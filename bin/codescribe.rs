@@ -117,6 +117,14 @@ enum Command {
         #[command(subcommand)]
         cmd: codescribe::cli::teacher::TeacherCommand,
     },
+    /// Run a recorded take through the production session again and print
+    /// the document the overlay would show
+    ///
+    /// Inputs come from the take's replay card, so the replay uses the take's
+    /// settings, device, capture turn and archive. stdout carries the text;
+    /// every input that differs from the take is named on stderr, or in the
+    /// receipt under --json.
+    Replay(codescribe::cli::replay::ReplayArgs),
     /// Private corpus census and production-overlay replay
     Corpus {
         #[command(subcommand)]
@@ -218,7 +226,7 @@ enum LexiconAction {
         /// Also hold hand-written rows to the admission gate
         ///
         /// Hand-written does not mean correct: a curated row can list a term's
-        /// own inflections as mispronunciations (`Monika <- Moniki, Monikę`),
+        /// own inflections as mispronunciations (`Kraków <- Krakowa, Krakowie`),
         /// which rewrites correct speech and breaks the sentence.
         #[arg(long)]
         gate_curated: bool,
@@ -356,6 +364,10 @@ fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
             Ok(success)
         }
         Command::Teach { cmd } => codescribe::cli::teacher::run(cmd).map(|()| success),
+        Command::Replay(args) => {
+            blocking_runtime()?.block_on(codescribe::cli::replay::run(args))?;
+            Ok(success)
+        }
         // `main_with` owns the corpus exit contract; the unified entry point
         // adopts it rather than reinventing a second one.
         Command::Corpus { command } => Ok(codescribe::cli::corpus::main_with(

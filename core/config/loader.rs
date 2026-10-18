@@ -1186,6 +1186,10 @@ impl Config {
         env_parse!("AGENT_CHANNEL_MODIFIER", self.channel_modifier);
         env_flag!("FN_TAP_TOGGLES_DICTATION", self.fn_tap_toggles_dictation);
         env_flag!("MIDDLE_MOUSE_ACTS_AS_FN", self.middle_mouse_acts_as_fn);
+        env_flag!(
+            "MIDDLE_MOUSE_AGENT_GESTURE",
+            self.middle_mouse_agent_gesture
+        );
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
@@ -1453,6 +1457,11 @@ impl Config {
             "MIDDLE_MOUSE_ACTS_AS_FN",
             self.middle_mouse_acts_as_fn,
             settings.middle_mouse_acts_as_fn
+        );
+        apply_copy!(
+            "MIDDLE_MOUSE_AGENT_GESTURE",
+            self.middle_mouse_agent_gesture,
+            settings.middle_mouse_agent_gesture
         );
         // AI
         apply_copy!(
@@ -2901,6 +2910,38 @@ mod tests {
         assert!(!snapshot.seal_lane_armed());
         assert!(snapshot.seal_lane_setting_armed());
         assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
+    }
+
+    #[test]
+    #[serial]
+    fn transcription_controls_are_independent_and_frozen_for_the_take() {
+        let _tmp = setup_isolated_data_dir();
+        let original = Config::load_runtime_snapshot_without_keychain().unwrap();
+        assert!(!original.seal_ledger_enabled());
+        assert!(!original.apple_live_enabled());
+        for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
+            Config::default()
+                .save_to_env_many(&[
+                    (
+                        "CODESCRIBE_SEAL_LEDGER_ENABLED",
+                        if ledger { "1" } else { "0" },
+                    ),
+                    (
+                        "CODESCRIBE_APPLE_LIVE_ENABLED",
+                        if apple { "1" } else { "0" },
+                    ),
+                ])
+                .unwrap();
+            Config::default()
+                .save_to_env("WHISPER_ADAPTIVE_BUFFER", "1")
+                .unwrap();
+            let next = Config::load_runtime_snapshot_without_keychain().unwrap();
+            assert_eq!(next.seal_ledger_enabled(), ledger);
+            assert_eq!(next.apple_live_enabled(), apple);
+            assert!(!original.seal_ledger_enabled());
+            assert!(!original.apple_live_enabled());
+            assert_ne!(next.digest(), original.digest());
+        }
     }
 
     #[test]

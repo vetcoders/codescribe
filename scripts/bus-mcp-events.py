@@ -318,7 +318,7 @@ class Events:
     def catalog(self, principal):
         self.check_owner(principal)
         return {"events": [{"name": EVENT_NAME,
-                "description": "An unread message is available in this fixed Miksa mailbox. No text is sent.",
+                "description": "An unread message is available in this agent's mailbox. No text is sent.",
                 "delivery": ["webhook"],
                 "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
                 "payloadSchema": {"type": "object", "properties": {

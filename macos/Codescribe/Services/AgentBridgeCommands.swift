@@ -80,8 +80,31 @@ enum AgentBroadcastPolicy: String, Decodable, Sendable, CaseIterable {
   case on, quiet, off
 
   var receivesWake: Bool { self == .on }
-  var statusSymbol: String? {
-    receivesWake ? nil : "antenna.radiowaves.left.and.right.slash"
+  /// One mark per state (Maciej, 2026-10-17: channel 0 and channel 0 plus
+  /// steer could not be told apart): on and quiet are both members of
+  /// channel 0, off is not; quiet queues every delivery without a wake.
+  var statusSymbol: String {
+    switch self {
+    case .on: "antenna.radiowaves.left.and.right"
+    case .quiet: "tray.and.arrow.down"
+    case .off: "antenna.radiowaves.left.and.right.slash"
+    }
+  }
+  var statusHelp: String {
+    switch self {
+    case .on:
+      String(
+        localized: "Channel 0 · steer: deliveries wake the agent",
+        comment: "Agent row mark: member of channel 0, deliveries start a turn")
+    case .quiet:
+      String(
+        localized: "Channel 0 · queued: deliveries wait, the agent is not woken",
+        comment: "Agent row mark: member of channel 0, deliveries queue without a wake")
+    case .off:
+      String(
+        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive",
+        comment: "Agent row mark: not a member of channel 0")
+    }
   }
 }
 
@@ -293,7 +316,8 @@ extension RealAgentBridgeInstaller {
       var result: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
       for identity in identities {
         result[identity] = .on
-        let path = root.appendingPathComponent("runtime/broadcast-policy/\(identity.storageKey).json")
+        let path = root.appendingPathComponent(
+          "runtime/broadcast-policy/\(identity.storageKey).json")
         // Unlike playback mute's fail-closed silence, policy fails open to on:
         // a broken receipt must never silently disconnect an agent.
         guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
@@ -483,7 +507,8 @@ extension RealAgentBridgeInstaller {
               "Some agents may have received this message. Check read receipts before sending again."
           )
           : String(localized: "Message could not be sent. Your draft is retained.")
-        let refusal = String(data: refusalData.suffix(4096), encoding: .utf8)?
+        let refusal =
+          String(data: refusalData.suffix(4096), encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
           .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""

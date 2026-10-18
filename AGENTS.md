@@ -1,100 +1,68 @@
-# Codescribe Local Agent Contract
+# Codescribe — Agent Guide
 
-The Vetcoders Global Agent Charter is authoritative. This file adds only
-Codescribe-specific runtime laws, thrones of authority, release cadence, and canonical pointers.
+Codescribe is a macOS dictation app. A Rust core (`core/`, `app/`) does audio
+capture, speech recognition and transcript assembly; a Swift app (`macos/`)
+draws the UI and talks to the core through UniFFI bindings (`bridge/`).
+This file tells a coding agent where authority lives and how to verify a change.
 
-## Naming & Authority
+## One owner per responsibility
 
-- **Founder** = Maciej Gad and Monika Szymańska (human voice, decisions, buttons).
-- **Operator** is exclusively an AGENT role (`vc-operator`, integrator). Never call the Founder "operator".
-- **Prawo Cięcia**: Jeden tron na władzę, zero nowych warstw. Konkurent tronu jest bezwzględnie
-  USUWANY (`git rm` / wycięcie symbolu), nigdy opakowywany.
-- **Unikamy w pracy: w diffach, kodzie i commitach**: `shim`, `compat`, `legacy`, `adapter-for-old`,
-  `fallback-to-previous`, `bridge-until`, `TODO remove`. Kod pisze się szybko. Refaktor monstrualnych i pogmatwanych konstrukcji to męka.
-- **Falsyfikator przed edycją**: test „pięć Iwo” (5 fizycznych wystąpień PCM → 5 w ledgerze → 5 w reducerze → 5 w delivery).
-- Zobacz `CANARY_MAP.md` oraz `AGENT_CANARY.md` dla pełnej mapy kolizji i 7 tronów.
+Each runtime responsibility has exactly one owner. Change the owner; do not add
+a parallel path, a wrapper or a fallback next to it. When a second owner is
+found, remove it rather than wrapping it.
 
-## Worker embargo — only for `stt engine` related tasks:
+| Responsibility | Owner |
+| --- | --- |
+| Identity of every spoken occurrence | `core/pipeline/acoustic_ledger.rs`. Text is a label attached to an occurrence, never its key. |
+| Sealing an utterance | PCM energy plus Silero VAD valleys on the same capture epoch. String equality never creates, merges or deletes an occurrence. |
+| Microphone | `RecordingController` (`app/controller/mod.rs`). Dictation, agent and assistive modes route downstream; none opens its own recorder. |
+| Transcript document | `TranscriptReducer` in `app/presentation/emitter.rs`. `OverlayState.swift` is a projection and keeps no document state of its own. |
+| Transcript bus | `app/presentation/transcript_bus.rs` only observes committed reducer events and never reinterprets the document. |
+| Delivery routing | `app/controller/delivery_route.rs`. Delivery follows the user's explicit target, never OS focus alone. |
+| Runtime configuration | `settings.json` → `core/config/loader.rs` → one immutable runtime snapshot. |
 
-- **Worker pisze kod. Testy pisze i uruchamia integrator. Worker nie kompiluje
-  i nie uruchamia żadnych testów.**
-  Build, typecheck, Clippy, wykonanie produktu, modele, benchmarki, instalacja
-  i odbiór runtime należą wyłącznie do jawnie wyznaczonego integratora.
-- Zakaz obowiązuje przez cały przydział workera, także po zamknięciu W2.
-  Brak markera embargo, mały zakres, neutralny instrument, szybki smoke test,
-  błąd kompilatora albo zalecenie skilla nie tworzą wyjątku.
-- Worker może czytać i mapować źródła, robić statyczny przegląd oraz
-  `git diff --check`. Oddaje commit, zakres zmian i niepewności. Integrator
-  odpowiada za fixtury, testy i ich wyniki; worker nie ogłasza ich jako PASS.
-- Integrator uruchamia wymagane bramki na jawnie wskazanej generacji po odbiorze
-  zmian. Po błędzie może zwrócić workerowi cut do poprawy; worker nadal nie
-  uruchamia bramek. Worker nie mianuje sam siebie integratorem.
-- Każdy dispatch musi zawierać tę zasadę, rolę oraz tożsamość integratora.
-  Dotyczy wszystkich providerów i runtime'ów. Hook uruchamiający kompilację
-  lub testy również podlega zakazowi; checkpoint stosuje protokół z
-  `docs/COMPILE_EMBARGO.md`, z jawną listą pominiętych hooków.
-- Wymagania build/test/install w tym pliku wykonuje **integrator**, nie worker.
-  Szczegóły i granica technicznego egzekwowania: `docs/COMPILE_EMBARGO.md` §0.
+Terminal events release the microphone, the UI phase and the agent thread.
 
-## Wspólny cache kompilacji — Founder 2026-10-07
+Avoid introducing `shim`, `compat`, `legacy`, `adapter-for-old`,
+`fallback-to-previous` or `TODO remove` layers in code, diffs and commits.
 
-- Źródła mogą być w worktree; uprawniona kompilacja korzysta z jednego
-  `target` w głównym checkoutcie. `make` wyznacza go przez wspólny katalog Git
-  i eksportuje `CARGO_TARGET_DIR` oraz `CARGO_BUILD_BUILD_DIR`.
-- Przy bezpośrednim wywołaniu Cargo ustaw oba na bezwzględną ścieżkę tego
-  samego głównego `target`. Bez prywatnych targetów ani nazw ukrywających cache
-  przed cleanerem. Profile i zestawy features współdzielą ten katalog.
-- Integracja i instalacja należą do wyznaczonego integratora. Wspólny cache
-  nie znosi embargo workera. Nie czyść cache podczas aktywnej kompilacji.
+## Contracts
 
-## Trony władzy (Runtime authority)
-
-- `acoustic_ledger.rs` (`core/pipeline/acoustic_ledger.rs`): jedyny tron tożsamości PCM (`OccurrenceIdentity`, `ObservationIdentity`, `MutationReceipt`). Tekst jest etykietą przypiętą do occurrence, nigdy kluczem identity.
-- **Seal authority**: predykat na energii PCM + dolinach Silero VAD na tym samym capture epoch, nigdy na równości stringów. Równość stringów nie tworzy, nie łączy i nie kasuje occurrence.
-- `RecordingController`: jedyny właściciel mikrofonu w aplikacji. Dictation, Agent i Assistive mogą routować downstream; żaden nie tworzy własnego recordera.
-- `PresentationEmitter` (`TranscriptReducer`): jedyny reducer dokumentu. `OverlayState.swift` to wyłącznie projekcja i malowanie UI bez własnego stanu dokumentu.
-- `TranscriptBus`: wyłącznie obserwator zatwierdzonych zdarzeń reducera. Zero reinterpretacji dokumentu.
-- `delivery_route.rs` (`app/controller/delivery_route.rs`): jedyny tron routingu delivery. Delivery kieruje się jawną intencją Foundera / użytkownika, nigdy samym fokusem OS.
-- `settings.json` → loader → immutable runtime snapshot: jedyne źródło konfiguracji runtime. Zero pięciogłosu.
-- Terminal events zwalniają stan mikrofonu, fazę UI i wątek Agenta.
-
-## Canonical contracts
-
-- `CANARY_MAP.md` — mapa kolizji, 20 konkurentów i 7 tronów.
-- `docs/STT_CONTRACT.md` — silniki i adjudykacja.
-- `docs/TRANSCRIPT_BUS.md` — czyste zdarzenia, prywatność i ścieżki.
-- `docs/HOTKEYS_CONTRACT.md` — gesty, ownership i tryby.
+- `docs/STT_CONTRACT.md` — recognition engines and adjudication.
+- `docs/TRANSCRIPT_BUS.md` — bus events, privacy and paths.
+- `docs/HOTKEYS_CONTRACT.md` — gestures, ownership and modes.
 - `docs/DELIVERY_ROUTE.md` — destination selection.
-- `docs/ENV_REGISTRY.toml` — rejestr zmiennych środowiskowych.
-- `docs/LOCALIZATION.md` — język interfejsu: String Catalogs, reguły pisania copy, ledger.
+- `docs/ENV_REGISTRY.toml` — every environment variable the app reads.
+- `docs/LOCALIZATION.md` — String Catalogs and UI copy rules.
 
-Po zmianach w API Rust bridge regeneruj bindingi Swift przez `make app-bindings`.
+After changing the Rust bridge API, regenerate the Swift bindings with
+`make app-bindings`. Do not edit `macos/Codescribe/Bridge/codescribe_ffi.swift`
+by hand.
 
-## Daily app and release cadence
+## Build and verify
 
-- Po spójnym cucie zmieniającym aplikację uruchom `make install-app` - to specjalny target, który
-podmienia /Applications/Codescribe.app BEZ ingerowania w działający proces aplikacji (możliwe dzięki
-architekturze aplikacji).
-- Traktuj instalację jako wymagany odbiór dla Foundera przy każdym większym cucie.
-- Po pomyślnej instalacji poinformuj o jej ukończeniu - odtwórz `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`
-lub przekaż słownie przez `cs-say`.
-- Nie restartuj aplikacji samodzielnie, chyba że
-zostaniesz o to poproszony w wątku lub na kanale `cs-bus`.
-- Po otrzymaniu zgody restart aplikacji wykonuj wyłącznie przez
-  `make restart-if-idle` (skrypt `scripts/restart-if-idle`). Sprawdzenie busa
-  i osobne `Quit` nie są atomowe. Skrypt wymaga zgody żywego kontrolera,
-  który pod blokadą startu odmawia przy aktywnym lub domykanym take'u i
-  zamyka przyszły start przed wyjściem. Odmowa ma kod 75; nie obchodź jej
-  AppleScriptem, `kill`, resetem kanałów ani kasowaniem historii.
-  Starszy proces bez protokołu także odmawia. Szczegóły: `docs/RESTART_IF_IDLE.md`.
-- Targetem dmg jest `make release-standard` (notaryzowany slim DMG). Buduj go na każdą prośbę
-Foundera, po sprawdzeniu, czy wszystkie istotne cuty są zintegrowane. Traktuj integrację przed buildem
-relase bundla jako automatyczną powinność.
-- Ad-hoc build `/Applications` to nie jest dystrybucyjny DMG.
+| Command | What it does |
+| --- | --- |
+| `make check` | Formatting, Clippy, Semgrep, the env registry and the ledger gate. |
+| `make verify` | Hermetic Rust tests and doctests (the CI contract). |
+| `make test-swift` | Regenerates bindings and runs the Swift test suite (Swift 6 strict concurrency, warnings as errors). |
+| `make install-app` | Builds and replaces `/Applications/Codescribe.app` without touching a running instance. |
+| `make restart-if-idle` | Restarts the app only when no take is active or closing; exit code 75 means it refused. See `docs/RESTART_IF_IDLE.md`. |
+| `make release-standard` | Notarized distribution DMG. A local `install-app` build is not a release. |
 
-## Verification
+Worktrees share one Cargo `target` directory in the main checkout: `make` sets
+`CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR` from the common Git directory.
+When calling Cargo directly, point both at that same absolute path.
 
-- `make check` — formatowanie, Clippy, Semgrep, rejestr env i gate ledger.
-- `make verify` — hermetyczne testy Rusta i doctesty (kontrakt CI).
-- `make test-swift` — regeneracja bindingów oraz pakiet testów Swifta (Swift 6 strict concurrency, warnings as errors).
-- Swift targets budują się bez wyciszania ostrzeżeń; warning suppressors są zabronione.
+Swift targets build without warning suppression; suppressors are not allowed.
+
+## Commits
+
+Every completed cut must have its own authored commit before handoff or
+installation. Do not leave finished changes uncommitted for the user to commit.
+Stage only the cut's files or hunks; preserve unrelated work. Source-only workers
+return a committed checkpoint using `docs/COMPILE_EMBARGO.md` without running
+compiler or test hooks; the designated integrator owns verification and admission.
+
+Commit messages follow `.commitmsg`: a scoped subject, a body that explains
+what changed and why, and an `Authored-By:` trailer.

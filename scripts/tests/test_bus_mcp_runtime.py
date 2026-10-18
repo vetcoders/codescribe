@@ -14,7 +14,7 @@ import importlib.util
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('runtime_test_fixture', SCRIPTS / 'tests/test_bus_dot_mcp.py')
+spec = importlib.util.spec_from_file_location('runtime_test_fixture', SCRIPTS / 'tests/test_bus_mcp_agent.py')
 BASE = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(BASE)
 RUNTIME = BASE.load('tested_bus_runtime', 'bus-mcp-runtime.py')
@@ -200,7 +200,7 @@ class HTTPSCallbackTests(unittest.TestCase):
             self.assertEqual(transport(BASE.URL+'?nonce=synthetic',addresses,b'{}',{}),(202,{}))
         call=self.calls[0]
         self.assertEqual((call.host,call.address),('callback.example.test','1.1.1.1'))
-        self.assertEqual(call.request[0][1],'/miksa?nonce=synthetic')
+        self.assertEqual(call.request[0][1],'/agent?nonce=synthetic')
         self.assertTrue(call.closed)
 
     def test_private_dns_and_redirects_are_not_followed(self):
@@ -294,9 +294,9 @@ class RuntimeLifecycleTests(BASE.Fixture):
         def run():
             output.seek(0); output.truncate(); errors.seek(0); errors.truncate()
             stream = SimpleNamespace(buffer=io.BytesIO(payload.encode()))
-            with patch.object(BASE.DOT.sys, 'stdin', stream), patch.object(BASE.DOT.sys, 'stdout', output), \
-                    patch.object(BASE.DOT.sys, 'stderr', errors):
-                BASE.DOT.serve(self.server, self.server.scope)
+            with patch.object(BASE.AGENT.sys, 'stdin', stream), patch.object(BASE.AGENT.sys, 'stdout', output), \
+                    patch.object(BASE.AGENT.sys, 'stderr', errors):
+                BASE.AGENT.serve(self.server, self.server.scope)
             return json.loads(output.getvalue()), json.loads(errors.getvalue())
         result, trace = run()
         self.assertEqual(result['error']['code'], -32602)
@@ -309,8 +309,8 @@ class RuntimeLifecycleTests(BASE.Fixture):
         # lease, pending IDs, cursor and ACK state are untouched.
         pump.stop()
         before = (self.root / 'leases' / (self.lease + '.json')).read_bytes()
-        self.server = BASE.DOT.DotMailbox(BASE.DEMUX, self.native,
-                         BASE.DOT.Scope({**self.config, 'bus': str(channel_bus)}))
+        self.server = BASE.AGENT.AgentMailbox(BASE.DEMUX, self.native,
+                         BASE.AGENT.Scope({**self.config, 'bus': str(channel_bus)}))
         pump = RUNTIME.configure(self.server, EVENTS, None, callback_hosts=(), callback_preflight=True)
         self.addCleanup(pump.stop)
         result, trace = run()
@@ -351,7 +351,7 @@ class RuntimeLifecycleTests(BASE.Fixture):
         for values in (['--callback-preflight', '--callback-host', 'callback.example.test'],
                        ['--callback-preflight', '--codescribe', '/unused-native'],
                        ['--callback-host', 'callback.example.test']):
-            with patch.object(BASE.DOT.sys, 'stderr', io.StringIO()):
+            with patch.object(BASE.AGENT.sys, 'stderr', io.StringIO()):
                 with self.assertRaises(SystemExit) as failure:
                     RUNTIME.main(['--scope', str(scope), *values])
             self.assertEqual(failure.exception.code, 2)
@@ -380,8 +380,8 @@ class RuntimeLifecycleTests(BASE.Fixture):
             ownership.append(server)
             return SimpleNamespace(start=lambda:ownership.append('started'),
                 stop=lambda:(server.events.close(),ownership.append('closed')))
-        with patch.object(BASE.DOT.sys,'stdin',input_stream),patch.object(BASE.DOT.sys,'stdout',output):
-            BASE.DOT.main(['--scope',str(scope_path)],runtime_factory=factory)
+        with patch.object(BASE.AGENT.sys,'stdin',input_stream),patch.object(BASE.AGENT.sys,'stdout',output):
+            BASE.AGENT.main(['--scope',str(scope_path)],runtime_factory=factory)
         responses=[json.loads(r) for r in output.getvalue().splitlines()]
         self.assertIn('events',responses[0]['result']['capabilities'])
         self.assertEqual(responses[1]['result']['events'][0]['name'],EVENTS.EVENT_NAME)
@@ -415,8 +415,8 @@ class RuntimeLifecycleTests(BASE.Fixture):
                 request={'jsonrpc':'2.0','id':17,'method':'events/subscribe','params':{'_meta':BASE.META,**self.subscription()}}
                 input_stream=SimpleNamespace(buffer=io.BytesIO((json.dumps(request)+'\n').encode()))
                 output=io.StringIO()
-                with patch.object(BASE.DOT.sys,'stdin',input_stream),patch.object(BASE.DOT.sys,'stdout',output):
-                    BASE.DOT.serve(self.server,self.server.scope)
+                with patch.object(BASE.AGENT.sys,'stdin',input_stream),patch.object(BASE.AGENT.sys,'stdout',output):
+                    BASE.AGENT.serve(self.server,self.server.scope)
                 value=json.loads(output.getvalue())
                 self.assertEqual(value['id'],17)
                 self.assertEqual(value['error'],{'code':-32015,'message':'Callback verification refused',
@@ -468,7 +468,7 @@ class RuntimeLifecycleTests(BASE.Fixture):
 
     def test_foreign_owner_revokes_only_own_subscription_and_stops_callbacks(self):
         pump=self.configure();self.server.dispatch(PRINCIPAL,'events/subscribe',self.subscription())
-        before=len(self.posts);self.state['name']='Foreign';self.save()
+        before=len(self.posts);self.state['name']='Lin';self.save()
         with self.assertRaises(PermissionError):pump.tick()
         self.assertEqual(len(self.posts),before)
         self.assertFalse(self.secret_store.values)

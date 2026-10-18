@@ -66,6 +66,8 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     func setFnTapTogglesDictation(_ enabled: Bool) throws {}
     func middleMouseActsAsFn() -> Bool { false }
     func setMiddleMouseActsAsFn(_ enabled: Bool) throws {}
+    func middleMouseAgentGesture() -> Bool { false }
+    func setMiddleMouseAgentGesture(_ enabled: Bool) throws {}
   }
 
   private func model(_ hotkeys: HotkeysEngine) -> SettingsViewModel {

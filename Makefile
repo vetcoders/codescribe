@@ -1179,7 +1179,7 @@ verify:
 	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
 	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
 	python3 -m unittest scripts/tests/test_bus_mcp.py; \
-	python3 -m unittest scripts/tests/test_bus_dot_mcp.py scripts/tests/test_bus_mcp_runtime.py scripts/tests/test_bus_mcp_key_store.py; \
+	python3 -m unittest scripts/tests/test_bus_mcp_agent.py scripts/tests/test_bus_mcp_runtime.py scripts/tests/test_bus_mcp_key_store.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
 	python3 -m unittest scripts/tests/test_l10n_lint.py; \
@@ -1188,6 +1188,8 @@ verify:
 	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
+	echo "=== Verify (Voice Lab install follows main) ==="; \
+	bash scripts/tests/install-voice-lab-test.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
 	bash scripts/tests/validate-gates-test.sh; \

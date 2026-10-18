@@ -23,7 +23,10 @@ struct LabPanel: View {
 
       sealLaneRow
 
+      transcriptionTracks
+
       dictationWitnessRow
+        .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
 
       Picker(
         "Whisper buffering",
@@ -93,6 +96,44 @@ struct LabPanel: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
+  }
+
+  private var transcriptionTracks: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Toggle(
+        "Seal-ledger admission",
+        isOn: Binding(
+          get: { model.settings.sealLedgerEnabled },
+          set: { enabled in
+            model.setSealLedgerEnabled(enabled)
+            Task { await model.refreshAdmission() }
+          }
+        )
+      )
+      .accessibilityIdentifier("lab-seal-ledger-enabled")
+
+      Toggle(
+        "Apple live speech",
+        isOn: Binding(
+          get: { model.settings.appleLiveEnabled },
+          set: { enabled in
+            model.setAppleLiveEnabled(enabled)
+            Task { await model.refreshAdmission() }
+          }
+        )
+      )
+      .accessibilityIdentifier("lab-apple-live-enabled")
+
+      Text(
+        "Applies to the next recording. Turn both off to keep Whisper output without Apple revisions or seal-ledger admission."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+    }
+    .toggleStyle(.switch)
+    .font(.body)
+    .tint(CSColor.chromeAccent)
   }
 
   /// Voice Lab experiment: the DictationTranscriber witness re-checks

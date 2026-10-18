@@ -20,8 +20,200 @@
 //! the exact class of harm the lexicon's stopword gate was added to stop.
 //! Hesitation sounds and accepted acoustic event markers are preserved too.
 //!
+//! The one word rule is the product name: every spoken form of it becomes
+//! "Codescribe" (see [`brand_spelling`]).
+//!
 //! Every rule is idempotent: applying the pass twice yields the same string, so
 //! a re-delivered or re-formatted transcript never drifts.
+
+/// The product name, spelled one way whichever engine heard it.
+const BRAND: &str = "Codescribe";
+
+/// How engines hear the product name: Whisper writes "CodeScript" or
+/// "code script", cloud engines "Code Scribe", Polish decoders "kod skrajb".
+/// The brand is not a user preference, so a missing, reset or poisoned
+/// custom dictionary must not let it ship misspelt; the rule lives in this
+/// always-on pass that every committed span goes through.
+static BRAND_HEARINGS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)\b(?:code[ -]?scri(?:be|pt)|code[ -]?skrajb|kod[ -]?(?:scribe|skrybe|skraj ?b)|kodeskrajb|kołdskrajb)\b",
+    )
+    .expect("brand hearing pattern")
+});
+
+/// Byte ranges that hold data rather than speech: fenced code, inline code
+/// and straight-quoted literals, split the way CommonMark 0.31.2 splits them.
+/// A fence is a run of three or more backticks or tildes opening a line (at
+/// most three spaces before it); it closes at the first later line holding at
+/// most three spaces, a run of the same character at least as long and
+/// nothing else, and an unclosed fence protects the rest. Any other run of n
+/// backticks, even three mid-line, is an inline span that closes at the next
+/// run of exactly n, so ``a `b` c`` is one span; an unclosed inline run
+/// protects nothing. Tildes outside a fence are text. A quote closes only when an even number of backslashes
+/// precedes it, so JSON escapes stay inside their string. An apostrophe
+/// inside a word (`Codescribe'a`, `don't`) does not open a literal.
+fn literal_regions(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut regions = Vec::new();
+    let mut index = 0;
+    while let Some(ch) = text[index..].chars().next() {
+        let (end, skip) = match ch {
+            '`' | '~' => {
+                let marker = ch as u8;
+                let run = marker_run(&text[index..], marker);
+                let end = if run >= 3 && opens_line(text, index) {
+                    Some(closing_fence(text, index, marker, run).unwrap_or(text.len()))
+                } else if marker == b'`' {
+                    closing_backtick_run(text, index + run, run)
+                } else {
+                    None
+                };
+                (end, run)
+            }
+            '"' if unescaped(text, index) => (closing_quote(text, index + 1, '"'), 1),
+            '\'' if unescaped(text, index)
+                && text[..index]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|before| !before.is_alphanumeric()) =>
+            {
+                (closing_quote(text, index + 1, '\''), 1)
+            }
+            _ => (None, ch.len_utf8()),
+        };
+        match end {
+            Some(end) => {
+                regions.push(index..end);
+                index = end;
+            }
+            None => index += skip,
+        }
+    }
+    regions
+}
+
+/// Length of the run of `marker` bytes that starts `text`.
+fn marker_run(text: &str, marker: u8) -> usize {
+    text.bytes().take_while(|&byte| byte == marker).count()
+}
+
+/// True when only up to three spaces separate `at` from the line start.
+fn opens_line(text: &str, at: usize) -> bool {
+    let line_start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let indent = &text[line_start..at];
+    indent.len() <= 3 && indent.bytes().all(|byte| byte == b' ')
+}
+
+/// End of the line that closes the fence opened by `run` `marker` bytes at
+/// `at`: at most three spaces, at least `run` of the same marker, then only
+/// whitespace.
+fn closing_fence(text: &str, at: usize, marker: u8, run: usize) -> Option<usize> {
+    let mut line_start = at + text[at..].find('\n')? + 1;
+    loop {
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |newline| line_start + newline);
+        let line = &text[line_start..line_end];
+        let fence = line.trim_start_matches(' ');
+        let length = marker_run(fence, marker);
+        if line.len() - fence.len() <= 3 && length >= run && fence[length..].trim().is_empty() {
+            return Some(line_end);
+        }
+        if line_end == text.len() {
+            return None;
+        }
+        line_start = line_end + 1;
+    }
+}
+
+/// End of the first run of exactly `run` backticks at or after `from`.
+fn closing_backtick_run(text: &str, from: usize, run: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(offset) = text[at..].find('`') {
+        let start = at + offset;
+        let length = marker_run(&text[start..], b'`');
+        if length == run {
+            return Some(start + run);
+        }
+        at = start + length;
+    }
+    None
+}
+
+/// True when the byte at `at` is not escaped: an even number of
+/// backslashes precedes it.
+fn unescaped(text: &str, at: usize) -> bool {
+    text[..at]
+        .bytes()
+        .rev()
+        .take_while(|&byte| byte == b'\\')
+        .count()
+        % 2
+        == 0
+}
+
+/// End of the literal opened by `quote` before `from`: the next unescaped
+/// `quote`. A single quote also needs a non-alphanumeric character after it,
+/// so `'CodeScript'a'` closes at the last quote, not inside a word.
+fn closing_quote(text: &str, from: usize, quote: char) -> Option<usize> {
+    text[from..]
+        .match_indices(quote)
+        .map(|(offset, _)| from + offset)
+        .find(|&close| {
+            unescaped(text, close)
+                && (quote == '"'
+                    || text[close + 1..]
+                        .chars()
+                        .next()
+                        .is_none_or(|after| !after.is_alphanumeric()))
+        })
+        .map(|close| close + 1)
+}
+
+/// Rewrite spoken forms of the brand to [`BRAND`]. All-lowercase
+/// `codescribe` and any form glued to a path, identifier or address stay as
+/// written: `~/.codescribe/takes` and `codescribe.transcript.v1` are names,
+/// not speech. Code in backticks or fences and straight-quoted literals
+/// (`printf '%s' 'CodeScript'`, JSON `"CodeScript"`) are data and stay too;
+/// writer's quotes („…”) are prose and are normalised. Lone "code", "script"
+/// or "scribe" never match.
+///
+/// Known gap: the rule sees one span. When the decoder splits the name over
+/// two occurrences ("code" | "scribe"), each stays as heard; occurrences are
+/// never merged or re-keyed for spelling, because that would change their
+/// acoustic identity.
+pub fn brand_spelling(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut rewritten = String::new();
+    let mut copied = 0;
+    let mut literals = None;
+    for found in BRAND_HEARINGS.find_iter(text) {
+        let heard = found.as_str();
+        let before = text[..found.start()].chars().next_back();
+        let mut after = text[found.end()..].chars();
+        let next = after.next();
+        let glued = matches!(before, Some('.' | '/' | '\\' | '_' | '-' | '~' | '@'))
+            || matches!(next, Some('/' | '\\' | '_' | '@'))
+            || (matches!(next, Some('.' | '-' | ':'))
+                && after.next().is_some_and(char::is_alphanumeric));
+        if glued || heard == BRAND || heard == "codescribe" {
+            continue;
+        }
+        if literals
+            .get_or_insert_with(|| literal_regions(text))
+            .iter()
+            .any(|region| region.start <= found.start() && found.end() <= region.end)
+        {
+            continue;
+        }
+        rewritten.push_str(&text[copied..found.start()]);
+        rewritten.push_str(BRAND);
+        copied = found.end();
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    rewritten.push_str(&text[copied..]);
+    std::borrow::Cow::Owned(rewritten)
+}
 
 /// Punctuation that closes a clause and may therefore be doubled by a seam.
 const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
@@ -133,7 +325,8 @@ pub fn apply_live_span(left_context: &str, span: &str, sentence_break_before: bo
         return String::new();
     }
 
-    let tightened = tighten_punctuation(trimmed);
+    let branded = brand_spelling(trimmed);
+    let tightened = tighten_punctuation(&branded);
     let punctuated = place_polish_commas(&tightened);
     let tightened = punctuated.trim();
     if tightened.is_empty() {
@@ -319,6 +512,136 @@ fn ends_with_terminal_punctuation(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_heard_form_of_the_brand_becomes_codescribe() {
+        for heard in [
+            "CodeScript",
+            "Codescript",
+            "codescript",
+            "code script",
+            "Code Script",
+            "code-script",
+            "CodeScribe",
+            "Code Scribe",
+            "code scribe",
+            "kod scribe",
+            "kod-scribe",
+            "kod skrajb",
+            "kod skraj b",
+            "kod skrybe",
+            "kodeskrajb",
+            "kołdskrajb",
+            "code skrajb",
+            "Codescribe",
+        ] {
+            assert_eq!(
+                brand_spelling(&format!("pracuję nad {heard} dziś")),
+                "pracuję nad Codescribe dziś",
+                "{heard}"
+            );
+        }
+        assert_eq!(brand_spelling("CodeScript."), "Codescribe.");
+        assert_eq!(brand_spelling("CodeScript'a"), "Codescribe'a");
+        assert_eq!(
+            apply("otwórz CodeScript i code scribe"),
+            "Otwórz Codescribe i Codescribe."
+        );
+    }
+
+    #[test]
+    fn script_code_and_names_stay_as_spoken() {
+        for kept in [
+            "to jest Python script",
+            "TypeScript i JavaScript",
+            "ten skrypt i ten script",
+            "kod skryptu jest długi",
+            "napisz code, potem scribe",
+            "zajrzyj do ~/.codescribe/takes",
+            "schema codescribe.transcript.v1",
+            "plik codescribe-ffi i code_script.py",
+            "codescribe z małej litery",
+        ] {
+            assert_eq!(brand_spelling(kept), kept);
+        }
+    }
+
+    #[test]
+    fn code_and_quoted_literals_keep_their_bytes() {
+        for kept in [
+            "printf '%s' 'CodeScript'",
+            r#"{"name": "CodeScript"}"#,
+            "uruchom `code script --help`",
+            "```\nCodeScript = 1\n```",
+            "```sh\necho code scribe",
+            r#"{"text": "call \"CodeScript help\" now"}"#,
+            "``CodeScript help``",
+            "``a `CodeScript` b``",
+            "```\nx ``` y\nCodeScript help\n```",
+            "a ```CodeScript``` b",
+        ] {
+            assert_eq!(brand_spelling(kept), kept);
+        }
+    }
+
+    #[test]
+    fn prose_beside_code_still_gets_the_brand() {
+        assert_eq!(
+            brand_spelling("CodeScript uruchamia `code script` i „Code Scribe”"),
+            "Codescribe uruchamia `code script` i „Codescribe”"
+        );
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n```\npo bloku CodeScript działa"),
+            "```\nCodeScript\n```\npo bloku Codescribe działa"
+        );
+        assert_eq!(brand_spelling("`a` CodeScript `b`"), "`a` Codescribe `b`");
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n````\npo CodeScript"),
+            "```\nCodeScript\n````\npo Codescribe"
+        );
+        assert_eq!(
+            brand_spelling("```\nCodeScript\n   ```\npo CodeScript"),
+            "```\nCodeScript\n   ```\npo Codescribe"
+        );
+        assert_eq!(
+            brand_spelling("~~~sh\nCodeScript --help\n~~~\npo CodeScript"),
+            "~~~sh\nCodeScript --help\n~~~\npo Codescribe"
+        );
+        // A backtick run never closes a tilde fence, and tildes mid-line are text.
+        assert_eq!(
+            brand_spelling("~~~\nCodeScript\n```\nCodeScript"),
+            "~~~\nCodeScript\n```\nCodeScript"
+        );
+        assert_eq!(brand_spelling("a ~~~ CodeScript"), "a ~~~ Codescribe");
+        assert_eq!(
+            brand_spelling(r#""a\\" CodeScript "b""#),
+            r#""a\\" Codescribe "b""#
+        );
+        assert_eq!(
+            brand_spelling("`` CodeScript i code script"),
+            "`` Codescribe i Codescribe"
+        );
+        assert_eq!(
+            brand_spelling("nie don't i CodeScript'a"),
+            "nie don't i Codescribe'a"
+        );
+    }
+
+    /// Known gap, pinned: the name split over two occurrences stays as heard.
+    #[test]
+    fn brand_split_across_occurrences_stays_as_heard() {
+        assert_eq!(
+            apply_live_span("pracuję nad code", "scribe dziś", false),
+            "scribe dziś"
+        );
+    }
+
+    #[test]
+    fn brand_rule_is_idempotent_through_the_live_span() {
+        let once = apply_live_span("", "pracuję nad code script", false);
+        assert_eq!(once, "Pracuję nad Codescribe");
+        assert_eq!(apply_live_span("", &once, false), once);
+    }
 
     #[test]
     fn tick_budget_counts_queue_time_and_refuses_late_candidates() {

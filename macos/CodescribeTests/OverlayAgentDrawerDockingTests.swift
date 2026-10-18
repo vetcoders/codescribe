@@ -132,7 +132,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(agent.title, "3 · astra")
     XCTAssertEqual(agent.descriptor, "codex", "the pill shows the provider descriptor")
     XCTAssertEqual(agent.unread, 4)
-    XCTAssertNotNil(agent.quietSymbol, "a quiet broadcast policy marks the pill")
+    XCTAssertEqual(agent.broadcastPolicy, .quiet, "a quiet broadcast policy marks the pill")
+    XCTAssertNil(zero.broadcastPolicy, "the shared channel has no membership of its own")
     XCTAssertEqual(zero.dot, .broadcast, "the shared channel wears the antenna, not a delivery dot")
   }
 
@@ -358,36 +359,124 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)
 
-  func testDockedRowsCarryTimePreviewAndBadgeAndMoveDescriptorToTooltip() throws {
+  func testDockedRowsKeepProviderModelVisibleAlongsideTimePreviewAndBadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let row = try section(
       of: source, from: "private func channelRow(", to: "private func conversationRow(")
     XCTAssertTrue(row.contains("lineLimit(2)"), "rows carry a two-line message preview")
     XCTAssertTrue(row.contains("drawerPreview("), "rows render the last message preview")
-    XCTAssertFalse(
-      row.contains("overlay-agent-descriptor-"), "the descriptor leaves the row body")
+    XCTAssertTrue(
+      row.contains("overlay-agent-descriptor-"),
+      "wide rows must show the same provider/model identity as narrow pills")
     XCTAssertTrue(row.contains(".help("), "descriptor and status live in the row tooltip")
     XCTAssertTrue(
       row.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
-  func testDrawerPreviewPrefixesOwnMessagesAndChannelZeroSenders() throws {
+  func testRememberedDrawerWidthLeavesConversationSpaceAndScalesWithText() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
     let (broadcast, lena, _) = try rosterFixture()
-    let own = OverlayConversationMessage(
-      id: "user:1", kind: .user, text: "first line\nsecond line", order: 1,
-      emittedAt: "2026-10-16T14:54:00Z", owner: nil, recipients: [],
-      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.selectConversation(lena.id)
+    state.conversationDrafts[lena.id] = "unfinished message"
+    for (width, scale, expected) in [
+      (1200.0, 1.0, 480.0), (900.0, 1.0, 380.0),
+      (1400.0, 1.4, 672.0),
+    ] as [(CGFloat, CGFloat, CGFloat)] {
+      let recorder = OverlayDrawerFrameRecorder()
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .defaultAppStorage(defaults)
+          .environment(\.csTextScale, scale)
+          .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+          .frame(width: width, height: 500))
+      host.sizingOptions = []
+      let panel = NSPanel(
+        contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.contentView = host
+      panel.orderFrontRegardless()
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(recorder.frame.width, expected, accuracy: 1)
+      XCTAssertEqual(recorder.frame.minX, width - expected, accuracy: 1)
+      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 520 * scale - 1)
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+      XCTAssertEqual(state.conversationDrafts[lena.id], "unfinished message")
+      panel.orderOut(nil)
+    }
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: own, channel: lena.channel),
-      "You: first line second line", "own messages carry the localized prefix, one line")
-    let reply = lena.messages[0]
+      defaults.double(forKey: "Overlay.agentDrawerWidth.v1"), 480,
+      "window clamping must not overwrite the user's remembered width")
+  }
+
+  func testDrawerPreviewNamesWhoAddressedWhomFromTheMessagesOwnRoute() throws {
+    // Maciej (2026-10-17): "brak informacji jak who addressed whom". The
+    // route is the message's source channel and frozen recipients, never the
+    // row it is shown in.
+    let (_, lena, astra) = try rosterFixture()
+    let lenaOwner = try XCTUnwrap(lena.owner)
+    let astraOwner = try XCTUnwrap(astra.owner)
+    func recipient(_ owner: OverlayConversationOwner) -> OverlayConversationRecipient {
+      OverlayConversationRecipient(
+        owner: owner, deliveryID: nil, queued: false, accepted: false, acknowledged: false)
+    }
+    func message(
+      _ kind: OverlayConversationMessage.Kind, owner: OverlayConversationOwner? = nil,
+      to recipients: [OverlayConversationOwner] = [], source: String? = nil
+    ) -> OverlayConversationMessage {
+      var message = OverlayConversationMessage(
+        id: "\(kind):1", kind: kind, text: "first line\nsecond line", order: 1,
+        emittedAt: "2026-10-16T14:54:00Z", owner: owner, recipients: recipients.map(recipient),
+        deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+      message.sourceChannel = source
+      return message
+    }
+    func preview(_ message: OverlayConversationMessage) -> String {
+      OverlayChannelStatusView.drawerPreview(message: message)
+    }
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: reply, channel: broadcast.channel),
-      "lena: PR is green", "channel 0 names the sender")
+      preview(message(.user, to: [lenaOwner, astraOwner], source: "0")),
+      "You → All: first line second line",
+      "a broadcast stays → All in every recipient's row, one line")
     XCTAssertEqual(
-      OverlayChannelStatusView.drawerPreview(message: reply, channel: lena.channel),
-      "PR is green", "an agent's own chat needs no prefix")
+      preview(message(.user, to: [lenaOwner], source: "2")), "You → lena: first line second line")
+    XCTAssertEqual(
+      preview(message(.user, source: "2")), "You → 2: first line second line",
+      "without frozen recipients the channel stands, not the agent now on it")
+    XCTAssertEqual(
+      preview(message(.user)), "You: first line second line",
+      "no route recorded, no arrow invented")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner)), "lena → You: first line second line",
+      "a reply without a destination answered the Founder")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, source: "0")), "lena → All: first line second line")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, to: [astraOwner], source: "3")),
+      "lena → astra: first line second line", "a peer message names its frozen recipient")
+    XCTAssertEqual(
+      preview(message(.reply, owner: lenaOwner, source: "3")),
+      "lena → 3: first line second line")
+  }
+
+  func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
+    // Maciej (2026-10-17): "ustalmy budżet 5 wierszy". Title, descriptor,
+    // two preview lines, one state line; unread is a badge on the title line.
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let label = try section(
+      of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
+    let limits = label.components(separatedBy: ".lineLimit(").dropFirst().compactMap {
+      Int($0.prefix { $0.isNumber })
+    }
+    XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
+    XCTAssertTrue(label.contains("unreadBadge(count)"), "unread rides the title line as a badge")
+    XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
+    XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
   }
 
   func testBroadcastPolicyRidesTheRowsContextMenuWithNoDisclosureList() throws {
@@ -424,7 +513,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     // The roster enters the canvas only as the docked HStack sibling; the
     // actions handle's badge is the one remaining topTrailing overlay and it
     // stays empty of roster content.
-    XCTAssertTrue(canvas.contains("agentDrawerColumn(maximumHeight: geometry.size.height)"))
+    XCTAssertTrue(canvas.contains("maximumHeight: geometry.size.height, width: drawerWidth"))
     var rest = canvas
     while let range = rest.range(of: ".overlay(alignment: .topTrailing)") {
       let window = rest[range.lowerBound...].prefix(600)
@@ -460,7 +549,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "the visible docked column is exactly when the pill evacuates")
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
-      of: conversation, from: ".overlay(alignment: .top)", to: ".onAppear { scrollToLatest")
+      of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
     XCTAssertTrue(
       anchor.contains("if hidesNavigation"),
       "the navigation row is conditional, not just transparent")

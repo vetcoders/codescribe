@@ -1,4 +1,10 @@
-"""Synthetic Miksa MCP + Events acceptance. No network, credentials or sound."""
+"""Synthetic agent MCP + Events acceptance. No network, credentials or sound.
+
+Two fictional agents share one bridge here: Ada and Lin. Everything either one
+is allowed to touch comes from its own reviewed scope, so a test that lets one
+act through the other's lease, binding or name is the regression this file
+exists to catch.
+"""
 import argparse
 import base64
 import contextlib
@@ -7,7 +13,9 @@ import hmac
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,17 +36,21 @@ def load(name, filename):
     return module
 
 
-DEMUX = load("dot_test_demux", "bus-demux.py")
-NATIVE = load("dot_test_native", "bus-mcp.py")
-DOT = load("dot_test_gateway", "bus-dot-mcp.py")
-EVENTS = load("dot_test_events", "bus-mcp-events.py")
+DEMUX = load("agent_test_demux", "bus-demux.py")
+NATIVE = load("agent_test_native", "bus-mcp.py")
+AGENT = load("agent_test_surface", "bus-mcp-agent.py")
+EVENTS = load("agent_test_events", "bus-mcp-events.py")
+RUNTIME_SCRIPT = SCRIPTS / "bus-mcp-runtime.py"
 SESSION = "11111111-2222-4333-8444-555555555555"
-PRINCIPAL = "synthetic-miksa-owner"
+OTHER_SESSION = "99999999-8888-4777-8666-555555555555"
+PRINCIPAL = "synthetic-agent-owner"
 SECRET = "whsec_" + base64.b64encode(b"synthetic-signing-key-only-0000000").decode()
-URL = "https://callback.example.test/miksa"
+URL = "https://callback.example.test/agent"
 TIME = "2026-10-14T12:00:00Z"
-# Exact self-contained envelope from openai/tunnel-client v0.0.16
-# pkg/mcpclient/stdio_initialization_test.go:144; never a legacy handshake.
+CALL_TEXT = "This agent is ready and waiting."
+MESSAGE = "MESSAGE_TEXT_PRIVATE"
+# Every request carries its own protocol version and capabilities: the server
+# keeps no handshake state, so a frame is accepted or refused on its own terms.
 META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientCapabilities": {}}
 
@@ -65,21 +77,22 @@ class Fixture(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.bus = self.root / "bus.jsonl"
         self.bus.touch()
-        self.config = {"provider": "codex", "session_id": SESSION, "name": "Miksa",
-                       "principal": PRINCIPAL, "bridge_home": str(self.root), "bus": str(self.bus)}
+        self.config = {"provider": "codex", "session_id": SESSION, "name": "Ada",
+                       "principal": PRINCIPAL, "bridge_home": str(self.root), "bus": str(self.bus),
+                       "state_dir": str(self.root / "runtime" / "ada-mcp"), "call_text": CALL_TEXT}
         self.lease = DEMUX.lease_identifier("codex", SESSION)
         self.ids = [f"{n:024x}" for n in range(1, 6)]
         owner = {"provider": "codex", "provider_session_id": SESSION, "lease_id": self.lease}
         self.pending = [{**owner, "delivery_owner": dict(owner), "delivery_id": identity,
                          "bus": str(self.bus), "emitted_at": TIME, "kind": "message", "source": "typed",
-                         "text": "Iwo", "instructions": "untrusted", "attachments": [{"path": "/private/audio.wav"}]}
+                         "text": MESSAGE, "instructions": "untrusted", "attachments": [{"path": "/private/audio.wav"}]}
                         for identity in self.ids]
-        self.state = {"schema": DEMUX.LEASE_SCHEMA, **owner, "name": "Miksa", "bus": str(self.bus),
+        self.state = {"schema": DEMUX.LEASE_SCHEMA, **owner, "name": "Ada", "bus": str(self.bus),
                       "pending": self.pending, "cursor": 0, "wakeup": "off"}
         self.save()
         self.native = NATIVE.Mailbox(DEMUX, self.root, self.bus)
         self.native.command = [sys.executable, str(SCRIPTS / "bus-demux.py")]
-        self.server = DOT.DotMailbox(DEMUX, self.native, DOT.Scope(self.config))
+        self.server = AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope(self.config))
         self.now = [1791979200.0]
         self.posts, self.statuses = [], []
         self.alarms = []
@@ -125,10 +138,286 @@ class Fixture(unittest.TestCase):
         self.assertIn(expected, headers["webhook-signature"].split())
 
 
-class DotToolsTests(Fixture):
+class ScopeContractTests(Fixture):
+    """The scope is the only identity: no name, provider or path is compiled in."""
+
+    def test_state_directory_is_one_reviewed_private_child_of_the_runtime_root(self):
+        runtime = self.root / "runtime"
+        created = AGENT.Scope(self.config).state
+        self.assertEqual(created, runtime / "ada-mcp")
+        self.assertEqual(stat.S_IMODE(created.stat().st_mode), 0o700)
+        # An existing reviewed directory is adopted, not replaced.
+        marker = created / "keep-me"
+        marker.mkdir()
+        self.assertEqual(AGENT.Scope(self.config).state, created)
+        self.assertTrue(marker.is_dir())
+        foreign = self.root / "elsewhere"
+        foreign.mkdir()
+        link = runtime / "linked-mcp"
+        link.symlink_to(foreign)
+        shared = runtime / "shared-mcp"
+        shared.mkdir()
+        os.chmod(shared, 0o770)
+        for state_dir in (str(self.root / "ada-mcp"), str(runtime / "nested" / "ada-mcp"),
+                          str(runtime / "ada"), str(runtime / "Ada-MCP"), str(link), str(shared),
+                          str(runtime / "ada-mcp" / "keep-me"), "runtime/ada-mcp", str(created / "..")):
+            with self.subTest(state_dir=state_dir), self.assertRaises(ValueError):
+                AGENT.Scope({**self.config, "state_dir": state_dir})
+        for missing in (None, {}):
+            scope = dict(self.config)
+            if missing is None:
+                scope.pop("state_dir")
+            else:
+                scope["state_dir"] = missing
+            with self.assertRaises(ValueError):
+                AGENT.Scope(scope)
+
+    def test_state_layout_and_signing_key_namespace_match_a_named_directory(self):
+        # A deployment keeps its signing keys by naming the directory it already
+        # uses: path and namespace must equal the independently built layout.
+        scope = AGENT.Scope(self.config)
+        expected = self.root / "runtime" / "ada-mcp" / self.lease
+        self.assertEqual(scope.state / self.lease, expected)
+        self.assertEqual(AGENT.AgentMailbox(DEMUX, self.native, scope).calls, expected / "calls")
+        self.assertEqual(EVENTS.key_namespace(PRINCIPAL, SESSION, scope.state / self.lease / "events.sqlite"),
+                         EVENTS.key_namespace(PRINCIPAL, SESSION, expected / "events.sqlite"))
+        renamed = AGENT.Scope({**self.config, "state_dir": str(self.root / "runtime" / "other-mcp")})
+        self.assertNotEqual(EVENTS.key_namespace(PRINCIPAL, SESSION, renamed.state / self.lease / "events.sqlite"),
+                            EVENTS.key_namespace(PRINCIPAL, SESSION, expected / "events.sqlite"))
+
+    def test_absent_call_text_removes_the_fixed_call_entirely(self):
+        config = {k: v for k, v in self.config.items() if k != "call_text"}
+        server = AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope(config))
+        self.assertNotIn("codescribe_call", {t["name"] for t in server.tools()})
+        with patch.object(self.native, "run", side_effect=AssertionError("call attempted")):
+            with self.assertRaises(ValueError):
+                server.call(PRINCIPAL, "codescribe_call", {"request_id": "a" * 24})
+        self.assertEqual(self.call("call", {"request_id": "a" * 24})["text"], CALL_TEXT)
+        for bad in ("", "   ", "x" * 201, "with\nnewline", 7, None):
+            with self.subTest(call_text=repr(bad)), self.assertRaises(ValueError):
+                AGENT.Scope({**self.config, "call_text": bad})
+
+    def test_scope_identity_fields_are_bounded_and_never_defaulted(self):
+        for change in ({"provider": "Codex"}, {"provider": "code x"}, {"provider": ""},
+                       {"provider": "a" * 65}, {"provider": 1}, {"name": ""}, {"name": "x" * 81},
+                       {"name": "line\nbreak"}, {"session_id": "not-a-uuid"},
+                       {"session_id": SESSION.replace("-", "")}, {"principal": ""},
+                       {"bridge_home": "relative/path"}, {"bus": "relative/path"},
+                       {"speech_enabled": "yes"}, {"mailbox_enabled": 1},
+                       {"broadcast_enabled": None}):
+            with self.subTest(change=list(change)), self.assertRaises(ValueError):
+                AGENT.Scope({**self.config, **change})
+        with self.assertRaises(ValueError):
+            AGENT.Scope({**self.config, "unknown": True})
+        scope = AGENT.Scope(self.config)
+        self.assertEqual((scope.provider, scope.name), ("codex", "Ada"))
+        self.assertFalse(scope.speech_enabled or scope.broadcast_enabled)
+        self.assertTrue(scope.mailbox_enabled)
+
+    def test_check_scope_prints_the_resolved_identity_without_any_side_effect(self):
+        path = self.root / "scope.json"
+        path.write_text(json.dumps(self.config))
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT), "--scope", str(path), "--check-scope"],
+                                text=True, capture_output=True, check=True, timeout=15)
+        value = json.loads(result.stdout)
+        expected = self.root / "runtime" / "ada-mcp" / self.lease
+        self.assertEqual(value, {"schema": "codescribe.agent-mcp.scope-check.v1", "provider": "codex",
+                                 "name": "Ada", "lease_id": self.lease, "state_dir_exists": True,
+                                 "state_path": str(expected),
+                                 "events_path": str(expected / "events.sqlite"),
+                                 "key_namespace": EVENTS.key_namespace(PRINCIPAL, SESSION, expected / "events.sqlite")})
+        self.assertNotIn(PRINCIPAL, result.stdout)
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
+        self.assertFalse((self.root / "acknowledgments").exists())
+        self.assertFalse(expected.exists())
+
+    def test_a_symlinked_runtime_root_cannot_relocate_state(self):
+        home = self.root / "other-home"
+        elsewhere = self.root / "elsewhere"
+        home.mkdir()
+        elsewhere.mkdir()
+        (home / "runtime").symlink_to(elsewhere, target_is_directory=True)
+        config = {**self.config, "bridge_home": str(home), "state_dir": str(home / "runtime" / "x-mcp")}
+        with self.assertRaises(ValueError):
+            AGENT.Scope(config)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_validation_and_check_scope_never_create_an_absent_state_directory(self):
+        absent = self.root / "runtime" / "lin-mcp"
+        config = {**self.config, "state_dir": str(absent)}
+        scope = AGENT.Scope(config)
+        self.assertFalse(os.path.lexists(absent))
+        path = self.root / "absent-scope.json"
+        path.write_text(json.dumps(config))
+        result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT), "--scope", str(path), "--check-scope"],
+                                text=True, capture_output=True, check=True, timeout=15)
+        value = json.loads(result.stdout)
+        self.assertFalse(value["state_dir_exists"])
+        self.assertEqual(value["events_path"], str(absent / self.lease / "events.sqlite"))
+        self.assertFalse(os.path.lexists(absent))
+        # Only a starting connection prepares it, privately.
+        self.assertEqual(scope.prepare_state(), absent)
+        self.assertEqual(stat.S_IMODE(absent.stat().st_mode), 0o700)
+        self.assertEqual(scope.prepare_state(), absent)
+
+    def test_check_scope_writes_no_bytecode_next_to_the_components(self):
+        scripts = self.root / "payload-bin"
+        scripts.mkdir()
+        for name in ("bus-mcp-runtime.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-demux.py"):
+            (scripts / name).write_bytes((SCRIPTS / name).read_bytes())
+        path = self.root / "scope.json"
+        path.write_text(json.dumps(self.config))
+        environment = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        result = subprocess.run([sys.executable, str(scripts / "bus-mcp-runtime.py"), "--scope", str(path),
+                                 "--check-scope"], text=True, capture_output=True, check=True, timeout=15,
+                                env=environment)
+        self.assertEqual(json.loads(result.stdout)["lease_id"], self.lease)
+        self.assertEqual(sorted(p.name for p in scripts.iterdir()),
+                         ["bus-demux.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py"])
+
+    def child_view(self, planted):
+        """What a BUS helper child sees: its environment and the canonical bus it resolves."""
+        dump = self.root / "dump-env.py"
+        dump.write_text(
+            "import importlib.util, json, os, sys\n"
+            "spec = importlib.util.spec_from_file_location('child_demux', sys.argv[1])\n"
+            "demux = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(demux)\n"
+            "print(json.dumps({'env': dict(os.environ), 'bus_path': str(demux.bus_path())}))\n")
+        with patch.dict(os.environ, planted, clear=True):
+            server = AGENT.AgentMailbox(DEMUX, NATIVE.Mailbox(DEMUX, self.root, self.bus), AGENT.Scope(self.config))
+        server.mailbox.command = [sys.executable, "-B", str(dump), str(SCRIPTS / "bus-demux.py")]
+        return server.mailbox.run(["--status"])
+
+    def test_bus_helper_children_receive_only_the_allowlisted_environment(self):
+        planted = {"TRANSPORT_TOKEN": "transport-secret", "CODESCRIBE_STT_SIDECAR_TOKEN": "sidecar-secret",
+                   "LLM_ANTHROPIC_API_KEY": "model-secret", "LLM_OPENAI_API_KEY": "speech-key",
+                   "PATH": "/usr/bin:/bin", "HOME": str(self.root), "LANG": "pl_PL.UTF-8", "LC_ALL": "C",
+                   "TZ": "UTC"}
+        seen = self.child_view(planted)["env"]
+        for name in ("TRANSPORT_TOKEN", "CODESCRIBE_STT_SIDECAR_TOKEN", "LLM_ANTHROPIC_API_KEY"):
+            self.assertNotIn(name, seen)
+        self.assertNotIn("transport-secret", json.dumps(seen))
+        # The speech credential the BUS helper itself consumes before Keychain.
+        for name in ("LLM_OPENAI_API_KEY", "PATH", "HOME", "LANG", "LC_ALL", "TZ"):
+            self.assertEqual(seen[name], planted[name])
+        allowed = AGENT.CHILD_ENVIRONMENT | set(DEMUX.BUS_PATH_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}
+        self.assertTrue({k for k in seen if not k.startswith("LC_")} <= allowed)
+
+    def test_bus_helper_children_resolve_the_same_canonical_bus_as_the_agent(self):
+        custom = self.root / "custom" / "transcript.jsonl"
+        base = {"PATH": "/usr/bin:/bin", "HOME": str(self.root), "TRANSPORT_TOKEN": "transport-secret"}
+        for config in ({"CODESCRIBE_TRANSCRIPT_BUS_PATH": str(custom)},
+                       {"XDG_STATE_HOME": str(self.root / "state")},
+                       {"CODESCRIBE_DATA_DIR": str(self.root / "data")},
+                       {"CODESCRIBE_ENV_PATH": str(self.root / "elsewhere.env")}):
+            with self.subTest(config=list(config)):
+                (self.root / "elsewhere.env").write_text(f"CODESCRIBE_TRANSCRIPT_BUS_PATH={custom}\n")
+                with patch.dict(os.environ, {**base, **config}, clear=True):
+                    expected = str(DEMUX.bus_path())
+                view = self.child_view({**base, **config})
+                self.assertEqual(view["bus_path"], expected)
+                self.assertNotIn("TRANSPORT_TOKEN", view["env"])
+        self.assertNotEqual(expected, str(self.root / ".codescribe" / DEMUX.BUS_FILENAME))
+
+    def test_check_scope_refuses_other_modes_and_an_invalid_scope(self):
+        path = self.root / "scope.json"
+        path.write_text(json.dumps(self.config))
+        for extra in (["--callback-preflight"], ["--callback-host", "callback.example.test"],
+                      ["--codescribe", str(self.root / "codescribe"), "--native-sha256", "0" * 64]):
+            result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT), "--scope", str(path),
+                                     "--check-scope", *extra], text=True, capture_output=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+        path.write_text(json.dumps({k: v for k, v in self.config.items() if k != "state_dir"}))
+        result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT), "--scope", str(path), "--check-scope"],
+                                text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
+
+class ForeignAgentTests(Fixture):
+    """Ada and Lin are separate connections; neither inherits the other's rights."""
+
+    def lin(self, **changes):
+        """A second connection with its own native mailbox, as a second client has."""
+        config = {**self.config, "provider": "claude-code", "session_id": OTHER_SESSION, "name": "Lin",
+                  "state_dir": str(self.root / "runtime" / "lin-mcp"), **changes}
+        self.other_native = NATIVE.Mailbox(DEMUX, self.root, self.bus)
+        self.other_native.command = [sys.executable, str(SCRIPTS / "bus-demux.py")]
+        return AGENT.AgentMailbox(DEMUX, self.other_native, AGENT.Scope(config))
+
+    def test_each_agent_keeps_its_own_lease_state_and_namespace(self):
+        lin = self.lin()
+        lease = DEMUX.lease_identifier("claude-code", OTHER_SESSION)
+        self.assertNotEqual(lin.lease, self.server.lease)
+        self.assertEqual(lin.calls, self.root / "runtime" / "lin-mcp" / lease / "calls")
+        self.assertNotEqual(
+            EVENTS.key_namespace(PRINCIPAL, OTHER_SESSION, lin.calls.parent / "events.sqlite"),
+            EVENTS.key_namespace(PRINCIPAL, SESSION, self.server.calls.parent / "events.sqlite"))
+
+    def test_an_agent_cannot_read_or_ack_through_a_foreign_lease(self):
+        # Ada's mailbox holds the pending messages; Lin's lease does not exist.
+        self.assertEqual(self.call("read")["read_delivery_ids"], self.ids[:1])
+        lin = self.lin()
+        with self.assertRaises(DEMUX.MailboxReadError) as refusal:
+            lin.call(PRINCIPAL, "codescribe_read", {})
+        self.assertEqual(refusal.exception.reason, "mailbox_owner_mismatch")
+        with self.assertRaises(ValueError):
+            lin.call(PRINCIPAL, "codescribe_ack", {"delivery_ids": self.ids[:1]})
+        # The same session with the wrong name on the lease is refused outright.
+        with self.assertRaises(PermissionError):
+            self.lin(provider="codex", session_id=SESSION).call(PRINCIPAL, "codescribe_read", {})
+
+    def test_a_mismatched_provider_resolves_to_a_different_lease_not_a_shared_one(self):
+        # Same session id and same name, different provider: the lease key is
+        # derived from both, so Ada's pending messages stay out of reach.
+        mismatched = self.lin(name="Ada", session_id=SESSION)
+        self.assertNotEqual(mismatched.lease, self.server.lease)
+        with self.assertRaises(DEMUX.MailboxReadError) as refusal:
+            mismatched.call(PRINCIPAL, "codescribe_read", {})
+        self.assertEqual(refusal.exception.reason, "mailbox_owner_mismatch")
+        self.assertEqual(self.call("read")["read_delivery_ids"], self.ids[:1])
+        # A lease written under the mismatched provider is its own, not Ada's.
+        DEMUX.atomic_json(self.root / "leases" / (mismatched.lease + ".json"),
+                          {**self.state, "provider": "claude-code", "lease_id": mismatched.lease})
+        mismatched.scope.speech_enabled = True
+        with patch.object(self.other_native, "run", return_value={"receipts": []}) as run:
+            mismatched.call(PRINCIPAL, "codescribe_call", {"request_id": "a" * 24})
+            self.assertEqual(run.call_args.args[0], ["--say", CALL_TEXT, "--name", "Ada"])
+        self.assertTrue((mismatched.calls / ("a" * 24 + ".json")).exists())
+        self.assertFalse((self.server.calls / ("a" * 24 + ".json")).exists())
+
+    def test_a_fixed_call_refuses_a_lease_owned_by_the_other_agent(self):
+        self.state["name"] = "Lin"
+        self.save()
+        self.server.scope.speech_enabled = True
+        with patch.object(self.native, "run", side_effect=AssertionError("foreign lease used")):
+            with self.assertRaises(PermissionError):
+                self.call("call", {"request_id": "a" * 24})
+
+    def test_a_binding_owned_by_the_other_agent_cannot_be_used_to_send(self):
+        DEMUX.write_channel_binding(self.root, "2", "Lin", "claude-code", OTHER_SESSION, str(self.bus))
+        DEMUX.write_channel_binding(self.root, "3", "Peer", "codex", "peer-3", str(self.bus))
+        server = AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope({**self.config, "broadcast_enabled": True}))
+        with patch.object(self.native, "run", side_effect=AssertionError("foreign binding used")):
+            for target in ("0", "3"):
+                with self.subTest(to=target), self.assertRaises(PermissionError):
+                    server.call(PRINCIPAL, "codescribe_send",
+                                {"request_id": "a" * 24, "text": "Hello", "to": target})
+
+    def test_a_principal_from_another_connection_is_refused_before_any_work(self):
+        with patch.object(self.native, "run", side_effect=AssertionError("foreign principal used")):
+            for name in ("status", "read", "call"):
+                with self.subTest(tool=name), self.assertRaises(PermissionError):
+                    self.server.call("someone-else", "codescribe_" + name, {})
+
+
+class AgentToolsTests(Fixture):
     def test_phase_one_discovery_and_direct_calls_allow_only_status_and_call(self):
-        self.server = DOT.DotMailbox(DEMUX, self.native,
-            DOT.Scope({**self.config, "mailbox_enabled": False}), events=self.events)
+        self.server = AGENT.AgentMailbox(DEMUX, self.native,
+            AGENT.Scope({**self.config, "mailbox_enabled": False}), events=self.events)
         self.assertEqual({t["name"] for t in self.server.dispatch(PRINCIPAL, "tools/list", {})["tools"]},
                          {"codescribe_status", "codescribe_call"})
         self.assertNotIn("events", self.server.dispatch(PRINCIPAL, "server/discover", {})["capabilities"])
@@ -145,12 +434,34 @@ class DotToolsTests(Fixture):
         with patch.object(self.native, "run", return_value={"receipts": []}) as run:
             self.call("call", {"request_id": "a" * 24})
             self.assertEqual(run.call_count, 1)
-            self.assertEqual(run.call_args.args[0], ["--say", DOT.CALL_TEXT, "--name", "Miksa"])
-        self.state["name"] = "other-agent"
+            self.assertEqual(run.call_args.args[0], ["--say", CALL_TEXT, "--name", "Ada"])
+        self.state["name"] = "Lin"
         self.save()
         with patch.object(self.native, "run", side_effect=AssertionError("foreign lease used")):
             with self.assertRaises(PermissionError):
                 self.call("call", {"request_id": "b" * 24})
+
+    def test_unsolicited_speech_without_a_lease_cannot_borrow_a_bound_name(self):
+        (self.root / "leases" / (self.lease + ".json")).unlink()
+        self.server.scope.speech_enabled = True
+        binding = self.root / DEMUX.AUDIENCE_BINDING_FILENAME
+        def bind(provider, session):
+            DEMUX.atomic_json(binding, {"schema": DEMUX.AUDIENCE_BINDING_SCHEMA, "bindings": {"4": {
+                "audience": "ada", "bus": str(self.bus), "provider": provider, "provider_session_id": session}}})
+        bind("codex", OTHER_SESSION)
+        with patch.object(self.native, "run", side_effect=AssertionError("borrowed name spoke")):
+            for tool, args in (("call", {"request_id": "c" * 24}),
+                               ("say", {"request_id": "d" * 24, "text": "Hello."})):
+                with self.subTest(tool=tool), self.assertRaises(PermissionError):
+                    self.call(tool, args)
+        bind("claude-code", SESSION)  # Same session, other provider: still another participant.
+        with patch.object(self.native, "run", side_effect=AssertionError("borrowed name spoke")):
+            with self.assertRaises(PermissionError):
+                self.call("call", {"request_id": "e" * 24})
+        bind("codex", SESSION)  # This agent's own binding.
+        with patch.object(self.native, "run", return_value={"receipts": []}) as run:
+            self.call("call", {"request_id": "f" * 24})
+            self.assertEqual(run.call_count, 1)
 
     def test_six_tools_and_no_model_controlled_owner_or_path(self):
         tools = self.server.dispatch(PRINCIPAL, "tools/list", {})["tools"]
@@ -176,37 +487,37 @@ class DotToolsTests(Fixture):
     def test_normal_say_supports_owned_ack_association_and_exact_retry(self):
         self.call("read")
         with self.assertRaises(PermissionError):
-            self.call("say", {"request_id": "a" * 24, "text": "Odpowiadam.", "reply_to": self.ids[0]})
+            self.call("say", {"request_id": "a" * 24, "text": "Answering.", "reply_to": self.ids[0]})
         self.call("ack", {"delivery_ids": self.ids[:1]})
         self.server.scope.speech_enabled = True
-        values = {"request_id": "a" * 24, "text": "Moniko, otrzymałam wiadomość.", "reply_to": self.ids[0]}
+        values = {"request_id": "a" * 24, "text": "Message received.", "reply_to": self.ids[0]}
         with patch.object(self.native, "run", return_value=self.speech_receipts()) as run:
             first = self.call("say", values)
-            self.server = DOT.DotMailbox(DEMUX, self.native, DOT.Scope({**self.config, "speech_enabled": True}))
+            self.server = AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope({**self.config, "speech_enabled": True}))
             second = self.call("say", values)
             with self.assertRaises(ValueError):
-                self.call("say", {**values, "text": "Inna odpowiedź."})
+                self.call("say", {**values, "text": "A different answer."})
         self.assertTrue(first["spoken"])
         self.assertEqual(first, second)
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0], ["--say", values["text"], "--name", "Miksa", "--reply-to", self.ids[0]])
+        self.assertEqual(run.call_args.args[0], ["--say", values["text"], "--name", "Ada", "--reply-to", self.ids[0]])
 
     def test_say_rejects_foreign_delivery_and_bounds_text_without_speech(self):
         with patch.object(self.native, "run", side_effect=AssertionError("voice attempted")):
             with self.assertRaises(ValueError):
-                self.call("say", {"request_id": "a" * 24, "text": "Hej", "reply_to": "f" * 24})
+                self.call("say", {"request_id": "a" * 24, "text": "Hello", "reply_to": "f" * 24})
             with self.assertRaises(ValueError):
                 self.call("say", {"request_id": "a" * 24, "text": "x" * 1201})
-            result = self.call("say", {"request_id": "a" * 24, "text": "Moniko, skończyłam zadanie."})
+            result = self.call("say", {"request_id": "a" * 24, "text": "The task is finished."})
         self.assertEqual(result["state"], "prepared")
         self.assertFalse(result["speech_attempted"])
 
     def test_send_uses_native_publisher_and_owned_sender_no_echo_and_dedupes(self):
-        DEMUX.write_channel_binding(self.root, "2", "Miksa", "codex", SESSION, str(self.bus))
-        for slot, name in (("1", "Astra"), ("3", "Igor")):
+        DEMUX.write_channel_binding(self.root, "2", "Ada", "codex", SESSION, str(self.bus))
+        for slot, name in (("1", "Lin"), ("3", "Nova")):
             DEMUX.write_channel_binding(self.root, slot, name, "codex", "peer-" + slot, str(self.root / ("peer-" + slot + ".jsonl")))
-        self.server = DOT.DotMailbox(DEMUX, self.native,
-            DOT.Scope({**self.config, "broadcast_enabled": True}))
+        self.server = AGENT.AgentMailbox(DEMUX, self.native,
+            AGENT.Scope({**self.config, "broadcast_enabled": True}))
         published = []
 
         def publisher(bus, event, **kwargs):
@@ -222,17 +533,17 @@ class DotToolsTests(Fixture):
                 DEMUX.send_peer_command(args)
             return json.loads(stream.getvalue())
 
-        values = {"request_id": "a" * 24, "text": "Cześć, jestem na BUS.", "to": "0"}
+        values = {"request_id": "a" * 24, "text": "Hello, this agent is on the BUS.", "to": "0"}
         with patch.object(self.native, "run", side_effect=native_send) as run:
             first = self.call("send", values)
             second = self.call("send", values)
             with self.assertRaises(ValueError):
-                self.call("send", {**values, "text": "Inna wiadomość"})
+                self.call("send", {**values, "text": "A different message"})
             self.assertEqual(run.call_count, 1)
         self.assertEqual(first, second)
         self.assertEqual(first["state"], "published")
-        self.assertEqual({e["peer_to"] for e in published}, {"astra", "igor"})
-        self.assertEqual({e["sender"]["name"] for e in published}, {"Miksa"})
+        self.assertEqual({e["peer_to"] for e in published}, {"lin", "nova"})
+        self.assertEqual({e["sender"]["name"] for e in published}, {"Ada"})
         self.assertEqual(len({e["message_id"] for e in published}), 1)
         for event in published:
             payload = DEMUX.consider(event, name=event["peer_to"], hear_all=False, drafts=False, debug=False)
@@ -241,9 +552,9 @@ class DotToolsTests(Fixture):
         self.assertNotIn(values["text"], metadata)
 
     def test_roster_and_direct_send_follow_all_nine_slots_and_renames(self):
-        self.server.scope = DOT.Scope({**self.config, 'message_targets': 'current_bus'})
+        self.server.scope = AGENT.Scope({**self.config, 'message_targets': 'current_bus'})
         for slot in map(str, range(1, 10)):
-            DEMUX.write_channel_binding(self.root, slot, 'Miksa' if slot == '2' else 'Peer-' + slot,
+            DEMUX.write_channel_binding(self.root, slot, 'Ada' if slot == '2' else 'Peer-' + slot,
                 'codex', SESSION if slot == '2' else 'session-' + slot, str(self.bus))
         with patch.object(self.native, 'status', return_value={}):
             roster = self.call('status')['participants']
@@ -252,50 +563,50 @@ class DotToolsTests(Fixture):
         self.assertNotIn('enum', schema['properties']['to'])
         with patch.object(self.native, 'run', return_value={}) as run:
             for slot in ('1', '3', '4', '5', '6', '7', '8', '9'):
-                self.call('send', {'request_id': f'{int(slot):024x}', 'text': 'Hej', 'to': slot})
+                self.call('send', {'request_id': f'{int(slot):024x}', 'text': 'Hello', 'to': slot})
                 self.assertEqual(run.call_args.args[0][-1], 'peer-' + slot)
             # Rename the canonical occupant without editing this server or its scope.
             with DEMUX.channel_bindings(self.root) as rows:
-                rows['9']['audience'] = 'NoweImie'
-            self.call('send', {'request_id': 'a' * 24, 'text': 'Hej', 'to': 'NoweImie'})
-            self.assertEqual(run.call_args.args[0][-1], 'noweimie')
-            self.call('send', {'request_id': 'b' * 24, 'text': 'Hej', 'to': '9'})
-            self.assertEqual(run.call_args.args[0][-1], 'noweimie')
-            for target in ('peer-9', '2', 'Miksa', '0', '10', 'unknown'):
+                rows['9']['audience'] = 'NewName'
+            self.call('send', {'request_id': 'a' * 24, 'text': 'Hello', 'to': 'NewName'})
+            self.assertEqual(run.call_args.args[0][-1], 'newname')
+            self.call('send', {'request_id': 'b' * 24, 'text': 'Hello', 'to': '9'})
+            self.assertEqual(run.call_args.args[0][-1], 'newname')
+            for target in ('peer-9', '2', 'Ada', '0', '10', 'unknown'):
                 with self.assertRaises(PermissionError):
-                    self.call('send', {'request_id': 'c' * 24, 'text': 'Hej', 'to': target})
+                    self.call('send', {'request_id': 'c' * 24, 'text': 'Hello', 'to': target})
         with patch.object(self.native, 'status', return_value={}):
-            self.assertEqual(self.call('status')['participants'][-1]['name'], 'NoweImie')
+            self.assertEqual(self.call('status')['participants'][-1]['name'], 'NewName')
 
     def test_send_refuses_ambiguous_names_and_preserves_separate_recipient_policy(self):
-        for slot, name in (('2', 'Miksa'), ('1', 'Duplicate'), ('9', 'duplicate')):
+        for slot, name in (('2', 'Ada'), ('1', 'Duplicate'), ('9', 'duplicate')):
             DEMUX.write_channel_binding(self.root, slot, name, 'codex',
                 SESSION if slot == '2' else 'session-' + slot, str(self.bus))
         with patch.object(self.native, 'run', side_effect=AssertionError('no ambiguous send')):
             for target in ('duplicate', '1', '9'):
                 with self.assertRaises(PermissionError):
-                    self.call('send', {'request_id': 'a' * 24, 'text': 'Hej', 'to': target})
+                    self.call('send', {'request_id': 'a' * 24, 'text': 'Hello', 'to': target})
         with DEMUX.channel_bindings(self.root) as rows:
             rows['9']['audience'] = 'new-peer'
-        self.server.scope = DOT.Scope({**self.config, 'message_targets': ['duplicate']})
+        self.server.scope = AGENT.Scope({**self.config, 'message_targets': ['duplicate']})
         with patch.object(self.native, 'run', side_effect=AssertionError('unapproved send')):
             with self.assertRaises(PermissionError):
-                self.call('send', {'request_id': 'a' * 24, 'text': 'Hej', 'to': '9'})
+                self.call('send', {'request_id': 'a' * 24, 'text': 'Hello', 'to': '9'})
 
     def test_send_refuses_unapproved_target_and_detached_binding(self):
-        DEMUX.write_channel_binding(self.root, "2", "Miksa", "codex", SESSION, str(self.bus))
+        DEMUX.write_channel_binding(self.root, "2", "Ada", "codex", SESSION, str(self.bus))
         with patch.object(self.native, "run", side_effect=AssertionError("unexpected send")):
             with self.assertRaises(PermissionError):
-                self.call("send", {"request_id": "a" * 24, "text": "Hej", "to": "any-agent"})
+                self.call("send", {"request_id": "a" * 24, "text": "Hello", "to": "any-agent"})
             with DEMUX.channel_bindings(self.root) as rows:
                 rows['2']['audience'] = 'other'
             with self.assertRaises(PermissionError):
-                self.call("send", {"request_id": "a" * 24, "text": "Hej", "to": "0"})
+                self.call("send", {"request_id": "a" * 24, "text": "Hello", "to": "0"})
 
     def test_uncertain_send_never_retries_automatically(self):
-        DEMUX.write_channel_binding(self.root, "2", "Miksa", "codex", SESSION, str(self.bus))
+        DEMUX.write_channel_binding(self.root, "2", "Ada", "codex", SESSION, str(self.bus))
         self.server.scope.broadcast_enabled = True
-        values = {"request_id": "a" * 24, "text": "Jedna wiadomość", "to": "0"}
+        values = {"request_id": "a" * 24, "text": "One message", "to": "0"}
         with patch.object(self.native, "run", side_effect=subprocess.TimeoutExpired("synthetic", 30)) as run:
             first = self.call("send", values)
             second = self.call("send", values)
@@ -304,7 +615,7 @@ class DotToolsTests(Fixture):
         self.assertEqual(run.call_count, 1)
 
     def test_read_requires_matching_lease_and_returns_complete_text_without_paths(self):
-        text = "Moniko " * 2000
+        text = "message " * 2000
         self.state['pending'][0].update(channel='2', origin_channel='0', audience='*')
         self.state["pending"][0]["text"] = text
         self.save()
@@ -316,7 +627,7 @@ class DotToolsTests(Fixture):
         self.assertFalse((self.root / "acknowledgments").exists())
         for field in ("bus", "instructions", "attachments", "recipients"):
             self.assertNotIn(field, result["deliveries"][0])
-        self.state["name"] = "another-agent"
+        self.state["name"] = "Lin"
         self.save()
         with self.assertRaises(PermissionError):
             self.call("read")
@@ -324,7 +635,7 @@ class DotToolsTests(Fixture):
     def test_breaking_mailbox_api_refuses_before_any_bus_operation(self):
         with patch.object(self.native, 'api_version', 2), patch.object(self.native, 'run') as run:
             with self.assertRaisesRegex(RuntimeError, 'mailbox API v1 required'):
-                DOT.DotMailbox(DEMUX, self.native, DOT.Scope(self.config))
+                AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope(self.config))
             run.assert_not_called()
 
     def test_foreign_envelope_and_status_diagnostics_cannot_expand_scope(self):
@@ -357,7 +668,7 @@ class DotToolsTests(Fixture):
             result = self.call("call", {"request_id": "a" * 24})
         self.assertEqual(result["state"], "prepared")
         self.assertFalse(result["speech_attempted"])
-        self.assertEqual(result["text"], DOT.CALL_TEXT)
+        self.assertEqual(result["text"], CALL_TEXT)
         self.assertFalse(self.server.calls.exists())
 
     def test_opted_in_call_uses_existing_say_receipts_and_dedupes_across_restart(self):
@@ -368,12 +679,12 @@ class DotToolsTests(Fixture):
              "provider_session_id": SESSION, "lease_id": self.lease}]}
         with patch.object(self.native, "run", return_value=result) as run:
             first = self.call("call", {"request_id": "a" * 24})
-            self.server = DOT.DotMailbox(DEMUX, self.native, DOT.Scope({**self.config, "speech_enabled": True}))
+            self.server = AGENT.AgentMailbox(DEMUX, self.native, AGENT.Scope({**self.config, "speech_enabled": True}))
             second = self.call("call", {"request_id": "a" * 24})
         self.assertEqual(first, second)
         self.assertTrue(first["spoken"])
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[0], ["--say", DOT.CALL_TEXT, "--name", "Miksa"])
+        self.assertEqual(run.call_args.args[0], ["--say", CALL_TEXT, "--name", "Ada"])
         self.assertNotIn("text", json.loads((self.server.calls / ("a" * 24 + ".json")).read_text()))
 
     def test_uncertain_speech_never_replays(self):
@@ -400,7 +711,7 @@ class DotToolsTests(Fixture):
         requests = [{"jsonrpc": "2.0", "id": 1, "method": "server/discover"},
                     {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
                         "_meta": META, "name": "codescribe_call", "arguments": {"request_id": "a" * 24}}}]
-        result = subprocess.run([sys.executable, str(SCRIPTS / "bus-dot-mcp.py"), "--scope", str(config)],
+        result = subprocess.run([sys.executable, str(SCRIPTS / "bus-mcp-agent.py"), "--scope", str(config)],
                                 input="".join(json.dumps(r) + "\n" for r in requests), text=True, capture_output=True, check=True)
         rows = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(rows[0]["result"]["supportedVersions"], ["2026-07-28"])
@@ -410,7 +721,7 @@ class DotToolsTests(Fixture):
     def test_oversized_stdio_frame_stops_before_following_request(self):
         config = self.root / "scope.json"
         config.write_text(json.dumps(self.config))
-        result = subprocess.run([sys.executable, str(SCRIPTS / "bus-dot-mcp.py"), "--scope", str(config)],
+        result = subprocess.run([sys.executable, str(SCRIPTS / "bus-mcp-agent.py"), "--scope", str(config)],
             input=b"x" * 70000 + b'\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n',
             capture_output=True, check=True)
         rows = result.stdout.splitlines()
@@ -475,9 +786,9 @@ class ProtocolTests(Fixture):
         payload = raw if raw is not None else ''.join(json.dumps(r) + '\n' for r in requests)
         output, errors = io.StringIO(), io.StringIO()
         input_stream = type('Input', (), {'buffer': io.BytesIO(payload.encode())})()
-        with patch.object(DOT.sys, 'stdin', input_stream), patch.object(DOT.sys, 'stdout', output), \
-                patch.object(DOT.sys, 'stderr', errors):
-            DOT.serve(self.server, self.server.scope)
+        with patch.object(AGENT.sys, 'stdin', input_stream), patch.object(AGENT.sys, 'stdout', output), \
+                patch.object(AGENT.sys, 'stderr', errors):
+            AGENT.serve(self.server, self.server.scope)
         self.last_trace = [json.loads(line) for line in errors.getvalue().splitlines()]
         for trace in self.last_trace:
             self.assertEqual(trace['kind'], 'codescribe_refusal_shape')
@@ -716,9 +1027,9 @@ class ProtocolTests(Fixture):
         requests = [self.frame('server/discover'), self.frame('events/list', identity=2),
                     self.frame('events/subscribe', self.subscription(), 3)]
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*'))
-        result = subprocess.run([sys.executable, str(SCRIPTS / 'bus-mcp-runtime.py'),
+        result = subprocess.run([sys.executable, str(RUNTIME_SCRIPT),
             '--scope', str(scope), '--callback-preflight'], input=''.join(json.dumps(r) + '\n' for r in requests),
-            text=True, capture_output=True, check=True, timeout=5)
+            text=True, capture_output=True, check=True, timeout=15)
         rows = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertIn('events', rows[0]['result']['capabilities'])
         self.assertEqual(rows[2]['error']['data']['callbackHost'], 'callback.example.test')
@@ -728,6 +1039,7 @@ class ProtocolTests(Fixture):
         self.assertNotIn(SECRET, result.stderr)
         self.assertNotIn(SECRET, result.stdout)
         self.assertEqual(before, sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*')))
+
 
 class EventsTests(Fixture):
     def test_verified_idempotent_subscription_signed_and_private(self):
@@ -749,7 +1061,7 @@ class EventsTests(Fixture):
             self.assertEqual(addresses, ("1.1.1.1",))
             self.assert_signature(body, headers)
             self.assertEqual(headers["webhook-id"], json.loads(body)["eventId"])
-            self.assertNotIn("Iwo", body.decode())
+            self.assertNotIn(MESSAGE, body.decode())
             self.assertEqual(set(json.loads(body)["data"]), {"delivery_id", "provider_session_id"})
         self.assertEqual(self.server.pump_events(PRINCIPAL), [])
         self.assertFalse((self.root / "acknowledgments").exists())
@@ -917,7 +1229,7 @@ class EventsTests(Fixture):
         for change in ({"arguments": {"session_id": "other"}}, {"cursor": "older"}, {"ttlMs": True}):
             with self.assertRaises(ValueError):
                 self.subscribe(**change)
-        for url in ("http://callback.example.test/miksa", "https://127.0.0.1/x", "https://callback.example.test:8443/x",
+        for url in ("http://callback.example.test/agent", "https://127.0.0.1/x", "https://callback.example.test:8443/x",
                     "https://name:password@callback.example.test/x", "https://callback.example.test/x#fragment"):
             params = self.subscription()
             params["delivery"]["url"] = url

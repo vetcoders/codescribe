@@ -570,6 +570,6 @@ private final class HeldComposerHost {
     let reception = try NativeAccessibilityProbe.waitForElements(identifier)
     XCTAssertEqual(
       reception.elements.count, 1, "one control must answer \(identifier)")
-    return try NativeAccessibilityProbe.query(identifier, press: true).pressStatus
+    return try XCTUnwrap(NativeAccessibilityProbe.query(identifier, press: true).pressStatus)
   }
 }

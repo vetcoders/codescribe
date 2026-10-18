@@ -104,6 +104,9 @@ pub struct CsSettings {
     /// recovery debt after each sealed utterance. Effective value after the
     /// settings key plus the power-user env override.
     pub dictation_witness_armed: bool,
+    /// Independent next-take publication and Apple producer choices.
+    pub seal_ledger_enabled: bool,
+    pub apple_live_enabled: bool,
     pub light_plus_sentence_pause_sec: f32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
@@ -117,6 +120,9 @@ pub struct CsSettings {
     /// Middle mouse button follows Fn press/release. Default off.
     /// The tap stays listen-only, so the click still reaches the frontmost app.
     pub middle_mouse_acts_as_fn: bool,
+    /// A short middle click opens the overlay's agent chooser. Default off.
+    /// While it is on, the middle button is Codescribe's, not the frontmost app's.
+    pub middle_mouse_agent_gesture: bool,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -234,11 +240,14 @@ impl CsSettings {
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,
             format_on_device: config.format_on_device,
             dictation_witness_armed: runtime.dictation_witness_armed(),
+            seal_ledger_enabled: runtime.seal_ledger_enabled(),
+            apple_live_enabled: runtime.apple_live_enabled(),
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
+            middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             paste_mode: config.paste_mode.into(),
@@ -2846,6 +2855,28 @@ mod reset_tests {
     }
 
     use codescribe_core::test_isolation::EnvGuard;
+
+    #[test]
+    fn transcription_controls_bridge_projects_each_frozen_combination() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                std::path::PathBuf::from("/fixture/transcription-controls"),
+                1_700_000_000_000,
+            );
+            let original = Config::runtime_snapshot_from_captured(input.clone());
+            input.user_settings.seal_ledger_enabled = Some(ledger);
+            input.user_settings.apple_live_enabled = Some(apple);
+            let snapshot = Config::runtime_snapshot_from_captured(input);
+            let projected = super::CsSettings::from_runtime_snapshot(&snapshot);
+            assert_eq!(projected.seal_ledger_enabled, ledger);
+            assert_eq!(projected.apple_live_enabled, apple);
+            let unchanged = super::CsSettings::from_runtime_snapshot(&original);
+            assert!(!unchanged.seal_ledger_enabled);
+            assert!(!unchanged.apple_live_enabled);
+        }
+    }
 
     #[test]
     fn resolved_asr_projection_uses_the_same_seal_as_the_session_factory() {

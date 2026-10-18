@@ -22,8 +22,9 @@ use codescribe_core::pipeline::acoustic_ledger::{
     TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
-    ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase,
-    TranscriptDelta, UnadmittedAppleWord, UnadmittedAppleWordSource,
+    ClosedApplePhrase, DeltaSink, EngineEvent, EventSink, SidebandEvidence, SidebandEvidenceKind,
+    SpeechIntegrity, SpeechIntegrityPhase, TranscriptDelta, UnadmittedAppleWord,
+    UnadmittedAppleWordSource,
 };
 use codescribe_core::pipeline::word_confidence::{
     UncertainSpan, WordConfidence, word_confidence_thresholds,
@@ -38,6 +39,8 @@ use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
 /// Read-only, ephemeral Apple recognition paint; never a document mutation.
 pub type ApplePreviewObserver = Arc<dyn Fn(&str) + Send + Sync>;
+/// Read-only measured speech edges from this emitter's opened capture.
+pub type SpeechActivityObserver = Arc<dyn Fn(&SidebandEvidence) + Send + Sync>;
 
 /// Passive paint from one opened capture. Sequence 1 binds the display before
 /// any transcription event; later values replace paint, never document truth.
@@ -183,7 +186,155 @@ struct DocumentContextMarker {
     order: usize,
 }
 
-/// A ledger-authorized document transition. Every variant names a physical
+/// Per-take transcription track switches, frozen at capture open from the
+/// immutable runtime snapshot. Both lanes default on; the direct publication
+/// lane exists only while `seal_ledger_enabled` is false, and the Apple live
+/// lane reaches paint and admission only while `apple_live_enabled` is true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptionControls {
+    pub seal_ledger_enabled: bool,
+    pub apple_live_enabled: bool,
+}
+
+impl Default for TranscriptionControls {
+    fn default() -> Self {
+        Self {
+            seal_ledger_enabled: true,
+            apple_live_enabled: true,
+        }
+    }
+}
+
+/// One decoder observation accepted into the ledger-free document. Identity is
+/// the PCM range plus request/generation of the hypothesis; `final_chunk`
+/// pins the range against later equal-or-lower-priority rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectObservation {
+    pub observation: ObservationIdentity,
+    pub text: String,
+    pub final_chunk: bool,
+}
+
+/// Reducer-minted authority for ledger-free ("direct") publication.
+///
+/// Only [`TranscriptReducer`] can mint one: the constructor and the digest
+/// stay private to this module, so no engine, Bus, bridge, or Swift caller
+/// can fabricate document authority while the seal ledger is opted out. The
+/// Bus verifies the digest and the exact observation list before persisting
+/// a single row; a capability is not a ledger receipt and claims none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectPublicationCapability {
+    pub(crate) session_id: String,
+    pub(crate) capture_epoch: u64,
+    /// Reducer revision this capability authorizes; monotonic per take.
+    pub(crate) revision: u64,
+    /// The complete accepted document at `revision`, in PCM occurrence order.
+    pub(crate) observations: Vec<DirectObservation>,
+    pub(crate) rendered_text: String,
+    /// Decoder completion or an explicit operation continuing that completed document.
+    pub(crate) terminal: bool,
+    /// Explicit operation on the completed direct document: source CAS and provenance.
+    /// Decoder observations never carry this authority.
+    pub(crate) document_revision: Option<(u64, DocumentRevisionProvenance)>,
+    digest: [u8; 32],
+}
+
+impl DirectPublicationCapability {
+    fn document_revision_receipt_id(
+        provenance: DocumentRevisionProvenance,
+        session_id: &str,
+        revision: u64,
+    ) -> String {
+        format!("{}-direct-{session_id}-{revision}", provenance.as_str())
+    }
+
+    /// Document provenance backed by this reducer capability, never an
+    /// acoustic claim. The Bus calls this only after authenticating the full
+    /// publication; decoder observations have no document-operation receipt.
+    pub(crate) fn document_revision_receipt(&self) -> Option<ManualDocumentRevisionReceipt> {
+        let (source_revision, provenance) = self.document_revision?;
+        Some(ManualDocumentRevisionReceipt {
+            receipt_id: Self::document_revision_receipt_id(
+                provenance,
+                &self.session_id,
+                self.revision,
+            ),
+            provenance: provenance.as_str().to_string(),
+            session_id: self.session_id.clone(),
+            source_revision,
+            revision: self.revision,
+            source_occurrences: Vec::new(),
+            source_seal_receipts: Vec::new(),
+            rendered_text: self.rendered_text.clone(),
+            capture_epoch: Some(self.capture_epoch),
+            capture_receipt_id: Some(format!("direct-publication-{}", hex::encode(self.digest))),
+        })
+    }
+
+    fn mint(
+        session_id: &str,
+        capture_epoch: u64,
+        revision: u64,
+        observations: Vec<DirectObservation>,
+        rendered_text: String,
+        terminal: bool,
+    ) -> Self {
+        let mut capability = Self {
+            session_id: session_id.to_string(),
+            capture_epoch,
+            revision,
+            observations,
+            rendered_text,
+            terminal,
+            document_revision: None,
+            digest: [0; 32],
+        };
+        capability.digest = capability.compute_digest();
+        capability
+    }
+
+    fn compute_digest(&self) -> [u8; 32] {
+        Sha256::digest(
+            format!(
+                "{:?}",
+                (
+                    "codescribe.direct-publication.v1",
+                    &self.session_id,
+                    self.capture_epoch,
+                    self.revision,
+                    &self.observations,
+                    &self.rendered_text,
+                    self.terminal,
+                    &self.document_revision,
+                )
+            )
+            .as_bytes(),
+        )
+        .into()
+    }
+
+    /// Verify this capability authorizes exactly `revision` for `session`.
+    pub(crate) fn verifies(&self, session: &str, revision: &TranscriptRevision) -> bool {
+        self.digest == self.compute_digest()
+            && self.session_id == session
+            && self.revision == revision.revision
+            && self.rendered_text == revision.rendered_text
+            && revision.entries.len() == self.observations.len()
+            && revision
+                .entries
+                .iter()
+                .zip(&self.observations)
+                .all(|(entry, observation)| {
+                    entry.occurrence == observation.observation.occurrence
+                        && entry.label == observation.text
+                        && entry.occurrence.capture_epoch == self.capture_epoch
+                })
+    }
+}
+
+/// A reducer-authorized document transition. Ledger receipts authorize the
+/// ledger lane; `ApplyDirectTranscript` is authorized by the reducer-minted
+/// [`DirectPublicationCapability`] instead. Every variant names a physical
 /// occurrence; no action locates content by comparing transcript strings.
 ///
 /// W2 must construct these actions from ledger receipts. W1 deliberately does
@@ -224,6 +375,13 @@ pub enum ReducerAction {
         position: usize,
         label: String,
         order: usize,
+    },
+    /// Ledger-free document transition authorized by the reducer's own direct
+    /// capability, minted only while the take opted out of seal-ledger
+    /// admission. The capability carries the PCM-range/request/generation
+    /// identity of every accepted observation; no ledger receipt is claimed.
+    ApplyDirectTranscript {
+        capability: DirectPublicationCapability,
     },
 }
 
@@ -273,6 +431,7 @@ impl TranscriptRevision {
                 ReducerAction::RecordLedgerSeal { .. } => ("seal", Vec::new()),
                 ReducerAction::RecordSealCoverage { .. } => ("coverage", Vec::new()),
                 ReducerAction::RecordContextMarker { .. } => ("context", Vec::new()),
+                ReducerAction::ApplyDirectTranscript { .. } => ("direct", Vec::new()),
             };
             codescribe_core::pipeline::trail::record_projection(
                 &first.occurrence,
@@ -465,6 +624,46 @@ impl TranscriptRevision {
             && ledger.has_manual_document_capture(session, receipt.capture_epoch)
             && ledger.latest_seal_coverage() == Some(receipt)
             && self.seal_coverage.as_ref() == Some(receipt)
+    }
+
+    /// Validate a ledger-free revision against the capability the reducer minted
+    /// inside its action. Returns the verified capability for the publisher.
+    /// No ledger is consulted: authority here is the digest-bound capability,
+    /// the exact observation list, and the monotonic revision — nothing else.
+    pub(crate) fn authenticates_direct_publication(
+        &self,
+        session: &str,
+    ) -> Option<&DirectPublicationCapability> {
+        if self.publication_digest != self.digest() {
+            return None;
+        }
+        let ReducerAction::ApplyDirectTranscript { capability } = &self.action else {
+            return None;
+        };
+        if (self.entries.is_empty() && (!capability.terminal || !self.rendered_text.is_empty()))
+            || self
+                .entries
+                .windows(2)
+                .any(|pair| pair[0].occurrence >= pair[1].occurrence)
+        {
+            return None;
+        }
+        // A direct take has no ledger coverage verdict or consultation group;
+        // carrying one would be a second, foreign authority over this document.
+        if self.seal_coverage.is_some()
+            || self.comparison.is_some()
+            || !self.consultation_presentations.is_empty()
+        {
+            return None;
+        }
+        if self.entries.iter().any(|entry| {
+            entry.seal_receipt.is_some()
+                || entry.manual_edit_receipt.is_some()
+                || entry.presentation_receipt.is_some()
+        }) {
+            return None;
+        }
+        capability.verifies(session, self).then_some(capability)
     }
 }
 
@@ -953,6 +1152,20 @@ pub struct TranscriptReducer {
     manual_document_revision_receipt: Option<String>,
     /// Capability retained from this emitter's actual capture-open callback.
     manual_document_capture: Option<ManualDocumentCaptureReceipt>,
+    /// Per-take transcription track switches, frozen at capture open.
+    transcription_controls: TranscriptionControls,
+    /// Ledger-free committed document, keyed by the same PCM occurrence key as
+    /// the ledger lane. Filled only while the take opted out of seal-ledger
+    /// admission; it never mixes with `document_by_occurrence` in one take.
+    direct_document: BTreeMap<OccurrenceIdentity, TranscriptDocumentEntry>,
+    /// The decoder observation and finality behind each direct entry, in the
+    /// same occurrence order. Source of every minted direct capability.
+    direct_provenance: BTreeMap<OccurrenceIdentity, DirectObservation>,
+    /// Seen request generations survive unchanged text and replaced ranges.
+    direct_generations: BTreeMap<(ObservationProducer, u64), u64>,
+    /// The terminal capability minted by `DirectTranscriptEnd`; after it, the
+    /// direct document accepts no further observations.
+    direct_terminal: Option<DirectPublicationCapability>,
     /// Lifecycle ended; independent of whether the ledger issued a terminal seal.
     terminal: bool,
     terminal_sealed: bool,
@@ -1032,6 +1245,16 @@ impl TranscriptReducer {
         if result.status != AiFormatStatus::Applied {
             text = source_raw_text.clone();
             delivered = FormattingPolicy::Correction;
+        } else {
+            // Every applied formatter version leaves through here: a model
+            // that rewrites the words may also rewrite the brand.
+            let branded = match codescribe_core::pipeline::light_plus::brand_spelling(&text) {
+                std::borrow::Cow::Owned(branded) => Some(branded),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            if let Some(branded) = branded {
+                text = branded;
+            }
         }
         // The high bit identifies the derived history namespace; Raw retains
         // its own monotonic counter and every CAS continues to use it.
@@ -1093,11 +1316,16 @@ impl TranscriptReducer {
 
     fn revision_for_action(&mut self, action: ReducerAction) -> TranscriptRevision {
         self.revision = self.revision.saturating_add(1);
+        // One occurrence-ordered document: the ledger lane and the ledger-free
+        // direct lane never coexist in one take, and the sort keeps that
+        // invariant visible even to a reader who does not trust the gate.
         let mut entries = self
             .document_by_occurrence
             .values()
+            .chain(self.direct_document.values())
             .cloned()
             .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.occurrence.cmp(&right.occurrence));
         for entry in &mut entries {
             entry.presentation_receipt = self.shaped_by_occurrence.get(&entry.occurrence).cloned();
         }
@@ -1143,6 +1371,7 @@ impl TranscriptReducer {
     /// The same ordered fragments feed the main paint and its STOP receipt.
     fn visible_paint_fragments(&self) -> Vec<(u64, String, VisibleWordSource, bool)> {
         if self.document_by_occurrence.is_empty()
+            && self.direct_document.is_empty()
             && let Some(text) = &self.manual_rendered_text
         {
             // An accepted human document supersedes preview paint, without
@@ -1216,6 +1445,17 @@ impl TranscriptReducer {
                     false,
                 ));
             }
+            // Ledger-free committed lane: identical paint source honesty, with
+            // the direct observation receipt instead of a ledger receipt.
+            for (range, entry) in &self.direct_document {
+                let source = VisibleWordSource::Committed(source_for(range, entry));
+                fragments.push((
+                    range.sample_start,
+                    self.presentation_of(range, entry).to_string(),
+                    source,
+                    false,
+                ));
+            }
         }
         fragments.sort_by_key(|(start, _, _, _)| *start);
         fragments
@@ -1254,6 +1494,7 @@ impl TranscriptReducer {
         let midpoint = preview_sample_point(start, end);
         self.document_by_occurrence
             .keys()
+            .chain(self.direct_document.keys())
             .find(|owner| owner.sample_start <= midpoint && midpoint < owner.sample_end)
     }
 
@@ -1279,6 +1520,7 @@ impl TranscriptReducer {
         let Some(extent_end) = self
             .document_by_occurrence
             .keys()
+            .chain(self.direct_document.keys())
             .map(|owner| owner.sample_end)
             .max()
         else {
@@ -1785,6 +2027,215 @@ impl TranscriptReducer {
         }))
     }
 
+    /// Mint the capability covering exactly the current direct document. The
+    /// revision number is the one `revision_for_action` is about to assign;
+    /// the two stay coupled by construction, never by a later lookup.
+    fn mint_direct_capability(
+        &self,
+        session_id: &str,
+        capture_epoch: u64,
+        terminal: bool,
+    ) -> DirectPublicationCapability {
+        let observations = self
+            .direct_document
+            .iter()
+            .map(|(range, entry)| {
+                let provenance = self
+                    .direct_provenance
+                    .get(range)
+                    .expect("every direct entry carries its observation");
+                DirectObservation {
+                    observation: provenance.observation.clone(),
+                    text: entry.label.clone(),
+                    final_chunk: provenance.final_chunk,
+                }
+            })
+            .collect();
+        DirectPublicationCapability::mint(
+            session_id,
+            capture_epoch,
+            self.revision.saturating_add(1),
+            observations,
+            self.committed_rendered_text(),
+            terminal,
+        )
+    }
+
+    /// Accept one decoder observation into the ledger-free document. Open only
+    /// while the take opted out of seal-ledger admission; when the ledger owns
+    /// this take, direct text has no authority here at all.
+    ///
+    /// Fences: the range must name real audio; a newer observation of one range
+    /// wins only on (producer authority rank, generation); a final chunk pins
+    /// its range against equal-or-lower-priority rewrites. Disjoint ranges
+    /// coexist in PCM order; nothing is clipped by string comparison.
+    pub fn apply_direct_transcript(
+        &mut self,
+        observation: &ObservationIdentity,
+        text: &str,
+        final_chunk: bool,
+    ) -> Option<TranscriptRevision> {
+        if self.transcription_controls.seal_ledger_enabled || self.direct_terminal.is_some() {
+            return None;
+        }
+        let occurrence = observation.occurrence.clone();
+        if !occurrence.is_anchored()
+            || text.trim().is_empty()
+            || !matches!(
+                observation.producer,
+                ObservationProducer::Apple
+                    | ObservationProducer::Whisper
+                    | ObservationProducer::CloudLive
+            )
+            || (observation.producer == ObservationProducer::Apple
+                && !self.transcription_controls.apple_live_enabled)
+        {
+            return None;
+        }
+        let request = (observation.producer, observation.request);
+        if self
+            .direct_generations
+            .get(&request)
+            .is_some_and(|generation| *generation >= observation.generation)
+        {
+            return None;
+        }
+        // Receipt freshness is independent of whether the visible bytes change.
+        self.direct_generations
+            .insert(request, observation.generation);
+        let mut replaced = Vec::new();
+        for (range, existing) in &self.direct_provenance {
+            if range.session != occurrence.session
+                || range.capture_epoch != occurrence.capture_epoch
+            {
+                return None;
+            }
+            let same_request = existing.observation.producer == observation.producer
+                && existing.observation.request == observation.request;
+            let overlaps = range.sample_start < occurrence.sample_end
+                && occurrence.sample_start < range.sample_end;
+            if !same_request && !overlaps {
+                continue;
+            }
+            let incumbent = existing.observation.producer.authority_rank();
+            let challenger = observation.producer.authority_rank();
+            if challenger < incumbent
+                || (challenger == incumbent
+                    && existing.final_chunk
+                    && (!same_request || !final_chunk))
+                || (challenger == incumbent
+                    && !same_request
+                    && observation.request <= existing.observation.request)
+            {
+                return None;
+            }
+            replaced.push(range.clone());
+        }
+        for range in replaced {
+            self.direct_document.remove(&range);
+            self.direct_provenance.remove(&range);
+        }
+        let entry = TranscriptDocumentEntry {
+            occurrence: occurrence.clone(),
+            label: text.to_string(),
+            // Provenance string in the ledger lane's own prefix convention,
+            // with the lane name instead of a receipt id: it attests a decoder
+            // observation directly and never claims ledger membership.
+            observation_receipt: format!(
+                "{}:{}:{}:direct",
+                observation.producer.as_str(),
+                observation.request,
+                observation.generation,
+            ),
+            word_evidence_receipts: Vec::new(),
+            layer_decision_receipts: Vec::new(),
+            seal_receipt: None,
+            manual_edit_receipt: None,
+            presentation_receipt: None,
+            word_confidence: Vec::new(),
+        };
+        self.direct_document.insert(occurrence.clone(), entry);
+        self.direct_provenance.insert(
+            occurrence,
+            DirectObservation {
+                observation: observation.clone(),
+                text: text.to_string(),
+                final_chunk,
+            },
+        );
+        let capability = self.mint_direct_capability(
+            &observation.occurrence.session,
+            observation.occurrence.capture_epoch,
+            false,
+        );
+        Some(self.revision_for_action(ReducerAction::ApplyDirectTranscript { capability }))
+    }
+
+    /// Close the ledger-free document for this capture. The terminal capability
+    /// is the honest completion marker the Bus records in place of an acoustic
+    /// seal; after it, no observation may rewrite this take's direct document.
+    pub fn apply_direct_transcript_end(
+        &mut self,
+        session_id: &str,
+        capture_epoch: u64,
+    ) -> Option<TranscriptRevision> {
+        if self.transcription_controls.seal_ledger_enabled || self.direct_terminal.is_some() {
+            return None;
+        }
+        if self
+            .direct_document
+            .first_key_value()
+            .is_some_and(|(owner, _)| {
+                owner.session != session_id || owner.capture_epoch != capture_epoch
+            })
+        {
+            return None;
+        }
+        let capability = self.mint_direct_capability(session_id, capture_epoch, true);
+        self.direct_terminal = Some(capability.clone());
+        Some(self.revision_for_action(ReducerAction::ApplyDirectTranscript { capability }))
+    }
+
+    /// Authenticate the completed direct document, independently of acoustic
+    /// seals. Only the reducer can mint this capability; every operation must
+    /// name its current revision and the same opened capture.
+    fn authenticated_direct_document(
+        &self,
+        session_id: &str,
+        source_revision: u64,
+    ) -> Result<&DirectPublicationCapability, UserRevisionRefusal> {
+        let owner = self
+            .direct_terminal
+            .as_ref()
+            .ok_or(UserRevisionRefusal::NotTerminal)?;
+        if self.transcription_controls.seal_ledger_enabled
+            || !owner.terminal
+            || owner.digest != owner.compute_digest()
+            || owner.rendered_text != self.committed_rendered_text()
+            || owner.revision != self.revision
+        {
+            return Err(UserRevisionRefusal::AuthorityUnavailable);
+        }
+        if owner.session_id != session_id {
+            return Err(UserRevisionRefusal::SessionMismatch);
+        }
+        if source_revision != self.revision {
+            return Err(UserRevisionRefusal::StaleRevision {
+                expected: self.revision,
+                actual: source_revision,
+            });
+        }
+        if self.direct_document.is_empty() {
+            return Err(UserRevisionRefusal::NoCommittedDocument);
+        }
+        Ok(owner)
+    }
+
+    /// A committed ledger-free document owns this take's canvas.
+    fn direct_document_is_committed(&self) -> bool {
+        !self.direct_document.is_empty()
+    }
+
     /// Commit a whole-document user edit without fabricating per-word acoustic
     /// ownership. The ledger authenticates the exact committed source occurrence
     /// set, then this reducer mints the only new document revision.
@@ -2025,7 +2476,11 @@ impl TranscriptReducer {
         if intent.rendered_text.trim().is_empty() {
             return Err(UserRevisionRefusal::EmptyText);
         }
-        let source_occurrences = if self.document_by_occurrence.is_empty() {
+        let direct = self.direct_document_is_committed();
+        let source_occurrences = if direct {
+            self.authenticated_direct_document(&intent.session_id, intent.source_revision)?;
+            Vec::new()
+        } else if self.document_by_occurrence.is_empty() {
             if !matches!(
                 intent.provenance,
                 DocumentRevisionProvenance::UserEdit
@@ -2080,16 +2535,32 @@ impl TranscriptReducer {
         if accepted_operation {
             self.anchor_document_timeline(&intent.session_id);
         }
-        let receipt = ledger
-            .record_manual_document_revision(
-                &intent.session_id,
-                intent.source_revision,
-                revision,
-                &intent.rendered_text,
-                &source_occurrences,
-                intent.provenance,
+        let receipt = if direct {
+            None
+        } else {
+            Some(
+                ledger
+                    .record_manual_document_revision(
+                        &intent.session_id,
+                        intent.source_revision,
+                        revision,
+                        &intent.rendered_text,
+                        &source_occurrences,
+                        intent.provenance,
+                    )
+                    .map_err(UserRevisionRefusal::LedgerRefusal)?,
             )
-            .map_err(UserRevisionRefusal::LedgerRefusal)?;
+        };
+        let receipt_id = receipt.as_ref().map_or_else(
+            || {
+                DirectPublicationCapability::document_revision_receipt_id(
+                    intent.provenance,
+                    &intent.session_id,
+                    revision,
+                )
+            },
+            |receipt| receipt.receipt_id.clone(),
+        );
         let navigated_human_revision = navigation
             .and_then(|target| self.document_timeline.steps.get(target))
             .map(|step| step.raw_human_revision);
@@ -2113,21 +2584,32 @@ impl TranscriptReducer {
         // The manual document owns presentation until a later ledger edit
         // clears it. The cursor then starts at the first physical owner.
         self.shaping_affected_from = self.document_by_occurrence.keys().next().cloned();
-        self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
+        self.manual_document_revision_receipt =
+            receipt.as_ref().map(|receipt| receipt.receipt_id.clone());
         match navigation {
             Some(target) => self.document_timeline.cursor = target,
             None if accepted_operation => {
-                let step = self.snapshot_step(
-                    intent.provenance.as_str(),
-                    None,
-                    receipt.receipt_id.clone(),
-                    None,
-                );
+                let step =
+                    self.snapshot_step(intent.provenance.as_str(), None, receipt_id.clone(), None);
                 self.push_document_step(step);
             }
             None => self.refresh_selected_step_raw(),
         }
-        Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
+        let action = if let Some(receipt) = receipt {
+            ReducerAction::ApplyUserRevision { receipt }
+        } else {
+            let epoch = self
+                .direct_terminal
+                .as_ref()
+                .expect("authenticated direct owner")
+                .capture_epoch;
+            let mut capability = self.mint_direct_capability(&intent.session_id, epoch, true);
+            capability.document_revision = Some((intent.source_revision, intent.provenance));
+            capability.digest = capability.compute_digest();
+            self.direct_terminal = Some(capability.clone());
+            ReducerAction::ApplyDirectTranscript { capability }
+        };
+        Ok(self.revision_for_action(action))
     }
 
     /// Derive a Max version from the admitted sealed group. Later suffix
@@ -2615,7 +3097,11 @@ impl TranscriptReducer {
         session_id: &str,
         source_revision: u64,
     ) -> Result<String, UserRevisionRefusal> {
-        self.authenticated_revision_occurrences(session_id, source_revision)?;
+        if self.direct_document_is_committed() {
+            self.authenticated_direct_document(session_id, source_revision)?;
+        } else {
+            self.authenticated_revision_occurrences(session_id, source_revision)?;
+        }
         Ok(self.selected_text())
     }
 
@@ -2628,10 +3114,16 @@ impl TranscriptReducer {
     /// against, so the one formatter corridor stays
     /// [`Self::terminal_revision_source`] → provider → `apply_formatter_revision`.
     pub fn terminal_formatter_request(&self) -> Option<TerminalFormatterRequest> {
-        if !(self.terminal || self.terminal_sealed) {
-            return None;
-        }
-        let session_id = self.document_by_occurrence.keys().next()?.session.clone();
+        let session_id = if let Some(owner) = self.direct_document.keys().next() {
+            self.authenticated_direct_document(&owner.session, self.revision)
+                .ok()?;
+            owner.session.clone()
+        } else {
+            if !(self.terminal || self.terminal_sealed) {
+                return None;
+            }
+            self.document_by_occurrence.keys().next()?.session.clone()
+        };
         let source_text = self.committed_rendered_text();
         if source_text.trim().is_empty() {
             return None;
@@ -2856,7 +3348,16 @@ impl TranscriptReducer {
     /// taken against committed occurrence text alone.
     fn rendered_occurrence_span(&self, until: Option<&OccurrenceIdentity>) -> String {
         let mut rendered = String::new();
-        for (occurrence, entry) in &self.document_by_occurrence {
+        // Both lanes iterate in the same PCM occurrence order; a take never
+        // holds the two at once, and the merged walk keeps the span honest
+        // even for a reader who does not trust the gate.
+        let mut entries: Vec<(&OccurrenceIdentity, &TranscriptDocumentEntry)> = self
+            .document_by_occurrence
+            .iter()
+            .chain(self.direct_document.iter())
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(right.0));
+        for (occurrence, entry) in entries {
             if until.is_some_and(|limit| occurrence == limit) {
                 break;
             }
@@ -3338,6 +3839,7 @@ pub struct PresentationEmitter {
     cursor_observer: Option<CursorObserver>,
     /// Apple partial paint only; independent of reducer publication and delivery.
     apple_preview_observer: Option<ApplePreviewObserver>,
+    speech_activity_observer: Option<SpeechActivityObserver>,
     cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
@@ -3357,6 +3859,9 @@ pub struct PresentationEmitter {
     /// Every other lane — including auto-format "off" — gets the Light+
     /// floor, exactly as the pre-ledger controller gated it.
     literal_delivery: std::sync::atomic::AtomicBool,
+    /// Per-take track switches from the frozen runtime snapshot, set once by
+    /// [`Self::with_transcription_controls`] before capture opens.
+    transcription_controls: TranscriptionControls,
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
     sentence_pause_sec: f32,
@@ -3442,7 +3947,8 @@ impl PresentationEmitter {
                 .map(|(&id, phrase)| (id, phrase.arrival_index))
                 .collect(),
             closed_phrases: reducer.closed_apple_phrases.clone(),
-            has_committed_document: !reducer.document_by_occurrence.is_empty(),
+            has_committed_document: !reducer.document_by_occurrence.is_empty()
+                || reducer.direct_document_is_committed(),
             qualified_occurrences: ledger.as_ref().map_or(0, |ledger| {
                 ledger
                     .qualified_occurrences()
@@ -3467,6 +3973,18 @@ impl PresentationEmitter {
             || !frozen.has_committed_document
             || self.literal_delivery()
             || frozen.text.trim().is_empty()
+        {
+            return Ok(frozen);
+        }
+        // A ledger-free direct document freezes exactly as committed: actual
+        // document presence was already required above, and no Light+ receipt
+        // can be minted without the ledger — the bytes cross the stop boundary
+        // unchanged rather than dressed in a foreign receipt.
+        if self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .direct_document_is_committed()
         {
             return Ok(frozen);
         }
@@ -3619,6 +4137,7 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            transcription_controls: TranscriptionControls::default(),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             sentence_pause_sec: 0.7,
             tick_clock: {
@@ -3628,6 +4147,7 @@ impl PresentationEmitter {
             refinement_warnings: None,
             cursor_observer: None,
             apple_preview_observer: None,
+            speech_activity_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
@@ -3661,6 +4181,29 @@ impl PresentationEmitter {
         self
     }
 
+    /// Freeze the per-take transcription track switches before capture opens.
+    /// Called exactly once by the controller from the take's immutable runtime
+    /// snapshot; the defaults keep both existing lanes for every old caller.
+    /// With the seal ledger opted out, the reducer accepts the direct
+    /// publication lane instead; with Apple live opted out, that lane's
+    /// events never touch paint or document.
+    pub fn with_transcription_controls(
+        mut self,
+        seal_ledger_enabled: bool,
+        apple_live_enabled: bool,
+    ) -> Self {
+        let controls = TranscriptionControls {
+            seal_ledger_enabled,
+            apple_live_enabled,
+        };
+        self.transcription_controls = controls;
+        self.session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .transcription_controls = controls;
+        self
+    }
+
     /// Observe ephemeral paint without granting document or delivery authority.
     pub fn with_cursor_observer(mut self, observer: CursorObserver) -> Self {
         self.cursor_observer = Some(observer);
@@ -3670,6 +4213,12 @@ impl PresentationEmitter {
     /// Observe the existing raw Apple preview without admitting or rewriting words.
     pub fn with_apple_preview_observer(mut self, observer: ApplePreviewObserver) -> Self {
         self.apple_preview_observer = Some(observer);
+        self
+    }
+
+    /// Observe owned VAD edges independently of text, ledger and Apple controls.
+    pub fn with_speech_activity_observer(mut self, observer: SpeechActivityObserver) -> Self {
+        self.speech_activity_observer = Some(observer);
         self
     }
 
@@ -3877,6 +4426,21 @@ impl PresentationEmitter {
         self.send_committed_paint(revision.rendered_text);
     }
 
+    /// Publish a ledger-free revision. The Bus authenticates the embedded
+    /// reducer capability; a refusal publishes nothing and paints nothing, so
+    /// an unauthenticated direct snapshot never reaches delivery. The ordered
+    /// paint/delivery FIFO is the same one the ledger lane uses.
+    fn publish_direct_revision(&self, revision: TranscriptRevision) {
+        if let Some(bus) = &self.transcript_bus {
+            let events = bus.publish_direct_revision(&revision);
+            if events.is_empty() {
+                return;
+            }
+            self.emit_overlay_events(&events);
+        }
+        self.send_committed_paint(revision.rendered_text);
+    }
+
     /// Paint the visible projection. Delivery receives only the committed text.
     fn send_committed_paint(&self, delivery: String) {
         let paint = {
@@ -4033,7 +4597,7 @@ impl PresentationEmitter {
             .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if state.document_by_occurrence.is_empty() {
+        if state.document_by_occurrence.is_empty() && !state.direct_document_is_committed() {
             if !matches!(
                 request.provenance(),
                 DocumentRevisionProvenance::UserEdit
@@ -4120,13 +4684,25 @@ impl PresentationEmitter {
             }
         };
         drop(state);
-        if !self.authenticates_revision(&revision, ledger) {
+        let direct = matches!(revision.action, ReducerAction::ApplyDirectTranscript { .. });
+        let authenticated = if direct {
+            revision
+                .authenticates_direct_publication(request.session_id())
+                .is_some()
+        } else {
+            self.authenticates_revision(&revision, ledger)
+        };
+        if !authenticated {
             return Err(UserRevisionRefusal::LedgerRefusal(
                 "publication_authentication_failed",
             ));
         }
         if let Some(bus) = &self.transcript_bus {
-            let events = bus.publish_revision(&revision, ledger);
+            let events = if direct {
+                bus.publish_direct_revision(&revision)
+            } else {
+                bus.publish_revision(&revision, ledger)
+            };
             if events.is_empty() {
                 return Err(UserRevisionRefusal::LedgerRefusal(
                     "bus_publication_refused",
@@ -4150,15 +4726,22 @@ impl PresentationEmitter {
                 provenance_receipt: projection.receipt_id.clone(),
             });
         }
-        let ReducerAction::ApplyUserRevision { receipt } = &revision.action else {
-            unreachable!("apply_user_revision must mint an ApplyUserRevision action")
+        let provenance_receipt = match &revision.action {
+            ReducerAction::ApplyUserRevision { receipt } => receipt.receipt_id.clone(),
+            ReducerAction::ApplyDirectTranscript { capability } => {
+                capability
+                    .document_revision_receipt()
+                    .expect("explicit direct operation")
+                    .receipt_id
+            }
+            _ => unreachable!("document operation must mint a document revision"),
         };
         Ok(UserRevisionCommit {
-            session_id: receipt.session_id.clone(),
-            source_revision: receipt.source_revision,
+            session_id: request.session_id().to_string(),
+            source_revision: request.source_revision(),
             revision: revision.revision,
             rendered_text: revision.rendered_text,
-            provenance_receipt: receipt.receipt_id.clone(),
+            provenance_receipt,
         })
     }
 
@@ -4496,7 +5079,8 @@ impl PresentationEmitter {
         let session_id = reducer
             .document_by_occurrence
             .keys()
-            .next()?
+            .next()
+            .or_else(|| reducer.direct_document.keys().next())?
             .session
             .clone();
         let exact_raw = reducer.committed_rendered_text() == raw_at_handoff;
@@ -4511,6 +5095,7 @@ impl PresentationEmitter {
             && reducer
                 .document_by_occurrence
                 .values()
+                .chain(reducer.direct_document.values())
                 .all(|entry| entry.seal_receipt.is_some())
             && !reducer.raw_human_revision
             && reducer.context_markers.is_empty();
@@ -4724,7 +5309,71 @@ impl EventSink for PresentationEmitter {
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
         let tick_budget = self.schedule_light_plus();
+        // Apple-live opt-out: that lane's events never touch paint, mirror, or
+        // document. A late callback after the lane's own retirement dies here.
+        if !self.transcription_controls.apple_live_enabled
+            && matches!(
+                event,
+                EngineEvent::Preview { .. }
+                    | EngineEvent::UnadmittedAppleWords { .. }
+                    | EngineEvent::PreviewDisposition { .. }
+            )
+        {
+            return;
+        }
+        // Seal-ledger opt-out: the ledger lane holds no document authority for
+        // this take. The direct publication lane below is the only one open.
+        if !self.transcription_controls.seal_ledger_enabled
+            && matches!(
+                event,
+                EngineEvent::LedgerMutation { .. }
+                    | EngineEvent::LedgerSeal { .. }
+                    | EngineEvent::SealCoverage { .. }
+                    | EngineEvent::OccurrenceLabelProposal { .. }
+            )
+        {
+            return;
+        }
         match event {
+            EngineEvent::DirectTranscript {
+                observation,
+                text,
+                final_chunk,
+            } => {
+                // Direct events count only inside the capture they name.
+                if self.cursor_capture.get().is_none_or(|(session, epoch)| {
+                    session != &observation.occurrence.session
+                        || *epoch != observation.occurrence.capture_epoch
+                }) {
+                    return;
+                }
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .apply_direct_transcript(observation, text, *final_chunk);
+                if let Some(revision) = revision {
+                    self.publish_direct_revision(revision);
+                }
+            }
+            EngineEvent::DirectTranscriptEnd {
+                session_id,
+                capture_epoch,
+            } => {
+                if self.cursor_capture.get().is_none_or(|(session, epoch)| {
+                    session != session_id || *epoch != *capture_epoch
+                }) {
+                    return;
+                }
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .apply_direct_transcript_end(session_id, *capture_epoch);
+                if let Some(revision) = revision {
+                    self.publish_direct_revision(revision);
+                }
+            }
             EngineEvent::SpeechIntegrity { evidence } => {
                 if !self.cursor_capture.get().is_some_and(|(session, epoch)| {
                     session == &evidence.session_id && *epoch == evidence.capture_epoch
@@ -4957,6 +5606,18 @@ impl EventSink for PresentationEmitter {
             EngineEvent::VadStart { .. } => {}
             EngineEvent::VadEnd { .. } => self.paint_apple_preview(""),
             EngineEvent::SidebandEvidence { evidence } => {
+                if let Some(observer) = &self.speech_activity_observer
+                    && self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                        session == &evidence.range.session && *epoch == evidence.range.capture_epoch
+                    })
+                    && matches!(
+                        &evidence.evidence,
+                        SidebandEvidenceKind::SpeechStart { .. }
+                            | SidebandEvidenceKind::SpeechEnd { .. }
+                    )
+                {
+                    observer(evidence);
+                }
                 debug!(
                     sequence = evidence.sequence,
                     sample_start = evidence.range.sample_start,
@@ -5124,7 +5785,9 @@ impl EventSink for PresentationEmitter {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .mark_terminal_lifecycle();
-                    if let Some(ledger) = &self.acoustic_ledger {
+                    if self.transcription_controls.seal_ledger_enabled
+                        && let Some(ledger) = &self.acoustic_ledger
+                    {
                         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
                         self.mint_light_plus_revision(&mut ledger, &tick_budget);
                     }
@@ -5138,8 +5801,12 @@ impl EventSink for PresentationEmitter {
                 self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical_text));
                 // Lifecycle end closes edit admission independently of the
                 // seal verdict. Light+ is idempotent: a document the terminal
-                // seal already shaped yields no second intent.
-                if let Some(ledger) = &self.acoustic_ledger {
+                // seal already shaped yields no second intent. A ledger-free
+                // take has no Light+ authority; its document stands as
+                // committed by the direct lane.
+                if self.transcription_controls.seal_ledger_enabled
+                    && let Some(ledger) = &self.acoustic_ledger
+                {
                     let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
                     self.mint_light_plus_revision(&mut ledger, &tick_budget);
                 }
@@ -11178,6 +11845,82 @@ mod tests {
             reducer.apply_incremental_shaping(&mut ledger, &occurrence),
             Err(IncrementalShapingRefusal::AlreadyShaped)
         );
+    }
+
+    /// Acceptance: Whisper's hearing of the brand never reaches the user.
+    /// A Whisper word correction relabels the occurrence to "CodeScript"; the
+    /// live Light+ shape that paint, stop, paste and agent delivery read
+    /// presents "Codescribe", and the ledger authenticates that shape by
+    /// re-running the same pass over the corrected label.
+    #[test]
+    fn whisper_heard_brand_is_presented_as_codescribe() {
+        use codescribe_core::pipeline::acoustic_ledger::WordPin;
+        let mut reducer = TranscriptReducer::default();
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("brand-session", 22, 0, 32_000);
+        let mutation = admitted_mutation(&mut ledger, occurrence.clone(), 1, "pracuję nad kodem");
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = &mutation
+        else {
+            panic!("admitted_mutation must produce a ledger mutation");
+        };
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, observation, receipt)
+                .is_some()
+        );
+
+        let whisper =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, occurrence.clone());
+        let receipt = ledger.admit_word_slots_for_tests(
+            &whisper,
+            &[
+                WordPin::new(1_000, 9_000, "pracuję").with_decode_window(0, 48_000),
+                WordPin::new(10_000, 16_000, "nad").with_decode_window(0, 48_000),
+                WordPin::new(17_000, 31_000, "CodeScript").with_decode_window(0, 48_000),
+            ],
+        );
+        assert!(matches!(receipt, MutationReceipt::Correct { .. }));
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &receipt)
+                .is_some()
+        );
+        assert_eq!(ledger.text_of(&occurrence), Some("pracuję nad CodeScript"));
+
+        let shaped = reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .expect("the corrected label is shaped");
+        assert_eq!(shaped.rendered_text, "Pracuję nad Codescribe");
+    }
+
+    /// Acceptance: a formatter that misspells the brand still delivers
+    /// "Codescribe"; the published digest covers the corrected bytes.
+    #[test]
+    fn formatter_versions_spell_the_brand() {
+        let mut reducer = TranscriptReducer::default();
+        for policy in [FormattingPolicy::Smart, FormattingPolicy::Max] {
+            let projection = reducer.mint_derived_projection(
+                "brand-format".into(),
+                1,
+                "pracuję nad kodem".into(),
+                policy,
+                AiFormatResult {
+                    text: "Pracuję nad CodeScript, a Python script zostaje.".into(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
+            assert_eq!(
+                projection.rendered_text,
+                "Pracuję nad Codescribe, a Python script zostaje."
+            );
+            assert_eq!(projection.publication_digest, projection.digest());
+        }
     }
 
     /// Acceptance: a terminal whole-document revision keeps ownership of the

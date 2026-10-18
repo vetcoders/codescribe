@@ -15,7 +15,9 @@ Connect this chat now using: $ARGUMENTS
    On an occupied slot report its owner; never overwrite it or silently choose
    another slot. Use `--takeover` only for the same name's ended-session handoff.
 4. Reuse or start one output-notifying `cs-bus --watch --bell` monitor and retain its
-   notification window. Native Codex queue is armed by attachment too. A bare
+   notification window. Native Codex queue is armed by attachment too; it wakes
+   only a thread in the local Codex store, never a cloud thread (see the monitor
+   reference), which must keep its turn open with the watch. A bare
    background reader is insufficient. If only active polling is available,
    report that boundary and keep the listening turn open.
 5. Read `--status` for the same session. Return name, channel, stored voice and

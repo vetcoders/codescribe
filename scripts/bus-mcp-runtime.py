@@ -1,6 +1,6 @@
 """Bounded HTTPS callback transport and one own-mailbox notification pump.
 
-No inbound listener, new follower, credential store, tunnel or agent relay.
+No inbound listener, new follower, credential store or agent relay.
 Production construction requires an admitted Codescribe secure-store binding.
 """
 import concurrent.futures
@@ -268,12 +268,8 @@ def configure(server, events_module, secret_store, *, callback_hosts, transport=
     return NotificationPump(server)
 
 
-def run(scope_path, *, callback_hosts=(), secret_store=None, secret_store_factory=None, callback_preflight=False):
-    """Local embedding entrypoint; the owner supplies its admitted store binding.
-
-    No backend name, credential or callback policy can be selected by an MCP
-    argument. The standalone dot CLI deliberately remains tools-only.
-    """
+def load_components():
+    """The agent surface and the Events metadata component, by file name."""
     from pathlib import Path
     import importlib.util
     import sys
@@ -284,8 +280,44 @@ def run(scope_path, *, callback_hosts=(), secret_store=None, secret_store_factor
         sys.modules[name] = module
         spec.loader.exec_module(module)
         return module
-    dot = load("codescribe_runtime_dot", "bus-dot-mcp.py")
-    events = load("codescribe_runtime_events", "bus-mcp-events.py")
+    return load("codescribe_runtime_agent", "bus-mcp-agent.py"), load("codescribe_runtime_events", "bus-mcp-events.py")
+
+
+SCOPE_CHECK_SCHEMA = "codescribe.agent-mcp.scope-check.v1"
+
+
+def check_scope(scope_path):
+    """Print the resolved identity of one reviewed scope and exit.
+
+    An operator compares an old and a new configuration with this before
+    switching. It starts no server, reads no mailbox, builds no signing-key
+    store and contacts no network. The namespace is a hash, not a secret.
+    """
+    from pathlib import Path
+    import sys
+    sys.dont_write_bytecode = True  # Importing the components must not write next to them.
+    agent, events = load_components()
+    scope = agent.Scope(json.loads(Path(scope_path).read_text()))
+    demux = agent.load_module("codescribe_scope_check_demux",
+                              Path(agent.__file__).resolve().with_name("bus-demux.py"))
+    lease = demux.lease_identifier(scope.provider, scope.session)
+    state = scope.state / lease
+    metadata = state / "events.sqlite"
+    print(json.dumps({"schema": SCOPE_CHECK_SCHEMA, "provider": scope.provider, "name": scope.name,
+                      "lease_id": lease, "state_dir_exists": scope.check_private_directory(scope.state),
+                      "state_path": str(state.resolve()),
+                      "events_path": str(metadata.resolve()),
+                      "key_namespace": events.key_namespace(scope.principal, scope.session, metadata)}))
+    return 0
+
+
+def run(scope_path, *, callback_hosts=(), secret_store=None, secret_store_factory=None, callback_preflight=False):
+    """Local embedding entrypoint; the owner supplies its admitted store binding.
+
+    No backend name, credential or callback policy can be selected by an MCP
+    argument. The standalone agent CLI deliberately remains tools-only.
+    """
+    agent, events = load_components()
     if (callback_preflight and (secret_store is not None or secret_store_factory is not None)
             or not callback_preflight and (secret_store is None) == (secret_store_factory is None)):
         raise ValueError("One reviewed signing-key binding required")
@@ -300,7 +332,7 @@ def run(scope_path, *, callback_hosts=(), secret_store=None, secret_store_factor
             if callable(close):
                 close()
             raise
-    dot.main(["--scope", str(scope_path)], runtime_factory=factory)
+    agent.main(["--scope", str(scope_path)], runtime_factory=factory)
 
 
 def main(argv=None):
@@ -314,7 +346,12 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--callback-host", action="append")
     mode.add_argument("--callback-preflight", action="store_true")
+    mode.add_argument("--check-scope", action="store_true")
     args = parser.parse_args(argv)
+    if args.check_scope:
+        if args.codescribe is not None or args.native_sha256 is not None:
+            parser.error("Scope check does not accept a native key binding")
+        return check_scope(args.scope)
     if args.callback_preflight:
         if args.codescribe is not None or args.native_sha256 is not None:
             parser.error("Callback preflight does not accept a native key binding")
@@ -325,7 +362,7 @@ def main(argv=None):
         Path(__file__).resolve().with_name("bus-mcp-key-store.py"))
     keys = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(keys)
-    run(args.scope, callback_hosts=args.callback_host, secret_store_factory=lambda namespace:
+    return run(args.scope, callback_hosts=args.callback_host, secret_store_factory=lambda namespace:
         keys.CodescribeSecretStore(args.codescribe, namespace, args.native_sha256))
 
 

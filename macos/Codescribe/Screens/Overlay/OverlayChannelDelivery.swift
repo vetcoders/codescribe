@@ -13,6 +13,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
   let isOpen: Bool
   var broadcastIdentity: AgentPlaybackIdentity? = nil
   var broadcastPolicy: AgentBroadcastPolicy = .on
+  /// The follower's skip receipt for exactly that delivery and owner: off
+  /// channel 0 a broadcast is never queued (`queue_delivery` in bus-demux.py),
+  /// so "sent" would otherwise wait for a receipt that never comes.
+  var broadcastSkipped = false
   var id: String { channel }
 
   /// Metadata projection of the bus; never a document reducer or delivery writer.
@@ -180,6 +184,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         ])
       }
       var stage: Stage? = deliveryID == nil ? nil : .sent
+      var skipped = false
       if let deliveryID {
         let pending = lease["pending"] as? [[String: Any]] ?? []
         if pending.contains(where: {
@@ -195,6 +200,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         }
         if observations.contains(where: \.queued) { stage = .queued }
         if observations.contains(where: \.acknowledged) { stage = .received }
+        skipped = stage == .sent && observations.contains { $0.broadcastSkipped == true }
       }
       // A hold or a withdrawal is the only news this projection adds on top
       // of the seal-derived stage; an ordinary delivery keeps its receipts.
@@ -211,10 +217,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         } else if addressed.holdingSeconds(at: Date()) != nil {
           deliveryID = addressed.recipients.first?.deliveryID
           stage = .held
+          skipped = false
         }
       }
-      return OverlayChannelDelivery(
+      var delivery = OverlayChannelDelivery(
         channel: channel, agent: agent, deliveryID: deliveryID, stage: stage, isOpen: isOpen)
+      delivery.broadcastSkipped = skipped
+      return delivery
     }
 
     mutating func observeLease(_ lease: [String: Any], channel: String, binding: [String: Any]) {
@@ -267,21 +276,61 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         acknowledged: false)
     }
 
-    /// Unacknowledged recipients still worth a receipt poll. The third
-    /// element says whether provider acceptance was already observed, so the
-    /// reader can skip the wakeup receipt and only watch for the acknowledgment.
-    mutating func receiptCoordinates() -> [(OverlayConversationOwner, String, Bool)] {
-      var result: [(OverlayConversationOwner, String, Bool)] = []
+    /// The follower's skip receipt (`record_broadcast_skipped` in
+    /// bus-demux.py) marks exactly this delivery to exactly this owner; a
+    /// receipt naming another lease, session or delivery marks nothing.
+    mutating func observeBroadcastSkip(
+      _ receipt: [String: Any], owner: OverlayConversationOwner, delivery: String
+    ) {
+      guard receipt["schema"] as? String == "codescribe.broadcast-policy.v1",
+        receipt["kind"] as? String == "broadcast_skipped",
+        receipt["delivery_id"] as? String == delivery,
+        receipt["lease_id"] as? String == owner.leaseID,
+        receipt["provider"] as? String == owner.provider,
+        receipt["provider_session_id"] as? String == owner.providerSessionID
+      else { return }
+      var changed = false
+      for id in messageOrder {
+        guard var message = messages[id] else { continue }
+        var rowChanged = false
+        for index in message.recipients.indices
+        where message.recipients[index].owner.id == owner.id
+          && message.recipients[index].deliveryID == delivery
+          && message.recipients[index].broadcastSkipped != true
+        {
+          message.recipients[index].broadcastSkipped = true
+          rowChanged = true
+        }
+        if rowChanged {
+          messages[id] = message
+          changed = true
+        }
+      }
+      if changed { revision &+= 1 }
+    }
+
+    typealias ReceiptCoordinate = (
+      owner: OverlayConversationOwner, delivery: String, accepted: Bool, broadcast: Bool
+    )
+
+    /// Unacknowledged recipients still worth a receipt poll. `accepted` says
+    /// whether provider acceptance was already observed, so the reader can
+    /// skip the wakeup receipt and only watch for the acknowledgment;
+    /// `broadcast` marks a channel-0 delivery, the only kind a follower skips.
+    /// A recorded skip settles the recipient: nothing reads it afterwards.
+    mutating func receiptCoordinates() -> [ReceiptCoordinate] {
+      var result: [ReceiptCoordinate] = []
       var seen: Set<String> = []
       for id in messageOrder {
         guard let message = messages[id] else { continue }
-        for recipient in message.recipients {
+        for recipient in message.recipients where recipient.broadcastSkipped != true {
           // Conversation receipt settles observation even when provider queue
           // acceptance was absent (for example, monitor-only delivery).
           if let delivery = recipient.deliveryID, !recipient.acknowledged,
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
-            result.append((recipient.owner, delivery, recipient.accepted))
+            result.append(
+              (recipient.owner, delivery, recipient.accepted, message.sourceChannel == "0"))
           }
         }
       }
@@ -686,7 +735,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       {
         return
       }
-      let ledgerCoordinates = row["occurrence_session_id"] is String
+      let ledgerCoordinates =
+        row["occurrence_session_id"] is String
         && row["capture_epoch"] is NSNumber && row["sample_start"] is NSNumber
         && row["sample_end"] is NSNumber
       let occurrence =
@@ -814,9 +864,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let utterance = Self.coordinate(row["utterance_id"])
       message.controlIdentity = utterance.isEmpty ? session : utterance
       // Ledger previews are not deliveries, even when they carry hold metadata.
-      message.deliverySealed = messages[key]?.deliverySealed == true
+      message.deliverySealed =
+        messages[key]?.deliverySealed == true
         || (evidence ? channelClosed : terminal)
-      message.holdUntil = (row["hold_until"] as? String).flatMap(Self.openingDate)
+      message.holdUntil =
+        (row["hold_until"] as? String).flatMap(Self.openingDate)
         ?? messages[key]?.holdUntil
       message.revisedText = messages[key]?.revisedText
       message.withdrawn = messages[key]?.withdrawn
@@ -842,20 +894,24 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if let typed {
           matches = id == "typed:" + typed
         } else if !utterance.isEmpty {
-          matches = !id.hasPrefix("typed:") && message.controlIdentity == utterance
+          matches =
+            !id.hasPrefix("typed:") && message.controlIdentity == utterance
             && ((row["session_id"] as? String).map { $0 == message.captureSessionID } ?? true)
         } else if let identity {
-          matches = identity == message.controlIdentity || identity == id
+          matches =
+            identity == message.controlIdentity || identity == id
             || identity == message.captureSessionID
         } else {
           matches = false
         }
         guard matches, message.holdingSeconds(at: emittedAt) != nil else { return false }
-        guard message.recipients.contains(where: { recipient in
+        guard
+          message.recipients.contains(where: { recipient in
             recipient.owner.provider == provider
               && recipient.owner.providerSessionID == providerSession
               && recipient.owner.leaseID == lease
-          }) else { return false }
+          })
+        else { return false }
         return true
       }
       // Reused numeric utterance labels do not identify a take on their own.
@@ -895,8 +951,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func finalizeRefused(session: String, holdUntil: Date? = nil) {
       for (id, origin) in deliveryOrigins
-      where origin.captureSession == session
-      {
+      where origin.captureSession == session {
         guard var message = messages[id] else { continue }
         message.deliverySealed = true
         message.holdUntil = holdUntil ?? message.holdUntil
@@ -1092,6 +1147,9 @@ struct OverlayConversationRecipient: Codable, Equatable, Sendable {
   var queued: Bool
   var accepted: Bool
   var acknowledged: Bool
+  /// The owner's follower recorded this channel-0 delivery as skipped
+  /// (`broadcast-skipped/<lease>/<delivery>.json`): it was off channel 0.
+  var broadcastSkipped: Bool? = nil
 }
 
 struct OverlayReplyPlayback: Codable, Equatable, Sendable {

@@ -717,6 +717,20 @@ reload = "restart"
 category = "stt"
 description = "Arm the DictationTranscriber lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Power-user override for the Voice Lab witness key audio.dictation_witness_armed: present env wins over Settings in either direction and is recorded by name in the snapshot provenance. The witness re-checks unresolved recovery debt in the background after each committed utterance seal and once more at Stop (docs/STT_CONTRACT.md, 2026-10-15). The Rust side sets this key explicitly on the spawned bridge child for a DT request, so the armed decision crosses the process boundary without depending on the app process environment. Not a shipped default — flipping it is an operator decision"
 
+[vars.CODESCRIBE_SEAL_LEDGER_ENABLED]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Promoted Settings write token for audio.seal_ledger_enabled. The next take reads this choice from its immutable settings snapshot. Disabling selects direct decoder publication without word-admission or acoustic-seal certification. This token is a settings router key, not a process-environment override."
+
+[vars.CODESCRIBE_APPLE_LIVE_ENABLED]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Promoted Settings write token for audio.apple_live_enabled. The next take reads this independent choice from its immutable settings snapshot. Disabling prevents Apple live recognition and Apple witness text from affecting transcription. This token is a settings router key, not a process-environment override."
+
 [vars.STT_FILE_ENDPOINT]
 default = ""
 type = "string"
@@ -1155,6 +1169,13 @@ type = "bool"
 reload = "hot"
 category = "hotkeys"
 description = "Mouse button 2 follows Fn press and release. Off until chosen. The tap is listen-only, so the click still reaches the frontmost app."
+
+[vars.MIDDLE_MOUSE_AGENT_GESTURE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "hotkeys"
+description = "A middle click opens the overlay's agent chooser: the wheel moves the focus, a left click opens that agent, a middle click talks to it until the next middle click. Off until chosen. While on, Codescribe consumes the middle click, and while choosing also the wheel, the left click and Escape. With MIDDLE_MOUSE_ACTS_AS_FN a hold still dictates."
 
 [vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
 default = "disabled"

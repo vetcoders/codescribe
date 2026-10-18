@@ -243,6 +243,15 @@ impl AcousticSpeechEvidence {
     }
 }
 
+/// One capture energy hop on the PCM clock, read-only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnergyHopLevel {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    /// Linear RMS of the hop's samples.
+    pub rms: f32,
+}
+
 /// One speech burst on the capture hop clock.
 ///
 /// Identity is `(range.capture_epoch, range.sample_start)`. The start stays
@@ -573,6 +582,61 @@ impl CaptureEnergyOwner {
         sample_start: u64,
         sample_end: u64,
     ) -> Option<Vec<(u64, u64)>> {
+        self.hops_at_or_above(
+            session,
+            capture_epoch,
+            sample_start,
+            sample_end,
+            ACTIVE_SPEECH_LINEAR_FLOOR,
+        )
+    }
+
+    /// Every hop of this capture, in order, with its RMS.
+    ///
+    /// For readers that need the levels themselves, such as syllable-nucleus
+    /// counting. `None` means this owner cannot speak for the whole extent:
+    /// wrong identity, nothing observed, invalid PCM, or a hole in the clock.
+    pub fn session_hop_levels(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+    ) -> Option<Vec<EnergyHopLevel>> {
+        if !self.identity.matches(session, capture_epoch) {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        if clock.observed_samples == 0
+            || clock.first_invalid_sample.is_some()
+            || !speech_anchor_clock_contiguous(&clock)
+        {
+            return None;
+        }
+        Some(
+            clock
+                .hops
+                .iter()
+                .map(|hop| EnergyHopLevel {
+                    sample_start: hop.sample_start,
+                    sample_end: hop.sample_end,
+                    rms: hop.rms,
+                })
+                .collect(),
+        )
+    }
+
+    /// Hops that overlap `[sample_start, sample_end)` at or above `floor_rms`.
+    ///
+    /// Same clock as [`Self::voiced_hops_in`]. `None` means this owner cannot
+    /// speak for the range. `Some` empty means every overlapping hop was
+    /// measured below `floor_rms`. The mean of the query is not read.
+    pub fn hops_at_or_above(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+        floor_rms: f32,
+    ) -> Option<Vec<(u64, u64)>> {
         if sample_end <= sample_start || !self.identity.matches(session, capture_epoch) {
             return None;
         }
@@ -596,7 +660,7 @@ impl CaptureEnergyOwner {
             if overlap_start > cursor {
                 return None;
             }
-            if hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR {
+            if hop.rms >= floor_rms {
                 let end = hop.sample_end.min(sample_end);
                 if end > overlap_start {
                     voiced.push((overlap_start, end));

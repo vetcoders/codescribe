@@ -309,7 +309,8 @@ actor OverlayChannelDeliveryReader {
       // and that was the hottest frame of the 500 ms poll (sample 2026-10-14).
       let wakeups = root.path + "/wakeups/"
       let acknowledgments = root.path + "/acknowledgments/"
-      for (owner, delivery, accepted) in cursor.projection.receiptCoordinates() {
+      let skips = root.path + "/broadcast-skipped/"
+      for (owner, delivery, accepted, broadcast) in cursor.projection.receiptCoordinates() {
         guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
           continue
         }
@@ -317,6 +318,17 @@ actor OverlayChannelDeliveryReader {
           let wakeup = URL(
             fileURLWithPath: wakeups + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
           if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+        }
+        // Only an unaccepted channel-0 delivery can have been skipped; a
+        // recorded skip drops the coordinate from the next poll. The
+        // acknowledgment is still read below: a skip file naming another
+        // owner marks nothing and must not hide a real ACK (Lena, 2026-10-17).
+        if broadcast && !accepted {
+          let skip = URL(
+            fileURLWithPath: skips + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
+          if let receipt = try? object(at: skip) {
+            cursor.projection.observeBroadcastSkip(receipt, owner: owner, delivery: delivery)
+          }
         }
         let acknowledgment = URL(
           fileURLWithPath: acknowledgments + owner.leaseID + "/" + delivery + ".json",

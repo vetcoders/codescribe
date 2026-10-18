@@ -207,6 +207,9 @@ pub struct UserSettings {
     /// Middle mouse button follows Fn. `None` keeps the default off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub middle_mouse_acts_as_fn: Option<bool>,
+    /// A middle click opens the agent chooser. `None` keeps the default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_mouse_agent_gesture: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,6 +345,12 @@ pub struct UserSettings {
     /// is the documented power-user override and wins when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictation_witness_armed: Option<bool>,
+    /// Opt out of word admission while retaining the original capture identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seal_ledger_enabled: Option<bool>,
+    /// Enable Apple live recognition and its witness lanes for the next take.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_live_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -834,7 +843,7 @@ impl RuntimeLlmLanes {
 ///
 /// Runtime execution records this typed evidence rather than carrying an
 /// absolute path or raw I/O error text into the selected generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSource {
     /// A non-empty operator override on disk.
     CustomFile,
@@ -1275,6 +1284,12 @@ impl RuntimeSettingsSnapshot {
         self.tail_provider
     }
 
+    /// The resolver inputs this snapshot sealed. Crate-only: they carry
+    /// credentials, which only a redacting record may read.
+    pub(crate) fn captured_inputs(&self) -> &super::loader::CapturedRuntimeInputs {
+        &self.captured_inputs
+    }
+
     /// Borrow the frozen runtime values.
     pub fn values(&self) -> &Config {
         &self.values
@@ -1364,6 +1379,16 @@ impl RuntimeSettingsSnapshot {
     /// Effective Voice Lab witness verdict for this immutable generation.
     pub const fn dictation_witness_armed(&self) -> bool {
         self.dictation_witness_armed
+    }
+
+    /// Frozen persisted choice; ledger admission is an explicit opt-in.
+    pub fn seal_ledger_enabled(&self) -> bool {
+        self.user_settings.seal_ledger_enabled.unwrap_or(false)
+    }
+
+    /// Frozen persisted choice, shared by the producer and presentation owners.
+    pub fn apple_live_enabled(&self) -> bool {
+        self.user_settings.apple_live_enabled.unwrap_or(false)
     }
 
     /// Agent-channel send hold for this generation. Zero means immediate delivery.
@@ -1474,6 +1499,8 @@ struct InteractionV2 {
     fn_tap_toggles_dictation: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     middle_mouse_acts_as_fn: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    middle_mouse_agent_gesture: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_clipboard: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1625,6 +1652,10 @@ struct AudioV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     dictation_witness_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    seal_ledger_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apple_live_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
 
@@ -1740,6 +1771,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AGENT_CHANNEL_MODIFIER",
     "FN_TAP_TOGGLES_DICTATION",
     "MIDDLE_MOUSE_ACTS_AS_FN",
+    "MIDDLE_MOUSE_AGENT_GESTURE",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "PASTE_MODE",
@@ -1783,6 +1815,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "AUDIO_RETENTION",
     SILERO_FUSION_ENV,
     crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER,
+    "CODESCRIBE_SEAL_LEDGER_ENABLED",
+    "CODESCRIBE_APPLE_LIVE_ENABLED",
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -1854,11 +1888,14 @@ typed_setting_writes! {
         "HOLD_EXCLUSIVE" => hold_exclusive,
         "FN_TAP_TOGGLES_DICTATION" => fn_tap_toggles_dictation,
         "MIDDLE_MOUSE_ACTS_AS_FN" => middle_mouse_acts_as_fn,
+        "MIDDLE_MOUSE_AGENT_GESTURE" => middle_mouse_agent_gesture,
         "USE_LOCAL_STT" => use_local_stt,
         "WHISPER_ADAPTIVE_BUFFER" => whisper_adaptive_buffer,
         "CODESCRIBE_FORMAT_ON_DEVICE" => format_on_device,
         SILERO_FUSION_ENV => seal_lane_armed,
         crate::stt::apple_stt::ENV_DICTATION_TRANSCRIBER => dictation_witness_armed,
+        "CODESCRIBE_SEAL_LEDGER_ENABLED" => seal_ledger_enabled,
+        "CODESCRIBE_APPLE_LIVE_ENABLED" => apple_live_enabled,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
         "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
@@ -1912,6 +1949,7 @@ impl UserSettings {
                 channel_modifier: self.channel_modifier.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
+                middle_mouse_agent_gesture: self.middle_mouse_agent_gesture,
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
@@ -1979,6 +2017,8 @@ impl UserSettings {
                 retention: self.audio_retention,
                 seal_lane_armed: self.seal_lane_armed,
                 dictation_witness_armed: self.dictation_witness_armed,
+                seal_ledger_enabled: self.seal_ledger_enabled,
+                apple_live_enabled: self.apple_live_enabled,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -2069,6 +2109,7 @@ impl UserSettings {
             channel_modifier: cloned!(v2.interaction, channel_modifier),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
+            middle_mouse_agent_gesture: copy!(v2.interaction, middle_mouse_agent_gesture),
             mode_bindings: cloned!(v2.interaction, mode_bindings),
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
@@ -2142,6 +2183,8 @@ impl UserSettings {
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.dictation_witness_armed),
+            seal_ledger_enabled: copy!(v2.audio, seal_ledger_enabled),
+            apple_live_enabled: copy!(v2.audio, apple_live_enabled),
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
@@ -3821,6 +3864,26 @@ mod tests {
         assert!(!called.get());
         assert!(path.is_dir());
         drop(root);
+    }
+
+    #[test]
+    #[serial]
+    fn transcription_controls_roundtrip_independently_in_the_canonical_projection() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
+            let input = serde_json::json!({
+                "schema_version": 3,
+                "audio": {
+                    "seal_ledger_enabled": ledger,
+                    "apple_live_enabled": apple
+                }
+            });
+            fs::write(&path, input.to_string()).unwrap();
+            let projected = serde_json::to_value(UserSettings::load().to_v2()).unwrap();
+            assert_eq!(projected["audio"]["seal_ledger_enabled"], ledger);
+            assert_eq!(projected["audio"]["apple_live_enabled"], apple);
+        }
     }
 
     /// Legacy schema-v3 files have no seal-lane field. Loading them performs

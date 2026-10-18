@@ -7,9 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
+
+## [0.17.1] - 2026-10-17
+
+Source changes in preparation; validation and distribution have separate receipts.
+
 ### Fixed
 
+- Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
+- Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
 - Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
+
+<!-- release-notes:0.17.1:start -->
+<!-- release-summary: generated -->
+
+### Added
+
+- restructure the Shortcuts tab around honest save semantics
+- About tab replaces User with readable diagnostics
+
+### Fixed
+
+- speak the chosen language in the restart row
+- let the formatting level picker size to its labels
+
+### Changed
+
+- l10n(settings): catalog entries for the restructured Shortcuts tab
+- l10n(settings): catalog for round 5 and a shorter Polish "Ask"
+
+### Documentation
+
+- record the gap between the Shortcuts picker and routed gestures
+- state the Max consultation self-heal contract
+
+Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
+<!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
 

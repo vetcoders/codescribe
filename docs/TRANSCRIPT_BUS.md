@@ -557,6 +557,18 @@ paste policy. The controller snapshots the target before overlay focus can
 replace it, and checks the session-owned WAV only after the stop path has had a
 chance to retain it.
 
+An explicit edit, retranscription or version move carries its typed
+`document_revision_receipt` on the resulting projection. A direct document
+operation uses the reducer's authenticated publication capability: its
+`capture_receipt_id` starts with `direct-publication-`, and its acoustic source
+occurrence and seal lists remain empty. This is document provenance, never
+an acoustic seal. Operation identifiers keep the provenance first, for example
+`user-edit-direct-…`. The command acknowledgement and the projected receipt
+name the same operation. Receivers finish a pending edit or version move only
+after the matching document projection arrives; a command acknowledgement
+alone does not repaint or complete it. Such a revision has
+`lifecycle_terminal=false` and cannot release capture a second time.
+
 The Bus refuses the **whole revision** before any row or sequence mutation if
 the reducer's publication validator rejects it. Validation binds the exact ordered
 entries, action, rendered bytes and other snapshot fields to the private reducer
@@ -869,11 +881,12 @@ The rail projects the producer's capability bits on `coverage_refused` and on
 `error` instead of a fixed `[close]`. A delivery failure keeps its words and its
 retained audio, so Copy, Insert and Retranscribe are exactly the recovery the
 user needs at that moment, and the previous fixed list hid them behind the word
-"error". Format is the one command withheld on both phases: its production relay
-refuses outside `formatted`, so projecting it would paint a dead button whose
-only working form would relabel a refused take as a sealed one. A false bit is
-honoured everywhere; on these two phases a true `can_format` is declined by the
-receiver, and that decision is stated here rather than inferred.
+"error". Format also follows the producer's `can_format` on a terminal document
+in `formatted`, `coverage_refused` or `error`. The request creates an explicit
+document revision; it does not certify an acoustic seal or erase diagnostics.
+A false capability stays disabled, and an active capture, dirty draft or pending
+document operation still prevents the request. Direct decoder completion alone
+does not enable actions: the capture lifecycle must have ended first.
 
 Delivery is unchanged and deliberately not phase-aware. Refused documents take
 the same `ComposerPending` route, and only the receiver's typed receipt is
@@ -1228,17 +1241,21 @@ not rewritten.
 
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
-`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed without new channel text. `0`
+`CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
+Silero speech-end edge. Text arrivals do not start or reset this clock. While
+speech is measured active, or no complete speech-start/end pair is available,
+there is no automatic silence deadline; manual hang-up remains available. `0`
 disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
 pressed again and nothing reopens the session. `state: sealed` with
 `reason: orphan` means the process that opened the session ended without
-sealing it (quit or crash); the next controller start writes it for every
-session whose `open` row is still the newest `channel-session` row of its
-channel, reading only the last 64 MiB of each bus (shared, and every
-dedicated bus the binding names). A session followed by a newer row of its
-channel is already over and gets no orphan row. Each channel session gets at
-most one `sealed` row, on the bus that carried its `open` row, after its
-capture closed and whether or not the ledger issued a terminal seal. The row names `opened_at`, `provider`,
+sealing it (quit or crash); the next controller start writes it for each
+named capture with an `open` but no matching non-open channel-session row,
+reading only the last 64 MiB of each bus (shared, and every dedicated bus the
+binding names). A replacement capture can open on the same channel while its
+predecessor's decoder tail drains. That open never settles the predecessor;
+only its own close, session-ended event, or orphan recovery does. Each channel
+session gets at most one `sealed` row, on the bus that carried its `open` row,
+after its capture closed and whether or not the ledger issued a terminal seal. The row names `opened_at`, `provider`,
 `provider_session_id`, and `utterance_silence_sec`, repeated from the `open`
 row; followers pair the two rows on them. `ChannelHudState` carries
 the same open fact, including provider and session, for the overlay. The
@@ -1430,6 +1447,25 @@ a bounded cooldown, without blocking journal consumption. Missing or mismatched
 provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
+
+### Threads outside the local Codex store
+
+Native wakeup reaches only a thread the local Codex CLI can load. `codex queue`
+and `thread/queue/delete` resolve the thread from the local thread store, whose
+sessions are the `rollout-*-<thread-id>.jsonl` files under `~/.codex/sessions`.
+A thread that lives in the cloud — for example a Codex conversation started from
+the ChatGPT app with a cloud environment, where this Mac runs only its executor
+(`codex exec-server --remote https://…`) — has no local rollout. Every
+submission is refused with `invalid thread-store request: no rollout found for thread id …` and the transport receipt records `disposition: rejected`.
+Pointing `codex queue --remote unix://` at the shared local app-server daemon
+does not help: that daemon does not hold the thread either.
+
+Such an agent still reads, acknowledges, sends and speaks normally; only waking
+it after its turn has ended is unavailable. Keep its turn open with one
+`cs-bus --watch --until-event` for as long as it must hear the bus, or let an
+orchestrator that is woken through its own channel resume it. To see where a
+thread lives, follow the process tree of its `cs-bus --watch`: a
+`codex exec-server --remote` parent means a cloud thread.
 
 ## Unexpected listener loss and recovery
 

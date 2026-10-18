@@ -14,7 +14,7 @@ def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path)
     module=importlib.util.module_from_spec(spec);sys.modules[name]=module;spec.loader.exec_module(module)
     return module
-BASE=load('native_key_test_base',SCRIPTS/'tests/test_bus_dot_mcp.py')
+BASE=load('native_key_test_base',SCRIPTS/'tests/test_bus_mcp_agent.py')
 KEYS=load('native_key_test_driver',SCRIPTS/'bus-mcp-key-store.py')
 RUNTIME=load('native_key_test_runtime',SCRIPTS/'bus-mcp-runtime.py')
 
@@ -64,7 +64,7 @@ with socket.socket(fileno=fd) as channel:
 
 class NativeKeyTests(NativeFixture):
     def test_private_fd_roundtrip_and_no_credential_environment_or_argv(self):
-        with patch.dict(os.environ,{'CONTROL_PLANE_API_KEY':'synthetic-tunnel','OPENAI_API_KEY':'synthetic-model','LLM_XAI_API_KEY':'synthetic-voice'}):
+        with patch.dict(os.environ,{'CONTROL_PLANE_API_KEY':'synthetic-control-plane','OPENAI_API_KEY':'synthetic-model','LLM_XAI_API_KEY':'synthetic-voice'}):
             self.store.put(self.ref,BASE.SECRET)
             self.assertEqual(self.store.get(self.ref),BASE.SECRET)
             self.assertEqual(self.store.references(self.namespace),[self.ref])
