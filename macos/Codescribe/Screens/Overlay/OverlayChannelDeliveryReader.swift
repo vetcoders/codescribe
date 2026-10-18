@@ -227,6 +227,8 @@ actor OverlayChannelDeliveryReader {
       }
     }
     var paths: [String] = sharedBus.map { [$0.path] } ?? []
+    let founderBus = root.appendingPathComponent("buses/channel-10.jsonl").path
+    if !paths.contains(founderBus) { paths.append(founderBus) }
     for channel in bindings.keys.sorted() {
       guard let binding = bindings[channel],
         let lease = leases.first(where: {
