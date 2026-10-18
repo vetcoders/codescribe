@@ -780,7 +780,10 @@ struct DictationOverlayView: View {
       focusRevision: state.agentDrawerFocusRevision
     )
     .padding(.top, headerHeight + 8)
-    .padding(.horizontal, 10)
+    // The column is a list, not a card: its gutters only have to clear the
+    // resize handle on the leading edge and the scroller on the trailing one
+    // (Founder, 2026-10-18, on the drawer's padding).
+    .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
