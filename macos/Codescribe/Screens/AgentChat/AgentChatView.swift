@@ -71,19 +71,23 @@ private struct MaxPermissionPresentation: View {
 }
 
 /// Desktop-utility window floor for Agent. Named so the shared sidebar
-/// column (`CSSidebarWidth.navigation`, expanded min 196) plus a usable
-/// detail column stay a single invariant: the root layout and the AppKit
-/// window agree on this floor, including when SwiftUI recomputes its window
-/// constraints after the sidebar collapses. The floor itself did not move
-/// when the rail narrowed; the conversation took the points the rail gave up.
+/// column (`CSSidebarWidth.navigation`, opening at its ideal 216) plus a
+/// usable detail column stay a single invariant: the root layout and the
+/// AppKit window agree on this floor, including when SwiftUI recomputes its
+/// window constraints after the sidebar collapses. The floor itself did not
+/// move when the rail narrowed; the conversation took the points the rail
+/// gave up.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
   static let idealWidth: CGFloat = 840
   static let idealHeight: CGFloat = 520
-  /// Narrowest conversation column. With the rail at its minimum the window
-  /// lands exactly on `minWidth`.
-  static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.minimum
+  /// Narrowest conversation column. The split view opens the rail at its
+  /// ideal width, not its minimum, so the window lands exactly on `minWidth`
+  /// with the rail as it opens — the rule Settings already follows
+  /// (880 − 216). Sized from the 196 pt minimum, the columns overran the
+  /// 640 pt floor by 20 pt on both sides.
+  static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.ideal
 }
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
