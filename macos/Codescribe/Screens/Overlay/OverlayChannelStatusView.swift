@@ -479,9 +479,13 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
         set: { steer in apply(steer ? .on : .quiet, to: channel) }
       )
     ) {
+      // The user-facing label is "Wake the agent" (Founder, 2026-10-18); the
+      // wire policy and the code keep the `steer` name.
       Text(
-        "Steer (otherwise queued)",
-        comment: "Pill context menu: deliveries wake the agent; unticked, they queue silently")
+        "Wake the agent",
+        comment:
+          "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox"
+      )
     }
     .disabled(locked || channel.broadcastPolicy == .off)
   }
