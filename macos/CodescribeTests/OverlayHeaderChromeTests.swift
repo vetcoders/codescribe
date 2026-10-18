@@ -757,7 +757,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let canvas = try source("Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(canvas.contains("scrollView.scrollerStyle = .overlay"))
     XCTAssertTrue(canvas.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
-    XCTAssertFalse(conversation.contains(".menuStyle(.borderlessButton)"), "receipt keeps the edge")
+    XCTAssertTrue(
+      conversation.contains(".menuStyle(.borderlessButton)"), "the receipt stays a native menu")
+    XCTAssertTrue(
+      conversation.contains(".padding(.leading, -Self.receiptMenuLabelInset)"),
+      "receipt keeps the edge")
     XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
   }
 

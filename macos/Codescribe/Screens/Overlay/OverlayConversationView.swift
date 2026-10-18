@@ -454,6 +454,10 @@ struct OverlayConversationView: View {
     }
   }
 
+  /// How far a borderless-button menu sets its label in from its own leading
+  /// edge (measured through the accessibility frames, 2026-10-18).
+  static let receiptMenuLabelInset: CGFloat = 2
+
   static func receiptStatusText(for recipient: OverlayConversationRecipient) -> String {
     if recipient.acknowledged { return String(localized: "Read") }
     if recipient.accepted { return String(localized: "Queue accepted") }
@@ -545,25 +549,19 @@ struct OverlayConversationView: View {
             Text(verbatim: "\(recipient.owner.name) · \(Self.receiptStatusText(for: recipient))")
           }
         } label: {
-          // A borderless-button menu insets its label, so the expandable
-          // receipt started a few points right of a plain one and the bubble
-          // footers no longer lined up (Founder, 2026-10-18). The plain button
-          // style adds no inset, and the disclosure is drawn here rather than
-          // left to the style, so both footers begin at the bubble's edge.
-          HStack(spacing: 2) {
-            Text("Read \(readCount)/\(message.recipients.count)")
-              .lineLimit(1)
-            Image(systemName: "chevron.down")
-              .font(.system(size: 7 * textScale, weight: .semibold))
-          }
-          .font(.system(size: 10 * textScale))
-          .foregroundStyle(palette.mutedText.color)
-          .contentShape(Rectangle())
+          Text("Read \(readCount)/\(message.recipients.count)")
+            .font(.system(size: 10 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+            .lineLimit(1)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
+        .menuStyle(.borderlessButton)
         .fixedSize()
+        // A borderless-button menu insets its label, so the expandable receipt
+        // started right of a plain one and the bubble footers no longer lined
+        // up (Founder, 2026-10-18). A plain-styled menu has no inset but leaves
+        // the accessibility tree as an unlabelled unknown element, so the
+        // native style stays and the frame steps back by its inset instead.
+        .padding(.leading, -Self.receiptMenuLabelInset)
         .help("Show details")
         .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
       } else {
