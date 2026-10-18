@@ -922,9 +922,11 @@ class ClaudeCodeWakeTests(MailboxFixture):
         code, notice = self.wake()
         self.assertEqual(code, MCP.WAKE_EXIT)
         self.assertEqual(notice["channel"], "7", "the head still names the agent's own channel")
+        # A peer's channel-0 broadcast names this agent in peer_to only to
+        # route the copy; it is still addressed to everyone (2026-10-18).
         self.assertEqual(notice["addressed"], {broadcast: "channel 0 (all audience)",
                                                direct: "channel 7 (fable)",
-                                               peer: "channel 0 (fable)"})
+                                               peer: "channel 0 (all audience)"})
         self.assert_not_acknowledged()
 
     def test_arrival_during_silence_wakes_without_reading(self):

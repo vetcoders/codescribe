@@ -74,6 +74,49 @@ class PeerSendTests(unittest.TestCase):
         self.assertEqual({event["channel"] for event in events}, {"0"})
         self.assertEqual(len({event["message_id"] for event in events}), 1)
         self.assertNotIn("vagabond", {event["peer_to"] for event in events})
+        # Each copy names the whole audience, not just its own recipient.
+        for event in events:
+            self.assertEqual(event["target"], {"mode": "broadcast", "channel": "0", "recipients": [
+                {"name": "lena", "channel": "2"}, {"name": "astra", "channel": "3"}]})
+            self.assertEqual(len(event["recipients"]), 1)
+
+    def test_broadcast_audience_leaves_out_an_agent_with_channel_zero_off(self):
+        DEMUX.write_channel_binding(self.root, "3", "astra", "codex",
+                                    "astra-session", str(self.root / "bus-3.jsonl"))
+        bus = self.root / "bus-3.jsonl"
+        DEMUX.atomic_json(DEMUX.broadcast_policy_path(self.root, "codex", "astra-session", bus), {
+            "schema": DEMUX.BROADCAST_POLICY_SCHEMA, "provider": "codex",
+            "provider_session_id": "astra-session",
+            "lease_id": DEMUX.lease_identifier("codex", "astra-session"),
+            "bus": str(bus.resolve(strict=False)), "policy": "off"})
+        with patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+             patch.object(DEMUX, "live_follower_pid", return_value=None), \
+             patch.object(DEMUX, "emit"):
+            self.assertEqual(DEMUX.send_peer_command(send_args(self.root, "fala", "0")), 0)
+        audiences = {tuple(r["name"] for r in call.args[1]["target"]["recipients"])
+                     for call in publish.call_args_list}
+        self.assertEqual(audiences, {("lena",)})
+
+    def test_name_bound_to_two_channels_reaches_both_and_a_digit_reaches_one(self):
+        DEMUX.write_channel_binding(self.root, "3", "lena", "codex",
+                                    "lena-fork", str(self.root / "bus-3.jsonl"))
+        with patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+             patch.object(DEMUX, "live_follower_pid", return_value=None), \
+             patch.object(DEMUX, "emit"):
+            self.assertEqual(DEMUX.send_peer_command(send_args(self.root, "obie", "lena")), 0)
+            events = [call.args[1] for call in publish.call_args_list]
+            self.assertEqual(sorted(event["channel"] for event in events), ["2", "3"])
+            self.assertEqual(events[0]["target"]["mode"], "direct")
+            self.assertEqual(len(events[0]["target"]["recipients"]), 2)
+            publish.reset_mock()
+            self.assertEqual(DEMUX.send_peer_command(send_args(self.root, "jedna", "3")), 0)
+            self.assertEqual([call.args[1]["channel"] for call in publish.call_args_list], ["3"])
+
+    def test_digit_of_the_senders_own_channel_is_refused(self):
+        with patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish:
+            with self.assertRaises(ValueError):
+                DEMUX.send_peer_command(send_args(self.root, "do siebie", "1"))
+        self.assertEqual(publish.call_count, 0)
 
     def test_sender_without_attached_name_is_refused(self):
         lease_id = DEMUX.lease_identifier("codex", "anonymous")
