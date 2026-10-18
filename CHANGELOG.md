@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An attachment chip names a pasted picture "Image · size" and a pasted file by the name it was chosen with, instead of the store's hashed file name.
 - An optional key that is not set reads "Not set" in neutral grey; only a missing required key stays a warning.
 - The overlay menu names the Steer box "Wake the agent", and replies no longer carry an "Unsolicited reply" label.
-- The Settings and Agent windows give the sidebar one flat tone of the app palette instead of a desktop-tinted material, and the window header fades into the content in its own tone instead of a glass band with a hard edge.
+- In the Settings and Agent windows the header fades into the content in its own tone instead of a glass band with a hard edge. The sidebar keeps the system glass.
 - The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 - No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
 

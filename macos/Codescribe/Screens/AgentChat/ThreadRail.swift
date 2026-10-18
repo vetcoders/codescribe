@@ -4,7 +4,7 @@ import SwiftUI
 /// Thread list content hosted in the native split sidebar column.
 ///
 /// The same composition as the Settings sidebar: a system sidebar List with
-/// sidebar search, the shared sidebar canvas behind the whole column, and
+/// sidebar search, the shared sidebar material behind the whole column, and
 /// system row selection, hover and focus.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
@@ -22,7 +22,7 @@ struct ThreadRail: View {
       }
       .modifier(AgentScrollBottomBar { newThreadFooter })
       // On the List, not a stack around it: the list runs through the
-      // titlebar, so the sidebar tone does too.
+      // titlebar, so the material does too.
       .background { SettingsSidebarMaterial().ignoresSafeArea() }
       .background {
         ThreadSearchKeyRouter(

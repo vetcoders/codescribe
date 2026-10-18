@@ -4,67 +4,144 @@ import XCTest
 
 @testable import Codescribe
 
-/// The sidebar of the Settings and Agent windows is one flat palette tone,
-/// `CSColor.sidebar`, a single step away from the detail sheet. A `.sidebar`
-/// visual effect blending behind the window took its colour from the desktop,
-/// so the seam beside the content was a wallpaper tone rather than one of ours
-/// (Monika, 2026-10-18). These tests pin the tone, its step from the sheet in
-/// both appearances, and the window adoption that lets the column run up
-/// through the titlebar.
+/// Native regression suite for the sidebar material of the Settings and Agent
+/// windows: translucency, hit-testing transparency, and accessibility contrast
+/// contracts. The column keeps the system glass (Monika, 2026-10-18).
 @MainActor
 final class SettingsSidebarMaterialTests: XCTestCase {
 
-  // MARK: - Palette
+  // MARK: - Material Invariants
 
-  func testSidebarIsOneStepFromTheSheetInBothAppearances() throws {
-    let paper = try XCTUnwrap(NSAppearance(named: .aqua))
-    let ink = try XCTUnwrap(NSAppearance(named: .darkAqua))
-    let paperSidebar = luminance(CSPalette.sidebar, in: paper)
-    let paperSheet = luminance(CSPalette.sheet, in: paper)
-    let inkSidebar = luminance(CSPalette.sidebar, in: ink)
-    let inkSheet = luminance(CSPalette.sheet, in: ink)
+  func testSettingsSidebarVisualEffectViewConfiguresNativeSidebarMaterial() async throws {
+    let host = NSHostingView(rootView: SettingsSidebarVisualEffectView())
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 220, height: 600),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
 
-    XCTAssertLessThan(paperSidebar, paperSheet, "the sidebar sits deeper than the sheet on paper")
-    XCTAssertGreaterThan(inkSidebar, inkSheet, "the sidebar sits lighter than the sheet on ink")
-    XCTAssertLessThan(paperSheet - paperSidebar, 0.08, "one step on paper, not a second surface")
-    XCTAssertLessThan(inkSidebar - inkSheet, 0.08, "one step on ink, not a second surface")
-    XCTAssertGreaterThan(paperSidebar - inkSidebar, 0.5, "the tone follows the appearance")
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+
+    let view = try XCTUnwrap(findView(of: SettingsSidebarVisualEffectNSView.self, in: host))
+    XCTAssertEqual(
+      view.material, .sidebar,
+      "Settings sidebar must use native macOS .sidebar material")
+    XCTAssertEqual(
+      view.blendingMode, .behindWindow,
+      "Settings sidebar must blend behindWindow for native translucency")
+    XCTAssertEqual(
+      view.state, .followsWindowActiveState,
+      "Settings sidebar material must respond to window key and active activation states")
   }
 
-  // MARK: - Sidebar view
+  func testSettingsSidebarVisualEffectViewDropsHitTesting() {
+    let view = SettingsSidebarVisualEffectNSView(
+      frame: NSRect(x: 0, y: 0, width: 220, height: 600))
 
-  func testSidebarPaintsTheFlatToneAndPassesEventsThrough() throws {
-    let sidebar = try source("Screens/Settings/SettingsSidebarMaterial.swift")
-    XCTAssertTrue(sidebar.contains("CSColor.sidebar"))
+    // Must return nil at all coordinates so clicks and scrolls pass through
+    // directly to the SwiftUI List rows, search field, and health footer.
+    XCTAssertNil(view.hitTest(NSPoint(x: 0, y: 0)))
+    XCTAssertNil(view.hitTest(NSPoint(x: 110, y: 300)))
+    XCTAssertNil(view.hitTest(NSPoint(x: 219, y: 599)))
+  }
+
+  // MARK: - Accessibility Policy
+
+  func testReduceTransparencyAndIncreaseContrastPolicy() {
+    XCTAssertFalse(
+      SettingsSidebarMaterial.shouldReduceTransparency(
+        reduceTransparency: false,
+        contrast: .standard
+      ),
+      "Normal conditions must preserve translucency"
+    )
+
     XCTAssertTrue(
-      sidebar.contains(".allowsHitTesting(false)"),
-      "list rows, the search field and footer controls keep every click")
-    XCTAssertFalse(sidebar.contains("NSViewRepresentable"), "no desktop-sampled material")
-    XCTAssertFalse(sidebar.contains(".material ="), "no desktop-sampled material")
+      SettingsSidebarMaterial.shouldReduceTransparency(
+        reduceTransparency: true,
+        contrast: .standard
+      ),
+      "Reduce Transparency accessibility setting must force opaque canvas"
+    )
+
+    XCTAssertTrue(
+      SettingsSidebarMaterial.shouldReduceTransparency(
+        reduceTransparency: false,
+        contrast: .increased
+      ),
+      "Increase Contrast accessibility setting must force opaque canvas"
+    )
+
+    XCTAssertTrue(
+      SettingsSidebarMaterial.shouldReduceTransparency(
+        reduceTransparency: true,
+        contrast: .increased
+      ),
+      "Both accessibility flags active must force opaque canvas"
+    )
   }
 
-  func testSidebarMountsNoVisualEffectView() async {
-    let host = NSHostingView(rootView: SettingsSidebarMaterial())
+  // MARK: - Hierarchy Mounting
+
+  func testSidebarMaterialMountsVisualEffectViewInNormalConditions() async {
+    let materialView = SettingsSidebarMaterial(
+      reduceTransparency: false,
+      contrast: .standard
+    )
+    let host = NSHostingView(rootView: materialView)
     host.frame = NSRect(x: 0, y: 0, width: 220, height: 600)
     host.layoutSubtreeIfNeeded()
     await nextMainQueueTurn()
 
-    XCTAssertNil(
-      findView(of: NSVisualEffectView.self, in: host),
-      "the sidebar is a flat palette tone, not a visual effect")
+    let visualEffect = findView(of: NSVisualEffectView.self, in: host)
+    XCTAssertNotNil(
+      visualEffect,
+      "Normal sidebar material must mount an NSVisualEffectView in the view hierarchy")
+    XCTAssertEqual(visualEffect?.material, .sidebar)
+    XCTAssertEqual(visualEffect?.blendingMode, .behindWindow)
+    XCTAssertEqual(visualEffect?.state, .followsWindowActiveState)
   }
 
-  func testBothWindowsRunTheSidebarToneUnderTheTitlebar() throws {
-    for path in ["Screens/Settings/SettingsView.swift", "Screens/AgentChat/ThreadRail.swift"] {
-      XCTAssertTrue(
-        try source(path).contains(".background { SettingsSidebarMaterial().ignoresSafeArea() }"),
-        "\(path) backs its sidebar with the shared tone from the bottom edge to the top")
-    }
+  func testSidebarMaterialFallsBackToOpaqueUnderReducedTransparency() async {
+    let materialView = SettingsSidebarMaterial(
+      reduceTransparency: true,
+      contrast: .standard
+    )
+    let host = NSHostingView(rootView: materialView)
+    host.frame = NSRect(x: 0, y: 0, width: 220, height: 600)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+
+    let visualEffect = findView(of: NSVisualEffectView.self, in: host)
+    XCTAssertNil(
+      visualEffect,
+      "Reduce Transparency must replace visual effect view with an opaque solid canvas")
+  }
+
+  func testSidebarMaterialFallsBackToOpaqueUnderIncreasedContrast() async {
+    let materialView = SettingsSidebarMaterial(
+      reduceTransparency: false,
+      contrast: .increased
+    )
+    let host = NSHostingView(rootView: materialView)
+    host.frame = NSRect(x: 0, y: 0, width: 220, height: 600)
+    host.layoutSubtreeIfNeeded()
+    await nextMainQueueTurn()
+
+    let visualEffect = findView(of: NSVisualEffectView.self, in: host)
+    XCTAssertNil(
+      visualEffect,
+      "Increase Contrast must replace visual effect view with an opaque solid canvas")
   }
 
   // MARK: - Window Adoption & Chrome Contract
 
-  func testSettingsWindowAdoptionLetsTheSidebarReachTheTitlebar() async {
+  func testSettingsWindowAdoptionConfiguresTranslucencyBacking() async {
     let model = SettingsViewModel.preview(.creator)
     let settingsView = SettingsView(model: model)
     let host = NSHostingView(rootView: settingsView)
@@ -87,19 +164,34 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     XCTAssertEqual(window.titleVisibility, .hidden, "Toolbar wordmark serves as visible title")
     XCTAssertTrue(
       window.titlebarAppearsTransparent,
-      "Titlebar must appear transparent so the sidebar tone runs up beside the header")
+      "Titlebar must appear transparent for full-height sidebar material flow")
     XCTAssertTrue(
       window.styleMask.contains(.fullSizeContentView),
-      "Window must use fullSizeContentView so the sidebar extends under the titlebar")
-    XCTAssertFalse(window.isOpaque, "adoptHostWindow keeps the window itself clear")
+      "Window must use fullSizeContentView so sidebar material extends under titlebar")
+    XCTAssertFalse(
+      window.isOpaque,
+      "Window must not be opaque so .behindWindow blending can sample desktop wallpaper")
     XCTAssertEqual(
       window.backgroundColor, .clear,
-      "the sheet and sidebar tones paint the window, not its background colour")
+      "Window backgroundColor must be clear to avoid blocking behind-window translucency")
   }
 
-  // MARK: - Header rhythm
+  func testBothWindowsRunTheMaterialUnderTheTitlebar() throws {
+    let codescribe = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe")
+    for path in ["Screens/Settings/SettingsView.swift", "Screens/AgentChat/ThreadRail.swift"] {
+      let source = try String(
+        contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
+      XCTAssertTrue(
+        source.contains(".background { SettingsSidebarMaterial().ignoresSafeArea() }"),
+        "\(path) backs its sidebar with the shared material from the bottom edge to the top")
+    }
+  }
 
-  func testSettingsHeaderKeepsTheSharedHeight() async throws {
+  // MARK: - Appearance Adaptation
+
+  func testSettingsHeaderKeepsTheSharedHeightAndFullSidebarMaterial() async throws {
     let host = NSHostingController(rootView: SettingsView(model: .preview(.creator)))
     let window = NSWindow(contentViewController: host)
     window.isReleasedWhenClosed = false
@@ -119,14 +211,42 @@ final class SettingsSidebarMaterialTests: XCTestCase {
       XCTAssertLessThanOrEqual(rect.maxY, window.frame.height)
       XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY)
     }
+    let material = try XCTUnwrap(
+      findView(of: SettingsSidebarVisualEffectNSView.self, in: host.view))
+    let frame = material.convert(material.bounds, to: nil)
+    XCTAssertEqual(frame.maxY, window.frame.height, accuracy: 1)
+    XCTAssertEqual(frame.minY, 0, accuracy: 1)
+  }
+
+  func testSystemAppearanceAdaptationBetweenLightAndDark() {
+    let aqua = NSAppearance(named: .aqua)!
+    let darkAqua = NSAppearance(named: .darkAqua)!
+
+    var aquaColor = NSColor.clear
+    var darkAquaColor = NSColor.clear
+
+    aqua.performAsCurrentDrawingAppearance {
+      aquaColor =
+        NSColor.windowBackgroundColor.usingColorSpace(.sRGB)
+        ?? NSColor.windowBackgroundColor
+    }
+    darkAqua.performAsCurrentDrawingAppearance {
+      darkAquaColor =
+        NSColor.windowBackgroundColor.usingColorSpace(.sRGB)
+        ?? NSColor.windowBackgroundColor
+    }
+
+    XCTAssertNotEqual(
+      aquaColor.redComponent, darkAquaColor.redComponent,
+      "System fallback background must adapt dynamically across light and dark appearances"
+    )
   }
 
   // MARK: - Falsifier Contract
 
-  func testFalsifierBaselineWindowKeepsTheSidebarBelowTheTitlebar() {
-    // Proves that the default macOS/SwiftUI window configuration without
-    // adoptHostWindow stops content under the titlebar, so the sidebar tone
-    // could not run up beside the header.
+  func testFalsifierBaselineWindowConfigurationBlocksTranslucency() {
+    // Proves that the default macOS/SwiftUI window configuration without adoptHostWindow
+    // is opaque and prevents .behindWindow material sampling.
     let baselineWindow = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 880, height: 620),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -136,6 +256,11 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     baselineWindow.isReleasedWhenClosed = false
     defer { baselineWindow.close() }
 
+    // Baseline unadopted window properties:
+    XCTAssertTrue(
+      baselineWindow.isOpaque,
+      "Falsifier: default window is opaque, which stops behind-window blending from sampling"
+    )
     XCTAssertFalse(
       baselineWindow.styleMask.contains(.fullSizeContentView),
       "Falsifier: default window lacks fullSizeContentView, clipping content below titlebar"
@@ -147,22 +272,6 @@ final class SettingsSidebarMaterialTests: XCTestCase {
   }
 
   // MARK: - Helpers
-
-  private func luminance(_ color: NSColor, in appearance: NSAppearance) -> CGFloat {
-    var resolved = color
-    appearance.performAsCurrentDrawingAppearance {
-      resolved = color.usingColorSpace(.sRGB) ?? color
-    }
-    return 0.2126 * resolved.redComponent + 0.7152 * resolved.greenComponent
-      + 0.0722 * resolved.blueComponent
-  }
-
-  private func source(_ path: String) throws -> String {
-    let codescribe = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("Codescribe")
-    return try String(contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
-  }
 
   private func findView<T: NSView>(of type: T.Type, in root: NSView) -> T? {
     if let match = root as? T {
