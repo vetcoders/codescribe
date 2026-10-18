@@ -950,29 +950,21 @@ struct DictationOverlayView: View {
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
     return HStack(spacing: mini ? 6 : 10) {
-      HStack(spacing: mini ? 6 : 5) {
+      // The shared lockup, with the close button in the brand dot's place.
+      Wordmark(
+        size: density.brandSize, spacing: mini ? 6 : 5,
+        textIdentifier: mini ? "overlay-mini-brand" : ""
+      ) {
         closeButton
-
-        // The wordmark is the product name, never translated copy.
-        Text(verbatim: "codescribe")
-          .font(CSFont.ui(density.brandSize, .bold))
-          .tracking(-0.3)
-          .foregroundStyle(palette.primaryText.color)
-          .allowsHitTesting(false)
-          .accessibilityIdentifier(mini ? "overlay-mini-brand" : "")
-          .background {
-            if mini {
-              OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
-            }
-          }
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
+      // The brand block sits on an inert drag region, so the dot answers
+      // clicks and the word moves the window.
       .background {
-        if !mini {
-          OverlayWindowDragRegion(identifier: "overlay-header-inert-drag-region")
-        }
+        OverlayWindowDragRegion(
+          identifier: mini ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
       }
 
       // The flexible centre keeps one identity in every density; in mini it
