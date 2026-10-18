@@ -61,15 +61,6 @@ pub(crate) fn channel_presentation_emitter(
 /// Broadcast marker for Fn+0. Followers treat it as addressed to them.
 pub const BROADCAST_AUDIENCE: &str = "*";
 
-/// Permanent mailbox channel and audience for the Founder.
-pub const FOUNDER_CHANNEL: &str = "10";
-pub const FOUNDER_AUDIENCE: &str = "founder";
-
-/// Canonical bus path for the Founder's permanent mailbox (`channel-10.jsonl`).
-pub fn founder_bus_path_at(bridge_home: &Path) -> PathBuf {
-    bridge_home.join("buses").join("channel-10.jsonl")
-}
-
 /// Why a channel refused to open. The display string is the loud reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelOpenRefusal {
@@ -4360,16 +4351,5 @@ mod channel_transcription_controls_tests {
             Some(t + Duration::from_secs(5))
         );
         emitter.finish().await;
-    }
-
-    #[test]
-    fn founder_channel_10_constants_and_bus_path() {
-        let root = Path::new("/tmp/agent-bridge");
-        assert_eq!(FOUNDER_CHANNEL, "10");
-        assert_eq!(FOUNDER_AUDIENCE, "founder");
-        assert_eq!(
-            founder_bus_path_at(root),
-            PathBuf::from("/tmp/agent-bridge/buses/channel-10.jsonl")
-        );
     }
 }
