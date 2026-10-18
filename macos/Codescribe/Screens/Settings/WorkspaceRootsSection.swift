@@ -29,37 +29,37 @@ struct WorkspaceRootsSection: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionLabel(String(localized: "Allowed folders"))
 
-      Text(
-        "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories."
-      )
-      .font(SettingsScale.helper)
-      .lineSpacing(2)
-      .foregroundStyle(Color.secondary)
-      .padding(.top, 6)
+      // One line: what the folders are for. What they do NOT cover — the
+      // separate permissions of processes and MCP servers — is the tab's own
+      // blurb and is not repeated here (Founder review, 2026-10-18).
+      Text("The Agent looks for projects here, skipping hidden and build folders.")
+        .font(SettingsScale.helper)
+        .foregroundStyle(Color.secondary)
+        .padding(.top, SettingsScale.headerGap)
 
-      VStack(spacing: 8) {
+      VStack(spacing: SettingsScale.rowGap) {
         ForEach(rows.indices, id: \.self) { index in
           rootRow(index: index)
         }
       }
-      .padding(.top, 12)
+      .padding(.top, SettingsScale.rowGap)
 
-      HStack(spacing: 10) {
-        Button(action: pickFolder) {
+      // One button family: the same chip as every other flat action in
+      // Settings, not four bare labels.
+      HStack(spacing: CSSpace.sm) {
+        SettingsChipButton(action: pickFolder) {
           Label("Add folder…", systemImage: "plus")
-            .font(CSFont.ui(12, .semibold))
+            .font(SettingsScale.controlLabel)
+            .foregroundStyle(Color.primary)
         }
-        .csFocusRing()
-        .foregroundStyle(Color.primary)
         .help("Choose a folder to add to the list")
 
         if let last = removed.last {
-          Button(action: undoRemove) {
+          SettingsChipButton(action: undoRemove) {
             Label("Undo remove", systemImage: "arrow.uturn.backward")
-              .font(CSFont.ui(12, .semibold))
+              .font(SettingsScale.controlLabel)
+              .foregroundStyle(Color.primary)
           }
-          .csFocusRing()
-          .foregroundStyle(Color.primary)
           .help("Put \(last.path) back")
           .accessibilityIdentifier("settings-workspace-undo-remove")
         }
@@ -67,27 +67,24 @@ struct WorkspaceRootsSection: View {
         Spacer()
 
         if isDirty {
-          Button(action: syncFromModel) {
+          SettingsChipButton(action: syncFromModel) {
             Text("Discard changes")
-              .font(CSFont.ui(12, .semibold))
+              .font(SettingsScale.controlLabel)
               .foregroundStyle(Color.secondary)
           }
-          .csFocusRing()
           .help("Go back to the saved list")
         }
 
-        Button {
+        SettingsChipButton(enabled: isDirty) {
           model.setAgentWorkspaceRoots(rows)
           syncFromModel()
         } label: {
           Text("Save changes")
-            .font(CSFont.ui(12, .semibold))
+            .font(SettingsScale.controlLabel)
             .foregroundStyle(isDirty ? Color.primary : Color.secondary)
         }
-        .csFocusRing()
-        .disabled(!isDirty)
       }
-      .padding(.top, 12)
+      .padding(.top, SettingsScale.rowGap)
     }
     .onAppear {
       guard !loaded else { return }
@@ -97,7 +94,7 @@ struct WorkspaceRootsSection: View {
   }
 
   private func rootRow(index: Int) -> some View {
-    HStack(spacing: 10) {
+    HStack(spacing: CSSpace.sm) {
       existsDot(for: rows[index])
       TextField(
         Self.rootPlaceholder,
@@ -124,8 +121,8 @@ struct WorkspaceRootsSection: View {
       .help("Remove folder")
       .accessibilityLabel("Remove folder")
     }
-    .padding(.horizontal, 11)
-    .padding(.vertical, 9)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
         .fill(Color.primary.opacity(0.06))
