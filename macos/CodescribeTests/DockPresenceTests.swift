@@ -76,10 +76,13 @@ final class DockPresenceTests: XCTestCase {
   /// The Agent window is created as a `HidingWindow`; a revert to a plain
   /// `NSWindow` would silently bring back either the dead button or the ghost.
   func testAgentWindowIsAHidingWindow() throws {
+    let window = AgentWindowChrome.makeWindow(content: NSViewController())
+    XCTAssertTrue(window is HidingWindow)
+    XCTAssertTrue(window.styleMask.contains(.miniaturizable))
     let root = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
     let app = try String(
       contentsOf: root.appendingPathComponent("Codescribe/App.swift"), encoding: .utf8)
-    XCTAssertTrue(app.contains("HidingWindow(contentViewController:"))
+    XCTAssertTrue(app.contains("AgentWindowChrome.makeWindow(content:"))
   }
 }

@@ -9,6 +9,8 @@ import XCTest
 /// claimed the rest of the column: Settings showed a search field over an
 /// empty sidebar with its rows pushed under the footer, and the Agent list
 /// lost its lower half. A hand-placed toggle also sat beside the system one.
+/// The Agent window is built by the app's own factory: mounted in a plain
+/// window it showed the system toggle while the shipped window had none.
 @MainActor
 final class CSSidebarColumnTests: XCTestCase {
   private let keys = ["Settings.sidebarExpanded.v1", "AgentChat.sidebarExpanded.v1"]
@@ -26,12 +28,18 @@ final class CSSidebarColumnTests: XCTestCase {
     }
     for key in keys { UserDefaults.standard.set(true, forKey: key) }
 
-    let windows: [(String, NSViewController)] = [
-      ("Settings", NSHostingController(rootView: SettingsView(model: .preview(.creator)))),
-      ("Agent", NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil)))),
+    // Settings is a SwiftUI scene the test cannot open, so it is mounted in a
+    // plain window; the Agent window comes from the factory the app uses.
+    let windows: [(String, () -> NSWindow)] = [
+      ("Settings", { self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator)))) }),
+      ("Agent", {
+        self.show(
+          AgentWindowChrome.makeWindow(
+            content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil)))))
+      }),
     ]
-    for (name, host) in windows {
-      let window = mount(host)
+    for (name, make) in windows {
+      let window = make()
       defer { window.orderOut(nil) }
       let list = try XCTUnwrap(
         sidebarList(in: window, until: { $0.documentView.map { $0.frame.height > 0 } ?? false }),
@@ -64,6 +72,10 @@ final class CSSidebarColumnTests: XCTestCase {
     window.isReleasedWhenClosed = false
     window.contentViewController = host
     window.setContentSize(NSSize(width: 1120, height: 720))
+    return show(window)
+  }
+
+  private func show(_ window: NSWindow) -> NSWindow {
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
     window.orderFrontRegardless()
     return window

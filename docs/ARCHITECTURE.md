@@ -338,7 +338,12 @@ Increase Contrast), the column bounds and the two slots a window may fill.
   Each window persists its own flag (`Settings.sidebarExpanded.v1`,
   `AgentChat.sidebarExpanded.v1`); the button, a divider drag and the
   shortcut all write it. A second, hand-placed toolbar button would sit
-  beside the system one, not replace it.
+  beside the system one, not replace it. The Agent window shows the system
+  toggle only because `AgentWindowChrome.makeWindow` creates it with its
+  final style mask before attaching the content: a window built from the
+  controller and given `.fullSizeContentView` afterwards gets no toggle at
+  all. The app and `CSSidebarColumnTests` build the Agent window through that
+  one factory.
 - **The slots** carry what belongs to a window's function and nothing else.
   Agent fills the header slot, under the search field and above the rows, with **New conversation** —
   the agent's first action, a create glyph and its label on a plain row —
