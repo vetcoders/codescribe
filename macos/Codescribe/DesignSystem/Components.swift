@@ -413,17 +413,31 @@ struct StaticStatusPill: View {
   }
 }
 
-/// Wordmark lockup: brand dot + lowercase "codescribe".
-struct Wordmark: View {
+/// Wordmark lockup: brand dot + lowercase "codescribe", the product name and
+/// never translated copy. The lockup is a label, so the word itself never
+/// answers the pointer; a surface that needs a control there hands in its own
+/// dot, the way the overlay hands in its close button.
+struct Wordmark<Dot: View>: View {
   var size: CGFloat = 15
-  var dotColor: Color = CSColor.terracotta
+  var spacing: CGFloat = 9
+  /// Identifier for the word, for probes that measure the brand block.
+  var textIdentifier: String = ""
+  @ViewBuilder var dot: () -> Dot
   var body: some View {
-    HStack(spacing: 9) {
-      ModeDot(color: dotColor, size: size * 0.6)
+    HStack(spacing: spacing) {
+      dot()
       Text(verbatim: "codescribe")
         .font(CSFont.ui(size, .bold))
         .tracking(-0.3)
         .foregroundStyle(CSColor.textHigh)
+        .allowsHitTesting(false)
+        .accessibilityIdentifier(textIdentifier)
     }
+  }
+}
+
+extension Wordmark where Dot == ModeDot {
+  init(size: CGFloat = 15, dotColor: Color = CSColor.terracotta) {
+    self.init(size: size) { ModeDot(color: dotColor, size: size * 0.6) }
   }
 }
