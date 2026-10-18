@@ -112,6 +112,11 @@ enum CSPalette {
   static let amberLight = adaptive(light: NSColor(hex: 0x8A5B00), dark: NSColor(hex: 0xE2BE5B))
   static let modeProcessingLight = adaptive(
     light: NSColor(hex: 0x96450A), dark: NSColor(hex: 0xF09A4E))
+  /// The healthy olive at status strength. On ink the label rung sits within
+  /// 0.15 of `textMuted`, so a resting grey glyph beside a status read as
+  /// "healthy"; this rung keeps the status clear of the muted grey on both
+  /// appearances.
+  static let oliveStatus = adaptive(light: NSColor(hex: 0x4D5E2D), dark: NSColor(hex: 0xB5C98D))
   /// Steel blue: the dictionary owns the words it rewrote, so a rewritten
   /// surface never wears the uncertainty orange.
   static let lexicon = adaptive(light: NSColor(hex: 0x31587A), dark: NSColor(hex: 0x9FC2E8))

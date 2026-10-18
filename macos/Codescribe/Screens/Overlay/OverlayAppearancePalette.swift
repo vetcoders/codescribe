@@ -42,7 +42,7 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
-    successStatus = OverlayColorToken(CSPalette.oliveLight, in: appearance)
+    successStatus = OverlayColorToken(CSPalette.oliveStatus, in: appearance)
     errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
     agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
     uncertainWord = OverlayColorToken(CSPalette.modeProcessingLight, in: appearance)
