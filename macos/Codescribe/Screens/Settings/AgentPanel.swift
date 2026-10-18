@@ -127,10 +127,10 @@ private struct LLMLaneEditor: View {
           .font(CSFont.ui(14.5, .bold))
           .foregroundStyle(Color.primary)
         Text(lane.subtitle)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
         Text(model.laneUsageDescription(lane))
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(laneModel.availabilityTint)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -229,7 +229,7 @@ private struct LLMLaneEditor: View {
         HStack(spacing: 8) {
           if failureShownOnAgent {
             Text("Same provider as the Agent; the model list error is shown above.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           } else {
@@ -237,7 +237,7 @@ private struct LLMLaneEditor: View {
               .fill(discoveryDotColor.opacity(0.85))
               .frame(width: 7, height: 7)
             Text(laneModel.discoveryDescription)
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -257,7 +257,7 @@ private struct LLMLaneEditor: View {
               .fixedSize(horizontal: false, vertical: true)
               .padding(.top, 4)
           }
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .accessibilityIdentifier("lane-discovery-error-details")
         }

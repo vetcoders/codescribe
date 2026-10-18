@@ -30,18 +30,17 @@ struct ShortcutsPanel: View {
       header
 
       if permissionDegraded {
-        permissionNote.padding(.top, 18)
+        permissionNote.padding(.top, SettingsScale.sectionGap)
       }
 
-      modeSection.padding(.top, CSSpace.lg)
-      dictationControlSection.padding(.top, 12)
-      dictationContextSection.padding(.top, 12)
-      extraShortcutsSection.padding(.top, 12)
-      pasteModeSection.padding(.top, 12)
-      badgeLegend.padding(.top, 12)
+      modeSection.padding(.top, SettingsScale.sectionGap)
+      dictationControlSection.padding(.top, SettingsScale.sectionGap)
+      dictationContextSection.padding(.top, SettingsScale.sectionGap)
+      extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
+      pasteModeSection.padding(.top, SettingsScale.sectionGap)
+      badgeLegend.padding(.top, SettingsScale.sectionGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
   }
 
   // MARK: Header
@@ -159,7 +158,7 @@ struct ShortcutsPanel: View {
           model.saveBindings()
         } label: {
           Text("Save shortcuts")
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
@@ -178,7 +177,7 @@ struct ShortcutsPanel: View {
           model.resetBindingsToDefaults()
         } label: {
           Text("Restore defaults")
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.secondary)
         }
         .csFocusRing()
@@ -316,7 +315,7 @@ struct ShortcutsPanel: View {
       }
       HStack(spacing: 12) {
         Text("Size of the indicator next to the cursor")
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
           .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -665,7 +664,7 @@ struct ShortcutsPanel: View {
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 2) {
         Text("Shortcuts need Input Monitoring + Accessibility")
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(CSColor.amber)
         Text(
           "You can edit bindings here, but they won't fire until both are granted. Click to open System Settings."

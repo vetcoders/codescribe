@@ -45,10 +45,10 @@ struct ToolPermissionsSection: View {
       Text(
         "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first."
       )
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       if model.toolCapabilities.isEmpty {
         // Discovery spawns every configured MCP server, so the first pass
@@ -64,15 +64,15 @@ struct ToolPermissionsSection: View {
         Rectangle()
           .fill(Color.primary.opacity(0.12))
           .frame(height: 1)
-          .padding(.top, CSSpace.section)
+          .padding(.top, SettingsScale.sectionGap)
 
         // The count is the whole catalog, not the number of individual rules.
-        ToolsSectionHeader(String(localized: "Individual tools")) {
+        SettingsSectionHeaderRow(String(localized: "Individual tools")) {
           Text("\(model.toolCapabilities.count) tools", comment: "Plural: count of tools")
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
         }
-        .padding(.top, CSSpace.lg)
+        .padding(.top, SettingsScale.sectionGap)
 
         ToolOverridesBrowser(
           model: model,
@@ -80,7 +80,7 @@ struct ToolPermissionsSection: View {
           searchText: $searchText,
           selectedServer: $selectedServer
         )
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
       }
     }
     .onAppear { model.reloadToolPermissions() }
@@ -89,7 +89,7 @@ struct ToolPermissionsSection: View {
   private var defaultsCard: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Defaults")
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
         .accessibilityAddTraits(.isHeader)
 
@@ -97,7 +97,7 @@ struct ToolPermissionsSection: View {
       defaultRow(title: "Changes, processes and network", selection: $model.sideEffectDefaultPicker)
       defaultRow(title: "Unclassified", selection: $model.globalDefaultPicker)
     }
-    .padding(CSSpace.card)
+    .padding(SettingsScale.cardPadding)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -143,31 +143,6 @@ struct ToolPermissionsSection: View {
       .font(CSFont.ui(11, .medium))
       .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)
-  }
-}
-
-/// "Individual tools" header with its live counter on the same line. Reads one
-/// step stronger than the shared `SettingsSectionLabel`, same shape as
-/// `ProvidersSectionHeader` and `WorkspaceSectionHeader` — a local header, not
-/// a global restyle (Founder brief, round 12, 2026-10-10).
-private struct ToolsSectionHeader<Trailing: View>: View {
-  let text: String
-  @ViewBuilder var trailing: () -> Trailing
-
-  init(_ text: String, @ViewBuilder trailing: @escaping () -> Trailing) {
-    self.text = text
-    self.trailing = trailing
-  }
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
-      Text(text)
-        .font(CSFont.ui(13, .semibold))
-        .foregroundStyle(Color.primary)
-        .accessibilityAddTraits(.isHeader)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      trailing()
-    }
   }
 }
 
@@ -511,7 +486,7 @@ struct ToolCapabilityRow: View {
       VStack(alignment: .leading, spacing: 3) {
         HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
           Text(item.displayName)
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)

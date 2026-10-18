@@ -30,15 +30,15 @@ struct ProvidersPanel: View {
 
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
-          .padding(.top, 12)
+          .padding(.top, SettingsScale.sectionGap)
       }
 
       if let error = model.providerAccessError {
         Text(model.providerAccessResolved
           ? String(localized: "Provider access is unavailable. The last checked values are shown below.")
           : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
-          .font(CSFont.ui(11.5))
-          .padding(.top, 12)
+          .font(SettingsScale.helper)
+          .padding(.top, SettingsScale.sectionGap)
         Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
@@ -53,14 +53,14 @@ struct ProvidersPanel: View {
           mutationPending: model.providerMutationPending,
           checkedAt: model.providerAccessCheckedAt)
       }
-      .padding(.top, 12)
+      .padding(.top, SettingsScale.sectionGap)
       if model.providerAccessResolved {
         VStack(spacing: 8) {
           ForEach(model.vendorProviders, id: \.id) { provider in
             ProviderCard(model: model, provider: provider)
           }
         }
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
         .disabled(model.providerMutationPending)
 
         CustomProvidersSection(
@@ -68,28 +68,27 @@ struct ProvidersPanel: View {
           onAdd: { formTarget = .add },
           onEdit: { formTarget = .edit($0) }
         )
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
         .disabled(model.providerMutationPending)
 
         SpeechToTextSection(model: model)
-          .padding(.top, CSSpace.section)
+          .padding(.top, SettingsScale.sectionGap)
           .disabled(model.providerMutationPending)
           .id(SettingsAnchor.providersCloudTranscription)
 
         ServiceKeysSection(model: model)
-          .padding(.top, CSSpace.section)
+          .padding(.top, SettingsScale.sectionGap)
           .disabled(model.providerMutationPending)
 
       }
 
       Text("Keys are stored securely in the macOS Keychain.")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
     .sheet(item: $formTarget) { target in
       CustomProviderForm(model: model, target: target)
     }
@@ -120,14 +119,14 @@ struct ProviderAccessStatusSlot: View {
         Text(mutationPending
           ? String(localized: "Updating provider access…")
           : String(localized: "Checking provider access…"))
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineLimit(1)
       }
       .opacity(busy ? 1 : 0)
       .accessibilityHidden(!busy)
 
       Text(receipt)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .lineLimit(1)
         .opacity(showsReceipt ? 1 : 0)
@@ -146,43 +145,6 @@ struct ProviderAccessStatusSlot: View {
 
   /// One fixed line: tall enough for the small spinner on every macOS build.
   static let height: CGFloat = 20
-}
-
-/// Providers section header. The sections on this page put one-line helper
-/// copy straight under the heading, so the heading reads one step stronger
-/// than the shared `SettingsSectionLabel` — a local fix, not a global header
-/// restyle (Founder brief, round 7, 2026-10-10).
-struct ProvidersSectionHeader<Action: View>: View {
-  let text: String
-  let emphasized: Bool
-  @ViewBuilder var action: () -> Action
-
-  init(
-    _ text: String, emphasized: Bool = false,
-    @ViewBuilder action: @escaping () -> Action
-  ) {
-    self.text = text
-    self.emphasized = emphasized
-    self.action = action
-  }
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
-      Text(text)
-        .font(CSFont.ui(emphasized ? 15 : 13, emphasized ? .bold : .semibold))
-        .foregroundStyle(Color.primary)
-        .accessibilityAddTraits(.isHeader)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      action()
-        .controlSize(.small)
-    }
-  }
-}
-
-extension ProvidersSectionHeader where Action == EmptyView {
-  init(_ text: String) {
-    self.init(text, emphasized: false, action: { EmptyView() })
-  }
 }
 
 /// What the custom-provider sheet is editing. `Identifiable` so `.sheet(item:)`
@@ -271,7 +233,7 @@ struct ProviderCard: View {
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
-        Text(error).font(CSFont.ui(11.5)).textSelection(.enabled)
+        Text(error).font(SettingsScale.helper).textSelection(.enabled)
         SettingsChipButton("Sign out", tint: Color.secondary) {
           model.signOutAccount(providerId: provider.id)
         }
@@ -302,7 +264,7 @@ struct ProviderCard: View {
       } label: {
         Text("Advanced")
       }
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("provider-advanced")
     }
@@ -391,7 +353,7 @@ struct CustomProvidersSection: View {
       // The heading, the wire pills on the cards and the add sheet already say
       // what belongs here; the old explainer sentence is gone (Founder brief,
       // round 7, 2026-10-10).
-      ProvidersSectionHeader(String(localized: "Custom providers"), emphasized: true) {
+      SettingsSectionHeaderRow(String(localized: "Custom providers"), emphasized: true) {
         Button(action: onAdd) {
           Label("Add provider", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
@@ -468,7 +430,7 @@ struct CustomProviderForm: View {
         .tracking(-0.3)
         .foregroundStyle(Color.primary)
       Text("The endpoint is normalized to the wire's canonical path on save.")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
 
       field("Name") {
@@ -611,10 +573,10 @@ struct SpeechToTextSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Cloud transcription", comment: "Providers section: cloud STT lanes"))
       Text("Connections for cloud transcription. The mode is chosen under Dictation.")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .lineSpacing(2)
         .foregroundStyle(Color.secondary)
         .padding(.top, 6)
@@ -750,7 +712,7 @@ struct SttLaneCard: View {
         }
         .padding(.top, 6)
       }
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .accessibilityIdentifier("stt-lane-advanced")
     }
@@ -769,7 +731,7 @@ struct ServiceKeysSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(String(localized: "Service keys"))
+      SettingsSectionHeaderRow(String(localized: "Service keys"))
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
           // Service keys (GitHub, …) are optional extras: an absent key is

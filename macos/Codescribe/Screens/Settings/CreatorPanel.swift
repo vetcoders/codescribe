@@ -21,12 +21,12 @@ struct CreatorPanel: View {
       SettingsSectionLabel(
         String(localized: "Languages", comment: "Settings group: app language and speech language")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         InterfaceLanguageRow(model: model)
         RecognitionLanguageRow(selection: languageBinding)
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
@@ -38,7 +38,7 @@ struct CreatorPanel: View {
         ) { PermissionKind.openPrivacySettings() }
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 0) {
         ForEach(Self.permissionKinds) { kind in
           PermissionChecklistRow(
@@ -55,10 +55,10 @@ struct CreatorPanel: View {
         }
       }
       .settingsGroupedInset(padding: 0)
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Voice & formatting"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
@@ -94,13 +94,13 @@ struct CreatorPanel: View {
             .id(SettingsAnchor.maxConsultation)
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       agentBridgeSection
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       SettingsSectionLabel(String(localized: "Quick start"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       HStack(spacing: 10) {
         QuickStartCard(
           icon: .mic,
@@ -118,10 +118,9 @@ struct CreatorPanel: View {
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
     .onAppear { model.refreshCreatorAgentBridge() }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
@@ -145,7 +144,7 @@ struct CreatorPanel: View {
   }
 
   private var agentBridgeSection: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       SettingsSectionHeaderRow(String(localized: "Connect your coding agent")) {
         SettingsRefreshButton(
           axLabel: "Refresh coding agent skill status",
@@ -162,7 +161,7 @@ struct CreatorPanel: View {
           HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
               Text(client.displayName)
-                .font(.body.weight(.semibold))
+                .font(SettingsScale.settingName)
                 .foregroundStyle(.primary)
               if installed {
                 Text(
@@ -170,7 +169,7 @@ struct CreatorPanel: View {
                     localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
                     comment: "Status on an agent client row: the Codescribe skill is installed")
                 )
-                .font(.subheadline)
+                .font(SettingsScale.helper)
                 .foregroundStyle(.secondary)
               }
             }
@@ -196,16 +195,16 @@ struct CreatorPanel: View {
       .settingsGroupedInset(padding: 0)
       if !model.creatorAgentBridgeStatus.payloadAvailable {
         Text(model.creatorAgentBridgeStatus.detail)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let notice = model.creatorAgentBridgeNotice {
-        Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
+        Text(notice).font(SettingsScale.helper).foregroundStyle(Color.primary).textSelection(.enabled)
       }
       if let error = model.creatorAgentBridgeError {
         Text(error)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
@@ -243,15 +242,15 @@ private struct MaxConsultationCard: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if model.maxConsultationEnabled {
         HStack(spacing: 12) {
           VStack(alignment: .leading, spacing: 2) {
             Text("Max consultation")
-              .font(.body.weight(.semibold))
+              .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
             Text("Continue the consultation or start a new one. History stays.")
-              .font(.subheadline)
+              .font(SettingsScale.helper)
               .foregroundStyle(.secondary)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -263,7 +262,7 @@ private struct MaxConsultationCard: View {
         }
         if let notice = model.maxConsultationNotice {
           Text(notice)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -283,11 +282,11 @@ struct MaxApprovalCards: View {
   var embedded: Bool = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if embedded {
         HStack(spacing: 12) {
           Text("Max permissions")
-            .font(.body.weight(.semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
           refreshButton
@@ -387,18 +386,18 @@ struct SettingsControlRow<Control: View>: View {
   /// Omitted when the title already carries the whole meaning of the row.
   var subtitle: String? = nil
   /// Card inset; dense hosts (the AI-model lane editors) pass a tighter one.
-  var inset: CGFloat = CSSpace.card
+  var inset: CGFloat = SettingsScale.cardPadding
   @ViewBuilder var control: () -> Control
 
   var body: some View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         if let subtitle {
           Text(subtitle)
-            .font(.subheadline)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
         }
       }
@@ -440,7 +439,7 @@ private struct InterfaceLanguageRow: View {
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
           Text(model.interfaceLanguageRestartExplanation)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -451,7 +450,7 @@ private struct InterfaceLanguageRow: View {
       }
       if let notice = model.interfaceLanguageNotice {
         Text(notice)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-interface-language-notice")

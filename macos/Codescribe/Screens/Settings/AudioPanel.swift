@@ -721,33 +721,32 @@ struct AudioPanel: View {
           axHint: "Re-reads the microphone list; readiness is checked below"
         ) { model.refreshAudioInput() }
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       .id(SettingsAnchor.audioInput)
       inputDeviceSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Recording readiness"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
         .id(SettingsAnchor.audioReadiness)
       admissionSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
         .task {
           recordingControls = model.audioRecordingControls()
           await model.refreshAdmission()
         }
 
       SettingsSectionLabel(String(localized: "Audio retention"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       retentionSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Recording start sound"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       feedbackSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
   }
 
   /// One compact card: the choice, the input that is actually recording, and a
@@ -757,7 +756,7 @@ struct AudioPanel: View {
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 12) {
         Text("Input device")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         Spacer(minLength: 12)
         Picker("Input device", selection: inputDeviceBinding) {
@@ -786,14 +785,14 @@ struct AudioPanel: View {
       }
 
       Text(card.current)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
 
       if let notice = card.notice {
         Text(notice)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(statusColor(card.noticeTone ?? .fallback))
           .fixedSize(horizontal: false, vertical: true)
@@ -828,7 +827,7 @@ struct AudioPanel: View {
 
       if let notice = model.calibrationNotice {
         Text(notice)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .accessibilityLabel("Calibration result")
       }
@@ -961,7 +960,7 @@ struct AudioPanel: View {
           .fixedSize(horizontal: false, vertical: true)
         if let detail = summary.detail {
           Text(detail)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .lineSpacing(2)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -1164,7 +1163,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 12) {
         Text("Keep completed recordings")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         Spacer(minLength: 0)
         Picker(
@@ -1188,7 +1187,7 @@ struct AudioPanel: View {
       // actually expire something carry one.
       if let detail = audioRetentionDetail(model.audioRetention) {
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1200,7 +1199,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 12) {
         Text("Play a signal")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         Spacer(minLength: 0)
         Toggle("", isOn: soundFeedbackBinding)
@@ -1277,10 +1276,10 @@ struct AudioPanel: View {
       Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(Color.secondary)
       }
