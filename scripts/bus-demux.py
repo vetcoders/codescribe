@@ -3413,10 +3413,12 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     channel = payload.get("origin_channel", payload.get("channel"))
     audience = payload.get("peer_to") or payload.get("audience")
     peer_to = payload.get("peer_to")
+    if channel == "0":
+        # A peer broadcast names each copy's recipient in `peer_to` for routing;
+        # its address is still channel 0 (is_broadcast_delivery agrees).
+        return "0 (all audience)"
     if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
         return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
-    if channel == "0":
-        return "0 (all audience)"
     if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
         return f"{channel} ({audience})" if audience else channel
     if audience == "*":
@@ -5855,20 +5857,42 @@ def send_peer_command(args: argparse.Namespace) -> int:
                         if owner_lease != lease_id]
             if not selected:
                 raise ValueError("no other agent is bound to any channel")
-            origin = "0"
-        else:
-            selected = [(channel, binding) for channel, binding, _ in rows
-                        if str(binding.get("audience") or "").casefold() == target.casefold()]
+        elif len(target) == 1 and target in "123456789":
+            # A channel digit names one session, even when two share a name.
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if channel == target and owner_lease != lease_id]
             if not selected:
-                raise ValueError(f"no channel is bound to the name {target!r}")
-            selected = selected[:1]
-            origin = selected[0][0]
+                raise ValueError(f"no other agent is bound to channel {target}")
+        else:
+            # A name reaches every other session bound to it (two Andrzej
+            # sessions on channels 3 and 4 both get it), never just the first.
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if str(binding.get("audience") or "").casefold() == target.casefold()
+                        and owner_lease != lease_id]
+            if not selected:
+                raise ValueError(f"no other channel is bound to the name {target!r}")
         identity = os.urandom(12).hex()
         sender = {"name": sender_name, "provider": args.provider.casefold(),
                   "provider_session_id": args.session, "lease_id": lease_id,
                   "channel": sender_channel}
+        # Every copy carries the original address and the audience frozen at
+        # sending, so a recipient tells a channel-0 broadcast from a message to
+        # it alone. `peer_to` stays the routing key of one copy and
+        # `recipients` that copy's admitted owner.
+        audience_at_send = []
+        for channel, binding in selected:
+            if target == "0" and agent_broadcast_policy(
+                    root, str(binding.get("provider") or "").casefold(),
+                    str(binding.get("provider_session_id") or ""),
+                    Path(str(binding.get("bus") or "")).expanduser()) == "off":
+                continue  # Channel 0 unticked: this agent never receives broadcasts.
+            audience_at_send.append({"name": binding.get("audience"), "channel": channel})
+        addressed = ({"mode": "broadcast", "channel": "0", "recipients": audience_at_send}
+                     if target == "0" else
+                     {"mode": "direct", "to": target.casefold(), "recipients": audience_at_send})
         deliveries: list[dict[str, Any]] = []
         for channel, binding in selected:
+            origin = "0" if target == "0" else channel
             owner_lease = lease_identifier(str(binding.get("provider") or ""),
                                            str(binding.get("provider_session_id") or ""))
             audience = binding.get("audience")
@@ -5889,7 +5913,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "provider_session_id": args.session, "lease_id": lease_id,
                      "text": text, "spoken": False, "association": "unsolicited",
                      "delivery_id": None, "peer_to": audience,
-                     "channel": origin, "sender": sender, "recipients": [owner]}
+                     "channel": origin, "sender": sender, "recipients": [owner],
+                     "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
             if (any(type(receipt.get(key)) is not int or receipt[key] < 0
                     for key in ("stream_dev", "stream_inode", "offset", "length"))
@@ -5901,8 +5926,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
                                "source": receipt})
     emit({"kind": "peer_message_published", "message_id": identity,
-          "origin_channel": origin, "sender": sender_name,
-          "recipients": deliveries})
+          "origin_channel": "0" if target == "0" else deliveries[0]["channel"],
+          "sender": sender_name, "target": addressed, "recipients": deliveries})
     return 0
 
 
@@ -7135,7 +7160,7 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     # Keep the owner and conversational attribution, without repeating the
     # acoustic envelope or every recipient's copy of the same coordinates.
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
-                "emitted_at", "source", "sender", "peer_to", "association", "reply_id", "reply_to",
+                "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
                 "routing_candidates", "instructions", "attachments"):
         if key in payload:
             line[key] = payload[key]
@@ -7593,7 +7618,8 @@ def main() -> int:
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
-    parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
+    parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
+                        "one channel digit 1-9, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
