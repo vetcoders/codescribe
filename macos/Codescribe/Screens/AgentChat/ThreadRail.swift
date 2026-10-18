@@ -199,6 +199,20 @@ struct ThreadRail: View {
 /// input object, but it can never become visible text. Prefer the first user
 /// excerpt and fall back to a relative date label when messages are still lazy.
 enum ThreadRowTitle {
+  /// A stored excerpt can already end at the title cap, so layout truncation
+  /// alone cannot mark the omitted text. Keep this decoration out of rename,
+  /// copy and persistence; only labels disclose the known truncation.
+  static func labelTitle(for thread: ChatThread) -> String {
+    let title = displayTitle(for: thread)
+    let fullTitle = ThreadTitlePolicy.normalized(thread.title, limit: Int.max)
+    let fullExcerpt = ThreadTitlePolicy.firstUserExcerpt(in: thread.messages, limit: Int.max)
+    let clipsTitle = fullTitle.map { $0.count > title.count } ?? false
+    let clipsExcerpt =
+      ThreadTitlePolicy.firstUserExcerpt(in: thread.messages) == title
+      && (fullExcerpt.map { $0.count > title.count } ?? false)
+    return clipsTitle || clipsExcerpt ? title + "…" : title
+  }
+
   static func displayTitle(
     for thread: ChatThread,
     now: Date = Date(),
@@ -359,7 +373,7 @@ private struct ThreadRow: View {
   }
 
   private var titleLabel: some View {
-    Text(ThreadRowTitle.displayTitle(for: thread))
+    Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
       .font(.system(size: 13, weight: isActive ? .semibold : .regular))
       .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.85))
       .lineLimit(1)

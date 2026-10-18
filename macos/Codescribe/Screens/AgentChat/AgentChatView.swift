@@ -263,7 +263,7 @@ private struct AgentIntegratedChrome: ViewModifier {
 
   private var identityCluster: some View {
     HStack(spacing: 8) {
-      Text(store.currentThread?.title ?? "—")
+      Text(verbatim: store.currentThread.map { ThreadRowTitle.labelTitle(for: $0) } ?? "—")
         .font(CSFont.ui(14, .semibold))
         .foregroundStyle(Color.primary)
         .lineLimit(1)
