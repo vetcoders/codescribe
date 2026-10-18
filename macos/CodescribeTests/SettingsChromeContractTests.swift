@@ -49,7 +49,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let tabBar = try XCTUnwrap(sources["SettingsTabBar.swift"])
     XCTAssertTrue(tabBar.contains("NSSegmentedControl()"))
     XCTAssertTrue(tabBar.contains("control.segmentDistribution = .fit"))
-    XCTAssertTrue(tabBar.contains("ScrollView(.horizontal, showsIndicators: false) { bar }"))
+    XCTAssertTrue(tabBar.contains("ScrollView(.horizontal, showsIndicators: false) {"))
+    XCTAssertTrue(tabBar.contains("bar.csAutohidingScrollers(.includesHorizontal)"))
     XCTAssertTrue(tabBar.contains(".controlSize(.regular)"))
     // A bar pinned to its natural width widens the pane past the window.
     XCTAssertFalse(tabBar.contains(".fixedSize()"))
