@@ -126,8 +126,10 @@ struct OverlayAgentStatusMark: View {
           spinner
         }
       } else if let character = glyph.character {
+        // A status sign, not code: the system face carries it (Founder's mono
+        // policy, 2026-10-18). The slot below already fixes its box.
         Text(character)
-          .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+          .font(.system(size: fontSize, weight: .medium))
           .fixedSize()
       }
     }
@@ -735,7 +737,8 @@ struct OverlayChannelStatusView: View {
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
         Spacer()
         Text(verbatim: String(channels.count))
-          .font(.system(size: 11 * textScale, design: .monospaced))
+          .font(.system(size: 11 * textScale))
+          .monospacedDigit()
           .foregroundStyle(palette.mutedText.color)
           .accessibilityHidden(true)
       }
@@ -1185,7 +1188,8 @@ struct OverlayChannelStatusView: View {
 
   private func unreadBadge(_ count: Int) -> some View {
     Text(verbatim: String(count))
-      .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
+      .font(.system(size: 11 * textScale, weight: .semibold))
+      .monospacedDigit()
       .foregroundStyle(palette.processingStatus.color)
       .padding(.horizontal, 6).padding(.vertical, 2)
       .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
@@ -1861,6 +1865,11 @@ struct OverlayAgentPillStack: View {
               value: revealed)
           }
         }
+        // The column width belongs to the rows, not only to the viewport: a
+        // glass container proposes its content's ideal width, so a width set
+        // on the scroll view alone let each row lay out wider than the column
+        // and hung the audio pair outside it (Founder screenshot 2026-10-18).
+        .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
       )
       .padding(.vertical, 2)
     }
@@ -1914,7 +1923,8 @@ struct OverlayAgentPillStack: View {
         Spacer(minLength: 4)
         if entry.unread > 0 {
           Text(verbatim: String(entry.unread))
-            .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
+            .font(.system(size: 11 * textScale, weight: .semibold))
+            .monospacedDigit()
             .foregroundStyle(palette.processingStatus.color)
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
@@ -2088,8 +2098,8 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
               } action: {
                 contentHeight = $0
               }
+              .overlayAutohidingScroller()
           }
-          .scrollIndicators(.visible)
           .frame(height: viewportHeight)
           .clipped()
           .onChange(of: scrollTargetID) { _, target in

@@ -122,6 +122,103 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+extension View {
+  /// Overlay lists never wear a legacy scroller. SwiftUI's `.scrollIndicators`
+  /// only chooses between hidden and the style the system "Show scroll bars"
+  /// setting picked, so with a mouse attached a visible indicator is the thick
+  /// bar that never goes away (Founder, 2026-10-18). The composer pins the
+  /// overlay style on its own `NSScrollView`
+  /// (`OverlayConversationComposer.makeNSView`); this does the same to the
+  /// scroll view SwiftUI builds, so the scroller is a thin band that fades in
+  /// while scrolling and fades out after it.
+  func overlayAutohidingScroller() -> some View {
+    background(OverlayScrollerStyle())
+  }
+}
+
+/// Attaches inside the document view, so `enclosingScrollView` resolves to the
+/// list it was placed in rather than an outer pane — the way the chat's
+/// live-scroll observer finds its own scroll view.
+private struct OverlayScrollerStyle: NSViewRepresentable {
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeNSView(context: Context) -> AttachmentView {
+    let view = AttachmentView()
+    view.onAttach = { [weak coordinator = context.coordinator] scrollView in
+      coordinator?.attach(to: scrollView)
+    }
+    return view
+  }
+
+  func updateNSView(_ nsView: AttachmentView, context: Context) {
+    nsView.attachWhenReady()
+  }
+
+  static func dismantleNSView(_ nsView: AttachmentView, coordinator: Coordinator) {
+    coordinator.detach()
+  }
+
+  @MainActor
+  final class AttachmentView: NSView {
+    var onAttach: ((NSScrollView) -> Void)?
+
+    /// The view exists to configure the scroll view around it; it spans the
+    /// whole document and must not take a click away from the content.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      attachWhenReady()
+    }
+
+    /// The backing scroll view exists one layout pass after the representable
+    /// is installed.
+    func attachWhenReady() {
+      Task { @MainActor [weak self] in
+        await Task.yield()
+        guard let self, let scrollView = enclosingScrollView else { return }
+        onAttach?(scrollView)
+      }
+    }
+  }
+
+  @MainActor
+  final class Coordinator {
+    private weak var scrollView: NSScrollView?
+    private var styleObserver: NSObjectProtocol?
+
+    func attach(to scrollView: NSScrollView) {
+      self.scrollView = scrollView
+      pinOverlayScrollers()
+      guard styleObserver == nil else { return }
+      // AppKit re-reads the system preference whenever it changes and would
+      // hand the list its legacy scroller straight back.
+      styleObserver = NotificationCenter.default.addObserver(
+        forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+        object: nil,
+        queue: nil
+      ) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.pinOverlayScrollers()
+        }
+      }
+    }
+
+    func detach() {
+      if let styleObserver { NotificationCenter.default.removeObserver(styleObserver) }
+      styleObserver = nil
+      scrollView = nil
+    }
+
+    private func pinOverlayScrollers() {
+      guard let scrollView else { return }
+      scrollView.scrollerStyle = .overlay
+      scrollView.autohidesScrollers = true
+      scrollView.hasHorizontalScroller = false
+    }
+  }
+}
+
 /// Header and composer use the same system-owned control surface.
 struct OverlayControlGlass: ViewModifier {
   @ViewBuilder
