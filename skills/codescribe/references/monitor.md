@@ -244,7 +244,10 @@ Without the plugin, use the Kimi pattern with `--provider claude-code`: one
 An interactive Claude Code session keeps a background task running; unattended
 runs (`-p`, Agent SDK, CI) stop it at its timeout (30 min by default, at most
 2 h) and wake the model: there, set the maximum timeout and treat that wake as a
-rearm without ACK or reply. A turn that ends without a new task is deaf.
+rearm without ACK or reply. A background session started from the agents
+screen is neither: there an untimed task waited 85 min, and another 1 h 50 min,
+until a message ended it (measured 2026-10-18); whether such a session stops a
+task after 2 h is not yet measured. A turn that ends without a new task is deaf.
 
 The same task may also run beside the plugin. While it lives, the plugin's
 waiter stays armed but leaves deliveries to the task, which records what it
