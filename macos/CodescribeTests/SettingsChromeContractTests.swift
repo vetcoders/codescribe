@@ -33,6 +33,27 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Founder review, 2026-10-18: one header pattern across the central pane, and
+  /// a section title never quieter than the settings under it. Panels used to
+  /// carry private header types that fixed this locally; the shared label is
+  /// now the only owner.
+  func testSectionHeadersHaveOneOwnerAndReadAtPrimaryStrength() throws {
+    let sources = try settingsSources()
+    let joined = sources.values.joined(separator: "\n")
+    for parallel in [
+      "struct ProvidersSectionHeader", "struct WorkspaceSectionHeader",
+      "struct ToolsSectionHeader", "func sectionHeader(",
+    ] {
+      XCTAssertFalse(joined.contains(parallel), "a second header owner is back: \(parallel)")
+    }
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    let label = try XCTUnwrap(view.range(of: "struct SettingsSectionLabel: View {"))
+    let labelBody = view[label.lowerBound...].prefix(600)
+    XCTAssertTrue(labelBody.contains("SettingsScale.sectionTitle"))
+    XCTAssertTrue(labelBody.contains(".foregroundStyle(.primary)"))
+    XCTAssertFalse(labelBody.contains(".foregroundStyle(.secondary)"))
+  }
+
   func testSettingsKeepsNativeNavigationAndBrandSemantics() throws {
     let sources = try settingsSources()
     let joined = sources.values.joined(separator: "\n")
@@ -100,9 +121,9 @@ final class SettingsChromeContractTests: XCTestCase {
     // An 880 pt window with the sidebar at its ideal width.
     XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
-    XCTAssertTrue(pane.contains(".padding(.horizontal, CSSpace.xl)"))
+    XCTAssertTrue(pane.contains(".padding(.horizontal, SettingsScale.pageGutter)"))
     // Detail column minus the bar's horizontal padding and the column divider.
-    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * CSSpace.xl
+    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * SettingsScale.pageGutter
 
     let polish = try polishCatalog()
     let tabbed = SettingsSection.allCases.filter { !SettingsTab.tabs(in: $0).isEmpty }
@@ -176,10 +197,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj", "Blokuj"])
     // The card column at the minimum window: one column since round 12 (the
     // 190 pt source sidebar became a popup), minus the pane padding and the
-    // card's own 14 pt sides. The picker owns its row, so it only has to fit.
+    // card's own sides. The picker owns its row, so it only has to fit.
     let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
     XCTAssertFalse(browser.contains(".frame(width: 190)"), "the source sidebar is gone")
-    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 2 * 14
+    let column =
+      SettingsView.detailMinWidth - 2 * SettingsScale.pageGutter - 2 * SettingsScale.cardPadding
     for titles in [levels, polishLevels] {
       let picker = width(titles)
       XCTAssertGreaterThan(picker, 0)
@@ -490,7 +512,7 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
     XCTAssertTrue(
-      section.contains("WorkspaceSectionHeader(String(localized: \"Allowed folders\"))"))
+      section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
     XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
     XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
     XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
@@ -643,7 +665,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified\""))
-    XCTAssertTrue(section.contains("ToolsSectionHeader(String(localized: \"Individual tools\"))"))
+    XCTAssertTrue(
+      section.contains("SettingsSectionHeaderRow(String(localized: \"Individual tools\"))"))
     XCTAssertFalse(section.contains("Tool overrides"))
     XCTAssertTrue(section.contains("A rule for one tool outranks its server's rule"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
@@ -1116,7 +1139,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("if showingResets {"))
     XCTAssertTrue(
       panel.contains("String(localized: \"Reset data\""),
-      "the Reset header is a ProvidersSectionHeader since round 16")
+      "the Reset header is a SettingsSectionHeaderRow")
     XCTAssertTrue(panel.contains("Text(\"Reset Agent data\""))
     XCTAssertTrue(panel.contains("Text(\"Reset app data\""))
     XCTAssertFalse(panel.contains("String(localized: \"Danger zone\")"))
@@ -1195,7 +1218,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("\"Corrected original\""))
     XCTAssertTrue(panel.contains("correctionFooter("))
     XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
-    XCTAssertTrue(panel.contains("ProvidersSectionHeader(String(localized: \"Dictionary rules\"))"))
+    XCTAssertTrue(
+      panel.contains("SettingsSectionHeaderRow(String(localized: \"Dictionary rules\"))"))
     XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
     XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
     XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
@@ -1223,7 +1247,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
     let pins = try XCTUnwrap(panel.range(of: "DictionaryWordPins(configDir: model.configDir)"))
     let recent = try XCTUnwrap(
-      panel.range(of: "ProvidersSectionHeader(String(localized: \"Recent corrections\"))"))
+      panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
     XCTAssertLessThan(pins.lowerBound, recent.lowerBound)
 
     let polish = try polishCatalog()
