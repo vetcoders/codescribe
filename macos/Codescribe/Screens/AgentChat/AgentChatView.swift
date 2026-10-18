@@ -98,6 +98,7 @@ private struct MaxPermissionPresentation: View {
       ScrollView {
         MaxApprovalCards(model: model)
           .padding(CSSpace.card)
+          .csAutohidingScrollers()
       }
       .frame(maxHeight: 260)
     }
@@ -727,6 +728,7 @@ struct ToolApprovalCard: View {
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
+              .csAutohidingScrollers()
           }
           .frame(maxHeight: Self.argumentsMaxHeight)
         }

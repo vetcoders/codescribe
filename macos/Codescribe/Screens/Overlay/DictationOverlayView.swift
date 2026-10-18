@@ -1223,7 +1223,7 @@ struct DictationOverlayView: View {
               Text(message).fixedSize(horizontal: false, vertical: true)
             }
           }
-          .overlayAutohidingScroller()
+          .csAutohidingScrollers()
         }
         .frame(maxHeight: 320)
       }

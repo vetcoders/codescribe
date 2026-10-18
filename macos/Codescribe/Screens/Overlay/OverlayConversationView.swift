@@ -429,7 +429,7 @@ struct OverlayConversationView: View {
           _ = scrollFollow.handle(event)
         }
       }
-      .overlayAutohidingScroller()
+      .csAutohidingScrollers()
     }
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {

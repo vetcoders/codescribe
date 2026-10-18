@@ -53,6 +53,7 @@ struct OnboardingView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(28)
           .id(model.stepIndex)
+          .csAutohidingScrollers()
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
       footer

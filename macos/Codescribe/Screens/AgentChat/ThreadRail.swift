@@ -55,6 +55,9 @@ struct ThreadRail: View {
 
   private var threadList: some View {
     List(selection: $selectedThreadID) {
+      // Untagged and zero-height: it carries the shared scroller policy into
+      // the list's own scroll view (Founder, 2026-10-18).
+      CSScrollerPinRow()
       // Untagged, so the system selection never lands on it.
       if let error = store.threadSearchError {
         Section {

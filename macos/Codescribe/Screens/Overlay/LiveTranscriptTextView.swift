@@ -154,16 +154,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.contentView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
-    scrollView.hasHorizontalScroller = false
     scrollView.hasVerticalScroller = true
     scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
-    scrollView.autohidesScrollers = true
-    // `autohidesScrollers` alone only hides a scroller with nothing to scroll:
-    // with a mouse attached the system hands this view the legacy style and a
-    // thick grey bar stood down the transcript's edge for the whole take
-    // (Founder, 2026-10-18). The overlay style fades in while scrolling and out
-    // after it; the coordinator re-pins it when the preference changes.
-    scrollView.scrollerStyle = .overlay
+    // The scroller policy — overlay style, autohide, no horizontal scroller —
+    // belongs to `CSScrollerPin`, which the coordinator attaches below and
+    // re-applies when the system preference changes (Founder, 2026-10-18).
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView
     context.coordinator.attach(to: scrollView)
@@ -398,11 +393,13 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let uncertainWordPopover = UncertainWordPopoverPresenter()
     private weak var observedScrollView: NSScrollView?
     private var scrollObservers: [NSObjectProtocol] = []
+    private let scrollerPin = CSScrollerPin()
 
     func attach(to scrollView: NSScrollView) {
       guard observedScrollView !== scrollView else { return }
       detach()
       observedScrollView = scrollView
+      scrollerPin.attach(to: scrollView)
       let center = NotificationCenter.default
       scrollObservers = [
         center.addObserver(
@@ -432,31 +429,14 @@ struct LiveTranscriptTextView: NSViewRepresentable {
             self?.reportScrollEnd()
           }
         },
-        // AppKit re-reads the system "Show scroll bars" preference whenever it
-        // changes and would hand the transcript its legacy scroller straight
-        // back. The notification carries no object, so this one is global.
-        center.addObserver(
-          forName: NSScroller.preferredScrollerStyleDidChangeNotification,
-          object: nil,
-          queue: nil
-        ) { [weak self] _ in
-          MainActor.assumeIsolated {
-            self?.pinOverlayScrollers()
-          }
-        },
       ]
     }
 
     func detach() {
       for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
       scrollObservers.removeAll()
+      scrollerPin.detach()
       observedScrollView = nil
-    }
-
-    private func pinOverlayScrollers() {
-      guard let observedScrollView else { return }
-      observedScrollView.scrollerStyle = .overlay
-      observedScrollView.autohidesScrollers = true
     }
 
     func userScrollBegan() {
