@@ -5592,7 +5592,7 @@ final class OverlayStateTests: XCTestCase {
       .appendingPathComponent("codescribe-slim-listening-overlay-min-width.png")
     try png.write(to: dest)
     XCTAssertGreaterThan(png.count, 800)
-    XCTAssertEqual(DictationOverlayWindow.minSize.width, 320)
+    XCTAssertEqual(DictationOverlayWindow.minSize.width, 360)
     XCTAssertEqual(DictationOverlayWindow.minSize.height, 260)
   }
 

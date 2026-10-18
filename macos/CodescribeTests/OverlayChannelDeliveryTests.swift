@@ -1623,7 +1623,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(
-      header.range(of: ".modifier(OverlayControlGlass())")
+      header.range(of: ".modifier(OverlayControlGlass(cornerRadius: CSRadius.window))")
     )
     XCTAssertLessThan(drag.lowerBound, glass.lowerBound)
     let status = try String(

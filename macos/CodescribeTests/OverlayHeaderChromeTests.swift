@@ -753,8 +753,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
     XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
     XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
-    XCTAssertTrue(conversation.contains("scrollView.scrollerStyle = .overlay"))
-    XCTAssertTrue(conversation.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertTrue(conversation.contains(".overlayAutohidingScroller()"), "one scroller owner")
+    let canvas = try source("Overlay/OverlayCanvasSurface.swift")
+    XCTAssertTrue(canvas.contains("scrollView.scrollerStyle = .overlay"))
+    XCTAssertTrue(canvas.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
     XCTAssertFalse(conversation.contains(".menuStyle(.borderlessButton)"), "receipt keeps the edge")
     XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
   }

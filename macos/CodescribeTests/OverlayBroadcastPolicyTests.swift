@@ -53,7 +53,10 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
           .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"),
         encoding: .utf8)) ?? ""
     XCTAssertTrue(source.contains("\"Channel 0\""), "membership checkbox")
-    XCTAssertTrue(source.contains("\"Steer (otherwise queued)\""), "steer checkbox")
+    // The steer box speaks plainly: ticked, a delivery wakes the agent
+    // (Founder, 2026-10-18).
+    XCTAssertTrue(source.contains("\"Wake the agent\""), "steer checkbox")
+    XCTAssertFalse(source.contains("\"Steer (otherwise queued)\""), "no jargon label")
   }
 
   /// The member row's menu (click and right-click alike) issues the selected
