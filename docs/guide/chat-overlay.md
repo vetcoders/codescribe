@@ -110,8 +110,10 @@ not a successful mute. Text remains visible when audio playback fails.
 ## Built-in Agent window
 
 Open **Show Agent** from the menu bar or use `Command+Shift+Space`. Select a thread
-in its sidebar, or create one explicitly with **New thread**. Summoning the window
-does not start recording or send a request.
+in its sidebar, or create one explicitly with **New thread** at the top of the
+sidebar. The sidebar looks and behaves like the one in Settings: the button at the
+left of the toolbar, or `Control+Command+S`, hides and shows it. Summoning the
+window does not start recording or send a request.
 
 The built-in Agent composer microphone records one turn until explicit Stop.
 It shares Codescribe's recording controller and transcription engine. Hands-free

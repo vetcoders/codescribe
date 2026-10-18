@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In the Settings and Agent windows the header fades into the content in its own tone instead of a glass band with a hard edge. The sidebar keeps the system glass.
 - The overlay's agent list marks the open conversation the same way on every row, "0 · All" included: a slim accent bar on the leading edge over a light veil. "0 · All" no longer sits on a violet wash and stays apart by its place at the top, its antenna and the divider below it. Hover on a row is a light veil instead of a milky patch in the light appearance, and the rows are denser.
 - Conversation bubbles in the overlay may use more of the column (92 % instead of 82 %), so a docked agent list no longer leaves an empty band beside them.
+- The Agent window and Settings share one sidebar, with Settings as the model: the same width (216 pt), search field, section headers, selection and glass, and the same toggle button at the left of the toolbar with `Control+Command+S`. Each window remembers whether its sidebar is open. Thread titles take the system sidebar style and dim with the window like any other sidebar row.
+- **New thread** moves from the pill at the bottom of the Agent sidebar to the top, above the search field, as a quiet icon and label.
+- The Settings health line under the sidebar is ordinary secondary text beside its coloured dot.
 - The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 - No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
 

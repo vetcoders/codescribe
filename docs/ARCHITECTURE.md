@@ -364,7 +364,7 @@ miniaturising it, so App Exposé never shows an empty tile; the tray's
 
 - **Left:** the sidebar toggle, then the wordmark, then the thread title
   followed by the turn count, the thread's model and the live turn status.
-  The toggle belongs to the shared sidebar column (see "The sidebar", below),
+  The toggle belongs to the shared sidebar column (see "The sidebar" above),
   so it stays reachable while the column is collapsed and behaves exactly as
   it does in Settings.
 - **Right:** exactly two controls. The pin (always on top) shows its state

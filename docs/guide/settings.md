@@ -1,7 +1,9 @@
 # Settings & Configuration
 
 Codescribe has one native Settings window. Choose a section in its sidebar;
-the Dictation section has separate tabs for its concerns. The sections below
+the Dictation section has separate tabs for its concerns. The button at the
+left of the toolbar, or `Control+Command+S`, hides and shows the sidebar, and
+the window remembers the choice. The sections below
 describe the current controls and their runtime contracts.
 
 Configuration still lives in three layers:
