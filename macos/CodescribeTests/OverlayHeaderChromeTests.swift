@@ -745,6 +745,37 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertNil(OverlayAgentAudioControls.litGlass(nil), "an unlit control keeps plain glass")
   }
 
+  /// Founder's website shots (2026-10-18): bubbles stayed legible under the
+  /// header glass, a mouse brought back legacy scrollers, the expandable
+  /// receipt sat right of a plain one and a jargon badge rode on replies.
+  func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
+    let conversation = try source("Overlay/OverlayConversationView.swift")
+    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
+    XCTAssertTrue(conversation.contains("scrollView.scrollerStyle = .overlay"))
+    XCTAssertTrue(conversation.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertFalse(conversation.contains(".menuStyle(.borderlessButton)"), "receipt keeps the edge")
+    XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
+  }
+
+  /// Store-minted attachment names never reach a chip.
+  func testAttachmentChipNamesThePictureOrTheChosenFile() {
+    let hash = String(repeating: "a1", count: 32)
+    let image = String(localized: "Image")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "inline_\(hash).png"), image)
+    let size = ByteCountFormatter.string(fromByteCount: 2_048, countStyle: .file)
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "inline_\(hash).png", bytes: 2_048),
+      "\(image) · \(size)")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_\(hash)_report.pdf"), "report.pdf")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_short_report.pdf"),
+      "clipboard_short_report.pdf", "only a full content hash is peeled")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "notes.txt"), "notes.txt")
+  }
+
   private func source(_ relative: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()

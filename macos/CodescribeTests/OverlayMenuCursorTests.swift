@@ -273,8 +273,9 @@ final class OverlayMenuCursorTests: XCTestCase {
     let chip = NSHostingView(
       rootView: AttachmentChip(
         attachment: MessageAttachment(
-          name: "inline_d0d0…09372302.png", url: URL(fileURLWithPath: "/tmp/inline_d0d0.png"),
-          type: "image/png")))
+          name: ConversationAttachmentLabel.display(
+            fileName: "inline_d0d0…09372302.png", bytes: 1024),
+          url: URL(fileURLWithPath: "/tmp/inline_d0d0.png"), type: "image/png")))
     chip.frame = NSRect(x: 120, y: 70, width: 170, height: 32)
     content.addSubview(chip)
     panel.contentView = content

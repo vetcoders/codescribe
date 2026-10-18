@@ -241,13 +241,16 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     XCTAssertTrue(view.contains("Circle().fill(health.level.color).frame(width: 6, height: 6)"))
     XCTAssertTrue(view.contains("if let message = health.message {"))
-    XCTAssertTrue(view.contains("Text(message)\n        .font(CSFont.mono(10, .medium))"))
+    // A status sentence speaks in the system face; mono is for time, versions,
+    // shortcuts, code and eyebrows (Founder, 2026-10-18).
+    XCTAssertTrue(view.contains("Text(message)\n        .font(CSFont.ui(10, .medium))"))
     // Narrowest sidebar minus the footer padding, the status dot and its gap.
     let slot: CGFloat = 196 - 2 * 16 - 6 - 8
     XCTAssertEqual(states.first?.level, .healthy)
     let healthy = try XCTUnwrap(messages.first)
+    let face = NSFont.systemFont(ofSize: 10, weight: .medium)
     for line in [healthy, try XCTUnwrap(polish[healthy])] {
-      let width = (line as NSString).size(withAttributes: [.font: CSFont.nsMono(10)]).width
+      let width = (line as NSString).size(withAttributes: [.font: face]).width
       XCTAssertLessThanOrEqual(width, slot, line)
     }
   }
