@@ -372,6 +372,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         else { return false }
         return message.replyToOccurrenceID.map { broadcastIDs.contains($0) } ?? true
       }
+      let broadcastReplyIDs = Set(broadcast.filter { $0.kind == .reply }.map(\.id))
       var result = [
         OverlayConversation(
           id: "0", channel: "0", name: "All", owner: nil,
@@ -389,6 +390,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       for (ownerID, owner) in historicalOwners.sorted(by: { $0.key < $1.key }) {
         let rows = addressedRows.filter { addressed in
           let row = addressed.row
+          // Broadcast replies live only in All; retain private delivery evidence.
+          if broadcastReplyIDs.contains(row.id) { return false }
           if row.kind == .reply, let destination = row.sourceChannel {
             // All is one shared conversation. Private peer messages belong to
             // their frozen recipient, never implicitly to their author.
