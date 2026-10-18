@@ -546,12 +546,24 @@ struct OverlayConversationView: View {
             Text(verbatim: "\(recipient.owner.name) · \(Self.receiptStatusText(for: recipient))")
           }
         } label: {
-          Text("Read \(readCount)/\(message.recipients.count)")
-            .font(.system(size: 10 * textScale))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
+          // A borderless-button menu insets its label, so the expandable
+          // receipt started a few points right of a plain one and the bubble
+          // footers no longer lined up (Founder, 2026-10-18). The plain button
+          // style adds no inset, and the disclosure is drawn here rather than
+          // left to the style, so both footers begin at the bubble's edge.
+          HStack(spacing: 2) {
+            Text("Read \(readCount)/\(message.recipients.count)")
+              .lineLimit(1)
+            Image(systemName: "chevron.down")
+              .font(.system(size: 7 * textScale, weight: .semibold))
+          }
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("Show details")
         .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
