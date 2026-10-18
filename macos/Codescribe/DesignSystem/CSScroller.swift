@@ -26,10 +26,10 @@ enum CSScrollerAxes {
 /// changes, because AppKit re-reads it and hands the scroll view its legacy
 /// scroller straight back.
 ///
-/// One owner for every scroll surface in the app: SwiftUI lists and panes
-/// reach it through `csAutohidingScrollers()`, `List` through
-/// `CSScrollerPinRow`, and the hand-built `NSScrollView`s (live transcript,
-/// both composers, the oversized-text bubble) hold a pin of their own.
+/// One owner for every scroll surface in the app: SwiftUI panes and lists
+/// reach it through `csAutohidingScrollers()`, and the hand-built
+/// `NSScrollView`s (live transcript, both composers, the oversized-text
+/// bubble) hold a pin of their own.
 @MainActor
 final class CSScrollerPin {
   private let axes: CSScrollerAxes
@@ -79,25 +79,13 @@ extension View {
   /// Place it on the CONTENT inside the `ScrollView`, never on the scroll
   /// view itself: the attachment finds its `enclosingScrollView`, and a
   /// background applied to the scroll view lands beside that view rather than
-  /// inside it. A `List` draws its rows in an `NSTableView` of its own and
-  /// takes `CSScrollerPinRow` instead.
+  /// inside it. A `List` draws its rows inside its own scroll view, so there it
+  /// goes on each row's content: rows are built lazily, and whichever rows are
+  /// on screen hold the pin, where a single anchor row would be recycled as
+  /// soon as it scrolled away. An extra zero-height row would also take the
+  /// list's minimum row height and open a gap above the first section.
   func csAutohidingScrollers(_ axes: CSScrollerAxes = .verticalOnly) -> some View {
     background(CSScrollerStyleAttachment(axes: axes))
-  }
-}
-
-/// A `List`'s scroll view is only reachable from inside its rows, so the pin
-/// travels as one zero-height row rather than as a background on the list.
-/// It is the first row because `List` builds its rows lazily: a last row of a
-/// list long enough to scroll is exactly the row that never materialises.
-struct CSScrollerPinRow: View {
-  var body: some View {
-    Color.clear
-      .frame(height: 0)
-      .csAutohidingScrollers()
-      .accessibilityHidden(true)
-      .listRowInsets(EdgeInsets())
-      .listRowSeparator(.hidden)
   }
 }
 
