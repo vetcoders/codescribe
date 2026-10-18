@@ -39,7 +39,9 @@ struct InterfaceLanguageStepView: View {
             "You’ll choose your dictation language later.", locale: model.interfaceLocale,
             comment: "Interface language is independent of speech recognition"))
       )
-      .font(.body)
+      // Both notes under the picker carry the same weight, so one text style
+      // for both: the quieter secondary callout.
+      .font(.callout)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       if model.interfaceLanguageNeedsRestart {
@@ -51,6 +53,7 @@ struct InterfaceLanguageStepView: View {
         )
         .font(.callout)
         .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
         Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
@@ -156,8 +159,8 @@ struct ModeStepView: View {
         OnboardingChoiceCard(
           title: String(
             localized: LocalizedStringResource(
-              "Basic — dictation only", locale: model.interfaceLocale,
-              comment: "Operating lane choice; Basic is the lane name")),
+              "Dictation only", locale: model.interfaceLocale,
+              comment: "Operating lane choice: dictation without the AI agent")),
           subtitle: String(
             localized: LocalizedStringResource(
               "You speak, Codescribe turns it into text.", locale: model.interfaceLocale,
@@ -168,8 +171,8 @@ struct ModeStepView: View {
         OnboardingChoiceCard(
           title: String(
             localized: LocalizedStringResource(
-              "Agentic — dictation + AI agent", locale: model.interfaceLocale,
-              comment: "Operating lane choice; Agentic is the lane name")),
+              "Dictation + AI agent", locale: model.interfaceLocale,
+              comment: "Operating lane choice: dictation plus the AI agent")),
           subtitle: String(
             localized: LocalizedStringResource(
               "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
@@ -237,7 +240,7 @@ struct LanguageStepView: View {
     case .auto:
       return String(
         localized: LocalizedStringResource(
-          "Auto-detect when you speak several languages.",
+          "When you speak more than one language.",
           locale: model.interfaceLocale,
           comment: "Detail under the Auto-detect dictation language choice"))
     default: return nil
@@ -443,7 +446,8 @@ struct PermissionsStepView: View {
       OnboardingStepNote(
         text: String(
           localized: LocalizedStringResource(
-            "You can change them later in System Settings.", locale: model.interfaceLocale,
+            "You can change these permissions later in System Settings.",
+            locale: model.interfaceLocale,
             comment: "Setup permissions footnote; System Settings is the macOS application")))
     }
   }
@@ -563,7 +567,9 @@ struct LocalModelStepView: View {
       .font(.body)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
+      // The model block is the content under the heading, not another line of it.
       WhisperDownloadView(store: downloads)
+        .padding(.top, 10)
       if model.dictationLane.requiresLocalModel, downloads.readiness != .installed {
         Text(
           String(
@@ -613,8 +619,9 @@ struct ApiKeyStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Set up an Agent account or an API key. You can also do this later.",
-            locale: model.interfaceLocale, comment: "Setup step description"))
+            "One is enough: sign in with a provider account or add an API key. You can also do this later.",
+            locale: model.interfaceLocale,
+            comment: "Setup step description; the account and the key are alternatives"))
       )
       .font(.body)
       .lineSpacing(3)
@@ -784,19 +791,22 @@ struct ApiKeyStepView: View {
       && !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  /// An account and a key are alternatives, and the step is skippable, so a
+  /// missing credential is neutral on both rows. Red is kept for a real
+  /// failure — a credential that was read and rejected — which arrives as an
+  /// inline error under the row.
   private var accountStatusColor: Color {
     if model.providerAccessPending || model.providerAccessError != nil
       || model.selectedProviderAccountError != nil
     {
       return CSColor.textFaint
     }
-    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.terracottaLight
+    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.textFaint
   }
 
   private var keyStatusColor: Color {
     if model.providerAccessPending || model.providerAccessError != nil { return CSColor.textFaint }
-    if model.selectedProviderKeySet { return CSColor.oliveLight }
-    return model.selectedProviderRequiresApiKey ? CSColor.terracottaLight : CSColor.textFaint
+    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.textFaint
   }
 
   private var accountActionTitle: String {
@@ -914,12 +924,16 @@ struct DoneStepView: View {
       )
       .font(.title2.weight(.semibold))
       .foregroundStyle(.primary)
-      Text(summary(readiness))
-        .font(.body)
-        .lineSpacing(3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("onboarding-done-summary")
+      // The chapter heading already states a ready verdict; only a blocked one
+      // needs a sentence here.
+      if let summary = blockedSummary(readiness) {
+        Text(summary)
+          .font(.body)
+          .lineSpacing(3)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("onboarding-done-summary")
+      }
 
       requiredSection(readiness)
         .padding(.top, 6)
@@ -946,30 +960,21 @@ struct DoneStepView: View {
     }
   }
 
-  private func summary(_ readiness: DictationReadiness) -> String {
-    guard readiness.isReady else {
-      return String(
-        localized: LocalizedStringResource(
-          "Finish unlocks once each required item below is ready.",
-          locale: model.interfaceLocale,
-          comment: "Setup summary while something required for transcription is missing"))
-    }
-    let lane = readiness.lane.displayName(locale: model.interfaceLocale)
+  private func blockedSummary(_ readiness: DictationReadiness) -> String? {
+    guard !readiness.isReady else { return nil }
     return String(
       localized: LocalizedStringResource(
-        "Everything is ready for transcription (\(lane)).", locale: model.interfaceLocale,
-        comment: "Setup summary when ready; the placeholder is the dictation engine name"))
+        "Finish unlocks once each required item below is ready.",
+        locale: model.interfaceLocale,
+        comment: "Setup summary while something required for transcription is missing"))
   }
 
   // MARK: Required
 
   private func requiredSection(_ readiness: DictationReadiness) -> some View {
+    // No group label: each row already carries its own state, and Finish says
+    // what it waits for.
     VStack(alignment: .leading, spacing: 8) {
-      sectionLabel(
-        String(
-          localized: LocalizedStringResource(
-            "Required for transcription", locale: model.interfaceLocale,
-            comment: "Setup Done group: what Finish waits for")))
       ForEach(PermissionKind.allCases.filter(\.isRequiredForSetup)) { kind in
         OnboardingPermissionRow(kind: kind, model: model, compact: true)
         Divider()
@@ -1320,19 +1325,19 @@ extension PermissionKind {
     case .screenRecording:
       return String(
         localized: LocalizedStringResource(
-          "Optional — without it, the Agent cannot use your screen as context; dictation still works.",
+          "Without it, the Agent can't use your screen as context. Dictation still works.",
           locale: locale,
           comment: "Consequence of a missing Screen Recording scope"))
     case .speechRecognition:
       return String(
         localized: LocalizedStringResource(
-          "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally.",
+          "Without it, Apple dictation is unavailable. Local transcription still works.",
           locale: locale,
           comment: "Consequence of a missing Speech Recognition scope"))
     case .fullDiskAccess:
       return String(
         localized: LocalizedStringResource(
-          "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works.",
+          "Without it, protected files stay unavailable to the Agent as context. Dictation still works.",
           locale: locale,
           comment: "Consequence of a missing Full Disk Access scope"))
     }
