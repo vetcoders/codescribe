@@ -71,7 +71,7 @@ struct MCPServersSection: View {
         .padding(.top, 6)
       } label: {
         Text("Technical details")
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
       }
       .padding(.top, 14)
@@ -111,7 +111,7 @@ struct MCPServersSection: View {
   private var emptyState: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("No MCP servers yet — this is optional.")
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Text(
         "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."

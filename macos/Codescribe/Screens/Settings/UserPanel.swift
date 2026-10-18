@@ -46,19 +46,18 @@ struct UserPanel: View {
       informationSection
       resetSection
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
   }
 
   // MARK: - Version and configuration notice
 
   private var versionSection: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       VStack(alignment: .leading, spacing: 0) {
         HStack(alignment: .center, spacing: CSSpace.md) {
           VStack(alignment: .leading, spacing: 2) {
             Text(verbatim: "Codescribe \(model.buildInfo.version)")
-              .font(.body.weight(.semibold))
+              .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
               .textSelection(.enabled)
               .accessibilityIdentifier("about-version")
@@ -66,7 +65,7 @@ struct UserPanel: View {
               "Build \(model.buildInfo.build)",
               comment: "About panel: the build number under the version"
             )
-            .font(.subheadline)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
           }
@@ -101,7 +100,7 @@ struct UserPanel: View {
         }
       }
     }
-    .padding(.top, CSSpace.section)
+    .padding(.top, SettingsScale.sectionGap)
   }
 
   private var readableBuildDate: String {
@@ -121,7 +120,7 @@ struct UserPanel: View {
         HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
           CSIconView(icon: .info, size: 12, weight: .medium, color: Color.secondary)
           Text(notice.compactTitle)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           CSIconView(
@@ -139,7 +138,7 @@ struct UserPanel: View {
       if showingConfigNotice {
         configNoticeDetails(notice)
           .settingsGroupedInset()
-          .padding(.top, CSSpace.control)
+          .padding(.top, SettingsScale.headerGap)
           .accessibilityIdentifier("about-config-notice-details")
       }
     }
@@ -156,10 +155,10 @@ struct UserPanel: View {
             color: notice.isWarning ? CSColor.amber : Color.secondary)
           VStack(alignment: .leading, spacing: 2) {
             Text(notice.title)
-              .font(.body.weight(.semibold))
+              .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
             Text(notice.subtitle)
-              .font(.subheadline)
+              .font(SettingsScale.helper)
               .foregroundStyle(.secondary)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -192,18 +191,18 @@ struct UserPanel: View {
             .foregroundStyle(.primary)
             .textSelection(.enabled)
           Text(item.impact)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(.primary)
             .fixedSize(horizontal: false, vertical: true)
           Text(item.action)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
       if let outcome = notice.outcomeLine {
         Text(outcome)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -228,8 +227,8 @@ struct UserPanel: View {
 
   private var localDataSection: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(String(localized: "Local data"))
-        .padding(.top, CSSpace.section)
+      SettingsSectionHeaderRow(String(localized: "Local data"))
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 0) {
         pathRow(
           String(localized: "App data", comment: "About panel: the ~/.codescribe folder"),
@@ -238,7 +237,7 @@ struct UserPanel: View {
         pathRow(String(localized: "Transcripts"), model.transcriptsPath)
       }
       .settingsGroupedInset(padding: 0)
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
   }
 
@@ -246,10 +245,10 @@ struct UserPanel: View {
 
   private var activationPingSection: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "First dictation confirmation", comment: "About panel section")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       SettingsControlRow(
         title: String(
           localized: "Send a confirmation after the first successful dictation",
@@ -266,7 +265,7 @@ struct UserPanel: View {
           .accessibilityLabel("Send a confirmation after the first successful dictation")
           .accessibilityValue(activationPingOptIn ? "On" : "Off")
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
   }
 
@@ -274,10 +273,10 @@ struct UserPanel: View {
 
   private var transcriptMarkersSection: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Transcript markers", comment: "About panel section")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       SettingsControlRow(
         title: String(localized: "Add markers to text", comment: "About panel: switch"),
         subtitle: String(
@@ -291,7 +290,7 @@ struct UserPanel: View {
           .accessibilityLabel("Add markers to text")
           .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       DisclosureGroup(isExpanded: $showingTemplate) {
         templateEditor
@@ -300,10 +299,10 @@ struct UserPanel: View {
           "Edit template and preview",
           comment: "About panel: disclosure with the marker template editor"
         )
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(.secondary)
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("about-template-disclosure")
     }
   }
@@ -318,13 +317,13 @@ struct UserPanel: View {
         .textFieldStyle(.plain)
         .lineLimit(3...8)
         .settingsGroupedInset()
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
         .accessibilityLabel("Transcript tag template editor")
         .accessibilityValue(model.settings.transcriptTagTemplate)
 
       if let warning = model.transcriptTagTemplateWarning {
         Text(warning)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.danger)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.sm)
@@ -365,14 +364,14 @@ struct UserPanel: View {
           model.restoreDefaultTranscriptTagTemplate()
         }
         .csFocusRing()
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(CSColor.chromeAccent)
         .accessibilityLabel("Restore default transcript tag template")
       }
       .padding(.top, CSSpace.sm)
 
       Text("Template preview", comment: "About panel: label over the rendered template")
-        .font(.subheadline)
+        .font(SettingsScale.helper)
         .foregroundStyle(.secondary)
         .padding(.top, CSSpace.md)
       Text(model.transcriptTagPreview)
@@ -395,10 +394,10 @@ struct UserPanel: View {
   /// cards competing with the heading (Founder brief, round 16, 2026-10-10).
   private var informationSection: some View {
     VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Information and documentation", comment: "About panel section")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       VStack(alignment: .leading, spacing: CSSpace.xxs) {
         externalLink(
           String(localized: "Privacy Policy"), Self.privacyURL,
@@ -418,7 +417,7 @@ struct UserPanel: View {
     Link(destination: url) {
       HStack(alignment: .center, spacing: CSSpace.sm) {
         Text(title)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .frame(maxWidth: .infinity, alignment: .leading)
         Image(systemName: "arrow.up.forward.square")
           .font(.system(size: 11, weight: .medium))
@@ -441,9 +440,9 @@ struct UserPanel: View {
   private var resetSection: some View {
     VStack(alignment: .leading, spacing: 0) {
       divider
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Reset data", comment: "About panel: section holding both resets")
       ) {
         TrailingDisclosureButton(
@@ -454,7 +453,7 @@ struct UserPanel: View {
         )
         .accessibilityIdentifier("about-reset-toggle")
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
 
       if showingResets {
         VStack(alignment: .leading, spacing: 0) {
@@ -463,7 +462,7 @@ struct UserPanel: View {
           ResetAppDataSection(model: model)
         }
         .settingsGroupedInset()
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
         .accessibilityIdentifier("about-resets")
       }
     }
@@ -488,7 +487,7 @@ struct UserPanel: View {
   private func detailRow(_ label: String, _ value: String, mono: Bool) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.card) {
       Text(label)
-        .font(.subheadline)
+        .font(SettingsScale.helper)
         .foregroundStyle(.secondary)
         .frame(width: 110, alignment: .leading)
       Text(value)
@@ -542,7 +541,7 @@ struct UserPanel: View {
           String(localized: "Copy the \(label) path", comment: "About panel: copy button"))
       }
     }
-    .padding(.horizontal, CSSpace.card)
+    .padding(.horizontal, SettingsScale.cardPadding)
     .padding(.vertical, CSSpace.md)
   }
 
@@ -569,7 +568,7 @@ private struct TrailingDisclosureButton: View {
         CSIconView(
           icon: isExpanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold)
       }
-      .font(.callout)
+      .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
       .contentShape(Rectangle())
     }
@@ -618,7 +617,7 @@ private struct ResetAgentSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Text("Reset Agent data", comment: "About panel: the Agent reset")
-        .font(.body.weight(.semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(.primary)
 
       Text(
@@ -626,7 +625,7 @@ private struct ResetAgentSection: View {
         comment:
           "About panel: short scope of the Agent reset; the confirmation shows the full scope"
       )
-      .font(.callout)
+      .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, CSSpace.xxs)
@@ -667,7 +666,7 @@ private struct ResetAppDataSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       Text("Reset app data", comment: "About panel: the full app-data reset")
-        .font(.body.weight(.semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(.primary)
 
       Text(
@@ -675,7 +674,7 @@ private struct ResetAppDataSection: View {
         comment:
           "About panel: short scope of the app-data reset; the confirmation shows the full scope"
       )
-      .font(.callout)
+      .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, CSSpace.xxs)
@@ -688,7 +687,7 @@ private struct ResetAppDataSection: View {
             "Also remove API keys from Keychain (not recoverable from Trash)",
             comment: "About panel: reset checkbox"
           )
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)
         }
         .toggleStyle(.checkbox)
@@ -698,7 +697,7 @@ private struct ResetAppDataSection: View {
             "Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)",
             comment: "About panel: reset checkbox; the four file names stay verbatim"
           )
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
         }

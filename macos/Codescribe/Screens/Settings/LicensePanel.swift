@@ -25,20 +25,20 @@ struct LicensePanel: View {
       )
 
       statusCard
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
-      ProvidersSectionHeader(String(localized: "License key"))
-        .padding(.top, CSSpace.section)
+      SettingsSectionHeaderRow(String(localized: "License key"))
+        .padding(.top, SettingsScale.sectionGap)
 
       activationRow
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       secondaryActions
         .padding(.top, CSSpace.md)
 
       if let error = model.licenseError {
         Text(error)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.danger)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.md)
@@ -54,7 +54,7 @@ struct LicensePanel: View {
             .font(CSFont.mono(10.5, .medium))
             .textSelection(.enabled)
         }
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .padding(.top, CSSpace.md)
       }
@@ -64,14 +64,13 @@ struct LicensePanel: View {
           localized: "The key is stored in the macOS Keychain.",
           comment: "License panel footnote: where the key lives")
       )
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, CSSpace.lg)
+      .padding(.top, SettingsScale.sectionGap)
     }
     .frame(maxWidth: 560, alignment: .leading)
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
@@ -85,7 +84,7 @@ struct LicensePanel: View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       HStack(alignment: .center, spacing: CSSpace.md) {
         Text(stateRowLabel)
-          .font(.subheadline)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .frame(width: Self.statusLabelWidth, alignment: .leading)
         HStack(alignment: .center, spacing: CSSpace.sm) {
@@ -94,7 +93,7 @@ struct LicensePanel: View {
             .frame(width: 7, height: 7)
             .accessibilityHidden(true)
           Text(stateLabel)
-            .font(.body.weight(.semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -120,11 +119,11 @@ struct LicensePanel: View {
   private func statusRow(_ label: String, _ value: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
       Text(label)
-        .font(.subheadline)
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .frame(width: Self.statusLabelWidth, alignment: .leading)
       Text(value)
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
