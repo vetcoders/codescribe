@@ -78,11 +78,10 @@ recovery and inherited messages. An undrained reader must resume, not be killed.
 ## Arm wakeup for this provider
 
 Follow [Monitor and agent wakeup](references/monitor.md) before ending the turn.
-Use the Codescribe plugin in Claude Code; otherwise use its completion-notifying
-background task. Kimi also requires a completion task. Codex and other providers
-with output notifications reuse one monitor over
-`cs-bus --watch --bell --provider PROVIDER --session SESSION`.
-Native queue, a bare background shell or `tail -F` alone does not prove wakeup.
+Claude Code uses the Codescribe plugin or a completion-notifying background
+task; so do Kimi and agy. Codex runs `cs-bus --watch --until-event` in one `tty`
+exec cell beside `codex-queue`; other output-notifying providers reuse one
+`--watch --bell` monitor. A queue, bare shell or `tail -F` alone proves no wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
 
 Channel 0: `off` skips broadcasts; `quiet` (Steer) queues all messages without waking.
