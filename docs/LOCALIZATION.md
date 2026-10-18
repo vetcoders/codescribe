@@ -44,7 +44,10 @@
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter
-  follows the dictation-language choice.
+  follows the dictation-language choice. The resume slot is not the number the
+  “Step N of M” header shows: that counter and the progress bar run over the
+  chapters the chosen lane actually displays, so the Basic lane — which hides
+  Agentic Readiness — counts to eight and the Agentic lane to nine.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.
 

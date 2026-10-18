@@ -19,7 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One type policy across the app: labels, buttons, statuses and sentences use the system face; JetBrains Mono is kept for times, versions, keyboard shortcuts, code and eyebrows, and SF Mono is no longer used.
 - The overlay is at least 360 pt wide, so the timer never wraps; the agent rows in the narrow overlay share one width.
 - An attachment chip names a pasted picture "Image · size" and a pasted file by the name it was chosen with, instead of the store's hashed file name.
-- An optional key that is not set reads "Not set" in neutral grey; only a missing required key stays a warning.
+- A provider API key that is not set is never a red warning. An account and a key are alternatives, so whichever is missing reads "Optional" in neutral grey once the other is configured, and stays neutral when neither is; red is left for a real failure, such as a key the provider rejected. The same rule holds in setup and in Settings → Providers, where **Sign out** is now a neutral chip instead of a red one.
+- Setup counts the steps the chosen lane actually shows. The Basic lane hides the Agentic Readiness step, so it reads "Step 7 of 8" and then "Step 8 of 8" instead of jumping from 7 straight to 9; the progress bar follows the same fraction.
+- Setup's second step names what you get rather than the lane: "Dictation only" and "Dictation + AI agent".
+- Setup's permission descriptions no longer repeat the "Optional" badge beside the title, and each one says in two short sentences what stops working and what keeps working. The footnote now names what it is about: "You can change these permissions later in System Settings."
+- Setup's completion step drops the sentence that repeated the heading's ready verdict and the "Required for transcription" group label; the heading, "Summary", "Review your setup." and the rows carry it.
+- Setup's provider step says one source is enough — sign in with a provider account **or** add an API key.
+- The Whisper model's state reads beside the model heading instead of at the far right edge of the window, and setup's model step separates the heading from the model block.
+- Both notes under setup's interface-language picker use one text style.
 - The overlay menu names the Steer box "Wake the agent", and replies no longer carry an "Unsolicited reply" label.
 - In the Settings and Agent windows the header fades into the content in its own tone instead of a glass band with a hard edge. The sidebar keeps the system glass.
 - The overlay's agent list marks the open conversation the same way on every row, "0 · All" included: a slim accent bar on the leading edge over a light veil. "0 · All" no longer sits on a violet wash and stays apart by its place at the top, its antenna and the divider below it. Hover on a row is a light veil instead of a milky patch in the light appearance, and the rows are denser.
