@@ -79,9 +79,14 @@ hooks:
   One message wakes the conversation once; when the task is gone the waiter takes
   over and announces anything the task never reported.
 - Announced IDs stay recorded until acknowledged, so a message left unread does
-  not wake every turn. A lost follower or refused mailbox is announced once as
+  not wake every turn. The ledger is written before the notice, so a notice can
+  be lost after it (a remote waiter released when the local one wins, a dropped
+  ssh); a delivery still unacknowledged ten minutes after its announcement wakes
+  the conversation once more as `codescribe_mailbox_reminder`. That is one retry,
+  not a guarantee. A lost follower or refused mailbox is announced once as
   `codescribe_listener_problem`. After six silent hours the hook wakes once with
-  `codescribe_wait_idle` only to re-arm. Detach or Claude Code exit ends it quietly.
+  `codescribe_wait_idle` only to re-arm; it lists any delivery still
+  unacknowledged. Detach or Claude Code exit ends it quietly.
 - The hook never reads, ACKs or replies. `codescribe_status` reports
   `native_wake_armed`.
 - Inside a running turn the `PostToolUse` hook runs `cs-bus --claude-code-probe`
