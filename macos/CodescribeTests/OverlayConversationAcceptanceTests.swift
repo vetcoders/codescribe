@@ -1386,7 +1386,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         bubbles.contains {
           !$0.accessibilityFrame().isEmpty && viewport.intersects($0.accessibilityFrame())
         },
-        "agent \(index) has no painted latest bubble after switching (\(width)×\(height) @\(textScale))")
+        "agent \(index) has no painted latest bubble after switching (\(width)×\(height) @\(textScale))"
+      )
       XCTAssertTrue(
         try XCTUnwrap(editor(host)) === originalEditor, "switch must not recreate input")
       XCTAssertEqual(originalEditor.string, "Draft for \(conversations[index].id)")

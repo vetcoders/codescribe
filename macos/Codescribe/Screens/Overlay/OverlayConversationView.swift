@@ -622,7 +622,8 @@ struct OverlayConversationView: View {
         } else if let recipient = message.recipients.first?.owner,
           message.owner?.id == conversation.owner?.id,
           recipient.id != conversation.owner?.id,
-          message.sourceChannel != nil && message.sourceChannel != "0" && message.sourceChannel != "10"
+          message.sourceChannel != nil && message.sourceChannel != "0"
+            && message.sourceChannel != "10"
         {
           Text(verbatim: "\(message.owner?.name ?? conversation.name) → \(recipient.name)")
             .font(.system(size: 10 * textScale, weight: .bold))
