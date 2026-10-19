@@ -1242,8 +1242,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(menu.contains(".accessibilityAddTraits(.isToggle)"))
     XCTAssertTrue(menu.contains("state.selectPlacementAnchor(anchor)"))
     XCTAssertTrue(menu.contains("state.selectFreeMotion()"))
+    let pinButton = try XCTUnwrap(menu.range(of: "struct OverlayPinButton:"))
     XCTAssertFalse(
-      menu.contains("Menu {"), "no header button opens the placement menu any more")
+      menu[pinButton.lowerBound...].contains("Menu {"),
+      "the pin button toggles directly instead of opening a placement menu")
   }
 
   /// The header's content controls are one Dingbats character each, in the
@@ -1296,9 +1298,47 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let titles = resolved.items.map(\.title)
       for title in [
         "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
-        "Auto fold after…",
+        "Auto fold after… 10 s",
       ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
+      }
+    }
+  }
+
+  func testAutoFoldMenuNamesTheCurrentIntervalAndMarksItsSelectedRow() throws {
+    let choices: [UInt32] = [5, 10, 30, 60, 0]
+    for seconds in choices {
+      let state = OverlayState()
+      let engine = OverlayChromePolicyEngine()
+      engine.autoFoldSeconds = seconds
+      state.engine = engine
+      state.attach()
+      state.setPresentationMode(.expanded)
+      try withPanel(state: state) { panel, root in
+        let point = NSPoint(x: 150, y: root.bounds.maxY - 22)
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .rightMouseDown, location: root.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 9_101,
+            clickCount: 1, pressure: 1))
+        var view = root.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        let resolved = try XCTUnwrap(menu)
+        resolved.delegate?.menuNeedsUpdate?(resolved)
+        let fold = try XCTUnwrap(
+          resolved.items.first { $0.title.hasPrefix("Auto fold after") })
+        let label = seconds == 0 ? "Never" : "\(seconds) s"
+        XCTAssertEqual(fold.title, "Auto fold after… \(label)")
+        let submenu = try XCTUnwrap(fold.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        let titles = submenu.items.map(\.title)
+        XCTAssertEqual(titles.filter { $0.contains(" · selected") }, ["\(label) · selected"])
+        XCTAssertEqual(titles.count, choices.count)
       }
     }
   }
