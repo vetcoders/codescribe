@@ -2174,16 +2174,6 @@
         }
       }
     },
-    "Acoustic coverage was measured as complete, but this transcript has no current terminal seal." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pomiar akustyczny wskazuje pełne pokrycie, ale ta transkrypcja nie ma aktualnego końcowego zatwierdzenia."
-          }
-        }
-      }
-    },
     "Activate" : {
       "localizations" : {
         "pl" : {
@@ -2959,17 +2949,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu Codescribe."
-          }
-        }
-      }
-    },
-    "Also heard · not committed" : {
-      "comment" : "Tooltip over the unanchored-evidence chip",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykryto też · niezatwierdzone"
           }
         }
       }
@@ -10711,16 +10690,6 @@
         }
       }
     },
-    "No seal was recorded for this take, so nothing here is certified complete." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dla tego nagrania nie zapisano zatwierdzenia, więc nie można uznać go za kompletne."
-          }
-        }
-      }
-    },
     "No speech detected" : {
       "localizations" : {
         "pl" : {
@@ -16975,16 +16944,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Plik istnieje, ale jest pusty, dlatego używany jest wbudowany prompt."
-          }
-        }
-      }
-    },
-    "The handover came back. These words are retained here — recover them before the next take." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tekst nie został przekazany. Został zachowany tutaj — odzyskaj go przed kolejnym nagraniem."
           }
         }
       }

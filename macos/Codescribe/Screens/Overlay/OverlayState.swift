@@ -2727,24 +2727,6 @@ final class OverlayState {
     }
   }
 
-  /// Read-only words Rust keeps visible without mutation authority — for
-  /// example a Whisper alternative the ledger refused as a whole-span
-  /// replacement — in PCM order. They ride the capture-bound compact paint,
-  /// never `formattedText`, so no canvas, copy, or delivery path reads them.
-  /// Capture completion does not settle alternatives. Keep the same capture's
-  /// evidence available for review until Rust removes it or a new capture resets paint.
-  var liveEvidence: [CsUnanchoredEvidence] {
-    guard let paint = compactProjection,
-      !retiredProjectionSessions.contains(paint.sessionId)
-    else { return [] }
-    if let document = latestTranscriptProjection {
-      guard document.sessionId == paint.sessionId,
-        document.captureEpoch == 0 || document.captureEpoch == paint.captureEpoch
-      else { return [] }
-    }
-    return paint.evidence
-  }
-
   /// Post-take review owns the floating panel. The formatted / no-speech
   /// surface must not yield to an Assistive tray tick — that path calls
   /// `hide()` and arms Agent auto-send.
@@ -2754,25 +2736,6 @@ final class OverlayState {
   var blocksAssistiveOverlayHide: Bool {
     presentationStatus != nil || mode == .formatted || mode == .coverageRefused
       || mode == .noSpeech
-  }
-
-  /// The refusal card reports retained delivery, measured coverage and the
-  /// missing seal separately. None of these facts grants terminal acceptance.
-  var coverageRefusalDetail: String {
-    if retainedComposerDelivery != nil {
-      return String(
-        localized:
-          "The handover came back. These words are retained here — recover them before the next take."
-      )
-    }
-    if latestTranscriptProjection?.sealCoverage?.status == .complete {
-      return String(
-        localized:
-          "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
-      )
-    }
-    return String(
-      localized: "No seal was recorded for this take, so nothing here is certified complete.")
   }
 
   /// Availability is refreshed at events and action opening, never during paint.
