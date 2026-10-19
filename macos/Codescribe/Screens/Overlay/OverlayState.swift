@@ -200,6 +200,26 @@ struct OverlayPresentationStatus: Equatable {
   let calibrationVersion: String?
 }
 
+/// Immediate (<1 frame) and receipt-reconciled UI state for an agent panel focus
+/// request (`codescribe.agent-panel-focus.v1` → `codescribe.agent-panel-focus-result.v1`).
+struct OverlayAgentPanelFocusState: Equatable, Sendable {
+  enum Phase: Equatable, Sendable {
+    case requesting
+    case succeeded
+    case failed
+  }
+
+  let requestID: String
+  let owner: OverlayConversationOwner
+  var phase: Phase
+  var statusText: String
+  var updatedAt: Date
+
+  var isRequesting: Bool { phase == .requesting }
+  var isSucceeded: Bool { phase == .succeeded }
+  var isFailed: Bool { phase == .failed }
+}
+
 /// One superseded take, retained as a single identity-associated unit.
 ///
 /// Retention used to be two disconnected slots — a projection and a draft
@@ -1322,6 +1342,176 @@ final class OverlayState {
       comment: "Archive refusal reason: unknown failure")
   }
 
+  // MARK: Agent panel focus in Frame (`codescribe.agent-panel-focus.v1`)
+
+  /// Starts false (fail-closed) so the first render never advertises panel
+  /// focus before `supportsAgentPanelFocus` confirms a compatible `vc-frame`.
+  private(set) var agentPanelFocusAvailable: Bool = false
+  private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  @ObservationIgnored var detectAgentPanelFocusAvailability:
+    @MainActor () async -> Bool = {
+      await RealAgentBridgeInstaller.supportsAgentPanelFocus()
+    }
+  @ObservationIgnored var requestAgentPanelFocusCommand:
+    @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
+      try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
+    }
+  @ObservationIgnored var activateTerminalHost:
+    @MainActor (Int32?, String?) -> Bool = { hostPID, hostBundleID in
+      RealAgentBridgeInstaller.activateAgentTerminalHost(
+        hostPID: hostPID, hostBundleID: hostBundleID)
+    }
+  @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
+  @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
+
+  func setAgentPanelFocusAvailable(_ available: Bool) {
+    guard agentPanelFocusAvailable != available else { return }
+    agentPanelFocusAvailable = available
+    if !available, !agentPanelFocusStates.isEmpty {
+      agentPanelFocusStates.removeAll()
+    }
+    onChannelPresentationChanged?()
+  }
+
+  /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
+  /// while immediately (<1 frame) updating the row state with a spinner.
+  func focusAgentPanel(_ owner: OverlayConversationOwner) {
+    guard !channelStatusUnavailable,
+      agentPanelFocusAvailable,
+      channelHudStates[owner.channel]?.followerAlive != false,
+      agentPanelFocusStates[owner.channel]?.isRequesting != true
+    else { return }
+    let request = OverlayAgentPanelFocusRequest(owner: owner)
+    agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+      requestID: request.requestID,
+      owner: owner,
+      phase: .requesting,
+      statusText: String(localized: "Opening panel in Frame…"),
+      updatedAt: Date()
+    )
+    onChannelPresentationChanged?()
+
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await self.requestAgentPanelFocusCommand(request)
+      } catch {
+        guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID else {
+          return
+        }
+        self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+          requestID: request.requestID,
+          owner: owner,
+          phase: .failed,
+          statusText: Self.panelFocusFailureReason(error),
+          updatedAt: Date()
+        )
+        self.onChannelPresentationChanged?()
+      }
+    }
+
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await Task.sleep(for: self.panelFocusTimeoutDuration)
+      } catch {
+        return
+      }
+      guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID,
+        self.agentPanelFocusStates[owner.channel]?.phase == .requesting
+      else { return }
+      self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+        requestID: request.requestID,
+        owner: owner,
+        phase: .failed,
+        statusText: String(localized: "No response from agent panel in Frame."),
+        updatedAt: Date()
+      )
+      self.onChannelPresentationChanged?()
+    }
+  }
+
+  private func reconcileAgentPanelFocusResults(
+    _ results: [String: OverlayPanelFocusResult]
+  ) {
+    guard !results.isEmpty, !agentPanelFocusStates.isEmpty else { return }
+    var changed = false
+    for (channel, state) in agentPanelFocusStates {
+      guard state.phase == .requesting, let result = results[state.requestID] else { continue }
+      changed = true
+      if result.isSuccess {
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .succeeded,
+          statusText: String(localized: "Focused in Frame"),
+          updatedAt: Date()
+        )
+        foldAfterAgentPanelFocus()
+        let fallbackFrame = channelPlaybackAgents[channel]?.frame
+        let hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
+        let hostBundleID =
+          result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+        _ = activateTerminalHost(hostPID, hostBundleID)
+        let requestID = state.requestID
+        Task { @MainActor [weak self] in
+          guard let self else { return }
+          do {
+            try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
+          } catch {
+            return
+          }
+          if self.agentPanelFocusStates[channel]?.requestID == requestID,
+            self.agentPanelFocusStates[channel]?.phase == .succeeded
+          {
+            self.agentPanelFocusStates.removeValue(forKey: channel)
+            self.onChannelPresentationChanged?()
+          }
+        }
+      } else {
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .failed,
+          statusText: Self.panelFocusStatusReason(for: result.status),
+          updatedAt: Date()
+        )
+      }
+    }
+    if changed {
+      onChannelPresentationChanged?()
+    }
+  }
+
+  private func foldAfterAgentPanelFocus() {
+    guard presentationMode == .expanded else { return }
+    let target = autoCollapse.restoreMode ?? .midi
+    applyPresentationMode(target, cause: .user)
+  }
+
+  private static func panelFocusFailureReason(_ error: Error) -> String {
+    if let csError = error as? CsError {
+      let trimmed = csError.userFacingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    return description.isEmpty
+      ? String(localized: "Could not focus panel in Frame") : description
+  }
+
+  private static func panelFocusStatusReason(for status: String) -> String {
+    switch status {
+    case "pane_missing":
+      return String(localized: "Panel not found in Frame")
+    case "no_frame":
+      return String(localized: "Agent is not running in Frame")
+    case "stale":
+      return String(localized: "Panel focus request expired")
+    default:
+      return String(localized: "Could not focus panel in Frame")
+    }
+  }
+
   private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
     guard let owner = conversation.owner else { return nil }
     // A conversation merges broadcast mirrors from several buses. Its first
@@ -1496,9 +1686,11 @@ final class OverlayState {
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
     let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
+    let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
+    setAgentPanelFocusAvailable(panelFocusAvailable)
     channelPlaybackAgents = bound
     broadcastPolicies = broadcastSnapshot
     if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
@@ -1875,6 +2067,7 @@ final class OverlayState {
       onChannelPresentationChanged?()
     }
     applyChannelDelivery(snapshot.deliveries)
+    reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including

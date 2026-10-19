@@ -86,6 +86,45 @@ path, not proof that the text was loaded or read. An empty unread mailbox is not
 an empty history. Reading history neither ACKs another lease nor makes old
 requests fresh commands.
 
+## Agent panel focus
+
+A click on an agent row asks that agent's own follower to bring its vc-frame
+pane to the Founder's focus. The app never drives the terminal; the follower
+was spawned from the agent's pane and inherits its coordinates.
+
+At start the follower records them in its lease as `frame`: `session`,
+`pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
+and `host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`). `frame` is `null`
+for an agent outside vc-frame. A follower that predates this contract reports
+no `frame` until it is restarted. The address comes from the owner's own pane
+(`VC_FRAME_PANE_ID`, `VC_FRAME_SESSION_NAME`, `VC_FRAME_SOCKET_DIR`, with the
+`ZELLIJ_*` names as fallback), the exported Vibecrafted contract.
+
+The program is not part of the address. Each click runs the public `vc-frame`
+resolved on PATH at that moment (contract of the Vibecrafted maintainer,
+2026-10-19). `VIBECRAFTED_VC_FRAME_BIN` pins Vibecrafted's internal engine and
+is not a fallback; with no `vc-frame` on PATH the click answers `error`.
+
+The request is a row on the agent's bus, schema
+`codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with
+`request_id` (24 lowercase hex), `emitted_at`, the exact `provider`,
+`provider_session_id`, `lease_id`, `bus` and `channel` of the agent, and
+`source` (`overlay_click`). It carries no text, status or capture coordinates.
+The owning follower runs `vc-frame action focus-pane-id terminal_<pane_id>`
+once per `request_id`; vc-frame switches to the pane's tab first. It neither
+wakes the model nor touches the mailbox. A request older than 15 seconds is a
+replayed backlog and is answered `stale` without focusing.
+
+The follower answers on the same bus with
+`codescribe.agent-panel-focus-result.v1`, `kind` `agent_panel_focus_result`:
+the same `request_id`, its own `provider`/`provider_session_id`/`lease_id`,
+`emitted_at`, `status` (`focused`, `already_focused`, `pane_missing`,
+`no_frame`, `stale` or `error`), `exit_code` (integer or `null`),
+`elapsed_ms`, and `frame` (`session`, `pane_id`, `host_bundle_id`,
+`host_pid`, or `null`). Activating the terminal window stays with the app on
+`focused` / `already_focused`: the click is its user action. Both rows pass
+through `codescribe bus append-event`, which refuses any other shape.
+
 ## Conversational read receipt
 
 The complete causal identity, sender, reply association, routing and provenance
@@ -1523,3 +1562,22 @@ The overlay reader ignores archive metadata while that exact owner remains
 bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
+
+## Agent panel focus in Frame
+
+The overlay drawer starts fail-closed and renders **Focus agent panel in Frame**
+(`overlay-focus-panel-CHANNEL`) only after a public `vc-frame` command on `PATH`
+(or on the user's non-interactive `zsh` `PATH` when a `launchd`-spawned GUI
+process inherits only `/usr/bin:/bin:/usr/sbin:/sbin` and `$HOME/.zshenv` or
+`$HOME/.zprofile` is present) is verified to support
+`vc-frame action focus-pane-id <PANE_ID>`. Capability detection probes
+`vc-frame action focus-pane-id --help` with session and socket variables
+stripped. Positive results are memoized by the executable and wrapper-target
+file stamps so older compatible `vc-frame` releases and current releases are
+both accepted without version-string equality, focus changes, or session side
+effects, while negative results are never cached so repairing a missing wrapper
+dependency restores availability on the next poll without restarting Codescribe.
+Literal `~/.local/bin` fallbacks and `VIBECRAFTED_VC_FRAME_BIN` are never used.
+When a compatible `vc-frame` is absent or unsupported, the button is excluded
+from rendering; when a compatible `vc-frame` is installed and a channel's
+follower is disconnected, the button remains rendered and disabled.

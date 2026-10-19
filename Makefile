@@ -154,6 +154,9 @@ release-qube: dist-preflight
 
 release: release-codescribe release-qube
 
+CARGO_INSTALL_ROOT ?= $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)
+CARGO_BIN ?= $(CARGO_INSTALL_ROOT)/bin
+
 install:
 	@echo "Installing qube tools + codescribe CLI (Silero embedded; Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
@@ -161,6 +164,9 @@ install:
 	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
 	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		bash ./scripts/codesign-binaries.sh "$(CARGO_BIN)"; \
+	fi
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -171,6 +177,9 @@ install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		bash ./scripts/codesign-binaries.sh "$(CARGO_BIN)"; \
+	fi
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -1171,6 +1180,7 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_broadcast_policy.py; \
 	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
 	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
+	python3 -m unittest scripts/tests/test_bus_panel_focus.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \

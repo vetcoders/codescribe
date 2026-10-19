@@ -415,9 +415,16 @@ actor OverlayChannelDeliveryReader {
       builtConversations = built
     }
     try checkpoint(at: checkpointTime)
+    var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
+    for cursor in buses.values {
+      for (requestID, result) in cursor.projection.panelFocusResults {
+        panelFocusResults[requestID] = result
+      }
+    }
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries, conversations: built.conversations,
-      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs)
+      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs,
+      panelFocusResults: panelFocusResults)
   }
 
   private func buildConversations(
