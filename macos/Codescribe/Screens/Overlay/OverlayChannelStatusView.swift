@@ -591,7 +591,7 @@ struct OverlayChannelStatusView: View {
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
   var panelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
-  var panelFocusAvailable = true
+  var panelFocusAvailable = false
   var onFocusAgentPanel: ((OverlayConversationOwner) -> Void)?
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?

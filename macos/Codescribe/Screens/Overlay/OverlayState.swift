@@ -1344,7 +1344,9 @@ final class OverlayState {
 
   // MARK: Agent panel focus in Frame (`codescribe.agent-panel-focus.v1`)
 
-  private(set) var agentPanelFocusAvailable: Bool = true
+  /// Starts false (fail-closed) so the first render never advertises panel
+  /// focus before `supportsAgentPanelFocus` confirms a compatible `vc-frame`.
+  private(set) var agentPanelFocusAvailable: Bool = false
   private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
   @ObservationIgnored var detectAgentPanelFocusAvailability:
     @MainActor () async -> Bool = {
