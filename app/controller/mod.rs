@@ -5079,6 +5079,7 @@ impl RecordingController {
                 .build()
                 .ok();
             let mut lab_batcher = lab_feed::LabFeedBatcher::new(std::time::Instant::now());
+            let lab_frames_url = lab_feed::lab_frames_url();
             while let Some(rms) = level_rx.recv().await {
                 // Cleanup drops the callback sender. Do not drain a buffered
                 // sample after that boundary: it belongs to the closed session
@@ -5105,9 +5106,10 @@ impl RecordingController {
                     let payload = lab_feed::frames_payload(&batch);
                     let client = client.clone();
                     let state = Arc::clone(&lab_state);
+                    let url = lab_frames_url.clone();
                     tokio::spawn(async move {
                         let delivered = client
-                            .post(lab_feed::LAB_FRAMES_URL)
+                            .post(url)
                             .json(&payload)
                             .send()
                             .await
