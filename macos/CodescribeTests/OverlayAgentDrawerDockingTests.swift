@@ -365,33 +365,51 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation it is permanent")
   }
 
-  func testDockedTranscriptionOpensAndClosesTheColumnThroughTheFlag() throws {
+  func testWideningUnderTheOpenListDocksItAsTheColumn() throws {
     let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
+    let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.setAgentDrawerDocked(true)
-    XCTAssertFalse(state.dockedRosterColumnShown)
-
+    let recorder = OverlayDrawerFrameRecorder()
+    // No fixed frame: the panel's content size is the window the layout reads.
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 })
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
     state.showAgentMonitor()
-    XCTAssertTrue(
-      state.showsAgentMonitor, "no conversation: the click opens, it has nothing to focus")
-    XCTAssertTrue(state.dockedRosterColumnShown)
-
-    state.selectConversation(lena.id)
-    XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
-    XCTAssertTrue(state.dockedRosterColumnShown, "beside a conversation the column stays")
-
-    state.showTranscription()
-    XCTAssertNil(state.selectedConversationID)
-    XCTAssertFalse(state.dockedRosterColumnShown, "back on the transcription the column is gone")
+    settle()
+    XCTAssertEqual(recorder.frame.width, 700, accuracy: 1, "narrow: the list covers the window")
 
     // Docking engages while the list is open on the transcription: the list
     // becomes the column instead of vanishing.
-    state.setAgentDrawerDocked(false)
-    state.showAgentMonitor()
-    state.setAgentDrawerDocked(true)
+    panel.setContentSize(NSSize(width: 1200, height: 500))
+    settle()
+    XCTAssertTrue(state.agentDrawerDocked)
     XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertTrue(state.dockedRosterColumnShown)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the open list docks as the column")
+    XCTAssertEqual(recorder.frame.maxX, 1200, accuracy: 1)
+
+    state.selectConversation(lena.id)
+    settle()
+    XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation the column stays")
+
+    state.showTranscription()
+    settle()
+    XCTAssertNil(state.selectedConversationID)
+    XCTAssertEqual(recorder.frame, .zero, "back on the transcription the column is gone")
   }
 
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)

@@ -1182,10 +1182,6 @@ final class OverlayState {
   private var dockedColumnAlreadyOnScreen: Bool {
     agentDrawerDocked && selectedConversationID != nil
   }
-  /// What the wide canvas hosts as the roster column this pass.
-  var dockedRosterColumnShown: Bool {
-    agentDrawerDocked && (selectedConversationID != nil || showsAgentMonitor)
-  }
 
   /// The layout owns the call. Engaging the docked column beside a
   /// conversation closes the full-width list; the selection, drafts and
