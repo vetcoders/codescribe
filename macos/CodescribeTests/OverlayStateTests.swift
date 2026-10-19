@@ -2082,9 +2082,9 @@ final class OverlayStateTests: XCTestCase {
   }
 
   /// Counterexample A at the Swift boundary: a refused Whisper alternative
-  /// rides the compact paint as evidence. It is shown beside the canvas while
-  /// the take is live and never reaches the canvas or delivered text.
-  func testUnanchoredEvidenceIsLivePaintBesideTheCanvasOnly() {
+  /// rides the compact paint as evidence and never reaches the canvas or the
+  /// delivered text. The overlay shows no evidence; Voice Lab reviews it.
+  func testUnanchoredEvidenceNeverReachesTheCanvasOrDelivery() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     projectText("Apple mówi tak", to: state, sessionId: "A")
@@ -2095,43 +2095,13 @@ final class OverlayStateTests: XCTestCase {
       CsCompactProjection(
         sessionId: "A", captureEpoch: 1, sequence: 1, text: "Apple mówi tak",
         degraded: false, evidence: [alternative]))
-    XCTAssertEqual(state.liveEvidence, [alternative])
     XCTAssertEqual(state.canvasText, "Apple mówi tak", "evidence never enters the canvas")
     XCTAssertEqual(state.activeText, "Apple mówi tak", "nor the delivered text")
-
-    // Only an explicit same-capture source snapshot settles the evidence;
-    // ending the UI phase alone is not that disposition.
-    state.applyCompactProjection(
-      CsCompactProjection(
-        sessionId: "A", captureEpoch: 1, sequence: 2, text: "Apple mówi tak",
-        degraded: false, evidence: []))
-    XCTAssertTrue(state.liveEvidence.isEmpty, "Rust explicitly removed the resolved evidence")
     projectText("Apple mówi tak", to: state, terminal: true, sessionId: "A")
-    XCTAssertTrue(state.liveEvidence.isEmpty, "resolved evidence stays absent at terminal")
     XCTAssertEqual(state.canvasText, "Apple mówi tak")
   }
 
-  func testForensicUnresolvedEvidenceSurvivesAuthenticatedTerminal() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    projectText("Zapisane słowa", to: state, sessionId: "unresolved-review")
-    let unresolved = CsUnanchoredEvidence(
-      sampleStart: 16_000, sampleEnd: 32_000, text: "Osobny nierozstrzygnięty dowód",
-      reason: "resegmentation_unaccounted_speech")
-    state.applyCompactProjection(
-      CsCompactProjection(
-        sessionId: "unresolved-review", captureEpoch: 1, sequence: 1,
-        text: "Zapisane słowa", degraded: false, evidence: [unresolved]))
-    XCTAssertEqual(state.liveEvidence, [unresolved])
-    projectText("Zapisane słowa", to: state, terminal: true, sessionId: "unresolved-review")
-    XCTAssertTrue(state.terminal)
-    XCTAssertEqual(state.liveEvidence, [unresolved], "Rust retained unresolved evidence for review")
-    XCTAssertEqual(
-      state.canvasText, "Zapisane słowa", "evidence does not acquire document authority")
-    XCTAssertEqual(state.activeText, "Zapisane słowa", "evidence remains outside delivery")
-  }
-
-  func testFiveUncommittedRepeatedWordsRemainReviewableAfterStop() {
+  func testLivePaintOfFiveUncommittedRepeatedWordsIsNotDeliveryAuthority() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     projectText("Zatwierdzony dokument", to: state, sessionId: "five-word-review")
@@ -2148,17 +2118,15 @@ final class OverlayStateTests: XCTestCase {
         sessionId: "five-word-review", captureEpoch: 1, sequence: 1,
         text: "Zatwierdzony dokument Iwo Iwo Iwo Iwo Iwo", degraded: true,
         evidence: evidence))
-    XCTAssertEqual(state.liveEvidence, evidence)
     XCTAssertEqual(state.canvasText, "Zatwierdzony dokument Iwo Iwo Iwo Iwo Iwo")
     XCTAssertEqual(
       state.activeText, "Zatwierdzony dokument", "live paint is not delivery authority")
     projectText("Zatwierdzony dokument", to: state, terminal: true, sessionId: "five-word-review")
     XCTAssertEqual(state.canvasText, "Zatwierdzony dokument")
-    XCTAssertEqual(state.liveEvidence, evidence, "Stop cannot settle five separate refusals")
     XCTAssertEqual(state.activeText, "Zatwierdzony dokument", "review is not delivery authority")
   }
 
-  func testForensicTerminalReviewFencesCaptureEpochSequenceAndExplicitRemoval() {
+  func testForensicTerminalReviewFencesForeignStaleAndRetiredPaint() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     projectText("Przyjęty tekst", to: state, sessionId: "review-owner")
@@ -2170,13 +2138,11 @@ final class OverlayStateTests: XCTestCase {
         sessionId: "review-owner", captureEpoch: 1, sequence: 1,
         text: "Przyjęty tekst", degraded: false, evidence: [unresolved]))
     projectText("Przyjęty tekst", to: state, terminal: true, sessionId: "review-owner")
-    XCTAssertEqual(state.liveEvidence, [unresolved])
     for (session, epoch) in [("foreign-capture", UInt64(1)), ("review-owner", UInt64(2))] {
       state.applyCompactProjection(
         CsCompactProjection(
           sessionId: session, captureEpoch: epoch, sequence: 2,
           text: "Nieuprawniona podmiana", degraded: false, evidence: []))
-      XCTAssertEqual(state.liveEvidence, [unresolved], "foreign capture cannot settle evidence")
       XCTAssertTrue(state.terminal)
       XCTAssertFalse(state.recording)
       XCTAssertEqual(state.activeText, "Przyjęty tekst")
@@ -2185,12 +2151,10 @@ final class OverlayStateTests: XCTestCase {
       CsCompactProjection(
         sessionId: "review-owner", captureEpoch: 1, sequence: 2,
         text: "Przyjęty tekst", degraded: false, evidence: []))
-    XCTAssertTrue(state.liveEvidence.isEmpty, "an ordered source snapshot explicitly removed it")
     state.applyCompactProjection(
       CsCompactProjection(
         sessionId: "review-owner", captureEpoch: 1, sequence: 1,
         text: "Przyjęty tekst", degraded: false, evidence: [unresolved]))
-    XCTAssertTrue(state.liveEvidence.isEmpty, "stale evidence cannot return")
     XCTAssertTrue(state.terminal)
     XCTAssertFalse(state.recording)
     XCTAssertEqual(state.canvasText, "Przyjęty tekst")
@@ -2200,7 +2164,6 @@ final class OverlayStateTests: XCTestCase {
       CsCompactProjection(
         sessionId: "review-owner", captureEpoch: 1, sequence: 3,
         text: "Poprzednie nagranie", degraded: false, evidence: [unresolved]))
-    XCTAssertTrue(state.liveEvidence.isEmpty, "a retired capture cannot paint the next take")
     XCTAssertEqual(state.activeText, "Nowe nagranie")
   }
 
@@ -7096,9 +7059,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.coverageRefusalNotice, OverlayWarningCopy.sealRefused(nil).sentence)
     XCTAssertEqual(
       state.footerWarning?.owner, .coverage, "a refused seal reports an observation, not a culprit")
-    XCTAssertEqual(
-      state.coverageRefusalDetail,
-      "No seal was recorded for this take, so nothing here is certified complete.")
     XCTAssertEqual(successes, 0, "a refused seal fired the success callback")
     XCTAssertNil(state.errorMessage, "refusal is not an error message")
     XCTAssertTrue(state.isTranscriptEditable, "review is possible even when a seal was refused")
@@ -7141,9 +7101,6 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertEqual(state.retainedComposerDelivery, "words with nowhere to go")
     XCTAssertEqual(state.toast, "kept for recovery")
-    XCTAssertEqual(
-      state.coverageRefusalDetail,
-      "The handover came back. These words are retained here — recover them before the next take.")
     XCTAssertNotNil(state.coverageRefusalNotice)
 
     state.handleRecordingPreparing()
@@ -7257,10 +7214,6 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(
         state.coverageRefusalNotice,
         "Speech coverage was measured as complete, but this take has no terminal seal."
-      )
-      XCTAssertEqual(
-        state.coverageRefusalDetail,
-        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
       )
       XCTAssertEqual(Array(state.activeText.utf8), Array(words.utf8))
       XCTAssertEqual(state.canCopy, copyAllowed, "measurement must not grant copy permission")
