@@ -18,7 +18,9 @@ final class OverlayEditKeyGateTests: XCTestCase {
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state,
-        textScale: TextScaleController(key: "OverlayEditKeyGateTests.textScale")
+        textScale: TextScaleController(key: "OverlayEditKeyGateTests.textScale"),
+        reduceTransparencyOverride: false,
+        contrastOverride: .standard
       ) as? FloatingOverlayPanel
     )
     defer {

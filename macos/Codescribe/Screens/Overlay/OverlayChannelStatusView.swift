@@ -914,7 +914,6 @@ struct OverlayChannelStatusView: View {
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityIdentifier("overlay-agent-rail-\(digit)")
   }
-
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
@@ -1079,7 +1078,6 @@ struct OverlayChannelStatusView: View {
     .hidden()
     .accessibilityHidden(true)
   }
-
   func channelRow(
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {

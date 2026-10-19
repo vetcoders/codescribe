@@ -419,13 +419,14 @@ to a count followed by an adjective or verb (`"\(n) configured"`).
 
 A sentence with several counts stays one key. In the catalog its text names a
 substitution per count (`%#@threads@`), and each substitution carries its own
-argument number and plural forms:
+argument number and plural forms. A substitution name is internal: `threads`
+kept its name when the visible words became conversations.
 
 ```text
-key   Moves %lld Agent threads and %lld Agent files to Trash.
+key   Moves %lld Agent conversations and %lld Agent files to Trash.
 en    Moves %#@threads@ and %#@files@ to Trash.
-        threads (arg 1): one "%arg Agent thread" · other "%arg Agent threads"
-        files   (arg 2): one "%arg Agent file"   · other "%arg Agent files"
+        threads (arg 1): one "%arg Agent conversation" · other "%arg Agent conversations"
+        files   (arg 2): one "%arg Agent file"         · other "%arg Agent files"
 ```
 
 English needs variations only where the singular differs. A language whose

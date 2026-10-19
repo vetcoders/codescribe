@@ -52,7 +52,7 @@ struct TranscriptActivityText: NSViewRepresentable {
   ) -> CGSize? {
     // Reserve the decorative marker's width without adding a character or
     // changing selection/copy. TextKit still owns all line wrapping and glyphs.
-    let markerSpace: CGFloat = 12
+    let markerSpace = LiveTranscriptNativeTextView.activityTrailingSpace
     let idealWidth = min(660, (view.textStorage?.size().width ?? 0) + markerSpace)
     let width = max(markerSpace + 1, proposal.width ?? idealWidth)
     view.textContainer?.containerSize = NSSize(

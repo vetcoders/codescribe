@@ -2,6 +2,7 @@ import AppKit
 
 /// Whether a window of this app is a regular window the overlay should step
 /// aside for. Borderless chrome and modal alerts never qualify.
+@MainActor
 enum OverlayAppWindowPolicy {
   /// Titled, not a sheet, and at the normal level. The overlay, tray, header
   /// chrome and popovers are borderless, so they cannot fold the overlay; a

@@ -6631,7 +6631,7 @@ final class OverlayStateTests: XCTestCase {
 
   // MARK: Pin release — Unpin lets a resting overlay go, never at the click
 
-  func testUnpinLetsTheRestingOverlayGoAfterTheGraceDespiteTheClickHover() throws {
+  func testUnpinUnderThePointerWaitsForExitThenGivesTheFullGrace() throws {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)
     state.engine = OverlayStateTestEngine()
@@ -6646,15 +6646,20 @@ final class OverlayStateTests: XCTestCase {
     state.setPointerHovering(true)
     clock.now = 50
     state.setKeepVisibleBetweenTakes(false)
-    XCTAssertEqual(
-      try XCTUnwrap(state.autoHideDeadline), 50 + OverlayState.pinReleaseDelaySeconds)
+    XCTAssertNil(state.autoHideDeadline, "Unpin must not dismiss the panel under its pointer")
 
-    clock.now = 50 + OverlayState.pinReleaseDelaySeconds - 0.1
+    clock.now = 100
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertEqual(releases, 0, "an older wake cannot hide a hovered panel either")
+    state.setPointerHovering(false)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), 100 + OverlayState.pinReleaseDelaySeconds)
+    clock.now = 100 + OverlayState.pinReleaseDelaySeconds - 0.1
     state.fireAutoHideNowForTests()
-    XCTAssertEqual(releases, 0, "the panel stays for the grace after the click")
-    clock.now = 50 + OverlayState.pinReleaseDelaySeconds
+    XCTAssertEqual(releases, 0)
+    clock.now = 100 + OverlayState.pinReleaseDelaySeconds
     state.fireAutoHideNowForTests()
-    XCTAssertEqual(releases, 1, "the pointer resting where it clicked does not hold it")
+    XCTAssertEqual(releases, 1, "the full grace starts only after pointer exit")
     XCTAssertEqual(closes, 0, "the release fades through its own seam, not the abrupt close")
     XCTAssertFalse(state.keepVisibleBetweenTakes)
   }
@@ -6679,6 +6684,47 @@ final class OverlayStateTests: XCTestCase {
     state.fireAutoHideNowForTests(armedDeadline: 0)
     XCTAssertEqual(releases, 0)
     XCTAssertEqual(closes, 0)
+  }
+
+  func testNativeMenuHoldsUnpinnedPanelAndClosingItStartsTheFullGrace() throws {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock)
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let controller = makeRoutedController(
+      state: state, overlayEnabled: true, assistive: false, panel: panel,
+      frontCount: {}, outCount: {})
+    let menu = NSMenu()
+    defer {
+      NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+      panel.orderOut(nil)
+      withExtendedLifetime(controller) {}
+    }
+    controller.show()
+    state.engine = OverlayStateTestEngine()
+    state.setPresentationMode(.mini)
+    var releases = 0
+    state.onPinReleased = { releases += 1 }
+    state.setKeepVisibleBetweenTakes(true)
+    state.setPointerHovering(true)
+    clock.now = 50
+    state.setKeepVisibleBetweenTakes(false)
+    NotificationCenter.default.post(name: NSMenu.didBeginTrackingNotification, object: menu)
+    state.setPointerHovering(false)
+    XCTAssertNil(state.autoHideDeadline, "the menu remains an interaction outside the panel")
+    clock.now = 100
+    state.fireAutoHideNowForTests(armedDeadline: 0)
+    XCTAssertEqual(releases, 0, "a native menu protects the window from an older deadline")
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: menu)
+    XCTAssertEqual(
+      try XCTUnwrap(state.autoHideDeadline), clock.now + OverlayState.pinReleaseDelaySeconds)
+    clock.now += OverlayState.pinReleaseDelaySeconds - 0.1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 0)
+    clock.now += 0.1
+    state.fireAutoHideNowForTests()
+    XCTAssertEqual(releases, 1)
   }
 
   func testPointerEntryPausesTheReleaseAndLeavingGivesAFreshGrace() throws {
@@ -6802,6 +6848,14 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(panel.alphaValue, 1)
 
     state.setKeepVisibleBetweenTakes(false)
+    release()
+    state.setPointerHovering(true)
+    try XCTUnwrap(pendingFade)()
+    XCTAssertEqual(outs, 0, "returning during the fade keeps the panel")
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertEqual(panel.alphaValue, 1)
+
+    state.setPointerHovering(false)
     release()
     try XCTUnwrap(pendingFade)()
     XCTAssertEqual(outs, 1)
