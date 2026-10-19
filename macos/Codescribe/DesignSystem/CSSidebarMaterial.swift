@@ -20,9 +20,31 @@ import SwiftUI
 ///   opaque high-contrast canvas.
 /// - Passively backs navigation: ignores hit tests so all pointer and keyboard
 ///   events reach sidebar list rows, search fields, and footer controls.
+private struct CSReduceTransparencyOverrideKey: EnvironmentKey {
+  static let defaultValue: Bool? = nil
+}
+
+private struct CSContrastOverrideKey: EnvironmentKey {
+  static let defaultValue: ColorSchemeContrast? = nil
+}
+
+extension EnvironmentValues {
+  var csReduceTransparencyOverride: Bool? {
+    get { self[CSReduceTransparencyOverrideKey.self] }
+    set { self[CSReduceTransparencyOverrideKey.self] = newValue }
+  }
+
+  var csContrastOverride: ColorSchemeContrast? {
+    get { self[CSContrastOverrideKey.self] }
+    set { self[CSContrastOverrideKey.self] = newValue }
+  }
+}
+
 struct CSSidebarMaterial: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csReduceTransparencyOverride) private var envReduceTransparencyOverride
+  @Environment(\.csContrastOverride) private var envContrastOverride
 
   var overrideReduceTransparency: Bool?
   var overrideContrast: ColorSchemeContrast?
@@ -43,11 +65,11 @@ struct CSSidebarMaterial: View {
   }
 
   var isReducedTransparency: Bool {
-    overrideReduceTransparency ?? reduceTransparency
+    overrideReduceTransparency ?? envReduceTransparencyOverride ?? reduceTransparency
   }
 
   var isIncreasedContrast: Bool {
-    (overrideContrast ?? contrast) == .increased
+    (overrideContrast ?? envContrastOverride ?? contrast) == .increased
   }
 
   var body: some View {

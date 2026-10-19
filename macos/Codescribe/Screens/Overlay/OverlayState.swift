@@ -796,9 +796,19 @@ final class OverlayState {
   var autoCollapseRestoreMode: OverlayPresentationMode? { autoCollapse.restoreMode }
   var autoCollapseDeadline: TimeInterval? { autoCollapse.deadline }
 
-  /// Window-side holds (hidden panel, resize or drag in progress, open menu or
-  /// popover), supplied by the panel's owner. Standalone states have none.
+  /// Window-side holds for folding and hiding (hidden panel, resize or drag,
+  /// open menu or popover). Standalone states have none.
   @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
+
+  var presentationInteractionHeld: Bool {
+    isPointerHovering || autoCollapseExternalHold()
+  }
+
+  /// Entering a native menu suspends dismissal; its final close starts the
+  /// full interval again, just like leaving the panel with the pointer.
+  func presentationInteractionDidChange() {
+    restartAutoHideCountdown()
+  }
 
   /// Reading time comes from the canonical text actually selected on screen.
   /// At 180 words/minute a long reply is not folded on the chosen idle base.
@@ -826,9 +836,9 @@ final class OverlayState {
   /// Editing, an uncommitted draft, the pointer over the panel, the focused
   /// composer, a live capture and reply playback are active interactions.
   private var autoCollapseInteractionHeld: Bool {
-    isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
-      || activeCaptureOwnsPresentation || channelAudioCaptureActive || selectedReplyPlaybackActive
-      || autoCollapseExternalHold()
+    isEditingTranscript || isRevisionDraftDirty || presentationInteractionHeld
+      || composerEditorActive || activeCaptureOwnsPresentation || channelAudioCaptureActive
+      || selectedReplyPlaybackActive
   }
 
   private func autoCollapseDeadlineReached() {
@@ -916,7 +926,7 @@ final class OverlayState {
       cancelAutoHide()
     } else if terminal {
       if pinWasHolding { pinReleaseArmed = true }
-      restartAutoHideCountdown(atUnpinClick: pinReleaseArmed)
+      restartAutoHideCountdown()
     }
   }
   var onRecordingPreparing: (() -> Void)?
@@ -1092,8 +1102,8 @@ final class OverlayState {
   static let pinReleaseDelaySeconds: TimeInterval = 3
   /// Set by the Unpin of a panel the pin was holding; the countdown it arms
   /// ends in `onPinReleased` (a fade) instead of the ordinary `onClose`. The
-  /// click's own hover does not hold it; a later pointer entry pauses it like
-  /// any countdown. Re-pinning or a new take clears it.
+  /// pointer or native menu holds it until the interaction ends. Re-pinning
+  /// or a new take clears it.
   @ObservationIgnored private var pinReleaseArmed = false
   /// The pin's release: the controller fades the resting panel out.
   @ObservationIgnored var onPinReleased: (() -> Void)?
@@ -3945,9 +3955,7 @@ final class OverlayState {
       && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  /// `atUnpinClick`: the Unpin click itself has the pointer on the header, so
-  /// that hover cannot hold the release it starts.
-  private func restartAutoHideCountdown(atUnpinClick: Bool = false) {
+  private func restartAutoHideCountdown() {
     // Every auto-hide restart is user or presentation activity (drag, resize,
     // edit end, draft resolution, terminal status, archive action).
     noteAutoCollapseActivity()
@@ -3982,7 +3990,7 @@ final class OverlayState {
     }
     // A take under review (caret in the canvas, or an uncommitted draft) is
     // never auto-hidden out from under the user.
-    guard isTerminalMode, atUnpinClick || !isPointerHovering, !isEditingTranscript,
+    guard isTerminalMode, !presentationInteractionHeld, !isEditingTranscript,
       !isRevisionDraftDirty
     else {
       cancelAutoHide()
@@ -4089,9 +4097,13 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
-    // A pointer that entered after the arming cancelled this wake; one still
-    // resting where it clicked Unpin does not hold the release.
-    guard isTerminalMode, pinReleaseArmed || !isPointerHovering, let deadline = autoHideDeadline
+    // Cancellation and a stale wake can race. Recheck the live interaction,
+    // including the pointer that was already on the Unpin button.
+    guard !presentationInteractionHeld else {
+      cancelAutoHide()
+      return
+    }
+    guard isTerminalMode, let deadline = autoHideDeadline
     else { return }
     let remaining = deadline - nowProvider()
     if remaining > 0 {

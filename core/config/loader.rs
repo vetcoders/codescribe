@@ -2919,12 +2919,67 @@ mod tests {
     }
 
     #[test]
+    fn fresh_apple_only_mode_has_an_enabled_recognizer_without_weights() {
+        use crate::config::cloud_asr::AsrProductMode;
+
+        let input = CapturedRuntimeInputs::defaults_at(
+            PathBuf::from("/fixture/fresh-install-no-models"),
+            1_700_000_000_000,
+        );
+        let snapshot = Config::runtime_snapshot_from_captured(input);
+        assert_eq!(
+            snapshot.user_settings().resolved_asr_mode().mode,
+            AsrProductMode::AppleOnly
+        );
+        let (layer1, _) = crate::asr_session::layer1_decision(&snapshot);
+        assert!(!layer1.is_armed());
+        assert!(!snapshot.seal_ledger_enabled());
+        assert!(
+            snapshot.apple_live_enabled(),
+            "Apple-only must retain its recognizer on a clean install without Whisper weights"
+        );
+    }
+
+    #[test]
+    fn apple_live_defaults_follow_resolved_mode_and_preserve_explicit_choices() {
+        for (mode, consent, legacy_local, expected) in [
+            (None, None, None, true),
+            (Some("apple_only"), None, Some(true), true),
+            (Some("local_power"), None, None, false),
+            (Some("cloud"), Some("granted"), None, false),
+            (Some("cloud"), None, None, true),
+            (Some("cloud"), Some("denied"), None, true),
+            (None, None, Some(true), false),
+            (None, None, Some(false), false),
+            (Some("unknown"), None, None, true),
+        ] {
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                PathBuf::from("/fixture/recognizer-defaults"),
+                1_700_000_000_000,
+            );
+            input.user_settings.asr_mode = mode.map(str::to_owned);
+            input.user_settings.cloud_consent = consent.map(str::to_owned);
+            input.user_settings.use_local_stt = legacy_local;
+            let default = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(default.apple_live_enabled(), expected, "mode={mode:?}");
+            assert_eq!(default.user_settings().apple_live_enabled, None);
+            for explicit in [false, true] {
+                input.user_settings.apple_live_enabled = Some(explicit);
+                let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+                assert_eq!(snapshot.apple_live_enabled(), explicit);
+                assert_eq!(default.apple_live_enabled(), expected);
+                assert!(!snapshot.seal_ledger_enabled());
+            }
+        }
+    }
+
+    #[test]
     #[serial]
     fn transcription_controls_are_independent_and_frozen_for_the_take() {
         let _tmp = setup_isolated_data_dir();
         let original = Config::load_runtime_snapshot_without_keychain().unwrap();
         assert!(!original.seal_ledger_enabled());
-        assert!(!original.apple_live_enabled());
+        assert!(original.apple_live_enabled());
         for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
             Config::default()
                 .save_to_env_many(&[
@@ -2945,7 +3000,7 @@ mod tests {
             assert_eq!(next.seal_ledger_enabled(), ledger);
             assert_eq!(next.apple_live_enabled(), apple);
             assert!(!original.seal_ledger_enabled());
-            assert!(!original.apple_live_enabled());
+            assert!(original.apple_live_enabled());
             assert_ne!(next.digest(), original.digest());
         }
     }

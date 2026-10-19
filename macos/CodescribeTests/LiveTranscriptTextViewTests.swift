@@ -6,6 +6,38 @@ import XCTest
 
 @MainActor
 final class LiveTranscriptTextViewTests: XCTestCase {
+  func testActivityUnderlineUsesPlacedWidthAfterSpeculativeMeasurement() throws {
+    let view = LiveTranscriptTextView.makeTextView()
+    view.textContainer?.widthTracksTextView = false
+    view.textStorage?.setAttributedString(
+      NSAttributedString(
+        string: String(repeating: "Iwo ", count: 80) + "\n",
+        attributes: [.font: NSFont.systemFont(ofSize: 15)]))
+    view.setTranscriptActivity(true)
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 480, height: 260),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = view
+    window.orderFrontRegardless()
+    defer { window.close() }
+    view.setSelectedRange(NSRange(location: 0, length: 3))
+    // SwiftUI may measure a rejected narrow proposal after the placed width.
+    view.textContainer?.containerSize = NSSize(width: 208, height: CGFloat.greatestFiniteMagnitude)
+    view.needsLayout = true
+    view.layoutSubtreeIfNeeded()
+    XCTAssertEqual(try XCTUnwrap(view.textContainer).containerSize.width, 468, accuracy: 0.5)
+    let marker = try XCTUnwrap(
+      view.subviews.first { $0 is NSHostingView<TranscriptActivityUnderline> })
+    let end = NSRange(location: (view.string as NSString).length, length: 0)
+    let caret = view.convert(
+      window.convertFromScreen(view.firstRect(forCharacterRange: end, actualRange: nil)),
+      from: nil)
+    XCTAssertFalse(marker.isHidden)
+    XCTAssertEqual(marker.frame.maxY, caret.maxY, accuracy: 0.5)
+    XCTAssertEqual(view.selectedRange(), NSRange(location: 0, length: 3))
+  }
+
   func testConversationActivityUnderlineFollowsLastWrappedLine() async throws {
     for width in [CGFloat(220), 360] {
       let text = String(repeating: "A short spoken phrase with several words. ", count: 4) + "tail"
@@ -102,7 +134,8 @@ final class LiveTranscriptTextViewTests: XCTestCase {
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(view.selectedRange(), selected)
-        let context = "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
+        let context =
+          "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
         XCTAssertFalse(marker.isHidden, context)
         XCTAssertGreaterThanOrEqual(marker.frame.minX, 0)
         XCTAssertLessThanOrEqual(marker.frame.maxX, view.bounds.maxX + 1)

@@ -135,10 +135,14 @@ struct OverlayConversationView: View {
         )
         // One ScrollView per conversation. `.initialOffset` then starts at the
         // bottom instead of reusing the previous list's offset through the morph.
-        // It places a list once, so a list born empty while the history loads
-        // gets a fresh one when the rows arrive; otherwise it stayed at the top
-        // of everything that came after (Maciej, 2026-10-19).
-        .id(orderedMessages.isEmpty ? conversation.id + "#empty" : conversation.id)
+        // It places a list once, so the list is recreated when the history
+        // finishes loading and when a list born empty gets its first rows;
+        // otherwise it stayed at the top of everything that came after
+        // (Maciej, 2026-10-19). The composer stays put.
+        .id([
+          conversation.id, conversation.historyLoaded ? "loaded" : "loading",
+          orderedMessages.isEmpty ? "empty" : "rows",
+        ])
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.

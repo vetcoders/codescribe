@@ -302,8 +302,8 @@ final class OverlayController: ObservableObject {
     }
     state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
     state.autoCollapseExternalHold = { [weak self] in self?.windowHoldsAutoCollapse ?? false }
-    transientInteractions.onInteractionEnded = { [weak state] in
-      state?.noteAutoCollapseActivity()
+    transientInteractions.onInteractionChanged = { [weak state] in
+      state?.presentationInteractionDidChange()
     }
     state.attach()
   }
@@ -678,7 +678,8 @@ final class OverlayController: ObservableObject {
   /// keeps it on screen.
   func hideAfterPinRelease() {
     fadeOut(duration: Self.pinReleaseFadeSeconds) { [weak self] in
-      self?.state.keepVisibleBetweenTakes == false
+      guard let self else { return false }
+      return !self.state.keepVisibleBetweenTakes && !self.state.presentationInteractionHeld
     }
   }
 
