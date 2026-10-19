@@ -992,7 +992,6 @@ struct DictationOverlayView: View {
       ) {
         closeButton
       }
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: miniAgentMicrophone)
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
@@ -1046,7 +1045,7 @@ struct DictationOverlayView: View {
         } else if miniAgentMicrophone {
           // Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons,
           // the agent's beside the ordinary microphone, and the wordmark
-          // shortens to "cs" to make the room.
+          // shortens to "cs" to make the room; the panel then hugs them (09:36).
           channelStatusView
         }
         recordingControls(compact: false)

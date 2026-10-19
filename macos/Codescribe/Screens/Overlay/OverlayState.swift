@@ -649,6 +649,8 @@ final class OverlayState {
   /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
   /// which keeps an open agent channel on screen against it.
   var onClose: (() -> Void)?
+  /// An agent channel started or stopped recording; mini hugs its controls.
+  var onAgentCaptureChanged: ((Bool) -> Void)?
   /// The human Close intent (the brand dot) — wired by the orchestrator to a
   /// dismissal that no automatic visibility rule can veto.
   var onCloseIntent: (() -> Void)?
@@ -2474,6 +2476,7 @@ final class OverlayState {
     // full idle interval. Unchanged roster polls must not extend that interval.
     if wasChannelCapturing != channelAudioCaptureActive {
       noteAutoCollapseActivity()
+      onAgentCaptureChanged?(channelAudioCaptureActive)
       // The session counter runs for a channel take as it does for dictation:
       // from the first open channel until the last one closes. An open
       // dictation keeps its own clock.
