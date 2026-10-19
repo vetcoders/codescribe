@@ -1774,7 +1774,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
     XCTAssertTrue(status.contains("Microphone active"))
     XCTAssertFalse(status.contains(".popover("))
-    XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
+    // The column installs the same status view, with its corner buttons.
+    XCTAssertTrue(
+      view.contains("var roster = channelStatusView") && view.contains("roster.monitorBody("))
     XCTAssertTrue(status.contains("overlay-channel-delivery-"))
     XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
