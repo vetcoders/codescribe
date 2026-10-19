@@ -3497,3 +3497,27 @@ fn cloud_word_context_gates_mixed_producer_overlap_components() {
         }
     }
 }
+
+#[test]
+fn coarse_polarity_ignores_a_negation_outside_the_stubs_reach() {
+    use super::word_adjudication::coarse_polarity_disagrees;
+    // Founder take 19 X 09:55: at Stop Apple held only the sentence's last word.
+    let decode = "Dobra, czy ja mam coś do podmienienia ewentualnie, czy nie? \
+                  Czy zostajemy na tym, co jest?";
+    assert!(!coarse_polarity_disagrees("jest", decode));
+    assert!(!coarse_polarity_disagrees("co jest", decode));
+    assert!(!coarse_polarity_disagrees("podmienienia", decode));
+    for (held, candidate) in [
+        ("jest dobrze", "to nie jest dobrze"),
+        ("działa", "to nie działa"),
+        ("to działa", "to nie działa"),
+        ("to", "to nie działa"),
+        ("testuj", "nie testuj"),
+        ("nie testuj", "już testuj"),
+    ] {
+        assert!(
+            coarse_polarity_disagrees(held, candidate),
+            "{held:?} -> {candidate:?}"
+        );
+    }
+}
