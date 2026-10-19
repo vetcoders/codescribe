@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Dictation › Engine: the recognition mode first (the one editable choice),
+/// Dictation › Engine: the recognition mode first (the one recognition choice),
 /// then what the last transcription actually used — read-only rows sourced
-/// from the runtime verdict and the settings snapshot, never hardcoded.
+/// from the runtime verdict and the settings snapshot, never hardcoded — and
+/// last, the transcript markers added to delivered text.
 ///
 /// The mode has no section label of its own: the row below carries the one
 /// label ("Recognition mode") and the page headline already says the pane is
@@ -23,6 +24,11 @@ struct DictationEngineTab: View {
       DictationRuntimeRows(model: model)
         .padding(.top, SettingsScale.headerGap)
         .onAppear { model.refreshServingStatus() }
+
+      // What a dictation adds to the text it delivers (moved from About,
+      // Founder decision 2026-10-19).
+      TranscriptMarkersSection(model: model)
+        .padding(.top, SettingsScale.sectionGap)
     }
   }
 }
