@@ -1301,6 +1301,20 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   @MainActor
   func testRepeatedAgentSwitchPaintsLatestBubbleWithoutInputAndKeepsComposer() throws {
+    try assertAgentSwitchPaintsLatestBubble(width: 600, height: 500, textScale: 1)
+  }
+
+  /// Maciej, 2026-10-19: the wide window with the docked roster, at ⌘+ 1.6,
+  /// opened a long thread empty until he scrolled.
+  @MainActor
+  func testDockedAgentSwitchPaintsLatestBubbleAtLargeTextScale() throws {
+    try assertAgentSwitchPaintsLatestBubble(width: 1400, height: 900, textScale: 1.6)
+  }
+
+  @MainActor
+  private func assertAgentSwitchPaintsLatestBubble(
+    width: CGFloat, height: CGFloat, textScale: CGFloat
+  ) throws {
     let conversations = [173, 1, 35].enumerated().map { agent, count in
       OverlayConversation(
         id: "switch-agent-\(agent)", channel: "0", name: "Agent \(agent)", owner: nil,
@@ -1321,10 +1335,11 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       state.conversationDrafts[conversation.id] = "Draft for \(conversation.id)"
     }
     state.selectConversation(conversations[0].id)
-    let host = NSHostingView(rootView: DictationOverlayView(state: state))
+    let host = NSHostingView(
+      rootView: DictationOverlayView(state: state).environment(\.csTextScale, textScale))
     host.sizingOptions = []
     let panel = FloatingOverlayPanel(
-      contentRect: NSRect(x: 800, y: 300, width: 600, height: 500),
+      contentRect: NSRect(x: 800, y: 300, width: width, height: height),
       styleMask: [.borderless, .nonactivatingPanel, .resizable],
       backing: .buffered, defer: false)
     panel.isReleasedWhenClosed = false
@@ -1371,7 +1386,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         bubbles.contains {
           !$0.accessibilityFrame().isEmpty && viewport.intersects($0.accessibilityFrame())
         },
-        "agent \(index) has no painted latest bubble after switching")
+        "agent \(index) has no painted latest bubble after switching (\(width)×\(height) @\(textScale))")
       XCTAssertTrue(
         try XCTUnwrap(editor(host)) === originalEditor, "switch must not recreate input")
       XCTAssertEqual(originalEditor.string, "Draft for \(conversations[index].id)")

@@ -406,10 +406,18 @@ struct OverlayConversationView: View {
     }
   }
 
+  /// Newest rows built eagerly at the foot of the list. A LazyVStack sizes the
+  /// document from estimated row heights, so the bottom anchor of a long
+  /// history landed past the real last bubble: the thread opened empty and
+  /// painted only after a scroll measured its rows (Maciej, 2026-10-19).
+  /// Measured rows own the bottom now; older history stays lazy.
+  static let eagerTailCount = 12
+
   @ViewBuilder
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
+    let lazyEnd = max(0, orderedMessages.count - Self.eagerTailCount)
     let list = ScrollView {
-      LazyVStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: 12) {
         if !conversation.historyLoaded {
           ProgressView()
             .controlSize(.small)
@@ -419,7 +427,15 @@ struct OverlayConversationView: View {
             .font(.system(size: 13 * textScale))
             .foregroundStyle(palette.mutedText.color)
         }
-        ForEach(orderedMessages) { message in
+        if lazyEnd > 0 {
+          LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(orderedMessages[..<lazyEnd]) { message in
+              messageRow(message, maxBubbleWidth: maxBubbleWidth)
+                .id(message.id)
+            }
+          }
+        }
+        ForEach(orderedMessages[lazyEnd...]) { message in
           messageRow(message, maxBubbleWidth: maxBubbleWidth)
             .id(message.id)
         }
