@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
 - A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- Switching pages in Settings no longer freezes the window for a quarter of a second. Every switch re-validated the whole Whisper model on the main thread; the check now runs in the background and the page shows the last known model state until it lands.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
 
 ## [0.17.1] - 2026-10-17
