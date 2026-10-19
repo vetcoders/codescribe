@@ -322,4 +322,21 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertEqual(assistiveHits, 2)
     XCTAssertEqual(formattingHits, 2)
   }
+
+  /// The wire badge names the protocol, so a card title drops only the
+  /// trailing parenthesis that repeats that same wire. A product name in
+  /// parentheses stays (round 15, 2026-10-18).
+  func testProviderCardTitleDropsOnlyItsOwnWireSuffix() {
+    XCTAssertEqual(
+      ProviderCard.title(displayName: "OpenAI (Responses)", wire: "Responses"), "OpenAI")
+    XCTAssertEqual(
+      ProviderCard.title(displayName: "Anthropic (Messages)", wire: "Messages"), "Anthropic")
+    XCTAssertEqual(ProviderCard.title(displayName: "xAI (Grok)", wire: "Responses"), "xAI (Grok)")
+    XCTAssertEqual(
+      ProviderCard.title(displayName: "Libraxis (Messages)", wire: "Responses"),
+      "Libraxis (Messages)", "another wire's name is part of the title")
+    XCTAssertEqual(
+      ProviderCard.title(displayName: " (Responses)", wire: "Responses"), " (Responses)",
+      "a title is never cut down to nothing")
+  }
 }

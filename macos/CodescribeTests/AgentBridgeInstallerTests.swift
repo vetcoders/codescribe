@@ -485,6 +485,8 @@ final class AgentBridgeInstallerTests: XCTestCase {
       let status = installer.status()
       XCTAssertEqual(Set(status.installedClients), [.codex, .claudeCode])
       XCTAssertEqual(status.clientsNeedingRepair, [.codex, .claudeCode])
+      XCTAssertTrue(
+        status.clientsWithCurrentSkill.isEmpty, "a client needing repair is never up to date")
       XCTAssertEqual(Set(status.installedPaths), Set(skills.map(\.path)))
       XCTAssertTrue(status.detail.contains("Update will re-adopt it."), status.detail)
       XCTAssertTrue(status.detail.contains("Claude Code: managed folder found"))
@@ -493,6 +495,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       let updated = try installer.install(selectedClients: [.codex, .claudeCode])
       XCTAssertEqual(Set(updated.installedClients), [.codex, .claudeCode])
       XCTAssertTrue(updated.clientsNeedingRepair.isEmpty)
+      XCTAssertEqual(installer.status().clientsWithCurrentSkill, [.codex, .claudeCode])
       XCTAssertTrue(updated.detail.contains("receipt and managed folder found"))
       let newID = try XCTUnwrap(try jsonObject(receiptURL)["managed_id"] as? String)
       XCTAssertNotEqual(newID, oldID)
@@ -682,7 +685,12 @@ final class AgentBridgeInstallerTests: XCTestCase {
       resourceRoot: nextPayload, homeDirectory: home, environment: [:])
     let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
     let originalReceipt = try Data(contentsOf: receiptURL)
+    XCTAssertEqual(originalInstaller.status().clientsWithCurrentSkill, [.codex])
     XCTAssertTrue(nextInstaller.status().clientsNeedingRepair.isEmpty)
+    // Intact but older than the bundle: Creator says "Update available", not
+    // "Up to date" and not a repair.
+    XCTAssertEqual(nextInstaller.status().installedClients, [.codex])
+    XCTAssertTrue(nextInstaller.status().clientsWithCurrentSkill.isEmpty)
     XCTAssertEqual(try Data(contentsOf: receiptURL), originalReceipt)
     XCTAssertEqual(
       try Data(contentsOf: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md")),
