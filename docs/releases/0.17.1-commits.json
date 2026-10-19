@@ -1,7 +1,7 @@
 {
   "version": "0.17.1",
   "from_sha": "c39fb7409b8c8c124975d953b9f57c6fe33ab29e",
-  "to_sha": "05a9b4a7d7c36003360fd73f1631e38b096cd307",
+  "to_sha": "045749fe6ef99cc5c6c8770d58d29df45518ace5",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1646,6 +1646,18 @@
       "sha": "05a9b4a7d7c36003360fd73f1631e38b096cd307",
       "date": "2026-10-19",
       "subject": "build(test): rebaseline the full Swift suite for measured coverage",
+      "squash_headings": []
+    },
+    {
+      "sha": "1025390192c8436d2a4ce57fb3ca5a5b6d862508",
+      "date": "2026-10-19",
+      "subject": "docs(release): bind the inventory to the reconciled gate fixes",
+      "squash_headings": []
+    },
+    {
+      "sha": "045749fe6ef99cc5c6c8770d58d29df45518ace5",
+      "date": "2026-10-19",
+      "subject": "test(swift): retain negative budget fixtures after the rebaseline",
       "squash_headings": []
     }
   ]
