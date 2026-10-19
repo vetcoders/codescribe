@@ -28,7 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Whisper model's state reads beside the model heading instead of at the far right edge of the window, and setup's model step separates the heading from the model block.
 - Both notes under setup's interface-language picker use one text style.
 - The overlay menu names the Steer box "Wake the agent", and replies no longer carry an "Unsolicited reply" label.
-- In the Settings and Agent windows the header fades into the content in its own tone instead of a glass band with a hard edge. The sidebar keeps the system glass.
 - The overlay's agent list marks the open conversation the same way on every row, "0 · All" included: a slim accent bar on the leading edge over a light veil. "0 · All" no longer sits on a violet wash and stays apart by its place at the top, its antenna and the divider below it. Hover on a row is a light veil instead of a milky patch in the light appearance, and the rows are denser.
 - Conversation bubbles in the overlay may use more of the column (92 % instead of 82 %), so a docked agent list no longer leaves an empty band beside them.
 - The Agent window and Settings share one sidebar, with Settings as the model: the same width (216 pt), search field, section headers, selection and glass, and the same toggle button at the left of the toolbar with `Control+Command+S`. Each window remembers whether its sidebar is open. Conversation titles take the system sidebar style and dim with the window like any other sidebar row.
@@ -51,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
 - A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- ⌘C copies text selected in an overlay bubble. A click into the bubble moved focus off the transcript and the panel gave up the keyboard in the same click, so the shortcut went to the app behind it.
+- The agent list docked beside the overlay conversation grows with the overlay text size like the conversation does, instead of staying at the default size while its column widens.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
 
 ## [0.17.1] - 2026-10-17
