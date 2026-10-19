@@ -96,11 +96,14 @@ At start the follower records them in its lease as `frame`: `session`,
 `pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
 and `host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`). `frame` is `null`
 for an agent outside vc-frame. A follower that predates this contract reports
-no `frame` until it is restarted. The vc-frame binary is not recorded: each
-click resolves `vc-frame` on PATH and skips `vibecrafted/releases/*/bin`, as
-the installed shim does, so a follower that outlives an upgrade never calls a
-removed generation. `VIBECRAFTED_VC_FRAME_BIN` names one generation and is not
-used.
+no `frame` until it is restarted. The address comes from the owner's own pane
+(`VC_FRAME_PANE_ID`, `VC_FRAME_SESSION_NAME`, `VC_FRAME_SOCKET_DIR`, with the
+`ZELLIJ_*` names as fallback), the exported Vibecrafted contract.
+
+The program is not part of the address. Each click runs the public `vc-frame`
+resolved on PATH at that moment (contract of the Vibecrafted maintainer,
+2026-10-19). `VIBECRAFTED_VC_FRAME_BIN` pins Vibecrafted's internal engine and
+is not a fallback; with no `vc-frame` on PATH the click answers `error`.
 
 The request is a row on the agent's bus, schema
 `codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with
@@ -1484,25 +1487,6 @@ a bounded cooldown, without blocking journal consumption. Missing or mismatched
 provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
-
-### Threads outside the local Codex store
-
-Native wakeup reaches only a thread the local Codex CLI can load. `codex queue`
-and `thread/queue/delete` resolve the thread from the local thread store, whose
-sessions are the `rollout-*-<thread-id>.jsonl` files under `~/.codex/sessions`.
-A thread that lives in the cloud — for example a Codex conversation started from
-the ChatGPT app with a cloud environment, where this Mac runs only its executor
-(`codex exec-server --remote https://…`) — has no local rollout. Every
-submission is refused with `invalid thread-store request: no rollout found for thread id …` and the transport receipt records `disposition: rejected`.
-Pointing `codex queue --remote unix://` at the shared local app-server daemon
-does not help: that daemon does not hold the thread either.
-
-Such an agent still reads, acknowledges, sends and speaks normally; only waking
-it after its turn has ended is unavailable. Keep its turn open with one
-`cs-bus --watch --until-event` for as long as it must hear the bus, or let an
-orchestrator that is woken through its own channel resume it. To see where a
-thread lives, follow the process tree of its `cs-bus --watch`: a
-`codex exec-server --remote` parent means a cloud thread.
 
 ## Unexpected listener loss and recovery
 
