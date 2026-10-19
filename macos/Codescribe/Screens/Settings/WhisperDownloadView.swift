@@ -11,17 +11,19 @@ struct WhisperDownloadView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 12) {
+      // The state belongs to the model named beside it, so it sits next to the
+      // heading instead of drifting to the far edge of whatever hosts this control.
+      HStack(spacing: 10) {
         Text(
           String(
             localized: LocalizedStringResource(
               "Whisper model", locale: locale, comment: "Shared Whisper download control heading"))
         )
         .font(.body.weight(.semibold))
-        Spacer(minLength: 0)
         Text(installLabel)
           .font(.caption.weight(.medium))
           .foregroundStyle(store.status.available ? CSColor.oliveLight : Color.secondary)
+        Spacer(minLength: 0)
       }
       Text(store.status.modelId).font(.callout)
       Text(

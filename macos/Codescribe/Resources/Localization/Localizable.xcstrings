@@ -1353,7 +1353,7 @@
         }
       }
     },
-    "%lld recordings from %lld days, %lld threads (%@ MB)" : {
+    "%lld recordings from %lld days, %lld conversations (%@ MB)" : {
       "comment" : "Reset impact; each count needs its own plural variation",
       "localizations" : {
         "en" : {
@@ -1410,13 +1410,13 @@
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg thread"
+                      "value" : "%arg conversation"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg threads"
+                      "value" : "%arg conversations"
                     }
                   }
                 }
@@ -1502,25 +1502,25 @@
                   "few" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątki"
+                      "value" : "%arg rozmowy"
                     }
                   },
                   "many" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątków"
+                      "value" : "%arg rozmów"
                     }
                   },
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątek"
+                      "value" : "%arg rozmowa"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątku"
+                      "value" : "%arg rozmowy"
                     }
                   }
                 }
@@ -2873,17 +2873,6 @@
         }
       }
     },
-    "Agentic — dictation + AI agent" : {
-      "comment" : "Operating lane choice; Agentic is the lane name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent — głos + AI"
-          }
-        }
-      }
-    },
     "Agents" : {
       "localizations" : {
         "pl" : {
@@ -3483,18 +3472,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatycznie"
-          }
-        }
-      }
-    },
-    "Auto-detect when you speak several languages." : {
-      "comment" : "Detail under the Auto-detect dictation language choice",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Automatyczne wykrywanie mowy, gdy mówisz w kilku językach."
+            "value" : "Automatyczne wykrywanie języka"
           }
         }
       }
@@ -3626,17 +3604,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb podstawowy pozostaje bezpłatny. Licencja odblokowuje tryb agentowy."
-          }
-        }
-      }
-    },
-    "Basic — dictation only" : {
-      "comment" : "Operating lane choice; Basic is the lane name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy — praca z tekstem"
           }
         }
       }
@@ -5600,6 +5567,27 @@
         }
       }
     },
+    "Conversation" : {
+      "comment" : "Menu section header above the current conversation's actions",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa"
+          }
+        }
+      }
+    },
+    "Conversation title" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tytuł rozmowy"
+          }
+        }
+      }
+    },
     "Conversation width" : {
       "comment" : "Submenu of the Agent header menu",
       "localizations" : {
@@ -5859,12 +5847,12 @@
         }
       }
     },
-    "Could not load threads. Try refreshing the list." : {
+    "Could not load conversations. Try refreshing the list." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się wczytać wątków. Spróbuj odświeżyć listę."
+            "value" : "Nie udało się wczytać rozmów. Spróbuj odświeżyć listę."
           }
         }
       }
@@ -5895,22 +5883,22 @@
         }
       }
     },
-    "Could not refresh threads. The previous list is still shown." : {
+    "Could not refresh conversations. The previous list is still shown." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się odświeżyć wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się odświeżyć rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
     },
-    "Could not reload threads. The previous list was restored." : {
+    "Could not reload conversations. The previous list was restored." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się ponownie wczytać wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się ponownie wczytać rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
@@ -5936,12 +5924,12 @@
         }
       }
     },
-    "Could not search threads. The previous list is still shown." : {
+    "Could not search conversations. The previous list is still shown." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie udało się przeszukać wątków. Wyświetlana jest poprzednia lista."
+            "value" : "Nie udało się przeszukać rozmów. Wyświetlana jest poprzednia lista."
           }
         }
       }
@@ -6517,22 +6505,22 @@
         }
       }
     },
-    "Delete Thread" : {
+    "Delete Conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń wątek"
+            "value" : "Usuń rozmowę"
           }
         }
       }
     },
-    "Delete this thread?" : {
+    "Delete this conversation?" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usunąć ten wątek?"
+            "value" : "Usunąć tę rozmowę?"
           }
         }
       }
@@ -6693,7 +6681,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz po prostu dyktować albo pracować głosem razem z agentem AI."
+            "value" : "Możesz dyktować albo pracować głosem razem z agentem AI."
           }
         }
       }
@@ -6705,6 +6693,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dyktowanie"
+          }
+        }
+      }
+    },
+    "Dictation + AI agent" : {
+      "comment" : "Operating lane choice: dictation plus the AI agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głos + AI"
           }
         }
       }
@@ -6726,6 +6725,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Sterowanie dyktowaniem"
+          }
+        }
+      }
+    },
+    "Dictation only" : {
+      "comment" : "Operating lane choice: dictation without the AI agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Praca z tekstem"
           }
         }
       }
@@ -7322,17 +7332,6 @@
         }
       }
     },
-    "Everything is ready for transcription (%@)." : {
-      "comment" : "Setup summary when ready; the placeholder is the dictation engine name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wszystko gotowe do transkrypcji (%@)."
-          }
-        }
-      }
-    },
     "Expand" : {
       "comment" : "Opens a closed section",
       "localizations" : {
@@ -7460,12 +7459,12 @@
         }
       }
     },
-    "Favorite thread" : {
+    "Favorite conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj wątek do ulubionych"
+            "value" : "Dodaj rozmowę do ulubionych"
           }
         }
       }
@@ -7565,7 +7564,7 @@
         }
       }
     },
-    "Finish the current turn before changing the thread search." : {
+    "Finish the current turn before changing the conversation search." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8237,6 +8236,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gotowość"
+          }
+        }
+      }
+    },
+    "Image" : {
+      "comment" : "Attachment chip label for an image pasted into a message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obraz"
           }
         }
       }
@@ -9859,7 +9869,7 @@
         }
       }
     },
-    "Moves %lld Agent threads and %lld Agent files to Trash." : {
+    "Moves %lld Agent conversations and %lld Agent files to Trash." : {
       "comment" : "Agent reset impact; each count needs its own plural variation",
       "localizations" : {
         "en" : {
@@ -9896,13 +9906,13 @@
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg Agent thread"
+                      "value" : "%arg Agent conversation"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg Agent threads"
+                      "value" : "%arg Agent conversations"
                     }
                   }
                 }
@@ -9956,25 +9966,25 @@
                   "few" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątki Agenta"
+                      "value" : "%arg rozmowy Agenta"
                     }
                   },
                   "many" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątków Agenta"
+                      "value" : "%arg rozmów Agenta"
                     }
                   },
                   "one" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątek Agenta"
+                      "value" : "%arg rozmowa Agenta"
                     }
                   },
                   "other" : {
                     "stringUnit" : {
                       "state" : "translated",
-                      "value" : "%arg wątku Agenta"
+                      "value" : "%arg rozmowy Agenta"
                     }
                   }
                 }
@@ -10005,12 +10015,12 @@
         }
       }
     },
-    "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched." : {
+    "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, conversations, preferences, and API keys stay untouched." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Do Kosza trafi tylko ~/.codescribe/mcp.json. Nagrania, transkrypcje, wątki, ustawienia i klucze API pozostaną nietknięte."
+            "value" : "Do Kosza trafi tylko ~/.codescribe/mcp.json. Nagrania, transkrypcje, rozmowy, ustawienia i klucze API pozostaną nietknięte."
           }
         }
       }
@@ -10208,23 +10218,23 @@
         }
       }
     },
+    "New conversation" : {
+      "comment" : "Default title of an unnamed conversation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowa rozmowa"
+          }
+        }
+      }
+    },
     "New recordings open with the transcript. Turn off to show only the recording bar." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nowe nagrania otwierają się z transkrypcją. Wyłącz, aby pokazywać tylko pasek nagrywania."
-          }
-        }
-      }
-    },
-    "New thread" : {
-      "comment" : "Default title of an unnamed conversation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nowy wątek"
           }
         }
       }
@@ -11264,6 +11274,17 @@
         }
       }
     },
+    "One is enough: sign in with a provider account or add an API key. You can also do this later." : {
+      "comment" : "Setup step description; the account and the key are alternatives",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API. Możesz to zrobić także później."
+          }
+        }
+      }
+    },
     "Only %@ s of speech was heard; at least %@ s is needed. Speak normally for the whole measurement." : {
       "comment" : "Calibration refusal. Both placeholders are pre-formatted numbers of seconds: measured, then required",
       "localizations" : {
@@ -11481,13 +11502,13 @@
         }
       }
     },
-    "Opens this thread" : {
+    "Opens this conversation" : {
       "comment" : "Accessibility hint on a history row",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Otwiera ten wątek"
+            "value" : "Otwiera tę rozmowę"
           }
         }
       }
@@ -11563,28 +11584,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opcjonalne · nieskonfigurowane"
-          }
-        }
-      }
-    },
-    "Optional — without it, protected files stay unavailable to the Agent as context; dictation still works." : {
-      "comment" : "Consequence of a missing Full Disk Access scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opcjonalne — bez tego uprawnienia chronione pliki pozostają niedostępne dla Agenta jako kontekst; dyktowanie nadal działa."
-          }
-        }
-      }
-    },
-    "Optional — without it, the Agent cannot use your screen as context; dictation still works." : {
-      "comment" : "Consequence of a missing Screen Recording scope",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opcjonalne — bez tego uprawnienia Agent nie może korzystać z ekranu jako kontekstu; dyktowanie nadal działa."
           }
         }
       }
@@ -11683,12 +11682,12 @@
         }
       }
     },
-    "Overridden for this thread" : {
+    "Overridden for this conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmienione w tym wątku"
+            "value" : "Zmienione w tej rozmowie"
           }
         }
       }
@@ -13409,12 +13408,12 @@
         }
       }
     },
-    "Rename thread" : {
+    "Rename conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmień nazwę wątku"
+            "value" : "Zmień nazwę rozmowy"
           }
         }
       }
@@ -13627,17 +13626,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach Codescribe."
-          }
-        }
-      }
-    },
-    "Required for transcription" : {
-      "comment" : "Setup Done group: what Finish waits for",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do transkrypcji"
           }
         }
       }
@@ -14217,19 +14205,19 @@
         }
       }
     },
-    "Saved the whole thread as %@ in %@." : {
+    "Saved the whole conversation as %@ in %@." : {
       "comment" : "Placeholders: file name, then folder path",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Saved the whole thread as %1$@ in %2$@."
+            "value" : "Saved the whole conversation as %1$@ in %2$@."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Cały wątek zapisano w folderze %2$@ jako plik %1$@."
+            "value" : "Całą rozmowę zapisano w folderze %2$@ jako plik %1$@."
           }
         }
       }
@@ -14455,6 +14443,16 @@
         }
       }
     },
+    "Search conversations" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znajdź rozmowę"
+          }
+        }
+      }
+    },
     "Search conversations…" : {
       "comment" : "Prompt inside the saved conversations search field",
       "localizations" : {
@@ -14495,16 +14493,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szukaj w ustawieniach"
-          }
-        }
-      }
-    },
-    "Search threads" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Znajdź wątek"
           }
         }
       }
@@ -14848,17 +14836,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skonfiguruj"
-          }
-        }
-      }
-    },
-    "Set up an Agent account or an API key. You can also do this later." : {
-      "comment" : "Setup step description",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skonfiguruj konto Agenta lub klucz API. Możesz zrobić to także później."
           }
         }
       }
@@ -15395,12 +15372,6 @@
           }
         }
       }
-    },
-    "Space Grotesk — body 14" : {
-      "shouldTranslate" : false
-    },
-    "Space Grotesk — body 18" : {
-      "shouldTranslate" : false
     },
     "Spawn the server and list its tools" : {
       "localizations" : {
@@ -16042,17 +16013,6 @@
         }
       }
     },
-    "Steer (otherwise queued)" : {
-      "comment" : "Pill context menu: deliveries wake the agent; unticked, they queue silently",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Steruj (inaczej do kolejki)"
-          }
-        }
-      }
-    },
     "Step %lld of %lld" : {
       "comment" : "Setup wizard progress; first %lld is the current step, second the total",
       "localizations" : {
@@ -16518,6 +16478,12 @@
       }
     },
     "System surfaces own their material and borders." : {
+      "shouldTranslate" : false
+    },
+    "System — body 14" : {
+      "shouldTranslate" : false
+    },
+    "System — body 18" : {
       "shouldTranslate" : false
     },
     "Take not sealed yet" : {
@@ -17026,12 +16992,32 @@
         }
       }
     },
+    "The message is too long (64 KB limit)." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość jest za długa (limit 64 KB)."
+          }
+        }
+      }
+    },
     "The provider returned no models. Enter a model ID below." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostawca nie zwrócił żadnych modeli. Wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
+    "The revised message cannot be empty." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poprawiona wiadomość nie może być pusta."
           }
         }
       }
@@ -17362,27 +17348,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W tym tygodniu"
-          }
-        }
-      }
-    },
-    "Thread" : {
-      "comment" : "Menu section header above the current thread's actions",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wątek"
-          }
-        }
-      }
-    },
-    "Thread title" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tytuł wątku"
           }
         }
       }
@@ -17873,12 +17838,12 @@
         }
       }
     },
-    "Unfavorite thread" : {
+    "Unfavorite conversation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usuń wątek z ulubionych"
+            "value" : "Usuń rozmowę z ulubionych"
           }
         }
       }
@@ -18006,22 +17971,6 @@
         }
       }
     },
-    "Unsolicited reply" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Unsolicited reply"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wiadomość bez powiązanej wypowiedzi"
-          }
-        }
-      }
-    },
     "Unsupported" : {
       "comment" : "Whisper model status: quantized (Q8) weights the local engine cannot load",
       "localizations" : {
@@ -18044,13 +17993,13 @@
         }
       }
     },
-    "Untitled thread" : {
-      "comment" : "Thread with no title",
+    "Untitled conversation" : {
+      "comment" : "Conversation with no title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wątek bez tytułu"
+            "value" : "Rozmowa bez tytułu"
           }
         }
       }
@@ -18455,6 +18404,17 @@
         }
       }
     },
+    "Wake the agent" : {
+      "comment" : "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Budź agenta"
+          }
+        }
+      }
+    },
     "What I checked · %lld running · %lld tools" : {
       "comment" : "Tool activity header: calls still running, then the total",
       "localizations" : {
@@ -18693,6 +18653,17 @@
         }
       }
     },
+    "When you speak more than one language." : {
+      "comment" : "Detail under the Auto-detect dictation language choice",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gdy mówisz w różnych językach."
+          }
+        }
+      }
+    },
     "While holding Fn, press the chosen key to attach the selection." : {
       "localizations" : {
         "pl" : {
@@ -18780,13 +18751,13 @@
         }
       }
     },
-    "Without it, Apple dictation is unavailable; downloaded Whisper can still transcribe locally." : {
+    "Without it, Apple dictation is unavailable. Local transcription still works." : {
       "comment" : "Consequence of a missing Speech Recognition scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez tego uprawnienia dyktowanie Apple jest niedostępne; pobrany Whisper nadal może transkrybować lokalnie."
+            "value" : "Bez tego uprawnienia dyktowanie Apple jest niedostępne. Transkrypcja lokalna nadal działa."
           }
         }
       }
@@ -18809,6 +18780,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez tego uprawnienia globalne skróty nagrywania są niedostępne."
+          }
+        }
+      }
+    },
+    "Without it, protected files stay unavailable to the Agent as context. Dictation still works." : {
+      "comment" : "Consequence of a missing Full Disk Access scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia chronione pliki pozostają niedostępne dla Agenta jako kontekst. Dyktowanie działa."
+          }
+        }
+      }
+    },
+    "Without it, the Agent can't use your screen as context. Dictation still works." : {
+      "comment" : "Consequence of a missing Screen Recording scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez tego uprawnienia Agent nie może korzystać z ekranu jako kontekstu. Dyktowanie działa."
           }
         }
       }
@@ -18969,13 +18962,13 @@
         }
       }
     },
-    "You can change them later in System Settings." : {
+    "You can change these permissions later in System Settings." : {
       "comment" : "Setup permissions footnote; System Settings is the macOS application",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zmienisz je później w Ustawieniach systemowych."
+            "value" : "Te uprawnienia zmienisz później w Ustawieniach systemowych."
           }
         }
       }
@@ -22969,19 +22962,19 @@
       }
     },
     "tools.native.search_threads" : {
-      "comment" : "Native tool name: search the Agent's own threads",
+      "comment" : "Native tool name: search the Agent's own conversations",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Search in threads"
+            "value" : "Search in conversations"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Szukaj w wątkach"
+            "value" : "Szukaj w rozmowach"
           }
         }
       }

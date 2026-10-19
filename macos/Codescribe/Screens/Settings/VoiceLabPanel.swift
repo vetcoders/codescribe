@@ -737,7 +737,7 @@ struct VoiceLabPanel: View {
           if row.isLowConfidence {
             Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
               .textCase(.uppercase)
-              .font(CSFont.mono(9.5, .semibold))
+              .font(CSFont.ui(9.5, .semibold))
               .foregroundStyle(CSColor.terracotta)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
@@ -751,7 +751,7 @@ struct VoiceLabPanel: View {
               comment: "Dictionary badge: the session closed before this take was reviewed"
             )
             .textCase(.uppercase)
-            .font(CSFont.mono(9.5, .semibold))
+            .font(CSFont.ui(9.5, .semibold))
             .foregroundStyle(CSColor.chromeAccent)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -1238,7 +1238,8 @@ struct VoiceLabPanel: View {
             .disabled(safeIndex == 0)
           Spacer()
           Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.ui(10.5, .medium))
+            .monospacedDigit()
             .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") {
@@ -1317,7 +1318,7 @@ struct VoiceLabPanel: View {
                 Button("Teach") {
                   model.teachRuleCandidate(target: candidate.target, variant: variant)
                 }
-                .font(CSFont.mono(10.5, .semibold))
+                .font(CSFont.ui(10.5, .semibold))
                 .controlSize(.small)
                 .disabled(model.voiceLabTeachPending)
                 .accessibilityLabel("Teach \(variant) as \(candidate.target)")
@@ -1334,7 +1335,8 @@ struct VoiceLabPanel: View {
               .disabled(safeIndex == 0)
             Spacer()
             Text("\(safeIndex + 1) of \(model.ruleCandidates.count)")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.ui(10.5, .medium))
+              .monospacedDigit()
               .foregroundStyle(Color.secondary)
             Spacer()
             Button("Next") {

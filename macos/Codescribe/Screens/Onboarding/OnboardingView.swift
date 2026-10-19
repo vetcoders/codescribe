@@ -53,6 +53,7 @@ struct OnboardingView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(28)
           .id(model.stepIndex)
+          .csAutohidingScrollers()
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
       footer
@@ -156,7 +157,9 @@ struct OnboardingView: View {
       HStack {
         Wordmark(size: 16)
         Spacer()
-        Text(model.progressLabel).font(.callout).foregroundStyle(.secondary)
+        Text(model.progressLabel)
+          .font(CSFont.ui(12, .regular))
+          .foregroundStyle(CSColor.textMuted)
       }
       HStack(spacing: 12) {
         Image(systemName: chapter.symbol)
@@ -164,14 +167,14 @@ struct OnboardingView: View {
           .frame(width: 34, height: 34)
           .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 5) {
-          Text(chapter.title).font(.headline)
+          Text(chapter.title).font(CSFont.ui(13, .bold)).foregroundStyle(CSColor.textHigh)
           if let purpose = chapter.purpose {
-            Text(purpose).font(.subheadline).foregroundStyle(.secondary)
+            Text(purpose).font(CSFont.ui(11, .regular)).foregroundStyle(CSColor.textMuted)
           }
         }
         Spacer(minLength: 0)
       }
-      ProgressView(value: Double(model.stepIndex), total: Double(max(1, model.totalSteps - 1)))
+      ProgressView(value: model.progressFraction)
         .controlSize(.small)
         .accessibilityLabel("Setup progress")
     }

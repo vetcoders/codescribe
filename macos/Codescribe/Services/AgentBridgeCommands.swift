@@ -219,6 +219,20 @@ enum OverlayDeliveryControl: String, CaseIterable, Sendable {
   case revise, withdraw, release
 }
 
+enum AgentBusMessageValidationError: LocalizedError {
+  case messageTooLong
+  case emptyRevision
+
+  var errorDescription: String? {
+    switch self {
+    case .messageTooLong:
+      String(localized: "The message is too long (64 KB limit).")
+    case .emptyRevision:
+      String(localized: "The revised message cannot be empty.")
+    }
+  }
+}
+
 private struct AgentBroadcastPolicyReceipt: Decodable, Sendable {
   let schema: String
   let provider: String
@@ -599,7 +613,9 @@ extension RealAgentBridgeInstaller {
       process.standardOutput = FileHandle.nullDevice
       process.standardError = diagnostics
       // Bound text fits in the pipe; writing happens off the UI thread.
-      guard message.text.utf8.count <= 65536 else { throw CocoaError(.fileWriteOutOfSpace) }
+      guard message.text.utf8.count <= 65536 else {
+        throw AgentBusMessageValidationError.messageTooLong
+      }
       try process.run()
       try input.fileHandleForWriting.write(contentsOf: Data(message.text.utf8))
       try input.fileHandleForWriting.close()
@@ -702,9 +718,12 @@ extension RealAgentBridgeInstaller {
       let arguments = try deliveryControlArguments(
         control, identity: identity, owner: owner, busPath: busPath, root: root)
       if control == .revise {
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-          text.utf8.count <= 65536
-        else { throw CocoaError(.fileWriteOutOfSpace) }
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+          throw AgentBusMessageValidationError.emptyRevision
+        }
+        guard text.utf8.count <= 65536 else {
+          throw AgentBusMessageValidationError.messageTooLong
+        }
       }
       let process = Process()
       let input = Pipe()

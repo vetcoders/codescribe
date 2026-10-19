@@ -34,7 +34,7 @@ struct DictionaryWordPins: View {
           Text("No recorded word slots for this take.")
             .foregroundStyle(.secondary)
         } else {
-          Text(snapshot.session).font(.caption.monospaced()).textSelection(.enabled)
+          Text(snapshot.session).font(CSFont.mono(11)).textSelection(.enabled)
           Text("Select a pin to inspect its PCM range and source.")
             .font(.caption).foregroundStyle(.secondary)
           ScrollView(.vertical) {
@@ -44,7 +44,7 @@ struct DictionaryWordPins: View {
                   selected = pin.id
                 } label: {
                   HStack(spacing: 10) {
-                    Text(verbatim: "#\(pin.index)").font(.caption.monospaced()).frame(width: 38)
+                    Text(verbatim: "#\(pin.index)").font(CSFont.mono(11)).frame(width: 38)
                     Text(pin.text).lineLimit(1).frame(width: 140, alignment: .leading)
                     GeometryReader { geometry in
                       let span = max(1, pin.occurrenceEnd - pin.occurrenceStart)
@@ -59,7 +59,7 @@ struct DictionaryWordPins: View {
                       .frame(height: 22)
                     }
                     .frame(minWidth: 100, maxWidth: .infinity, minHeight: 22, maxHeight: 22)
-                    Text(pin.timeRange).font(.caption.monospaced()).frame(width: 130)
+                    Text(pin.timeRange).font(CSFont.mono(11)).frame(width: 130)
                     Text(pin.producer).font(.caption).frame(width: 75, alignment: .leading)
                   }
                   .padding(6)
@@ -72,6 +72,7 @@ struct DictionaryWordPins: View {
                   Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer)"))
               }
             }
+            .csAutohidingScrollers()
           }
           .frame(maxHeight: 280)
           if let pin = snapshot.pins.first(where: { $0.id == selected }) {
@@ -83,10 +84,10 @@ struct DictionaryWordPins: View {
                 "Observation", value: "\(pin.producer) / \(pin.request) / \(pin.generation)")
               LabeledContent("Occurrence", value: "\(pin.occurrenceStart)–\(pin.occurrenceEnd)")
               DisclosureGroup("Recorded adjudication") {
-                Text(pin.adjudication).font(.caption.monospaced()).textSelection(.enabled)
+                Text(pin.adjudication).font(CSFont.mono(11)).textSelection(.enabled)
               }
             }
-            .font(.caption.monospaced())
+            .font(CSFont.mono(11))
             .textSelection(.enabled)
           }
           Text(

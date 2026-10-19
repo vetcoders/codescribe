@@ -187,7 +187,7 @@ struct SettingsUrlRow: View {
 
       if let error {
         Text(error)
-          .font(CSFont.mono(11, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
@@ -250,8 +250,9 @@ enum KeyRowPresentation {
 /// One Keychain account on one line: presence dot, label, state (`Set` /
 /// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
 /// paste-to-replace secure field, Save, Test, Clear. The account name is not
-/// on the row; the card's Advanced disclosure shows it. `optional` marks
-/// key-optional hosts (custom providers): an absent key is neutral there, not red.
+/// on the row; the card's Advanced disclosure shows it. `optional` marks a key
+/// nothing is waiting for — a key-optional host, or a provider already covered
+/// by a connected account — and only chooses the wording of the state.
 struct KeyRow: View {
   let account: String
   let label: String
@@ -279,8 +280,12 @@ struct KeyRow: View {
 
   private var isUpdating: Bool { mutationPending || operationPending }
 
+  /// Presence tints the row green; an absent key stays neutral whether or not
+  /// it is marked optional. A key that is simply missing blocks nothing on its
+  /// own — an account can cover the same provider — so red is reserved for a
+  /// real failure, which `KeyProbeChip` and the operation error report.
   private var accent: Color {
-    isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
+    isSet ? CSColor.olive : Color.secondary
   }
 
   init(
@@ -315,8 +320,8 @@ struct KeyRow: View {
         customProviderContent(endpoint: endpoint)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional)
-    // when not. Embedded rows keep the tint on the dot and state text only.
+    // Presence-tinted card: green when set, grey when not.
+    // Embedded rows keep the tint on the dot and state text only.
     .padding(.horizontal, embedded ? 0 : 15)
     .padding(.vertical, embedded ? 2 : 13)
     .background(
@@ -389,7 +394,7 @@ struct KeyRow: View {
 
   private var presenceState: some View {
     Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-      .font(CSFont.mono(10, .semibold))
+      .font(CSFont.ui(10, .semibold))
       .foregroundStyle(isSet ? CSColor.oliveLight : accent)
   }
 
@@ -559,7 +564,7 @@ struct KeyProbeChip: View {
 
   var body: some View {
     Text(label)
-      .font(CSFont.mono(10, .semibold))
+      .font(CSFont.ui(10, .semibold))
       .lineLimit(1)
       .foregroundStyle(tint)
       .padding(.horizontal, 8)
@@ -624,22 +629,24 @@ struct AccountLoginRow: View {
         .font(CSFont.ui(12.5, .semibold))
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
-        .font(CSFont.mono(10, .semibold))
+        .font(CSFont.ui(10, .semibold))
         .foregroundStyle(accent)
         .lineLimit(1)
         .truncationMode(.middle)
         .help(provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
-          .font(CSFont.mono(10, .medium))
+          .font(CSFont.ui(10, .medium))
           .foregroundStyle(CSColor.terracotta)
           .lineLimit(1)
           .help(loginNotice)
       }
       Spacer(minLength: 0)
+      // Sign out is a neutral chip like every other row action: it is an
+      // ordinary choice, and destructive styling belongs to a confirmation.
       if signedIn {
         SettingsChipButton(
-          "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
+          "Sign out", tint: Color.secondary, enabled: !loginPending, action: onSignOut
         )
         .help("Remove the stored \(accountBrand) account tokens")
         .accessibilityLabel("Sign out of \(accountBrand)")
@@ -686,7 +693,7 @@ struct OAuthClientIdButton: View {
   var body: some View {
     Button("OAuth client id…") { editing = true }
       .buttonStyle(.plain)
-      .font(CSFont.mono(10, .medium))
+      .font(CSFont.ui(10, .medium))
       .foregroundStyle(Color.secondary)
       .csFocusRing()
       .popover(isPresented: $editing, arrowEdge: .bottom) {

@@ -115,10 +115,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       OverlayConversationView.bubbleCap(contentWidth: 2000, textScale: 1.4), 924,
       accuracy: 0.001, "⌘+ grows the cap with the letters")
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0), (700 - 40) * 0.82,
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0), (700 - 40) * 0.92,
       accuracy: 0.001)
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4), (700 - 40) * 0.82,
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4), (700 - 40) * 0.92,
       accuracy: 0.001, "the window bound wins regardless of scale")
   }
 

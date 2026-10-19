@@ -4,15 +4,17 @@ import XCTest
 
 @testable import Codescribe
 
-/// Native regression suite for Settings sidebar material, translucency,
-/// hit-testing transparency, and accessibility contrast contracts.
+/// Native regression suite for the sidebar material behind the shared sidebar
+/// column of the Settings and Agent windows: translucency, hit-testing
+/// transparency, and accessibility contrast contracts. The column keeps the
+/// system glass (Monika, 2026-10-18).
 @MainActor
-final class SettingsSidebarMaterialTests: XCTestCase {
+final class CSSidebarMaterialTests: XCTestCase {
 
   // MARK: - Material Invariants
 
-  func testSettingsSidebarVisualEffectViewConfiguresNativeSidebarMaterial() async throws {
-    let host = NSHostingView(rootView: SettingsSidebarVisualEffectView())
+  func testCSSidebarVisualEffectViewConfiguresNativeSidebarMaterial() async throws {
+    let host = NSHostingView(rootView: CSSidebarVisualEffectView())
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 220, height: 600),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -26,7 +28,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     await nextMainQueueTurn()
 
-    let view = try XCTUnwrap(findView(of: SettingsSidebarVisualEffectNSView.self, in: host))
+    let view = try XCTUnwrap(findView(of: CSSidebarVisualEffectNSView.self, in: host))
     XCTAssertEqual(
       view.material, .sidebar,
       "Settings sidebar must use native macOS .sidebar material")
@@ -38,8 +40,8 @@ final class SettingsSidebarMaterialTests: XCTestCase {
       "Settings sidebar material must respond to window key and active activation states")
   }
 
-  func testSettingsSidebarVisualEffectViewDropsHitTesting() {
-    let view = SettingsSidebarVisualEffectNSView(
+  func testCSSidebarVisualEffectViewDropsHitTesting() {
+    let view = CSSidebarVisualEffectNSView(
       frame: NSRect(x: 0, y: 0, width: 220, height: 600))
 
     // Must return nil at all coordinates so clicks and scrolls pass through
@@ -53,7 +55,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
 
   func testReduceTransparencyAndIncreaseContrastPolicy() {
     XCTAssertFalse(
-      SettingsSidebarMaterial.shouldReduceTransparency(
+      CSSidebarMaterial.shouldReduceTransparency(
         reduceTransparency: false,
         contrast: .standard
       ),
@@ -61,7 +63,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     )
 
     XCTAssertTrue(
-      SettingsSidebarMaterial.shouldReduceTransparency(
+      CSSidebarMaterial.shouldReduceTransparency(
         reduceTransparency: true,
         contrast: .standard
       ),
@@ -69,7 +71,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     )
 
     XCTAssertTrue(
-      SettingsSidebarMaterial.shouldReduceTransparency(
+      CSSidebarMaterial.shouldReduceTransparency(
         reduceTransparency: false,
         contrast: .increased
       ),
@@ -77,7 +79,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
     )
 
     XCTAssertTrue(
-      SettingsSidebarMaterial.shouldReduceTransparency(
+      CSSidebarMaterial.shouldReduceTransparency(
         reduceTransparency: true,
         contrast: .increased
       ),
@@ -88,7 +90,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
   // MARK: - Hierarchy Mounting
 
   func testSidebarMaterialMountsVisualEffectViewInNormalConditions() async {
-    let materialView = SettingsSidebarMaterial(
+    let materialView = CSSidebarMaterial(
       reduceTransparency: false,
       contrast: .standard
     )
@@ -107,7 +109,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
   }
 
   func testSidebarMaterialFallsBackToOpaqueUnderReducedTransparency() async {
-    let materialView = SettingsSidebarMaterial(
+    let materialView = CSSidebarMaterial(
       reduceTransparency: true,
       contrast: .standard
     )
@@ -123,7 +125,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
   }
 
   func testSidebarMaterialFallsBackToOpaqueUnderIncreasedContrast() async {
-    let materialView = SettingsSidebarMaterial(
+    let materialView = CSSidebarMaterial(
       reduceTransparency: false,
       contrast: .increased
     )
@@ -175,6 +177,26 @@ final class SettingsSidebarMaterialTests: XCTestCase {
       "Window backgroundColor must be clear to avoid blocking behind-window translucency")
   }
 
+  func testBothWindowsRunTheMaterialUnderTheTitlebar() throws {
+    let codescribe = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe")
+    let column = try String(
+      contentsOf: codescribe.appendingPathComponent("DesignSystem/CSSidebarColumn.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(
+      column.contains(".background { CSSidebarMaterial().ignoresSafeArea() }"),
+      "the shared column backs every sidebar with the material from the bottom edge to the top")
+    for path in ["Screens/Settings/SettingsView.swift", "Screens/AgentChat/ThreadRail.swift"] {
+      let source = try String(
+        contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
+      XCTAssertTrue(
+        source.contains("CSSidebarColumn("), "\(path) builds its sidebar from the shared column")
+      XCTAssertFalse(
+        source.contains("CSSidebarMaterial()"), "\(path) never reaches for the material on its own")
+    }
+  }
+
   // MARK: - Appearance Adaptation
 
   func testSettingsHeaderKeepsTheSharedHeightAndFullSidebarMaterial() async throws {
@@ -198,7 +220,7 @@ final class SettingsSidebarMaterialTests: XCTestCase {
       XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY)
     }
     let material = try XCTUnwrap(
-      findView(of: SettingsSidebarVisualEffectNSView.self, in: host.view))
+      findView(of: CSSidebarVisualEffectNSView.self, in: host.view))
     let frame = material.convert(material.bounds, to: nil)
     XCTAssertEqual(frame.maxY, window.frame.height, accuracy: 1)
     XCTAssertEqual(frame.minY, 0, accuracy: 1)

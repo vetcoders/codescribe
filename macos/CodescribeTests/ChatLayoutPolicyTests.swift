@@ -79,7 +79,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(AgentWindowMetrics.minWidth, 640)
     XCTAssertEqual(AgentWindowMetrics.minHeight, 440)
     let detailAtFloor =
-      AgentWindowMetrics.minWidth - AgentSidebarMetrics.minimumWidth
+      AgentWindowMetrics.minWidth - CSSidebarWidth.navigation.minimum
     XCTAssertGreaterThanOrEqual(
       detailAtFloor,
       ChatLayoutPolicy.minimumReadable,
@@ -87,14 +87,17 @@ final class ChatLayoutPolicyTests: XCTestCase {
     )
     XCTAssertGreaterThan(
       AgentWindowMetrics.minWidth,
-      AgentSidebarMetrics.maximumWidth,
+      CSSidebarWidth.navigation.maximum,
       "window floor must stay wider than a fully dragged rail so native collapse is not the only way to keep detail visible"
     )
   }
 
+  /// The Agent rail is a navigation column with the Settings bounds since
+  /// the shared sidebar (Monika, 2026-10-18: the Settings sidebar wins).
   func testSidebarHasReadableFloorAndBoundedExpansion() {
-    XCTAssertEqual(AgentSidebarMetrics.minimumWidth, 267)
-    XCTAssertEqual(AgentSidebarMetrics.maximumWidth, 360)
+    XCTAssertEqual(CSSidebarWidth.navigation.minimum, 196)
+    XCTAssertEqual(CSSidebarWidth.navigation.ideal, 216)
+    XCTAssertEqual(CSSidebarWidth.navigation.maximum, 300)
   }
 
   @MainActor
@@ -126,35 +129,36 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(window.title, "Agent")
     let split = try XCTUnwrap(find(host.view), "Native split must be reachable after attachment")
     let item = try XCTUnwrap(split.splitViewItems.first(where: { $0.behavior == .sidebar }))
-    XCTAssertEqual(item.minimumThickness, 267)
-    XCTAssertEqual(item.maximumThickness, 360)
+    XCTAssertEqual(item.minimumThickness, 196)
+    XCTAssertEqual(item.maximumThickness, 300)
 
     let initialWidth = item.viewController.view.frame.width
     for title in ["Short", "Moderately descriptive title", String(repeating: "Long title ", count: 8)] {
       store.threads[0].title = title
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-      XCTAssertEqual(item.maximumThickness, 360, "titles cannot own the divider bounds")
+      XCTAssertEqual(item.maximumThickness, 300, "titles cannot own the divider bounds")
       XCTAssertEqual(item.viewController.view.frame.width, initialWidth, accuracy: 1)
     }
     let retainedThreads = store.threads
     store.threads = []
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    XCTAssertEqual(item.maximumThickness, 360, "empty search keeps the same column bounds")
+    XCTAssertEqual(item.maximumThickness, 300, "empty search keeps the same column bounds")
     store.threads = retainedThreads
     for windowWidth in [1120.0, 640.0, 1800.0, 800.0] {
       window.setContentSize(NSSize(width: windowWidth, height: 720))
-      for proposed in [267.0, 300.0, 360.0, 900.0] {
+      for proposed in [196.0, 250.0, 300.0, 900.0] {
         split.splitView.setPosition(proposed, ofDividerAt: 0)
         split.splitView.layoutSubtreeIfNeeded()
         pumpUntil(ceiling: 0.05) {
           let width = item.viewController.view.frame.width
-          return width >= 266 && width <= 361
+          return width >= 195 && width <= 301
         }
         XCTAssertFalse(item.isCollapsed)
-        XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 266)
-        XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 361)
+        XCTAssertGreaterThanOrEqual(item.viewController.view.frame.width, 195)
+        XCTAssertLessThanOrEqual(item.viewController.view.frame.width, 301)
         XCTAssertGreaterThanOrEqual(
-          split.splitViewItems[1].viewController.view.frame.width, 372)
+          split.splitViewItems[1].viewController.view.frame.width,
+          AgentWindowMetrics.detailMinWidth - 1)
       }
       item.isCollapsed = true
       pumpUntil(ceiling: 0.05) { item.isCollapsed }

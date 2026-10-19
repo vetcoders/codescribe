@@ -233,6 +233,7 @@ struct OverlayCoverageStatus: View {
             .font(CSFont.ui(11, .medium))
           }
         }
+        .csAutohidingScrollers()
       }
       .frame(width: 280)
       .frame(maxHeight: 320)

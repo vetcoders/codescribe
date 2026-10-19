@@ -4,8 +4,9 @@ Codescribe has two distinct conversation surfaces:
 
 - The floating **dictation overlay** shows your transcript and the conversations
   with coding agents attached to Codescribe channels.
-- **Show Agent** opens the built-in Agent window, with its own thread sidebar,
-  provider, tools and composer. It is not the channel roster in the overlay.
+- **Show Agent** opens the built-in Agent window, with its own conversation
+  sidebar, provider, tools and composer. It is not the channel roster in the
+  overlay.
 
 The floating overlay does not have Drawer / Agent / Settings tabs. Its channel
 menu switches between **My dictation**, **0 · All**, individual agents and saved
@@ -109,9 +110,11 @@ not a successful mute. Text remains visible when audio playback fails.
 
 ## Built-in Agent window
 
-Open **Show Agent** from the menu bar or use `Command+Shift+Space`. Select a thread
-in its sidebar, or create one explicitly with **New thread**. Summoning the window
-does not start recording or send a request.
+Open **Show Agent** from the menu bar or use `Command+Shift+Space`. Select a
+conversation in its sidebar, or create one explicitly with **New conversation**
+at the top of the sidebar. The sidebar looks and behaves like the one in Settings: the button at the
+left of the toolbar, or `Control+Command+S`, hides and shows it. Summoning the
+window does not start recording or send a request.
 
 The built-in Agent composer microphone records one turn until explicit Stop.
 It shares Codescribe's recording controller and transcription engine. Hands-free

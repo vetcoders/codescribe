@@ -161,6 +161,14 @@ struct FullTextView: NSViewRepresentable {
   let text: String
   let font: NSFont
 
+  /// The bubble's only AppKit state is the shared scroller policy (Founder,
+  /// 2026-10-18), so the pin is the coordinator.
+  func makeCoordinator() -> CSScrollerPin { CSScrollerPin() }
+
+  static func dismantleNSView(_ scrollView: NSScrollView, coordinator: CSScrollerPin) {
+    coordinator.detach()
+  }
+
   func makeNSView(context: Context) -> NSScrollView {
     // Explicit TextKit 2 stack (viewport-based layout); the convenience
     // `NSTextView.scrollableTextView()` can still wire up TextKit 1.
@@ -185,6 +193,7 @@ struct FullTextView: NSViewRepresentable {
     scrollView.documentView = textView
     scrollView.hasVerticalScroller = true
     scrollView.drawsBackground = false
+    context.coordinator.attach(to: scrollView)
     return scrollView
   }
 

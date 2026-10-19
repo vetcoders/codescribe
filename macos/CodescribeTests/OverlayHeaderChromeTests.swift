@@ -745,6 +745,67 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertNil(OverlayAgentAudioControls.litGlass(nil), "an unlit control keeps plain glass")
   }
 
+  /// Founder's website shots (2026-10-18): bubbles stayed legible under the
+  /// header glass, a mouse brought back legacy scrollers, the expandable
+  /// receipt sat right of a plain one and a jargon badge rode on replies.
+  func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
+    let conversation = try source("Overlay/OverlayConversationView.swift")
+    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
+    XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
+    let scroller = try source("../DesignSystem/CSScroller.swift")
+    XCTAssertTrue(scroller.contains("scrollView.scrollerStyle = .overlay"))
+    XCTAssertTrue(scroller.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertFalse(
+      try source("Overlay/OverlayCanvasSurface.swift").contains("scrollerStyle"),
+      "the overlay keeps no scroller policy of its own")
+    XCTAssertTrue(
+      conversation.contains(".menuStyle(.borderlessButton)"), "the receipt stays a native menu")
+    XCTAssertTrue(
+      conversation.contains(".padding(.leading, -Self.receiptMenuLabelInset)"),
+      "receipt keeps the edge")
+    XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
+  }
+
+  /// Founder, 2026-10-18: "te scrolle muszą zniknąć". SwiftUI's indicator
+  /// visibility cannot keep that promise with a mouse attached, so no screen
+  /// rests on it; every surface goes through `CSScrollerPin`.
+  func testNoScreenRestsOnSwiftUIScrollIndicatorsAlone() throws {
+    let screens = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens")
+    let files = try XCTUnwrap(FileManager.default.enumerator(at: screens, includingPropertiesForKeys: nil))
+      .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    XCTAssertFalse(files.isEmpty)
+    for file in files {
+      // Comments may still name what stood there; code may not.
+      let code = try String(contentsOf: file, encoding: .utf8)
+        .split(separator: "\n")
+        .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        .joined(separator: "\n")
+      XCTAssertFalse(
+        code.contains(".scrollIndicators(.hidden)"), "\(file.lastPathComponent) hides by hope")
+      XCTAssertFalse(code.contains("overlayAutohidingScroller"), file.lastPathComponent)
+    }
+  }
+
+  /// Store-minted attachment names never reach a chip.
+  func testAttachmentChipNamesThePictureOrTheChosenFile() {
+    let hash = String(repeating: "a1", count: 32)
+    let image = String(localized: "Image")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "inline_\(hash).png"), image)
+    let size = ByteCountFormatter.string(fromByteCount: 2_048, countStyle: .file)
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "inline_\(hash).png", bytes: 2_048),
+      "\(image) · \(size)")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_\(hash)_report.pdf"), "report.pdf")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_short_report.pdf"),
+      "clipboard_short_report.pdf", "only a full content hash is peeled")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "notes.txt"), "notes.txt")
+  }
+
   private func source(_ relative: String) throws -> String {
     let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent()

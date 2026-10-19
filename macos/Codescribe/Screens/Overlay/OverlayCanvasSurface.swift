@@ -63,9 +63,6 @@ struct OverlayCanvasBackdrop: View {
   /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
   /// sheet constant in both states; only the 16 % of desktop hint still follows
   /// the window.
-  ///
-  /// A nightly build's dark veil lets less of the desktop through, so its
-  /// lower black point is not lifted back by the glass.
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
     let alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
     return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
@@ -122,111 +119,25 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-extension View {
-  /// Overlay lists never wear a legacy scroller. SwiftUI's `.scrollIndicators`
-  /// only chooses between hidden and the style the system "Show scroll bars"
-  /// setting picked, so with a mouse attached a visible indicator is the thick
-  /// bar that never goes away (Founder, 2026-10-18). The composer pins the
-  /// overlay style on its own `NSScrollView`
-  /// (`OverlayConversationComposer.makeNSView`); this does the same to the
-  /// scroll view SwiftUI builds, so the scroller is a thin band that fades in
-  /// while scrolling and fades out after it.
-  func overlayAutohidingScroller() -> some View {
-    background(OverlayScrollerStyle())
-  }
-}
-
-/// Attaches inside the document view, so `enclosingScrollView` resolves to the
-/// list it was placed in rather than an outer pane — the way the chat's
-/// live-scroll observer finds its own scroll view.
-private struct OverlayScrollerStyle: NSViewRepresentable {
-  func makeCoordinator() -> Coordinator { Coordinator() }
-
-  func makeNSView(context: Context) -> AttachmentView {
-    let view = AttachmentView()
-    view.onAttach = { [weak coordinator = context.coordinator] scrollView in
-      coordinator?.attach(to: scrollView)
-    }
-    return view
-  }
-
-  func updateNSView(_ nsView: AttachmentView, context: Context) {
-    nsView.attachWhenReady()
-  }
-
-  static func dismantleNSView(_ nsView: AttachmentView, coordinator: Coordinator) {
-    coordinator.detach()
-  }
-
-  @MainActor
-  final class AttachmentView: NSView {
-    var onAttach: ((NSScrollView) -> Void)?
-
-    /// The view exists to configure the scroll view around it; it spans the
-    /// whole document and must not take a click away from the content.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func viewDidMoveToWindow() {
-      super.viewDidMoveToWindow()
-      attachWhenReady()
-    }
-
-    /// The backing scroll view exists one layout pass after the representable
-    /// is installed.
-    func attachWhenReady() {
-      Task { @MainActor [weak self] in
-        await Task.yield()
-        guard let self, let scrollView = enclosingScrollView else { return }
-        onAttach?(scrollView)
-      }
-    }
-  }
-
-  @MainActor
-  final class Coordinator {
-    private weak var scrollView: NSScrollView?
-    private var styleObserver: NSObjectProtocol?
-
-    func attach(to scrollView: NSScrollView) {
-      self.scrollView = scrollView
-      pinOverlayScrollers()
-      guard styleObserver == nil else { return }
-      // AppKit re-reads the system preference whenever it changes and would
-      // hand the list its legacy scroller straight back.
-      styleObserver = NotificationCenter.default.addObserver(
-        forName: NSScroller.preferredScrollerStyleDidChangeNotification,
-        object: nil,
-        queue: nil
-      ) { [weak self] _ in
-        MainActor.assumeIsolated {
-          self?.pinOverlayScrollers()
-        }
-      }
-    }
-
-    func detach() {
-      if let styleObserver { NotificationCenter.default.removeObserver(styleObserver) }
-      styleObserver = nil
-      scrollView = nil
-    }
-
-    private func pinOverlayScrollers() {
-      guard let scrollView else { return }
-      scrollView.scrollerStyle = .overlay
-      scrollView.autohidesScrollers = true
-      scrollView.hasHorizontalScroller = false
-    }
-  }
-}
-
 /// Header and composer use the same system-owned control surface.
+///
+/// A surface flush with the window's own edges must carry the window's corner,
+/// not the pill's: the header spans the full width at the very top, so its
+/// `CSRadius.pill` circular corner sat inside the canvas's `CSRadius.window`
+/// continuous clip and the two curves read as a cut-off right end (Founder,
+/// 2026-10-18). The composer floats inside the sheet and keeps the pill radius;
+/// the corner style is `.continuous` for both, the way every other shape on
+/// this canvas is drawn.
 struct OverlayControlGlass: ViewModifier {
+  var cornerRadius: CGFloat = CSRadius.pill
+
   @ViewBuilder
   func body(content: Content) -> some View {
+    let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     if #available(macOS 26.0, *) {
-      content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.regular.interactive(), in: shape)
     } else {
-      content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+      content.background(.regularMaterial, in: shape)
     }
   }
 }

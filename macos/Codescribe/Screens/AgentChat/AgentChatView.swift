@@ -9,7 +9,7 @@ struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   private let maxPermissions: SettingsViewModel?
   /// Persist only the user's expanded/collapsed choice; the split view owns
-  /// column geometry inside the fixed `AgentSidebarMetrics` bounds.
+  /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
 
@@ -19,13 +19,8 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: columnVisibility) {
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
       ThreadRail(store: store)
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMetrics.minimumWidth,
-          ideal: AgentSidebarMetrics.idealWidth,
-          max: AgentSidebarMetrics.maximumWidth
-        )
     } detail: {
       ThreadDetail(store: store, maxPermissions: maxPermissions)
         // Sized so the expanded columns fit the window floor exactly; the
@@ -33,8 +28,8 @@ struct AgentChatView: View {
         // view makes an opening sidebar slide to half its width and jump.
         .frame(minWidth: AgentWindowMetrics.detailMinWidth)
     }
+    .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
-    .background { AgentSidebarShortcut(toggle: { toggleSidebar() }) }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
     .background(AgentWindowCapabilities(isPinned: isPinned))
@@ -52,40 +47,10 @@ struct AgentChatView: View {
     }
   }
 
-  /// The system sidebar toggle, a divider drag to collapse and ⌃⌘S all write
-  /// through here, so every path persists the same choice.
-  private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-    Binding(
-      get: { sidebarExpanded ? .all : .detailOnly },
-      set: { sidebarExpanded = $0 != .detailOnly }
-    )
-  }
-
-  private func toggleSidebar() {
-    withAnimation {
-      sidebarExpanded.toggle()
-    }
-  }
-}
-
-/// ⌃⌘S without a second visible toggle. The split view's own toolbar toggle
-/// sits in the sidebar column while it is open and on the detail's leading
-/// edge while it is collapsed; it carries no key equivalent, and the
-/// accessory app has no View menu to lend one, so this zero-size button holds
-/// the shortcut only.
-private struct AgentSidebarShortcut: View {
-  let toggle: () -> Void
-
-  var body: some View {
-    Button(action: toggle) {
-      EmptyView()
-    }
-    .buttonStyle(.plain)
-    .keyboardShortcut("s", modifiers: [.command, .control])
-    .frame(width: 0, height: 0)
-    .opacity(0)
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
+  /// The toolbar toggle, a divider drag to collapse and ⌃⌘S all write the
+  /// one persisted flag, so every path keeps the same choice.
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    CSSidebarVisibility.binding(expanded: $sidebarExpanded)
   }
 }
 
@@ -98,33 +63,31 @@ private struct MaxPermissionPresentation: View {
       ScrollView {
         MaxApprovalCards(model: model)
           .padding(CSSpace.card)
+          .csAutohidingScrollers()
       }
       .frame(maxHeight: 260)
     }
   }
 }
 
-/// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 267) plus a usable detail column stay a single invariant:
-/// The root layout and the AppKit window agree on this floor, including when
-/// SwiftUI recomputes its window constraints after the sidebar collapses.
+/// Desktop-utility window floor for Agent. Named so the shared sidebar
+/// column (`CSSidebarWidth.navigation`, opening at its ideal 216) plus a
+/// usable detail column stay a single invariant: the root layout and the
+/// AppKit window agree on this floor, including when SwiftUI recomputes its
+/// window constraints after the sidebar collapses. The floor itself did not
+/// move when the rail narrowed; the conversation took the points the rail
+/// gave up.
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
   static let idealWidth: CGFloat = 840
   static let idealHeight: CGFloat = 520
-  /// Narrowest conversation column. With the rail at its minimum the window
-  /// lands exactly on `minWidth`.
-  static let detailMinWidth: CGFloat = minWidth - AgentSidebarMetrics.minimumWidth
-}
-
-/// Fixed bounds of the native sidebar column. Long thread titles truncate
-/// inside them; they never widen the column. Collapsing removes the whole
-/// column.
-enum AgentSidebarMetrics {
-  static let minimumWidth: CGFloat = 267
-  static let idealWidth: CGFloat = 267
-  static let maximumWidth: CGFloat = 360
+  /// Narrowest conversation column. The split view opens the rail at its
+  /// ideal width, not its minimum, so the window lands exactly on `minWidth`
+  /// with the rail as it opens — the rule Settings already follows
+  /// (880 − 216). Sized from the 196 pt minimum, the columns overran the
+  /// 640 pt floor by 20 pt on both sides.
+  static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.ideal
 }
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
@@ -133,6 +96,33 @@ enum AgentSidebarMetrics {
 enum AgentWindowChrome {
   static func title() -> String {
     String(localized: "Agent", comment: "Agent window title")
+  }
+
+  /// The one Agent window, built the same way for the app and its tests.
+  /// The window carries its final style mask before SwiftUI sees the content:
+  /// created from the controller first and given `.fullSizeContentView`
+  /// afterwards, it never gets the split view's sidebar toggle.
+  @MainActor
+  static func makeWindow(content: NSViewController) -> NSWindow {
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
+      styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+      backing: .buffered,
+      defer: false
+    )
+    window.contentViewController = content
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.isReleasedWhenClosed = false
+    // LSUIElement accessory: join the active Space so a passive
+    // `orderFrontRegardless` is actually visible during voice delivery.
+    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    DockPresence.adopt(window)
+    // After adopt: style-mask repair must not leave a second painted "Agent" row.
+    apply(window)
+    return window
   }
 
   @MainActor
@@ -207,8 +197,8 @@ private struct AgentIntegratedChrome: ViewModifier {
     content
       .toolbar { agentToolbar }
       .modifier(CSWindowHeaderChrome())
-      .alert("Rename thread", isPresented: $isRenaming) {
-        TextField("Thread title", text: $renameText)
+      .alert("Rename conversation", isPresented: $isRenaming) {
+        TextField("Conversation title", text: $renameText)
         Button("Rename") {
           if let thread = store.currentThread { store.rename(thread, to: renameText) }
         }
@@ -263,7 +253,7 @@ private struct AgentIntegratedChrome: ViewModifier {
 
   private var identityCluster: some View {
     HStack(spacing: 8) {
-      Text(store.currentThread?.title ?? "—")
+      Text(verbatim: store.currentThread.map { ThreadRowTitle.labelTitle(for: $0) } ?? "—")
         .font(CSFont.ui(14, .semibold))
         .foregroundStyle(Color.primary)
         .lineLimit(1)
@@ -358,7 +348,9 @@ private struct AgentIntegratedChrome: ViewModifier {
             store.toggleFavorite(thread)
           }
         } header: {
-          Text("Thread", comment: "Menu section header above the current thread's actions")
+          Text(
+            "Conversation",
+            comment: "Menu section header above the current conversation's actions")
         }
         if thread.backendId != nil {
           Section {
@@ -377,7 +369,7 @@ private struct AgentIntegratedChrome: ViewModifier {
           Button("Open settings") { openWindow.presentSettings() }
         }
         Section {
-          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
+          Button("Delete Conversation", role: .destructive) { deleteCandidate = thread }
         }
       }
     } label: {
@@ -473,7 +465,7 @@ private struct ThreadDetail: View {
   var body: some View {
     conversation
       .modifier(AgentScrollBottomBar { composerDock })
-      .modifier(CSDetailHeaderGlass())
+      .modifier(CSDetailHeaderFade())
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background(CSColor.sheet)
       .alert(
@@ -727,6 +719,7 @@ struct ToolApprovalCard: View {
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
+              .csAutohidingScrollers()
           }
           .frame(maxHeight: Self.argumentsMaxHeight)
         }
@@ -783,7 +776,7 @@ enum ThreadExportOutcome: Equatable {
           "Saved the Agent replies as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
         : Text(
-          "Saved the whole thread as \(file) in \(folder).",
+          "Saved the whole conversation as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
     case .failed(let threadTitle, _):
       return Text(

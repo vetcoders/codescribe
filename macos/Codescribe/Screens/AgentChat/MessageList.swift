@@ -308,6 +308,7 @@ struct MessageList: View {
               _ = followState.handle(event)
             }
           )
+          .csAutohidingScrollers()
         }
         .scrollContentBackground(.hidden)
         // The document height is exact (see `emptyStateHeight`), so this only
@@ -872,7 +873,7 @@ struct AttachmentChip: View {
           CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
         }
         Text(attachment.name)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(10.5, .medium))
           .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.middle)
@@ -938,7 +939,7 @@ struct AttachmentPreviewSheet: View {
       HStack(alignment: .firstTextBaseline) {
         VStack(alignment: .leading, spacing: 4) {
           Text(attachment.name)
-            .font(CSFont.mono(13, .semibold))
+            .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Text(attachment.type)
@@ -962,6 +963,9 @@ struct AttachmentPreviewSheet: View {
               )
               .padding(Self.imageInset)
               .frame(maxWidth: .infinity, maxHeight: .infinity)
+              // A zoomed picture scrolls on both axes; only the style is
+              // pinned (Founder, 2026-10-18).
+              .csAutohidingScrollers(.includesHorizontal)
           }
           .frame(minHeight: 280, maxHeight: 480)
           .background(Color.primary.opacity(0.04))
@@ -1689,7 +1693,7 @@ private struct CopyButton: View {
 /// there is nothing to copy.
 struct CopyMessageButton: View {
   let text: String
-  var labelFont: Font = CSFont.mono(10, .medium)
+  var labelFont: Font = CSFont.ui(10, .medium)
   var restingColor: Color = CSColor.textTertiary
   @State private var copied = false
   @State private var hovering = false

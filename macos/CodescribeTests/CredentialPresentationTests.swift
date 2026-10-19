@@ -54,10 +54,13 @@ final class CredentialPresentationTests: XCTestCase {
         model.selectedProviderKeySet, key,
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
-      if account && !key {
-        XCTAssertEqual(model.selectedProviderAccountStatus, "Connected")
-        XCTAssertEqual(model.selectedProviderKeyStatus, "Not set")
-      }
+      // An account and a key are alternatives: whichever is missing reads
+      // "Optional" once the other covers the provider.
+      XCTAssertEqual(
+        model.selectedProviderAccountStatus,
+        account ? "Connected" : (key ? "Optional" : "Not connected"))
+      XCTAssertEqual(
+        model.selectedProviderKeyStatus, key ? "Set" : (account ? "Optional" : "Not set"))
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
       model.refreshProviderAccess()

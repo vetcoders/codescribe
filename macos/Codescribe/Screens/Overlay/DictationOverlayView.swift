@@ -785,7 +785,10 @@ struct DictationOverlayView: View {
       focusRevision: state.agentDrawerFocusRevision
     )
     .padding(.top, headerHeight + 8)
-    .padding(.horizontal, 10)
+    // The column is a list, not a card: its gutters only have to clear the
+    // resize handle on the leading edge and the scroller on the trailing one
+    // (Founder, 2026-10-18, on the drawer's padding).
+    .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
@@ -912,7 +915,11 @@ struct DictationOverlayView: View {
       // Placement, the take-start preference and the panel routes live behind a
       // secondary click anywhere on the header, drag region included, in every form.
       .contextMenu { OverlayHeaderMenu(state: state) }
-      .modifier(OverlayControlGlass())
+      // The bar is flush with the window's top, leading and trailing edges, so
+      // its glass carries the window's corner. At the pill radius the glass
+      // corner and the canvas clip were two different curves a couple of points
+      // apart, and the trailing end read as cut off (Founder, 2026-10-18).
+      .modifier(OverlayControlGlass(cornerRadius: CSRadius.window))
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
       .background {
@@ -976,29 +983,21 @@ struct DictationOverlayView: View {
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
     return HStack(spacing: mini ? 6 : 10) {
-      HStack(spacing: mini ? 6 : 5) {
+      // The shared lockup, with the close button in the brand dot's place.
+      Wordmark(
+        size: density.brandSize, spacing: mini ? 6 : 5,
+        textIdentifier: mini ? "overlay-mini-brand" : ""
+      ) {
         closeButton
-
-        // The wordmark is the product name, never translated copy.
-        Text(verbatim: "codescribe")
-          .font(CSFont.ui(density.brandSize, .bold))
-          .tracking(-0.3)
-          .foregroundStyle(palette.primaryText.color)
-          .allowsHitTesting(false)
-          .accessibilityIdentifier(mini ? "overlay-mini-brand" : "")
-          .background {
-            if mini {
-              OverlayWindowDragRegion(identifier: "overlay-mini-brand-drag-region")
-            }
-          }
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
+      // The brand block sits on an inert drag region, so the dot answers
+      // clicks and the word moves the window.
       .background {
-        if !mini {
-          OverlayWindowDragRegion(identifier: "overlay-header-inert-drag-region")
-        }
+        OverlayWindowDragRegion(
+          identifier: mini ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
       }
 
       // The flexible centre keeps one identity in every density; in mini it
@@ -1259,7 +1258,7 @@ struct DictationOverlayView: View {
               Text(message).fixedSize(horizontal: false, vertical: true)
             }
           }
-          .overlayAutohidingScroller()
+          .csAutohidingScrollers()
         }
         .frame(maxHeight: 320)
       }

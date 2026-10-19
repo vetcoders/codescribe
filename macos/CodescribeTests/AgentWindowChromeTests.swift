@@ -45,7 +45,7 @@ final class AgentWindowChromeTests: XCTestCase {
         let sidebar = controller?.splitViewItems.first { $0.behavior == .sidebar }
         XCTAssertEqual(sidebar?.behavior, .sidebar, "width \(width) expanded \(expanded)")
         XCTAssertEqual(
-          sidebar?.minimumThickness, AgentSidebarMetrics.minimumWidth,
+          sidebar?.minimumThickness, CSSidebarWidth.navigation.minimum,
           "width \(width) expanded \(expanded)")
         XCTAssertEqual(sidebar?.isCollapsed, !expanded, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.contentMinSize.width, 640)
@@ -75,7 +75,7 @@ final class AgentWindowChromeTests: XCTestCase {
         // XCTest. Measure the public NSToolbarItem views instead of treating
         // absent AX children as absent production controls.
         let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-        XCTAssertGreaterThanOrEqual(controls.count, 3, "system toggle joins the native clusters")
+        XCTAssertGreaterThanOrEqual(controls.count, 3, "the sidebar toggle joins the native clusters")
         XCTAssertGreaterThanOrEqual(
           controls.filter { frame($0).height >= 51 }.count, 3,
           "brand, title and actions share the three-line native header rhythm")
@@ -101,7 +101,7 @@ final class AgentWindowChromeTests: XCTestCase {
   func testSidebarMaterialFollowsReduceTransparencyAndIncreaseContrast() throws {
     for (reduced, contrast) in [(false, false), (true, false), (false, true)] {
       let host = NSHostingView(
-        rootView: SettingsSidebarMaterial(
+        rootView: CSSidebarMaterial(
           reduceTransparency: reduced, contrast: contrast ? .increased : .standard))
       let window = NSWindow(
         contentRect: NSRect(x: 80, y: 80, width: 300, height: 400),
@@ -159,12 +159,13 @@ final class AgentWindowChromeTests: XCTestCase {
   }
 
   /// Maciej, 2026-10-14: the title bar sits only above the messages, never over
-  /// the sidebar, as the overlay header's glass with a hard lower edge, and the
-  /// same in Settings. An AppKit-hosted window draws no SwiftUI scroll edge
-  /// effect under its toolbar (probe 2026-10-14), so the glass is the
-  /// `CSDetailHeaderGlass` plane on each detail column. Window chrome does not
-  /// render in an XCTest mount, so the structure is pinned at the source.
-  func testHeaderGlassCoversOnlyTheDetailColumns() throws {
+  /// the sidebar, and the same in Settings. An AppKit-hosted window draws no
+  /// SwiftUI scroll edge effect under its toolbar (probe 2026-10-14), so the
+  /// header is the `CSDetailHeaderFade` plane on each detail column: the
+  /// sheet's own tone fading into the rows below, not a glass band with a hard
+  /// lower edge (Monika, 2026-10-18). Window chrome does not render in an
+  /// XCTest mount, so the structure is pinned at the source.
+  func testHeaderFadeCoversOnlyTheDetailColumns() throws {
     let codescribe = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Codescribe")
@@ -174,19 +175,23 @@ final class AgentWindowChromeTests: XCTestCase {
     let agent = try source("Screens/AgentChat/AgentChatView.swift")
     let threadDetail = try XCTUnwrap(
       agent.range(of: "private struct ThreadDetail").map { String(agent[$0.lowerBound...]) })
-    XCTAssertTrue(threadDetail.contains(".modifier(CSDetailHeaderGlass())"))
-    XCTAssertEqual(agent.components(separatedBy: "CSDetailHeaderGlass").count - 1, 1)
+    XCTAssertTrue(threadDetail.contains(".modifier(CSDetailHeaderFade())"))
+    XCTAssertEqual(agent.components(separatedBy: "CSDetailHeaderFade").count - 1, 1)
 
     let settings = try source("Screens/Settings/SettingsView.swift")
     let detail = try XCTUnwrap(settings.range(of: "} detail: {"))
     let toolbar = try XCTUnwrap(
       settings.range(of: ".toolbar {", range: detail.upperBound..<settings.endIndex))
-    XCTAssertTrue(settings[detail.upperBound..<toolbar.lowerBound].contains("CSDetailHeaderGlass"))
+    XCTAssertTrue(settings[detail.upperBound..<toolbar.lowerBound].contains("CSDetailHeaderFade"))
     XCTAssertFalse(
-      settings[..<detail.lowerBound].contains("CSDetailHeaderGlass"), "never over the sidebar")
+      settings[..<detail.lowerBound].contains("CSDetailHeaderFade"), "never over the sidebar")
 
     let components = try source("DesignSystem/Components.swift")
     XCTAssertFalse(components.contains("scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertFalse(components.contains("glassEffect"), "no glass band across the sheet")
+    XCTAssertTrue(
+      components.contains("colors: [CSColor.sheet, CSColor.sheet.opacity(0)]"),
+      "the fade runs in the sheet's own tone down to transparent")
   }
 
   private func mount(contentWidth: CGFloat, store: AgentChatStore? = nil)
@@ -235,7 +240,7 @@ final class AgentWindowChromeTests: XCTestCase {
   private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { view in
-      view is SettingsSidebarVisualEffectNSView
+      view is CSSidebarVisualEffectNSView
     } as? NSVisualEffectView
   }
 

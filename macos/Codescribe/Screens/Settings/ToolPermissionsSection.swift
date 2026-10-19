@@ -131,7 +131,7 @@ struct ToolPermissionsSection: View {
       ProgressView()
         .controlSize(.small)
       Text("Discovering tools from the MCP servers…")
-        .font(CSFont.mono(11, .medium))
+        .font(CSFont.ui(11, .medium))
         .foregroundStyle(Color.secondary)
     }
     .padding(.vertical, 10)
@@ -140,7 +140,7 @@ struct ToolPermissionsSection: View {
 
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the Agent once or add an MCP server.")
-      .font(CSFont.mono(11, .medium))
+      .font(CSFont.ui(11, .medium))
       .foregroundStyle(Color.secondary)
       .padding(.vertical, 10)
   }
@@ -360,8 +360,8 @@ enum ToolPermissionLabels {
         comment: "Native tool name: search the contents of files")
     case "search_threads":
       return String(
-        localized: "tools.native.search_threads", defaultValue: "Search in threads",
-        comment: "Native tool name: search the Agent's own threads")
+        localized: "tools.native.search_threads", defaultValue: "Search in conversations",
+        comment: "Native tool name: search the Agent's own conversations")
     case "stop_process":
       return String(
         localized: "tools.native.stop_process", defaultValue: "Stop a process",
@@ -429,7 +429,7 @@ enum ToolPermissionLabels {
     switch source {
     case "tool": return String(localized: "Individual rule")
     case "server": return String(localized: "Server rule")
-    case "thread": return String(localized: "Overridden for this thread")
+    case "thread": return String(localized: "Overridden for this conversation")
     default: return String(localized: "Category default")
     }
   }

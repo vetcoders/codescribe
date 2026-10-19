@@ -457,7 +457,7 @@ struct StatusToneMark: View {
     HStack(spacing: 5) {
       Circle().fill(tone.dotColor).frame(width: 7, height: 7)
       Text(tone.label)
-        .font(CSFont.mono(10, .medium))
+        .font(CSFont.ui(10, .medium))
         .foregroundStyle(Color.secondary)
         .lineLimit(1)
     }
@@ -475,7 +475,7 @@ private struct AgentStatusRow: View {
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
       Text(row.localizedLabel)
-        .font(CSFont.mono(12, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(Color.secondary)
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
@@ -508,7 +508,7 @@ private struct CapabilityMatrixRow: View {
         .foregroundStyle(Color.secondary)
         .frame(width: 120, alignment: .leading)
       Text(row.localizedTier.uppercased())
-        .font(CSFont.mono(10, .semibold))
+        .font(CSFont.ui(10, .semibold))
         .tracking(0.3)
         .foregroundStyle(tierColor)
         .padding(.horizontal, 7)
@@ -532,7 +532,7 @@ private struct CapabilityMatrixRow: View {
         }
         if let detail = row.localizedDetail {
           Text(detail)
-            .font(CSFont.mono(10, .medium))
+            .font(CSFont.ui(10, .medium))
             .foregroundStyle(Color.secondary)
             .lineLimit(1)
         }
