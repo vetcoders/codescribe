@@ -1348,19 +1348,18 @@ final class OverlayState {
   /// focus before `supportsAgentPanelFocus` confirms a compatible `vc-frame`.
   private(set) var agentPanelFocusAvailable: Bool = false
   private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
-  @ObservationIgnored var detectAgentPanelFocusAvailability:
-    @MainActor () async -> Bool = {
-      await RealAgentBridgeInstaller.supportsAgentPanelFocus()
-    }
+  @ObservationIgnored var detectAgentPanelFocusAvailability: @MainActor () async -> Bool = {
+    await RealAgentBridgeInstaller.supportsAgentPanelFocus()
+  }
   @ObservationIgnored var requestAgentPanelFocusCommand:
     @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
       try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
     }
-  @ObservationIgnored var activateTerminalHost:
-    @MainActor (Int32?, String?) -> Bool = { hostPID, hostBundleID in
-      RealAgentBridgeInstaller.activateAgentTerminalHost(
-        hostPID: hostPID, hostBundleID: hostBundleID)
-    }
+  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) -> Bool = {
+    hostPID, hostBundleID in
+    RealAgentBridgeInstaller.activateAgentTerminalHost(
+      hostPID: hostPID, hostBundleID: hostBundleID)
+  }
   @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
   @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
 
@@ -1765,6 +1764,20 @@ final class OverlayState {
   /// in a conversation the press opens the drawer to change agents, and on
   /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
+    // Maciej, 2026-10-19 08:52: "całe nagrywanie agentowe przenosimy na
+    // przycisk fioletowy, który nam rozwija agenta, jeśli jest zwinięty. I
+    // jeśli już ma nagranie, to po prostu pulsuje jako mikrofon." While a
+    // channel records, the press opens that agent; on it, the press stops it.
+    if let recording = recordingAgentConversationID {
+      if agentsButtonStopsRecording {
+        if let conversation = conversations.first(where: { $0.id == recording }) {
+          Task { await toggleConversationMicrophone(conversation) }
+        }
+      } else {
+        selectConversation(recording)
+      }
+      return
+    }
     if showsAgentMonitor && !isCollapsed {
       hideAgentSidebar()
     } else if !isCollapsed && selectedConversationID != nil {
@@ -1774,6 +1787,22 @@ final class OverlayState {
     } else {
       showAgentMonitor()
     }
+  }
+
+  /// The conversation whose microphone is open: the one on screen when it
+  /// records, else the lowest open channel's.
+  var recordingAgentConversationID: String? {
+    let recording = conversations.filter { conversationMicrophoneOpen($0) }
+    if let selectedConversationID, recording.contains(where: { $0.id == selectedConversationID }) {
+      return selectedConversationID
+    }
+    return recording.min { $0.channel < $1.channel }?.id
+  }
+
+  /// The recording agent is on screen, so the Agents press is its stop.
+  var agentsButtonStopsRecording: Bool {
+    guard let recording = recordingAgentConversationID else { return false }
+    return !isCollapsed && !showsAgentMonitor && selectedConversationID == recording
   }
 
   /// Where one press on Agents lands: the conversation with the newest unread
@@ -2541,13 +2570,14 @@ final class OverlayState {
       && (audioReady || vadActive)
   }
 
-  /// The header status light, or nil when no take is live. Projection only:
-  /// phase from the reducer, mode from the tray feed, silence from measured
-  /// capture level.
+  /// The header microphone's light, or nil when no dictation take is live.
+  /// Projection only: phase from the reducer, mode from the tray feed, silence
+  /// from measured capture level. An open agent channel never paints it: the
+  /// violet "Start dictation" microphone started a dictation where Maciej
+  /// expected a stop (2026-10-19 08:50). The header microphone is dictation's
+  /// alone; agent capture lives on the Agents button (08:52).
   var recordingLight: OverlayRecordingLight? {
-    // A channel owns live capture independently of the ordinary take's phase.
-    if channelAudioCaptureActive { return .agent }
-    return OverlayRecordingLight.resolve(
+    OverlayRecordingLight.resolve(
       mode: mode, terminal: terminal, recording: recording, transcribing: transcribing,
       indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }

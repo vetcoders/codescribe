@@ -966,7 +966,9 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-brand-close-dot")
   }
 
-  private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
+  private func recordingControls(
+    compact: Bool, showsMicrophone: Bool = true, showsPreview: Bool = true
+  ) -> some View {
     var controls = OverlayRecordingControls(
       canFinish: state.recording && !state.transcribing,
       presentationMode: state.presentationMode, compact: compact, palette: palette,
@@ -975,6 +977,7 @@ struct DictationOverlayView: View {
       isFinalizing: state.isFinalizingDictation,
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
+    controls.showsPreviewButton = showsPreview
     controls.onShowDictation = state.showTranscription
     controls.onPresentationSelect = state.setPresentationMode
     return controls
@@ -982,6 +985,8 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
+    // Mini during an agent recording: the agent's microphone, not the arrow.
+    let miniAgentMicrophone = mini && state.channelAudioCaptureActive
     return HStack(spacing: mini ? 6 : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       Wordmark(
@@ -1041,7 +1046,13 @@ struct DictationOverlayView: View {
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
         }
-        recordingControls(compact: false)
+        recordingControls(compact: false, showsPreview: !miniAgentMicrophone)
+        if miniAgentMicrophone {
+          // Mini has no room for another control: while an agent records, its
+          // microphone takes the expand arrow's place and expands straight to
+          // that agent; the arrow returns when the recording ends.
+          channelStatusView
+        }
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
@@ -1108,6 +1119,7 @@ struct DictationOverlayView: View {
     view.headerSelected =
       !state.isCollapsed
       && (state.showsAgentMonitor || state.selectedConversationID != nil)
+    view.agentMicrophoneStops = state.agentsButtonStopsRecording
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
     view.playbackError = state.playbackPreferenceError

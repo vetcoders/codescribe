@@ -451,7 +451,8 @@ final class OverlayStateTests: XCTestCase {
     state.applyChannelRoster([])
     state.applyConversationSnapshot(
       .init(
-        deliveries: [], conversations: [
+        deliveries: [],
+        conversations: [
           OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
         ]))
     XCTAssertTrue(drawer().showsRosterLoading, "History cannot establish controller readiness")
@@ -1106,6 +1107,50 @@ final class OverlayStateTests: XCTestCase {
     single.showTranscription()
     single.toggleAgentSidebar()
     XCTAssertEqual(single.selectedConversationID, lena.id, "the only agent needs no choice")
+  }
+
+  /// Maciej, 2026-10-19 08:52: agent recording lives on the violet Agents
+  /// button. From mini the press opens the agent that records; on it, the
+  /// press stops the capture. The header microphone stays dictation's.
+  func testAgentsPressOpensTheRecordingAgentThenStopsIt() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.applyChannelRoster([
+      navigationRoster(open: true), navigationRoster(channel: "3", session: "astra", open: false),
+    ])
+    engine.rosterSnapshot = [
+      navigationRoster(open: false), navigationRoster(channel: "3", session: "astra", open: false),
+    ]
+    state.selectConversation(astra.id)
+    state.setPresentationMode(.mini)
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertTrue(state.channelAudioCaptureActive)
+    XCTAssertNil(state.recordingLight, "the header microphone stays ready for dictation")
+    XCTAssertEqual(state.recordingAgentConversationID, lena.id)
+    XCTAssertFalse(state.agentsButtonStopsRecording)
+
+    state.toggleAgentSidebar()
+    XCTAssertEqual(state.selectedConversationID, lena.id, "the press opens the agent that records")
+    XCTAssertFalse(state.isCollapsed)
+    XCTAssertFalse(state.showsAgentMonitor)
+    XCTAssertEqual(engine.toggledDigits, [])
+    XCTAssertTrue(state.agentsButtonStopsRecording)
+
+    state.toggleAgentSidebar()
+    for _ in 0..<200 where state.channelAudioCaptureActive {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(engine.toggledDigits, [2], "on the recording agent the press stops it")
+    XCTAssertFalse(state.channelAudioCaptureActive)
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertNil(state.recordingAgentConversationID)
+
+    state.toggleAgentSidebar()
+    XCTAssertTrue(state.showsAgentMonitor, "with nothing recording the press changes agents")
   }
 
   func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {
@@ -4086,12 +4131,14 @@ final class OverlayStateTests: XCTestCase {
       if !projectionFirst {
         gate.release()
         for _ in 0..<40 { await Task.yield() }
-        XCTAssertTrue(state.retranscribePending, "ACK alone must not unblock actions on the old CAS")
+        XCTAssertTrue(
+          state.retranscribePending, "ACK alone must not unblock actions on the old CAS")
         XCTAssertEqual(state.activeText, "Original")
       }
       state.formatTranscript(at: .smart)
       for _ in 0..<10 { await Task.yield() }
-      XCTAssertTrue(engine.formatterRequests.isEmpty, "a result still in transit owns the operation slot")
+      XCTAssertTrue(
+        engine.formatterRequests.isEmpty, "a result still in transit owns the operation slot")
       if projectionFirst { gate.release() } else { state.applyTranscriptProjection(projected) }
       for _ in 0..<50 { await Task.yield() }
       XCTAssertFalse(state.retranscribePending)
@@ -5379,7 +5426,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(Set(engine.requestedAudioSessionIds), ["spoken-a"])
     XCTAssertEqual(engine.transcribedPaths, ["cloud:/tmp/spoken-a.wav"])
     XCTAssertEqual(engine.revisionRequests.first?.sessionId, "spoken-a")
-    XCTAssertTrue(state.retranscribePending, "the selected audio was decoded, but its projection is still in transit")
+    XCTAssertTrue(
+      state.retranscribePending,
+      "the selected audio was decoded, but its projection is still in transit")
     projectText(
       "poprawione A", to: state, canRetranscribe: true, terminal: true,
       sessionId: "spoken-a", reducerRevision: 5, reducerAction: "apply_manual_edit",
@@ -7926,7 +7975,9 @@ final class OverlayAgentGestureTests: XCTestCase {
 
   func testMiddleClickTalksToTheFocusedAgentUntilTheNextMiddleClick() async throws {
     let f = try fixture()
-    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek")]
+    f.engine.rosterSnapshot = [
+      roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek"),
+    ]
     f.state.handleAgentGesture(.middleClick)
     f.state.handleAgentGesture(.scroll(steps: 1))
 
@@ -7948,7 +7999,9 @@ final class OverlayAgentGestureTests: XCTestCase {
 
   func testAMicrophoneClickedInTheListDisarmsTheNextMiddleClick() async throws {
     let f = try fixture()
-    f.engine.rosterSnapshot = [roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek")]
+    f.engine.rosterSnapshot = [
+      roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek"),
+    ]
     f.state.handleAgentGesture(.middleClick)
     f.state.handleAgentGesture(.scroll(steps: 1))
     f.state.handleAgentGesture(.middleClick)
