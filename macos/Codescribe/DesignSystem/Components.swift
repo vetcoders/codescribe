@@ -44,8 +44,8 @@ struct CSWindowHeaderChrome: ViewModifier {
 /// (Maciej, 2026-10-14: the title bar only above the messages, never over the
 /// sidebar; the same in Settings).
 ///
-/// The nightly keeps this glass: Maciej preferred its look over the
-/// sheet-toned fade of PR #178 (2026-10-19), which the release line carries.
+/// A sheet-toned fade replaced this glass for a day; Maciej preferred the glass
+/// and the Founder kept it in both windows (2026-10-19).
 ///
 /// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
 /// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
