@@ -507,11 +507,11 @@ struct ToolCapabilityRow: View {
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
         // The technical identity, in the background but never hidden: the
-        // quietest mono rung, whole, and selectable so it can be copied into
-        // a config or a bug report.
+        // scale's quietest mono rung, whole, and selectable so it can be
+        // copied into a config or a bug report.
         Text(item.identity)
-          .font(CSFont.mono(9.5))
-          .foregroundStyle(Color.secondary.opacity(0.8))
+          .font(SettingsScale.metaKey)
+          .foregroundStyle(Color.secondary)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
