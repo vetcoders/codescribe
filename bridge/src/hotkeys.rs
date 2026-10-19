@@ -1820,6 +1820,10 @@ pub struct CsChannelRosterState {
     pub autoseal_deadline_unix_ms: Option<i64>,
     /// `None` = the snapshot made no liveness claim for this row.
     pub follower_alive: Option<bool>,
+    /// Whether the live follower's lease names a vc-frame pane; `None` = no
+    /// live follower or no claim. Off means the Frame focus control is idle.
+    #[uniffi(default = None)]
+    pub frame_detected: Option<bool>,
     /// Milliseconds since the Unix epoch of the live follower's oldest
     /// unacknowledged delivery; `None` = no backlog or no follower. The
     /// overlay's "alive but not reading" layer: a process heartbeat proves
@@ -1919,6 +1923,7 @@ impl CodescribeHotkeys {
                             .map(|since| since.as_millis() as i64)
                     }),
                     follower_alive: state.follower_alive,
+                    frame_detected: state.frame_detected,
                     unread_since_unix_ms: state.unread_since.and_then(|since| {
                         since
                             .duration_since(std::time::UNIX_EPOCH)
