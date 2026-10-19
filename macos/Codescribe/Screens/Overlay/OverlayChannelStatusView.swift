@@ -967,7 +967,9 @@ struct OverlayChannelStatusView: View {
           .modifier(OverlayAgentControlStyle())
           .csFocusOutline()
           .disabled(focusState?.isRequesting == true || hasDeadFollower(channel))
-          .help(focusHelp)
+          .modifier(
+            OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
+          )
           .accessibilityLabel(Text(verbatim: focusHelp))
           .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
         }

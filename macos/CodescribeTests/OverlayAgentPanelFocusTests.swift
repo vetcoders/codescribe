@@ -228,4 +228,16 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(event["channel"] as? String, "5")
     XCTAssertEqual(event["bus"] as? String, "/tmp/channel-5.jsonl")
   }
+
+  func testPanelFocusButtonUsesOverlayHeaderTooltipChrome() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    XCTAssertTrue(
+      source.contains("OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)")
+    )
+    XCTAssertFalse(source.contains(".help(focusHelp)"))
+  }
 }
