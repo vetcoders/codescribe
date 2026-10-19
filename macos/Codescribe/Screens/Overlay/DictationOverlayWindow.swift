@@ -245,12 +245,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     makeFirstResponder(nil)
   }
 
-  override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if isKeyWindow, event.type == .keyDown,
+  /// ⌘C for whatever holds the focus in this panel.
+  func performCopyChord(_ event: NSEvent) -> Bool {
+    guard isKeyWindow, event.type == .keyDown,
       event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c",
-      let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:)))
-    {
+      event.charactersIgnoringModifiers?.lowercased() == "c"
+    else { return false }
+    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
       // The focused responder owns its copy: the transcript canvas routes
       // through the tagged clipboard bridge in its own `copy(_:)`, and any
       // other text view keeps the behaviour it overrides.
@@ -263,14 +264,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // This panel is non-activating, so the app's Edit menu does not receive
     // key equivalents while another app is active; the action has to be sent
     // explicitly down the responder chain.
-    if isKeyWindow, event.type == .keyDown,
-      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c",
-      firstResponder?.responds(to: #selector(NSText.copy(_:))) != true,
-      NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
-    {
-      return true
-    }
+    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if performCopyChord(event) { return true }
     return super.performKeyEquivalent(with: event)
   }
 
@@ -279,6 +277,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    // ⌘C on a selected bubble did nothing in the installed app, while the key
+    // equivalent path passed in a test host that is the active app (Maciej,
+    // 2026-10-19). With another app active the chord can arrive as a plain
+    // keyDown for the first responder; the transcript canvas catches it in its
+    // own keyDown, and the panel now does the same for every responder.
+    if event.type == .keyDown, performCopyChord(event) { return }
     // An unpinned panel sits among ordinary windows and never activates, so
     // nothing else would lift it back out from under the window covering it.
     if event.type == .leftMouseDown, level == .normal {
