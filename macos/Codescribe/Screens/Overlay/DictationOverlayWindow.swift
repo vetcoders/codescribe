@@ -129,7 +129,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     frameTransitionGeneration &+= 1
     let generation = frameTransitionGeneration
-    let wasTransitioning = isFrameTransitioning
     frameTransitionTarget = restored
     isFrameTransitioning = animated
     OverlayPresentationTrace.shared.record(
@@ -137,27 +136,16 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
     lastMorphDuration =
       animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
-    if animated {
-      NSAnimationContext.runAnimationGroup { context in
-        context.duration = lastMorphDuration
-        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        animator().setFrame(restored, display: true)
-      } completionHandler: { [weak self] in
-        Task { @MainActor in
-          self?.completeFrameTransition(generation: generation)
-        }
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = lastMorphDuration
+      context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+      animator().setFrame(restored, display: true)
+    } completionHandler: { [weak self] in
+      Task { @MainActor in
+        self?.completeFrameTransition(generation: generation)
       }
-    } else {
-      if wasTransitioning {
-        NSAnimationContext.runAnimationGroup { context in
-          context.duration = 0
-          animator().setFrame(restored, display: isVisible)
-        }
-      } else {
-        setFrame(restored, display: isVisible)
-      }
-      completeFrameTransition(generation: generation)
     }
+    if !animated { completeFrameTransition(generation: generation) }
   }
 
   /// Remembered or default expanded size, raised to the qualified content
