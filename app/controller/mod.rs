@@ -7389,7 +7389,8 @@ impl RecordingController {
     }
 
     async fn select_paste_projection(&self, raw: String) -> String {
-        let policy = self.runtime_settings_arc().await.formatting_policy();
+        let runtime_settings = self.runtime_settings_arc().await;
+        let policy = runtime_settings.formatting_policy();
         if !matches!(
             policy,
             FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
@@ -7401,6 +7402,23 @@ impl RecordingController {
         };
         if presentation.literal_delivery() {
             return raw;
+        }
+        if runtime_settings.values().ai_formatting_enabled
+            && matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+        {
+            presentation
+                .wait_for_occurrence_projections(
+                    policy,
+                    &raw,
+                    runtime_settings
+                        .ai_execution()
+                        .request_timing()
+                        .attempt_timeout(),
+                )
+                .await;
         }
         let Some(projection) = presentation.delivery_projection(policy, &raw) else {
             return raw;

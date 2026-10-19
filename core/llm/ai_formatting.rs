@@ -1098,8 +1098,13 @@ async fn format_text_with_status_channels_for_policy(
             if attempt == 0 {
                 info!("Using assistive mode (model: {})", lane.model());
             }
-        } else {
-            if attempt == 0 {
+        } else if attempt == 0 {
+            if runtime_settings.values().format_on_device {
+                info!(
+                    "Using formatting mode (on-device: Apple FoundationModels, cloud fallback: {})",
+                    lane.model()
+                );
+            } else {
                 info!("Using formatting mode (model: {})", lane.model());
             }
         }
