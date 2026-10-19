@@ -365,6 +365,16 @@
         }
       }
     },
+    "%@ · selected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · wybrane"
+          }
+        }
+      }
+    },
     "%@ — can send requests" : {
       "comment" : "Placeholder is the provider name; a request may go out under the credentials that exist now (a key-optional provider counts), no request was made",
       "localizations" : {
@@ -3485,13 +3495,12 @@
         }
       }
     },
-    "Auto fold after…" : {
-      "comment" : "Overlay header menu: how long an expanded overlay stays open",
+    "Auto fold after… %@" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zwijaj po…"
+            "value" : "Zwijaj po… %@"
           }
         }
       }

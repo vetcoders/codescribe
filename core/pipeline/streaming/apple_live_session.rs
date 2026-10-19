@@ -780,8 +780,10 @@ impl RetainedFormatterJobs {
         // owner never waits on a sender the worker thread has not dropped yet.
         self.requests.close();
         if self.jobs.is_empty() && self.requests.is_empty() {
+            self.event_sink.on_formatter_pending(false);
             return None;
         }
+        self.event_sink.on_formatter_pending(true);
         let deadline = self
             .runtime_settings
             .ai_execution()
@@ -820,6 +822,9 @@ impl RetainedFormatterJobs {
                         } else {
                             refused = refused.saturating_add(1);
                         }
+                        self.event_sink.on_formatter_pending(
+                            !self.jobs.is_empty() || !self.requests.is_empty(),
+                        );
                     }
                     else => break,
                 }
@@ -827,6 +832,7 @@ impl RetainedFormatterJobs {
         })
         .await
         .is_ok();
+        self.event_sink.on_formatter_pending(false);
         // On the owner deadline the remaining provider futures are dropped,
         // which cancels their requests; raw labels were never touched.
         let abandoned = (self.jobs.len() + self.requests.len()) as u64;
@@ -1447,6 +1453,9 @@ pub(crate) async fn apple_stream_transcription_session(
             }
             settled = &mut live_finals_rx, if live_finals_pending => {
                 live_finals_pending = false;
+                event_sink.on_formatter_pending(
+                    !formatter_jobs.is_empty() || !formatter_rx.is_empty(),
+                );
                 forward_live_finals_admitted(
                     settled.is_ok(),
                     &mut ev_rx,
@@ -1754,12 +1763,16 @@ pub(crate) async fn apple_stream_transcription_session(
                     Arc::clone(&formatter_runtime_settings),
                     formatter_language.clone(),
                 ));
+                event_sink.on_formatter_pending(true);
             }
             Some(completion) = formatter_jobs.next() => {
                 let _ = deliver_formatter_completion(
                     completion,
                     event_sink.as_ref(),
                     stream_log_path.as_deref(),
+                );
+                event_sink.on_formatter_pending(
+                    !formatter_jobs.is_empty() || !formatter_rx.is_empty(),
                 );
             }
         }
