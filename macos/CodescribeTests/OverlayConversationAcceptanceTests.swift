@@ -2063,6 +2063,20 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           + selection)
       return
     }
+
+    // Step E: the same chord as a plain keyDown, the way it can arrive while
+    // another app is active. The key equivalent path above was green while ⌘C
+    // did nothing in the installed app (Maciej, 2026-10-19).
+    generalBoard.clearContents()
+    routed.clearContents()
+    panel.sendEvent(key)
+    let generalAfterKeyDown = generalBoard.string(forType: .string) ?? ""
+    let routedAfterKeyDown = routed.string(forType: .string) ?? ""
+    XCTAssertTrue(
+      generalAfterKeyDown.contains("alpha beta gamma")
+        || routedAfterKeyDown.contains("alpha beta gamma"),
+      "step E: ⌘C as keyDown copied nothing; general=\(generalAfterKeyDown), "
+        + "routed=\(routedAfterKeyDown); \(selection)")
   }
 
   /// Mini opens another agent: collapsed, then one update selects the other
