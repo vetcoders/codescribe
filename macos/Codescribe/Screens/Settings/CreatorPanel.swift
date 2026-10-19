@@ -9,6 +9,10 @@ import SwiftUI
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var manualSkillClient: AgentBridgeClient?
+  /// The install or update waiting for the user's confirmation. Nothing is
+  /// written until its Install/Update button is pressed (Founder decision,
+  /// 2026-10-18: skill installs never overwrite files unannounced).
+  @State private var pendingSkillInstall: CreatorAgentBridgeInstallPlan?
   @State private var showingSkillLocations = false
 
   private static let permissionKinds: [PermissionKind] = [
@@ -154,10 +158,12 @@ struct CreatorPanel: View {
         )
         .accessibilityIdentifier("settings-agent-bridge-refresh")
       }
-      // One shared card: the heading, statuses and buttons already say what
-      // this section does, so the old caption sentence is gone (Founder brief,
-      // round 4, 2026-10-10).
+      // One shared card. It opens with what the skill is and what the agent
+      // can do with it — the section owns that sentence, not each row
+      // (Founder decision, 2026-10-18) — then one row per client.
       VStack(spacing: 0) {
+        skillDescription
+        Divider().padding(.leading, SettingsScale.rowInsetH)
         ForEach(AgentBridgeClient.allCases) { client in
           agentBridgeRow(client)
           Divider().padding(.leading, SettingsScale.rowInsetH)
@@ -181,6 +187,106 @@ struct CreatorPanel: View {
           .textSelection(.enabled)
       }
     }
+    .confirmationDialog(
+      pendingSkillInstall.map(installConfirmationTitle) ?? "",
+      isPresented: Binding(
+        get: { pendingSkillInstall != nil },
+        set: { if !$0 { pendingSkillInstall = nil } }
+      ),
+      presenting: pendingSkillInstall
+    ) { plan in
+      Button(
+        plan.action == .update
+          ? String(
+            localized: "creator.agentBridge.confirmUpdate", defaultValue: "Update",
+            comment: "Confirms updating the Codescribe skill for one coding-agent client")
+          : String(
+            localized: "creator.agentBridge.confirmInstall", defaultValue: "Install",
+            comment: "Confirms installing the Codescribe skill for one coding-agent client")
+      ) {
+        model.installCreatorAgentBridge(for: plan.client)
+        pendingSkillInstall = nil
+      }
+      .accessibilityIdentifier("settings-agent-bridge-confirm-\(plan.client.rawValue)")
+      Button("Cancel", role: .cancel) { pendingSkillInstall = nil }
+    } message: { plan in
+      Text(installConfirmationMessage(plan))
+    }
+  }
+
+  /// What the skill is and what installing it gives the agent, readable
+  /// without opening anything. Facts from the bundled skill's SKILL.md.
+  private var skillDescription: some View {
+    Text(
+      String(
+        localized:
+          "The Codescribe skill lets your coding agent work with Codescribe. Once it is installed, the agent can join the Codescribe Bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it.",
+        comment:
+          "Description at the top of the coding-agent card in Settings › Creator. Codescribe Bus is a product name; /codescribe is a command the user types — keep both verbatim"
+      )
+    )
+    .font(SettingsScale.helper)
+    .foregroundStyle(.secondary)
+    .fixedSize(horizontal: false, vertical: true)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+    .accessibilityIdentifier("settings-agent-bridge-description")
+  }
+
+  private func installConfirmationTitle(_ plan: CreatorAgentBridgeInstallPlan) -> String {
+    plan.action == .update
+      ? String(
+        localized: "Update the Codescribe skill for \(plan.client.displayName)?",
+        comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
+      : String(
+        localized: "Install the Codescribe skill for \(plan.client.displayName)?",
+        comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
+  }
+
+  /// Which skill, into which folder, and whether it replaces anything — said
+  /// before the first file is written.
+  private func installConfirmationMessage(_ plan: CreatorAgentBridgeInstallPlan) -> String {
+    var parts: [String] = []
+    if plan.action == .update {
+      parts.append(
+        String(
+          localized:
+            "Codescribe will replace the skill folder it installed at \(plan.skillPath) with the codescribe skill bundled in this app. Changes made inside that folder are not kept.",
+          comment:
+            "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
+        ))
+    } else {
+      parts.append(
+        String(
+          localized:
+            "Codescribe will add the codescribe skill bundled in this app to \(plan.skillPath). Nothing is replaced: if that folder already exists and Codescribe did not install it, installation stops without changing it.",
+          comment:
+            "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
+        ))
+    }
+    if let version = plan.bundleVersion {
+      parts.append(
+        String(
+          localized: "Skill version: \(version).",
+          comment: "Install confirmation; the placeholder is a version number such as 0.13.2"))
+    }
+    if !plan.alsoUpdated.isEmpty {
+      let names = plan.alsoUpdated.map(\.displayName).formatted(.list(type: .and))
+      parts.append(
+        String(
+          localized: "The outdated copy for \(names) is updated at the same time.",
+          comment:
+            "Install confirmation; the placeholder lists coding-agent clients such as Claude Code"
+        ))
+    }
+    parts.append(
+      String(
+        localized:
+          "Codescribe also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started.",
+        comment: "Install confirmation; ~/.local/bin is a folder path — keep it verbatim"
+      ))
+    return parts.joined(separator: " ")
   }
 
   /// One client: its name, whether the installed skill is the one this app
@@ -211,10 +317,20 @@ struct CreatorPanel: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      Button(installed ? "Update skill" : "Install skill") {
-        model.installCreatorAgentBridge(for: client)
+      // Install/Update only opens the confirmation; an up-to-date client has
+      // nothing to do, so its button stays disabled (Founder, 2026-10-18).
+      Button(
+        installed
+          ? String(
+            localized: "Update skill…",
+            comment: "Coding-agent row action: opens the confirmation to update the skill")
+          : String(
+            localized: "Install skill…",
+            comment: "Coding-agent row action: opens the confirmation to install the skill")
+      ) {
+        pendingSkillInstall = model.creatorAgentBridgeInstallPlan(for: client)
       }
-      .disabled(!status.payloadAvailable)
+      .disabled(model.creatorAgentBridgeInstallPlan(for: client) == nil)
       .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
       if model.creatorAgentBridgeError != nil {
         Button("Replace manual copy…") { manualSkillClient = client }

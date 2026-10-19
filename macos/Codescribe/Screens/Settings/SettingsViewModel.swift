@@ -47,6 +47,27 @@ struct LastServingVerdict: Equatable {
   let fallbackUsed: Bool
 }
 
+/// The one action a coding-agent row offers for its client.
+enum CreatorAgentBridgeAction: Equatable {
+  case install
+  case update
+  /// The installed skill is this app's generation; the button is disabled.
+  case upToDate
+}
+
+/// What Settings › Creator states before installing or updating the skill.
+struct CreatorAgentBridgeInstallPlan: Equatable, Identifiable {
+  let client: AgentBridgeClient
+  /// `.install` or `.update`, never `.upToDate`.
+  let action: CreatorAgentBridgeAction
+  let skillPath: String
+  let bundleVersion: String?
+  /// Other installed clients whose outdated copy the same install updates.
+  let alsoUpdated: [AgentBridgeClient]
+
+  var id: AgentBridgeClient { client }
+}
+
 /// The model preference row of the Engine tab: the model the selected mode
 /// actually loads. Nil when the mode has no model preference to show.
 struct SttModelRow: Equatable {
@@ -1476,8 +1497,45 @@ final class SettingsViewModel: ObservableObject {
     creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
+  /// What the row's button would do for `client` under `status`. A client
+  /// whose installed skill is this app's generation has nothing to do, so its
+  /// button is disabled rather than offering a rewrite of identical files
+  /// (Founder decision, 2026-10-18).
+  static func creatorAgentBridgeAction(
+    for client: AgentBridgeClient, in status: AgentBridgeInstallationStatus
+  ) -> CreatorAgentBridgeAction {
+    guard status.installedClients.contains(client) else { return .install }
+    return status.clientsWithCurrentSkill.contains(client) ? .upToDate : .update
+  }
+
+  /// Everything the confirmation step has to say before a file is written:
+  /// the destination folder, whether it replaces this app's earlier copy and
+  /// which other installed clients the same transaction updates. `nil` when
+  /// there is nothing to do or no payload to install.
+  func creatorAgentBridgeInstallPlan(
+    for client: AgentBridgeClient
+  ) -> CreatorAgentBridgeInstallPlan? {
+    let status = creatorAgentBridgeStatus
+    guard status.payloadAvailable else { return nil }
+    let action = Self.creatorAgentBridgeAction(for: client, in: status)
+    guard action != .upToDate else { return nil }
+    // The installer rewrites every client already in its receipt; the ones
+    // whose copy is outdated change with this click too.
+    let alsoUpdated = status.installedClients.filter {
+      $0 != client && !status.clientsWithCurrentSkill.contains($0)
+    }
+    return CreatorAgentBridgeInstallPlan(
+      client: client,
+      action: action,
+      skillPath: client.skillPathLabel,
+      bundleVersion: status.bundleVersion,
+      alsoUpdated: alsoUpdated
+    )
+  }
+
   /// Add/update one client while preserving other managed clients. Creator
-  /// has no implicit deselection or deletion action.
+  /// has no implicit deselection or deletion action. The view calls this only
+  /// after the confirmation step; a client already up to date is left alone.
   func installCreatorAgentBridge(for client: AgentBridgeClient) {
     let current = creatorAgentBridge.status()
     creatorAgentBridgeStatus = current
@@ -1487,6 +1545,7 @@ final class SettingsViewModel: ObservableObject {
       creatorAgentBridgeError = current.detail
       return
     }
+    guard Self.creatorAgentBridgeAction(for: client, in: current) != .upToDate else { return }
     do {
       let clients = Set(current.installedClients).union([client])
       creatorAgentBridgeStatus = try creatorAgentBridge.install(selectedClients: clients)
