@@ -1435,24 +1435,41 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   /// Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons, the
   /// agent's beside the ordinary microphone and the expand arrow, and the
-  /// wordmark shortens to a lowercase "cs" to make the room (07:10Z).
+  /// wordmark shortens to a lowercase "cs" to make the room (07:10Z). An AX
+  /// walk of the test panel does not surface the SwiftUI header, so the probe
+  /// reads AppKit truth: one mounted hover region per header control and the
+  /// drag region that backs the wordmark.
   func testMiniAddsTheRecordingAgentsMicrophoneAndShortensTheWordmark() throws {
     let state = OverlayState()
     state.setPresentationMode(.mini)
-    try withPanel(state: state) { _, root in
-      @MainActor func shown(_ identifier: String) -> Bool {
-        accessibilityTree(root).contains { $0.accessibilityIdentifier() == identifier }
+    try withPanel(state: state) { panel, root in
+      @MainActor func headerControls() -> Int {
+        panel.menuCursorRegions.allObjects.filter { view in
+          guard let region = view as? OverlayMenuCursorRegionView, region.onHover != nil,
+            region.window === panel, !region.isHiddenOrHasHiddenAncestor
+          else { return false }
+          let rect = root.convert(region.bounds, from: region)
+          let top = root.isFlipped ? rect.minY : root.bounds.height - rect.maxY
+          return rect.width <= 30 && rect.height <= 30 && top < 46
+        }.count
       }
-      @MainActor func brand(_ word: String) -> Bool {
-        accessibilityTree(root).contains { element in
-          element.accessibilityIdentifier() == "overlay-mini-brand"
-            && [element.accessibilityLabel(), element.accessibilityValue() as? String]
-              .contains(word)
-        }
+      @MainActor func brandWidth() throws -> CGFloat {
+        let region = try XCTUnwrap(
+          self.dragRegionViews(in: root).first {
+            $0.accessibilityIdentifier() == "overlay-mini-brand-drag-region"
+              && !$0.isHiddenOrHasHiddenAncestor
+          }, "mini: no brand drag region")
+        return region.bounds.width
       }
-      XCTAssertTrue(shown("overlay-live-preview-toggle"))
-      XCTAssertFalse(shown("overlay-agent-glyph"))
-      XCTAssertTrue(brand("codescribe"))
+      // The wordmark's text change animates for 0.2 s after the frame settles.
+      @MainActor func settleWordmark() {
+        self.settle(root)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        root.layoutSubtreeIfNeeded()
+      }
+      let restingControls = headerControls()
+      let restingBrand = try brandWidth()
+      XCTAssertGreaterThanOrEqual(restingControls, 2, "mini: microphone and expand arrow")
       state.applyChannelRoster([
         .init(
           channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
@@ -1460,15 +1477,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
           unreadSinceUnixMs: nil)
       ])
       state.setPresentationMode(.mini)
-      settle(root)
-      XCTAssertTrue(shown("overlay-agent-glyph"), "the agent's microphone joins mini")
-      XCTAssertTrue(shown("overlay-start-recording"), "beside the ordinary microphone")
-      XCTAssertTrue(shown("overlay-live-preview-toggle"), "and the expand arrow")
-      XCTAssertTrue(brand("cs"), "the wordmark makes the room")
+      settleWordmark()
+      XCTAssertEqual(headerControls(), restingControls + 1, "the agent's microphone joins mini")
+      XCTAssertLessThan(try brandWidth(), restingBrand * 0.6, "the wordmark shortens to cs")
       state.applyChannelRoster([])
-      settle(root)
-      XCTAssertFalse(shown("overlay-agent-glyph"))
-      XCTAssertTrue(brand("codescribe"))
+      settleWordmark()
+      XCTAssertEqual(headerControls(), restingControls, "the agent's microphone leaves")
+      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "codescribe returns")
     }
   }
 
