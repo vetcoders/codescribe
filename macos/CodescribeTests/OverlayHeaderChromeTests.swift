@@ -401,7 +401,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let frames = try hoverFrames(view, palette: palette)
     for role in [palette.successStatus, palette.agentAccent, palette.processingStatus] {
       XCTAssertFalse(
-        headerContains(frames.rest, near: headerRendered(role, palette: palette), tolerance: 0.16),
+        headerContainsHue(
+          frames.rest, near: headerRendered(role, palette: palette), tolerance: 0.16),
         "\(name) rests on a role color")
     }
     XCTAssertGreaterThan(
@@ -648,6 +649,27 @@ final class OverlayHeaderChromeTests: XCTestCase {
     pixels.contains { pixel in
       pixel.alpha > 0.45 && headerDistance(pixel, target) < tolerance
     }
+  }
+
+  /// A role colour is a hue, not a lightness. The olive status is muted
+  /// enough that a neutral grey of its lightness lies 0.13 from it, and the
+  /// antialiased rim of the Agents button's unread dot (primary text, black
+  /// or white) paints such greys in both appearances (div0 swiftc probe,
+  /// 2026-10-19: 0.127 light, 0.133 dark; without the dot 0.272 and 0.175).
+  /// Only a pixel with at least half the role's chroma can wear the role; a
+  /// glyph painted in the agent violet still matches at 0.000.
+  private func headerContainsHue(
+    _ pixels: [HeaderPixel], near target: HeaderPixel, tolerance: CGFloat
+  ) -> Bool {
+    let floor = headerChroma(target) / 2
+    return pixels.contains { pixel in
+      pixel.alpha > 0.45 && headerChroma(pixel) >= floor
+        && headerDistance(pixel, target) < tolerance
+    }
+  }
+
+  private func headerChroma(_ pixel: HeaderPixel) -> CGFloat {
+    max(pixel.red, pixel.green, pixel.blue) - min(pixel.red, pixel.green, pixel.blue)
   }
 
   /// A role colour as this raster paints it. The raster comes back through

@@ -884,7 +884,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       canvas.range(
         of:
-          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*bottomChromeContainer\(\s*HStack\(spacing: 6\)"#,
+          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*bottomChromeContainer\(\s*HStack\(spacing: 2\) \{\s*Button \{\s*actions\.toggle\(\)"#,
         options: .regularExpression) != nil)
     XCTAssertTrue(
       canvas.range(
