@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,8 +19,7 @@ sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
 
 FRAME = {"session": "vibecrafted", "pane_id": 9, "socket_dir": "/tmp/vc-frame-501",
-         "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854,
-         "frame_bin": "/opt/vc-frame"}
+         "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854}
 
 
 class FrameContextTests(unittest.TestCase):
@@ -29,17 +29,15 @@ class FrameContextTests(unittest.TestCase):
                    "__CFBundleIdentifier": "io.vetcoders.vibecrafted",
                    "ALACRITTY_SOCKET": "/var/folders/T/Alacritty-43854.sock",
                    "VIBECRAFTED_VC_FRAME_BIN": sys.executable}
-        self.assertEqual(DEMUX.frame_context(environ), {
-            "session": "vibecrafted", "pane_id": 9, "socket_dir": "/tmp/vc-frame-501",
-            "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854,
-            "frame_bin": sys.executable})
+        # The generation-pinned binary path is not part of the pane coordinates.
+        self.assertEqual(DEMUX.frame_context(environ), FRAME)
 
     def test_zellij_names_are_accepted_and_the_log_names_the_host(self):
         frame = DEMUX.frame_context({"ZELLIJ_PANE_ID": "3", "ZELLIJ_SESSION_NAME": "work",
                                      "ZELLIJ_SOCKET_DIR": "/tmp/z",
-                                     "ALACRITTY_LOG": "/tmp/Alacritty-77.log", "PATH": ""})
+                                     "ALACRITTY_LOG": "/tmp/Alacritty-77.log"})
         self.assertEqual((frame["pane_id"], frame["session"], frame["socket_dir"],
-                          frame["host_pid"], frame["frame_bin"]), (3, "work", "/tmp/z", 77, None))
+                          frame["host_pid"]), (3, "work", "/tmp/z", 77))
 
     def test_an_agent_outside_vc_frame_has_no_frame(self):
         self.assertIsNone(DEMUX.frame_context({"VC_FRAME_SESSION_NAME": "vibecrafted"}))
@@ -48,10 +46,38 @@ class FrameContextTests(unittest.TestCase):
                                                "VC_FRAME_SESSION_NAME": "vibecrafted"}))
 
 
+class FrameCliTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+
+    def executable(self, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "vc-frame"
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def test_path_wins_over_the_generation_named_in_the_environment(self):
+        release = self.executable(self.home / "share/vibecrafted/releases/4.4.0+gold/bin")
+        pinned = self.executable(self.home / "share/vibecrafted/releases/4.4.0+gold/libexec")
+        shim = self.executable(self.home / "local/bin")
+        environ = {"PATH": f"{release.parent}{os.pathsep}{shim.parent}",
+                   "VIBECRAFTED_VC_FRAME_BIN": str(pinned)}
+        self.assertEqual(DEMUX.frame_cli(environ), str(shim))
+
+    def test_only_a_release_directory_on_path_resolves_nothing(self):
+        release = self.executable(self.home / "share/vibecrafted/releases/4.4.0+gold/bin")
+        self.assertIsNone(DEMUX.frame_cli({"PATH": str(release.parent)}))
+        self.assertIsNone(DEMUX.frame_cli({}))
+
+
 class RunPanelFocusTests(unittest.TestCase):
     def run_with(self, returncode=0, stderr="", error=None):
         completed = subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
-        with mock.patch("subprocess.run", side_effect=error, return_value=completed) as run:
+        with mock.patch.object(DEMUX, "frame_cli", return_value="/opt/vc-frame"), \
+                mock.patch("subprocess.run", side_effect=error, return_value=completed) as run:
             outcome = DEMUX.run_panel_focus(FRAME)
         return outcome, run
 
@@ -75,7 +101,10 @@ class RunPanelFocusTests(unittest.TestCase):
         self.assertEqual(self.run_with(error=FileNotFoundError("vc-frame"))[0], ("error", None))
         self.assertEqual(self.run_with(error=subprocess.TimeoutExpired("vc-frame", 5))[0],
                          ("error", None))
-        self.assertEqual(DEMUX.run_panel_focus({**FRAME, "frame_bin": None}), ("error", None))
+        with mock.patch.object(DEMUX, "frame_cli", return_value=None), \
+                mock.patch("subprocess.run") as run:
+            self.assertEqual(DEMUX.run_panel_focus(FRAME), ("error", None))
+        run.assert_not_called()
 
 
 class PanelFocusLeaseTests(unittest.TestCase):

@@ -2547,17 +2547,13 @@ def frame_context(environ: Any) -> dict[str, Any] | None:
     """Name the vc-frame pane that hosts this provider session, or None outside vc-frame.
 
     The follower is spawned from the agent's own shell, so it inherits the
-    pane, session and terminal-host coordinates of that pane.
+    pane, session and terminal-host coordinates of that pane. The vc-frame
+    binary is not recorded: it is resolved on PATH at each click.
     """
-    import shutil
-
     pane = str(environ.get("VC_FRAME_PANE_ID") or environ.get("ZELLIJ_PANE_ID") or "")
     session = str(environ.get("VC_FRAME_SESSION_NAME") or environ.get("ZELLIJ_SESSION_NAME") or "")
     if not pane.isdigit() or not session:
         return None
-    binary = environ.get("VIBECRAFTED_VC_FRAME_BIN")
-    if not binary or not os.access(binary, os.X_OK):
-        binary = shutil.which("vc-frame", path=environ.get("PATH"))
     host_pid = None
     for key in ("ALACRITTY_SOCKET", "ALACRITTY_LOG"):
         match = re.search(r"Alacritty-(\d+)\.(?:sock|log)$", str(environ.get(key) or ""))
@@ -2570,8 +2566,21 @@ def frame_context(environ: Any) -> dict[str, Any] | None:
         "socket_dir": environ.get("VC_FRAME_SOCKET_DIR") or environ.get("ZELLIJ_SOCKET_DIR"),
         "host_bundle_id": environ.get("__CFBundleIdentifier"),
         "host_pid": host_pid,
-        "frame_bin": binary,
     }
+
+
+def frame_cli(environ: Any) -> str | None:
+    """Resolve `vc-frame` on PATH the way the installed shim does.
+
+    Release directories are skipped: VIBECRAFTED_VC_FRAME_BIN and any
+    releases/<build>/bin entry name one generation, and a follower outlives
+    upgrades. The shim in ~/.local/bin always execs the current release.
+    """
+    import shutil
+
+    entries = [entry for entry in str(environ.get("PATH") or "").split(os.pathsep)
+               if entry and not re.search(r"/vibecrafted/releases/[^/]+/bin/?$", entry)]
+    return shutil.which("vc-frame", path=os.pathsep.join(entries))
 
 
 def panel_focus_request(raw: str) -> dict[str, Any] | None:
@@ -2593,7 +2602,7 @@ def run_panel_focus(frame: dict[str, Any]) -> tuple[str, int | None]:
     """Focus one pane; vc-frame switches the client to the pane's tab first."""
     import subprocess
 
-    binary = frame.get("frame_bin")
+    binary = frame_cli(os.environ)
     if not binary:
         return "error", None
     environ = {**os.environ, "ZELLIJ_SESSION_NAME": frame["session"],

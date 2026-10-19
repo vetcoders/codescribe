@@ -94,9 +94,13 @@ was spawned from the agent's pane and inherits its coordinates.
 
 At start the follower records them in its lease as `frame`: `session`,
 `pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
-`host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`) and `frame_bin`.
-`frame` is `null` for an agent outside vc-frame. A follower that predates this
-contract reports no `frame` until it is restarted.
+and `host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`). `frame` is `null`
+for an agent outside vc-frame. A follower that predates this contract reports
+no `frame` until it is restarted. The vc-frame binary is not recorded: each
+click resolves `vc-frame` on PATH and skips `vibecrafted/releases/*/bin`, as
+the installed shim does, so a follower that outlives an upgrade never calls a
+removed generation. `VIBECRAFTED_VC_FRAME_BIN` names one generation and is not
+used.
 
 The request is a row on the agent's bus, schema
 `codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with
