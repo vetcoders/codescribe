@@ -131,7 +131,10 @@ struct OverlayConversationView: View {
         )
         // One ScrollView per conversation. `.initialOffset` then starts at the
         // bottom instead of reusing the previous list's offset through the morph.
-        .id(conversation.id)
+        // It places a list once, so a list born empty while the history loads
+        // gets a fresh one when the rows arrive; otherwise it stayed at the top
+        // of everything that came after (Maciej, 2026-10-19).
+        .id(orderedMessages.isEmpty ? conversation.id + "#empty" : conversation.id)
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
         // The open pill stack steals neither color nor scrolling (Maciej,
         // 2026-10-17): the conversation keeps its full opacity and stays live;
