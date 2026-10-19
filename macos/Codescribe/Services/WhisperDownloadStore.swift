@@ -184,23 +184,6 @@ final class WhisperDownloadStore: ObservableObject {
 
   }
 
-  /// The read for page changes and window activation. The provider validates
-  /// the bundle on disk, so it runs off the main actor and never stalls a
-  /// click. Its answer lands only if no transfer started and no newer read
-  /// superseded it in the meantime.
-  func refreshInBackground() {
-    guard !inFlight else { return }
-    let provider = statusProvider
-    backgroundRefresh?.cancel()
-    backgroundRefresh = Task { [weak self] in
-      let status = await Task.detached(priority: .userInitiated) { provider() }.value
-      guard !Task.isCancelled, let self, !self.inFlight else { return }
-      self.status = status
-      if status.available { self.interruption = nil }
-      self.backgroundRefresh = nil
-    }
-  }
-
   func start() {
     guard !inFlight else { return }
     // An explicit Download click reads the model where it stands before it
