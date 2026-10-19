@@ -11,8 +11,16 @@ No changes recorded yet.
 
 ## [0.17.2] - Unreleased
 
-Version preparation only. No product fixes have yet been committed beyond the
-0.17.1 source checkpoint. This is not a published release.
+Source changes in preparation. This is not a published release.
+
+### Fixed
+
+- Unpinning the widget keeps it visible while the pointer is over it or its menu
+  is open. Leaving the interaction starts the full three-second grace period;
+  returning during the fade keeps the window visible.
+- The auto-fold menu names the current interval and labels its selected option,
+  including Never, instead of relying on a checkmark image that was not visible
+  in the native menu.
 
 <!-- release-notes:0.17.2:start -->
 
