@@ -246,7 +246,7 @@ if [ "$rc" -eq 0 ] && [ -n "$secs" ] && \
   echo "test-swift: here has meant the core is doing real (blocking) work for a test run," >&2
   echo "test-swift: not that the machine is busy. Check the slowest test above, then" >&2
   echo "test-swift: core/config/keychain.rs::in_xctest_host and macos/CodescribeTests/README.md." >&2
-  echo "test-swift: if the host really is loaded: make test-swift SWIFT_TEST_MAX_SECONDS=90" >&2
+  echo "test-swift: investigate before choosing an explicit SWIFT_TEST_MAX_SECONDS override." >&2
   rc=4
 fi
 exit $rc''')
