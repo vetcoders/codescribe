@@ -8205,12 +8205,42 @@
         }
       }
     },
+    "Hide agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj listę agentów"
+          }
+        }
+      }
+    },
+    "Hide conversation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj rozmowę"
+          }
+        }
+      }
+    },
     "Hide full comparison" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ukryj pełne porównanie"
+          }
+        }
+      }
+    },
+    "Hide transcription" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj transkrypcję"
           }
         }
       }
@@ -15096,6 +15126,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aby skróty działały, włącz uprawnienia „Monitorowanie wprowadzania” i „Dostępność”"
+          }
+        }
+      }
+    },
+    "Show agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż listę agentów"
+          }
+        }
+      }
+    },
+    "Show conversation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż rozmowę"
           }
         }
       }

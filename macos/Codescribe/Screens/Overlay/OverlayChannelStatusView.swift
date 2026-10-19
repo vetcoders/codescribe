@@ -216,6 +216,52 @@ struct OverlayDisconnectedRowDim: ViewModifier {
   }
 }
 
+/// What the list header's corner buttons act on (Maciej, 2026-10-19:
+/// `sidebar.left` and `sidebar.right`). The overlay supplies it where it
+/// installs the list.
+struct OverlayAgentsSidebarControls {
+  /// The conversation, or the transcription, is on screen beside the list.
+  var canvasShown: Bool
+  var canvasIsTranscription: Bool
+  var onToggleCanvas: () -> Void
+  var onFoldList: () -> Void
+
+  var canvasTitle: String {
+    switch (canvasShown, canvasIsTranscription) {
+    case (true, true): String(localized: "Hide transcription")
+    case (true, false): String(localized: "Hide conversation")
+    case (false, true): String(localized: "Show transcription")
+    case (false, false): String(localized: "Show conversation")
+    }
+  }
+}
+
+/// A corner button of the agents list, blended into the background (Maciej,
+/// 2026-10-19: "wtopione w tło"): a muted glyph with the rows' hover wash.
+struct OverlaySidebarToggleButton: View {
+  let symbol: String
+  let title: String
+  let identifier: String
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 13 * textScale))
+        .frame(width: 22 * textScale, height: 22 * textScale)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(palette.mutedText.color)
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
+    .help(title)
+    .accessibilityLabel(Text(verbatim: title))
+    .accessibilityIdentifier(identifier)
+  }
+}
+
 /// The drawer's clickable rows answer the pointer the way the tray's plain
 /// rows do: the whole row is the hover target, a raised wash appears on
 /// enter, and leave clears it. The wash does not hit-test, so the row's own
@@ -601,6 +647,8 @@ struct OverlayChannelStatusView: View {
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
+  /// The list header's corner buttons; nil leaves the header bare.
+  var sidebarControls: OverlayAgentsSidebarControls?
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -778,13 +826,108 @@ struct OverlayChannelStatusView: View {
     }
   }
 
+  /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
+  /// row of the list, channel 0 first, under the `sidebar.right` that
+  /// unfolds it. A pill switches the conversation and the list stays folded.
+  func railBody(maximumHeight: CGFloat, onUnfold: @escaping () -> Void) -> some View {
+    OverlayTextScaleReader { scale in
+      var installed = self
+      installed.textScale = scale
+      return installed.scaledRailBody(maximumHeight: maximumHeight, onUnfold: onUnfold)
+    }
+  }
+
+  private func scaledRailBody(
+    maximumHeight: CGFloat, onUnfold: @escaping () -> Void
+  ) -> some View {
+    let unfold = 22 * textScale
+    return VStack(spacing: 8) {
+      OverlaySidebarToggleButton(
+        symbol: "sidebar.right", title: String(localized: "Show agents list"),
+        identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+        action: onUnfold)
+      ScrollView(.vertical) {
+        VStack(spacing: 6) {
+          if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
+            railPill(broadcast, channel: nil)
+          }
+          ForEach(channels) { channel in
+            railPill(conversation(for: channel), channel: channel)
+          }
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity)
+        .csAutohidingScrollers()
+      }
+      .frame(maxHeight: max(0, maximumHeight - unfold - 8))
+    }
+    // The list header sits 8 points into the roster content: the unfold
+    // button lands where `sidebar.right` folded it.
+    .padding(.top, 8)
+    .frame(maxWidth: .infinity)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-agent-rail-pills")
+  }
+
+  /// Status dot and channel number; the open conversation in the agent
+  /// accent, unread replies as the row badge's colour.
+  private func railPill(
+    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
+  ) -> some View {
+    let digit = channel?.channel ?? "0"
+    let selected = conversation != nil && conversation?.id == selectedConversationID
+    let unread = conversation.flatMap { unreadCounts[$0.id] } ?? 0
+    let title = channel.map { notificationTitle(for: $0) } ?? broadcastHeader
+    return Button {
+      if let conversation { onSelectConversation?(conversation.id) }
+    } label: {
+      HStack(spacing: 3) {
+        OverlayAgentStatusDot(
+          kind: channel.map { statusDotKind(for: $0) } ?? .broadcast, palette: palette)
+        Text(verbatim: digit)
+          .font(.system(size: 12 * textScale, weight: .semibold))
+          .monospacedDigit()
+      }
+      .foregroundStyle(palette.primaryText.color)
+      .padding(.horizontal, 6 * textScale)
+      .frame(height: 24 * textScale)
+      .background(
+        Capsule(style: .continuous)
+          .fill(selected ? palette.agentAccent.color.opacity(0.22) : CSColor.hairline(0.06))
+      )
+      .overlay(alignment: .topTrailing) {
+        if unread > 0 {
+          Circle()
+            .fill(palette.processingStatus.color)
+            .frame(width: 6 * textScale, height: 6 * textScale)
+            .offset(x: 1, y: -1)
+            .accessibilityHidden(true)
+        }
+      }
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(conversation == nil || onSelectConversation == nil)
+    .modifier(OverlayDisconnectedRowDim(disconnected: channel.map { hasDeadFollower($0) } ?? false))
+    .help(title)
+    .accessibilityLabel(Text(verbatim: title))
+    .accessibilityAddTraits(selected ? .isSelected : [])
+    .accessibilityIdentifier("overlay-agent-rail-\(digit)")
+  }
+
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID
     ) {
-      HStack {
+      HStack(spacing: 6) {
+        if let sidebarControls {
+          OverlaySidebarToggleButton(
+            symbol: "sidebar.left", title: sidebarControls.canvasTitle,
+            identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
+            textScale: textScale, action: sidebarControls.onToggleCanvas)
+        }
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
         Spacer()
         Text(verbatim: String(channels.count))
@@ -792,6 +935,12 @@ struct OverlayChannelStatusView: View {
           .monospacedDigit()
           .foregroundStyle(palette.mutedText.color)
           .accessibilityHidden(true)
+        if let sidebarControls {
+          OverlaySidebarToggleButton(
+            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
+            identifier: "overlay-agent-sidebar-fold", palette: palette,
+            textScale: textScale, action: sidebarControls.onFoldList)
+        }
       }
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
