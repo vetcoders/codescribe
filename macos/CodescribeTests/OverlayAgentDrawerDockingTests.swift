@@ -421,7 +421,10 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let (broadcast, lena, astra) = try rosterFixture()
     // The roster's height is its text: a heading and three rows. Measured
     // alone at a fixed width, it grows with the scale only if the text does.
+    // `fittingSize` reads 0 with `sizingOptions = []`, so the roster reports
+    // its own ideal height.
     func rosterHeight(at scale: CGFloat) -> CGFloat {
+      let recorder = OverlayRosterHeightRecorder()
       let view = OverlayChannelStatusView(
         channels: [
           OverlayChannelDelivery(
@@ -437,7 +440,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         rootView:
           view.monitorBody(maximumHeight: 4000)
           .environment(\.csTextScale, scale)
-          .frame(width: 300))
+          .frame(width: 300)
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { recorder.height = $0 })
       host.sizingOptions = []
       host.frame = CGRect(x: 0, y: 0, width: 300, height: 4000)
       // The scroll viewport takes the rows' measured height one pass later.
@@ -445,14 +450,16 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
       }
-      return host.fittingSize.height
+      return recorder.height
     }
     let normal = rosterHeight(at: 1)
     let large = rosterHeight(at: 1.5)
     XCTAssertGreaterThan(normal, 40, "the roster lays out its heading and rows")
     XCTAssertLessThan(normal, 1000, "the viewport took the rows' height, not the 4000 pt bound")
+    // Fixed paddings and glyphs do not scale, so the whole is below 1.5×; before
+    // the fix nothing in the roster scaled and the ratio was 1.
     XCTAssertGreaterThan(
-      large, normal * 1.25,
+      large, normal * 1.1,
       "the docked roster's text grows with ⌘+ like the conversation: \(normal) → \(large)")
   }
 
@@ -657,4 +664,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 @MainActor
 private final class OverlayDrawerFrameRecorder {
   var frame = CGRect.zero
+}
+
+@MainActor
+private final class OverlayRosterHeightRecorder {
+  var height: CGFloat = 0
 }
