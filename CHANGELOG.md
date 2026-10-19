@@ -9,9 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes recorded yet.
 
+## [0.17.2] - Unreleased
+
+Source changes in preparation. This is not a published release.
+
+### Fixed
+
+- Unpinning the widget keeps it visible while the pointer is over it or its menu
+  is open. Leaving the interaction starts the full three-second grace period;
+  returning during the fade keeps the window visible.
+- The auto-fold menu names the current interval and labels its selected option,
+  including Never, instead of relying on a checkmark image that was not visible
+  in the native menu.
+
+<!-- release-notes:0.17.2:start -->
+
+Source history: 2 commits; [complete inventory](docs/releases/0.17.2-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.17.2 4ced05b743ad18d5da2249a089d2f0f9a1dbf719 -->
+<!-- release-notes:0.17.2:end -->
+
 ## [0.17.1] - 2026-10-19
 
 Validation and distribution have separate receipts.
+
+### Known issues
+
+- Live and final transcription can still contain incorrect words or text inferred
+  from quiet audio. The filters below are implemented defenses, not a claim that
+  this class of error has disappeared.
+- The unpinned widget can hide during pointer/menu interaction, and the auto-fold
+  menu does not clearly show the selected interval. These remain open in this
+  source checkpoint.
 
 ### Added
 
@@ -70,7 +99,7 @@ Validation and distribution have separate receipts.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
 - After an agent's channel take ends, the overlay header is ready again instead of looking like a dictation still waiting for its text.
 - With keyboard navigation turned on in macOS, focus entering the overlay's agent list lands on the selected conversation instead of staying on "0 · All".
-- Whisper no longer leaves words where nobody spoke. A word with no speech heard within half a second of it is dropped, while a word just beside speech, such as one translated from another language, stays; a decoder loop that writes one word dozens of times is cut back to the copies the audio supports; and a phrase recognized from a cough or room tone (“Dziękuję.”) is dropped when both the speech detector and the level meter measured the whole stretch as quiet. Audio that was not measured keeps its words.
+- Added audio-based filters for unsupported Whisper words, decoder repetition and phrases inferred from quiet audio. They use measured speech near the candidate and retain words when audio evidence is unavailable. False positives and false negatives remain possible; quiet-audio phantom text is still a known issue.
 - A spoken agent message waits through the same send pause as a typed one, with Cancel, Edit and Send now. Before, a take that the ledger did not seal was sent at once.
 - A spoken agent message ends at a pause in your speech measured on the capture, not at a pause in the recognized text; without a measurement the take does not assume silence.
 - When a new agent take opens while the previous one is still finishing, the previous message is no longer delivered before its last words arrive.
@@ -84,9 +113,9 @@ Validation and distribution have separate receipts.
 
 <!-- release-notes:0.17.1:start -->
 
-Source history: 290 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history: 291 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.17.1 50e3f312f0f6ca34d327e31dee35dcf96bed912d -->
+<!-- release-boundary: 0.17.1 c55f8bc4d9faee2231ff7dff11e19e76cef4daca -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16

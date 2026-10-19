@@ -3506,6 +3506,16 @@
         }
       }
     },
+    "Auto fold after… %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwijaj po… %@"
+          }
+        }
+      }
+    },
     "Auto-detect" : {
       "comment" : "Dictation language choice: let the engine detect the language",
       "localizations" : {
