@@ -856,7 +856,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor && !dockedColumnAlreadyOnScreen
+    showsAgentMonitor = fold.agentMonitor && !agentListPinned
   }
 
   func clearPointerHover() {
@@ -1141,6 +1141,7 @@ final class OverlayState {
     if engine is ControllerDictationEngine {
       let root = OverlayChannelDeliveryReader.productionRoot()
       restoreReadState(root: root)
+      restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
           root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
@@ -1175,24 +1176,98 @@ final class OverlayState {
   /// Bumped when the name pill asks the docked column to focus its selected
   /// row, and when the list comes to cover the conversation.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
+  /// The panes the list's corner buttons chose (Maciej, 2026-10-19). Stored
+  /// only once `restoreAgentsLayout(defaults:)` ran, so a test state never
+  /// writes the app's defaults.
+  private(set) var agentsLayout: OverlayAgentsLayout = .split
+  @ObservationIgnored private var agentsLayoutDefaults: UserDefaults?
+  static let agentsLayoutDefaultsKey = "Overlay.agentsLayout.v1"
 
-  /// The docked column is permanent beside a conversation. The transcription
-  /// surface keeps its full width (OverlayChromeV3Tests) and shows the column
-  /// only while the roster was asked for, so `showsAgentMonitor` still drives
-  /// it there.
-  private var dockedColumnAlreadyOnScreen: Bool {
-    agentDrawerDocked && selectedConversationID != nil
+  /// The list is on screen beside or over a conversation without being asked
+  /// for: the docked column, or the agents view at any width. The
+  /// transcription surface shows it only while it is asked for, so
+  /// `showsAgentMonitor` still drives it there.
+  var agentListPinned: Bool {
+    OverlayAgentDrawerLayout.listPinned(
+      layout: agentsLayout, docked: agentDrawerDocked,
+      conversationSelected: selectedConversationID != nil)
   }
 
   /// The layout owns the call. Engaging the docked column beside a
   /// conversation closes the full-width list; the selection, drafts and
-  /// scroll follow survive the switch. On the transcription surface the open
-  /// list becomes the column instead of vanishing.
+  /// scroll follow survive the switch. On the transcription surface, or with
+  /// the list folded to its rail, the open list becomes the column instead of
+  /// vanishing.
   func setAgentDrawerDocked(_ docked: Bool) {
     guard docked != agentDrawerDocked else { return }
     agentDrawerDocked = docked
-    if docked, selectedConversationID != nil { showsAgentMonitor = false }
+    if docked, agentListPinned { showsAgentMonitor = false }
   }
+
+  /// The layout chosen last, read before the panel first shows. A roster
+  /// once dragged across the window was stored as an oversized width; it
+  /// becomes the agents view, and the width the default again.
+  func restoreAgentsLayout(defaults: UserDefaults) {
+    agentsLayoutDefaults = defaults
+    if let stored = defaults.string(forKey: Self.agentsLayoutDefaultsKey)
+      .flatMap(OverlayAgentsLayout.init(rawValue:))
+    {
+      agentsLayout = stored
+    } else if defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
+      >= OverlayAgentDrawerLayout.legacyFillsWindowWidth
+    {
+      defaults.set(300.0, forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
+      setAgentsLayout(.agents)
+    }
+  }
+
+  func setAgentsLayout(_ layout: OverlayAgentsLayout) {
+    guard layout != agentsLayout else { return }
+    agentsLayout = layout
+    agentsLayoutDefaults?.set(layout.rawValue, forKey: Self.agentsLayoutDefaultsKey)
+    onChannelPresentationChanged?()
+  }
+
+  /// `sidebar.left` over a list that hides the conversation (or the
+  /// transcription): it slides out beside the list where the window is wide
+  /// enough, and below the threshold the list gives it the window.
+  func showAgentsCanvas() {
+    if agentsLayout == .agents { setAgentsLayout(.split) }
+    if !agentDrawerDocked { hideAgentSidebar() }
+  }
+
+  /// `sidebar.left` beside the conversation: the list becomes the view.
+  func hideAgentsCanvas() {
+    setAgentsLayout(.agents)
+  }
+
+  /// `sidebar.right`: beside a conversation the list folds to its rail of
+  /// pills; over the transcription it only closes.
+  func foldAgentList() {
+    if selectedConversationID != nil { setAgentsLayout(.rail) }
+    hideAgentSidebar()
+  }
+
+  /// `sidebar.right` on the rail: the list comes back beside the
+  /// conversation. Below the threshold it cannot fit there, so it covers the
+  /// window while asked for and the rail stays the choice.
+  func unfoldAgentList() {
+    guard agentDrawerDocked else {
+      showAgentMonitor(expand: false)
+      return
+    }
+    setAgentsLayout(.split)
+    focusAgentRoster()
+  }
+
+  /// A row chosen in the list, or with the middle-click chooser. In the
+  /// agents view the conversation slides out: the list is the switcher
+  /// (Maciej, 2026-10-19). A followed reply or the Agents button keeps it.
+  func chooseConversation(_ id: String) {
+    if agentsLayout == .agents { setAgentsLayout(.split) }
+    selectConversation(id)
+  }
+
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
@@ -1748,10 +1823,10 @@ final class OverlayState {
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    if dockedColumnAlreadyOnScreen {
-      // Docked beside a conversation: the column is already on screen, so the
-      // click focuses the selected row instead of opening anything (mockup,
-      // Founder 2026-10-16).
+    if agentListPinned {
+      // Docked beside a conversation, or the agents view: the list is already
+      // on screen, so the click focuses the selected row instead of opening
+      // anything (mockup, Founder 2026-10-16).
       agentDrawerFocusRevision &+= 1
     } else {
       showsAgentMonitor = true
@@ -1886,7 +1961,7 @@ final class OverlayState {
   }
 
   private var agentListOnScreen: Bool {
-    !isCollapsed && (showsAgentMonitor || dockedColumnAlreadyOnScreen)
+    !isCollapsed && (showsAgentMonitor || agentListPinned)
   }
 
   func handleAgentGesture(_ input: CsAgentGestureInput) {
@@ -1901,7 +1976,7 @@ final class OverlayState {
       moveAgentFocus(from: focus, by: Int(steps))
     case (.choosing(let focus), .leftClick):
       endAgentChoosing()
-      if let focus { selectConversation(focus) }
+      if let focus { chooseConversation(focus) }
     case (.choosing, .cancel):
       hideAgentSidebar()
     case (_, .scroll), (_, .leftClick), (_, .cancel):
