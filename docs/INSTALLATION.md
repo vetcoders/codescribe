@@ -417,8 +417,9 @@ different identity is refused, as is any command without that header.
 
 The full readiness report, managed installation paths, MCP status, and Refresh
 action live in **Settings › Agent › Diagnostics**. Setup keeps only the client
-choice and an inline setup failure. Setup can be reopened later from the
-existing **Setup Wizard…** tray action.
+choice and an inline setup failure. The tray's **Setup Wizard…** row is gone
+(19 Oct 2026); **Settings › Creator** is the first-run setup screen, reachable
+any time setup needs revisiting.
 
 #### Selecting clients without a window
 

@@ -686,9 +686,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)
     }
-    model.tray.onCheckForUpdates = { [weak self] in
-      self?.updater?.checkForUpdates()
-    }
     // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
     // gate), `present()` always fronts the window — resume when onboarding is
     // still due, or re-run from Welcome after completion.
