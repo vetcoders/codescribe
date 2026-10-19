@@ -77,7 +77,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
   private func armRoster(
     on state: OverlayState,
     owner: OverlayConversationOwner,
-    panelFocusAvailable: Bool = true
+    panelFocusAvailable: Bool = true,
+    frameDetected: Bool? = nil
   ) {
     state.applyChannelRoster([
       CsChannelRosterState(
@@ -86,7 +87,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       CsChannelRosterState(
         channel: owner.channel, audience: owner.name, provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
+        autosealDeadlineUnixMs: nil, followerAlive: true, frameDetected: frameDetected,
+        unreadSinceUnixMs: nil),
     ])
     if panelFocusAvailable {
       state.setAgentPanelFocusAvailable(true)
@@ -123,6 +125,52 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(
       statusView.rowStateText(for: row, receiptText: "Read"),
       String(localized: "Opening panel in Frame…"))
+  }
+
+  func testAgentWithoutFramePaneRestsGreyedAndNeverRequestsFocus() throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner, frameDetected: false)
+
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { issuedRequests.append($0) }
+    state.focusAgentPanel(owner)
+    XCTAssertTrue(issuedRequests.isEmpty, "no pane, no request")
+    XCTAssertNil(state.agentPanelFocusStates[owner.channel])
+
+    var statusView = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates)
+    statusView.panelFocusAvailable = true
+    let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == owner.channel })
+    XCTAssertTrue(statusView.hasNoFramePane(row))
+    XCTAssertEqual(
+      statusView.panelFocusHelp(for: row, state: nil),
+      String(localized: "Agent is not in a Frame pane"))
+    XCTAssertEqual(statusView.rowStateText(for: row, receiptText: "Read"), "Read")
+  }
+
+  func testFailedFocusRidesTheButtonGlyphNotTheRowLine() throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner, frameDetected: true)
+    let failed = OverlayAgentPanelFocusState(
+      requestID: "r", owner: owner, phase: .failed,
+      statusText: String(localized: "Panel not found in Frame"), updatedAt: Date())
+
+    var statusView = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates)
+    statusView.panelFocusStates = [owner.channel: failed]
+    let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == owner.channel })
+    XCTAssertFalse(statusView.hasNoFramePane(row))
+    XCTAssertEqual(statusView.rowStateText(for: row, receiptText: "Read"), "Read")
+    XCTAssertEqual(statusView.panelFocusSymbol(failed), "exclamationmark.triangle")
+    XCTAssertEqual(
+      statusView.panelFocusHelp(for: row, state: failed),
+      String(localized: "Panel not found in Frame"))
   }
 
   func testFocusResultReceiptFoldsExpandedOverlayAndActivatesTerminalHostOnce() throws {

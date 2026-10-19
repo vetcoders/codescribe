@@ -82,6 +82,9 @@ struct OverlayChannelHudProjection: Equatable {
   let followerAlive: Bool?
   var provider: String? = nil
   var providerSessionID: String? = nil
+  /// Whether the live follower's lease names a vc-frame pane. False means a
+  /// focus request has nowhere to land; nil means no claim.
+  var frameDetected: Bool? = nil
   /// When the live follower's oldest unacknowledged delivery was emitted.
   /// The second liveness layer: a reader process can heartbeat while the
   /// conversation behind it reads nothing (Founder, 2026-10-14).
@@ -901,6 +904,7 @@ struct OverlayChannelStatusView: View {
       showsPanelFocusButton(for: channel),
       let owner = archiveCandidates[channel.channel],
       !hasDeadFollower(channel),
+      !hasNoFramePane(channel),
       let onFocusAgentPanel
     {
       onFocusAgentPanel(owner)
@@ -1013,25 +1017,26 @@ struct OverlayChannelStatusView: View {
                 ProgressView()
                   .controlSize(.mini)
               } else {
-                Image(
-                  systemName: focusState?.isSucceeded == true
-                    ? "checkmark" : "macwindow.on.rectangle"
-                )
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(
-                  focusState?.isSucceeded == true
-                    ? palette.successStatus.color
-                    : focusState?.isFailed == true
-                      ? palette.errorStatus.color
-                      : palette.primaryText.color
-                )
+                Image(systemName: panelFocusSymbol(focusState))
+                  .font(.system(size: 11, weight: .semibold))
+                  .foregroundStyle(
+                    focusState?.isSucceeded == true
+                      ? palette.successStatus.color
+                      : focusState?.isFailed == true
+                        ? palette.errorStatus.color
+                        : hasNoFramePane(channel)
+                          ? palette.mutedText.color : palette.primaryText.color
+                  )
               }
             }
             .frame(width: 16, height: 16)
           }
           .modifier(OverlayAgentControlStyle())
           .csFocusOutline()
-          .disabled(focusState?.isRequesting == true || hasDeadFollower(channel))
+          .disabled(
+            focusState?.isRequesting == true || hasDeadFollower(channel)
+              || hasNoFramePane(channel)
+          )
           .modifier(
             OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
           )
@@ -1186,8 +1191,12 @@ struct OverlayChannelStatusView: View {
 
   /// The receipt of the newest delivery, then the reader's state when there is
   /// no receipt or the reader is gone or stalled: one line, never two.
+  ///
+  /// A failed Frame focus never takes this line: Maciej, 2026-10-19, "czemu te
+  /// errors nie mogą się chować do ładnych mini glifków statusu, tylko straszą
+  /// do końca". The failure lives on the focus button's glyph and its help.
   func rowStateText(for channel: OverlayChannelDelivery, receiptText: String?) -> String {
-    if let focusState = panelFocusStates[channel.channel] {
+    if let focusState = panelFocusStates[channel.channel], !focusState.isFailed {
       return focusState.statusText
     }
     guard let receiptText else { return shortStatus(for: channel) }
@@ -1202,8 +1211,22 @@ struct OverlayChannelStatusView: View {
     switch focusState.phase {
     case .requesting: return palette.processingStatus.color
     case .succeeded: return palette.successStatus.color
-    case .failed: return palette.errorStatus.color
+    case .failed: return palette.mutedText.color
     }
+  }
+
+  /// The live follower attached without vc-frame pane coordinates, so a focus
+  /// request has nowhere to land: the control rests greyed instead of failing
+  /// on click (Maciej, 2026-10-19: "przycisków kierowania do frame brak gdy
+  /// frame session nie wykryty u agenta - wyszarzony").
+  func hasNoFramePane(_ channel: OverlayChannelDelivery) -> Bool {
+    hudStates[channel.channel]?.frameDetected == false
+  }
+
+  func panelFocusSymbol(_ state: OverlayAgentPanelFocusState?) -> String {
+    if state?.isSucceeded == true { return "checkmark" }
+    if state?.isFailed == true { return "exclamationmark.triangle" }
+    return "macwindow.on.rectangle"
   }
 
   func panelFocusHelp(
@@ -1211,6 +1234,9 @@ struct OverlayChannelStatusView: View {
   ) -> String {
     if hasDeadFollower(channel) {
       return String(localized: "Agent is disconnected")
+    }
+    if hasNoFramePane(channel) {
+      return String(localized: "Agent is not in a Frame pane")
     }
     if let state {
       return state.statusText

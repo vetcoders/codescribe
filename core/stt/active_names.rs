@@ -45,6 +45,23 @@ struct SessionLease {
     /// store under `acknowledgments/<lease_id>/` is the receipt truth.
     #[serde(default)]
     pending: Vec<PendingDelivery>,
+    /// The vc-frame pane the follower inherited at attach (`frame_context`
+    /// in the helper), or null when its process held no pane coordinates.
+    #[serde(default)]
+    frame: Option<serde_json::Value>,
+}
+
+impl SessionLease {
+    /// A pane the follower can focus: a numeric `pane_id` and a session name.
+    fn has_frame_pane(&self) -> bool {
+        self.frame.as_ref().is_some_and(|frame| {
+            frame.get("pane_id").is_some_and(serde_json::Value::is_u64)
+                && frame
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|session| !session.trim().is_empty())
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +172,20 @@ pub fn live_follower_sessions_at(
     now: f64,
     ttl_seconds: f64,
 ) -> HashSet<(String, String)> {
-    let mut sessions = HashSet::new();
+    live_follower_frames_at(root, now, ttl_seconds)
+        .into_keys()
+        .collect()
+}
+
+/// Every live follower session (same convention as
+/// [`live_follower_sessions_at`]) mapped to whether its lease names a vc-frame
+/// pane. One scan serves both the liveness and the pane facts the roster shows.
+pub fn live_follower_frames_at(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+) -> HashMap<(String, String), bool> {
+    let mut sessions = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
             lease.provider.as_deref().map(str::trim),
@@ -163,7 +193,10 @@ pub fn live_follower_sessions_at(
         ) && !provider.is_empty()
             && !session.is_empty()
         {
-            sessions.insert((provider.to_lowercase(), session.to_string()));
+            let framed = sessions
+                .entry((provider.to_lowercase(), session.to_string()))
+                .or_insert(false);
+            *framed |= lease.has_frame_pane();
         }
     });
     sessions
@@ -380,6 +413,63 @@ mod tests {
         assert_eq!(
             live,
             HashSet::from([("claude-code".to_string(), "sess-1".to_string())])
+        );
+    }
+
+    fn write_framed_lease(root: &Path, file: &str, session: &str, frame: serde_json::Value) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "claude-code",
+                "provider_session_id": session,
+                "frame": frame,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_lease_naming_a_frame_pane_reports_frame_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        write_framed_lease(
+            temp.path(),
+            "framed.json",
+            "in-pane",
+            serde_json::json!({"session": "codescribe", "pane_id": 3}),
+        );
+        // A daemon-hosted session attaches without pane coordinates.
+        write_framed_lease(
+            temp.path(),
+            "daemon.json",
+            "daemon",
+            serde_json::Value::Null,
+        );
+        write_framed_lease(
+            temp.path(),
+            "paneless.json",
+            "paneless",
+            serde_json::json!({"session": "codescribe"}),
+        );
+        // Pre-frame helpers never wrote the field at all.
+        write_session_lease(temp.path(), "old.json", "claude-code", "old", true, 990.0);
+
+        let frames = live_follower_frames_at(temp.path(), 1_000.0, 120.0);
+        let key = |session: &str| ("claude-code".to_string(), session.to_string());
+        assert_eq!(frames.get(&key("in-pane")), Some(&true));
+        assert_eq!(frames.get(&key("daemon")), Some(&false));
+        assert_eq!(frames.get(&key("paneless")), Some(&false));
+        assert_eq!(frames.get(&key("old")), Some(&false));
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0).len(),
+            4,
+            "the pane fact never changes who is alive"
         );
     }
 
