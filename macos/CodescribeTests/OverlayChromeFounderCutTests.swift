@@ -1074,8 +1074,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 5)
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 3)
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
+    // The folded list's rail (2026-10-19) brought two of them: its leading
+    // hairline and its frame reader, neither of which takes a click.
+    let rail = try section(
+      of: chrome, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
+    XCTAssertEqual(rail.components(separatedBy: ".allowsHitTesting(false)").count - 1, 2)
+    XCTAssertEqual(rail.components(separatedBy: ".accessibilityHidden(true)").count - 1, 1)
     // The docked agents column's hairline became its resize handle (15d5640d5):
     // that handle owns the chrome's only drag, and nothing else adds one.
     XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)
