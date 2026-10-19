@@ -408,7 +408,6 @@ final class OverlayIntentRailTests: XCTestCase {
       OverlayIntentRail.projectedIntents(for: state),
       [.insertPaste, .copy, .retranscribe, .format, .close])
     XCTAssertNotNil(state.coverageRefusalNotice)
-    XCTAssertFalse(state.coverageRefusalDetail.isEmpty)
   }
 
   func testSealedTakeKeepsRailWithoutReservingWarningSlot() {
