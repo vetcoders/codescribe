@@ -96,7 +96,7 @@ final class SettingsWindowChromeTests: XCTestCase {
 
   private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is SettingsSidebarVisualEffectNSView } as? NSVisualEffectView
+    return first(in: content) { $0 is CSSidebarVisualEffectNSView } as? NSVisualEffectView
   }
 
   private func frame(_ view: NSView) -> NSRect {

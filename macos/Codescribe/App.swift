@@ -1108,21 +1108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let root = TextScaleRoot(controller: model.chatTextScale) {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
-    let hosting = NSHostingController(rootView: root)
-    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
-    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
-    // back into the style mask (Founder decision, 2026-10-10).
-    let window = HidingWindow(contentViewController: hosting)
-    window.setContentSize(NSSize(width: 1120, height: 720))
-    window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-    window.isReleasedWhenClosed = false
-    // LSUIElement accessory: join the active Space so a passive
-    // `orderFrontRegardless` is actually visible during voice delivery.
-    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    let window = AgentWindowChrome.makeWindow(content: NSHostingController(rootView: root))
     window.center()
-    DockPresence.adopt(window)
-    // After adopt: style-mask repair must not leave a second painted "Agent" row.
-    AgentWindowChrome.apply(window)
     agentWindow = window
     return window
   }

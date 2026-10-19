@@ -182,7 +182,7 @@ lands in the thread the Agent rail currently has selected — the thread the
 user is looking at. The rail publishes every selection change through
 `CodescribeHotkeys.set_assistive_target_thread`; the controller rebinds its
 runtime (rejoin + rehydrate) when the target differs from the bound thread. A
-new thread is only ever minted by an explicit "+ New thread" (published as a
+new thread is only ever minted by an explicit "New conversation" (published as a
 `nil` target, consumed once — one press mints one thread, not one per
 utterance). If the Agent UI never published a selection (window never
 opened), the lane continues its bound conversation as before.

@@ -1648,7 +1648,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
     XCTAssertEqual(
       model.resetImpactDescription(includeKeys: false, includePrompts: false),
-      "Moves 5,000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+      "Moves 5,000 recordings from 42 days, 17 conversations (512.0 MB) to Trash. "
         + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
         + "prompts will be preserved. "
         + "Codescribe will relaunch as a fresh install."

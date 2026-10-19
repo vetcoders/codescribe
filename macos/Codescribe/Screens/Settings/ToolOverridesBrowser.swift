@@ -49,17 +49,18 @@ struct ToolOverridesBrowser: View {
           .accessibilityIdentifier("settings-tool-source")
         }
 
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: CSSpace.sm) {
-            ForEach(current.items) { item in
-              ToolCapabilityRow(
-                item: item, level: $model[toolLevel: item.identity],
-                restoreInheritance: { model.clearToolPermission(identity: item.identity) })
-            }
+        // No scroll box of its own: the pane already scrolls
+        // (`SettingsTabbedPane`), and a 420 pt window inside it meant two
+        // nested scrollers and a bar that never went away. The tools grow with
+        // the page instead (Founder, 2026-10-18).
+        LazyVStack(alignment: .leading, spacing: CSSpace.sm) {
+          ForEach(current.items) { item in
+            ToolCapabilityRow(
+              item: item, level: $model[toolLevel: item.identity],
+              restoreInheritance: { model.clearToolPermission(identity: item.identity) })
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxHeight: 420)
+        .frame(maxWidth: .infinity, alignment: .leading)
       } else {
         ContentUnavailableView.search(text: searchText)
           .frame(maxWidth: .infinity, minHeight: 160)

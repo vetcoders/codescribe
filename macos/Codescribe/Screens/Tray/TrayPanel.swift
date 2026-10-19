@@ -183,6 +183,7 @@ struct TrayPanelSurface<Content: View>: View {
         } action: {
           onHeightChange($0)
         }
+        .csAutohidingScrollers()
     }
     .scrollBounceBehavior(.basedOnSize)
     .clipShape(.rect(cornerRadius: CSRadius.window))

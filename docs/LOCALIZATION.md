@@ -44,7 +44,10 @@
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter
-  follows the dictation-language choice.
+  follows the dictation-language choice. The resume slot is not the number the
+  “Step N of M” header shows: that counter and the progress bar run over the
+  chapters the chosen lane actually displays, so the Basic lane — which hides
+  Agentic Readiness — counts to eight and the Agentic lane to nine.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.
 
@@ -313,6 +316,19 @@ including buttons, settings, history, messages, help and accessibility copy.
 | Converting audio to text                                | transcription             | transkrypcja              |
 | The resulting text                                      | transcript                | transkrypt                |
 | Command to convert audio to text                        | Transcribe                | Transkrybuj               |
+| Agent window's stored chat object                       | conversation              | rozmowa                   |
+
+Founder decision 2026-10-18: the Agent window's stored chat object — what code
+calls a thread — is named "conversation" / "rozmowa" everywhere a user reads
+it: buttons, search, menus, errors and accessibility copy (New thread → New
+conversation, Delete Thread → Delete Conversation, Nowy wątek → Nowa rozmowa,
+and so on). Mind the grammar: "wątek" is masculine and "rozmowa" is feminine,
+so every adjective and pronoun takes the new gender
+("Usunąć ten wątek?" → "Usunąć tę rozmowę?"). "chat" stays the name of the mode
+("Voice chat", "Continue in chat"); "session" / "sesja" stays reserved for
+dictation, the app session and bus agent sessions — neither is renamed by this
+decision. Code identifiers (`threadID`, `ThreadRail`, `ChatThread`,
+`search_threads`) are unaffected (R6).
 
 Mode names and license status describe different things. Do not call Basic
 mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".

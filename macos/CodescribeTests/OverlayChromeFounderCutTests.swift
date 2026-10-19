@@ -1212,7 +1212,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(close.contains("setPresentationMode"), "Close hover must never morph the window")
     XCTAssertTrue(close.contains(".contentShape(Circle().inset(by: -7.5))"))
     XCTAssertFalse(close.contains(".frame("), "A frame would move the dot")
-    XCTAssertTrue(header.contains("Text(verbatim: \"codescribe\")"))
+    // The overlay draws the same lockup as every other window; the dot slot
+    // carries the close button.
+    XCTAssertTrue(header.contains("Wordmark("))
+    XCTAssertTrue(
+      try self.source(at: "Codescribe/DesignSystem/Components.swift")
+        .contains("Text(verbatim: \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).

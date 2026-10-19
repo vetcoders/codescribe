@@ -52,6 +52,32 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
     }
   }
 
+  /// The counter and the bar run over the steps the lane shows. The Basic lane
+  /// hides Agentic Readiness, so its last step reads "Step 8 of 8" instead of
+  /// jumping from 7 to 9; the agentic lane counts to nine.
+  func testStepCounterAndBarFollowTheStepsTheLaneShows() throws {
+    let done = try XCTUnwrap(OnboardingStep.flow.firstIndex(of: .done))
+    try withPreferences { preferences, _ in
+      preferences.set(["en"], forKey: "AppleLanguages")
+      for (mode, total) in [("basic", 8), ("agentic", 9)] {
+        let engine = LanguageRecordingEngine()
+        engine.fixture.mode = mode
+        engine.fixture.progress = UInt32(done)
+        let wizard = model(preferences: preferences, engine: engine)
+        XCTAssertEqual(wizard.step, .done, mode)
+        XCTAssertEqual(wizard.progressLabel, "Step \(total) of \(total)", mode)
+        XCTAssertEqual(wizard.progressFraction, 1, accuracy: 0.0001, mode)
+        XCTAssertEqual(wizard.totalSteps, 9, "the flow itself keeps every step")
+      }
+      // The lane is chosen on step two: the one place the total may change.
+      let wizard = model(preferences: preferences)
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 8")
+      wizard.selectMode(.agentic)
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
+      XCTAssertEqual(wizard.progressFraction, 0, accuracy: 0.0001)
+    }
+  }
+
   func testChoosingInterfaceLanguagePersistsWithoutChangingDictationLanguage() throws {
     try withPreferences { preferences, suite in
       preferences.set(["en-GB"], forKey: "AppleLanguages")
@@ -173,11 +199,11 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       preferences.set(["en"], forKey: "AppleLanguages")
       let wizard = model(preferences: preferences)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
-      XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 8")
       let englishTitle = wizard.windowTitle
       wizard.selectInterfaceLanguage(.polish)
       XCTAssertEqual(wizard.primaryLabel, "Uruchom ponownie i kontynuuj")
-      XCTAssertEqual(wizard.progressLabel, "Krok 1 z 9")
+      XCTAssertEqual(wizard.progressLabel, "Krok 1 z 8")
       XCTAssertNotEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
         PermissionKind.microphone.displayName(locale: wizard.interfaceLocale),
@@ -185,7 +211,7 @@ final class OnboardingInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(PermissionState.granted.label(locale: wizard.interfaceLocale), "Przyznano")
       wizard.selectInterfaceLanguage(.english)
       XCTAssertEqual(wizard.primaryLabel, "Continue")
-      XCTAssertEqual(wizard.progressLabel, "Step 1 of 9")
+      XCTAssertEqual(wizard.progressLabel, "Step 1 of 8")
       XCTAssertEqual(wizard.windowTitle, englishTitle)
       XCTAssertEqual(
         PermissionKind.microphone.displayName(locale: wizard.interfaceLocale),

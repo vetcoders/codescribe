@@ -50,7 +50,7 @@ struct MCPServersSection: View {
       DisclosureGroup(isExpanded: $showingTechnicalDetails) {
         VStack(alignment: .leading, spacing: 6) {
           Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
-            .font(CSFont.mono(11, .medium))
+            .font(CSFont.ui(11, .medium))
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
           Text(verbatim: "~/.codescribe/mcp.json")
@@ -61,7 +61,7 @@ struct MCPServersSection: View {
             confirmingClear = true
           } label: {
             Text("Move MCP configuration to Trash…")
-              .font(CSFont.mono(10.5, .semibold))
+              .font(CSFont.ui(10.5, .semibold))
               .foregroundStyle(CSColor.danger)
           }
           .csFocusRing()
@@ -84,7 +84,7 @@ struct MCPServersSection: View {
       }
     } message: {
       Text(
-        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched."
+        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, conversations, preferences, and API keys stay untouched."
       )
     }
     // Removing one server is the same class of action as clearing the file:
@@ -116,7 +116,7 @@ struct MCPServersSection: View {
       Text(
         "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."
       )
-      .font(CSFont.mono(11, .medium))
+      .font(CSFont.ui(11, .medium))
       .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
     }
@@ -253,7 +253,7 @@ struct MCPServerRow: View {
 
   private func resultLine(text: String, color: Color) -> some View {
     Text(text)
-      .font(CSFont.mono(11, .semibold))
+      .font(CSFont.ui(11, .semibold))
       .foregroundStyle(color)
       .lineLimit(2)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -347,7 +347,7 @@ struct MCPServerRow: View {
             ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
             : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
       }
-      .font(CSFont.mono(10, .semibold))
+      .font(CSFont.ui(10, .semibold))
       .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
@@ -367,7 +367,7 @@ struct MCPServerRow: View {
   private var testButton: some View {
     Button(action: onTest) {
       Text("Test", comment: "Button label: run a connection test")
-        .font(CSFont.mono(10, .semibold))
+        .font(CSFont.ui(10, .semibold))
         .foregroundStyle(pending ? Color.secondary : Color.primary)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -565,7 +565,7 @@ private struct MCPAddServerForm: View {
   /// differ, stay one hover away instead of on the screen.
   private func errorLine(_ failure: MCPAddFailure) -> some View {
     Text(verbatim: failure.message)
-      .font(CSFont.mono(10.5, .medium))
+      .font(CSFont.ui(10.5, .medium))
       .foregroundStyle(CSColor.terracotta)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)

@@ -287,14 +287,28 @@ final class OnboardingViewModel: ObservableObject {
   var totalSteps: Int { OnboardingStep.count }
   var canGoBack: Bool { stepIndex > 0 }
 
-  /// Human-readable "Step N of M" — permission steps are still counted by their
-  /// absolute flow index so the bar never jumps.
+  /// The steps this lane actually shows. Counting the whole flow would promise
+  /// a step the Basic lane never reaches.
+  private var visibleSteps: [OnboardingStep] { OnboardingStep.flow.filter(isVisible) }
+
+  var visibleStepCount: Int { visibleSteps.count }
+  var visibleStepNumber: Int { (visibleSteps.firstIndex(of: step) ?? 0) + 1 }
+
+  /// Human-readable "Step N of M" over the visible steps, so the last step of
+  /// the Basic lane reads "Step 8 of 8" instead of jumping from 7 to 9. The
+  /// lane is chosen on step two, so the total can change once, there; after
+  /// that it is fixed and the bar never jumps.
   var progressLabel: String {
     String(
       localized: LocalizedStringResource(
-        "Step \(stepIndex + 1) of \(totalSteps)", locale: interfaceLocale,
+        "Step \(visibleStepNumber) of \(visibleStepCount)", locale: interfaceLocale,
         comment: "Setup wizard progress; first %lld is the current step, second the total"
       ))
+  }
+
+  /// The bar follows the same visible fraction as the counter.
+  var progressFraction: Double {
+    Double(visibleStepNumber - 1) / Double(max(1, visibleStepCount - 1))
   }
 
   var isDone: Bool { step == .done }
@@ -923,15 +937,23 @@ final class OnboardingViewModel: ObservableObject {
           "Account access unavailable", locale: interfaceLocale,
           comment: "Setup Agent account row status when account credentials cannot be read"))
     }
-    return selectedProviderAccountConnected
-      ? String(
+    if selectedProviderAccountConnected {
+      return String(
         localized: LocalizedStringResource(
           "Connected", locale: interfaceLocale,
           comment: "Setup Agent account row status"))
-      : String(
+    }
+    // A stored key already covers this provider, so the account is an extra.
+    if selectedProviderKeySet {
+      return String(
         localized: LocalizedStringResource(
-          "Not connected", locale: interfaceLocale,
-          comment: "Setup Agent account row status"))
+          "Optional", locale: interfaceLocale,
+          comment: "Status chip"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Not connected", locale: interfaceLocale,
+        comment: "Setup Agent account row status"))
   }
 
   var selectedProviderKeyStatus: String {
@@ -947,15 +969,23 @@ final class OnboardingViewModel: ObservableObject {
           "Provider access unavailable", locale: interfaceLocale,
           comment: "Setup provider row status when the credential snapshot failed"))
     }
-    return selectedProviderKeySet
-      ? String(
+    if selectedProviderKeySet {
+      return String(
         localized: LocalizedStringResource(
           "Set", locale: interfaceLocale,
           comment: "Setup API key row status"))
-      : String(
+    }
+    // The connected account already covers this provider, so the key is an extra.
+    if selectedProviderAccountConnected {
+      return String(
         localized: LocalizedStringResource(
-          "Not set", locale: interfaceLocale,
-          comment: "Setup API key row status"))
+          "Optional", locale: interfaceLocale,
+          comment: "Status chip"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Not set", locale: interfaceLocale,
+        comment: "Setup API key row status"))
   }
 
   func beginApiKeyEditing() {

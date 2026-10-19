@@ -209,7 +209,7 @@ struct LaneResetNotice: View {
     HStack(spacing: 8) {
       Circle().fill(CSColor.amber).frame(width: 7, height: 7)
       Text(text)
-        .font(CSFont.mono(11, .medium))
+        .font(CSFont.ui(11, .medium))
         .foregroundStyle(CSColor.amber)
         .lineLimit(2)
     }
@@ -261,16 +261,18 @@ struct ProviderCard: View {
       } else {
         vendorProviderHeader
       }
-      // Custom hosts are key-optional: an absent key there is neutral, not an error.
+      // Key-optional hosts, and vendors whose account is already connected,
+      // read "Optional": nothing is waiting for that key.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
-        isSet: provider.apiKeySet, optional: !provider.keyRequired, embedded: true,
+        isSet: provider.apiKeySet,
+        optional: !provider.keyRequired || provider.accountSignedIn, embedded: true,
         presentation: isCustom ? .customProvider(endpoint: provider.endpoint) : .standard)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
           .font(CSFont.ui(12, .semibold))
         Text(error).font(CSFont.ui(11.5)).textSelection(.enabled)
-        SettingsChipButton("Sign out", tint: CSColor.terracotta) {
+        SettingsChipButton("Sign out", tint: Color.secondary) {
           model.signOutAccount(providerId: provider.id)
         }
         .accessibilityLabel("Sign out \(provider.displayName)")
@@ -401,7 +403,7 @@ struct CustomProvidersSection: View {
 
       if model.customProviders.isEmpty {
         Text("No custom providers yet.")
-          .font(CSFont.mono(11, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(Color.secondary)
           .padding(.top, 12)
       } else {
@@ -495,7 +497,7 @@ struct CustomProviderForm: View {
           .accessibilityHint(endpointError ?? "")
         if let endpointError {
           Text(endpointError)
-            .font(CSFont.mono(11, .medium))
+            .font(CSFont.ui(11, .medium))
             .foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("custom-provider-endpoint-error")
@@ -511,7 +513,7 @@ struct CustomProviderForm: View {
 
       if let error {
         Text(error)
-          .font(CSFont.mono(11, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
@@ -552,7 +554,7 @@ struct CustomProviderForm: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.ui(10.5, .semibold))
         .foregroundStyle(Color.secondary)
       control()
     }
@@ -713,9 +715,10 @@ struct SttLaneCard: View {
           }
         }
       )
+      // Cloud transcription is an optional lane: an absent key is neutral, not an error.
       KeyRow(
         model: model, account: lane.keyAccount, label: String(localized: "API key"),
-        isSet: lane.apiKeySet, embedded: true)
+        isSet: lane.apiKeySet, optional: true, embedded: true)
       if lane.id == "live" {
         SettingsUrlRow(
           title: String(localized: "Gateway session URL"),
@@ -769,9 +772,11 @@ struct ServiceKeysSection: View {
       ProvidersSectionHeader(String(localized: "Service keys"))
       VStack(spacing: 8) {
         ForEach(model.serviceKeyAccounts, id: \.self) { account in
+          // Service keys (GitHub, …) are optional extras: an absent key is
+          // neutral, not an error.
           KeyRow(
             model: model, account: account, label: SettingsViewModel.keyLabel(for: account),
-            isSet: model.keyStatus.isSet(account: account))
+            isSet: model.keyStatus.isSet(account: account), optional: true)
         }
       }
       .padding(.top, 12)

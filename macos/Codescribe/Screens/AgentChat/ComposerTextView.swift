@@ -142,9 +142,10 @@ struct ComposerTextView: NSViewRepresentable {
     let scrollView = ComposerScrollView()
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
-    scrollView.hasHorizontalScroller = false
     scrollView.hasVerticalScroller = false
-    scrollView.autohidesScrollers = true
+    // One scroller policy for the whole app (Founder, 2026-10-18), even where
+    // the composer currently shows no scroller at all.
+    context.coordinator.scrollerPin.attach(to: scrollView)
     scrollView.horizontalScrollElasticity = .none
     scrollView.verticalScrollElasticity = .automatic
 
@@ -203,6 +204,10 @@ struct ComposerTextView: NSViewRepresentable {
     return scrollView
   }
 
+  static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    coordinator.scrollerPin.detach()
+  }
+
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
     context.coordinator.updateParent(self)
     guard let textView = scrollView.documentView as? ComposerNativeTextView else { return }
@@ -240,6 +245,7 @@ struct ComposerTextView: NSViewRepresentable {
   @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ComposerTextView
+    let scrollerPin = CSScrollerPin()
     private var historyState = ComposerDraftHistoryState()
     private var applyingHistory = false
 

@@ -1,11 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// Thread list content hosted in the native split sidebar column.
+/// Thread list content hosted in the shared sidebar column.
 ///
-/// The same composition as the Settings sidebar: a system sidebar List with
-/// sidebar search, the shared sidebar material behind the whole column, and
-/// system row selection, hover and focus.
+/// `CSSidebarColumn` owns the column itself — list style, search field,
+/// material, width and the toggle; the Settings sidebar is its reference
+/// (Monika, 2026-10-18). What stays here is what belongs to the Agent
+/// window's function: the thread rows and the New conversation action
+/// above them.
 struct ThreadRail: View {
   @ObservedObject var store: AgentChatStore
   @State private var search: String = ""
@@ -15,42 +17,43 @@ struct ThreadRail: View {
   @State private var renameDraft: String = ""
 
   var body: some View {
-    threadList
-      .searchable(text: $search, placement: .sidebar, prompt: "Search threads")
-      .onSubmit(of: .search) {
-        handleSearchCommit()
+    CSSidebarColumn(
+      width: .navigation,
+      search: $search,
+      prompt: Text("Search conversations"),
+      onSearchSubmit: { handleSearchCommit() }
+    ) {
+      threadList
+    } header: {
+      newThreadButton
+    }
+    .background {
+      ThreadSearchKeyRouter(
+        onMoveDown: { handleSearchMoveDown() },
+        onExit: { handleSearchCancel() }
+      )
+    }
+    .onAppear {
+      selectedThreadID = store.selectedThreadID
+    }
+    .onChange(of: store.selectedThreadID) { _, newID in
+      if selectedThreadID != newID {
+        selectedThreadID = newID
       }
-      .modifier(AgentScrollBottomBar { newThreadFooter })
-      // On the List, not a stack around it: the list runs through the
-      // titlebar, so the material does too.
-      .background { SettingsSidebarMaterial().ignoresSafeArea() }
-      .background {
-        ThreadSearchKeyRouter(
-          onMoveDown: { handleSearchMoveDown() },
-          onExit: { handleSearchCancel() }
-        )
+    }
+    .onChange(of: selectedThreadID) { _, newID in
+      guard let newID, newID != store.selectedThreadID else { return }
+      select(newID)
+    }
+    .onChange(of: search) { _, newValue in
+      store.searchThreads(newValue)
+    }
+    .onChange(of: store.threadSearchQuery) { _, newValue in
+      if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
+        search = newValue
       }
-      .onAppear {
-        selectedThreadID = store.selectedThreadID
-      }
-      .onChange(of: store.selectedThreadID) { _, newID in
-        if selectedThreadID != newID {
-          selectedThreadID = newID
-        }
-      }
-      .onChange(of: selectedThreadID) { _, newID in
-        guard let newID, newID != store.selectedThreadID else { return }
-        select(newID)
-      }
-      .onChange(of: search) { _, newValue in
-        store.searchThreads(newValue)
-      }
-      .onChange(of: store.threadSearchQuery) { _, newValue in
-        if search.trimmingCharacters(in: .whitespacesAndNewlines) != newValue {
-          search = newValue
-        }
-      }
-      .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
+    }
+    .threadDeleteConfirmation(candidate: $deleteCandidate) { store.delete($0) }
   }
 
   private var threadList: some View {
@@ -81,30 +84,39 @@ struct ThreadRail: View {
               onCopyTitle: { copyTitle(thread) },
               onExportMarkdown: { exportMarkdown(thread) }
             )
+            // Rows carry the shared scroller policy into the list's own scroll
+            // view (Founder, 2026-10-18).
+            .csAutohidingScrollers()
             .tag(thread.id)
           }
         }
       }
     }
-    .listStyle(.sidebar)
-    .scrollContentBackground(.hidden)
     .accessibilityIdentifier("thread-rail-list")
   }
 
-  /// The system glass button, the same regular glass as the composer field,
-  /// floats over the list. Rows scroll beneath it under the bar's edge
-  /// effect; hover, focus, Reduce Transparency and Increase Contrast come
-  /// from the system style.
-  private var newThreadFooter: some View {
+  /// The agent's first action, in the column's top slot: under the system
+  /// search field, which always sits first under the toolbar, and above the
+  /// conversations. Quiet by design: a create
+  /// glyph and its label on a plain row, no capsule and nothing to hover
+  /// for — it is visible the moment the window opens, and the reference
+  /// sidebar has no bottom pill to put it in (Monika, 2026-10-18). Same
+  /// action and same label as the bar it replaces.
+  private var newThreadButton: some View {
     Button(action: { store.newThread() }) {
-      Label("New thread", systemImage: "plus")
-        .frame(maxWidth: .infinity)
+      Label("New conversation", systemImage: "square.and.pencil")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
-    .modifier(NewThreadButtonStyle())
-    .controlSize(.large)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .accessibilityLabel("New thread")
+    // Plain look, product focus ring: `.buttonStyle(.plain)` here would
+    // shadow it and leave the row with no visible keyboard focus at all.
+    .csFocusRing()
+    .padding(.horizontal, 12)
+    // As much air below as above, so the row reads as its own action and not
+    // as part of the first section.
+    .padding(.vertical, 10)
+    .accessibilityLabel("New conversation")
+    .accessibilityIdentifier("thread-rail-new-thread")
   }
 
   private var filteredThreads: [ChatThread] {
@@ -199,6 +211,20 @@ struct ThreadRail: View {
 /// input object, but it can never become visible text. Prefer the first user
 /// excerpt and fall back to a relative date label when messages are still lazy.
 enum ThreadRowTitle {
+  /// A stored excerpt can already end at the title cap, so layout truncation
+  /// alone cannot mark the omitted text. Keep this decoration out of rename,
+  /// copy and persistence; only labels disclose the known truncation.
+  static func labelTitle(for thread: ChatThread) -> String {
+    let title = displayTitle(for: thread)
+    let fullTitle = ThreadTitlePolicy.normalized(thread.title, limit: Int.max)
+    let fullExcerpt = ThreadTitlePolicy.firstUserExcerpt(in: thread.messages, limit: Int.max)
+    let clipsTitle = fullTitle.map { $0.count > title.count } ?? false
+    let clipsExcerpt =
+      ThreadTitlePolicy.firstUserExcerpt(in: thread.messages) == title
+      && (fullExcerpt.map { $0.count > title.count } ?? false)
+    return clipsTitle || clipsExcerpt ? title + "…" : title
+  }
+
   static func displayTitle(
     for thread: ChatThread,
     now: Date = Date(),
@@ -218,23 +244,13 @@ enum ThreadRowTitle {
   }
 }
 
-/// The rail's New thread action on the system glass button style; macOS 14
-/// and 15 keep the bordered button over the bar material.
-private struct NewThreadButtonStyle: ViewModifier {
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if #available(macOS 26.0, *) {
-      content.buttonStyle(.glass)
-    } else {
-      content.buttonStyle(.bordered)
-    }
-  }
-}
-
 /// One history row presented in the native sidebar List.
 ///
-/// System selection, hover, and focus are owned by the enclosing List.
-/// Two-line readable row with normal system UI typography and secondary metadata.
+/// System selection, hover and focus are owned by the enclosing List, and so
+/// is the row's ink: the title takes the list's own text style, so it dims
+/// with the window like every other sidebar row instead of staying bright in
+/// a background window (Monika, 2026-10-18). A single-line title over its
+/// quieter time and model line.
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
@@ -272,7 +288,7 @@ private struct ThreadRow: View {
           }
         }
         Divider()
-        Button("Delete Thread", role: .destructive) {
+        Button("Delete Conversation", role: .destructive) {
           onRequestDelete()
         }
       }
@@ -282,13 +298,14 @@ private struct ThreadRow: View {
       .accessibilityAddTraits(.isButton)
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .accessibilityHint(
-        String(localized: "Opens this thread", comment: "Accessibility hint on a history row")
+        String(
+          localized: "Opens this conversation", comment: "Accessibility hint on a history row")
       )
       .accessibilityAction { onSelect() }
       .accessibilityAction(named: Text("Rename")) { onBeginRename() }
       .accessibilityAction(named: Text(favoriteActionTitle)) { onToggleFavorite() }
       .accessibilityAction(named: Text("Copy")) { onCopyTitle() }
-      .accessibilityAction(named: Text("Delete Thread")) { onRequestDelete() }
+      .accessibilityAction(named: Text("Delete Conversation")) { onRequestDelete() }
       .accessibilityIdentifier("thread-row-\(thread.id.uuidString)")
   }
 
@@ -300,8 +317,8 @@ private struct ThreadRow: View {
 
   private var favoriteHelp: String {
     thread.isFavorite
-      ? String(localized: "Unfavorite thread")
-      : String(localized: "Favorite thread")
+      ? String(localized: "Unfavorite conversation")
+      : String(localized: "Favorite conversation")
   }
 
   private var rowContent: some View {
@@ -316,7 +333,6 @@ private struct ThreadRow: View {
         if isEditing {
           TextField("", text: $renameDraft)
             .textFieldStyle(.plain)
-            .font(.system(size: 13, weight: .semibold))
             .focused($renameFieldFocused)
             .onSubmit { onCommitRename() }
             .onExitCommand { onCancelRename() }
@@ -358,10 +374,10 @@ private struct ThreadRow: View {
     }
   }
 
+  /// No font, weight or ink of its own: the enclosing sidebar List styles
+  /// the row, including how it dims when its window is not the active one.
   private var titleLabel: some View {
-    Text(ThreadRowTitle.displayTitle(for: thread))
-      .font(.system(size: 13, weight: isActive ? .semibold : .regular))
-      .foregroundStyle(isActive ? Color.primary : Color.primary.opacity(0.85))
+    Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
       .lineLimit(1)
       .truncationMode(.tail)
   }
@@ -504,7 +520,7 @@ struct ThreadDeleteConfirmation: ViewModifier {
 
   func body(content: Content) -> some View {
     content.confirmationDialog(
-      "Delete this thread?",
+      "Delete this conversation?",
       isPresented: Binding(
         get: { candidate != nil },
         set: { if !$0 { candidate = nil } }
@@ -512,7 +528,7 @@ struct ThreadDeleteConfirmation: ViewModifier {
       titleVisibility: .visible,
       presenting: candidate
     ) { thread in
-      Button("Delete Thread", role: .destructive) {
+      Button("Delete Conversation", role: .destructive) {
         onConfirm(thread)
         candidate = nil
       }
@@ -612,7 +628,7 @@ enum ThreadRailMeta {
     calendar: Calendar = .current
   ) -> String {
     guard let updatedAt else {
-      return String(localized: "Untitled thread", comment: "Thread with no title")
+      return String(localized: "Untitled conversation", comment: "Conversation with no title")
     }
     let relative = relativeTime(updatedAt, now: now, calendar: calendar)
     return relative.prefix(1).uppercased() + relative.dropFirst()

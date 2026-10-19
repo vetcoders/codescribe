@@ -1171,7 +1171,8 @@ The receipt schema is `codescribe.broadcast-policy.v1`:
   turn, `--read-pending` includes them and the agent ACKs only what it read.
   Steer is global (Maciej, 2026-10-17): quiet applies to every delivery —
   channel-zero broadcasts, directs and peer-to-peer alike — so an unticked
-  Steer means "nothing wakes me; everything waits in my mailbox".
+  Steer means "nothing wakes me; everything waits in my mailbox". The overlay
+  menu shows the Steer box as "Wake the agent" (Founder, 2026-10-18).
 - `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
   row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
   existing follower events stream. A skip is not an ACK marker and contains no

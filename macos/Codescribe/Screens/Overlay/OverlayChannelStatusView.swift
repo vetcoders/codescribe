@@ -226,11 +226,16 @@ struct OverlayRowHoverHighlight: ViewModifier {
   var enabled = true
   @State private var hovered = false
 
-  /// Tray plain rows use `CSColor.surfaceRaised(0.05)`. The clear branch
-  /// still names the row's canvas so a disabled row stays on its palette.
+  /// A veil, not a surface: `surfaceRaised` lifts dark glass with 5 % white
+  /// but paints paper with 80 % of it, which is the milky blob the Founder
+  /// saw in the drawer (2026-10-18). `hairline` keeps the same white veil on
+  /// ink and shades paper instead of bleaching it. Half the strength of
+  /// `OverlayRosterRowSelection`, so pointing at a row never reads as being
+  /// on it. The clear branch still names the row's canvas so a disabled row
+  /// stays on its palette.
   private var wash: Color {
     guard hovered, enabled else { return palette.desktopBackground.color.opacity(0) }
-    return CSColor.surfaceRaised(0.05)
+    return CSColor.hairline(0.05)
   }
 
   func body(content: Content) -> some View {
@@ -249,15 +254,17 @@ struct OverlayRowHoverHighlight: ViewModifier {
   }
 }
 
-/// The settled choice, the conversation the composer writes to, wears the
-/// chooser's accent tint on every docked roster row, and a 3 pt accent bar on
-/// the leading edge, where no other row chrome lives. Maciej, 2026-10-18:
-/// "takie wyróżnienie ma być na settled choice na każdym wybranym agencie",
-/// then "musi jakoś rozróżniać settled agenta (wybranego) od hover". The ring
-/// stays the chooser's alone and hover stays the neutral wash, so while
-/// choosing the candidate and the current choice show side by side. The
-/// dragon line marks its selection with the same bar (1c6457c27).
+/// One mark for "this is the open conversation", worn by every roster row:
+/// the shared channel and the agents under it, in the drawer. Before the
+/// Founder's 2026-10-18 review the roster carried two — a grey wash on an
+/// agent row, an accent wash on "0 · All" — and both read as milky glass.
+/// The mark is a slim accent bar on the leading edge, where no other row
+/// chrome lives, over a veil only a step deeper than hover: the bar says
+/// which row, the veil says the whole row. `OverlayGestureFocusRing` keeps
+/// the full accent outline, so the middle-click chooser's focus and the open
+/// conversation stay two different marks even on the same row.
 struct OverlayRosterRowSelection: ViewModifier {
+  let palette: OverlayAppearancePalette
   let selected: Bool
   var cornerRadius: CGFloat = 10
 
@@ -265,8 +272,8 @@ struct OverlayRosterRowSelection: ViewModifier {
     content
       .background {
         if selected {
-          RoundedRectangle(cornerRadius: cornerRadius)
-            .fill(Color.accentColor.opacity(0.22))
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(CSColor.hairline(0.09))
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
@@ -274,27 +281,24 @@ struct OverlayRosterRowSelection: ViewModifier {
       .overlay(alignment: .leading) {
         if selected {
           Capsule()
-            .fill(Color.accentColor)
+            .fill(palette.agentAccent.color)
             .frame(width: 3)
             .padding(.vertical, 3)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
       }
-      .accessibilityAddTraits(selected ? .isSelected : [])
   }
 }
 
-/// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): the focused
-/// row wears the system accent colour as a tint and a ring, the way a macOS
-/// list marks its selection, and the pointer entering a row moves the focus
-/// there. The palette's thin violet ring alone did not read as a selection on
-/// glass (Maciej, 2026-10-18: "nie ma tam w ogóle koloru akcentu… nie
-/// widzisz, że masz cokolwiek wybrane"). Hover rides the same tracking region
-/// as the row wash, so it answers while Codescribe is not the active app.
+/// The middle-click chooser's focus (Maciej, 2026-10-17 12:19Z): an accent
+/// ring on the focused row, and the pointer entering a row moves the focus
+/// there. Hover rides the same tracking region as the row wash, so it answers
+/// while Codescribe is not the active app.
 struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
   let focused: Bool
   let shape: RingShape
+  let palette: OverlayAppearancePalette
   let targetID: String?
   let onHover: ((String) -> Void)?
 
@@ -302,15 +306,12 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
     content
       .overlay {
         if focused {
-          ZStack {
-            shape.fill(Color.accentColor.opacity(0.22))
-            shape.strokeBorder(Color.accentColor, lineWidth: 2.5)
-          }
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
+          shape
+            .strokeBorder(palette.agentAccent.color, lineWidth: 2)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
       }
-      .accessibilityAddTraits(focused ? .isSelected : [])
       .background {
         if let targetID, let onHover {
           OverlayMenuCursorRegion { inside in
@@ -524,9 +525,13 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
         set: { steer in apply(steer ? .on : .quiet, to: channel) }
       )
     ) {
+      // The user-facing label is "Wake the agent" (Founder, 2026-10-18); the
+      // wire policy and the code keep the `steer` name.
       Text(
-        "Steer (otherwise queued)",
-        comment: "Pill context menu: deliveries wake the agent; unticked, they queue silently")
+        "Wake the agent",
+        comment:
+          "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox"
+      )
     }
     .disabled(locked || channel.broadcastPolicy == .off)
   }
@@ -743,7 +748,7 @@ struct OverlayChannelStatusView: View {
           .accessibilityHidden(true)
       }
     } content: { rowFocus in
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 6) {
         if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
           onSelectConversation != nil
         {
@@ -769,11 +774,19 @@ struct OverlayChannelStatusView: View {
             }
             .padding(.trailing, 6)
           )
-          .modifier(OverlayRosterRowSelection(selected: selectedConversationID == broadcast.id))
+          // The shared channel is a roster row: the same padding, the same
+          // selection mark and the same hover as the agents under it.
+          .padding(.vertical, 3)
+          .padding(.horizontal, 5)
+          .modifier(
+            OverlayRosterRowSelection(
+              palette: palette, selected: selectedConversationID == broadcast.id)
+          )
+          .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
           .modifier(
             OverlayGestureFocusRing(
               focused: broadcast.id == gestureFocusID,
-              shape: RoundedRectangle(cornerRadius: 10),
+              shape: RoundedRectangle(cornerRadius: 10), palette: palette,
               targetID: broadcast.id, onHover: onGestureHover)
           )
           .id(broadcast.id)
@@ -995,10 +1008,11 @@ struct OverlayChannelStatusView: View {
         }
       }
     )
-    .padding(.vertical, 4)
-    .padding(.horizontal, 6)
+    .padding(.vertical, 3)
+    .padding(.horizontal, 5)
     .modifier(
       OverlayRosterRowSelection(
+        palette: palette,
         selected: conversation != nil && selectedConversationID == conversation?.id)
     )
     .modifier(
@@ -1012,7 +1026,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayGestureFocusRing(
         focused: conversation != nil && conversation?.id == gestureFocusID,
-        shape: RoundedRectangle(cornerRadius: 10),
+        shape: RoundedRectangle(cornerRadius: 10), palette: palette,
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
@@ -1031,14 +1045,16 @@ struct OverlayChannelStatusView: View {
   /// time; the provider descriptor; a two-line preview that names who
   /// addressed whom; one state line. The badge counts replies the Founder has
   /// not opened, the state line carries the agent's receipts, so the two
-  /// never mix.
+  /// never mix. The five lines are a budget, not a shape: they sit on one
+  /// leading, so the card stays dense beside the conversation it steals
+  /// width from (Founder, 2026-10-18, on the drawer's padding).
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
     conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind,
     receiptText: String? = nil
   ) -> some View {
-    HStack(alignment: .top, spacing: 7) {
+    HStack(alignment: .top, spacing: 6) {
       OverlayAgentStatusDot(kind: dot, palette: palette)
         .padding(.top, 5 * textScale)
         .accessibilityLabel(
@@ -1051,7 +1067,7 @@ struct OverlayChannelStatusView: View {
           statusChannel.map { "overlay-channel-delivery-\($0.channel)" }
             ?? "overlay-channel-delivery"
         )
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 1) {
         HStack(spacing: 6) {
           // Maciej 2026-10-17: names were cut to "6…r" in the sidebar because
           // the fixed-size time won the squeeze. The name is offered room
@@ -1874,8 +1890,10 @@ struct OverlayAgentPillStack: View {
         .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
       )
       .padding(.vertical, 2)
+      // `.scrollIndicators(.hidden)` stood on the scroll view and still let
+      // the legacy bar through with a mouse attached (Founder, 2026-10-18).
+      .csAutohidingScrollers()
     }
-    .scrollIndicators(.hidden)
     .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-pill-stack")
@@ -1948,7 +1966,7 @@ struct OverlayAgentPillStack: View {
     .modifier(
       OverlayGestureFocusRing(
         focused: entry.conversationID == focusedConversationID, shape: Capsule(),
-        targetID: entry.conversationID, onHover: onHoverConversation)
+        palette: palette, targetID: entry.conversationID, onHover: onHoverConversation)
     )
     .help(
       entry.disconnected
@@ -2100,7 +2118,7 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
               } action: {
                 contentHeight = $0
               }
-              .overlayAutohidingScroller()
+              .csAutohidingScrollers()
           }
           .frame(height: viewportHeight)
           .clipped()

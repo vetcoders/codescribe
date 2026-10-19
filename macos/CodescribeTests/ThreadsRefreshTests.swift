@@ -228,7 +228,7 @@ final class ThreadsRefreshTests: XCTestCase {
 
     provider.listError = NSError(domain: "ThreadsRefreshTests", code: 1)
     store.refreshThreads()
-    let message = "Could not refresh threads. The previous list is still shown."
+    let message = "Could not refresh conversations. The previous list is still shown."
     XCTAssertEqual(store.threadSearchError, message)
     XCTAssertEqual(publishes, 1, "new failure must be visible even when the rows are unchanged")
     store.refreshThreads()

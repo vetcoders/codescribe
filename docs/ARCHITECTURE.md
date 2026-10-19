@@ -197,7 +197,7 @@ Codescribe/
 │   │   ├── Onboarding/           # First-run flow
 │   │   └── Tray/                 # Menu bar UI
 │   ├── Services/                 # UpdaterService (Sparkle), platform services
-│   └── DesignSystem/             # Tokens, shared components
+│   └── DesignSystem/             # Tokens, shared components, CSSidebarColumn
 │
 ├── bin/                          # CLI binaries
 │   ├── codescribe-teacher.rs     # Teacher / correction replay
@@ -315,6 +315,49 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### The sidebar (Agent and Settings)
+
+Both windows are a `NavigationSplitView` with the same sidebar. There is one
+owner for that column — `DesignSystem/CSSidebarColumn.swift` — and neither
+window keeps a copy of what it owns. After a side-by-side on 2026-10-18 the
+Founder chose the Settings column as the reference, so the Agent rail adopts
+it rather than the other way round.
+
+`CSSidebarColumn` owns the system sidebar list style (with it the section
+headers, selection, hover and focus), the sidebar search field, the shared
+glass behind the column (`CSSidebarMaterial`, a `.sidebar` `NSVisualEffectView`
+blending `behindWindow`, with an opaque canvas under Reduce Transparency or
+Increase Contrast), the column bounds and the two slots a window may fill.
+
+- **Width** is a named parameter, not a number per window:
+  `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;
+  `.content` (267 / 267 / 360) is the wider column the Agent rail used while
+  it carried two-line rows, kept as the other half of the choice.
+- **The toggle** is the split view's own, beside the traffic lights in both
+  windows; `csSidebarToggle(expanded:)` only binds `⌃⌘S` to the same action.
+  Each window persists its own flag (`Settings.sidebarExpanded.v1`,
+  `AgentChat.sidebarExpanded.v1`); the button, a divider drag and the
+  shortcut all write it. A second, hand-placed toolbar button would sit
+  beside the system one, not replace it. The Agent window shows the system
+  toggle only because `AgentWindowChrome.makeWindow` creates it with its
+  final style mask before attaching the content: a window built from the
+  controller and given `.fullSizeContentView` afterwards gets no toggle at
+  all. The app and `CSSidebarColumnTests` build the Agent window through that
+  one factory.
+- **The slots** carry what belongs to a window's function and nothing else.
+  Agent fills the header slot, under the search field and above the rows, with **New conversation** —
+  the agent's first action, a create glyph and its label on a plain row —
+  and has no footer: the reference sidebar ends with its last row, not with
+  a pill. Settings fills the footer slot with the health line — a coloured
+  status dot and secondary system text that deep-links to the section owning
+  the problem — and has no header.
+
+Window floors stayed where they were when the rail narrowed. Both windows
+size their detail floor from the rail's ideal width, because that is the width
+the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
+column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
+column.
+
 ### Agent window header
 
 The detail chrome (`AgentChatView.swift`) carries one title — the current
@@ -325,10 +368,11 @@ enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
 miniaturising it, so App Exposé never shows an empty tile; the tray's
 "Open chat", the summon shortcut and the passive voice reveal bring it back.
 
-- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
+- **Left:** the sidebar toggle, then the wordmark, then the thread title
   followed by the turn count, the thread's model and the live turn status.
-  The toggle lives in the detail chrome so it stays reachable while the
-  native sidebar is collapsed.
+  The toggle belongs to the shared sidebar column (see "The sidebar" above),
+  so it stays reachable while the column is collapsed and behaves exactly as
+  it does in Settings.
 - **Right:** exactly two controls. The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the

@@ -107,8 +107,13 @@ struct OverlayConversationView: View {
   private var followsLatest: Bool { scrollFollow.followingLive }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
+  /// The window bound keeps a margin on the far side so leading and trailing
+  /// bubbles stay told apart; at 0.82 that margin was a sixth of the column
+  /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
+  /// 0.92 of the text column is the same cue at a tenth of the width. The
+  /// absolute 660 pt is a reading measure, not a margin, and does not move.
   static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
-    max(0, min(660 * textScale, (contentWidth - 40) * 0.82))
+    max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
   }
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
@@ -429,16 +434,34 @@ struct OverlayConversationView: View {
           _ = scrollFollow.handle(event)
         }
       }
+      .csAutohidingScrollers()
     }
-    .contentMargins(.top, topInset + navigationHeight)
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {
-      // The within-window material owns these edges; a second system shade doubles them.
-      list.scrollEdgeEffectHidden(true, for: [.top, .bottom])
-    } else {
+      // The header's glass alone is not a shade: bubbles stayed readable right
+      // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
+      // scroll edge effect, so the pinned header becomes a safe-area bar — an
+      // empty one, since the window's own header paints it — and the system's
+      // soft effect fades whatever runs under it. The bar replaces the top
+      // content margin; both named the same height.
       list
+        .safeAreaBar(edge: .top, spacing: 0) {
+          Color.clear
+            .frame(height: topInset + navigationHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        // The composer's glass sits on the floor with nothing pinned behind it.
+        .scrollEdgeEffectHidden(true, for: .bottom)
+    } else {
+      list.contentMargins(.top, topInset + navigationHeight)
     }
   }
+
+  /// How far a borderless-button menu sets its label in from its own leading
+  /// edge (measured through the accessibility frames, 2026-10-18).
+  static let receiptMenuLabelInset: CGFloat = 2
 
   static func receiptStatusText(for recipient: OverlayConversationRecipient) -> String {
     if recipient.acknowledged { return String(localized: "Read") }
@@ -538,6 +561,12 @@ struct OverlayConversationView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        // A borderless-button menu insets its label, so the expandable receipt
+        // started right of a plain one and the bubble footers no longer lined
+        // up (Founder, 2026-10-18). A plain-styled menu has no inset but leaves
+        // the accessibility tree as an unlabelled unknown element, so the
+        // native style stays and the frame steps back by its inset instead.
+        .padding(.leading, -Self.receiptMenuLabelInset)
         .help("Show details")
         .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
       } else {
@@ -585,9 +614,8 @@ struct OverlayConversationView: View {
           Text(verbatim: message.owner?.name ?? conversation.name)
             .font(.system(size: 10 * textScale, weight: .bold))
         }
-        if message.unsolicited && message.kind == .reply {
-          Text("Unsolicited reply").font(.system(size: 10 * textScale))
-        }
+        // Founder, 2026-10-18: whether a reply was asked for is routing truth,
+        // not a badge — `unsolicited` keeps steering the channels, unlabelled.
         Spacer(minLength: 8)
         MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
           .font(.system(size: 10 * textScale))
@@ -621,7 +649,9 @@ struct OverlayConversationView: View {
           ForEach(attachments, id: \.self) { pointer in
             AttachmentChip(
               attachment: MessageAttachment(
-                name: pointer.name, url: URL(fileURLWithPath: pointer.path),
+                name: ConversationAttachmentLabel.display(
+                  fileName: pointer.name, bytes: pointer.bytes),
+                url: URL(fileURLWithPath: pointer.path),
                 type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
           }
         }

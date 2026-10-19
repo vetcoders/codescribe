@@ -733,7 +733,8 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
   let threads = Int(preview.threads)
   let megabytes = String(format: "%.1f", Double(preview.totalBytes) / 1_048_576.0)
   return String(
-    localized: "\(recordings) recordings from \(days) days, \(threads) threads (\(megabytes) MB)",
+    localized:
+      "\(recordings) recordings from \(days) days, \(threads) conversations (\(megabytes) MB)",
     comment: "Reset impact; each count needs its own plural variation"
   )
 }
@@ -2193,7 +2194,7 @@ final class SettingsViewModel: ObservableObject {
         )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
-      localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
+      localized: "Moves \(threads) Agent conversations and \(files) Agent files to Trash.",
       comment: "Agent reset impact; each count needs its own plural variation"
     )
     let unchanged = String(

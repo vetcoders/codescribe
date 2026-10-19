@@ -27,24 +27,6 @@ enum DictationLane: String, Equatable, Sendable {
   /// Only Local power transcribes with the downloaded Whisper weights. Apple
   /// only and Cloud never wait for them.
   var requiresLocalModel: Bool { self == .localPower }
-
-  /// The names Settings › Dictation shows for the same lanes.
-  func displayName(locale: Locale) -> String {
-    switch self {
-    case .appleOnly:
-      return String(
-        localized: LocalizedStringResource(
-          "Apple only", locale: locale, comment: "Dictation lane: on-device Apple Speech"))
-    case .localPower:
-      return String(
-        localized: LocalizedStringResource(
-          "Local power", locale: locale, comment: "Dictation lane: local model weights"))
-    case .cloud:
-      return String(
-        localized: LocalizedStringResource(
-          "Cloud", locale: locale, comment: "Dictation lane: cloud refinement"))
-    }
-  }
 }
 
 /// The local Whisper weights as the shared download store observes them.

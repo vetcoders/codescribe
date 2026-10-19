@@ -104,6 +104,25 @@ enum CSPalette {
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
   static let dangerLight = adaptive(light: NSColor(hex: 0xB3261E), dark: NSColor(hex: 0xFFAAA5))
+  /// The amber and the processing orange at label strength. The floating sheet
+  /// proves 4.5:1 for status words against the opaque sheet, which the base
+  /// rungs of both hues miss on paper; these are the same hues, deepened.
+  static let amberLight = adaptive(light: NSColor(hex: 0x8A5B00), dark: NSColor(hex: 0xE2BE5B))
+  static let modeProcessingLight = adaptive(
+    light: NSColor(hex: 0x96450A), dark: NSColor(hex: 0xF09A4E))
+  /// The healthy olive at status strength. On ink the label rung sits within
+  /// 0.15 of `textMuted`, so a resting grey glyph beside a status read as
+  /// "healthy"; this rung keeps the status clear of the muted grey on both
+  /// appearances.
+  static let oliveStatus = adaptive(light: NSColor(hex: 0x4D5E2D), dark: NSColor(hex: 0xB5C98D))
+  /// Steel blue: the dictionary owns the words it rewrote, so a rewritten
+  /// surface never wears the uncertainty orange.
+  static let lexicon = adaptive(light: NSColor(hex: 0x31587A), dark: NSColor(hex: 0x9FC2E8))
+  /// A floating panel's edge. Warmer and stronger than a `hairline` divider,
+  /// and the paper rung is the fainter of the two: the edge separates the sheet
+  /// from an arbitrary desktop, not two rows inside one window.
+  static let panelEdge = adaptive(
+    light: NSColor(hex: 0x5F5A52, alpha: 0.20), dark: NSColor(hex: 0xF3F0EA, alpha: 0.16))
 
   /// Primary-action wash: the operator's accent on paper; on ink the same
   /// accent lifted halfway to white. A translucent accent wash alone paints

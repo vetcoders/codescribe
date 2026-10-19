@@ -1,7 +1,9 @@
 # Settings & Configuration
 
 Codescribe has one native Settings window. Choose a section in its sidebar;
-the Dictation section has separate tabs for its concerns. The sections below
+the Dictation section has separate tabs for its concerns. The button at the
+left of the toolbar, or `Control+Command+S`, hides and shows the sidebar, and
+the window remembers the choice. The sections below
 describe the current controls and their runtime contracts.
 
 Configuration still lives in three layers:
@@ -240,7 +242,12 @@ provider card shows its key as one line — **API key · Set** with **Change**
 (or **Add**) opening the editor — and, for vendors with a sign-in flow, one
 account line with a single action: **Sign out** while connected (the line
 names the account, e.g. **Connected as name@example.com**), **Sign in with …**
-otherwise. Vendor endpoints are factory-defined and sit under each card's
+otherwise. **Sign out** is a neutral chip like the other row actions, not a
+red one. A key that is present reads **Set** in green; a key that is absent is
+neutral grey, and reads **Optional** when nothing is waiting for it — a
+key-optional host, or a vendor whose account is already connected. A missing
+key is never a red warning: red is reserved for a real failure, such as a key
+the provider rejected. Vendor endpoints are factory-defined and sit under each card's
 **Advanced** disclosure together with the Keychain account name and the OAuth
 client-id override; custom hosts show their endpoint on the card and edit it
 through **Edit**. Custom cards use a compact header for the full name,
@@ -373,6 +380,13 @@ Setup, its completion summary and the provider cards distinguish these states:
 | API key only      | Not connected | Configured     | Supported API requests, including Formatting and model discovery            |
 | Both              | Connected     | Configured     | Account access for supported model requests plus the provider API-key paths |
 | Key-optional host | Not required  | Optional       | Requests supported by that host, after selecting a model                    |
+
+An account and an API key are alternatives: one of them is enough, and setup
+says so. In setup, whichever is missing reads a neutral grey **Optional** once
+the other is configured. On the provider card the key reads **Optional** once
+the account is connected, and the account line reads **Not connected** in the
+same grey when only the key is set. A missing credential stays neutral even when
+neither is set: the provider step is skippable and a key can be added later.
 
 A connected ChatGPT account supplies account credentials for supported Responses
 requests in both Agent and Formatting. It does not supply a provider API key for
@@ -880,7 +894,7 @@ word. Only the two buttons are red.
   API keys from Keychain_ (not recoverable from Trash) and _Also reset my base
   prompts_ — `assistive.txt`, `formatting.txt`, `formatting-smart.txt` and
   `formatting-max.txt`, all four named on the checkbox and in the confirmation.
-- **New agent context**: Chat Overlay → **New thread**
+- **New agent context**: Chat Overlay → **New conversation**
 - **Reset prompts**: Settings → **Agent → Prompts** → **File details** →
   **Restore default**
 
