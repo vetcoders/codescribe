@@ -365,33 +365,179 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation it is permanent")
   }
 
-  func testDockedTranscriptionOpensAndClosesTheColumnThroughTheFlag() throws {
+  func testWideningUnderTheOpenListDocksItAsTheColumn() throws {
     let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
+    let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.setAgentDrawerDocked(true)
-    XCTAssertFalse(state.dockedRosterColumnShown)
-
+    let recorder = OverlayDrawerFrameRecorder()
+    // No fixed frame: the panel's content size is the window the layout reads.
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 })
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
     state.showAgentMonitor()
-    XCTAssertTrue(
-      state.showsAgentMonitor, "no conversation: the click opens, it has nothing to focus")
-    XCTAssertTrue(state.dockedRosterColumnShown)
-
-    state.selectConversation(lena.id)
-    XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
-    XCTAssertTrue(state.dockedRosterColumnShown, "beside a conversation the column stays")
-
-    state.showTranscription()
-    XCTAssertNil(state.selectedConversationID)
-    XCTAssertFalse(state.dockedRosterColumnShown, "back on the transcription the column is gone")
+    settle()
+    XCTAssertEqual(recorder.frame.width, 700, accuracy: 1, "narrow: the list covers the window")
 
     // Docking engages while the list is open on the transcription: the list
     // becomes the column instead of vanishing.
-    state.setAgentDrawerDocked(false)
-    state.showAgentMonitor()
-    state.setAgentDrawerDocked(true)
+    panel.setContentSize(NSSize(width: 1200, height: 500))
+    settle()
+    XCTAssertTrue(state.agentDrawerDocked)
     XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertTrue(state.dockedRosterColumnShown)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the open list docks as the column")
+    XCTAssertEqual(recorder.frame.maxX, 1200, accuracy: 1)
+
+    state.selectConversation(lena.id)
+    settle()
+    XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation the column stays")
+
+    state.showTranscription()
+    settle()
+    XCTAssertNil(state.selectedConversationID)
+    XCTAssertEqual(recorder.frame, .zero, "back on the transcription the column is gone")
+  }
+
+  // MARK: - The keyboard follows the list (Ada, 2026-10-19)
+
+  func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let (panel, host) = keyboardPanel(DictationOverlayView(state: state), width: 700)
+    let other = NSWindow(
+      contentRect: CGRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    other.isReleasedWhenClosed = false
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
+      panel.close()
+      other.close()
+    }
+    let editor = try XCTUnwrap(composerEditor(in: host))
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(editor))
+    XCTAssertTrue(panel.isKeyWindow)
+
+    let rosterFocus = state.agentDrawerFocusRevision
+    state.showAgentMonitor()
+    settle(host)
+    XCTAssertFalse(panel.firstResponder === editor, "the covered composer lets the keyboard go")
+    XCTAssertGreaterThan(
+      state.agentDrawerFocusRevision, rosterFocus, "the list's selected row is asked to take it")
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "x",
+        charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+    panel.sendEvent(key)
+    XCTAssertEqual(editor.string, "", "nothing is typed into a field nobody can see")
+
+    state.selectConversation(astra.id)
+    settle(host)
+    XCTAssertTrue(panel.firstResponder === editor, "choosing a row hands the keyboard back")
+
+    state.showAgentMonitor()
+    settle(host)
+    state.hideAgentSidebar()
+    settle(host)
+    XCTAssertTrue(panel.firstResponder === editor, "so does closing the list")
+
+    // The keyboard went to another window: the list opens and closes without
+    // taking it back.
+    other.makeKeyAndOrderFront(nil)
+    settle(host)
+    XCTAssertFalse(panel.isKeyWindow)
+    state.showAgentMonitor()
+    settle(host)
+    state.hideAgentSidebar()
+    settle(host)
+    XCTAssertFalse(panel.isKeyWindow, "a panel without the keyboard takes nothing")
+    XCTAssertFalse(panel.firstResponder === editor)
+  }
+
+  func testTheRosterOverTheWholeWindowTakesTheKeyboardToo() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
+    let (broadcast, lena, _) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.selectConversation(lena.id)
+    let (panel, host) = keyboardPanel(
+      DictationOverlayView(state: state).defaultAppStorage(defaults), width: 1200)
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
+      panel.close()
+    }
+    let editor = try XCTUnwrap(composerEditor(in: host))
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(editor))
+
+    // 780 still docks, but a 480 roster leaves the conversation under its
+    // 320-point minimum: the roster takes the whole window, agents view only.
+    let rosterFocus = state.agentDrawerFocusRevision
+    panel.setContentSize(NSSize(width: 780, height: 500))
+    settle(host)
+    XCTAssertTrue(state.agentDrawerDocked)
+    XCTAssertFalse(panel.firstResponder === editor, "the covered composer lets the keyboard go")
+    XCTAssertGreaterThan(state.agentDrawerFocusRevision, rosterFocus)
+
+    panel.setContentSize(NSSize(width: 1200, height: 500))
+    settle(host)
+    XCTAssertTrue(panel.firstResponder === editor, "the conversation returns with the keyboard")
+  }
+
+  /// A real overlay panel that can take the keyboard, as the composer tests use.
+  private func keyboardPanel(_ root: some View, width: CGFloat) -> (FloatingOverlayPanel, NSView) {
+    let host = NSHostingView(rootView: root)
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.delegate = panel
+    panel.becomesKeyOnlyIfNeeded = true
+    panel.contentView = host
+    panel.orderFront(nil)
+    settle(host)
+    return (panel, host)
+  }
+
+  private func settle(_ host: NSView) {
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+  }
+
+  private func composerEditor(in view: NSView) -> NSTextView? {
+    if let text = view as? NSTextView, text.isEditable,
+      String(describing: type(of: text)).contains("MessageTextView")
+    {
+      return text
+    }
+    for subview in view.subviews {
+      if let text = composerEditor(in: subview) { return text }
+    }
+    return nil
   }
 
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)
