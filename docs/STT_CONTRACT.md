@@ -630,6 +630,14 @@ chunks: a stopped transfer deletes its `.partial` file and fails with the core
 cancellation marker, so the model stays not installed. Reading the status
 drops a `.partial` stranded beside a bundle that is already complete.
 
+`whisper_model_status` validates the whole bundle, tokenizer included, so a
+read takes a few hundred milliseconds. `WhisperDownloadStore.refresh()` runs it
+off the main actor: a Settings page switch or a setup step shows the last known
+state and repaints when the read lands. Refreshes asked for during a read share
+it and one read that starts after them, and a read never overwrites the status a
+transfer wrote. Setup's Finish waits for a read begun after the click; an explicit
+Download click reads synchronously before it claims a transfer.
+
 ### 3.3 Dictation overlay / tray
 
 | Front                         | UniFFI                                     | Handler                                                         |
