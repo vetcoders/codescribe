@@ -3634,28 +3634,34 @@ impl AppleSealState {
         if owners.is_empty() {
             return;
         }
-        // Retained decodes only grow during a take while the unsealed owners
-        // sit near the live edge. One pass over the owners' sample envelope
-        // lets most decodes skip the owner product entirely; the result is
-        // the same set the full product would return.
-        let envelope_start = owners
+        // Retained decodes and unsealed owners both grow over a long take, and
+        // owners whose text recovery never lands stay unsealed from the first
+        // minute on, so an envelope over all owners no longer prunes anything.
+        // Owners sorted by start, with the running maximum of their ends, give
+        // each decode exactly the owners it can overlap: those starting before
+        // it ends, scanned back until no earlier owner reaches past its start.
+        // The result is the same set the full product would return.
+        let mut by_start = owners.iter().map(|(_, owner)| owner).collect::<Vec<_>>();
+        by_start.sort_by_key(|owner| owner.sample_start);
+        let reach = by_start
             .iter()
-            .map(|(_, owner)| owner.sample_start)
-            .min()
-            .unwrap_or(0);
-        let envelope_end = owners
-            .iter()
-            .map(|(_, owner)| owner.sample_end)
-            .max()
-            .unwrap_or(0);
+            .scan(0, |end, owner| {
+                *end = owner.sample_end.max(*end);
+                Some(*end)
+            })
+            .collect::<Vec<_>>();
         let returned = self
             .retained_word_decodes
             .iter()
             .filter(|payload| {
                 let range = &payload.identity.range;
-                range.sample_start < envelope_end
-                    && envelope_start < range.sample_end
-                    && owners.iter().any(|(_, owner)| {
+                let starts_before_end =
+                    by_start.partition_point(|owner| owner.sample_start < range.sample_end);
+                (0..starts_before_end)
+                    .rev()
+                    .take_while(|&index| reach[index] > range.sample_start)
+                    .any(|index| {
+                        let owner = by_start[index];
                         range_overlaps_occurrence(range, owner)
                             && !self
                                 .replayed_window_owners
@@ -5597,6 +5603,12 @@ impl AppleSealState {
         self.schedule_bounded_word_trial(ev_tx);
         let owners = self.unsealed_word_owners();
         let mut expired_words = false;
+        // Owners whose ledger can still expire a conflict. Unresolved owners
+        // accumulate behind the horizon over a long take; every one of them was
+        // re-scanned against every component on each worker tick. The set is
+        // exact for the ledger it was read from, so it is dropped after any
+        // call below that can mutate components.
+        let mut open_conflicts: Option<BTreeSet<OccurrenceIdentity>> = None;
         for (id, owner) in owners {
             if owner.sample_end > self.admission_horizon {
                 continue;
@@ -5623,17 +5635,27 @@ impl AppleSealState {
             if !has_return {
                 if is_open && sample_start == u64::MAX {
                     self.fail_refinement(ev_tx, id, &owner, RefinementFailure::NotScheduled);
+                    open_conflicts = None;
                 }
                 continue;
             }
             // With all covering planned work returned, the ledger records any
             // remaining local uncertainty without inventing a new witness.
             {
-                let expired = self
+                let mut ledger = self
                     .acoustic_ledger
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .close_word_adjudication_horizon(&owner);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let open = open_conflicts
+                    .get_or_insert_with(|| ledger.owners_with_unattempted_conflicts())
+                    .contains(&owner);
+                let expired = if open {
+                    open_conflicts = None;
+                    ledger.close_word_adjudication_horizon(&owner)
+                } else {
+                    0
+                };
+                drop(ledger);
                 expired_words |= expired > 0;
                 if expired > 0 {
                     info!(
@@ -5650,6 +5672,7 @@ impl AppleSealState {
             self.refinement_receipt(&owner, "admission_horizon_closed");
             self.return_whisper_without_label(ev_tx, id, &owner);
             self.emit_pending_seal(ev_tx, id);
+            open_conflicts = None;
         }
         if expired_words {
             self.publish_resolved_word_seals(ev_tx);
@@ -6156,6 +6179,12 @@ fn admit_late_apple_words(
     current_slice: &[TranscriptSegment],
 ) -> LateAppleAdmission {
     let mut outcome = LateAppleAdmission::default();
+    // Every reconciled Silero utterance comes back here on each worker tick,
+    // almost always with nothing late. Without words there is no owner to
+    // route to and nothing to admit, so the owner lookup is skipped.
+    if words.is_empty() {
+        return outcome;
+    }
     let owners = state.word_owners_overlapping(
         words
             .iter()
@@ -14440,6 +14469,198 @@ mod rc_w2_acoustic_tests {
         assert_eq!(replayed.text_of(&owner), Some("1286 nie"));
         assert_eq!(replayed.seal_of(&owner), Some(&expected_seal));
         assert_eq!(replayed.conservation().residue(), 0);
+    }
+
+    /// A long take whose owners stay unsealed behind the admission horizon:
+    /// Whisper disputes Apple on every owner, every planned window returned,
+    /// each returned word decode was already replayed, and text recovery is
+    /// still owed. 4d7ae454 (33 min, 19 X 2026) ended with 197 such owners
+    /// and the worker spending a full core walking them on every tick.
+    fn stuck_recovery_take(
+        owners: u64,
+    ) -> (
+        AppleSealState,
+        mpsc::UnboundedSender<EngineEvent>,
+        mpsc::UnboundedReceiver<EngineEvent>,
+        OccurrenceIdentity,
+    ) {
+        use crate::pipeline::acoustic_ledger::WordPin;
+        use crate::stt::tail_provider::TailSegmentGrain;
+        // Eight disputed words per owner; the take averaged about thirteen.
+        let stride = at(5.0);
+        let pins = |index: u64| {
+            let start = index * stride + at(1.0);
+            (0..8_u64).map(move |word| {
+                let at_word = start + at(0.2) + word * at(0.4);
+                (
+                    at_word,
+                    at_word + at(0.3),
+                    format!("jeden{word}"),
+                    format!("raz{word}"),
+                )
+            })
+        };
+        let mut state = state_for("stuck-recovery-take", 0.0);
+        let mut pcm = vec![0.0; (owners * stride + at(1.0)) as usize];
+        // Stop holds the whole take; the live buffer would evict its start.
+        state.audio = LiveAudioBuffer::new(RATE, pcm.len() as f32 / RATE as f32 + 1.0);
+        for index in 0..owners {
+            for (start, end, _, _) in pins(index) {
+                pcm[start as usize..end as usize].fill(0.25);
+            }
+        }
+        state.audio.push(&pcm);
+        let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+        for chunk in pcm.chunks(320) {
+            writer.push_samples(chunk);
+        }
+        let occurrences = (0..owners)
+            .map(|index| {
+                let start = index * stride + at(1.0);
+                OccurrenceIdentity::new(
+                    &state.session_id,
+                    state.capture_epoch,
+                    start,
+                    start + at(3.6),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (index, owner) in occurrences.iter().enumerate() {
+            let index = index as u64;
+            assert!(qualify_owned_occurrence(&state, owner));
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            ledger.schedule_frontier(owner.clone(), [LedgerObservationProducer::Whisper]);
+            ledger.record_speech_evidence(&coverage_speech_evidence(&state));
+            ledger.admit_word_slots(
+                &LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Apple,
+                    index + 1,
+                    0,
+                    owner.clone(),
+                ),
+                &pins(index)
+                    .map(|(start, end, apple, _)| WordPin::new(start, end, apple))
+                    .collect::<Vec<_>>(),
+            );
+            let whisper =
+                ledger.next_word_observation(LedgerObservationProducer::Whisper, index + 1, owner);
+            ledger.admit_word_slots(
+                &whisper,
+                &pins(index)
+                    .map(|(start, end, _, heard)| {
+                        WordPin::new(start, end, heard)
+                            .with_decode_window(owner.sample_start, owner.sample_end)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            ledger.require_text_recovery(owner);
+            drop(ledger);
+            state.pending_events.insert(
+                index + 1,
+                PendingAppleSeal {
+                    occurrence: owner.clone(),
+                    raw_text: String::new(),
+                    layer1_baseline: String::new(),
+                    start_ts: 0.0,
+                    end_ts: 0.0,
+                    segments: Vec::new(),
+                },
+            );
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel(4096);
+        state.tail_patch = Some(tail_tx);
+        state.capture_stopping = true;
+        state.pump_capture_windows(&tx);
+        let mut offered = Vec::new();
+        while let Ok(request) = tail_rx.try_recv() {
+            offered.push(request);
+        }
+        assert!(offered.len() as u64 >= owners);
+        for request in &offered {
+            complete_planned_window(&mut state, &tx, request, None);
+            let mut payload = gap_payload(&request.provider_request);
+            payload.evidence.segment_grain = TailSegmentGrain::Word;
+            payload.segments = (0..owners)
+                .flat_map(pins)
+                .filter(|(start, end, _, _)| window_contains(request, *start, *end))
+                .map(|(start, end, _, heard)| TimedTailSegment {
+                    confidence: None,
+                    grain: TailSegmentGrain::Word,
+                    text: heard,
+                    range: TailSampleRange {
+                        sample_start: start,
+                        sample_end: end,
+                        ..request.provider_request.identity.range.clone()
+                    },
+                })
+                .collect();
+            for owner in &occurrences {
+                if range_overlaps_occurrence(&request.provider_request.identity.range, owner) {
+                    state
+                        .replayed_window_owners
+                        .insert((request.provider_request.identity.request_id, owner.clone()));
+                }
+            }
+            state.retained_word_decodes.push_back(payload);
+        }
+        let last = occurrences.last().unwrap().clone();
+        state.close_admission_horizon(&tx, last.sample_end);
+        (state, tx, rx, last)
+    }
+
+    /// Worker time spent per tick on owners that can no longer change must
+    /// not grow with the length of the take. Ten times the stuck owners may
+    /// cost ten times the lookups, never ten times the lookups per owner.
+    #[test]
+    fn long_take_tick_cost_is_bounded_by_the_live_window() {
+        fn tick_cost(owners: u64) -> (std::time::Duration, usize, usize) {
+            let (mut state, tx, mut rx, last) = stuck_recovery_take(owners);
+            while rx.try_recv().is_ok() {}
+            let (unsealed, components) = {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert!(ledger.text_recovery_pending(&last));
+                assert!(!ledger.is_sealed(&last));
+                (
+                    ledger.unsealed_qualified_occurrences().count(),
+                    ledger.word_component_count().1,
+                )
+            };
+            let started = std::time::Instant::now();
+            for _ in 0..40 {
+                state.replay_completed_windows(&tx);
+                state.close_admission_horizon(&tx, last.sample_end);
+            }
+            let elapsed = started.elapsed();
+            assert!(
+                rx.try_recv().is_err(),
+                "ticks over settled owners must not emit anything"
+            );
+            (elapsed, unsealed, components)
+        }
+        // The capture energy clock belongs to the test thread: one take each.
+        let measured = |owners| {
+            std::thread::spawn(move || tick_cost(owners))
+                .join()
+                .unwrap()
+        };
+        let rounds = (0..3)
+            .map(|_| (measured(25), measured(250)))
+            .collect::<Vec<_>>();
+        let small = rounds.iter().map(|(small, _)| small.0).min().unwrap();
+        let large = rounds.iter().map(|(_, large)| large.0).min().unwrap();
+        let (_, small_unsealed, _) = rounds[0].0;
+        let (_, large_unsealed, conflicts) = rounds[0].1;
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
+        eprintln!(
+            "40 ticks: {small_unsealed} stuck owners {small:?}, {large_unsealed} stuck owners {large:?}, ratio {ratio:.1}, conflicting components {conflicts}"
+        );
+        assert_eq!(small_unsealed, 25);
+        assert_eq!(large_unsealed, 250);
+        assert!(
+            ratio < 25.0,
+            "10x the stuck owners cost {ratio:.1}x per tick: work grows with owners x components"
+        );
     }
 
     #[test]
