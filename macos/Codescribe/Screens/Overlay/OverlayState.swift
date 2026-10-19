@@ -1172,7 +1172,8 @@ final class OverlayState {
   /// Wide windows pin the roster as a docked column; below the threshold the
   /// same list covers the window while asked for. Reported by the layout pass.
   private(set) var agentDrawerDocked = false
-  /// Bumped when the name pill asks the docked column to focus its selected row.
+  /// Bumped when the name pill asks the docked column to focus its selected
+  /// row, and when the list comes to cover the conversation.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
 
   /// The docked column is permanent beside a conversation. The transcription
@@ -1822,6 +1823,12 @@ final class OverlayState {
     }
     if live.count == 1 { return live[0].id }
     return newest(live.filter { !$0.messages.isEmpty })?.id
+  }
+
+  /// The list now covers the conversation, so its selected row takes the
+  /// keyboard the hidden composer gave up (Klaudiusz, 2026-10-19).
+  func focusAgentRoster() {
+    agentDrawerFocusRevision &+= 1
   }
 
   func hideAgentSidebar() {

@@ -55,6 +55,9 @@ struct OverlayConversationView: View {
   let onControl: (OverlayConversationMessage, Bool) -> Void
   var focusRevision: UInt64 = 0
   var isPresented = true
+  /// The agents list covers the conversation. The scroll keeps following it
+  /// underneath; only the composer gives the keyboard up.
+  var isCovered = false
   @Binding var draft: String
   let sending: Bool
   let sendError: String?
@@ -273,7 +276,7 @@ struct OverlayConversationView: View {
           palette: palette, draft: $draft,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          focusRevision: revisionFocus,
+          focusRevision: revisionFocus, isCovered: isCovered || !isPresented,
           placeholder: composerPlaceholder)
         if let sendError { composerError(sendError) }
         if let playbackError {
