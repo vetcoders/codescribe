@@ -22,12 +22,12 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
   private func armRoster(on state: OverlayState, owner: OverlayConversationOwner) {
     state.applyChannelRoster([
       CsChannelRosterState(
-        channel: "0", audience: "All", open: false, loud: false, autosealDeadlineUnixMs: nil,
-        followerAlive: nil, provider: nil, providerSessionId: nil, unreadSinceUnixMs: nil),
+        channel: "0", audience: "All", provider: nil, providerSessionId: nil, open: false,
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: nil, unreadSinceUnixMs: nil),
       CsChannelRosterState(
-        channel: owner.channel, audience: owner.name, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true, provider: owner.provider,
-        providerSessionId: owner.providerSessionID, unreadSinceUnixMs: nil),
+        channel: owner.channel, audience: owner.name, provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
     ])
   }
 
@@ -142,6 +142,24 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
 
     let channelBus = busesDir.appendingPathComponent("channel-5.jsonl")
+    let leasesDir = tempRoot.appendingPathComponent("leases", isDirectory: true)
+    try FileManager.default.createDirectory(at: leasesDir, withIntermediateDirectories: true)
+    let leaseReceipt: [String: Any] = [
+      "schema": "codescribe.agent-bridge.lease.v1",
+      "lease_id": owner.leaseID,
+      "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID,
+      "channel": owner.channel,
+      "name": owner.name,
+      "bus": channelBus.path,
+    ]
+    let leaseJSON = try String(
+      data: JSONSerialization.data(withJSONObject: leaseReceipt, options: [.sortedKeys]),
+      encoding: .utf8)!
+    try leaseJSON.write(
+      to: leasesDir.appendingPathComponent("\(owner.leaseID).json"),
+      atomically: true,
+      encoding: .utf8)
     let resultRow: [String: Any] = [
       "schema": "codescribe.agent-panel-focus-result.v1",
       "kind": "agent_panel_focus_result",
@@ -186,7 +204,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
   func testClickingAlreadySelectedAgentRowRequestsPanelFocus() throws {
     let owner = makeOwner(channel: "5", name: "stanislaw")
     let conversation = OverlayConversation(
-      id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [], replyIDs: [])
+      id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [])
     let row = OverlayChannelDelivery(
       channel: "5", agent: "stanislaw", deliveryID: nil, stage: nil, isOpen: false)
     var selectedIDs: [String?] = []
