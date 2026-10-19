@@ -1377,6 +1377,7 @@ final class OverlayState {
     guard !channelStatusUnavailable,
       agentPanelFocusAvailable,
       channelHudStates[owner.channel]?.followerAlive != false,
+      channelHudStates[owner.channel]?.frameDetected != false,
       agentPanelFocusStates[owner.channel]?.isRequesting != true
     else { return }
     let request = OverlayAgentPanelFocusRequest(owner: owner)
@@ -2420,6 +2421,7 @@ final class OverlayState {
             },
             followerAlive: row.followerAlive,
             provider: row.provider, providerSessionID: row.providerSessionId,
+            frameDetected: row.frameDetected,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             })

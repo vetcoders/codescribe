@@ -9756,6 +9756,11 @@ public struct CsChannelRosterState: Equatable, Hashable {
      */
     public var followerAlive: Bool?
     /**
+     * Whether the live follower's lease names a vc-frame pane; `None` = no
+     * live follower or no claim. Off means the Frame focus control is idle.
+     */
+    public var frameDetected: Bool?
+    /**
      * Milliseconds since the Unix epoch of the live follower's oldest
      * unacknowledged delivery; `None` = no backlog or no follower. The
      * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9776,6 +9781,10 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * `None` = the snapshot made no liveness claim for this row.
          */followerAlive: Bool?,
         /**
+         * Whether the live follower's lease names a vc-frame pane; `None` = no
+         * live follower or no claim. Off means the Frame focus control is idle.
+         */frameDetected: Bool? = nil,
+        /**
          * Milliseconds since the Unix epoch of the live follower's oldest
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9789,6 +9798,7 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.loud = loud
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
         self.followerAlive = followerAlive
+        self.frameDetected = frameDetected
         self.unreadSinceUnixMs = unreadSinceUnixMs
     }
 
@@ -9814,6 +9824,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 loud: FfiConverterBool.read(from: &buf),
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
                 followerAlive: FfiConverterOptionBool.read(from: &buf),
+                frameDetected: FfiConverterOptionBool.read(from: &buf),
                 unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
@@ -9827,6 +9838,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.loud, into: &buf)
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
         FfiConverterOptionBool.write(value.followerAlive, into: &buf)
+        FfiConverterOptionBool.write(value.frameDetected, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
     }
 }
