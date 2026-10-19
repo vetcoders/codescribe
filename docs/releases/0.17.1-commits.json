@@ -1,7 +1,7 @@
 {
   "version": "0.17.1",
   "from_sha": "c39fb7409b8c8c124975d953b9f57c6fe33ab29e",
-  "to_sha": "9ba037e26740b456d5912555f58036278a91ba45",
+  "to_sha": "05a9b4a7d7c36003360fd73f1631e38b096cd307",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1616,6 +1616,36 @@
       "sha": "9ba037e26740b456d5912555f58036278a91ba45",
       "date": "2026-10-19",
       "subject": "test(verify): mutants follow the grammar 9 stop chain and the ledger admission gate",
+      "squash_headings": []
+    },
+    {
+      "sha": "db842569cee39a0936c979ec142bed30c7e38dde",
+      "date": "2026-10-19",
+      "subject": "docs(release): freeze the local 0.17.1 notes and source inventory",
+      "squash_headings": []
+    },
+    {
+      "sha": "0d11d61a3cd1b79eff78cbd26ddf98a4c3687e74",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): resolve Swift stage-3 test failures across material, morph, and bus contracts",
+      "squash_headings": []
+    },
+    {
+      "sha": "1d686e262da161d69d90b3cbcd71c13e5e6c2062",
+      "date": "2026-10-19",
+      "subject": "fix(verify): the direct Whisper decode is the ledger lane's alternative, owned and pinned",
+      "squash_headings": []
+    },
+    {
+      "sha": "310be0a470cd3f2537371ea3f78a98423234bb3f",
+      "date": "2026-10-19",
+      "subject": "test(overlay): keep presentation morph trace test in same RunLoop turn",
+      "squash_headings": []
+    },
+    {
+      "sha": "05a9b4a7d7c36003360fd73f1631e38b096cd307",
+      "date": "2026-10-19",
+      "subject": "build(test): rebaseline the full Swift suite for measured coverage",
       "squash_headings": []
     }
   ]
