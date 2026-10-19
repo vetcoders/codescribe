@@ -793,6 +793,81 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(settled?.acknowledged, true, "A changed receipt is read again")
   }
 
+  /// Sample 2026-10-19 on div0: after the stamp memo, foreign channel-0
+  /// coordinates still cost one `fstatat` each per tick plus the enumeration,
+  /// about 40 % of the reader. A receipt naming another bus this reader polls
+  /// settles there, so this bus stops asking for it.
+  func testCoordinatesAcknowledgedOnAnotherPolledBusLeaveThePoll() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let peerLease = String(repeating: "e", count: 32)
+    let peerBus = fixture.root.appendingPathComponent("peer.jsonl")
+    try Data().write(to: peerBus)
+    try fixture.write(
+      [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": peerLease,
+        "provider": "codex", "provider_session_id": "peer-session", "bus": peerBus.path,
+        "pending": [],
+      ], to: fixture.root.appendingPathComponent("leases/\(peerLease).json"))
+    var peer = fixture.recipient()
+    peer["lease_id"] = peerLease
+    peer["provider_session_id"] = "peer-session"
+    peer["bus"] = peerBus.path
+    peer["channel"] = "2"
+    peer["name"] = "jamie"
+    var rows: [[String: Any]] = []
+    for sequence in 1...210 {
+      var row = fixture.seal(sequence)
+      row["recipients"] = sequence <= 200 ? [peer] : [fixture.recipient()]
+      rows.append(row)
+      try fixture.append(row)
+    }
+    var projection = OverlayChannelDelivery.Bus()
+    for row in rows { projection.consume(row) }
+    var coordinates: [String: OverlayConversationOwner] = [:]
+    for _ in 0..<4 {
+      for coordinate in projection.receiptCoordinates() {
+        coordinates[coordinate.owner.leaseID + "/" + coordinate.delivery] = coordinate.owner
+      }
+    }
+    XCTAssertEqual(coordinates.count, 210)
+    for (file, owner) in coordinates where owner.leaseID == peerLease {
+      let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try fixture.write(
+        [
+          "lease_id": peerLease, "delivery_id": url.deletingPathExtension().lastPathComponent,
+          "bus": peerBus.path,
+        ], to: url)
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    // 128 coordinates per tick: two polls read every receipt once.
+    for _ in 0..<2 { _ = try await reader.readSnapshot() }
+    let coldProbes = await reader.receiptProbes
+    for _ in 0..<4 { _ = try await reader.readSnapshot() }
+    let steadyProbes = await reader.receiptProbes - coldProbes
+    // Ten own coordinates, each a wakeup and an acknowledgment probe.
+    XCTAssertEqual(steadyProbes, 4 * 10 * 2, "Only coordinates that can settle here are polled")
+    // Positive control: this bus still settles its own owner's receipt.
+    let (file, owner) = try XCTUnwrap(
+      coordinates.first { $0.value.leaseID == Fixture.leaseID })
+    let delivery = String(file.split(separator: "/").last ?? "")
+    var envelope = fixture.recipient()
+    envelope.merge(["kind": "seal", "delivery_id": delivery]) { _, new in new }
+    let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fixture.write(
+      [
+        "lease_id": owner.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ], to: url)
+    let settled = try await reader.readSnapshot().conversations.flatMap(\.messages)
+      .flatMap(\.recipients).first { $0.owner.id == owner.id && $0.deliveryID == delivery }
+    XCTAssertEqual(settled?.acknowledged, true, "An own receipt still settles on its bus")
+  }
+
   /// Screen recording 2026-10-13 09:46: a test host reading the live agent
   /// bridge drew a second overlay with the real conversations during a take.
   func testTestHostNeverResolvesTheLiveRuntime() throws {

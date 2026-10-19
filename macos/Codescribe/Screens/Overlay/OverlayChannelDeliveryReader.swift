@@ -64,6 +64,16 @@ actor OverlayChannelDeliveryReader {
   /// quarter of the app's busy samples (sample 2026-10-18).
   private var unchangedReceipts: [String: MetadataObjectStamp] = [:]
   private static let unchangedReceiptEntries = 1 << 14
+  /// Coordinates a bus stops polling: per bus, receipt file to the bus its
+  /// acknowledgment names. That bus is read too, its copy of the
+  /// delivery settles there, and the conversation merge carries the flag to
+  /// every copy. The stamp memo above still left one `fstatat` per foreign
+  /// coordinate and tick, plus the enumeration, about 40 % of the reader
+  /// (sample 2026-10-19 on div0, roughly 1,500 such coordinates).
+  private var acknowledgedElsewhere: [String: [String: String]] = [:]
+  /// `fstatat` calls on receipt paths. Tests use it to prove a settled
+  /// coordinate leaves the poll.
+  private(set) var receiptProbes: UInt64 = 0
   /// Conversation lists actually built. An idle poll reuses the previous list:
   /// rebuilding and re-sorting unchanged history every 500 ms held two reader
   /// threads at ~55 % of a core (sample of build 1004, 2026-10-14).
@@ -310,6 +320,7 @@ actor OverlayChannelDeliveryReader {
       let candidates = Set(rosterByID[id] ?? archivesByID[id] ?? [])
       return candidates.count == 1 ? candidates.first : nil
     }
+    let usedPaths = Set(usedBuses.map(\.path))
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
       for owner in verifiedOwners { cursor.projection.reconcileOwner(owner) }
@@ -321,10 +332,13 @@ actor OverlayChannelDeliveryReader {
       let acknowledgments = root.path + "/acknowledgments/"
       let skips = root.path + "/broadcast-skipped/"
       let busPath = bus.path
-      for (owner, delivery, accepted, broadcast) in cursor.projection.receiptCoordinates() {
-        guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
-          continue
-        }
+      let elsewhere = acknowledgedElsewhere[busPath] ?? [:]
+      let coordinates = cursor.projection.receiptCoordinates { owner, delivery in
+        guard let home = elsewhere[owner.leaseID + "/" + delivery + ".json"] else { return false }
+        return usedPaths.contains(home)
+      }
+      for (owner, delivery, accepted, broadcast) in coordinates {
+        guard Self.isDeliveryID(delivery) else { continue }
         let file = owner.leaseID + "/" + delivery + ".json"
         if !accepted {
           observeReceipt(atPath: wakeups + file, busPath: busPath, in: &cursor.projection) {
@@ -342,6 +356,16 @@ actor OverlayChannelDeliveryReader {
         }
         observeReceipt(atPath: acknowledgments + file, busPath: busPath, in: &cursor.projection) {
           $0.observeAcknowledgment($1, owner: owner, delivery: delivery, busPath: busPath)
+          // The owner's own receipt for this delivery, naming another bus
+          // this reader also polls: that copy settles, this one stops asking.
+          guard $1["lease_id"] as? String == owner.leaseID,
+            $1["delivery_id"] as? String == delivery,
+            let named = $1["bus"] as? String, named.hasPrefix("/")
+          else { return }
+          let home = URL(fileURLWithPath: named).standardizedFileURL.path
+          if home != busPath, usedPaths.contains(home) {
+            acknowledgedElsewhere[busPath, default: [:]][file] = home
+          }
         }
       }
       buses[bus] = cursor
@@ -359,6 +383,9 @@ actor OverlayChannelDeliveryReader {
       deliveries[index] = status
     }
     buses = buses.filter { usedBuses.contains($0.key) }
+    acknowledgedElsewhere = acknowledgedElsewhere.filter {
+      usedPaths.contains($0.key) && $0.value.count <= Self.unchangedReceiptEntries
+    }
     persistenceAttempts = persistenceAttempts.filter { usedBuses.contains($0.key) }
     savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
     let inputs = ConversationInputs(
@@ -508,6 +535,14 @@ actor OverlayChannelDeliveryReader {
     return result
   }
 
+  /// Twenty-four lowercase hex digits, checked on UTF-8 bytes:
+  /// `String.contains(_:)` per character was a visible frame of the poll
+  /// (sample 2026-10-19).
+  private static func isDeliveryID(_ value: String) -> Bool {
+    value.utf8.count == 24
+      && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+  }
+
   /// Applies one receipt file to a bus projection. An absent file costs one
   /// `fstatat`. A file this bus already read without any projection change is
   /// skipped until its stamp changes: every observer bumps the projection
@@ -517,6 +552,7 @@ actor OverlayChannelDeliveryReader {
     atPath path: String, busPath: String, in projection: inout OverlayChannelDelivery.Bus,
     _ observe: (inout OverlayChannelDelivery.Bus, [String: Any]) -> Void
   ) {
+    receiptProbes &+= 1
     var metadata = stat()
     guard fstatat(AT_FDCWD, path, &metadata, 0) == 0 else { return }
     let stamp = MetadataObjectStamp(metadata)

@@ -329,7 +329,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// skip the wakeup receipt and only watch for the acknowledgment;
     /// `broadcast` marks a channel-0 delivery, the only kind a follower skips.
     /// A recorded skip settles the recipient: nothing reads it afterwards.
-    mutating func receiptCoordinates() -> [ReceiptCoordinate] {
+    /// `settled` drops coordinates the reader has seen settle on another bus
+    /// before the 128-coordinate window is cut.
+    mutating func receiptCoordinates(
+      skipping settled: (OverlayConversationOwner, String) -> Bool = { _, _ in false }
+    ) -> [ReceiptCoordinate] {
       var result: [ReceiptCoordinate] = []
       var seen: Set<String> = []
       for id in messageOrder {
@@ -338,6 +342,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           // Conversation receipt settles observation even when provider queue
           // acceptance was absent (for example, monitor-only delivery).
           if let delivery = recipient.deliveryID, !recipient.acknowledged,
+            !settled(recipient.owner, delivery),
             seen.insert(recipient.owner.id + "\0" + delivery).inserted
           {
             result.append(
