@@ -401,7 +401,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let frames = try hoverFrames(view, palette: palette)
     for role in [palette.successStatus, palette.agentAccent, palette.processingStatus] {
       XCTAssertFalse(
-        headerContains(frames.rest, near: role, tolerance: 0.16),
+        headerContains(frames.rest, near: headerRendered(role, palette: palette), tolerance: 0.16),
         "\(name) rests on a role color")
     }
     XCTAssertGreaterThan(
@@ -639,10 +639,43 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func headerContains(
     _ pixels: [HeaderPixel], near token: OverlayColorToken, tolerance: CGFloat
   ) -> Bool {
-    let target = headerPixel(token.nsColor)
-    return pixels.contains { pixel in
+    headerContains(pixels, near: headerPixel(token.nsColor), tolerance: tolerance)
+  }
+
+  private func headerContains(
+    _ pixels: [HeaderPixel], near target: HeaderPixel, tolerance: CGFloat
+  ) -> Bool {
+    pixels.contains { pixel in
       pixel.alpha > 0.45 && headerDistance(pixel, target) < tolerance
     }
+  }
+
+  /// A role colour as this raster paints it. The raster comes back through
+  /// the display's colour transform: on div0 (2026-10-19) the dark sheet
+  /// #16161C reads 0.113 instead of 0.086 and the muted grey 0.667 instead of
+  /// 0.604, which put the resting grey 0.158 from the nominal olive and only
+  /// 0.175 from the olive as painted. Comparing a painted glyph with a
+  /// nominal token measures the display, not the control.
+  private func headerRendered(
+    _ token: OverlayColorToken, palette: OverlayAppearancePalette
+  ) -> HeaderPixel {
+    let size = NSSize(width: 8, height: 8)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 280, y: 460, width: size.width, height: size.height),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    let host = NSHostingView(
+      rootView: Rectangle().fill(token.color)
+        .frame(width: size.width, height: size.height)
+        .preferredColorScheme(palette.appearance == .dark ? .dark : .light))
+    host.frame = NSRect(origin: .zero, size: size)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    headerSettle(host)
+    let raster = headerRaster(host)
+    guard !raster.pixels.isEmpty else { return headerPixel(token.nsColor) }
+    return raster.pixels[raster.pixels.count / 2]
   }
 
   // A one-device-pixel 80%-opacity stroke is composited with the background;
