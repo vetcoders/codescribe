@@ -33765,3 +33765,7 @@ mod bounded_lexical_trial_tests {
 #[cfg(test)]
 #[path = "transcription_controls_tests.rs"]
 mod transcription_controls_tests;
+
+#[cfg(test)]
+#[path = "calibrated_energy_qualification_tests.rs"]
+mod calibrated_energy_qualification_tests;
