@@ -134,7 +134,8 @@ final class LiveTranscriptTextViewTests: XCTestCase {
         view.needsLayout = true
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(view.selectedRange(), selected)
-        let context = "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
+        let context =
+          "bytes=\(text.utf8.count) width=\(width) view=\(view.frame) marker=\(marker.frame)"
         XCTAssertFalse(marker.isHidden, context)
         XCTAssertGreaterThanOrEqual(marker.frame.minX, 0)
         XCTAssertLessThanOrEqual(marker.frame.maxX, view.bounds.maxX + 1)
