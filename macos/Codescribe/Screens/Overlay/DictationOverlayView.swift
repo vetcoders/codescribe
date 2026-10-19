@@ -25,15 +25,15 @@ struct OverlayBottomChromeSlots: Equatable {
 
   init(
     mode: OverlayMode, hasPresentationStatus: Bool, isCollapsed: Bool,
-    hasLowInputSignal: Bool = false, showsDiagnostics: Bool = false
+    hasLowInputSignal: Bool = false
   ) {
-    // Ledger diagnostics belong to developer power mode. Measured quiet-mic
-    // advice remains available in production.
-    let technicalCoverageRefused = mode == .coverageRefused && showsDiagnostics
+    // Only measured quiet-mic advice shares the bar. Ledger coverage (seconds
+    // to verify, ranges) lives in Voice Lab, not here (Maciej, 2026-10-19:
+    // "jak ja sobie moge odpalić voice lab i mieć czytelniejsze i lepsze").
     let lowInputAdvisory = mode == .listening && hasLowInputSignal
     if isCollapsed {
       ordered = []
-    } else if !hasPresentationStatus && (technicalCoverageRefused || lowInputAdvisory) {
+    } else if !hasPresentationStatus && lowInputAdvisory {
       ordered = [.rail, .coverageWarning]
     } else {
       ordered = [.rail]
@@ -354,8 +354,7 @@ struct DictationOverlayView: View {
   private var bottomChromeSlots: OverlayBottomChromeSlots {
     OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal,
-      showsDiagnostics: showsDiagnostics)
+      isCollapsed: state.isCollapsed, hasLowInputSignal: state.levelMeter.hasLowInputSignal)
   }
   private var projectedIntents: [OverlayIntent] {
     OverlayIntentRail.projectedIntents(for: state)
@@ -598,84 +597,77 @@ struct DictationOverlayView: View {
         if !state.isCollapsed && state.showsMyDictation && !state.showsAgentMonitor {
           VStack(spacing: CSSpace.sm) {
             bottomChromeContainer(
-              HStack(spacing: 6) {
-                OverlayEvidenceChip(
-                  state: state, palette: palette, actionsOpen: actions.phase == .open,
-                  glassNamespace: bottomChromeNamespace
-                )
-                .layoutPriority(-1)
-                HStack(spacing: 2) {
-                  Button {
-                    actions.toggle()
-                  } label: {
-                    HStack(spacing: 4) {
-                      Image(systemName: actions.controlSymbol)
-                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+              HStack(spacing: 2) {
+                Button {
+                  actions.toggle()
+                } label: {
+                  HStack(spacing: 4) {
+                    Image(systemName: actions.controlSymbol)
+                      .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
 
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.primaryText.color)
-                    .padding(.horizontal, actions.phase == .open ? 0 : 10)
-                    .frame(
-                      minWidth: actions.phase == .open
-                        ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
-                    )
-                    .frame(height: OverlayResizeChrome.actionsHeight)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .contentShape(Capsule())
-                    .overlay(alignment: .topTrailing) {
-                      if state.hasRecoverableSupersededWork && actions.phase != .open {
-                        Circle()
-                          .fill(palette.processingStatus.color)
-                          .frame(width: 5, height: 5)
-                          .accessibilityHidden(true)
-                          .accessibilityIdentifier("overlay-retained-work-badge")
-                      }
-                    }
                   }
-                  .buttonStyle(.plain)
-                  .focusable()
-                  .focused($actionsFocused)
-                  .accessibilityLabel(actions.controlTitle)
-                  .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
-                  .accessibilityHint(
-                    state.hasRecoverableSupersededWork
-                      ? "Previous take available. Open actions to copy or discard it."
-                      : "Show or hide transcript tools"
+                  .font(.system(size: 11, weight: .medium))
+                  .foregroundStyle(palette.primaryText.color)
+                  .padding(.horizontal, actions.phase == .open ? 0 : 10)
+                  .frame(
+                    minWidth: actions.phase == .open
+                      ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
                   )
-                  .accessibilityIdentifier("overlay-tools-handle")
-                  .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
-                  if actions.phase == .open {
-                    intentRail
+                  .frame(height: OverlayResizeChrome.actionsHeight)
+                  .fixedSize(horizontal: true, vertical: true)
+                  .contentShape(Capsule())
+                  .overlay(alignment: .topTrailing) {
+                    if state.hasRecoverableSupersededWork && actions.phase != .open {
+                      Circle()
+                        .fill(palette.processingStatus.color)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("overlay-retained-work-badge")
+                    }
                   }
                 }
-                .padding(.vertical, actions.phase == .open ? 2 : 0)
-                .padding(.horizontal, actions.phase == .open ? 10 : 0)
-                .fixedSize(horizontal: false, vertical: true)
-                .modifier(
-                  OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
+                .buttonStyle(.plain)
+                .focusable()
+                .focused($actionsFocused)
+                .accessibilityLabel(actions.controlTitle)
+                .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
+                .accessibilityHint(
+                  state.hasRecoverableSupersededWork
+                    ? "Previous take available. Open actions to copy or discard it."
+                    : "Show or hide transcript tools"
                 )
-                .contentShape(Capsule())
-                .onHover { actions.pointerChanged($0) }
-                .onChange(of: actionsFocused) { _, focused in
-                  actions.focusChanged(focused)
+                .accessibilityIdentifier("overlay-tools-handle")
+                .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
+                if actions.phase == .open {
+                  intentRail
                 }
-                .onExitCommand { actions.dismiss() }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
-                .transaction { transaction in
-                  if reduceMotion {
-                    transaction.animation = nil
-                    transaction.disablesAnimations = true
-                  }
+              }
+              .padding(.vertical, actions.phase == .open ? 2 : 0)
+              .padding(.horizontal, actions.phase == .open ? 10 : 0)
+              .fixedSize(horizontal: false, vertical: true)
+              .modifier(
+                OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
+              )
+              .contentShape(Capsule())
+              .onHover { actions.pointerChanged($0) }
+              .onChange(of: actionsFocused) { _, focused in
+                actions.focusChanged(focused)
+              }
+              .onExitCommand { actions.dismiss() }
+              .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
+              .transaction { transaction in
+                if reduceMotion {
+                  transaction.animation = nil
+                  transaction.disablesAnimations = true
                 }
-                .task(id: actions.hideDeadline) {
-                  guard let deadline = actions.hideDeadline else { return }
-                  do {
-                    try await ContinuousClock().sleep(until: deadline)
-                  } catch { return }
-                  guard !Task.isCancelled else { return }
-                  actions.expire()
-                }
+              }
+              .task(id: actions.hideDeadline) {
+                guard let deadline = actions.hideDeadline else { return }
+                do {
+                  try await ContinuousClock().sleep(until: deadline)
+                } catch { return }
+                guard !Task.isCancelled else { return }
+                actions.expire()
               }
             )
             // Glass is confined to each capsule, before the bar's clear margins.
@@ -1281,7 +1273,6 @@ struct DictationOverlayView: View {
         warning: warning, palette: palette,
         canRetranscribe: state.terminal && state.canRetranscribe,
         cloudConfigured: state.cloudRetranscribeConfigured,
-        diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil,
         onRetranscribe: { state.retranscribe(pass: $0) }
       )
     } else {

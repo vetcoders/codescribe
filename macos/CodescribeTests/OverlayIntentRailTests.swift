@@ -389,7 +389,9 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(OverlayDockLayout.minimumCanvasWidth, 360)
   }
 
-  func testUnsealedTakeKeepsWarningAndProjectedRailInSeparateOrderedSlots() {
+  /// The unsealed take keeps its recovery actions on the rail; its ledger
+  /// coverage is read in Voice Lab, not in a bar slot (Maciej, 2026-10-19).
+  func testUnsealedTakeKeepsTheRailAndLeavesLedgerCoverageToVoiceLab() {
     let state = projectedState(
       phase: "coverage_refused", text: "Words kept without a seal",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
@@ -397,11 +399,11 @@ final class OverlayIntentRailTests: XCTestCase {
     state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed, showsDiagnostics: true)
+      isCollapsed: state.isCollapsed)
 
     XCTAssertEqual(state.mode, .coverageRefused)
-    XCTAssertEqual(slots.ordered, [.rail, .coverageWarning])
-    XCTAssertTrue(slots.showsCoverageWarning)
+    XCTAssertEqual(slots.ordered, [.rail])
+    XCTAssertFalse(slots.showsCoverageWarning)
     XCTAssertEqual(
       OverlayIntentRail.projectedIntents(for: state),
       [.insertPaste, .copy, .retranscribe, .format, .close])
@@ -488,7 +490,8 @@ final class OverlayIntentRailTests: XCTestCase {
     await fulfillment(of: [cloud], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "cloud:/tmp/overlay-intent-boundary.wav")
     for _ in 0..<50 { await Task.yield() }
-    XCTAssertFalse(state.retranscribePending, "finish the first committed projection before the next pass")
+    XCTAssertFalse(
+      state.retranscribePending, "finish the first committed projection before the next pass")
 
     let local = expectation(description: "bare intent runs the local HQ pass")
     engine.onTranscribeFile = { local.fulfill() }
@@ -552,7 +555,8 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertEqual(OverlayIntentRail.recoveryIntents(for: clean), [])
     XCTAssertEqual(
-      OverlayIntentRail.projectedIntents(for: clean), [.insertPaste, .copy, .retranscribe, .format, .close])
+      OverlayIntentRail.projectedIntents(for: clean),
+      [.insertPaste, .copy, .retranscribe, .format, .close])
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: clean).contains(.format))
     XCTAssertEqual(clean.mode, .error)
     XCTAssertEqual(clean.activeText, "draft")
