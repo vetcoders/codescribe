@@ -48,6 +48,7 @@ fn fake_payload(request: &TailProviderRequest, text: &str) -> TailProviderPayloa
             stability: TailEvidenceStability::Final,
             timing_quality: TailTimingQuality::Synthetic,
             avg_logprob: Some(-0.1),
+            vad_selected_samples: None,
         },
     }
 }

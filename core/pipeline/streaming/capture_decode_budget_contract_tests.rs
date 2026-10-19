@@ -101,6 +101,7 @@ fn completion(request: &TailPatchRequest, words: usize, label: &str) -> TailPatc
             stability: TailEvidenceStability::Final,
             timing_quality: TailTimingQuality::ExactSampleRange,
             avg_logprob: Some(-0.2),
+            vad_selected_samples: None,
         },
     };
     payload.validate().unwrap();
