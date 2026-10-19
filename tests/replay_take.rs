@@ -53,8 +53,26 @@ async fn replay_operator_take() {
             }
         }
     }
+    let operator_home = std::env::var("HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.join(".codescribe/data_assets").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME").ok().and_then(|c| {
+                std::path::PathBuf::from(c)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+        .expect("operator home");
+    if std::env::var_os("CODESCRIBE_MODELS_DIR").is_none() {
+        let models = operator_home.join(".codescribe/models");
+        if models.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_MODELS_DIR", models) };
+        }
+    }
     let wav = std::env::var("CODESCRIBE_REPLAY_WAV").unwrap_or_else(|_| {
-        std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+        operator_home
             .join(".codescribe/data_assets/01_no-to-dobra.wav")
             .to_string_lossy()
             .into_owned()

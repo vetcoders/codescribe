@@ -45,7 +45,18 @@ fn preserved_capture_silero_ingress_keeps_long_speech() {
     let fixtures = if workspace_fixtures.join("long.wav").is_file() {
         workspace_fixtures
     } else {
-        std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+        std::env::var("HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.join(".codescribe/data_assets/silero-regression").is_dir())
+            .or_else(|| {
+                std::env::var("CARGO_HOME").ok().and_then(|c| {
+                    std::path::PathBuf::from(c)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+            })
+            .expect("operator home")
             .join(".codescribe/data_assets/silero-regression")
     };
     for (name, minimum) in [("quiet", 2.0), ("long", 80.0), ("silence", 0.0)] {

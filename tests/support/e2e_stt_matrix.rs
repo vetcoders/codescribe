@@ -80,12 +80,16 @@ pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
 }
 
 pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
-    codescribe_core::config::models::resolve_runtime_whisper_model_path(None)
-        .ok()
-        .map(|path| ModelDiscovery {
+    if let Ok(path) = codescribe_core::config::models::resolve_runtime_whisper_model_path(None) {
+        return Some(ModelDiscovery {
             source: ModelSource::RuntimeResolver,
             path,
-        })
+        });
+    }
+    let operator_home = std::env::var("CARGO_HOME")
+        .ok()
+        .and_then(|c| PathBuf::from(c).parent().map(Path::to_path_buf))?;
+    discover_local_whisper_model_for(&operator_home, None)
 }
 
 pub fn expand_models_root(home_dir: &Path, value: &str) -> PathBuf {

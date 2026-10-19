@@ -38,8 +38,16 @@ fn assets_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CODESCRIBE_DATA_ASSETS") {
         return PathBuf::from(dir);
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let local = PathBuf::from(home).join(".codescribe/data_assets");
+    for candidate in [
+        std::env::var("HOME").ok().map(PathBuf::from),
+        std::env::var("CARGO_HOME")
+            .ok()
+            .and_then(|c| PathBuf::from(c).parent().map(std::path::Path::to_path_buf)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let local = candidate.join(".codescribe/data_assets");
         if local.is_dir() {
             return local;
         }
@@ -88,8 +96,23 @@ fn find_model_path() -> Option<PathBuf> {
 }
 
 fn load_real_env() {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let env_path = PathBuf::from(&home).join(".codescribe/.env");
+    let home = std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|h| h.join(".codescribe").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME")
+                .ok()
+                .and_then(|c| PathBuf::from(c).parent().map(std::path::Path::to_path_buf))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    if std::env::var_os("CODESCRIBE_MODELS_DIR").is_none() {
+        let models = home.join(".codescribe/models");
+        if models.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_MODELS_DIR", models) };
+        }
+    }
+    let env_path = home.join(".codescribe/.env");
     if !env_path.exists() {
         eprintln!("  ⚠ No .env at {}", env_path.display());
         return;
