@@ -410,11 +410,14 @@ struct Wordmark<Dot: View>: View {
   var spacing: CGFloat = 9
   /// Identifier for the word, for probes that measure the brand block.
   var textIdentifier: String = ""
+  /// The lowercase "cs" in place of the word, where a surface needs the room.
+  var short = false
   @ViewBuilder var dot: () -> Dot
   var body: some View {
     HStack(spacing: spacing) {
       dot()
-      Text(verbatim: "codescribe")
+      Text(verbatim: short ? "cs" : "codescribe")
+        .contentTransition(.interpolate)
         .font(CSFont.ui(size, .bold))
         .tracking(-0.3)
         .foregroundStyle(CSColor.textHigh)
