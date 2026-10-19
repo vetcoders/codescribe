@@ -1348,19 +1348,18 @@ final class OverlayState {
   /// focus before `supportsAgentPanelFocus` confirms a compatible `vc-frame`.
   private(set) var agentPanelFocusAvailable: Bool = false
   private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
-  @ObservationIgnored var detectAgentPanelFocusAvailability:
-    @MainActor () async -> Bool = {
-      await RealAgentBridgeInstaller.supportsAgentPanelFocus()
-    }
+  @ObservationIgnored var detectAgentPanelFocusAvailability: @MainActor () async -> Bool = {
+    await RealAgentBridgeInstaller.supportsAgentPanelFocus()
+  }
   @ObservationIgnored var requestAgentPanelFocusCommand:
     @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
       try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
     }
-  @ObservationIgnored var activateTerminalHost:
-    @MainActor (Int32?, String?) -> Bool = { hostPID, hostBundleID in
-      RealAgentBridgeInstaller.activateAgentTerminalHost(
-        hostPID: hostPID, hostBundleID: hostBundleID)
-    }
+  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) -> Bool = {
+    hostPID, hostBundleID in
+    RealAgentBridgeInstaller.activateAgentTerminalHost(
+      hostPID: hostPID, hostBundleID: hostBundleID)
+  }
   @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
   @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
 
