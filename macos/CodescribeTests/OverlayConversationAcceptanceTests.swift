@@ -1729,8 +1729,14 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         projection.conversations(busPath: busPath).first { $0.channel == "0" })
       XCTAssertEqual(zero.messages.map(\.text), ["Do wszystkich", "Odpowiedź"])
       XCTAssertEqual(zero.messages.last?.replyTo, delivery)
+      let lenaRows = try lenaConversation(projection).messages
       XCTAssertEqual(
-        try lenaConversation(projection).messages.count, 5, "private conversation retains every row"
+        lenaRows.count, 4,
+        "private conversation retains private rows and broadcast question evidence without echoing broadcast replies"
+      )
+      XCTAssertFalse(
+        lenaRows.contains { $0.id == "reply:" + String(repeating: "e", count: 24) },
+        "broadcast replies live only in All"
       )
     }
   }
@@ -1767,7 +1773,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertEqual(all.messages.last?.id, "reply:" + associatedID)
       XCTAssertEqual(all.messages.last?.replyTo, delivery)
       XCTAssertFalse(
-        try lenaConversation(projection).messages.contains { $0.id == "reply:" + privateID })
+        all.messages.contains { $0.id == "reply:" + privateID },
+        "explicit private peer route must never appear in All"
+      )
+      XCTAssertTrue(
+        try lenaConversation(projection).messages.contains { $0.id == "reply:" + privateID },
+        "direct peer message remains visible in the authoring agent's conversation"
+      )
       let adam = try XCTUnwrap(conversations.first { $0.owner?.leaseID == leaseB })
       XCTAssertEqual(adam.messages.map(\.id), ["reply:" + privateID])
       XCTAssertEqual(adam.messages.first?.owner?.name, "Lena")

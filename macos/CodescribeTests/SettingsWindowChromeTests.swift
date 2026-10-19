@@ -73,7 +73,11 @@ final class SettingsWindowChromeTests: XCTestCase {
       defer: false
     )
     window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+    window.contentViewController = NSHostingController(
+      rootView: SettingsView(model: model)
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    )
     window.setContentSize(NSSize(width: contentWidth, height: 760))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
     window.orderFrontRegardless()

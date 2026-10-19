@@ -129,6 +129,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     frameTransitionGeneration &+= 1
     let generation = frameTransitionGeneration
+    let wasTransitioning = isFrameTransitioning
     frameTransitionTarget = restored
     isFrameTransitioning = animated
     OverlayPresentationTrace.shared.record(
@@ -136,16 +137,27 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
     lastMorphDuration =
       animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = lastMorphDuration
-      context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-      animator().setFrame(restored, display: true)
-    } completionHandler: { [weak self] in
-      Task { @MainActor in
-        self?.completeFrameTransition(generation: generation)
+    if animated {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = lastMorphDuration
+        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animator().setFrame(restored, display: true)
+      } completionHandler: { [weak self] in
+        Task { @MainActor in
+          self?.completeFrameTransition(generation: generation)
+        }
       }
+    } else {
+      if wasTransitioning {
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0
+          animator().setFrame(restored, display: isVisible)
+        }
+      } else {
+        setFrame(restored, display: isVisible)
+      }
+      completeFrameTransition(generation: generation)
     }
-    if !animated { completeFrameTransition(generation: generation) }
   }
 
   /// Remembered or default expanded size, raised to the qualified content
@@ -864,10 +876,19 @@ enum DictationOverlayWindow {
   /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the
   /// orchestrator before the panel is shown.
   @MainActor
-  static func make(state: OverlayState, textScale: TextScaleController) -> NSPanel {
+  static func make(
+    state: OverlayState,
+    textScale: TextScaleController,
+    reduceTransparencyOverride: Bool? = nil,
+    contrastOverride: ColorSchemeContrast? = nil
+  ) -> NSPanel {
     // Wrap in TextScaleRoot so ⌘+/-/0 on this panel scale the overlay text
     // (transcript + status) via `\.csTextScale`, independently of the chat.
-    let root = TextScaleRoot(controller: textScale) { DictationOverlayView(state: state) }
+    let root = TextScaleRoot(controller: textScale) {
+      DictationOverlayView(state: state)
+        .environment(\.csReduceTransparencyOverride, reduceTransparencyOverride)
+        .environment(\.csContrastOverride, contrastOverride)
+    }
     let hosting = NSHostingView(rootView: root)
     // CRITICAL: the WINDOW owns its size; the SwiftUI content only fills whatever
     // frame the window has. An NSHostingView otherwise installs Auto Layout

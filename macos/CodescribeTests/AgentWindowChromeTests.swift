@@ -75,7 +75,8 @@ final class AgentWindowChromeTests: XCTestCase {
         // XCTest. Measure the public NSToolbarItem views instead of treating
         // absent AX children as absent production controls.
         let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-        XCTAssertGreaterThanOrEqual(controls.count, 3, "the sidebar toggle joins the native clusters")
+        XCTAssertGreaterThanOrEqual(
+          controls.count, 3, "the sidebar toggle joins the native clusters")
         XCTAssertGreaterThanOrEqual(
           controls.filter { frame($0).height >= 51 }.count, 3,
           "brand, title and actions share the three-line native header rhythm")
@@ -208,7 +209,11 @@ final class AgentWindowChromeTests: XCTestCase {
       defer: false
     )
     window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: AgentChatView(store: store))
+    window.contentViewController = NSHostingController(
+      rootView: AgentChatView(store: store)
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    )
     window.setContentSize(NSSize(width: contentWidth, height: 720))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
     window.orderFrontRegardless()

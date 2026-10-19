@@ -72,6 +72,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     panel.orderFrontRegardless()
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.mini)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
     for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
       let mark = trace.recorded
