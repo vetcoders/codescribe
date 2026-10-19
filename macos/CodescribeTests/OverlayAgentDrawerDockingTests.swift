@@ -242,6 +242,26 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       state.agentDrawerFocusRevision, focus + 1, "docked: the click focuses the current row")
   }
 
+  /// Maciej, 2026-10-19 on div0 (keyboard navigation on): the system focus
+  /// ring sat on "0 · All" while the selection bar and the composer were on
+  /// another agent. Keyboard focus in the roster is a SwiftUI `FocusState`
+  /// that an XCTest mount does not drive, so the wiring is pinned in source.
+  func testRosterKeyboardFocusFollowsTheSelectedRow() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let body = try section(
+      of: source, from: "private struct OverlayAgentMonitorBody", to: "\n}\n")
+    XCTAssertTrue(
+      body.contains(".defaultFocus($rowFocus, focusedRowID)"),
+      "focus entering the roster lands on the open conversation, not the first row")
+    XCTAssertTrue(
+      body.contains(".onChange(of: focusedRowID)"),
+      "a focused row follows a selection made with the pointer")
+    let wiring = try section(of: source, from: "func monitorBody(", to: "\n  }\n")
+    XCTAssertTrue(
+      wiring.contains("focusedRowID: selectedConversationID"),
+      "the followed row is the selected conversation")
+  }
+
   func testDockedDrawerReservesTheScaledColumnBesideTheConversation() throws {
     for (width, scale, drawerWidth) in [(1200.0, 1.0, 300.0), (1400.0, 1.4, 420.0)]
       as [(CGFloat, CGFloat, CGFloat)]
