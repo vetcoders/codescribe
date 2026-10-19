@@ -197,8 +197,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
 
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
+    XCTAssertTrue(roster.contains("title: headerTitle, accent: .agents, palette: palette"))
     XCTAssertTrue(
-      roster.contains("title: String(localized: \"Agents\"), accent: .agents, palette: palette"))
+      roster.contains("guard agentCaptureOpen else { return String(localized: \"Agents\") }"),
+      "without an agent recording the hover chrome still says Agents")
     XCTAssertFalse(roster.contains(".help(\"Agents\")"))
 
     let menu = try source("Overlay/OverlayHeaderMenu.swift")
@@ -774,8 +776,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
   func testNoScreenRestsOnSwiftUIScrollIndicatorsAlone() throws {
     let screens = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
       .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens")
-    let files = try XCTUnwrap(FileManager.default.enumerator(at: screens, includingPropertiesForKeys: nil))
-      .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    let files = try XCTUnwrap(
+      FileManager.default.enumerator(at: screens, includingPropertiesForKeys: nil)
+    )
+    .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
     XCTAssertFalse(files.isEmpty)
     for file in files {
       // Comments may still name what stood there; code may not.
