@@ -213,6 +213,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private let resourceRoot: URL?
   let homeDirectory: URL
   let fileManager: FileManager
+  let environment: [String: String]
   let bridgeRoot: URL
   private let runtimeDirectory: URL
   private let receiptURL: URL
@@ -227,6 +228,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     self.resourceRoot = resourceRoot
     self.homeDirectory = homeDirectory
     self.fileManager = fileManager
+    self.environment = environment
     let override = environment["CODESCRIBE_AGENT_BRIDGE_HOME"]?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     self.bridgeRoot =

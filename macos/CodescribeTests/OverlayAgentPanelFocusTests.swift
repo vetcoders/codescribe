@@ -1,10 +1,32 @@
+import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 @MainActor
 final class OverlayAgentPanelFocusTests: XCTestCase {
+  private static let olderSupportedHelp = """
+    vc-frame-action-focus-pane-id
+    Focus a pane by its id (e.g. terminal_1 or plugin_2), switching to its tab if needed
+
+    USAGE:
+        vc-frame action focus-pane-id [OPTIONS] <PANE_ID> [VERSION: 4.4.0+g959bf184]
+    """
+
+  private static let currentSupportedHelp = """
+    vc-frame-action-focus-pane-id
+    Focus a pane by its id (e.g. terminal_1 or plugin_2), switching to its tab if needed
+
+    USAGE:
+        vc-frame action focus-pane-id [OPTIONS] <PANE_ID> [VERSION: 4.4.0+ga3f8214c]
+    """
+
+  private static let unsupportedStderr = """
+    error: Found argument 'focus-pane-id' which wasn't expected, or isn't valid in this context
+    """
+
   private func makeOwner(channel: String = "5", name: String = "stanislaw")
     -> OverlayConversationOwner
   {
@@ -17,6 +39,39 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       "name": name,
       "lease_id": leaseID,
     ])!
+  }
+
+  private func writeExecutable(at directory: URL, name: String = "vc-frame", body: String) throws
+    -> URL
+  {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent(name)
+    let script = "#!/bin/sh\n" + body
+    try script.write(to: fileURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: fileURL.path)
+    return fileURL
+  }
+
+  private func renderedRowSize(
+    in view: OverlayChannelStatusView,
+    for channel: OverlayChannelDelivery
+  ) -> NSSize {
+    let host = NSHostingView(rootView: view.channelRow(channel).fixedSize())
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: 440, height: 120),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false)
+    window.contentView = host
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    window.displayIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    host.layoutSubtreeIfNeeded()
+    return host.fittingSize
   }
 
   private func armRoster(on state: OverlayState, owner: OverlayConversationOwner) {
@@ -257,5 +312,233 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       source.contains("OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)")
     )
     XCTAssertFalse(source.contains(".help(focusHelp)"))
+  }
+
+  func testVcFrameCapabilityDetectionRejectsAbsentAndIncompatibleBinariesAndIgnoresEnginePin()
+    async throws
+  {
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("codescribe-vc-frame-cap-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    let emptyBin = tempRoot.appendingPathComponent("empty-bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: emptyBin, withIntermediateDirectories: true)
+    let pinnedLog = tempRoot.appendingPathComponent("pinned.log")
+    let pinnedExecutable = try writeExecutable(
+      at: tempRoot.appendingPathComponent("pinned", isDirectory: true),
+      body: """
+        printf 'pinned %s\\n' "$*" >> '\(pinnedLog.path)'
+        cat <<'EOF'
+        \(Self.currentSupportedHelp)
+        EOF
+        exit 0
+        """)
+
+    // 1. No vc-frame on PATH or in homeDirectory/.local/bin, even with VIBECRAFTED_VC_FRAME_BIN set:
+    let absentInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: tempRoot.appendingPathComponent("home-absent", isDirectory: true),
+      environment: [
+        "PATH": emptyBin.path,
+        "VIBECRAFTED_VC_FRAME_BIN": pinnedExecutable.path,
+      ])
+    let absentSupported = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: absentInstaller)
+    XCTAssertFalse(absentSupported)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: pinnedLog.path),
+      "VIBECRAFTED_VC_FRAME_BIN must never be probed as a fallback")
+
+    // 2. Installed vc-frame on PATH that lacks `focus-pane-id` (exits 2):
+    let unsupportedBin = tempRoot.appendingPathComponent("unsupported-bin", isDirectory: true)
+    let unsupportedLog = tempRoot.appendingPathComponent("unsupported.log")
+    _ = try writeExecutable(
+      at: unsupportedBin,
+      body: """
+        printf '%s\\n' "$*" >> '\(unsupportedLog.path)'
+        cat >&2 <<'EOF'
+        \(Self.unsupportedStderr)
+        EOF
+        exit 2
+        """)
+    let unsupportedInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: tempRoot.appendingPathComponent("home-unsupported", isDirectory: true),
+      environment: ["PATH": unsupportedBin.path])
+    let unsupportedResult = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: unsupportedInstaller)
+    XCTAssertFalse(unsupportedResult)
+    let unsupportedInvocations = try String(contentsOf: unsupportedLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(unsupportedInvocations, ["action focus-pane-id --help"])
+  }
+
+  func testVcFrameCapabilityDetectionAcceptsOlderAndCurrentSupportedReleasesWithoutSideEffects()
+    async throws
+  {
+    let tempRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("codescribe-vc-frame-ok-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+    // 1. Older supported release (`4.4.0+g959bf184` in `4.4.0+g0a387b2e`) on PATH:
+    let olderBin = tempRoot.appendingPathComponent("older-bin", isDirectory: true)
+    let olderLog = tempRoot.appendingPathComponent("older.log")
+    _ = try writeExecutable(
+      at: olderBin,
+      body: """
+        printf '%s|%s|%s\\n' "$*" "$VC_FRAME_SESSION_NAME" "$VC_FRAME_SOCKET_DIR" >> '\(olderLog.path)'
+        if [ "$1" = "action" ] && [ "$2" = "focus-pane-id" ] && [ "$3" = "--help" ]; then
+          cat <<'EOF'
+        \(Self.olderSupportedHelp)
+        EOF
+          exit 0
+        fi
+        exit 99
+        """)
+    let olderInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: tempRoot.appendingPathComponent("home-older", isDirectory: true),
+      environment: [
+        "PATH": olderBin.path,
+        "VC_FRAME_SESSION_NAME": "vibecrafted",
+        "ZELLIJ_SESSION_NAME": "vibecrafted",
+        "VC_FRAME_SOCKET_DIR": "/tmp/vc-frame-501",
+        "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
+      ])
+    let olderFirst = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: olderInstaller)
+    let olderSecond = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: olderInstaller)
+    XCTAssertTrue(olderFirst)
+    XCTAssertTrue(olderSecond)
+    let olderLines = try String(contentsOf: olderLog, encoding: .utf8).split(separator: "\n")
+    XCTAssertEqual(
+      olderLines,
+      ["action focus-pane-id --help||"],
+      "probe must strip session/socket env vars and memoize unchanged binary by stat stamp")
+
+    // 2. Current supported release (`4.4.0+ga3f8214c`) installed in `~/.local/bin` while
+    //    the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
+    let launchdHome = tempRoot.appendingPathComponent("home-launchd", isDirectory: true)
+    let localBin = launchdHome.appendingPathComponent(".local/bin", isDirectory: true)
+    let currentLog = tempRoot.appendingPathComponent("current.log")
+    _ = try writeExecutable(
+      at: localBin,
+      body: """
+        printf '%s|%s|%s\\n' "$*" "$ZELLIJ_SESSION_NAME" "$ZELLIJ_SOCKET_DIR" >> '\(currentLog.path)'
+        if [ "$1" = "action" ] && [ "$2" = "focus-pane-id" ] && [ "$3" = "--help" ]; then
+          cat <<'EOF'
+        \(Self.currentSupportedHelp)
+        EOF
+          exit 0
+        fi
+        exit 99
+        """)
+    let emptyPathDir = tempRoot.appendingPathComponent("empty-system-bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: emptyPathDir, withIntermediateDirectories: true)
+    let launchdInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: launchdHome,
+      environment: [
+        "PATH": emptyPathDir.path,
+        "ZELLIJ_SESSION_NAME": "vibecrafted",
+        "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
+      ])
+    let currentSupported = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    XCTAssertTrue(currentSupported)
+    let currentLines = try String(contentsOf: currentLog, encoding: .utf8).split(separator: "\n")
+    XCTAssertEqual(currentLines, ["action focus-pane-id --help||"])
+  }
+
+  func testPanelFocusButtonExcludedWhenUnavailableAndRenderedWhenAvailableIncludingDeadFollower()
+    throws
+  {
+    let owner = makeOwner(channel: "5", name: "stanislaw")
+    let conversation = OverlayConversation(
+      id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [])
+    let row = OverlayChannelDelivery(
+      channel: "5", agent: "stanislaw", deliveryID: nil, stage: nil, isOpen: false)
+
+    func makeStatusView(
+      panelFocusAvailable: Bool,
+      followerAlive: Bool,
+      onSelectConversation: @escaping (String?) -> Void = { _ in },
+      onFocusAgentPanel: @escaping (OverlayConversationOwner) -> Void = { _ in }
+    ) -> OverlayChannelStatusView {
+      var view = OverlayChannelStatusView(
+        channels: [row],
+        unavailable: false,
+        palette: .dark,
+        animates: false,
+        hudStates: [
+          "5": OverlayChannelHudProjection(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: followerAlive,
+            provider: owner.provider, providerSessionID: owner.providerSessionID)
+        ],
+        conversations: [conversation],
+        selectedConversationID: conversation.id,
+        unreadCounts: [:],
+        onSelectConversation: onSelectConversation)
+      view.archiveCandidates = ["5": owner]
+      view.onArchiveAgent = { _ in }
+      view.panelFocusAvailable = panelFocusAvailable
+      view.onFocusAgentPanel = onFocusAgentPanel
+      return view
+    }
+
+    let unavailableView = makeStatusView(panelFocusAvailable: false, followerAlive: true)
+    let availableLiveView = makeStatusView(panelFocusAvailable: true, followerAlive: true)
+    let availableDeadFollowerView = makeStatusView(panelFocusAvailable: true, followerAlive: false)
+
+    XCTAssertFalse(unavailableView.showsPanelFocusButton(for: row))
+    XCTAssertTrue(availableLiveView.showsPanelFocusButton(for: row))
+    XCTAssertTrue(
+      availableDeadFollowerView.showsPanelFocusButton(for: row),
+      "a disconnected follower must not hide the Focus in Frame button when vc-frame is installed")
+    XCTAssertEqual(
+      availableDeadFollowerView.panelFocusHelp(for: row, state: nil),
+      String(localized: "Agent is disconnected"))
+
+    let unavailableSize = renderedRowSize(in: unavailableView, for: row)
+    let availableLiveSize = renderedRowSize(in: availableLiveView, for: row)
+    let availableDeadSize = renderedRowSize(in: availableDeadFollowerView, for: row)
+
+    XCTAssertGreaterThan(
+      availableLiveSize.width,
+      unavailableSize.width + 20,
+      "the Focus in Frame button is excluded from the rendered row when vc-frame is unavailable")
+    XCTAssertEqual(
+      availableDeadSize.width,
+      availableLiveSize.width,
+      accuracy: 1.0,
+      "a dead follower keeps the Focus in Frame button rendered (disabled) when vc-frame is installed"
+    )
+
+    // Clicking an already-selected row when panelFocusAvailable is false must not request panel focus:
+    var focusedWhenUnavailable: [OverlayConversationOwner] = []
+    var selectedWhenUnavailable: [String?] = []
+    let checkView = makeStatusView(
+      panelFocusAvailable: false,
+      followerAlive: true,
+      onSelectConversation: { selectedWhenUnavailable.append($0) },
+      onFocusAgentPanel: { focusedWhenUnavailable.append($0) })
+    checkView.viewConversation(row)
+    XCTAssertTrue(focusedWhenUnavailable.isEmpty)
+    XCTAssertEqual(selectedWhenUnavailable, [conversation.id])
+
+    // OverlayState.focusAgentPanel is also a no-op when agentPanelFocusAvailable is false:
+    let state = OverlayState.previewFormatted()
+    armRoster(on: state, owner: owner)
+    state.setAgentPanelFocusAvailable(false)
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { request in
+      issuedRequests.append(request)
+    }
+    state.focusAgentPanel(owner)
+    XCTAssertNil(state.agentPanelFocusStates[owner.channel])
+    XCTAssertTrue(issuedRequests.isEmpty)
   }
 }
