@@ -286,7 +286,7 @@ final class SettingsTruthTests: XCTestCase {
 
     // Title match, case-insensitive.
     XCTAssertEqual(SettingsSection.matching(query: "hotkeys"), [.shortcuts])
-    XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.license])
+    XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.user])
 
     // Keyword match: the user searches for the job, not the tab name.
     XCTAssertTrue(SettingsSection.matching(query: "api key").contains(.keys))
@@ -353,10 +353,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.currentTab, .dictationEngine)
 
     // Sidebar selection round-trips through the rail's binding; nil is dropped.
-    model.sidebarSelection = .license
-    XCTAssertEqual(model.section, .license)
+    model.sidebarSelection = .user
+    XCTAssertEqual(model.section, .user)
     model.sidebarSelection = nil
-    XCTAssertEqual(model.section, .license)
+    XCTAssertEqual(model.section, .user)
   }
 
   func testSettingsSearchReachesInsideTabs() {
@@ -458,7 +458,7 @@ final class SettingsTruthTests: XCTestCase {
   func testSectionAvailabilityKeepsPromisesHonest() {
     for section in [
       SettingsSection.creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab,
-      .license, .user,
+      .user,
     ] {
       XCTAssertEqual(section.availability, .available)
       XCTAssertTrue(section.isInteractive)
@@ -480,8 +480,7 @@ final class SettingsTruthTests: XCTestCase {
       (.audio, "audio", "Audio", .audio),
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
-      (.license, "license", "License", .license),
-      (.user, "user", "About", .user),
+      (.user, "user", "User", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -1388,7 +1387,7 @@ final class SettingsTruthTests: XCTestCase {
       licenseReadState: .unavailable)
     XCTAssertEqual(health.level, .degraded)
     XCTAssertEqual(health.message, "License verification unavailable")
-    XCTAssertEqual(health.targetSection, .license)
+    XCTAssertEqual(health.targetSection, .user)
   }
 
   func testPendingLicenseCheckDoesNotClaimReadiness() {
@@ -1397,7 +1396,7 @@ final class SettingsTruthTests: XCTestCase {
       licenseReadState: .loading)
     XCTAssertEqual(health.level, .unknown)
     XCTAssertEqual(health.message, "Checking license…")
-    XCTAssertEqual(health.targetSection, .license)
+    XCTAssertEqual(health.targetSection, .user)
   }
 
   func testAvailableLicenseReadDoesNotRequirePaidEntitlementForBasicReadiness() {

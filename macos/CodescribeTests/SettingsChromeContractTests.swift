@@ -1167,14 +1167,25 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(lab.contains("Text(\"Required before a recording can start.\")"))
   }
 
-  /// Settings → About: the app, its data and the resets, in English and in
-  /// Polish. Everyday facts stay visible; the build details, the configuration
-  /// notice details, the template editor and both resets open on demand. The
-  /// resets keep their safeguards; only the chrome around them got quieter.
-  func testAboutPaneReadsAsTheAppAndItsData() throws {
-    let panel = try XCTUnwrap(try settingsSources()["UserPanel.swift"])
-    XCTAssertTrue(panel.contains("String(localized: \"About the app and your data\""))
-    XCTAssertTrue(panel.contains("\"Codescribe version, local data and privacy.\""))
+  /// Settings → User: the license, the app, its data and the resets, in
+  /// English and in Polish (Founder decision 2026-10-18: one User tab replaces
+  /// About and License; the transcript markers moved to Dictation). Everyday
+  /// facts stay visible; the build details, the configuration notice details,
+  /// the template editor and both resets open on demand. The resets keep
+  /// their safeguards; only the chrome around them got quieter.
+  func testUserPaneReadsAsTheUserTheAppAndItsData() throws {
+    let sources = try settingsSources()
+    let panel = try XCTUnwrap(sources["UserPanel.swift"])
+    XCTAssertTrue(panel.contains("String(localized: \"User\", comment: \"User panel header\")"))
+    XCTAssertTrue(panel.contains("\"Your license, Codescribe version, local data and privacy.\""))
+    // The license is a section of this pane, first in the column, not a tab.
+    XCTAssertTrue(panel.contains("LicenseSection(model: model)"))
+    XCTAssertFalse(sources.keys.contains("LicensePanel.swift"), "License is no longer a pane")
+    // Updates are checked from here (and from the app menu), not from the tray.
+    XCTAssertTrue(panel.contains("String(localized: \"Version\""))
+    XCTAssertTrue(panel.contains("localized: \"Check for Updates…\""))
+    XCTAssertTrue(panel.contains("model.onCheckForUpdates()"))
+    XCTAssertTrue(panel.contains(".disabled(!model.canCheckForUpdates)"))
     // One version line; commit and build date only under Version details.
     XCTAssertTrue(panel.contains("Text(verbatim: \"Codescribe \\(model.buildInfo.version)\")"))
     XCTAssertTrue(panel.contains("\"Build \\(model.buildInfo.build)\""))
@@ -1202,17 +1213,22 @@ final class SettingsChromeContractTests: XCTestCase {
         "if ActivationPingConfiguration.production.isEnabled {\n        activationPingSection"))
     XCTAssertTrue(panel.contains("@AppStorage(ActivationPing.optInDefaultsKey)"))
     XCTAssertFalse(panel.contains(".disabled(!availability.serviceEnabled)"))
-    // Markers: one switch, the editor closed by default, every tool kept.
-    XCTAssertTrue(panel.contains("String(localized: \"Transcript markers\""))
-    XCTAssertTrue(panel.contains("String(localized: \"Add markers to text\""))
-    XCTAssertTrue(panel.contains("\"Mark text delivered to other apps\""))
-    XCTAssertTrue(panel.contains("@State private var showingTemplate = false"))
-    XCTAssertTrue(panel.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
-    XCTAssertTrue(panel.contains("\"Edit template and preview\""))
-    XCTAssertTrue(panel.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
-    XCTAssertTrue(panel.contains("Button(String(localized: \"Restore default template\""))
-    XCTAssertTrue(panel.contains("model.transcriptTagTemplateWarning"))
-    XCTAssertTrue(panel.contains("Text(model.transcriptTagPreview)"))
+    // Markers live under Dictation now: one switch, the editor closed by
+    // default, every tool kept. Nothing of them is left in the User pane.
+    XCTAssertFalse(panel.contains("Transcript markers"))
+    let markers = try XCTUnwrap(sources["TranscriptMarkersSection.swift"])
+    XCTAssertTrue(markers.contains("String(localized: \"Transcript markers\""))
+    XCTAssertTrue(markers.contains("String(localized: \"Add markers to text\""))
+    XCTAssertTrue(markers.contains("\"Mark text delivered to other apps\""))
+    XCTAssertTrue(markers.contains("@State private var showingTemplate = false"))
+    XCTAssertTrue(markers.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
+    XCTAssertTrue(markers.contains("\"Edit template and preview\""))
+    XCTAssertTrue(markers.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
+    XCTAssertTrue(markers.contains("Button(String(localized: \"Restore default template\""))
+    XCTAssertTrue(markers.contains("model.transcriptTagTemplateWarning"))
+    XCTAssertTrue(markers.contains("Text(model.transcriptTagPreview)"))
+    let dictation = try XCTUnwrap(sources["DictationEngineTab.swift"])
+    XCTAssertTrue(dictation.contains("TranscriptMarkersSection(model: model)"))
     XCTAssertTrue(panel.contains("String(localized: \"Information and documentation\""))
     XCTAssertTrue(panel.contains("String(localized: \"Terms of Use\""))
     XCTAssertTrue(panel.contains("String(localized: \"Documentation\""))
@@ -1243,10 +1259,11 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "About": "O aplikacji",
-      "About the app and your data": "O aplikacji i danych",
-      "Codescribe version, local data and privacy.":
-        "Wersja Codescribe, lokalne dane i prywatność.",
+      "User": "Użytkownik",
+      "Your license, Codescribe version, local data and privacy.":
+        "Twoja licencja, wersja Codescribe, lokalne dane i prywatność.",
+      "Version": "Wersja",
+      "Check for Updates…": "Sprawdź uaktualnienia…",
       "Build %@": "Kompilacja %@",
       "Version details": "Szczegóły wersji",
       "The configuration needs a review": "Konfiguracja wymaga sprawdzenia",

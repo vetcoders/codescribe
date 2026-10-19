@@ -959,8 +959,66 @@ final class AgentBridgeInstallerTests: XCTestCase {
       FileManager.default.fileExists(
         atPath: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md").path))
     XCTAssertTrue(model.creatorAgentBridgeNotice?.contains("does not attach a listener") == true)
+    // Codex is now this app's generation: the row has nothing to offer and a
+    // second request writes nothing (Founder decision 2026-10-18).
+    let receiptURL = home.appendingPathComponent(".codescribe/agent-bridge/receipt.json")
+    let receiptBefore = try? Data(contentsOf: receiptURL)
+    XCTAssertEqual(
+      SettingsViewModel.creatorAgentBridgeAction(for: .codex, in: model.creatorAgentBridgeStatus),
+      .upToDate)
+    XCTAssertNil(model.creatorAgentBridgeInstallPlan(for: .codex))
+    let noticeBefore = model.creatorAgentBridgeNotice
     model.installCreatorAgentBridge(for: .codex)
     XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertEqual(try? Data(contentsOf: receiptURL), receiptBefore)
+    XCTAssertEqual(model.creatorAgentBridgeNotice, noticeBefore)
+  }
+
+  /// The row's one action follows the installation status: install when the
+  /// client has no skill, update when its copy is not this app's generation,
+  /// nothing (a disabled button) when it is.
+  func testCreatorRowActionFollowsInstallationStatus() {
+    let status = AgentBridgeInstallationStatus(
+      payloadAvailable: true, bundleVersion: "9.8.7",
+      installedClients: [.claudeCode, .codex], installedPaths: [], detail: "Installed",
+      clientsWithCurrentSkill: [.claudeCode])
+    XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .claudeCode, in: status), .upToDate)
+    XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .codex, in: status), .update)
+    XCTAssertEqual(SettingsViewModel.creatorAgentBridgeAction(for: .agents, in: status), .install)
+  }
+
+  /// What the confirmation states before a file is written: the destination,
+  /// the bundled version and the other outdated clients the same transaction
+  /// rewrites. Nothing to confirm without a payload or for a current client.
+  func testCreatorInstallPlanNamesDestinationVersionAndSideEffects() {
+    let bridge = StatusAgentBridgeInstaller(
+      AgentBridgeInstallationStatus(
+        payloadAvailable: true, bundleVersion: "9.8.7",
+        installedClients: [.claudeCode, .codex], installedPaths: [], detail: "Installed",
+        clientsWithCurrentSkill: [.claudeCode]))
+    let model = SettingsViewModel(
+      creatorAgentBridge: bridge, permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil })
+    model.refreshCreatorAgentBridge()
+
+    XCTAssertNil(model.creatorAgentBridgeInstallPlan(for: .claudeCode), "current copy: nothing to do")
+
+    let update = model.creatorAgentBridgeInstallPlan(for: .codex)
+    XCTAssertEqual(update?.action, .update)
+    XCTAssertEqual(update?.skillPath, AgentBridgeClient.codex.skillPathLabel)
+    XCTAssertEqual(update?.bundleVersion, "9.8.7")
+    XCTAssertEqual(update?.alsoUpdated, [], "Claude Code is current, so only Codex changes")
+
+    let install = model.creatorAgentBridgeInstallPlan(for: .agents)
+    XCTAssertEqual(install?.action, .install)
+    XCTAssertEqual(install?.skillPath, AgentBridgeClient.agents.skillPathLabel)
+    XCTAssertEqual(install?.alsoUpdated, [.codex], "the outdated Codex copy is rewritten too")
+
+    bridge.current = AgentBridgeInstallationStatus(
+      payloadAvailable: false, bundleVersion: nil, installedClients: [], installedPaths: [],
+      detail: "No payload")
+    model.refreshCreatorAgentBridge()
+    XCTAssertNil(model.creatorAgentBridgeInstallPlan(for: .codex), "no payload: nothing to confirm")
   }
 
   func testLaunchSynchronizationDetailStaysOutOfTheCreatorNotice() throws {
@@ -1828,6 +1886,20 @@ private final class RestoringForeignFolderFileManager: FileManager, @unchecked S
         to: folder.appendingPathComponent("operator.txt"))
     }
     try super.copyItem(at: source, to: destination)
+  }
+}
+
+/// Reports a fixed status and refuses to install; for tests of what Creator
+/// derives from a status, not of the installer.
+private final class StatusAgentBridgeInstaller: AgentBridgeInstalling {
+  var current: AgentBridgeInstallationStatus
+  init(_ status: AgentBridgeInstallationStatus) { current = status }
+  func status() -> AgentBridgeInstallationStatus { current }
+  func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
+    throw AgentBridgeInstallationError.transaction("this fixture never installs")
+  }
+  func adoptManualSkill(client: AgentBridgeClient) throws -> AgentBridgeAdoptionResult {
+    throw AgentBridgeInstallationError.transaction("this fixture never adopts")
   }
 }
 
