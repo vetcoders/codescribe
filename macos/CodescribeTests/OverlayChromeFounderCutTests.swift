@@ -1217,7 +1217,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("Wordmark("))
     XCTAssertTrue(
       try self.source(at: "Codescribe/DesignSystem/Components.swift")
-        .contains("Text(verbatim: \"codescribe\")"))
+        .contains("Text(verbatim: short ? \"cs\" : \"codescribe\")"))
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
@@ -1433,18 +1433,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Maciej, 2026-10-19 07:06Z: mini has no room for another control. While an
-  /// agent records, its microphone takes the expand arrow's place; the arrow
-  /// returns when the recording ends. The dictation microphone stays.
-  func testMiniSwapsTheExpandArrowForTheRecordingAgentsMicrophone() throws {
+  /// Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons, the
+  /// agent's beside the ordinary microphone and the expand arrow, and the
+  /// wordmark shortens to a lowercase "cs" to make the room (07:10Z).
+  func testMiniAddsTheRecordingAgentsMicrophoneAndShortensTheWordmark() throws {
     let state = OverlayState()
     state.setPresentationMode(.mini)
     try withPanel(state: state) { _, root in
       func shown(_ identifier: String) -> Bool {
         accessibilityTree(root).contains { $0.accessibilityIdentifier() == identifier }
       }
+      func brand(_ word: String) -> Bool {
+        accessibilityTree(root).contains { element in
+          element.accessibilityIdentifier() == "overlay-mini-brand"
+            && [element.accessibilityLabel(), element.accessibilityValue() as? String]
+              .contains(word)
+        }
+      }
       XCTAssertTrue(shown("overlay-live-preview-toggle"))
       XCTAssertFalse(shown("overlay-agent-glyph"))
+      XCTAssertTrue(brand("codescribe"))
       state.applyChannelRoster([
         .init(
           channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
@@ -1453,13 +1461,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       ])
       state.setPresentationMode(.mini)
       settle(root)
-      XCTAssertTrue(shown("overlay-agent-glyph"), "the agent's microphone in the arrow's place")
-      XCTAssertFalse(shown("overlay-live-preview-toggle"))
-      XCTAssertTrue(shown("overlay-start-recording"), "the dictation microphone stays")
+      XCTAssertTrue(shown("overlay-agent-glyph"), "the agent's microphone joins mini")
+      XCTAssertTrue(shown("overlay-start-recording"), "beside the ordinary microphone")
+      XCTAssertTrue(shown("overlay-live-preview-toggle"), "and the expand arrow")
+      XCTAssertTrue(brand("cs"), "the wordmark makes the room")
       state.applyChannelRoster([])
       settle(root)
-      XCTAssertTrue(shown("overlay-live-preview-toggle"), "the arrow returns")
       XCTAssertFalse(shown("overlay-agent-glyph"))
+      XCTAssertTrue(brand("codescribe"))
     }
   }
 

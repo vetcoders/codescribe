@@ -966,9 +966,7 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-brand-close-dot")
   }
 
-  private func recordingControls(
-    compact: Bool, showsMicrophone: Bool = true, showsPreview: Bool = true
-  ) -> some View {
+  private func recordingControls(compact: Bool, showsMicrophone: Bool = true) -> some View {
     var controls = OverlayRecordingControls(
       canFinish: state.recording && !state.transcribing,
       presentationMode: state.presentationMode, compact: compact, palette: palette,
@@ -977,7 +975,6 @@ struct DictationOverlayView: View {
       isFinalizing: state.isFinalizingDictation,
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
-    controls.showsPreviewButton = showsPreview
     controls.onShowDictation = state.showTranscription
     controls.onPresentationSelect = state.setPresentationMode
     return controls
@@ -985,16 +982,17 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
-    // Mini during an agent recording: the agent's microphone, not the arrow.
+    // Mini while an agent records: its microphone joins, the word shortens.
     let miniAgentMicrophone = mini && state.channelAudioCaptureActive
     return HStack(spacing: mini ? 6 : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       Wordmark(
         size: density.brandSize, spacing: mini ? 6 : 5,
-        textIdentifier: mini ? "overlay-mini-brand" : ""
+        textIdentifier: mini ? "overlay-mini-brand" : "", short: miniAgentMicrophone
       ) {
         closeButton
       }
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: miniAgentMicrophone)
       .fixedSize()
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
@@ -1045,14 +1043,13 @@ struct DictationOverlayView: View {
           }
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
-        }
-        recordingControls(compact: false, showsPreview: !miniAgentMicrophone)
-        if miniAgentMicrophone {
-          // Mini has no room for another control: while an agent records, its
-          // microphone takes the expand arrow's place and expands straight to
-          // that agent; the arrow returns when the recording ends.
+        } else if miniAgentMicrophone {
+          // Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons,
+          // the agent's beside the ordinary microphone, and the wordmark
+          // shortens to "cs" to make the room.
           channelStatusView
         }
+        recordingControls(compact: false)
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
