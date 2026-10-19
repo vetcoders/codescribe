@@ -941,11 +941,18 @@ extension RealAgentBridgeInstaller {
   /// non-interactive `zsh` `PATH` is consulted. Never falls back to a literal
   /// `~/.local/bin` path, `VIBECRAFTED_VC_FRAME_BIN`, or private `releases/*/bin`
   /// directories.
+  static let vcFrameShellFailureCooldown: TimeInterval = 5.0
+
   nonisolated static func vcFrameExecutableURL(
     homeDirectory: URL,
-    environment: [String: String]
+    environment: [String: String],
+    now: Date = Date()
   ) -> URL? {
-    let rawPath = effectiveVcFramePath(homeDirectory: homeDirectory, environment: environment)
+    let rawPath = effectiveVcFramePath(
+      homeDirectory: homeDirectory,
+      environment: environment,
+      now: now
+    )
     var directories: [String] = []
     for entry in rawPath.split(separator: ":", omittingEmptySubsequences: true) {
       let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -979,21 +986,15 @@ extension RealAgentBridgeInstaller {
 
   private nonisolated static func effectiveVcFramePath(
     homeDirectory: URL,
-    environment: [String: String]
+    environment: [String: String],
+    now: Date = Date()
   ) -> String {
     let launchdDefaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
     let provided = environment["PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !provided.isEmpty, provided != launchdDefaultPath {
       return provided
     }
-    let zshenv = homeDirectory.appendingPathComponent(".zshenv")
-    let zprofile = homeDirectory.appendingPathComponent(".zprofile")
-    let resolvedHomePath = homeDirectory.resolvingSymlinksInPath().path
-    let profileStamp = VcFrameShellProfileStamp(
-      homePath: resolvedHomePath,
-      zshenv: VcFrameFileStat(path: zshenv.path),
-      zprofile: VcFrameFileStat(path: zprofile.path)
-    )
+    let profileStamp = VcFrameShellProfileStamp(homeDirectory: homeDirectory)
     let fileManager = FileManager.default
     guard
       profileStamp.zshenv.exists || profileStamp.zprofile.exists,
@@ -1001,9 +1002,25 @@ extension RealAgentBridgeInstaller {
     else {
       return provided
     }
-    if let cached = VcFrameShellPathCache.shared.value(for: profileStamp) {
+    switch VcFrameShellPathCache.shared.lookup(for: profileStamp, now: now) {
+    case .hit(let cached):
       return cached
+    case .throttledFailure:
+      return provided
+    case .miss:
+      break
     }
+
+    func recordFailureIfUnchanged() {
+      let postStamp = VcFrameShellProfileStamp(homeDirectory: homeDirectory)
+      if postStamp == profileStamp {
+        VcFrameShellPathCache.shared.storeFailure(at: now, for: profileStamp)
+      } else {
+        VcFrameShellPathCache.shared.remove(for: profileStamp)
+        VcFrameShellPathCache.shared.remove(for: postStamp)
+      }
+    }
+
     let process = Process()
     let stdoutPipe = Pipe()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -1022,6 +1039,7 @@ extension RealAgentBridgeInstaller {
     do {
       try process.run()
     } catch {
+      recordFailureIfUnchanged()
       return provided
     }
     let deadline = Date().addingTimeInterval(1.0)
@@ -1030,6 +1048,7 @@ extension RealAgentBridgeInstaller {
     }
     if process.isRunning {
       process.terminate()
+      recordFailureIfUnchanged()
       return provided
     }
     let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -1038,16 +1057,15 @@ extension RealAgentBridgeInstaller {
         .trimmingCharacters(in: .whitespacesAndNewlines),
       !resolved.isEmpty
     else {
+      recordFailureIfUnchanged()
       return provided
     }
-    VcFrameShellPathCache.shared.store(resolved, for: profileStamp)
-    let postStamp = VcFrameShellProfileStamp(
-      homePath: resolvedHomePath,
-      zshenv: VcFrameFileStat(path: zshenv.path),
-      zprofile: VcFrameFileStat(path: zprofile.path)
-    )
-    if postStamp != profileStamp {
-      VcFrameShellPathCache.shared.store(resolved, for: postStamp)
+    let postStamp = VcFrameShellProfileStamp(homeDirectory: homeDirectory)
+    if postStamp == profileStamp {
+      VcFrameShellPathCache.shared.storeResolved(resolved, for: profileStamp)
+    } else {
+      VcFrameShellPathCache.shared.remove(for: profileStamp)
+      VcFrameShellPathCache.shared.remove(for: postStamp)
     }
     return resolved
   }
@@ -1118,7 +1136,8 @@ extension RealAgentBridgeInstaller {
   /// poll without restarting Codescribe.
   @MainActor
   static func supportsAgentPanelFocus(
-    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller(),
+    now: Date = Date()
   ) async -> Bool {
     let homeDirectory = installer.homeDirectory
     let environment = installer.environment
@@ -1126,7 +1145,8 @@ extension RealAgentBridgeInstaller {
       guard
         let executableURL = vcFrameExecutableURL(
           homeDirectory: homeDirectory,
-          environment: environment
+          environment: environment,
+          now: now
         ),
         let stamp = VcFrameExecutableStamp(url: executableURL)
       else {
@@ -1339,25 +1359,72 @@ private struct VcFrameShellProfileStamp: Hashable, Sendable {
   let homePath: String
   let zshenv: VcFrameFileStat
   let zprofile: VcFrameFileStat
+
+  init(homeDirectory: URL) {
+    let zshenvURL = homeDirectory.appendingPathComponent(".zshenv")
+    let zprofileURL = homeDirectory.appendingPathComponent(".zprofile")
+    self.homePath = homeDirectory.resolvingSymlinksInPath().path
+    self.zshenv = VcFrameFileStat(path: zshenvURL.path)
+    self.zprofile = VcFrameFileStat(path: zprofileURL.path)
+  }
 }
 
 private final class VcFrameShellPathCache: @unchecked Sendable {
   static let shared = VcFrameShellPathCache()
-  private let lock = NSLock()
-  private var entries: [VcFrameShellProfileStamp: String] = [:]
 
-  func value(for stamp: VcFrameShellProfileStamp) -> String? {
-    lock.lock()
-    defer { lock.unlock() }
-    return entries[stamp]
+  enum LookupResult: Equatable, Sendable {
+    case hit(String)
+    case throttledFailure
+    case miss
   }
 
-  func store(_ path: String, for stamp: VcFrameShellProfileStamp) {
+  private enum Entry: Sendable {
+    case resolved(String)
+    case failed(at: Date)
+  }
+
+  private let lock = NSLock()
+  private var entries: [VcFrameShellProfileStamp: Entry] = [:]
+
+  func lookup(for stamp: VcFrameShellProfileStamp, now: Date) -> LookupResult {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let entry = entries[stamp] else {
+      return .miss
+    }
+    switch entry {
+    case .resolved(let path):
+      return .hit(path)
+    case .failed(let failedAt):
+      if now.timeIntervalSince(failedAt) < RealAgentBridgeInstaller.vcFrameShellFailureCooldown {
+        return .throttledFailure
+      }
+      entries.removeValue(forKey: stamp)
+      return .miss
+    }
+  }
+
+  func storeResolved(_ path: String, for stamp: VcFrameShellProfileStamp) {
     lock.lock()
     defer { lock.unlock() }
     if entries.count >= 64 {
       entries.removeAll(keepingCapacity: true)
     }
-    entries[stamp] = path
+    entries[stamp] = .resolved(path)
+  }
+
+  func storeFailure(at now: Date, for stamp: VcFrameShellProfileStamp) {
+    lock.lock()
+    defer { lock.unlock() }
+    if entries.count >= 64 {
+      entries.removeAll(keepingCapacity: true)
+    }
+    entries[stamp] = .failed(at: now)
+  }
+
+  func remove(for stamp: VcFrameShellProfileStamp) {
+    lock.lock()
+    defer { lock.unlock() }
+    entries.removeValue(forKey: stamp)
   }
 }
