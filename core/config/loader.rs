@@ -1774,14 +1774,31 @@ impl Config {
 
     /// Save multiple configuration values in a single batch.
     ///
-    /// This reduces repeated settings.json writes and .env rewrites, and
-    /// minimizes redundant work when updating several fields at once.
+    /// The ASR mode/consent pair is one settings.json write; validation and save
+    /// failures are returned without committing a partial choice. Other batches
+    /// retain their per-tier persistence and committed-prefix behavior.
     pub fn save_to_env_many(&self, entries: &[(&str, &str)]) -> anyhow::Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _persistence = config_persistence_guard();
+
+        if entries.len() == 2
+            && entries.iter().any(|(key, _)| *key == "CODESCRIBE_ASR_MODE")
+            && entries
+                .iter()
+                .any(|(key, _)| *key == "CODESCRIBE_CLOUD_CONSENT")
+        {
+            let mut settings = super::settings::UserSettings::load_for_edit()?;
+            for (key, value) in entries {
+                anyhow::ensure!(
+                    settings.assign_wire(key, value, true)?,
+                    "Rejected ASR choice setting: {key}"
+                );
+            }
+            return settings.save();
+        }
 
         let mut settings: Option<super::settings::UserSettings> = None;
         let mut env_vars: Option<HashMap<String, String>> = None;

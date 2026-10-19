@@ -45,7 +45,70 @@ pub(crate) struct WhisperArchitecture {
 }
 
 /// Validate every artifact required by runtime and embedded Whisper loaders.
+///
+/// A bundle that validated is remembered with the identity of every file in
+/// its directory. Validation parses the tokenizer and hashes the mel
+/// filterbank, about a quarter of a second, and Settings asks on every page
+/// change. Any added, removed, rewritten or replaced file changes that
+/// identity, so the next call validates again; failures are never remembered.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+    let identity = bundle_identity(path);
+    if let Some(identity) = &identity
+        && validated_bundles().get(path) == Some(identity)
+    {
+        return Ok(());
+    }
+    validate_whisper_model_bundle_uncached(path)?;
+    // Taken before validation: a file changed meanwhile misses next time.
+    if let Some(identity) = identity {
+        validated_bundles().insert(path.to_path_buf(), identity);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundleFileIdentity {
+    name: std::ffi::OsString,
+    len: u64,
+    modified: std::time::SystemTime,
+    inode: u64,
+}
+
+type ValidatedBundles = BTreeMap<PathBuf, Vec<BundleFileIdentity>>;
+
+static VALIDATED_BUNDLES: std::sync::Mutex<ValidatedBundles> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn validated_bundles() -> std::sync::MutexGuard<'static, ValidatedBundles> {
+    VALIDATED_BUNDLES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Name, length, modification time and inode of each regular file directly in
+/// the bundle, symlinks followed (Hugging Face snapshots link into blobs).
+/// `None` when any of it cannot be read; such a bundle is never remembered.
+fn bundle_identity(path: &Path) -> Option<Vec<BundleFileIdentity>> {
+    use std::os::unix::fs::MetadataExt;
+    let mut files = Vec::new();
+    for entry in fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        let metadata = fs::metadata(entry.path()).ok()?;
+        if !metadata.is_file() {
+            continue;
+        }
+        files.push(BundleFileIdentity {
+            name: entry.file_name(),
+            len: metadata.len(),
+            modified: metadata.modified().ok()?,
+            inode: metadata.ino(),
+        });
+    }
+    files.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(files)
+}
+
+fn validate_whisper_model_bundle_uncached(path: &Path) -> Result<()> {
     let architecture = load_whisper_architecture(&path.join("config.json"))?;
     validate_whisper_tokenizer_for_architecture(&path.join("tokenizer.json"), architecture)?;
     verify_mel_filters(&path.join("mel_filters.npz"))?;

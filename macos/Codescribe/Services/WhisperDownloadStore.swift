@@ -81,7 +81,9 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
 /// it; navigating or closing onboarding never cancels the download generation.
 @MainActor
 final class WhisperDownloadStore: ObservableObject {
-  typealias StatusProvider = @MainActor () -> CsWhisperModelStatus
+  /// Validates the whole model bundle, tokenizer included, so a read takes a
+  /// few hundred milliseconds; `refresh()` runs it off the main actor.
+  typealias StatusProvider = @Sendable () -> CsWhisperModelStatus
   typealias Download =
     @Sendable (any CsWhisperDownloadListener) async throws -> CsWhisperModelStatus
 
@@ -116,6 +118,12 @@ final class WhisperDownloadStore: ObservableObject {
   /// hand-wind it.
   private let now: @Sendable () -> Date
   private var downloadTask: Task<Void, Never>?
+  /// The status read in progress, shared by every refresh asked for meanwhile.
+  private var statusRead: Task<Void, Never>?
+  /// A refresh arrived after the running read began, so one more read follows.
+  private var statusReadStale = false
+  /// Bumped by every write of `status`; a read lands only if none came first.
+  private var statusRevision = 0
   private var sink: WhisperDownloadProgressSink?
   private var rateSamples: [(at: Date, bytes: UInt64)] = []
   private var sampledFile: String?
@@ -140,15 +148,44 @@ final class WhisperDownloadStore: ObservableObject {
     self.now = now
   }
 
-  func refresh() {
-    guard !inFlight else { return }
-    status = statusProvider()
-    if status.available { interruption = nil }
+  /// Re-read the install state off the main actor, so a Settings page switch or
+  /// a setup step never waits for the bundle validation. Calls made while a read
+  /// runs share it, plus one read that starts after them; the returned task ends
+  /// once a read begun after this call has landed.
+  @discardableResult
+  func refresh() -> Task<Void, Never> {
+    guard !inFlight else { return Task {} }
+    if let statusRead {
+      statusReadStale = true
+      return statusRead
+    }
+    let read = Task { [weak self] in
+      guard let self else { return }
+      repeat {
+        statusReadStale = false
+        let revision = statusRevision
+        let provider = statusProvider
+        let observed = await Task.detached(priority: .userInitiated) { provider() }.value
+        // A transfer owns the status while it runs and when it ends.
+        if !inFlight, revision == statusRevision { apply(observed) }
+      } while statusReadStale && !inFlight
+      statusRead = nil
+    }
+    statusRead = read
+    return read
+  }
+
+  private func apply(_ read: CsWhisperModelStatus) {
+    status = read
+    statusRevision += 1
+    if read.available { interruption = nil }
   }
 
   func start() {
     guard !inFlight else { return }
-    refresh()
+    // An explicit Download click reads the model where it stands before it
+    // claims a generation; this one read may hold the click briefly.
+    apply(statusProvider())
     guard !status.available else { return }
     // Claim the generation before enqueuing either task, so simultaneous
     // Download clicks from Settings and onboarding cannot start two transfers.
@@ -207,7 +244,7 @@ final class WhisperDownloadStore: ObservableObject {
       await events.value
       switch result {
       case .success(let installed):
-        status = installed
+        apply(installed)
         let location = installed.path ?? installed.modelId
         detail =
           installed.available
@@ -222,7 +259,7 @@ final class WhisperDownloadStore: ObservableObject {
         // A stop is not a failure: Rust removed the partial file, so the step
         // goes back to offering the download instead of reporting an error.
         // It is still not an install: `interruption` keeps that visible.
-        status = statusProvider()
+        apply(statusProvider())
         detail = nil
         fraction = nil
         error = nil
