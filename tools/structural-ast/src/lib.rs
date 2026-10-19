@@ -13,7 +13,7 @@ mod closed_take;
 mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=8";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=9";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,6 +228,9 @@ fn check(body: &Body) -> Contract {
                     "is_settled" => parse_quote!(
                         pub fn is_settled(&self) -> bool {}
                     ),
+                    "prepare_terminal_audio" => parse_quote!(
+                        async fn prepare_terminal_audio(&mut self) {}
+                    ),
                     "finish" => parse_quote!(
                         pub async fn finish(
                             &mut self,
@@ -331,6 +334,9 @@ fn check(body: &Body) -> Contract {
                     }
                     "detach_take_state" => closed_take::detach_take_state(&mut g, &function.block),
                     "is_settled" => closed_take::is_settled(&mut g, &function.block),
+                    "prepare_terminal_audio" => {
+                        closed_take::prepare_terminal_audio(&mut g, &function.block)
+                    }
                     "finish" => closed_take::finish(&mut g, &function.block),
                     "copy_stop_error" => closed_take::copy_stop_error(&mut g, &function.block),
                     "finalize_take_archive" => {
@@ -369,6 +375,7 @@ pub fn analyze(request: Request) -> Evidence {
         ("detach_closed_take", "core/audio/streaming_recorder.rs"),
         ("detach_take_state", "core/audio/streaming_recorder.rs"),
         ("is_settled", "core/audio/streaming_recorder.rs"),
+        ("prepare_terminal_audio", "core/audio/streaming_recorder.rs"),
         ("finish", "core/audio/streaming_recorder.rs"),
         ("copy_stop_error", "core/audio/streaming_recorder.rs"),
         ("finalize_take_archive", "core/audio/streaming_recorder.rs"),
