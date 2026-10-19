@@ -592,6 +592,8 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertEqual(
       audioCalibrationFact(.sampleMissing, microphonePermission: .granted).value, "Required")
     XCTAssertEqual(
+      audioCalibrationFact(.sampleMissing, microphonePermission: .granted).tone, .unavailable)
+    XCTAssertEqual(
       audioCalibrationFact(.sampleGranted, microphonePermission: .denied).value, "Waiting")
     XCTAssertEqual(audioCalibrationFact(nil, microphonePermission: .granted).value, "Checking…")
 
@@ -600,15 +602,82 @@ final class AcousticAdmissionPanelTests: XCTestCase {
       audioSealLaneFact(armed),
       AudioReadinessFact(
         id: .sealLane, label: "Committing fragments", value: "On", tone: .healthy))
-    XCTAssertEqual(
-      audioSealLaneFact(readiness(armed: false, settingArmed: false, source: "settings")).value,
-      "Off")
+    let disarmedRefused = readiness(armed: false, settingArmed: false, source: "settings")
+    XCTAssertEqual(audioSealLaneFact(disarmedRefused).value, "Off")
+    XCTAssertEqual(audioSealLaneFact(disarmedRefused).tone, .unavailable)
     XCTAssertEqual(audioSealLaneFact(nil).value, "Checking…")
 
     var vadBroken = armed
     vadBroken.code = "admission_seal_vad_unavailable"
     XCTAssertEqual(audioSealLaneFact(vadBroken).value, "Unavailable")
     XCTAssertEqual(audioSealLaneFact(vadBroken).tone, .unavailable)
+  }
+
+  /// When the controller grants admission (`ready == true`) with uncalibrated
+  /// input and a disarmed seal lane (e.g. `seal_ledger_enabled() == false`),
+  /// the UI projection must respect `admission.ready` and never promote
+  /// optional calibration or a disarmed seal lane into a false blocker.
+  func testControllerAdmissionGrantedWithoutCalibrationOrSealLaneStaysReadyAndNeutral() {
+    let grantedWithoutLedger = CsAdmissionReadiness(
+      ready: true,
+      code: "admission_granted",
+      message: "acoustic admission ready on Fixture Mic at 48000 Hz",
+      deviceName: "Fixture Mic",
+      sampleRate: 48_000,
+      calibrationVersion: nil,
+      calibrationStatus: "missing",
+      calibrationPath: "/tmp/calibration.json",
+      calibratedDevices: [],
+      sealLaneArmed: false,
+      sealLaneSettingArmed: false,
+      sealLaneSource: "settings",
+      sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+    )
+
+    let steps = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: grantedWithoutLedger,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(steps.map(\.id), [.microphone, .calibration, .sealLane, .recording])
+    XCTAssertEqual(steps.map(\.tone), [.healthy, .healthy, .healthy, .healthy])
+    XCTAssertEqual(steps[1].title, "Optional")
+    XCTAssertEqual(steps[2].detail, "Off")
+    XCTAssertFalse(steps[2].detail.contains("cannot start"))
+    XCTAssertEqual(steps[3].title, "Ready to record")
+
+    let summary = audioReadinessSummary(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: grantedWithoutLedger
+    )
+    XCTAssertEqual(summary.tone, .healthy)
+    XCTAssertEqual(summary.title, "Ready to record")
+    XCTAssertNil(summary.detail)
+    XCTAssertEqual(summary.remedy, .none)
+
+    XCTAssertEqual(
+      audioReadinessRemedy(
+        for: .calibration, admission: grantedWithoutLedger, microphonePermission: .granted),
+      .none
+    )
+    XCTAssertEqual(
+      audioReadinessRemedy(
+        for: .sealLane, admission: grantedWithoutLedger, microphonePermission: .granted),
+      .none
+    )
+
+    XCTAssertEqual(
+      audioCalibrationFact(grantedWithoutLedger, microphonePermission: .granted),
+      AudioReadinessFact(
+        id: .calibration, label: "Microphone calibration", value: "Optional", tone: .healthy)
+    )
+    XCTAssertEqual(
+      audioSealLaneFact(grantedWithoutLedger),
+      AudioReadinessFact(
+        id: .sealLane, label: "Committing fragments", value: "Off", tone: .healthy)
+    )
   }
 
   /// One name for the committing row in every state, a readable switch state in
