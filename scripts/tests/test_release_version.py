@@ -95,6 +95,47 @@ class ReleaseVersionTests(unittest.TestCase):
         receipt = json.loads((self.root / "docs/releases/0.1.2-commits.json").read_text())
         self.assertEqual([c["subject"] for c in receipt["commits"]], ["fix: Release microphone promptly"])
 
+    def test_committed_untagged_version_can_advance(self):
+        self.run_release()
+        self.commit("chore: Prepare the first local version")
+        (self.root / "feature.txt").write_text("next local source\n")
+        self.commit("fix: Keep the widget visible during interaction")
+
+        self.run_release()
+
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "0.1.2")
+        receipt = json.loads((self.root / "docs/releases/0.1.2-commits.json").read_text())
+        self.assertEqual(receipt["version"], "0.1.2")
+        before = self.snapshot()
+        self.run_release()
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_different_requested_bump_is_not_silently_ignored(self):
+        self.run_release()
+        pending = self.snapshot()
+
+        with self.assertRaisesRegex(ValueError, "Uncommitted version.*not a major bump"):
+            self.run_release(kind="major")
+        self.assertEqual(pending, self.snapshot())
+
+    def test_pending_explicit_retarget_keeps_notes_and_inventory_untouched(self):
+        self.run_release()
+        pending = self.snapshot()
+
+        with self.assertRaisesRegex(ValueError, "[Uu]ncommitted|[Pp]ending"):
+            self.run_release(kind="major", to_version="1.0.0")
+        self.assertEqual(pending, self.snapshot())
+
+    def test_explicit_target_from_committed_version_is_honored(self):
+        self.run_release(kind="major", to_version="1.0.0")
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "1.0.0")
+        receipt = json.loads((self.root / "docs/releases/1.0.0-commits.json").read_text())
+        self.assertEqual(len(receipt["commits"]), 1)
+        self.assertIn("Human-authored feature explanation.", (self.root / "CHANGELOG.md").read_text())
+        before = self.snapshot()
+        self.run_release(kind="major")
+        self.assertEqual(before, self.snapshot())
+
     def test_existing_human_summary_is_preserved_on_refresh(self):
         text = (self.root / "CHANGELOG.md").read_text()
         text += "\n## [0.1.1] - 2026-10-08\n\nA concise human description.\n"
