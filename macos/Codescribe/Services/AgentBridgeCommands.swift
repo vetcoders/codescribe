@@ -935,28 +935,32 @@ extension RealAgentBridgeInstaller {
     return false
   }
 
-  /// Resolves the public `vc-frame` command on `PATH` (plus `~/.local/bin` for
-  /// `launchd`-spawned GUI processes whose inherited `PATH` omits user bin
-  /// directories). Never falls back to `VIBECRAFTED_VC_FRAME_BIN` or scans
-  /// private `releases/*/bin` directories.
+  /// Resolves the public `vc-frame` command on `PATH`. When a `launchd`-spawned
+  /// GUI process inherits only the bare system `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`)
+  /// and the user's home directory defines `.zshenv` or `.zprofile`, the user's
+  /// non-interactive `zsh` `PATH` is consulted. Never falls back to a literal
+  /// `~/.local/bin` path, `VIBECRAFTED_VC_FRAME_BIN`, or private `releases/*/bin`
+  /// directories.
   nonisolated static func vcFrameExecutableURL(
     homeDirectory: URL,
     environment: [String: String]
   ) -> URL? {
+    let rawPath = effectiveVcFramePath(homeDirectory: homeDirectory, environment: environment)
     var directories: [String] = []
-    if let rawPath = environment["PATH"] {
-      for entry in rawPath.split(separator: ":", omittingEmptySubsequences: true) {
-        let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { continue }
-        let expanded = (trimmed as NSString).expandingTildeInPath
-        if !directories.contains(expanded) {
-          directories.append(expanded)
-        }
+    for entry in rawPath.split(separator: ":", omittingEmptySubsequences: true) {
+      let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { continue }
+      let expanded: String
+      if trimmed == "~" {
+        expanded = homeDirectory.path
+      } else if trimmed.hasPrefix("~/") {
+        expanded = homeDirectory.appendingPathComponent(String(trimmed.dropFirst(2))).path
+      } else {
+        expanded = (trimmed as NSString).expandingTildeInPath
       }
-    }
-    let userLocalBin = homeDirectory.appendingPathComponent(".local/bin", isDirectory: true).path
-    if !directories.contains(userLocalBin) {
-      directories.append(userLocalBin)
+      if !directories.contains(expanded) {
+        directories.append(expanded)
+      }
     }
     let fileManager = FileManager.default
     for directory in directories {
@@ -971,6 +975,63 @@ extension RealAgentBridgeInstaller {
       }
     }
     return nil
+  }
+
+  private nonisolated static func effectiveVcFramePath(
+    homeDirectory: URL,
+    environment: [String: String]
+  ) -> String {
+    let launchdDefaultPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+    let provided = environment["PATH"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !provided.isEmpty, provided != launchdDefaultPath {
+      return provided
+    }
+    let zshenv = homeDirectory.appendingPathComponent(".zshenv")
+    let zprofile = homeDirectory.appendingPathComponent(".zprofile")
+    let fileManager = FileManager.default
+    guard
+      fileManager.fileExists(atPath: zshenv.path) || fileManager.fileExists(atPath: zprofile.path),
+      fileManager.isExecutableFile(atPath: "/bin/zsh")
+    else {
+      return provided
+    }
+    let process = Process()
+    let stdoutPipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = [
+      "-c",
+      "[[ -r \"$HOME/.zprofile\" ]] && source \"$HOME/.zprofile\" >/dev/null 2>&1; /usr/bin/printenv PATH",
+    ]
+    process.environment = [
+      "HOME": homeDirectory.path,
+      "ZDOTDIR": homeDirectory.path,
+      "PATH": launchdDefaultPath,
+    ]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = stdoutPipe
+    process.standardError = FileHandle.nullDevice
+    do {
+      try process.run()
+    } catch {
+      return provided
+    }
+    let deadline = Date().addingTimeInterval(1.0)
+    while process.isRunning, Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    if process.isRunning {
+      process.terminate()
+      return provided
+    }
+    let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    guard process.terminationReason == .exit, process.terminationStatus == 0,
+      let resolved = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !resolved.isEmpty
+    else {
+      return provided
+    }
+    return resolved
   }
 
   /// Side-effect-free capability probe: runs `vc-frame action focus-pane-id --help`
@@ -1032,8 +1093,11 @@ extension RealAgentBridgeInstaller {
   }
 
   /// True when a public `vc-frame` supporting `action focus-pane-id` is installed.
-  /// Memoized by executable file stamp so periodic HUD polls do not re-spawn
-  /// `vc-frame` unless the binary or symlink target changes on disk.
+  /// Positive results are memoized by executable and wrapper-target file stamps
+  /// so periodic HUD polls do not re-spawn `vc-frame` unless the binary, symlink
+  /// target, or referenced wrapper dependency changes on disk. Negative results
+  /// are never cached, allowing repaired dependencies to take effect on the next
+  /// poll without restarting Codescribe.
   @MainActor
   static func supportsAgentPanelFocus(
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
@@ -1050,14 +1114,21 @@ extension RealAgentBridgeInstaller {
       else {
         return false
       }
-      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp) {
-        return cached
+      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp), cached {
+        return true
       }
       let supported = probeVcFramePanelFocusCapability(
         executableURL: executableURL,
         environment: environment
       )
-      await AgentPanelFocusCapabilityCache.shared.store(supported, for: stamp)
+      if supported {
+        await AgentPanelFocusCapabilityCache.shared.store(true, for: stamp)
+        if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp {
+          await AgentPanelFocusCapabilityCache.shared.store(true, for: postProbeStamp)
+        }
+      } else {
+        await AgentPanelFocusCapabilityCache.shared.remove(for: stamp)
+      }
       return supported
     }.value
   }
@@ -1088,26 +1159,127 @@ extension RealAgentBridgeInstaller {
   }
 }
 
-private struct VcFrameExecutableStamp: Hashable, Sendable {
+private struct VcFrameFileStat: Hashable, Sendable {
   let path: String
   let resolvedPath: String
+  let exists: Bool
   let device: dev_t
   let inode: ino_t
   let size: off_t
   let modifiedSeconds: Int
   let modifiedNanoseconds: Int
 
-  init?(url: URL) {
+  init(path: String) {
+    let url = URL(fileURLWithPath: path)
     let resolved = url.resolvingSymlinksInPath()
     var statBuf = Darwin.stat()
-    guard fstatat(AT_FDCWD, resolved.path, &statBuf, 0) == 0 else { return nil }
-    self.path = url.path
-    self.resolvedPath = resolved.path
-    self.device = statBuf.st_dev
-    self.inode = statBuf.st_ino
-    self.size = statBuf.st_size
-    self.modifiedSeconds = statBuf.st_mtimespec.tv_sec
-    self.modifiedNanoseconds = statBuf.st_mtimespec.tv_nsec
+    if fstatat(AT_FDCWD, resolved.path, &statBuf, 0) == 0 {
+      self.path = path
+      self.resolvedPath = resolved.path
+      self.exists = true
+      self.device = statBuf.st_dev
+      self.inode = statBuf.st_ino
+      self.size = statBuf.st_size
+      self.modifiedSeconds = statBuf.st_mtimespec.tv_sec
+      self.modifiedNanoseconds = statBuf.st_mtimespec.tv_nsec
+    } else {
+      self.path = path
+      self.resolvedPath = resolved.path
+      self.exists = false
+      self.device = 0
+      self.inode = 0
+      self.size = 0
+      self.modifiedSeconds = 0
+      self.modifiedNanoseconds = 0
+    }
+  }
+}
+
+private struct VcFrameExecutableStamp: Hashable, Sendable {
+  let root: VcFrameFileStat
+  let referencedFiles: [VcFrameFileStat]
+
+  init?(url: URL) {
+    let rootStat = VcFrameFileStat(path: url.path)
+    guard rootStat.exists else { return nil }
+    self.root = rootStat
+
+    var visited: Set<String> = [rootStat.path, rootStat.resolvedPath]
+    var frontier: [String] = [rootStat.resolvedPath]
+    var discovered: [String] = []
+    for _ in 0..<2 {
+      var nextFrontier: [String] = []
+      for scriptPath in frontier {
+        for candidate in Self.referencedPathsInWrapperScript(atPath: scriptPath)
+        where !visited.contains(candidate) {
+          visited.insert(candidate)
+          discovered.append(candidate)
+          nextFrontier.append(candidate)
+        }
+      }
+      frontier = nextFrontier
+      if frontier.isEmpty { break }
+    }
+    self.referencedFiles = discovered.sorted().map(VcFrameFileStat.init(path:))
+  }
+
+  private static func referencedPathsInWrapperScript(atPath path: String) -> [String] {
+    var statBuf = Darwin.stat()
+    guard fstatat(AT_FDCWD, path, &statBuf, 0) == 0,
+      statBuf.st_size > 0, statBuf.st_size <= 65536,
+      let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+      let text = String(data: data, encoding: .utf8),
+      text.hasPrefix("#!")
+    else {
+      return []
+    }
+    let patterns = [
+      #"'(/[^'\n]+)'"#,
+      #""(/[^"$\n]+)""#,
+      #"(?:^|[\s=:])(/[A-Za-z0-9._+@/-]+)"#,
+    ]
+    let ignoredPrefixes = ["/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/", "/dev/"]
+    let ignoredExact: Set<String> = ["/bin", "/usr/bin", "/sbin", "/usr/sbin", "/dev"]
+    var results: [String] = []
+
+    let scriptURL = URL(fileURLWithPath: path)
+    if scriptURL.deletingLastPathComponent().lastPathComponent == "bin" {
+      let siblingLibexec = scriptURL
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("libexec")
+        .appendingPathComponent(scriptURL.lastPathComponent)
+        .path
+      results.append(siblingLibexec)
+    }
+
+    for rawLine in text.components(separatedBy: .newlines) {
+      let line = rawLine.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty || line.hasPrefix("#") { continue }
+      let scanSegment: String
+      if let redirectRange = line.range(of: #"[0-9]*>>?"#, options: .regularExpression) {
+        scanSegment = String(line[..<redirectRange.lowerBound])
+      } else {
+        scanSegment = line
+      }
+      let nsRange = NSRange(scanSegment.startIndex..<scanSegment.endIndex, in: scanSegment)
+      for pattern in patterns {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+        for match in regex.matches(in: scanSegment, range: nsRange) {
+          guard match.numberOfRanges > 1,
+            let range = Range(match.range(at: 1), in: scanSegment)
+          else { continue }
+          let candidate = String(scanSegment[range])
+          guard candidate.count > 1,
+            !ignoredExact.contains(candidate),
+            !ignoredPrefixes.contains(where: { candidate.hasPrefix($0) }),
+            !results.contains(candidate)
+          else { continue }
+          results.append(candidate)
+        }
+      }
+    }
+    return results
   }
 }
 
@@ -1124,5 +1296,9 @@ private actor AgentPanelFocusCapabilityCache {
       entries.removeAll(keepingCapacity: true)
     }
     entries[stamp] = supported
+  }
+
+  func remove(for stamp: VcFrameExecutableStamp) {
+    entries.removeValue(forKey: stamp)
   }
 }
