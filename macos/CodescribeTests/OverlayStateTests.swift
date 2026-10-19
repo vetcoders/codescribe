@@ -2964,6 +2964,48 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.sessionTimerPaused)
   }
 
+  /// Maciej, 2026-10-19 02:07Z on div0: after an agent take, with nothing
+  /// recording, the header held a disabled stop under the take's frozen
+  /// length, and a new start from it was refused.
+  func testAFinishedAgentTakeLeavesTheHeaderReadyToRecord() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 100
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    XCTAssertFalse(state.isFinalizingDictation, "an open agent take is not a dictation")
+    clock.now = 227
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+
+    XCTAssertEqual(state.sessionTimerText, "02:07", "the agent take keeps its frozen length")
+    XCTAssertFalse(state.terminal, "no dictation ran, so none ended")
+    XCTAssertFalse(state.isFinalizingDictation, "no dictation awaits its text")
+    XCTAssertNil(state.archiveOpenRefusal, "history opens after an agent take")
+  }
+
+  func testAStoppedDictationAwaitsItsTerminalTextEvenAfterAnAgentTake() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 100
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+
+    clock.now = 200
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    clock.now = 210
+    state.finishControllerRecording()
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 10, "the dictation took over the counter")
+    XCTAssertTrue(state.isFinalizingDictation, "a stopped dictation waits for its text")
+    XCTAssertNotNil(state.archiveOpenRefusal, "history waits for the dictation to finish")
+
+    projectText("gotowe", to: state, terminal: true)
+    XCTAssertFalse(state.isFinalizingDictation, "the terminal projection closes the take")
+  }
+
   func testReadinessMarkerPersistsOnIdleAndCompletedCanvas() {
     let state = OverlayState()
     state.setPresentationMode(.expanded)
