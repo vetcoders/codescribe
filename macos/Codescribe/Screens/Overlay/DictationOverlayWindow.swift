@@ -143,21 +143,47 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
     isFrameTransitioning = animated
+    // Only an unroll holds its landing layout; a fold, and a fold that
+    // interrupts an unroll, lay out at each step as before.
+    let unrolls = animated && mode == .expanded && previous != .expanded
+    (contentView as? OverlayContentContainer)?.pinnedContentSize =
+      unrolls ? restored.size : nil
     OverlayPresentationTrace.shared.record(
       .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
-      target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
+      target: restored, generation: generation,
+      note: settleResize ? "settle_resize" : unrolls ? "unroll" : nil)
     lastMorphDuration =
       animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
+    guard unrolls else {
+      animateFrame(to: restored, generation: generation)
+      if !animated { completeFrameTransition(generation: generation) }
+      return
+    }
+    // The landing layout is built before the animator's clock starts: a layout
+    // inside the first step would cost that step its frames. One turn later the
+    // controller has also published the morph duration the SwiftUI fade reads.
+    Task { @MainActor [weak self] in
+      guard let self, generation == frameTransitionGeneration, isFrameTransitioning else {
+        return
+      }
+      let wasApplyingFrame = OverlayController.isApplyingFrame
+      OverlayController.isApplyingFrame = true
+      defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+      contentView?.layoutSubtreeIfNeeded()
+      animateFrame(to: restored, generation: generation)
+    }
+  }
+
+  private func animateFrame(to target: NSRect, generation: UInt64) {
     NSAnimationContext.runAnimationGroup { context in
       context.duration = lastMorphDuration
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-      animator().setFrame(restored, display: true)
+      animator().setFrame(target, display: true)
     } completionHandler: { [weak self] in
       Task { @MainActor in
         self?.completeFrameTransition(generation: generation)
       }
     }
-    if !animated { completeFrameTransition(generation: generation) }
   }
 
   /// Remembered or default expanded size, raised to the qualified content
@@ -183,6 +209,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     frameTransitionTarget = nil
     transitionTop = nil
     transitionRight = nil
+    // The landed frame is the held size: releasing it lays nothing out again.
+    (contentView as? OverlayContentContainer)?.pinnedContentSize = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
     minSize =
       presentationMode == .mini
@@ -709,9 +737,30 @@ final class OverlayContentContainer: NSView {
   private let hosting: NSView
   let grabPad = OverlayResizeGrabPad()
 
+  /// While the panel unrolls into the expanded view, the content keeps the size
+  /// it lands at, held at the window's top-right corner, and the growing window
+  /// reveals it. Maciej, 2026-10-19: the unroll "robi z tego siekę", the parts
+  /// "się rozpadają, przesuwają". His 13:40 unroll painted five frames in 1.9 s:
+  /// every animator step laid the whole conversation out again at a new width.
+  /// Laid out once, a step only moves this view. The rounded mask keeps the
+  /// panel's corners on the window while it cuts through the held layout.
+  var pinnedContentSize: NSSize? {
+    didSet {
+      guard pinnedContentSize != oldValue else { return }
+      layer?.cornerCurve = .continuous
+      layer?.cornerRadius = pinnedContentSize == nil ? 0 : CSRadius.window
+      layer?.masksToBounds = pinnedContentSize != nil
+      pinHosting()
+    }
+  }
+
+  /// The hosting view's frame: the bounds, or the held size during an unroll.
+  var contentFrame: NSRect { hosting.frame }
+
   init(hosting: NSView) {
     self.hosting = hosting
     super.init(frame: .zero)
+    wantsLayer = true
     addSubview(grabPad)
     addSubview(hosting)
     hosting.frame = bounds
@@ -723,7 +772,7 @@ final class OverlayContentContainer: NSView {
   override func setFrameSize(_ newSize: NSSize) {
     let previousBounds = bounds
     super.setFrameSize(newSize)
-    if hosting.frame != bounds { hosting.frame = bounds }
+    pinHosting()
     if previousBounds != bounds {
       window?.invalidateCursorRects(for: self)
       refreshGrabPad()
@@ -732,8 +781,20 @@ final class OverlayContentContainer: NSView {
 
   override func layout() {
     super.layout()
-    if hosting.frame != bounds { hosting.frame = bounds }
+    pinHosting()
     refreshGrabPad()
+  }
+
+  /// The bounds, or the held size anchored at the top-right corner (this view
+  /// is not flipped), where the mini's controls already sit.
+  private func pinHosting() {
+    let frame =
+      pinnedContentSize.map {
+        NSRect(
+          x: bounds.maxX - $0.width, y: bounds.maxY - $0.height, width: $0.width,
+          height: $0.height)
+      } ?? bounds
+    if hosting.frame != frame { hosting.frame = frame }
   }
 
   override func viewDidMoveToWindow() {
@@ -846,14 +907,23 @@ enum DictationOverlayWindow {
   /// full-screen overlay folded in the same time as MIDI to mini. The morph
   /// keeps one speed instead of one clock: the edge that travels farthest
   /// sets the duration, and a short step keeps the former 0.28 s.
-  static let presentationSpeed: CGFloat = 1000
+  ///
+  /// Maciej, 2026-10-19: unrolling mini into the expanded view was far too slow
+  /// ("ja chciałem takie wolne, żeby była jasność, ale nie tak wolne"); his
+  /// 1149 pt unroll was declared at 1.15 s. The speed and the ceiling are
+  /// Stasiu's choice, for his acceptance: 1800 pt/s, never past 0.6 s, so a
+  /// big panel still takes visibly longer than a short step.
+  static let presentationSpeed: CGFloat = 1800
   static let presentationDuration: TimeInterval = 0.28
+  static let longestPresentationDuration: TimeInterval = 0.6
 
   static func presentationDuration(from start: NSRect, to end: NSRect) -> TimeInterval {
     let travel = max(
       abs(end.minX - start.minX), abs(end.maxX - start.maxX),
       abs(end.minY - start.minY), abs(end.maxY - start.maxY))
-    return max(presentationDuration, TimeInterval(travel / presentationSpeed))
+    return min(
+      longestPresentationDuration,
+      max(presentationDuration, TimeInterval(travel / presentationSpeed)))
   }
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)

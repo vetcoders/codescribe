@@ -137,9 +137,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
     XCTAssertEqual(
       DictationOverlayWindow.presentationDuration(from: midi, to: mini),
       DictationOverlayWindow.presentationDuration, "A short step keeps the former pace")
+    // Maciej, 2026-10-19: "nie tak wolne". A full-screen fold stops at the ceiling.
     let fullScreen = NSRect(x: 40, y: 40, width: 1960, height: 1046)
     let fold = DictationOverlayWindow.presentationDuration(from: fullScreen, to: mini)
-    XCTAssertEqual(fold, 1760 / DictationOverlayWindow.presentationSpeed, accuracy: 0.001)
+    XCTAssertEqual(fold, DictationOverlayWindow.longestPresentationDuration, accuracy: 0.001)
     XCTAssertEqual(
       DictationOverlayWindow.presentationDuration(from: mini, to: fullScreen), fold,
       "Unfolding the same distance takes as long")
@@ -149,8 +150,103 @@ final class OverlayPresentationTraceTests: XCTestCase {
       DictationOverlayWindow.presentationDuration, "The default panel folds as before")
     let largePanel = NSRect(x: 1100, y: 500, width: 900, height: 586)
     let partial = DictationOverlayWindow.presentationDuration(from: largePanel, to: mini)
-    XCTAssertEqual(partial, 0.7, accuracy: 0.001)
+    XCTAssertEqual(partial, 700 / DictationOverlayWindow.presentationSpeed, accuracy: 0.001)
     XCTAssertLessThan(partial, fold, "A shorter fold is quicker, at the same speed")
+    // The unroll from Maciej's ledger (13:40): 1149 pt, declared at 1.15 s before.
+    let parked = NSRect(x: 1516, y: 1026, width: 200, height: 46)
+    let expanded = NSRect(x: 367, y: 481, width: 1349, height: 591)
+    XCTAssertEqual(
+      DictationOverlayWindow.presentationDuration(from: parked, to: expanded),
+      DictationOverlayWindow.longestPresentationDuration, accuracy: 0.001)
+  }
+
+  /// Maciej, 2026-10-19: the unroll into the expanded view laid the whole panel
+  /// out again on every animator step. The content takes its landing size at
+  /// once, held at the window's top-right corner, and the window reveals it.
+  func testUnrollHoldsTheLandingLayoutAtTheTopRightCorner() throws {
+    let (state, panel) = try makePanel("unroll")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.mini)
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    XCTAssertEqual(root.contentFrame, root.bounds, "a resting panel fills its window")
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.expanded, animated: true)
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertEqual(began.note, "unroll")
+    let target = try XCTUnwrap(began.target)
+    XCTAssertEqual(root.pinnedContentSize, target.size)
+    XCTAssertEqual(root.contentFrame.size, target.size, "the landing size before the first step")
+
+    RunLoop.main.run(until: Date().addingTimeInterval(panel.lastMorphDuration / 2))
+    XCTAssertLessThan(panel.frame.width, target.width, "the unroll is under way")
+    XCTAssertEqual(root.contentFrame.size, target.size, "a step does not lay the content out")
+    XCTAssertEqual(root.contentFrame.maxX, root.bounds.maxX, accuracy: 0.5)
+    XCTAssertEqual(root.contentFrame.maxY, root.bounds.maxY, accuracy: 0.5)
+
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame, target)
+    XCTAssertNil(root.pinnedContentSize)
+    XCTAssertEqual(root.contentFrame, root.bounds, "the landed panel fills its window again")
+    XCTAssertEqual(root.layer?.masksToBounds, false)
+
+    // A fold lays out at its own steps, as before.
+    panel.setPresentationMode(.mini, animated: true)
+    XCTAssertNil(root.pinnedContentSize)
+    withExtendedLifetime(state) {}
+  }
+
+  /// A fold that catches an unroll gives the content back to the window, so the
+  /// fold lays out at its own steps from wherever the unroll had got to.
+  func testFoldCatchingAnUnrollReleasesTheHeldLayout() throws {
+    let (_, panel) = try makePanel("unroll-caught")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.mini)
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    panel.setPresentationMode(.expanded, animated: true)
+    XCTAssertNotNil(root.pinnedContentSize)
+    RunLoop.main.run(until: Date().addingTimeInterval(panel.lastMorphDuration / 3))
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.mini, animated: true)
+    XCTAssertNil(root.pinnedContentSize)
+    XCTAssertEqual(root.contentFrame, root.bounds)
+    XCTAssertEqual(root.layer?.masksToBounds, false)
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertNil(began.note)
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
+  }
+
+  /// A caller that settles an unroll before its first step lands it once; the
+  /// deferred start then finds nothing left to animate.
+  func testSettlingAnUnrollBeforeItsFirstStepLandsItOnce() throws {
+    let (_, panel) = try makePanel("unroll-settled")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.mini)
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.expanded, animated: true)
+    let target = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan }?.target)
+    panel.settleFrameTransition()
+    XCTAssertEqual(panel.frame, target)
+    XCTAssertFalse(panel.isFrameTransitioning)
+    XCTAssertNil(root.pinnedContentSize)
+
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    XCTAssertEqual(panel.frame, target)
+    XCTAssertEqual(
+      trace.entries(after: mark).filter { $0.kind == .frameTransitionCompleted }.count, 1)
   }
 
   /// Founder, 2026-10-15: a fold caught by the pointer returns to the frame
