@@ -2,9 +2,9 @@
 # Replay acceptance for "no speech detected" on a take every observer heard as
 # silence, paired with a take that had speech and must never read as silence.
 #
-# Expected RED until the stop path tells measured silence from unrecovered
-# speech: today the silent take ends in coverage_refused, which the overlay
-# shows as "Transcription failed".
+# Before the measured-silence cut the silent take ended in coverage_refused,
+# which the overlay showed as "Transcription failed". It now ends as observed
+# silence: Silero heard nothing and each Whisper window's VAD selected nothing.
 #
 #   silent take  09ededb1-7884-4b71-81f8-8cd0fc12a475 (19 X 09:36 CEST, 18 s)
 #                capture_energy found 10-11 crumbs of -70 dB noise; tail VAD

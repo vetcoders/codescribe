@@ -381,6 +381,11 @@ pub struct TailProviderEvidence {
     /// Word when every segment is a measured word pin. Phrase otherwise.
     #[serde(default)]
     pub segment_grain: TailSegmentGrain,
+    /// Request samples this provider's own VAD selected before decoding.
+    /// `Some(0)` is a measured "no speech in this window"; `None` means the
+    /// provider never measured, which says nothing about speech.
+    #[serde(default)]
+    pub vad_selected_samples: Option<u64>,
 }
 
 /// Grain of one tail segment. Phrase is a timestamp-token span. Word is a
@@ -610,6 +615,7 @@ impl InProcessTailProvider {
         // physically separated speech before the model and word alignment.
         let (speech, _) = crate::vad::extract_speech(pcm, request.sample_rate);
         execution.record_vad_selection(speech.len());
+        let vad_selected_samples = speech.len() as u64;
         let execution_control = execution.execution_control(control);
         control.check()?;
         let (raw, word_segments) = if speech.is_empty() {
@@ -702,6 +708,7 @@ impl InProcessTailProvider {
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
                 segment_grain,
+                vad_selected_samples: Some(vad_selected_samples),
             },
         };
         payload.validate()?;
@@ -1465,6 +1472,7 @@ impl TailProvider for RemoteTailProvider {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: response.avg_logprob,
+                vad_selected_samples: None,
             },
         };
         payload.validate()?;
@@ -2109,6 +2117,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::CompactedSpeechRelative,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         payload
@@ -2189,6 +2198,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: Some(-0.21),
+                vad_selected_samples: None,
             },
         };
         let fake = FakeTailProvider::new(payload.clone()).unwrap();
@@ -2275,6 +2285,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         assert!(
@@ -2315,6 +2326,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         payload.validate().expect("phrase grain");
@@ -2475,6 +2487,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: response.avg_logprob,
+                vad_selected_samples: None,
             },
         }
         .validate()
