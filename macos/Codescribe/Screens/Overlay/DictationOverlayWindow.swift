@@ -41,6 +41,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSize: NSSize?
   private var miniFrame: NSRect?
+  /// An agent records: mini hugs its three controls instead of the resting strip.
+  private(set) var miniHugsAgentControls = false
+  var miniSize: NSSize {
+    miniHugsAgentControls
+      ? DictationOverlayWindow.agentMiniSize : DictationOverlayWindow.collapsedSize
+  }
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
   /// Duration of the morph most recently started; the SwiftUI cross-fade
   /// reads it so content and frame land together.
@@ -57,7 +63,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// never the saved position. A real drag moves that mini by the same edges.
   var originForPersistence: NSPoint {
     let positionedFrame = frameTransitionTarget ?? frame
-    guard presentationMode == .midi else { return positionedFrame.origin }
+    guard presentationMode == .midi else {
+      // A hugging mini is the resting strip anchored at the same trailing edge.
+      guard presentationMode == .mini, miniHugsAgentControls else { return positionedFrame.origin }
+      return NSPoint(
+        x: positionedFrame.maxX - DictationOverlayWindow.collapsedSize.width,
+        y: positionedFrame.minY)
+    }
     if let miniFrame {
       guard let dragStart, let parked = dragStart.miniFrame else { return miniFrame.origin }
       return NSPoint(
@@ -103,12 +115,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       makeFirstResponder(nil)
       releaseKeyAfterTranscript()
       if previous == .expanded && expandedSize == nil { expandedSize = frame.size }
-      size = mode == .mini ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
+      size = mode == .mini ? miniSize : DictationOverlayWindow.midiSize
     } else {
       size = expandedPresentationSize()
     }
     // Intermediate frames may be smaller than the expanded window's floor.
-    minSize = DictationOverlayWindow.collapsedSize
+    minSize = miniSize
     contentMinSize = minSize
     styleMask.remove(.resizable)
     let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
@@ -172,7 +184,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     transitionTop = nil
     transitionRight = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
-    minSize = DictationOverlayWindow.minimumSize(for: presentationMode)
+    minSize =
+      presentationMode == .mini
+      ? miniSize : DictationOverlayWindow.minimumSize(for: presentationMode)
     contentMinSize = minSize
     if presentationMode != .mini { styleMask.insert(.resizable) }
     if let contentView {
@@ -184,7 +198,38 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       expandedSize = nil
       miniFrame = nil
     }
+    settleMiniWidth()
     onFrameTransitionCompleted?()
+  }
+
+  /// Maciej, 2026-10-19 09:36: the gap mini kept beside the short "cs" was
+  /// "simply brzydka"; the brand should come up to the controls. While an
+  /// agent records, mini narrows to its three controls; the trailing edge
+  /// stays, so the microphones keep their screen position. A morph in
+  /// flight lands on the size it started with; its completion settles here.
+  func setMiniHugsAgentControls(_ hugs: Bool) {
+    guard hugs != miniHugsAgentControls else { return }
+    miniHugsAgentControls = hugs
+    settleMiniWidth()
+  }
+
+  private func settleMiniWidth() {
+    guard presentationMode == .mini, !isFrameTransitioning, !isUserDragging, !isUserResizing,
+      abs(frame.width - miniSize.width) > 0.5
+    else { return }
+    let wasApplyingFrame = OverlayController.isApplyingFrame
+    OverlayController.isApplyingFrame = true
+    defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+    minSize = miniSize
+    contentMinSize = minSize
+    // One step, no morph: the header swaps the word and the agent's control
+    // in the same pass, so an animated width would clip the trailing
+    // controls while the strip widens.
+    setFrame(
+      NSRect(
+        x: frame.maxX - miniSize.width, y: frame.minY, width: miniSize.width,
+        height: frame.height),
+      display: true)
   }
 
   func settleFrameTransition() {
@@ -374,6 +419,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
       dragStart = nil
       dragMoved = false
+      settleMiniWidth()
       if moved { onUserDragEnded?(origin) }
       if clickedPresentation { onPresentationClick?() }
     default:
@@ -808,6 +854,13 @@ enum DictationOverlayWindow {
   }
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
+  /// Mini while an agent records, hugging its controls: 32 outer padding
+  /// (`16 - clipInset` + `clipInset` per side) + 30 leading (9 pt close dot +
+  /// 6 + 15 pt "cs" at `CSFont.ui(13, .bold)`) + 2 × 6 row spacing + 4 for
+  /// the collapsed waveform's minimum + 81 trailing (the 22 pt agent control,
+  /// 8, and the 51 pt recording pair) = 159, as a SwiftUI fitting-size probe
+  /// of that row measured it; 164 leaves the trailing arrow 5 pt of slack.
+  static let agentMiniSize = NSSize(width: 164, height: collapsedHeight)
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
 
   static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {
@@ -909,6 +962,10 @@ enum DictationOverlayWindow {
     }
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
+    }
+    panel.setMiniHugsAgentControls(state.channelAudioCaptureActive)
+    state.onAgentCaptureChanged = { [weak panel] capturing in
+      panel?.setMiniHugsAgentControls(capturing)
     }
     state.onAgentSidebarPresented = { [weak panel] in
       panel?.makeFirstResponder(nil)

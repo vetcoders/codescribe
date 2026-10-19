@@ -1480,10 +1480,17 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       settleWordmark()
       XCTAssertEqual(headerControls(), restingControls + 1, "the agent's microphone joins mini")
       XCTAssertLessThan(try brandWidth(), restingBrand * 0.6, "the wordmark shortens to cs")
+      // 09:36: no gap beside "cs"; mini hugs the controls, trailing edge fixed.
+      let trailing = panel.frame.maxX
+      XCTAssertEqual(
+        panel.frame.width, DictationOverlayWindow.agentMiniSize.width, accuracy: 0.5)
       state.applyChannelRoster([])
       settleWordmark()
       XCTAssertEqual(headerControls(), restingControls, "the agent's microphone leaves")
       XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "codescribe returns")
+      XCTAssertEqual(
+        panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
     }
   }
 

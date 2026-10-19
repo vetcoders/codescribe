@@ -417,7 +417,6 @@ struct Wordmark<Dot: View>: View {
     HStack(spacing: spacing) {
       dot()
       Text(verbatim: short ? "cs" : "codescribe")
-        .contentTransition(.interpolate)
         .font(CSFont.ui(size, .bold))
         .tracking(-0.3)
         .foregroundStyle(CSColor.textHigh)
