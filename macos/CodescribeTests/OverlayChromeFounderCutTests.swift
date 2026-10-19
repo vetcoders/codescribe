@@ -1209,7 +1209,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("character: OverlayHeaderGlyph.transcription"))
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains("character: OverlayHeaderGlyph.agents"))
-    XCTAssertFalse(roster.contains("sidebar.right"))
+    // sidebar.right is the list's own corner button (Maciej, 2026-10-19),
+    // never the header's Agents mark.
+    let glyph = try XCTUnwrap(roster.range(of: "private var headerGlyph: some View"))
+    XCTAssertFalse(roster[glyph.lowerBound...].prefix(700).contains("sidebar.right"))
   }
 
   /// A secondary click on a passive header point resolves the header menu:
