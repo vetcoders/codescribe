@@ -747,8 +747,10 @@ final class OnboardingViewModel: ObservableObject {
     finishPending = true
     reprobePermissions()
     dictationLane = engine.dictationLane()
-    whisperDownloadStore.refresh()
+    let modelRead = whisperDownloadStore.refresh()
     Task { @MainActor [weak self] in
+      // The verdict waits for a model read begun after this click.
+      await modelRead.value
       guard let self else { return }
       await readAdmission()
       finishPending = false
