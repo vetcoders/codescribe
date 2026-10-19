@@ -375,7 +375,7 @@ final class OverlayAgentPillRowsTests: XCTestCase {
 
     let top = try section(
       of: conversation, from: ".overlay(alignment: .top)",
-      to: ".onAppear { scrollToLatest(proxy) }")
+      to: ".onChange(of: conversation.id)")
     XCTAssertNotNil(
       top.range(of: #"Spacer\(minLength: 0\)\s*pillStack"#, options: .regularExpression),
       "the stack hangs trailing under the name pill and takes only its own width")
