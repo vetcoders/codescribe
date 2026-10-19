@@ -81,9 +81,9 @@ Validation and distribution have separate receipts.
 
 <!-- release-notes:0.17.1:start -->
 
-Source history: 285 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history: 287 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.17.1 db655ac32ea53ad8e245e668e070ff912d5dec0a -->
+<!-- release-boundary: 0.17.1 87c3ebfa0a7fe6a525c2db5912a442de2f7e81fe -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
