@@ -447,11 +447,12 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       ["action focus-pane-id --help||"],
       "probe must strip session/socket env vars and memoize unchanged binary by stat stamp")
 
-    // 2. Current supported release (`4.4.0+ga3f8214c`) on the user's configured `.zshenv` PATH
-    //    while the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
+    // 2. Current supported release (`4.4.0+ga3f8214c`) on the user's configured `.zshenv`/`.zprofile`
+    //    PATH while the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
     let launchdHome = tempRoot.appendingPathComponent("home-launchd", isDirectory: true)
     let localBin = launchdHome.appendingPathComponent(".local/bin", isDirectory: true)
     let currentLog = tempRoot.appendingPathComponent("current.log")
+    let zprofileEvalLog = tempRoot.appendingPathComponent("zprofile-eval.log")
     _ = try writeExecutable(
       at: localBin,
       body: """
@@ -464,10 +465,11 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         fi
         exit 99
         """)
-    try "export PATH=\"$HOME/.local/bin:$PATH\"\n".write(
-      to: launchdHome.appendingPathComponent(".zshenv"),
-      atomically: true,
-      encoding: .utf8)
+    let zprofileURL = launchdHome.appendingPathComponent(".zprofile")
+    try """
+    printf 'eval-1\\n' >> '\(zprofileEvalLog.path)'
+    export PATH="$HOME/.local/bin:$PATH"
+    """.write(to: zprofileURL, atomically: true, encoding: .utf8)
     let launchdInstaller = RealAgentBridgeInstaller(
       resourceRoot: nil,
       homeDirectory: launchdHome,
@@ -476,11 +478,42 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         "ZELLIJ_SESSION_NAME": "vibecrafted",
         "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
       ])
-    let currentSupported = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+    let currentSupportedFirst = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
       installer: launchdInstaller)
-    XCTAssertTrue(currentSupported)
+    let currentSupportedSecond = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    let currentSupportedThird = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    XCTAssertTrue(currentSupportedFirst)
+    XCTAssertTrue(currentSupportedSecond)
+    XCTAssertTrue(currentSupportedThird)
     let currentLines = try String(contentsOf: currentLog, encoding: .utf8).split(separator: "\n")
     XCTAssertEqual(currentLines, ["action focus-pane-id --help||"])
+    let evalLinesBeforeEdit = try String(contentsOf: zprofileEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalLinesBeforeEdit,
+      ["eval-1"],
+      "launchd PATH resolution must memoize .zprofile/.zshenv by file stats instead of spawning /bin/zsh on every poll"
+    )
+
+    try """
+    printf 'eval-2\\n' >> '\(zprofileEvalLog.path)'
+    export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+    """.write(to: zprofileURL, atomically: true, encoding: .utf8)
+    let currentSupportedAfterProfileEdit = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    let currentSupportedAfterProfileEditCached =
+      await RealAgentBridgeInstaller.supportsAgentPanelFocus(installer: launchdInstaller)
+    XCTAssertTrue(currentSupportedAfterProfileEdit)
+    XCTAssertTrue(currentSupportedAfterProfileEditCached)
+    let evalLinesAfterEdit = try String(contentsOf: zprofileEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalLinesAfterEdit,
+      ["eval-1", "eval-2"],
+      "modifying .zprofile must invalidate VcFrameShellPathCache once and memoize the updated stamp"
+    )
 
     // 3. Public wrapper whose internal engine executable is initially missing and then restored
     //    without modifying the outer wrapper file:
