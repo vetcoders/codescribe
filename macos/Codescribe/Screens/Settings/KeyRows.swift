@@ -12,6 +12,9 @@ import SwiftUI
 // MARK: - Shared chrome
 
 /// Input chrome shared by every editable settings row (text and secure fields).
+/// A field sits on the control rung, the chip's insets, so it is as tall as the
+/// Save and Test actions beside it (Founder brief, round 16, 2026-10-18: lower
+/// fields in the MCP form; one owner, so every field follows).
 private struct SettingsInputChrome: ViewModifier {
   let isFocused: Bool
 
@@ -21,8 +24,8 @@ private struct SettingsInputChrome: ViewModifier {
       .font(CSFont.mono(12, .regular))
       .foregroundStyle(Color.primary)
       .autocorrectionDisabled()
-      .padding(.horizontal, 11)
-      .padding(.vertical, 8)
+      .padding(.horizontal, SettingsScale.controlInsetH)
+      .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
           .fill(Color.primary.opacity(0.06))
@@ -43,7 +46,8 @@ extension View {
   }
 }
 
-/// Accent "Save": dimmed until there is something to save.
+/// Accent "Save": dimmed until there is something to save. On the control
+/// rung, like the field it usually stands next to.
 struct SettingsSaveButton: View {
   var title: LocalizedStringKey = "Save"
   let enabled: Bool
@@ -52,10 +56,10 @@ struct SettingsSaveButton: View {
   var body: some View {
     Button(action: action) {
       Text(title)
-        .font(CSFont.ui(12, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
             .fill(CSColor.chromeAccent.opacity(enabled ? 0.14 : 0.06))
