@@ -78,9 +78,15 @@ enum ConversationAttachmentPointer {
 
   static func line(_ url: URL) -> String { prefix + url.path }
 
+  /// The data directory is fixed for the process: `CODESCRIBE_DATA_DIR` is
+  /// read at launch. The composer splits its draft on every body pass, and
+  /// each fresh `CodescribeConfig()` reads the run-monitor store and logs on
+  /// the main thread — four times per painted frame of the 2026-10-19 unroll.
+  static let configDirectory = URL(fileURLWithPath: CodescribeConfig().configDir())
+
   static func extract(
     from draft: String,
-    configDirectory: URL = URL(fileURLWithPath: CodescribeConfig().configDir())
+    configDirectory: URL = ConversationAttachmentPointer.configDirectory
   ) -> (text: String, paths: [String]) {
     let root = configDirectory.resolvingSymlinksInPath()
     let stores = ["assets", "attachments"].map {
@@ -107,7 +113,7 @@ enum ConversationAttachmentPointer {
 enum ConversationDraft {
   static func split(
     _ draft: String,
-    configDirectory: URL = URL(fileURLWithPath: CodescribeConfig().configDir())
+    configDirectory: URL = ConversationAttachmentPointer.configDirectory
   ) -> (text: String, attachments: [String]) {
     let parts = ConversationAttachmentPointer.extract(from: draft, configDirectory: configDirectory)
     return (parts.text, parts.paths)
