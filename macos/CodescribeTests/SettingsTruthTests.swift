@@ -256,7 +256,7 @@ final class SettingsTruthTests: XCTestCase {
   /// which group a section sits in, its symbol, and what the search matches.
   func testEverySectionDeclaresItsGroupAndASymbolForTheNativeSidebar() {
     let visible = SettingsSection.allCases.filter { $0.availability != .hidden }
-    XCTAssertEqual(visible.count, DeveloperSurface.isEnabled() ? 10 : 9)
+    XCTAssertEqual(visible.count, DeveloperSurface.isEnabled() ? 9 : 8)
 
     for section in visible {
       XCTAssertFalse(section.symbol.isEmpty, "\(section.rawValue) needs an SF Symbol")
