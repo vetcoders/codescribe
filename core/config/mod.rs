@@ -26,7 +26,8 @@ pub use defaults::{
     default_whisper_context_window_sec, normalize_whisper_context_window_sec,
 };
 pub use defaults::{
-    default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
+    default_light_plus_sentence_pause_sec, normalize_ledger_sensitivity,
+    normalize_light_plus_sentence_pause_sec,
 };
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).

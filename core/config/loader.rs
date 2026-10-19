@@ -1202,6 +1202,7 @@ impl Config {
             "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
             self.light_plus_sentence_pause_sec
         );
+        env_parse!("CODESCRIBE_LEDGER_SENSITIVITY", self.ledger_sensitivity);
         env_parse!(
             "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
             self.deferred_insert_shortcut
@@ -1430,6 +1431,11 @@ impl Config {
             "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
             self.light_plus_sentence_pause_sec,
             settings.light_plus_sentence_pause_sec
+        );
+        apply_copy!(
+            "CODESCRIBE_LEDGER_SENSITIVITY",
+            self.ledger_sensitivity,
+            settings.ledger_sensitivity
         );
         apply_copy!(
             "HOLD_EXCLUSIVE",
