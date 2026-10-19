@@ -1,7 +1,20 @@
 {
   "version": "0.17.2",
   "from_sha": "c55f8bc4d9faee2231ff7dff11e19e76cef4daca",
-  "to_sha": "c55f8bc4d9faee2231ff7dff11e19e76cef4daca",
+  "to_sha": "4ced05b743ad18d5da2249a089d2f0f9a1dbf719",
   "scope": "Committed source history; not runtime or distribution acceptance.",
-  "commits": []
+  "commits": [
+    {
+      "sha": "6d0c403397843eed73508bf8b88ab796be856052",
+      "date": "2026-10-19",
+      "subject": "fix(release): keep preparation notes tied to reviewed source",
+      "squash_headings": []
+    },
+    {
+      "sha": "4ced05b743ad18d5da2249a089d2f0f9a1dbf719",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): keep the widget through pointer and menu interaction",
+      "squash_headings": []
+    }
+  ]
 }

@@ -24,9 +24,9 @@ Source changes in preparation. This is not a published release.
 
 <!-- release-notes:0.17.2:start -->
 
-Source history: 0 commits; [complete inventory](docs/releases/0.17.2-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history: 2 commits; [complete inventory](docs/releases/0.17.2-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.17.2 c55f8bc4d9faee2231ff7dff11e19e76cef4daca -->
+<!-- release-boundary: 0.17.2 4ced05b743ad18d5da2249a089d2f0f9a1dbf719 -->
 <!-- release-notes:0.17.2:end -->
 
 ## [0.17.1] - 2026-10-19
