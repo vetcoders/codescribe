@@ -534,7 +534,7 @@ pub(crate) enum ChannelOpenMode {
     Live,
     /// Register the subscriber and the open-channel record. No device start.
     /// Test seam: exercised by this module's tests; prod opens `Live`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     AttachedOnly,
 }
 
@@ -1092,16 +1092,16 @@ impl RecordingController {
         let speech_clock = Arc::new(StdMutex::new(ChannelSpeechClock::default()));
         let last_text = Arc::new(StdMutex::new(String::new()));
         let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
-        let mut session_id = None;
-        let mut transcript_bus = None;
-        let mut capture_ledger = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
         })?;
 
-        let subscriber = match mode {
-            ChannelOpenMode::AttachedOnly => recorder.register_channel_feed().id,
+        let (subscriber, session_id, transcript_bus, capture_ledger) = match mode {
+            #[cfg(test)]
+            ChannelOpenMode::AttachedOnly => {
+                (recorder.register_channel_feed().id, None, None, None)
+            }
             ChannelOpenMode::Live => {
                 let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
                 super::begin_audio_capture(
@@ -1109,9 +1109,8 @@ impl RecordingController {
                     runtime_settings.values().audio_retention,
                 )
                 .await?;
-                session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
-                capture_ledger = Some(Arc::clone(&ledger));
+                let capture_ledger = Some(Arc::clone(&ledger));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
                 let language = runtime_settings
                     .values()
@@ -1139,7 +1138,7 @@ impl RecordingController {
                     "audience": bound.audience, "recipients": recipients,
                     "emitted_at": chrono::Utc::now().to_rfc3339(),
                 }));
-                transcript_bus = Some(Arc::clone(&bus));
+                let transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
                 // so the channel dot is the persisted base times the Assistive
@@ -1194,7 +1193,7 @@ impl RecordingController {
                 Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
                 match recorder
                     .begin_channel_session(
-                        session_label,
+                        session_label.clone(),
                         runtime_settings,
                         sink,
                         language,
@@ -1203,12 +1202,12 @@ impl RecordingController {
                     )
                     .await
                 {
-                    Ok(id) => id,
+                    Ok(id) => (id, Some(session_label), transcript_bus, capture_ledger),
                     Err(error) => {
                         if opens_physical_capture {
                             recorder.set_level_callback(None);
                         }
-                        super::finish_audio_capture(session_id.as_deref());
+                        super::finish_audio_capture(Some(session_label.as_str()));
                         if channels.is_empty() {
                             hold_badge::hide_hold_badge();
                         }

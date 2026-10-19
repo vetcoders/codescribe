@@ -18,7 +18,7 @@ lint = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(lint)
 
 HAS_FILES = "%@ has %lld files"
-TRASH = "Moves %lld Agent threads and %lld Agent files to Trash."
+TRASH = "Moves %lld Agent conversations and %lld Agent files to Trash."
 FILES = "%lld files"
 POLISH_CASES = ("one", "few", "many", "other")
 ARABIC_CASES = ("zero", "one", "two", "few", "many", "other")
@@ -43,9 +43,9 @@ def trash_entry(files_other: str = "%arg Agent files") -> dict:
     return {
         "localizations": {
             "en": {
-                **unit("Moves %#@threads@ and %#@files@ to Trash."),
+                **unit("Moves %#@conversations@ and %#@files@ to Trash."),
                 "substitutions": {
-                    "threads": substitution(1, one="%arg Agent thread", other="%arg Agent threads"),
+                    "conversations": substitution(1, one="%arg Agent conversation", other="%arg Agent conversations"),
                     "files": substitution(2, one="%arg Agent file", other=files_other),
                 },
             }

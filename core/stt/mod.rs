@@ -203,23 +203,6 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
     })
 }
 
-// FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
-// the whole synchronous one-shot transcription contract (transcribe_chunk /
-// try_transcribe_long_with_segments across Whisper/Apple providers) is parked:
-// runtime uses the streaming session path. Kept as the documented
-// provider contract for CLI/batch revival; operator decides revive-or-delete.
-/// Candle chunk transcription through the Whisper singleton.
-#[allow(dead_code)]
-fn candle_transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<String> {
-    // Engine acquisition + idle-clock refresh + lazy (re)load live in the
-    // singleton now, so it can unload Whisper when idle and reload on demand.
-    whisper::singleton::transcribe_chunk(audio, sample_rate, language)
-}
-
 /// Candle long-audio transcription with segment timestamps (blocking acquire).
 fn candle_transcribe_long_with_segments(
     audio: &[f32],
@@ -248,19 +231,6 @@ fn candle_transcribe_tail_window(
         initial_prompt,
         control,
     )
-}
-
-/// Non-blocking Candle long transcription: yields an error instead of waiting
-/// when the engine lock is held, so a correction pass can be skipped rather
-/// than queued behind live work.
-#[allow(dead_code)]
-fn candle_try_transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    // Non-blocking acquisition: skip the correction pass if the engine is busy.
-    whisper::singleton::try_transcribe_with_segments(audio, sample_rate, language)
 }
 
 /// Initialize whichever STT engine is active by env.
@@ -402,22 +372,6 @@ fn synthetic_warmup_audio() -> Vec<f32> {
         .collect()
 }
 
-/// Transcribe a single chunk (blocking lock on whichever engine is active).
-// FORGOTTEN-GEM(vc-prune 2026-06-10): see candle_transcribe_chunk note above.
-#[allow(dead_code)]
-pub(crate) fn transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<String> {
-    match default_engine() {
-        SttEngine::Apple => run_apple_live_only("transcribe_chunk", || {
-            apple_stt::transcribe_chunk(audio, sample_rate, language)
-        }),
-        SttEngine::Candle => candle_transcribe_chunk(audio, sample_rate, language),
-    }
-}
-
 /// Transcribe long audio (blocking lock) with segment-level timestamps.
 pub(crate) fn transcribe_long_with_segments(
     audio: &[f32],
@@ -429,21 +383,6 @@ pub(crate) fn transcribe_long_with_segments(
             apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
         }),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
-    }
-}
-
-/// Transcribe long audio (try_lock) with segment-level timestamps.
-#[allow(dead_code)]
-pub(crate) fn try_transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    match default_engine() {
-        SttEngine::Apple => run_apple_live_only("try_transcribe_long_with_segments", || {
-            apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
-        }),
-        SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }
 
