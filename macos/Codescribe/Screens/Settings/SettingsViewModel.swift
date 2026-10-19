@@ -1546,13 +1546,14 @@ final class SettingsViewModel: ObservableObject {
   func installCreatorAgentBridge(for client: AgentBridgeClient) {
     let current = creatorAgentBridge.status()
     creatorAgentBridgeStatus = current
+    // Nothing to do for a current client: the earlier notice stays on screen.
+    guard Self.creatorAgentBridgeAction(for: client, in: current) != .upToDate else { return }
     creatorAgentBridgeError = nil
     creatorAgentBridgeNotice = nil
     guard current.payloadAvailable else {
       creatorAgentBridgeError = current.detail
       return
     }
-    guard Self.creatorAgentBridgeAction(for: client, in: current) != .upToDate else { return }
     do {
       let clients = Set(current.installedClients).union([client])
       creatorAgentBridgeStatus = try creatorAgentBridge.install(selectedClients: clients)
