@@ -129,9 +129,9 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: geometry.size.width, textScale: textScale)
         )
-        // One ScrollView per conversation. `.initialOffset` then starts at the
-        // bottom instead of reusing the previous list's offset through the morph.
-        .id(conversation.id)
+        // Initial offset belongs to the loaded history, not its empty spinner.
+        // Recreate only the list when loading finishes; the composer stays put.
+        .id([conversation.id, conversation.historyLoaded ? "loaded" : "loading"])
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
         // The open pill stack steals neither color nor scrolling (Maciej,
         // 2026-10-17): the conversation keeps its full opacity and stays live;
