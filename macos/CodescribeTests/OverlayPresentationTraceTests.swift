@@ -61,6 +61,19 @@ final class OverlayPresentationTraceTests: XCTestCase {
     return false
   }
 
+  /// WindowServer visibility and the hosting layout settle on run-loop events.
+  /// A painted-frame measurement starts only after those events, not a fixed delay.
+  private func pump(untilReady panel: FloatingOverlayPanel, deadline: TimeInterval = 2) -> Bool {
+    let end = Date().addingTimeInterval(deadline)
+    while Date() < end {
+      if panel.occlusionState.contains(.visible), panel.contentView?.needsLayout == false {
+        return true
+      }
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    return false
+  }
+
   private func isOneWay(_ values: [CGFloat]) -> Bool {
     let deltas = zip(values, values.dropFirst()).map { $1 - $0 }.filter { abs($0) > 0.5 }
     return deltas.allSatisfy { $0 > 0 } || deltas.allSatisfy { $0 < 0 }
@@ -94,10 +107,15 @@ final class OverlayPresentationTraceTests: XCTestCase {
     defer { panel.orderOut(nil) }
     let afterOrderFront = panelReadiness(panel, label: "afterOrderFront")
     panel.setPresentationMode(.mini)
-    // Measure the painted trajectory starting from an already laid-out and
-    // painted mini panel rather than assuming orderFrontRegardless painted synchronously.
+    // Synchronous display alone can leave both visibility and hosting layout
+    // pending. Observe the real readiness events before counting painted frames.
     panel.contentView?.layoutSubtreeIfNeeded()
     panel.displayIfNeeded()
+    let ready = pump(untilReady: panel)
+    XCTAssertTrue(
+      ready, "Initial mini never became ready: \(panelReadiness(panel, label: "timeout"))")
+    guard ready else { return }
+    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
     let afterSetMini = panelReadiness(panel, label: "afterSetMini")
     let initialTrace = formatTraceEntries(trace.entries)
     let initialReadiness =
@@ -170,7 +188,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     // host's stdout never reaches the xcodebuild log, so it is a file.
     let dump = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("overlay-presentation-ledger.txt")
-    try? ("mini→midi→expanded→mini\n" + trace.dump() + "\n").write(
+    try? (initialReadiness + "\nmini→midi→expanded→mini\n" + trace.dump() + "\n").write(
       to: dump, atomically: true, encoding: .utf8)
     withExtendedLifetime(state) {}
   }
