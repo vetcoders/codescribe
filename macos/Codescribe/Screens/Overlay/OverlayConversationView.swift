@@ -68,13 +68,10 @@ struct OverlayConversationView: View {
   var playbackError: String?
   var agentDescriptor: String? = nil
   /// Opens the Agents roster from the name pill: the docked column focuses its
-  /// selected row, the narrow window toggles the pill stack (state decides).
+  /// selected row, the narrow window toggles the full-width list (state decides).
   var onShowAgents: (() -> Void)? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
-  /// The narrow-mode roster mounted under the name pill while it is open.
-  /// Nil whenever the stack is closed or the wide window docks the roster.
-  var agentPillStack: OverlayAgentPillStack? = nil
   /// Wide windows dock the roster column, which already names the agent and
   /// carries its microphone and speaker — the identity pill evacuates instead
   /// of repeating it (Maciej, 2026-10-17).
@@ -140,9 +137,6 @@ struct OverlayConversationView: View {
         // of everything that came after (Maciej, 2026-10-19).
         .id(orderedMessages.isEmpty ? conversation.id + "#empty" : conversation.id)
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
-        // The open pill stack steals neither color nor scrolling (Maciej,
-        // 2026-10-17): the conversation keeps its full opacity and stays live;
-        // the pills' own glass carries their legibility.
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -197,18 +191,6 @@ struct OverlayConversationView: View {
                 } action: {
                   navigationHeight = $0
                 }
-            }
-            if let pillStack = agentPillStack {
-              HStack {
-                Spacer(minLength: 0)
-                pillStack
-                  .frame(
-                    maxHeight: max(
-                      160, geometry.size.height - topInset - navigationHeight - 120))
-              }
-              .padding(.horizontal, 20)
-              .padding(.top, 2)
-              .onExitCommand { pillStack.onDismiss() }
             }
           }
         }
@@ -388,7 +370,7 @@ struct OverlayConversationView: View {
     .truncationMode(.middle)
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
-    // The pill stack measures itself against this width (mockup: 224 × scale).
+    // Mockup: 224 × scale.
     .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
     .frame(minHeight: 28)
     .contentShape(Capsule())
@@ -799,7 +781,6 @@ struct OverlayConversationView: View {
 }
 
 /// The name pill's capsule of glass; interactive when the pill is a button.
-/// The narrow-mode pill stack reuses the same capsule for its rows.
 struct OverlayNamePillGlass: ViewModifier {
   let interactive: Bool
 

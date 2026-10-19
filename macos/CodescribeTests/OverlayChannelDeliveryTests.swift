@@ -1783,10 +1783,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       status.components(separatedBy: "antenna.radiowaves").count - 1, 1,
       "one antenna in the status view: the shared channel's dot")
     let statusDot = try XCTUnwrap(status.range(of: "struct OverlayAgentStatusDot: View"))
-    let pillStack = try XCTUnwrap(status.range(of: "struct OverlayAgentPillStack: View"))
+    let dotEnd = try XCTUnwrap(
+      status.range(of: "\n}\n", range: statusDot.upperBound..<status.endIndex))
     let antenna = try XCTUnwrap(status.range(of: "antenna.radiowaves"))
     XCTAssertTrue(
-      statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < pillStack.lowerBound,
+      statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < dotEnd.lowerBound,
       "the antenna is drawn by OverlayAgentStatusDot, not by the header")
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
     // Passive navigation and capture ownership are exercised by
