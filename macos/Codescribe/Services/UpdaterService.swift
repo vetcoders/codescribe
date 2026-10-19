@@ -7,8 +7,8 @@ import Sparkle
 //
 // Owns the single SPUStandardUpdaterController for the process. The controller
 // starts the updater immediately (scheduled background checks per
-// SUEnableAutomaticChecks / user consent), and the tray's "Check for Updates…"
-// row routes through `checkForUpdates()`.
+// SUEnableAutomaticChecks / user consent), and the app menu's
+// "Check for Updates…" item routes through `checkForUpdates()`.
 //
 // Feed + key contract (see macos/project.yml):
 //   SUFeedURL      → https://codescribe.vetcoders.io/appcast.xml
@@ -64,7 +64,7 @@ final class UpdaterService: ObservableObject {
     }
   }
 
-  /// User-initiated check ("Check for Updates…" in the tray). The app is an
+  /// User-initiated check ("Check for Updates…" in the app menu). The app is an
   /// LSUIElement accessory, so activate first — otherwise Sparkle's update
   /// window can appear behind the frontmost app.
   func checkForUpdates() {
