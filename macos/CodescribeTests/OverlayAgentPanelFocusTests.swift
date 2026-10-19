@@ -22,12 +22,12 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
   private func armRoster(on state: OverlayState, owner: OverlayConversationOwner) {
     state.applyChannelRoster([
       CsChannelRosterState(
-        channel: "0", audience: "All", open: false, loud: false, autosealDeadlineUnixMs: nil,
-        followerAlive: nil, provider: nil, providerSessionId: nil, unreadSinceUnixMs: nil),
+        channel: "0", audience: "All", provider: nil, providerSessionId: nil, open: false,
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: nil, unreadSinceUnixMs: nil),
       CsChannelRosterState(
-        channel: owner.channel, audience: owner.name, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true, provider: owner.provider,
-        providerSessionId: owner.providerSessionID, unreadSinceUnixMs: nil),
+        channel: owner.channel, audience: owner.name, provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
     ])
   }
 
@@ -186,7 +186,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
   func testClickingAlreadySelectedAgentRowRequestsPanelFocus() throws {
     let owner = makeOwner(channel: "5", name: "stanislaw")
     let conversation = OverlayConversation(
-      id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [], replyIDs: [])
+      id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [])
     let row = OverlayChannelDelivery(
       channel: "5", agent: "stanislaw", deliveryID: nil, stage: nil, isOpen: false)
     var selectedIDs: [String?] = []

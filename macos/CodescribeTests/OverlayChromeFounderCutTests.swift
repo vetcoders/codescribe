@@ -1135,9 +1135,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
     XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 5)
-    // The docked agents column adds one inert, hidden paint layer: its hairline.
-    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
-    XCTAssertFalse(chrome.contains("DragGesture"))
+    XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 3)
+    // The docked agents column's hairline became its resize handle (15d5640d5):
+    // that handle owns the chrome's only drag, and nothing else adds one.
+    XCTAssertEqual(chrome.components(separatedBy: "DragGesture").count - 1, 1)
+    let handle = try section(
+      of: chrome, from: "private func agentDrawerResizeHandle", to: ".onEnded")
+    XCTAssertTrue(handle.contains("DragGesture"))
   }
 
   private func findTranscript(in view: NSView) -> LiveTranscriptNativeTextView? {
