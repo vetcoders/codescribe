@@ -287,15 +287,25 @@ def run(args):
         changelog = changelog_path.read_text()
         expected = {manifest: cargo.encode(), changelog_path: changelog.encode()}
         if args.command == "bump":
-            parts = list(version_tuple(current))
             index = {"major": 0, "minor": 1, "patch": 2}[args.kind]
-            parts[index] += 1
-            parts[index + 1:] = [0] * (2 - index)
-            target = args.to_version or ".".join(map(str, parts))
-            # A not-yet-tagged generated release is still being prepared. Repeated
-            # bumps refresh that note rather than silently skipping another version.
-            tags = git(root, "tag", "--merged", "HEAD", "--list", "v" + current).splitlines()
-            if not args.to_version and not tags and f"<!-- release-notes:{current}:start -->" in changelog:
+            def advance(value):
+                parts = list(version_tuple(value))
+                parts[index] += 1
+                parts[index + 1:] = [0] * (2 - index)
+                return ".".join(map(str, parts))
+            target = args.to_version or advance(current)
+            # HEAD's manifest is the committed version. A working-tree version that
+            # differs from it is an uncommitted bump: repeating the same kind
+            # refreshes it; another kind or explicit target never stacks on it,
+            # because its promoted notes and inventory belong to that version.
+            committed = cargo_version(git(root, "show", "HEAD:./" + Path(os.path.relpath(manifest, root)).as_posix()))
+            if args.to_version and committed != current and args.to_version != current:
+                raise ValueError(f"Uncommitted version {current} is pending over committed {committed}; "
+                                 f"commit or revert it before preparing {args.to_version}")
+            if not args.to_version and committed != current:
+                if advance(committed) != current:
+                    raise ValueError(f"Uncommitted version {current} is not a {args.kind} bump of committed "
+                                     f"{committed}; commit or revert it first")
                 target = current
             if version_tuple(target) < version_tuple(current):
                 raise ValueError("Version rollback is not a bump")
