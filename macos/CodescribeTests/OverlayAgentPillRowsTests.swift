@@ -189,7 +189,7 @@ final class OverlayAgentPillRowsTests: XCTestCase {
     XCTAssertTrue(modifier.contains(".grayscale(disconnected ? 1 : 0)"))
 
     let docked = try section(
-      of: source, from: "private func channelRow(", to: "private func rosterRowLabel(")
+      of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(
       docked.contains("&& !hasDeadFollower(channel),"),
       "the docked row's microphone sleeps for a dead reader")
