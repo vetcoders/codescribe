@@ -442,7 +442,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           .environment(\.csTextScale, scale)
           .frame(width: 300)
           .fixedSize(horizontal: false, vertical: true)
-          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { recorder.height = $0 })
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            recorder.height = $0
+          })
       host.sizingOptions = []
       host.frame = CGRect(x: 0, y: 0, width: 300, height: 4000)
       // The scroll viewport takes the rows' measured height one pass later.
