@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -221,6 +222,12 @@ struct CodescribeApp: App {
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
+    // Settings › User checks for updates through the app's one Sparkle owner.
+    // No updater (the XCTest host) leaves the button disabled.
+    if let updater = delegate.updater {
+      model.onCheckForUpdates = { [weak updater] in updater?.checkForUpdates() }
+      updater.$canCheckForUpdates.assign(to: &model.$canCheckForUpdates)
+    }
     return model
   }
 
@@ -370,8 +377,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
-  // scheduled updater alongside the live app.
-  private var updater: UpdaterService?
+  // scheduled updater alongside the live app. Settings › User reads it for
+  // its "Check for Updates…" button.
+  private(set) var updater: UpdaterService?
   private let vocabularyAB = VocabularyABAction()
 
   /// True when the process is the XCTest host, not a user launch. The unit-test

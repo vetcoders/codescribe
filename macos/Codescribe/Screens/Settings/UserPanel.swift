@@ -1,10 +1,13 @@
 import AppKit
 import SwiftUI
 
-// About panel. Codescribe has no account model, so this panel reports the
-// running build, where local data lives and the two resets — the facts about
-// the app and its data, not a profile. Everyday information stays visible;
-// technical values and the resets open on demand.
+// User panel. Codescribe has no account model, so this panel gathers what
+// belongs to the person using this Mac: the license, the running build and its
+// update check, where local data lives, the first-dictation confirmation, the
+// public documents and the two resets. The former About and License tabs
+// folded into it; the transcript markers moved to Dictation (Founder
+// decision, 2026-10-19). Everyday information stays visible; technical values
+// and the resets open on demand.
 struct UserPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var repairNotice: ConfigRepairNotice?
@@ -26,13 +29,16 @@ struct UserPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(
-        String(localized: "About the app and your data", comment: "About panel header"),
+        String(localized: "User", comment: "User panel header"),
         blurb: String(
-          localized: "Codescribe version, local data and privacy.",
-          comment: "About panel blurb")
+          localized: "Your license, Codescribe version, local data and privacy.",
+          comment: "User panel blurb")
       )
       .onAppear { repairNotice = configRepairSummary().map(ConfigRepairNotice.init(raw:)) }
 
+      LicenseSection(model: model)
+        .padding(.top, SettingsScale.sectionGap)
+        .id(SettingsAnchor.license)
       versionSection
       localDataSection
       // The confirmation cannot be sent while the build ships without an
@@ -49,7 +55,19 @@ struct UserPanel: View {
 
   // MARK: - Version and configuration notice
 
+  /// Its own header now that License sits above it: without one the version
+  /// card read as part of the license.
   private var versionSection: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      SettingsSectionHeaderRow(
+        String(localized: "Version", comment: "User panel section: app version and updates"))
+      versionCard
+        .padding(.top, SettingsScale.headerGap)
+    }
+    .padding(.top, SettingsScale.sectionGap)
+  }
+
+  private var versionCard: some View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       VStack(alignment: .leading, spacing: 0) {
         HStack(alignment: .center, spacing: CSSpace.md) {
@@ -61,17 +79,30 @@ struct UserPanel: View {
               .accessibilityIdentifier("about-version")
             Text(
               "Build \(model.buildInfo.build)",
-              comment: "About panel: the build number under the version"
+              comment: "User panel: the build number under the version"
             )
             .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
+          // Sparkle's own check, owned by `UpdaterService`; disabled while a
+          // check runs or no updater is up.
+          Button(
+            String(
+              localized: "Check for Updates…",
+              comment: "User panel: starts a manual update check next to the version")
+          ) {
+            model.onCheckForUpdates()
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(!model.canCheckForUpdates)
+          .accessibilityIdentifier("user-check-for-updates")
           TrailingDisclosureButton(
             title: String(
               localized: "Version details",
-              comment: "About panel: opens the commit and the build date"),
+              comment: "User panel: opens the commit and the build date"),
             isExpanded: $showingVersionDetails
           )
           .accessibilityIdentifier("about-version-details-toggle")
@@ -98,7 +129,6 @@ struct UserPanel: View {
         }
       }
     }
-    .padding(.top, SettingsScale.sectionGap)
   }
 
   private var readableBuildDate: String {
@@ -210,7 +240,7 @@ struct UserPanel: View {
         .foregroundStyle(.secondary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
-        .accessibilityLabel(Text("Launch record", comment: "About panel: the raw repair line"))
+        .accessibilityLabel(Text("Launch record", comment: "User panel: the raw repair line"))
         .accessibilityValue(notice.raw)
     }
   }
@@ -229,7 +259,7 @@ struct UserPanel: View {
         .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 0) {
         pathRow(
-          String(localized: "App data", comment: "About panel: the ~/.codescribe folder"),
+          String(localized: "App data", comment: "User panel: the ~/.codescribe folder"),
           model.configDir)
         divider
         pathRow(String(localized: "Transcripts"), model.transcriptsPath)
@@ -244,17 +274,17 @@ struct UserPanel: View {
   private var activationPingSection: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionHeaderRow(
-        String(localized: "First dictation confirmation", comment: "About panel section")
+        String(localized: "First dictation confirmation", comment: "User panel section")
       )
       .padding(.top, SettingsScale.sectionGap)
       SettingsControlRow(
         title: String(
           localized: "Send a confirmation after the first successful dictation",
-          comment: "About panel: opt-in switch title"),
+          comment: "User panel: opt-in switch title"),
         subtitle: String(
           localized:
             "One anonymous event with the app version and the macOS version. Never audio or text.",
-          comment: "About panel: opt-in switch subtitle")
+          comment: "User panel: opt-in switch subtitle")
       ) {
         Toggle("", isOn: $activationPingOptIn)
           .toggleStyle(.switch)
@@ -276,7 +306,7 @@ struct UserPanel: View {
   private var informationSection: some View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionHeaderRow(
-        String(localized: "Information and documentation", comment: "About panel section")
+        String(localized: "Information and documentation", comment: "User panel section")
       )
       .padding(.top, SettingsScale.sectionGap)
       VStack(alignment: .leading, spacing: CSSpace.xxs) {
@@ -284,10 +314,10 @@ struct UserPanel: View {
           String(localized: "Privacy Policy"), Self.privacyURL,
           accessibility: "Open Privacy Policy")
         externalLink(
-          String(localized: "Terms of Use", comment: "About panel: legal link"),
+          String(localized: "Terms of Use", comment: "User panel: legal link"),
           Self.termsURL, accessibility: "Open Terms of Use")
         externalLink(
-          String(localized: "Documentation", comment: "About panel: docs link"),
+          String(localized: "Documentation", comment: "User panel: docs link"),
           Self.docsURL, accessibility: "Open Codescribe documentation")
       }
       .padding(.top, CSSpace.sm)
@@ -324,7 +354,7 @@ struct UserPanel: View {
         .padding(.top, SettingsScale.sectionGap)
 
       SettingsSectionHeaderRow(
-        String(localized: "Reset data", comment: "About panel: section holding both resets")
+        String(localized: "Reset data", comment: "User panel: section holding both resets")
       ) {
         TrailingDisclosureButton(
           title: showingResets
@@ -403,9 +433,9 @@ struct UserPanel: View {
         }
         .buttonStyle(.plain)
         .csFocusRing()
-        .help(String(localized: "Copy path", comment: "About panel: copy button tooltip"))
+        .help(String(localized: "Copy path", comment: "User panel: copy button tooltip"))
         .accessibilityLabel(
-          String(localized: "Copy the \(label) path", comment: "About panel: copy button"))
+          String(localized: "Copy the \(label) path", comment: "User panel: copy button"))
       }
     }
     .padding(.horizontal, SettingsScale.cardPadding)
@@ -483,14 +513,14 @@ private struct ResetAgentSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Reset Agent data", comment: "About panel: the Agent reset")
+      Text("Reset Agent data", comment: "User panel: the Agent reset")
         .font(SettingsScale.settingName)
         .foregroundStyle(.primary)
 
       Text(
         "Moves Agent conversations, MCP configuration and tool state to Trash. Agent provider keys and MCP connector secrets are deleted permanently. Everything else stays.",
         comment:
-          "About panel: short scope of the Agent reset; the confirmation shows the full scope"
+          "User panel: short scope of the Agent reset; the confirmation shows the full scope"
       )
       .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
@@ -520,7 +550,7 @@ private struct ResetAgentSection: View {
   }
 }
 
-/// The full-data reset lives only at the foot of About, away from MCP editing.
+/// The full-data reset lives only at the foot of User, away from MCP editing.
 /// Data is recoverable from Trash; Keychain deletion and prompt reset stay
 /// opt-in, and the confirmation sheet shows the live scope before anything moves.
 private struct ResetAppDataSection: View {
@@ -532,14 +562,14 @@ private struct ResetAppDataSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Reset app data", comment: "About panel: the full app-data reset")
+      Text("Reset app data", comment: "User panel: the full app-data reset")
         .font(SettingsScale.settingName)
         .foregroundStyle(.primary)
 
       Text(
         "Moves recordings, transcripts, conversations, logs, preferences and local configuration to Trash. Your base prompts stay unless you choose otherwise below.",
         comment:
-          "About panel: short scope of the app-data reset; the confirmation shows the full scope"
+          "User panel: short scope of the app-data reset; the confirmation shows the full scope"
       )
       .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
@@ -552,7 +582,7 @@ private struct ResetAppDataSection: View {
         Toggle(isOn: $includeKeys) {
           Text(
             "Also remove API keys from Keychain (not recoverable from Trash)",
-            comment: "About panel: reset checkbox"
+            comment: "User panel: reset checkbox"
           )
           .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)
@@ -562,7 +592,7 @@ private struct ResetAppDataSection: View {
         Toggle(isOn: $includePrompts) {
           Text(
             "Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)",
-            comment: "About panel: reset checkbox; the four file names stay verbatim"
+            comment: "User panel: reset checkbox; the four file names stay verbatim"
           )
           .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)
@@ -603,7 +633,7 @@ private struct ResetAppDataSection: View {
 }
 
 #if DEBUG
-  #Preview("About panel") {
+  #Preview("User panel") {
     ScrollView { UserPanel(model: .preview(.user)) }
       .frame(width: 720, height: 720)
   }
