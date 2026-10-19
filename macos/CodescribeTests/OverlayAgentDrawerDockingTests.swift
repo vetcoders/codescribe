@@ -6,8 +6,8 @@ import XCTest
 
 /// Falsifiers for the agents-drawer cut (Founder, 2026-10-16; mockup
 /// `szuflada-agentow.html`): the roster docks as a right-hand column on wide
-/// windows, becomes a pill stack under the name pill on narrow ones, and the
-/// bubble cap follows ⌘+ text scale. RED before, GREEN after.
+/// windows, covers the whole window as the same list on narrow ones
+/// (2026-10-19), and the bubble cap follows ⌘+ text scale.
 @MainActor
 final class OverlayAgentDrawerDockingTests: XCTestCase {
 
@@ -75,16 +75,16 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "1200 at 1.0 docks")
     XCTAssertFalse(
       OverlayAgentDrawerLayout.isDocked(windowWidth: 680, textScale: 1.0),
-      "680 at 1.0 falls back to pills")
+      "680 at 1.0 falls back to the full-width list")
     XCTAssertFalse(
       OverlayAgentDrawerLayout.isDocked(windowWidth: 1100, textScale: 1.6),
-      "1100 at 1.6 needs 1152 — pills, so large text never squeezes bubbles")
+      "1100 at 1.6 needs 1152 — the full-width list, so large text never squeezes bubbles")
     XCTAssertTrue(
       OverlayAgentDrawerLayout.isDocked(windowWidth: 720, textScale: 1.0),
       "the exact 720 × scale boundary docks")
     XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 1152, textScale: 1.6))
     XCTAssertFalse(OverlayAgentDrawerLayout.isDocked(windowWidth: 719.9, textScale: 1.0))
-    // Maciej 2026-10-19: a 900-point overlay at text 1.2 stayed on pills.
+    // Maciej 2026-10-19: a 900-point overlay at text 1.2 did not dock.
     XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 898, textScale: 1.2))
     XCTAssertEqual(OverlayAgentDrawerLayout.drawerWidth(textScale: 1.4), 420, accuracy: 0.001)
     // Maciej 2026-10-18: no cap; dragged fully left the roster is the window.
@@ -122,89 +122,86 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       accuracy: 0.001, "the window bound wins regardless of scale")
   }
 
-  // MARK: - Pill stack content (deliverable 2)
+  // MARK: - Narrow list (below the threshold, 2026-10-19)
 
-  func testPillStackListsEveryConversationExceptTheSelectedOneInRosterOrder() throws {
+  func testNarrowListCoversTheWindowAndSelectionReturnsToTheConversation() throws {
     let (broadcast, lena, astra) = try rosterFixture()
-    var quietDelivery = OverlayChannelDelivery(
-      channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false)
-    quietDelivery.broadcastPolicy = .quiet
-    let view = OverlayChannelStatusView(
-      channels: [
-        OverlayChannelDelivery(
-          channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
-        quietDelivery,
-      ],
-      unavailable: false, palette: .dark, animates: false,
-      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
-      conversations: [broadcast, lena, astra], selectedConversationID: lena.id,
-      unreadCounts: [astra.id: 4], onSelectConversation: { _ in })
-    let entries = view.pillEntries
-    XCTAssertEqual(
-      entries.map(\.id), [broadcast.id, astra.id],
-      "0 · All first, then the roster order; never the selected one, never a transcription row")
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let recorder = OverlayDrawerFrameRecorder()
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+        .frame(width: 700, height: 500))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
+    XCTAssertFalse(state.agentDrawerDocked, "700 wide at 1.0 is below the threshold")
+    XCTAssertEqual(recorder.frame, .zero, "no list until it is asked for")
 
-    let zero = try XCTUnwrap(entries.first { $0.id == broadcast.id })
-    XCTAssertEqual(zero.title, String(localized: "0 · All"))
-    XCTAssertTrue(zero.isBroadcast)
-    let agent = try XCTUnwrap(entries.first { $0.id == astra.id })
-    XCTAssertEqual(agent.title, "3 · astra")
-    XCTAssertEqual(agent.descriptor, "codex", "the pill shows the provider descriptor")
-    XCTAssertEqual(agent.unread, 4)
-    XCTAssertEqual(agent.broadcastPolicy, .quiet, "a quiet broadcast policy marks the pill")
-    XCTAssertNil(zero.broadcastPolicy, "the shared channel has no membership of its own")
-    XCTAssertEqual(zero.dot, .broadcast, "the shared channel wears the antenna, not a delivery dot")
+    state.showAgentMonitor()
+    settle()
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertEqual(recorder.frame.minX, 0, accuracy: 1, "the list starts at the left edge")
+    XCTAssertEqual(recorder.frame.width, 700, accuracy: 1, "and takes the whole width")
+    XCTAssertEqual(recorder.frame.maxY, 500, accuracy: 1, "and the full height")
+
+    state.selectConversation(astra.id)
+    settle()
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertFalse(state.showsAgentMonitor, "choosing a row returns to the conversation")
+    XCTAssertEqual(recorder.frame, .zero, "the list leaves with the flag")
   }
 
-  func testPillSelectionChangesTheConversationAndClosesTheStack() throws {
-    let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.selectConversation(broadcast.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-
-    state.selectConversation(lena.id)
-
-    XCTAssertEqual(state.selectedConversationID, lena.id)
-    XCTAssertFalse(state.showsAgentMonitor, "selecting a pill closes the stack")
-  }
-
-  func testPillStackClosesOnEscapeAndStealsNeitherColorNorScroll() throws {
-    // Maciej, 2026-10-17: the open stack steals neither color nor scrolling.
-    // Esc and the name pill's toggle route to hideAgentSidebar.
-    let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.selectConversation(lena.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-    state.hideAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor)
-    XCTAssertEqual(state.selectedConversationID, lena.id, "closing keeps the conversation")
-
+  func testNarrowListIsTheDockedListAndThePillStackIsGone() throws {
+    let overlay = try overlaySource("DictationOverlayView.swift")
+    let canvas = try section(
+      of: overlay, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertTrue(
+      canvas.contains("let listShown = !docked && !state.isCollapsed && state.showsAgentMonitor"))
+    XCTAssertTrue(
+      canvas.contains("let canvasHidden = canvasWidth < 1 || listShown"),
+      "the conversation or the transcription hides under the list, keeping its layout")
+    XCTAssertTrue(
+      canvas.contains("windowWidth: geometry.size.width, docked: false"),
+      "the narrow list is the docked column's own view")
+    XCTAssertTrue(canvas.contains(".onExitCommand { state.hideAgentSidebar() }"), "Esc closes it")
+    let column = try section(
+      of: overlay, from: "private func agentDrawerColumn",
+      to: "private func agentDrawerResizeHandle")
+    XCTAssertNotNil(
+      column.range(of: #"if docked \{\s*agentDrawerResizeHandle"#, options: .regularExpression),
+      "no edge to drag below the threshold")
+    XCTAssertNotNil(
+      column.range(of: #"\} else \{\s*state\.hideAgentSidebar\(\)"#, options: .regularExpression),
+      "the corner button closes the narrow list")
     let conversation = try overlaySource("OverlayConversationView.swift")
-    // The stack mounts in the top overlay, directly under the name pill row.
-    let topOverlay = try section(
-      of: conversation, from: ".overlay(alignment: .top)", to: "private var composer")
-    XCTAssertTrue(
-      topOverlay.contains("if let pillStack = agentPillStack"),
-      "the stack mounts under the name pill")
     XCTAssertFalse(
-      conversation.contains("overlay-agent-pill-dismiss"),
-      "no full-area catcher: the conversation keeps its clicks and its scroll")
-    XCTAssertFalse(
-      conversation.contains("agentPillStack == nil ? 1 : "),
-      "the open stack never dims the conversation or the composer")
-    XCTAssertTrue(topOverlay.contains(".onExitCommand"), "Esc closes the stack")
+      conversation.contains("agentPillStack"), "no second roster mounts under the name pill")
     let roster = try overlaySource("OverlayChannelStatusView.swift")
-    XCTAssertTrue(
-      roster.contains("overlay-agent-pill-stack"), "the pill stack carries its identifier")
+    for gone in [
+      "OverlayAgentPillStack", "OverlayAgentPillEntry", "pillEntries", "overlay-agent-pill-stack",
+    ] {
+      XCTAssertFalse(roster.contains(gone), "\(gone) left with the pill stack")
+    }
   }
 
   // MARK: - Docked column (deliverables 1 and 4)
 
-  func testDockingEngagementClosesThePillStackAndKeepsSelectionAndDraft() throws {
+  func testDockingEngagementClosesTheNarrowListAndKeepsSelectionAndDraft() throws {
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
@@ -216,7 +213,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
     state.setAgentDrawerDocked(true)
 
-    XCTAssertFalse(state.showsAgentMonitor, "the pill stack closes when docking engages")
+    XCTAssertFalse(state.showsAgentMonitor, "the narrow list closes when docking engages")
     XCTAssertEqual(state.selectedConversationID, lena.id, "the selection survives the switch")
     XCTAssertEqual(state.conversationDrafts[lena.id], "half-typed draft", "drafts survive")
     XCTAssertEqual(
@@ -224,7 +221,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "no scroll-reset signal crosses a pure mode switch")
 
     state.setAgentDrawerDocked(false)
-    XCTAssertFalse(state.showsAgentMonitor, "undocking does not reopen the stack")
+    XCTAssertFalse(state.showsAgentMonitor, "undocking does not reopen the list")
   }
 
   func testDockedNamePillFocusesTheSelectedRowInsteadOfOpening() throws {
@@ -302,7 +299,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.orderOut(nil)
     }
 
-    // Narrow: no docked column at all, and the pill stack publishes its own frame.
+    // Narrow: no docked column at all; the list appears only when asked for.
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
@@ -388,7 +385,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertNil(state.selectedConversationID)
     XCTAssertFalse(state.dockedRosterColumnShown, "back on the transcription the column is gone")
 
-    // Docking engages while the stack is open on the transcription: the stack
+    // Docking engages while the list is open on the transcription: the list
     // becomes the column instead of vanishing.
     state.setAgentDrawerDocked(false)
     state.showAgentMonitor()
@@ -585,14 +582,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       monitor.contains("OverlayBroadcastPolicyMenu("),
       "the docked 0 · All row carries every member's wake policy")
-    let pills = try XCTUnwrap(
-      source.range(of: "struct OverlayAgentPillStack"), "the pill stack exists")
-    XCTAssertTrue(
-      String(source[pills.lowerBound...]).contains("OverlayBroadcastPolicyMenu("),
-      "pill rows carry the same wake policy menu")
     XCTAssertTrue(
       source.contains("members: broadcastMembers.filter { $0.channel == channel.channel }"),
       "an agent's own docked row carries only its own policy")
+  }
+
+  /// A bound channel whose reader died keeps its row, dimmed as one unit,
+  /// and its microphone sleeps (Maciej, 2026-10-17).
+  func testDockedRowDimsADisconnectedReaderAndSleepsItsMicrophone() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let modifier = try section(
+      of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
+    XCTAssertTrue(modifier.contains(".opacity(disconnected ? Self.opacity : 1)"))
+    XCTAssertTrue(modifier.contains(".grayscale(disconnected ? 1 : 0)"))
+    let docked = try section(
+      of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertTrue(
+      docked.contains("&& !hasDeadFollower(channel),"),
+      "the docked row's microphone sleeps for a dead reader")
+    XCTAssertTrue(
+      docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
+      "the docked row dims as one unit")
   }
 
   // MARK: - Hosting structure (deliverables 1 and 4)
@@ -624,7 +634,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let conversation = try overlaySource("OverlayConversationView.swift")
     XCTAssertTrue(
       conversation.contains("OverlayAgentDrawerLayout.pillWidth(textScale: textScale)"),
-      "the name pill and the stack share 224 × scale")
+      "the name pill keeps 224 × scale")
   }
 
   // MARK: - Wide-window evacuation (Maciej, 2026-10-17)
@@ -651,7 +661,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "the content margin follows the evacuated row")
   }
 
-  /// Broadcast-policy choices in the pill's context menu are checkboxes, so
+  /// Broadcast-policy choices in a roster row's context menu are checkboxes, so
   /// they must use the menu Toggle's native state column like the header
   /// menu's checkboxes, not a checkmark squatting in the icon slot.
   func testPolicyMenuUsesNativeCheckboxToggles() throws {
