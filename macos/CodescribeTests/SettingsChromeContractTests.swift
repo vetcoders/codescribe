@@ -33,6 +33,27 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Founder review, 2026-10-18: one header pattern across the central pane, and
+  /// a section title never quieter than the settings under it. Panels used to
+  /// carry private header types that fixed this locally; the shared label is
+  /// now the only owner.
+  func testSectionHeadersHaveOneOwnerAndReadAtPrimaryStrength() throws {
+    let sources = try settingsSources()
+    let joined = sources.values.joined(separator: "\n")
+    for parallel in [
+      "struct ProvidersSectionHeader", "struct WorkspaceSectionHeader",
+      "struct ToolsSectionHeader", "func sectionHeader(",
+    ] {
+      XCTAssertFalse(joined.contains(parallel), "a second header owner is back: \(parallel)")
+    }
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    let label = try XCTUnwrap(view.range(of: "struct SettingsSectionLabel: View {"))
+    let labelBody = view[label.lowerBound...].prefix(600)
+    XCTAssertTrue(labelBody.contains("SettingsScale.sectionTitle"))
+    XCTAssertTrue(labelBody.contains(".foregroundStyle(.primary)"))
+    XCTAssertFalse(labelBody.contains(".foregroundStyle(.secondary)"))
+  }
+
   func testSettingsKeepsNativeNavigationAndBrandSemantics() throws {
     let sources = try settingsSources()
     let joined = sources.values.joined(separator: "\n")
@@ -100,9 +121,9 @@ final class SettingsChromeContractTests: XCTestCase {
     // An 880 pt window with the sidebar at its ideal width.
     XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
-    XCTAssertTrue(pane.contains(".padding(.horizontal, CSSpace.xl)"))
+    XCTAssertTrue(pane.contains(".padding(.horizontal, SettingsScale.pageGutter)"))
     // Detail column minus the bar's horizontal padding and the column divider.
-    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * CSSpace.xl
+    let column: CGFloat = SettingsView.detailMinWidth - 1 - 2 * SettingsScale.pageGutter
 
     let polish = try polishCatalog()
     let tabbed = SettingsSection.allCases.filter { !SettingsTab.tabs(in: $0).isEmpty }
@@ -176,10 +197,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polishLevels, ["Zezwalaj", "Pytaj", "Blokuj"])
     // The card column at the minimum window: one column since round 12 (the
     // 190 pt source sidebar became a popup), minus the pane padding and the
-    // card's own 14 pt sides. The picker owns its row, so it only has to fit.
+    // card's own sides. The picker owns its row, so it only has to fit.
     let browser = try XCTUnwrap(sources["ToolOverridesBrowser.swift"])
     XCTAssertFalse(browser.contains(".frame(width: 190)"), "the source sidebar is gone")
-    let column = SettingsView.detailMinWidth - 2 * CSSpace.xl - 2 * 14
+    let column =
+      SettingsView.detailMinWidth - 2 * SettingsScale.pageGutter - 2 * SettingsScale.cardPadding
     for titles in [levels, polishLevels] {
       let picker = width(titles)
       XCTAssertGreaterThan(picker, 0)
@@ -347,8 +369,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Refresh status",
       "Add provider",
       "Cloud transcription",
-      "Connections for cloud transcription. The mode is chosen under Dictation.",
-      "Recordings leave this computer only in Cloud mode, or when you start a cloud re-transcription yourself.",
+      "You choose the mode under Dictation.",
+      "We send recordings only in Cloud mode or during a manual cloud re-transcription.",
       "File transcription",
       "Live transcription",
       "Endpoint",
@@ -373,6 +395,25 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
     XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
     XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
+    // Approved verbatim by the Founder (round 15, 2026-10-18).
+    XCTAssertEqual(polish["You choose the mode under Dictation."], "Tryb wybierzesz w Dyktowaniu.")
+    XCTAssertEqual(
+      polish["We send recordings only in Cloud mode or during a manual cloud re-transcription."],
+      "Nagrania wysyłamy tylko w trybie chmurowym lub przy ręcznej retranskrypcji w chmurze.")
+    // A lane card keeps its key on the first level; the endpoint and the
+    // gateway session URL sit under Advanced (Founder decision, 2026-10-18).
+    let laneCard = try XCTUnwrap(panel.range(of: "struct SttLaneCard: View {"))
+    let laneBody = panel[laneCard.lowerBound...]
+    let laneKey = try XCTUnwrap(laneBody.range(of: "label: String(localized: \"API key\")"))
+    let laneAdvanced = try XCTUnwrap(laneBody.range(of: "DisclosureGroup(\"Advanced\") {"))
+    let laneEndpoint = try XCTUnwrap(laneBody.range(of: "title: String(localized: \"Endpoint\")"))
+    let laneGateway = try XCTUnwrap(
+      laneBody.range(of: "title: String(localized: \"Gateway session URL\")"))
+    XCTAssertLessThan(laneKey.lowerBound, laneAdvanced.lowerBound)
+    XCTAssertLessThan(laneAdvanced.lowerBound, laneEndpoint.lowerBound)
+    XCTAssertLessThan(laneAdvanced.lowerBound, laneGateway.lowerBound)
+    // One header strength across the page: Custom providers is a peer.
+    XCTAssertTrue(panel.contains("SettingsSectionHeaderRow(String(localized: \"Custom providers\")) {"))
     // Lowercase on purpose: an abbreviation and a protocol name start these.
     XCTAssertEqual(polish["e.g. Libraxis"], "np. Libraxis")
     XCTAssertEqual(polish["HTTP(S): %@"], "HTTP(S): %@")
@@ -385,6 +426,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Providers.", "Refresh provider access", "factory endpoint",
       "Speech-to-text Cloud Service", "Advanced · OAuth client id…",
       "secrets live only in the Keychain — presence shown, value hidden",
+      "Connections for cloud transcription. The mode is chosen under Dictation.",
+      "Recordings leave this computer only in Cloud mode, or when you start a cloud re-transcription yourself.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -418,7 +461,16 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(lanes.contains("@State private var detailsExpanded = false"))
     XCTAssertTrue(lanes.contains("DisclosureGroup(isExpanded: $detailsExpanded)"))
     XCTAssertTrue(lanes.contains("value: \"\\(lane.providerKey) · \\(lane.modelKey)\""))
-    let autoSend = try XCTUnwrap(lanes.range(of: "Auto-send to the Agent"))
+    let autoSend = try XCTUnwrap(lanes.range(of: "Auto-send to the built-in Agent"))
+    // Both Codescribe Bus timers sit under one header on this tab; the hold
+    // left the lane editors (round 15, 2026-10-18).
+    let busHeader = try XCTUnwrap(lanes.range(of: "String(localized: \"Codescribe Bus\""))
+    let pause = try XCTUnwrap(lanes.range(of: "\"agent-bus-speech-pause\""))
+    let hold = try XCTUnwrap(lanes.range(of: "\"agent-send-hold-seconds\""))
+    XCTAssertLessThan(busHeader.lowerBound, pause.lowerBound)
+    XCTAssertLessThan(pause.lowerBound, hold.lowerBound)
+    XCTAssertLessThan(hold.lowerBound, autoSend.lowerBound)
+    XCTAssertFalse(panel.contains("agent-send-hold-seconds"), "the hold is not a lane setting")
     let details = try XCTUnwrap(lanes.range(of: "Active configuration details"))
     XCTAssertLessThan(autoSend.lowerBound, details.lowerBound)
     XCTAssertFalse(lanes.contains("Resolved runtime truth"))
@@ -447,7 +499,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Reset model": "Przywróć model domyślny",
       "Active configuration details": "Szczegóły aktywnej konfiguracji",
       "%@ endpoint": "Adres API: %@",
-      "Auto-send to the Agent": "Wysyłaj automatycznie do Agenta",
+      "Auto-send to the built-in Agent": "Wysyłaj automatycznie do wbudowanego Agenta",
+      "Codescribe Bus": "Codescribe Bus",
+      "Hold before sending to Codescribe Bus": "Przytrzymanie przed wysłaniem do Codescribe Bus",
       "Sends the transcript after 5 seconds unless you start editing it.":
         "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji.",
       "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.":
@@ -462,6 +516,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
       "Model discovery failed: %@. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
       "Connect accounts or add API keys. Models are chosen under Agent › LLM lanes.",
+      "Auto-send to the Agent", "Hold before sending",
+      "Edit or withdraw a message to an agent during this window. 0 sends immediately.",
+      "Waits this long after you stop speaking before sending your message. Also sets the silence limit for hands-free dictation. Changes apply when you open a channel or start a recording.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -490,7 +547,7 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let section = try XCTUnwrap(sources["WorkspaceRootsSection.swift"])
     XCTAssertTrue(
-      section.contains("WorkspaceSectionHeader(String(localized: \"Allowed folders\"))"))
+      section.contains("SettingsSectionLabel(String(localized: \"Allowed folders\"))"))
     XCTAssertFalse(section.contains("(list_projects)"), "tool names stay out of the UI copy")
     XCTAssertTrue(section.contains("Label(\"Add folder…\", systemImage: \"plus\")"))
     XCTAssertTrue(section.contains("Button(action: pickFolder)"), "the ellipsis opens a picker")
@@ -510,8 +567,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions.":
         "Codescribe sprawdza względem tych folderów ścieżki plików oraz katalogi robocze i argumenty ścieżkowe poleceń terminala. Procesy i serwery MCP mogą korzystać z innych ścieżek zgodnie z własnymi uprawnieniami.",
       "Allowed folders": "Dozwolone foldery",
-      "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories.":
-        "Agent szuka tu projektów i repozytoriów Git, pomijając ukryte foldery i katalogi build.",
+      "The Agent looks for projects here, skipping hidden and build folders.":
+        "Agent szuka tu projektów, pomijając ukryte foldery i katalogi build.",
       "Add folder…": "Dodaj folder…",
       "Save changes": "Zapisz zmiany",
       "Remove folder": "Usuń folder",
@@ -529,6 +586,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "The Agent's built-in file tools read and write only inside these folders. MCP servers have separate access rules.",
       "Directories the Agent may read and write. Everything outside them is out of reach.",
       "Directories the Agent scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.",
+      "The Agent looks for projects and Git repositories here, skipping hidden folders and build directories.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -643,7 +701,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified\""))
-    XCTAssertTrue(section.contains("ToolsSectionHeader(String(localized: \"Individual tools\"))"))
+    XCTAssertTrue(
+      section.contains("SettingsSectionHeaderRow(String(localized: \"Individual tools\"))"))
+    XCTAssertTrue(section.contains("SettingsSectionHeaderRow(String(localized: \"Defaults\"))"))
+    XCTAssertFalse(section.contains("Text(\"Defaults\")"), "Defaults is not a setting name")
     XCTAssertFalse(section.contains("Tool overrides"))
     XCTAssertTrue(section.contains("A rule for one tool outranks its server's rule"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
@@ -718,6 +779,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
       "Inherited from the category default", "Inherited from the server rule",
       "Restore inheritance",
+      "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -802,6 +864,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Agent tools": "Narzędzia Agenta",
       "Detected installations": "Wykryte instalacje",
       "Configuration ready": "Konfiguracja gotowa",
+      "Provider: %@": "Dostawca: %@",
+      "No provider for %@": "Brak dostawcy dla: %@",
+      "Does not block the Agent": "Nie blokuje Agenta",
+      "Needs attention": "Wymaga uwagi",
       "Optional · not configured": "Opcjonalne · nieskonfigurowane",
       "Awaits first run": "Oczekuje na uruchomienie",
       "Detected": "Wykryto",
@@ -830,6 +896,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "%lld configured", "not tested", "testing…", "fail: %@",
       "Ready — %@ configured, access available, %@", "%@ — access available",
       "Ready — %@ configured, credentials available, %@", "%@ — credentials available",
+      "Model: %@", "%lld capabilities have no provider",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
@@ -865,6 +932,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("@State private var showingTechnicalDetails = false"))
     XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingTechnicalDetails)"))
     XCTAssertTrue(section.contains("Text(\"Move MCP configuration to Trash…\")"))
+    XCTAssertTrue(section.contains("SettingsSectionHeaderRow(\n        String(\n          localized: \"Add server\","))
+    XCTAssertFalse(section.contains(".textCase(.uppercase)"), "no uppercase eyebrow in the form")
+    XCTAssertFalse(section.contains("skip it"), "the empty state never suggests skipping a step")
     XCTAssertFalse(section.contains("Clear MCP configuration"))
     XCTAssertTrue(
       section.contains("String(localized: \"mcp.server.enabled\", defaultValue: \"Enabled\")"))
@@ -955,6 +1025,9 @@ final class SettingsChromeContractTests: XCTestCase {
         "Token jest zapisywany w pęku kluczy macOS, nie w pliku mcp.json.",
       "Move MCP configuration to Trash…": "Przenieś konfigurację MCP do Kosza…",
       "Move MCP configuration to Trash?": "Przenieść konfigurację MCP do Kosza?",
+      "Add server": "Dodaj serwer",
+      "A server gives the Agent extra tools, such as code or web search.":
+        "Serwer daje Agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie albo w sieci.",
       "Test": "Sprawdź",
       "Settings": "Ustawienia",
     ]
@@ -967,9 +1040,41 @@ final class SettingsChromeContractTests: XCTestCase {
       "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
       "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
       "Remove this server from mcp.json",
+      "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
+  }
+
+  /// Creator (round 14, 2026-10-18): a client row says whether its skill is
+  /// the generation this app carries, the folders sit in one disclosure
+  /// instead of inside a client's name, and Max says whether anything waits.
+  func testCreatorStatesTheSkillGenerationAndKeepsPathsInDetails() throws {
+    let sources = try settingsSources()
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(creator.contains("status.clientsWithCurrentSkill.contains(client)"))
+    XCTAssertFalse(creator.contains("creator.agentBridge.clientInstalled"))
+    XCTAssertTrue(creator.contains("DisclosureGroup(isExpanded: $showingSkillLocations)"))
+    XCTAssertTrue(creator.contains("\\(client.displayName): \\(client.skillPathLabel)"))
+    XCTAssertTrue(creator.contains("localized: \"max.approvals.none\""))
+    XCTAssertEqual(AgentBridgeClient.agents.skillPathLabel, "~/.agents/skills/codescribe")
+    XCTAssertEqual(AgentBridgeClient.codex.skillPathLabel, "~/.codex/skills/codescribe")
+    XCTAssertFalse(AgentBridgeClient.agents.displayName.contains("~"), "a name, not a path")
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "creator.agentBridge.clientCurrent": "Aktualny",
+      "creator.agentBridge.clientOutdated": "Dostępna aktualizacja",
+      "Skill locations": "Foldery skilla",
+      "max.approvals.none": "Brak oczekujących próśb",
+      "max.approvals.waiting": "Oczekujące prośby",
+      "audio.readiness.start": "Rozpocznij nagrywanie",
+      "audio.readiness.stop": "Zatrzymaj nagrywanie",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    XCTAssertNil(polish["creator.agentBridge.clientInstalled"])
   }
 
   /// The Audio pane reads as "microphone and recording": a headline without a
@@ -1116,7 +1221,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("if showingResets {"))
     XCTAssertTrue(
       panel.contains("String(localized: \"Reset data\""),
-      "the Reset header is a ProvidersSectionHeader since round 16")
+      "the Reset header is a SettingsSectionHeaderRow")
     XCTAssertTrue(panel.contains("Text(\"Reset Agent data\""))
     XCTAssertTrue(panel.contains("Text(\"Reset app data\""))
     XCTAssertFalse(panel.contains("String(localized: \"Danger zone\")"))
@@ -1195,7 +1300,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("\"Corrected original\""))
     XCTAssertTrue(panel.contains("correctionFooter("))
     XCTAssertFalse(panel.contains("Text(\"revision \\(row.revision)\")"))
-    XCTAssertTrue(panel.contains("ProvidersSectionHeader(String(localized: \"Dictionary rules\"))"))
+    XCTAssertTrue(
+      panel.contains("SettingsSectionHeaderRow(String(localized: \"Dictionary rules\"))"))
     XCTAssertTrue(panel.contains("lexiconProvenanceLine("))
     XCTAssertTrue(panel.contains("model.customLexiconEntries.count <= dictionaryRuleListLimit"))
     XCTAssertTrue(panel.contains("if corrections.count > 1 {"))
@@ -1223,7 +1329,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
     let pins = try XCTUnwrap(panel.range(of: "DictionaryWordPins(configDir: model.configDir)"))
     let recent = try XCTUnwrap(
-      panel.range(of: "ProvidersSectionHeader(String(localized: \"Recent corrections\"))"))
+      panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
     XCTAssertLessThan(pins.lowerBound, recent.lowerBound)
 
     let polish = try polishCatalog()

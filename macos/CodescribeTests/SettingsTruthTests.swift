@@ -1761,6 +1761,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(summary.native, 1)
     XCTAssertEqual(summary.enhanced, 1)
     XCTAssertEqual(summary.unavailable, 1)
+    XCTAssertEqual(summary.unavailableOps, ["code.symbols"])
     XCTAssertEqual(summary.line, "Capabilities: 1 native · 1 enhanced · 1 unavailable")
 
     let rows = CsCapabilityRow.sampleMatrix
@@ -1775,6 +1776,29 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertNil(
       CsCapabilityRow(op: "x", tier: "unavailable", provider: "", nativeTool: "", reason: "")
         .localizedDetail)
+  }
+
+  /// The notes under a passing verdict say they do not block the Agent, an
+  /// operation without a provider is named rather than counted, and the key
+  /// fact names the provider (round 15, 2026-10-18).
+  func testDiagnosticsSummaryNamesMissingProvidersAndCaptionsItsNotes() {
+    let warned = AgentStatusSummary(
+      readiness: .sample, capabilities: CsCapabilityRow.sampleMatrix, servers: [],
+      mcpStatus: .sample, accessResolved: true, accessError: nil)
+    XCTAssertEqual(warned.headline, "Configuration ready")
+    XCTAssertTrue(warned.notes.allSatisfy { $0.tone == .warn }, "\(warned.notes)")
+    XCTAssertTrue(warned.notes.map(\.text).contains("No provider for code.symbols"))
+    XCTAssertEqual(warned.notesCaption, "Does not block the Agent")
+    XCTAssertTrue(warned.facts.contains("Provider: OpenAI (Responses)"), warned.facts)
+
+    let quiet = CsAgenticReadiness(
+      configPathDisplay: CsAgenticReadiness.sample.configPathDisplay, ready: true,
+      rows: CsAgenticReadiness.sample.rows.filter { $0.facet != .aicxMcp })
+    let clean = AgentStatusSummary(
+      readiness: quiet, capabilities: Array(CsCapabilityRow.sampleMatrix.prefix(2)),
+      servers: [], mcpStatus: .sample, accessResolved: true, accessError: nil)
+    XCTAssertTrue(clean.notes.isEmpty, "\(clean.notes)")
+    XCTAssertEqual(clean.notesCaption, "", "no notes, no caption")
   }
 
   /// One MCP table line per configured server: the probe row joins by name

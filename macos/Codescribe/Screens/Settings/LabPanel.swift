@@ -72,7 +72,7 @@ struct LabPanel: View {
 
       ledgerSensitivity
     }
-    .padding(CSSpace.xl)
+    .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
     .task { await model.refreshAdmission() }
   }

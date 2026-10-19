@@ -13,8 +13,8 @@ struct SettingsTabbedPane<Content: View>: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsTabBar(model: model, section: section)
         .controlSize(.regular)
-        .padding(.horizontal, CSSpace.xl)
-        .padding(.vertical, CSSpace.md)
+        .padding(.horizontal, SettingsScale.pageGutter)
+        .padding(.vertical, SettingsScale.tabBarVertical)
         .frame(maxWidth: .infinity, alignment: .leading)
       Divider()
 
@@ -25,10 +25,9 @@ struct SettingsTabbedPane<Content: View>: View {
           }
 
           content
-            .padding(.top, CSSpace.lg)
+            .padding(.top, SettingsScale.sectionGap)
         }
-        .padding(.horizontal, CSSpace.xl)
-        .padding(.vertical, CSSpace.section)
+        .settingsPage()
         .frame(maxWidth: .infinity, alignment: .leading)
         // `.scrollIndicators(.hidden)` stood on the scroll view and could not
         // keep its promise with a mouse attached (Founder, 2026-10-18).

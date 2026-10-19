@@ -31,6 +31,20 @@ row) — voice and formatting, one **Max consultation** card that also holds
 the pending approval requests, the coding-agent skill rows with **Refresh
 status** on the section header, and the quick-start cards.
 
+**Max permissions** says under its heading whether anything is waiting for you —
+_No requests waiting_ or _Requests waiting_ — so an empty section cannot be
+mistaken for one that was never read; the requests themselves are the cards
+below. While the check runs, the button says so; if the journal cannot be read,
+the error replaces the line.
+
+The coding-agent rows name the client — Codex, Claude Code, Other agents — and
+whether its installed skill is the one this app carries: **Up to date**, or
+**Update available** when the app brings a newer one (the same **Update skill**
+button installs it). A folder the app manages whose receipt no longer describes
+it also reads as **Update available**; updating re-adopts it. The folders each
+client reads moved into **Skill locations**, a disclosure at the bottom of the
+card.
+
 ### Languages
 
 **Interface language** switches the app between
@@ -198,8 +212,9 @@ interface language, not the macOS region.
 **Conflicts** and notes are separate. A conflict blocks the save and sits in a
 coloured card above the Save button; a note does not block and sits under it as
 a quiet grey field with a globe symbol and secondary text. The macOS Fn
-configuration message is a note — Fn is also configured in macOS and Codescribe
-may capture its short presses; it never blocks saving. The technical identifier
+configuration message is a note: a short Fn press opens the macOS emoji picker
+or its dictation, Codescribe takes that press first, so the macOS one may not
+open. It never blocks saving. The technical identifier
 that came across the bridge is not shown; the save receipt and the bridge log
 keep it.
 
@@ -210,6 +225,8 @@ macOS Fn key action to _Do Nothing_, otherwise macOS can claim a double press
 for its own dictation). **Middle mouse acts as Fn**: the middle button follows
 the same press, hold and tap rules as Fn; custom mappings in your mouse
 software can block the standard middle-click signal the app listens for.
+**Middle click picks an agent**: middle click opens the list, scrolling chooses,
+left click opens the conversation, and middle click starts and ends talking.
 
 **During dictation** is a quiet neutral card: while holding Fn, pressing the
 chosen key attaches the selected text to the take. **Arm with** chooses Shift
@@ -227,9 +244,12 @@ paste") keeps **Safe**, **Comfort** and **Off**, with the picker on its own
 full-width row and only the selected mode explained underneath. The terminal,
 command and password-field safeguards are unchanged.
 
-**Recording indicator** names the three dot states in full — Recording, Agent,
-Processing — and sets the size of the indicator next to the cursor
-(Off / 4px / 8px / 12px; the Agent indicator stays proportionally larger).
+**Recording indicator** carries its title above the card, like **Dictation
+control**, **Extra shortcuts** and **Paste after dictation**. Inside, the size
+of the indicator next to the cursor comes first (Off / 4px / 8px / 12px; the
+Agent indicator stays proportionally larger), and the three dot states —
+Recording, Agent, Processing — read as captions below the size they are sized
+by.
 
 `HOLD_START_DELAY_MS` and `DOUBLE_TAP_INTERVAL_MS` govern the same gestures but
 have no control on this tab; they are settings keys
@@ -251,13 +271,20 @@ the provider rejected. Vendor endpoints are factory-defined and sit under each c
 **Advanced** disclosure together with the Keychain account name and the OAuth
 client-id override; custom hosts show their endpoint on the card and edit it
 through **Edit**. Custom cards use a compact header for the full name,
-protocol and Edit / Remove actions. The next row keeps the complete API
+protocol and Edit / Remove actions. The protocol is named once per card: the
+pill carries it, so a vendor name that ends in its own wire
+(**OpenAI (Responses)**, **Anthropic (Messages)**) drops that suffix from the
+title. A parenthesis that is not the wire — **xAI (Grok)** — is left alone. The next row keeps the complete API
 address visible beside the key-presence summary and Change / Add; at narrow
 widths these groups stack instead of overlapping. Names and addresses wrap.
 Advanced remains available below the configuration, and a stored key still
 describes presence rather than a successful connection.
-**Cloud transcription** holds the File and Live lanes
-(endpoint, key, and for Live the optional gateway session URL); a rejected
+**Cloud transcription** holds the File and Live lanes. Two short lines
+introduce them: **You choose the mode under Dictation.** and **We send
+recordings only in Cloud mode or during a manual cloud re-transcription.** Each
+lane card shows its key at the first level; the lane endpoint, the Live lane's
+optional gateway session URL and the lane's settings keys sit under the card's
+**Advanced** disclosure — an address is not an everyday choice. A rejected
 address reads as one sentence under the field, e.g. **This address needs
 ws:// or wss://.** Secrets are stored separately from account sign-in.
 
@@ -274,11 +301,20 @@ says **Provider default model** or **Set manually**. **Reset model** clears only
 the override and never touches the provider. The settings keys
 (`LLM_ASSISTIVE_PROVIDER`, `LLM_ASSISTIVE_MODEL`, …) and the resolved endpoints
 sit under **Active configuration details**, collapsed by default. **Agent →
-Prompts** edits their prompts.
+Prompts** edits their prompts. The model-list line (where the list came from,
+with **Refresh** and **Error details**) sits above the model field, because that
+is the line that tells you to type an identifier when there is no list.
 
-**Auto-send to the Agent** is one labelled switch (no separate section heading
-repeating it): in Agent mode the untouched transcript is sent 5 seconds after
-the take ends unless you start editing it.
+**Codescribe Bus** groups the two timers that act on channel messages:
+**Pause before sending to Codescribe Bus** (the silence that ends a spoken
+message, and the silence limit for hands-free dictation, applied from the next
+channel or recording) and **Hold before sending to Codescribe Bus** (0–30 s;
+the window in which you can revise or withdraw the message, 0 sends at once).
+
+**Auto-send to the built-in Agent** is a separate, labelled switch and has
+nothing to do with the bus: in Agent mode the untouched transcript is sent to
+the Agent in the overlay 5 seconds after the take ends unless you start editing
+it.
 
 ### Agent → Prompts
 
@@ -327,8 +363,11 @@ other paths under its own permissions. The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
-projects. A green dot marks an existing directory, amber one that does not
-resolve. **Add folder…** opens a folder picker and adds the choice as an
+projects. One line above the list says so: **The Agent looks for projects
+here, skipping hidden and build folders.** — what the list does not cover (the
+separate permissions of a process or an MCP server) is the tab's own
+introduction and is not repeated. A green dot marks an existing directory,
+amber one that does not resolve. **Add folder…** opens a folder picker and adds the choice as an
 editable row; the minus button (**Remove folder**) drops a row, and **Undo
 remove** puts the last removed row back where it was. Nothing is written until
 **Save changes**; **Discard changes** returns to the saved list.
@@ -444,31 +483,44 @@ attach listeners.
 Tools is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
+The tab has two bands under two titles of equal weight: **Defaults** and
+**Individual tools**. No rule is drawn between them — the second title is the
+separator.
+
 - **Defaults** — one row per category: Read data, Changes/processes/network,
   Unclassified. These are the stored category defaults and apply to every
   tool without a more specific rule.
 - **Resolution order** — a rule for one tool outranks its server's rule,
   and both outrank these defaults. External destructive tools are
   always refused, and an Allow never silently covers a path that may hold
-  secrets (`.env`, key material): that call asks first.
+  secrets (`.env`, key material): that call asks first. The sentence under the
+  defaults card says only the two facts needed to read a level: what outranks
+  what, and what no setting here can lift.
 - **Individual tools · N tools** — N is the whole tool catalog, not the number
   of individual rules. Opening the tab discovers the catalog by starting every
   configured MCP server and asking it for its tools, so the list appears a few
   seconds after the defaults; a "Discovering tools from the MCP servers…" row
-  stands in until then. One column: a search field over the whole catalog
-  (name, identifier, source), a **Source** popup listing Native plus every MCP
-  server with its tool count ("Native (26)", server names verbatim), then that
-  source's tools at the full width of the pane. Each card carries the tool's
-  full name — it wraps onto a second line instead of ending in an ellipsis —
-  with the rule that produced the current level opposite it ("Individual rule",
-  "Server rule" or "Category default"), then one quiet line for source, server
-  and localized risk class ("MCP · aicx-http · Read data"), the raw identity,
-  and the Allow/Ask/Deny control across the card. Codescribe's own tools are
-  named in the interface language; an MCP server's tools keep the vendor's
-  spelling, except that `aicx` is always written in lower case. The card's
-  tooltip carries the name and the identifier together. "Remove rule" appears
-  only on a card that carries an individual rule and drops it; the card then
-  shows the server rule or the category default again.
+  stands in until then. One column, and one row carries both filters: the
+  search field over the whole catalog (name, identifier, source) and, beside
+  it, the **Source** popup listing Native plus every MCP server with its tool
+  count ("Native (26)", server names verbatim). The row shows no "Source"
+  caption — the popup's own entries name what it selects, and the word stays
+  its tooltip and its VoiceOver label. Under the row sit that source's tools at
+  the full width of the pane, as a compact list.
+- **One tool's card** — the tool's full name, which wraps onto a second line
+  instead of ending in an ellipsis, with the rule that produced the current
+  level opposite it: "Individual rule" when the tool carries one of its own,
+  otherwise "Server rule" or "Category default", which is how a tool says it
+  follows the rule above it. The word "inheritance" appears nowhere. Then one
+  quiet line for source, server and localized risk class
+  ("MCP · aicx-http · Read data"), the raw identity in the quietest mono rung —
+  selectable, so it can be copied into a config or a bug report — and the
+  Allow/Ask/Deny control across the card. Codescribe's own tools are named in
+  the interface language; an MCP server's tools keep the vendor's spelling,
+  except that `aicx` is always written in lower case. The card's tooltip
+  carries the name and the identifier together. "Remove rule" appears only on a
+  card that carries an individual rule and drops it; the card then shows the
+  server rule or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
@@ -487,10 +539,16 @@ still reachable, at worst one disclosure away.
 
 - **Agent status** — the header carries the shared Refresh chip. The card below
   shows the verdict ("Configuration ready", or the concrete reason it is not),
-  one quiet line of key facts (model provider · built-in tools · Agent
-  folders), and one line per thing needing attention (integrations awaiting
-  their first run, failed integrations, failed MCP checks, capabilities with no
-  provider, an unreadable `mcp.json`). The verdict follows the core gate: a
+  one quiet line of key facts (**Provider:** … · built-in tools · Agent
+  folders — the readiness probe reports a provider, not a model; the resolved
+  model per lane is on **AI models**), and one line per thing needing attention
+  (integrations awaiting their first run, failed integrations, failed MCP
+  checks, an unreadable `mcp.json`, and capabilities with no provider — named,
+  e.g. **No provider for fs.list · repo.status**). A caption above that list
+  says how to read it: **Needs attention** when one of the lines is an error,
+  **Does not block the Agent** when they are warnings only, so a warning under
+  "Configuration ready" is not taken for a contradiction. The verdict follows
+  the core gate: a
   blocking failure can never render as "ready", and a warning or an unchecked
   state never renders as an error. Before the first probe the card says "Not
   checked yet" rather than guessing.
@@ -525,6 +583,11 @@ still reachable, at worst one disclosure away.
   status mark: a dot and a word (Good, Warning, Error, Not checked) that is also
   the tooltip and the VoiceOver label.
 
+Every list on this page uses the compact row as its pattern: one bordered card,
+the same insets, the same type rungs and one divider between rows. The two
+wider tables (the capability matrix and the readiness table) add a column to
+that row rather than a second row shape.
+
 The card's "built-in tools" count and the "Agent tools" capability counts
 measure different sets and are labelled accordingly: the first counts the tool
 definitions `register_native_tools` compiles in, the second counts the
@@ -539,7 +602,10 @@ dump.
 
 - **Server card** — the name, the configured state as a flag button (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
-  anything), the last handshake, and the Test / Remove actions. Remove only
+  anything), the last handshake, and the Test / Remove actions. All three
+  actions are the one Settings chip, so they share a shape, a label rung and a
+  focus ring with every other flat action in the window; the configured state
+  still reads in colour, on its power glyph and label. Remove only
   asks: an alert names the server and what goes with it (its entry in
   `mcp.json` and its Keychain token); Cancel, Escape or closing the alert
   leaves the configuration as it was, and only "Remove server" removes. "Details"
@@ -558,12 +624,20 @@ dump.
   test result, not a live connection indicator: the Agent starts servers per
   turn. Toggling the flag drops the cached result, so a card never reports a
   configuration that was just changed.
-- **Add server** — a segmented choice between a local process and an HTTP
+- **No servers yet** — the tab opens on two lines: that there are none and
+  that none are required, then what a server would add. MCP is optional, so
+  nothing here is presented as a step and nothing offers to skip one; the
+  **Add server** form below is the only action.
+- **Add server** — an ordinary section title above its card, in the same
+  weight as every other section title in Settings. Inside: a segmented choice
+  between a local process and an HTTP
   connection, then labelled fields: server name, launch command and command
   arguments, or server URL and an optional access token. The token goes to
   the macOS Keychain, never into `mcp.json`. Each field's caption is also its
   accessibility name, so VoiceOver reads "Server name" or "Access token
-  (optional)" rather than the placeholder or the typed text. Add is live as
+  (optional)" rather than the placeholder or the typed text. A long launch
+  command, argument list or URL is not clipped: the field scrolls its own
+  content while you edit, and the whole value is a tooltip away. Add is live as
   soon as anything is typed; the store does the checking. A rejected add
   keeps everything typed and says in plain words what to fix, under the field
   it names and with focus moved there: an unparseable or non-HTTP URL,
@@ -649,6 +723,12 @@ winning until it is removed.
 **Recording readiness** — one status line plus two values, instead of four
 numbered steps:
 
+The whole block is one card, not a panel inside a card: the status line, the two
+values and their actions sit directly on the **Recording readiness** card, and
+every action on it — **Start recording**, **Stop recording**, **Recalibrate**,
+**Allow**, **System Settings**, **Calibrate**, **Open Lab** — is the same chip
+button used across Settings.
+
 - The status line is the recorder's own verdict: **Ready to record** with
   **Start recording**, or the live phase while a take is starting, running or
   finishing. **Start recording** names the configured Dictation gesture when
@@ -700,8 +780,9 @@ with: switching to `Off` mid-take does not shorten that take, and a take capture
 under `Off` is still discarded if the choice is changed afterwards.
 
 **Recording start sound** — **Play a signal** plays the recorder's live start
-confirmation, and **Volume** below it shows the level as a percentage. The slider
-is disabled while the signal is off.
+confirmation. **Volume** sits on the next row — a short slider with the level as
+a percentage at the card's right edge, under the switch above it. The slider is
+disabled while the signal is off.
 
 ## Diagnostics
 
