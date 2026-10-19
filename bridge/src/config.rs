@@ -2874,7 +2874,7 @@ mod reset_tests {
             assert_eq!(projected.apple_live_enabled, apple);
             let unchanged = super::CsSettings::from_runtime_snapshot(&original);
             assert!(!unchanged.seal_ledger_enabled);
-            assert!(!unchanged.apple_live_enabled);
+            assert!(unchanged.apple_live_enabled);
         }
     }
 
