@@ -1440,10 +1440,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let state = OverlayState()
     state.setPresentationMode(.mini)
     try withPanel(state: state) { _, root in
-      func shown(_ identifier: String) -> Bool {
+      @MainActor func shown(_ identifier: String) -> Bool {
         accessibilityTree(root).contains { $0.accessibilityIdentifier() == identifier }
       }
-      func brand(_ word: String) -> Bool {
+      @MainActor func brand(_ word: String) -> Bool {
         accessibilityTree(root).contains { element in
           element.accessibilityIdentifier() == "overlay-mini-brand"
             && [element.accessibilityLabel(), element.accessibilityValue() as? String]
