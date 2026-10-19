@@ -2569,6 +2569,278 @@ def frame_context(environ: Any) -> dict[str, Any] | None:
     }
 
 
+_FRAME_ENV_KEYS = frozenset({
+    "VC_FRAME_PANE_ID",
+    "ZELLIJ_PANE_ID",
+    "VC_FRAME_SESSION_NAME",
+    "ZELLIJ_SESSION_NAME",
+    "VC_FRAME_SOCKET_DIR",
+    "ZELLIJ_SOCKET_DIR",
+    "__CFBundleIdentifier",
+    "ALACRITTY_SOCKET",
+    "ALACRITTY_LOG",
+})
+
+
+def process_environ(pid: int) -> dict[str, str]:
+    """Extract vc-frame environment variables from a live process via `ps eww`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "eww", "-o", "command=", "-p", str(pid)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=2, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    extracted: dict[str, str] = {}
+    for token in result.stdout.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        if key in _FRAME_ENV_KEYS:
+            extracted[key] = value
+    return extracted
+
+
+def tty_window_and_access(tty_name: str) -> dict[str, Any] | None:
+    """Read slave PTY window size (rows, cols) and st_atime for live attach coupling."""
+    import struct
+    import termios
+
+    cleaned = (tty_name or "").strip()
+    if not cleaned or cleaned == "??":
+        return None
+    path = "/dev/" + cleaned.lstrip("/")
+    if path.startswith("/dev/dev/"):
+        path = path[4:]
+    descriptor: int | None = None
+    try:
+        metadata = os.stat(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        packed = fcntl.ioctl(descriptor, termios.TIOCGWINSZ, b"\x00" * 8)
+        rows, cols = struct.unpack("HHHH", packed)[:2]
+        return {"path": path, "atime": metadata.st_atime, "winsz": (rows, cols)}
+    except OSError:
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def process_table() -> dict[int, dict[str, Any]]:
+    """Snapshot live processes `{pid: {pid, ppid, tty, command}}`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,tty=,command="],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=2, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    table: dict[int, dict[str, Any]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = {"pid": pid, "ppid": ppid, "tty": parts[2], "command": parts[3]}
+    return table
+
+
+def resolve_claude_frame_context(
+    provider_session_id: str,
+    *,
+    home: Path | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the vc-frame pane hosting a Claude Code session.
+
+    Handles both direct interactive `claude` processes inside a vc-frame pane
+    and `claude daemon` (`--bg-pty-host`) workers viewed through a `claude agents`
+    or `claude attach` client running inside a vc-frame pane.
+    """
+    if not isinstance(provider_session_id, str) or not provider_session_id.strip():
+        return None
+    claude_home = (home.expanduser() if home is not None else Path.home()) / ".claude"
+    short = provider_session_id[:8]
+    procs = process_table()
+    if not procs:
+        return None
+
+    sessions_dir = claude_home / "sessions"
+    target_pids: list[int] = []
+    other_session_pids: list[int] = []
+    try:
+        session_files = sorted(sessions_dir.glob("*.json"))
+    except OSError:
+        session_files = []
+    for session_file in session_files:
+        record = read_json(session_file)
+        if not isinstance(record, dict):
+            continue
+        pid = record.get("pid")
+        if not isinstance(pid, int) or pid not in procs:
+            continue
+        if record.get("sessionId") == provider_session_id:
+            target_pids.append(pid)
+        elif isinstance(record.get("sessionId"), str):
+            other_session_pids.append(pid)
+
+    roster = read_json(claude_home / "daemon" / "roster.json")
+    worker_record: dict[str, Any] | None = None
+    if isinstance(roster, dict) and isinstance(roster.get("workers"), dict):
+        workers = roster["workers"]
+        candidate = workers.get(short)
+        if isinstance(candidate, dict) and candidate.get("sessionId") in (None, provider_session_id):
+            worker_record = candidate
+        else:
+            for item in workers.values():
+                if isinstance(item, dict) and item.get("sessionId") == provider_session_id:
+                    worker_record = item
+                    break
+    if isinstance(worker_record, dict):
+        wpid = worker_record.get("pid")
+        if isinstance(wpid, int) and wpid in procs and wpid not in target_pids:
+            target_pids.append(wpid)
+
+    # 1. Direct or ancestor vc-frame environment on the session process tree.
+    visited: set[int] = set()
+    for start_pid in target_pids:
+        current = start_pid
+        for _ in range(8):
+            if current <= 1 or current in visited or current not in procs:
+                break
+            visited.add(current)
+            frame = frame_context(process_environ(current))
+            if frame is not None:
+                return frame
+            current = procs[current]["ppid"]
+
+    # 2. Collect live `claude` client processes running inside vc-frame panes.
+    frame_clients: list[dict[str, Any]] = []
+    for pid, info in procs.items():
+        command = info["command"]
+        if "claude" not in command or "--bg-pty-host" in command:
+            continue
+        frame = frame_context(process_environ(pid))
+        if frame is None:
+            continue
+        # Direct CLI match (`claude --resume <id>` or `claude attach <short>`).
+        if provider_session_id in command or (
+            len(short) >= 8 and re.search(rf"\battach\s+{re.escape(short)}\b", command)
+        ):
+            return frame
+        frame_clients.append({
+            "pid": pid,
+            "tty": info["tty"],
+            "tinfo": tty_window_and_access(info["tty"]),
+            "frame": frame,
+        })
+
+    if not frame_clients:
+        return None
+
+    # 3. Live PTY coupling (`TIOCGWINSZ` + `st_atime`) between `claude agents`
+    # client TTY and attached `--bg-pty-host` worker slave TTY.
+    worker_ttys = [
+        tinfo for pid in target_pids
+        if (tinfo := tty_window_and_access(procs[pid]["tty"])) is not None
+    ]
+    if worker_ttys:
+        other_ttys = [
+            tinfo for pid in other_session_pids
+            if (tinfo := tty_window_and_access(procs[pid]["tty"])) is not None
+        ]
+        best_frame: dict[str, Any] | None = None
+        best_delta = 2.0
+        for client in frame_clients:
+            ctty = client["tinfo"]
+            if ctty is None:
+                continue
+            deltas = [
+                abs(ctty["atime"] - wtty["atime"])
+                for wtty in worker_ttys
+                if wtty["winsz"] == ctty["winsz"]
+            ]
+            if not deltas:
+                continue
+            delta = min(deltas)
+            if delta > best_delta:
+                continue
+            closer_other = any(
+                otty["winsz"] == ctty["winsz"]
+                and abs(ctty["atime"] - otty["atime"]) + 1e-6 < delta
+                for otty in other_ttys
+            )
+            if not closer_other:
+                best_delta = delta
+                best_frame = client["frame"]
+        if best_frame is not None:
+            return best_frame
+
+    # 4. Fallback when PTY ioctl/stat is unavailable (e.g. synthetic test doubles):
+    # match the client's latest `attach-journal` gesture to `firedInteractiveMarks`.
+    marks = worker_record.get("firedInteractiveMarks") if isinstance(worker_record, dict) else None
+    if not worker_ttys and isinstance(marks, list) and marks:
+        loaded_pairs = {
+            (m.get("msgsLoaded"), m.get("msgsInJsonl"))
+            for m in marks
+            if isinstance(m, dict)
+            and m.get("kind") == "loaded"
+            and isinstance(m.get("msgsLoaded"), int)
+            and isinstance(m.get("msgsInJsonl"), int)
+        }
+        ready_counts = {
+            m.get("msgsRenderedAtFirstPaint")
+            for m in marks
+            if isinstance(m, dict)
+            and m.get("kind") == "ready"
+            and isinstance(m.get("msgsRenderedAtFirstPaint"), int)
+        }
+        journal_dir = claude_home / "daemon" / "attach-journal"
+        latest_by_pid: dict[int, dict[str, Any]] = {}
+        try:
+            journal_files = list(journal_dir.glob("*.json"))
+        except OSError:
+            journal_files = []
+        for journal_file in journal_files:
+            entry = read_json(journal_file)
+            if not isinstance(entry, dict):
+                continue
+            cpid = entry.get("pid")
+            started = entry.get("startedAtEpochMs")
+            if not isinstance(cpid, int) or not isinstance(started, (int, float)):
+                continue
+            prev = latest_by_pid.get(cpid)
+            if prev is None or started >= prev.get("startedAtEpochMs", 0):
+                latest_by_pid[cpid] = entry
+        for client in frame_clients:
+            entry = latest_by_pid.get(client["pid"])
+            if not isinstance(entry, dict):
+                continue
+            pair = (entry.get("msgsLoaded"), entry.get("msgsInJsonl"))
+            rendered = entry.get("msgsRenderedAtFirstPaint")
+            if (loaded_pairs and pair in loaded_pairs) or (
+                ready_counts and rendered in ready_counts
+            ):
+                return client["frame"]
+
+    return None
+
+
 def frame_cli(environ: Any) -> str | None:
     """The public `vc-frame` on PATH, resolved at each action.
 
@@ -2630,6 +2902,8 @@ def run_panel_focus(frame: dict[str, Any]) -> tuple[str, int | None]:
 class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
 
+    FRAME_DISCOVERY_INTERVAL = 5.0
+
     def __init__(
         self,
         *,
@@ -2653,7 +2927,10 @@ class SessionLease:
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
         self.process_identity = process_identity(os.getpid())
-        self.frame = frame_context(os.environ)
+        self._provider_metadata_home = provider_metadata_home
+        self._inherited_frame = frame_context(os.environ)
+        self.frame = self._inherited_frame
+        self._next_frame_discovery = 0.0
         self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
@@ -2879,9 +3156,25 @@ class SessionLease:
             },
         )
 
+    def refresh_frame_context(self, *, force: bool = False) -> bool:
+        if self._inherited_frame is not None or self.provider != "claude-code":
+            return False
+        now = time.monotonic()
+        if not force and now < self._next_frame_discovery:
+            return False
+        self._next_frame_discovery = now + self.FRAME_DISCOVERY_INTERVAL
+        resolved = resolve_claude_frame_context(
+            self.provider_session_id,
+            home=self._provider_metadata_home,
+        )
+        changed = resolved != self.frame
+        self.frame = resolved
+        return changed
+
     def refresh_provider_model(self) -> None:
         if self._provider_model_reader is not None:
             self._provider_model_reader.refresh()
+        self.refresh_frame_context()
 
     def focus_panel(self, request: dict[str, Any]) -> dict[str, Any] | None:
         """Answer one click on this agent's row; None for another lease or a repeat.
@@ -2902,10 +3195,13 @@ class SessionLease:
         exit_code: int | None = None
         if emitted is None or time.time() - emitted > PANEL_FOCUS_FRESH_SECONDS:
             status = "stale"
-        elif self.frame is None:
-            status = "no_frame"
         else:
-            status, exit_code = run_panel_focus(self.frame)
+            if self.refresh_frame_context(force=True):
+                self.persist(active=True)
+            if self.frame is None:
+                status = "no_frame"
+            else:
+                status, exit_code = run_panel_focus(self.frame)
         return {
             "schema": AGENT_PANEL_FOCUS_RESULT_SCHEMA, "kind": "agent_panel_focus_result",
             "emitted_at": utc_now(), "request_id": request["request_id"],
