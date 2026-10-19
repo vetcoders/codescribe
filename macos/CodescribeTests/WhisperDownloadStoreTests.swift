@@ -45,6 +45,25 @@ private final class StoppedClock: @unchecked Sendable {
   func advance(_ seconds: TimeInterval) { lock.withLock { stored += seconds } }
 }
 
+/// Counts status reads and how many ran on the main thread.
+private final class StatusReadLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var reads = 0
+  private var mainReads = 0
+
+  var count: Int { lock.withLock { reads } }
+  var onMain: Int { lock.withLock { mainReads } }
+
+  func record(onMain: Bool) {
+    lock.withLock {
+      reads += 1
+      if onMain { mainReads += 1 }
+    }
+  }
+
+  func reset() { lock.withLock { (reads, mainReads) = (0, 0) } }
+}
+
 @MainActor
 final class WhisperDownloadStoreTests: XCTestCase {
   /// 1539 MB: the shape of the real weights file, in whole megabytes.
@@ -72,6 +91,26 @@ final class WhisperDownloadStoreTests: XCTestCase {
     await Task.yield()
     XCTAssertEqual(transfer.starts, 0)
     XCTAssertFalse(store.inFlight)
+  }
+
+  /// Lena 19 X: each Settings sidebar click froze the app for 0.2-0.35 s while
+  /// the model bundle was validated on the main thread.
+  func testSettingsPageChangeValidatesTheModelOffTheMainThread() async {
+    let reads = StatusReadLog()
+    let store = WhisperDownloadStore(
+      statusProvider: {
+        reads.record(onMain: pthread_main_np() != 0)
+        return .sampleUnavailable
+      },
+      download: { _ in .sampleUnavailable })
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(.allGranted),
+      whisperDownloadStore: store, servingStatusProvider: { nil })
+    reads.reset()
+    settings.refreshForCurrentSection()
+    await awaitCondition { reads.count > 0 }
+    XCTAssertEqual(reads.count, 1)
+    XCTAssertEqual(reads.onMain, 0, "a page change must not validate the model on the main thread")
   }
 
   func testOpeningTheSetupModelStepNeverStartsARequestedModelTransfer() async {

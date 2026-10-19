@@ -1744,6 +1744,45 @@ mod tests {
         assert!(!is_complete_whisper_model_dir(&model));
     }
 
+    /// Settings re-reads the model status on every page change. An unchanged
+    /// bundle answers from memory without opening a file; touching any file
+    /// makes the next call read and validate everything again.
+    #[test]
+    fn unchanged_bundle_validates_without_reading_and_any_change_revalidates() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        assert!(is_complete_whisper_model_dir(&model));
+
+        let tokenizer = model.join("tokenizer.json");
+        let modified = fs::metadata(&tokenizer).unwrap().modified().unwrap();
+        fs::set_permissions(&tokenizer, fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(
+            fs::read(&tokenizer).is_err(),
+            "fixture: the tokenizer must be unreadable for this witness"
+        );
+        assert!(
+            is_complete_whisper_model_dir(&model),
+            "an unchanged bundle must not be read again"
+        );
+
+        fs::File::options()
+            .write(true)
+            .open(model.join("config.json"))
+            .unwrap()
+            .set_modified(modified + std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            validate_whisper_model_bundle(&model).is_err(),
+            "a touched file revalidates, and the unreadable tokenizer fails"
+        );
+        fs::set_permissions(&tokenizer, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(is_complete_whisper_model_dir(&model));
+        fs::write(model.join("mel_filters.npz"), b"corrupt").unwrap();
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
     /// A checksum mismatch cannot leave a directory advertised as complete.
     #[test]
     fn model_manager_rejects_corrupt_mel_filters() {

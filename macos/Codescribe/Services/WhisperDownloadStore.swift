@@ -81,7 +81,8 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
 /// it; navigating or closing onboarding never cancels the download generation.
 @MainActor
 final class WhisperDownloadStore: ObservableObject {
-  typealias StatusProvider = @MainActor () -> CsWhisperModelStatus
+  /// Reads and validates the model bundle on disk; may run off the main actor.
+  typealias StatusProvider = @Sendable () -> CsWhisperModelStatus
   typealias Download =
     @Sendable (any CsWhisperDownloadListener) async throws -> CsWhisperModelStatus
 
@@ -116,6 +117,7 @@ final class WhisperDownloadStore: ObservableObject {
   /// hand-wind it.
   private let now: @Sendable () -> Date
   private var downloadTask: Task<Void, Never>?
+  private var backgroundRefresh: Task<Void, Never>?
   private var sink: WhisperDownloadProgressSink?
   private var rateSamples: [(at: Date, bytes: UInt64)] = []
   private var sampledFile: String?
@@ -142,8 +144,27 @@ final class WhisperDownloadStore: ObservableObject {
 
   func refresh() {
     guard !inFlight else { return }
+    backgroundRefresh?.cancel()
+    backgroundRefresh = nil
     status = statusProvider()
     if status.available { interruption = nil }
+  }
+
+  /// The read for page changes and window activation. The provider validates
+  /// the bundle on disk, so it runs off the main actor and never stalls a
+  /// click. Its answer lands only if no transfer started and no newer read
+  /// superseded it in the meantime.
+  func refreshInBackground() {
+    guard !inFlight else { return }
+    let provider = statusProvider
+    backgroundRefresh?.cancel()
+    backgroundRefresh = Task { [weak self] in
+      let status = await Task.detached(priority: .userInitiated) { provider() }.value
+      guard !Task.isCancelled, let self, !self.inFlight else { return }
+      self.status = status
+      if status.available { self.interruption = nil }
+      self.backgroundRefresh = nil
+    }
   }
 
   func start() {
