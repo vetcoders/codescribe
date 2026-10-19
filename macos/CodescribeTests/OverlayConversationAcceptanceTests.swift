@@ -894,7 +894,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
-  func testNewAgentMessageRevealsTheLatestRowAfterReadingEarlierHistory() throws {
+  func testNewMessagesLeaveAReaderInEarlierHistoryWhereTheyAre() throws {
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<18 {
       bus.consume(
@@ -930,13 +930,24 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       if let text = root as? NSTextView, text.isEditable { return text }
       return root.subviews.lazy.compactMap { editor($0) }.first
     }
+    // A reader scrolls by hand: live-scroll notifications take the list off
+    // the live edge, as in the sibling history tests. A bare programmatic
+    // scroll leaves it following, and the bottom anchor rightly pulls it back.
+    func readHistory(_ scroll: NSScrollView) {
+      NotificationCenter.default.post(
+        name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+      scroll.contentView.scroll(to: .zero)
+      scroll.reflectScrolledClipView(scroll.contentView)
+      NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+      NotificationCenter.default.post(
+        name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+    }
     settle()
     let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
     let document = try XCTUnwrap(scroll.documentView)
     let originalEditor = try XCTUnwrap(editor(host))
     originalEditor.setSelectedRange(NSRange(location: 5, length: 7))
-    scroll.contentView.scroll(to: .zero)
-    scroll.reflectScrolledClipView(scroll.contentView)
+    readHistory(scroll)
     settle()
     XCTAssertLessThan(scroll.documentVisibleRect.maxY, document.bounds.height - 100)
 
@@ -948,24 +959,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     endCapture(&bus, session: "agent-channel-2-take-18")
     host.rootView = try view()
     settle()
-    XCTAssertGreaterThan(
-      scroll.documentVisibleRect.maxY, document.bounds.height - 50,
-      "a newly admitted message must reveal the newest row even after reading history")
+    // `StreamScrollFollowState`: content moves the viewport only while the
+    // reader follows the live edge. Someone reading history keeps their place
+    // and gets the return pill (testJumpToCurrentReturnsFromHistory…).
+    XCTAssertLessThan(
+      scroll.documentVisibleRect.maxY, document.bounds.height - 100,
+      "a newly admitted message must not pull a history reader to the bottom")
     XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
     XCTAssertEqual(originalEditor.string, "Zachowaj ten szkic")
     XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 5, length: 7))
 
-    scroll.contentView.scroll(to: .zero)
-    scroll.reflectScrolledClipView(scroll.contentView)
+    readHistory(scroll)
     settle()
     let delivery = try XCTUnwrap(
       try lenaConversation(bus).messages.last?.recipients.first?.deliveryID)
     bus.consume(reply(String(repeating: "8", count: 24), delivery: delivery))
     host.rootView = try view()
     settle()
-    XCTAssertGreaterThan(
-      scroll.documentVisibleRect.maxY, document.bounds.height - 50,
-      "an agent reply must also reveal the latest row")
+    XCTAssertLessThan(
+      scroll.documentVisibleRect.maxY, document.bounds.height - 100,
+      "an agent reply must not pull a history reader to the bottom either")
     XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
     XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 5, length: 7))
   }
