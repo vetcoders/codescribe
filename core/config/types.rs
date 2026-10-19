@@ -621,6 +621,12 @@ pub struct Config {
     #[serde(default = "default_light_plus_sentence_pause_sec")]
     pub light_plus_sentence_pause_sec: f32,
 
+    /// Lab slider for live word admission, from -100 (fewer repeated and
+    /// stray words, more cut words) to +100 (the reverse). 0 is today's engine.
+    /// Sampled once at take start.
+    #[serde(default)]
+    pub ledger_sensitivity: i32,
+
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
@@ -844,6 +850,7 @@ impl std::fmt::Debug for Config {
                 "light_plus_sentence_pause_sec",
                 &self.light_plus_sentence_pause_sec,
             )
+            .field("ledger_sensitivity", &self.ledger_sensitivity)
             .field("deferred_insert_shortcut", &self.deferred_insert_shortcut)
             .field("channel_modifier", &self.channel_modifier)
             .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
@@ -923,6 +930,7 @@ impl Default for Config {
             whisper_adaptive_buffer: false,
             format_on_device: false,
             light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
+            ledger_sensitivity: 0,
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             channel_modifier: ChannelModifier::default(),
             fn_tap_toggles_dictation: false,
@@ -989,6 +997,7 @@ impl Config {
             normalize_whisper_context_window_sec(self.whisper_context_window_sec);
         self.light_plus_sentence_pause_sec =
             normalize_light_plus_sentence_pause_sec(self.light_plus_sentence_pause_sec);
+        self.ledger_sensitivity = normalize_ledger_sensitivity(self.ledger_sensitivity);
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);

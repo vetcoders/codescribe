@@ -4157,6 +4157,16 @@
         }
       }
     },
+    "Centre" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Środek"
+          }
+        }
+      }
+    },
     "Change" : {
       "comment" : "Setup API key row action when a key is stored",
       "localizations" : {
@@ -7469,6 +7479,26 @@
         }
       }
     },
+    "Fewer cut words" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej uciętych słów"
+          }
+        }
+      }
+    },
+    "Fewer repeats" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej powtórzeń"
+          }
+        }
+      }
+    },
     "File details" : {
       "localizations" : {
         "pl" : {
@@ -8832,6 +8862,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdzone w rejestrze"
+          }
+        }
+      }
+    },
+    "Ledger sensitivity" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czułość ledgera"
           }
         }
       }
@@ -17432,6 +17472,16 @@
         }
       }
     },
+    "Too many repeated words: move it left. Too many cut words: move it right. The centre is the shipped engine. Applies to the next recording." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Za dużo powtórzeń: przesuń w lewo. Za dużo uciętych słów: przesuń w prawo. Środek to silnik bez zmian. Działa od następnego nagrania."
+          }
+        }
+      }
+    },
     "Tool activity" : {
       "comment" : "Agent chat: header of the collapsed tool-call activity section",
       "localizations" : {
@@ -18823,6 +18873,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bez Twojej zgody Codescribe nie korzysta z chmury i kontynuuje dyktowanie przez Apple na urządzeniu, bez uruchamiania lokalnego modelu."
+          }
+        }
+      }
+    },
+    "Word admission" : {
+      "comment" : "Lab group: the ledger sensitivity slider",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przyjmowanie słów"
           }
         }
       }

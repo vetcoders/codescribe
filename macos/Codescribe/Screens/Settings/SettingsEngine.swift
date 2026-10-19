@@ -992,6 +992,7 @@ extension CsSettings {
     sealLedgerEnabled: false,
     appleLiveEnabled: false,
     lightPlusSentencePauseSec: 0.7,
+    ledgerSensitivity: 0,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
     fnTapTogglesDictation: false,

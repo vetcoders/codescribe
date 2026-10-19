@@ -8,6 +8,7 @@
 //! refused, in the ledger lane and in the direct lane alike.
 
 use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
+use super::engine_tuning::EngineTuning;
 
 /// Shortest voiced span, in milliseconds, that can be one syllable of an
 /// identical Whisper repeat.
@@ -65,12 +66,12 @@ pub enum SileroSpeechDistance {
 }
 
 impl SileroSpeechDistance {
-    /// `true` only when Silero measured that no speech lies within the radius.
-    fn beyond_near_radius(self) -> bool {
+    /// `true` only when Silero measured that no speech lies within `near_ms`.
+    fn beyond_near_radius(self, near_ms: u64) -> bool {
         match self {
             Self::Unmeasured => false,
             Self::NoSpeechHeard => true,
-            Self::Ms(distance) => distance > WHISPER_WORD_SPEECH_NEAR_MS,
+            Self::Ms(distance) => distance > near_ms,
         }
     }
 
@@ -158,11 +159,20 @@ impl WhisperWordSpeechDecision {
 /// dip behind it, and at least [`WHISPER_REPEAT_MIN_MS_PER_SYLLABLE`] per
 /// syllable. A missing measurement never becomes a refusal.
 pub fn judge_whisper_words(words: &[WhisperWordSpeech]) -> Vec<WhisperWordSpeechDecision> {
+    judge_whisper_words_tuned(words, &EngineTuning::DEFAULT)
+}
+
+/// [`judge_whisper_words`] with the take's tuning: the speech radius and the
+/// repeat floor come from `tuning` instead of today's constants.
+pub fn judge_whisper_words_tuned(
+    words: &[WhisperWordSpeech],
+    tuning: &EngineTuning,
+) -> Vec<WhisperWordSpeechDecision> {
     words
         .iter()
         .enumerate()
         .map(|(index, word)| WhisperWordSpeechDecision {
-            verdict: judge_one(words, index, word),
+            verdict: judge_one(words, index, word, tuning),
         })
         .collect()
 }
@@ -171,11 +181,15 @@ fn judge_one(
     words: &[WhisperWordSpeech],
     index: usize,
     word: &WhisperWordSpeech,
+    tuning: &EngineTuning,
 ) -> WhisperWordSpeechVerdict {
     // No speech anywhere near the word: Silero alone decides this, with or
     // without a calibration profile. Energy is not consulted, because sound
     // above the floor without speech is where most of these words sit.
-    if word.silero_speech_distance.beyond_near_radius() {
+    if word
+        .silero_speech_distance
+        .beyond_near_radius(tuning.whisper_word_speech_near_ms)
+    {
         return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
             silence: word.silence_under_span,
             distance_ms: word.silero_speech_distance.receipt_ms(),
@@ -210,13 +224,15 @@ fn judge_one(
         Some(false) => {
             WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
         }
-        Some(true) => match span_meets_syllable_floor(word) {
-            Some(true) => WhisperWordSpeechVerdict::Admit,
-            Some(false) => WhisperWordSpeechVerdict::Refuse(
-                RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
-            ),
-            None => WhisperWordSpeechVerdict::Unmeasured,
-        },
+        Some(true) => {
+            match span_meets_syllable_floor(word, tuning.whisper_repeat_min_ms_per_syllable) {
+                Some(true) => WhisperWordSpeechVerdict::Admit,
+                Some(false) => WhisperWordSpeechVerdict::Refuse(
+                    RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
+                ),
+                None => WhisperWordSpeechVerdict::Unmeasured,
+            }
+        }
         None => WhisperWordSpeechVerdict::Unmeasured,
     }
 }
@@ -277,14 +293,14 @@ pub(crate) fn window_has_silero_dip(
 }
 
 /// `Some` when the sample rate can turn the span into milliseconds.
-fn span_meets_syllable_floor(word: &WhisperWordSpeech) -> Option<bool> {
+fn span_meets_syllable_floor(word: &WhisperWordSpeech, min_ms_per_syllable: u64) -> Option<bool> {
     if word.sample_rate == 0 || word.sample_end <= word.sample_start {
         return None;
     }
     let syllables = u64::from(syllable_groups(&word.text).max(1));
     let milliseconds =
         word.sample_end.saturating_sub(word.sample_start) * 1_000 / u64::from(word.sample_rate);
-    Some(milliseconds >= WHISPER_REPEAT_MIN_MS_PER_SYLLABLE.saturating_mul(syllables))
+    Some(milliseconds >= min_ms_per_syllable.saturating_mul(syllables))
 }
 
 /// Vowel groups in lowercase. Polish `i`/`y` immediately before another vowel
@@ -431,6 +447,54 @@ mod tests {
             jitter[0].receipt(),
             WHISPER_WORD_SPEECH_UNMEASURED,
             "a pin 64 ms off speech is Whisper's timing, not a word over silence"
+        );
+    }
+
+    #[test]
+    fn the_ledger_slider_moves_the_speech_radius_and_the_repeat_floor() {
+        let strict = EngineTuning::with_ledger_sensitivity(-100);
+        let loose = EngineTuning::with_ledger_sensitivity(100);
+
+        // 700 ms from speech: outside today's 500 ms radius, inside the loose 1 s.
+        let far = [silero_distance(
+            word("tak", 0, 9_600, Some(false), None, None),
+            SileroSpeechDistance::Ms(700),
+            SilenceUnderSpan::SoundWithoutSpeech,
+        )];
+        assert!(!judge_whisper_words(&far)[0].admits());
+        assert!(judge_whisper_words_tuned(&far, &loose)[0].admits());
+        // 400 ms: inside today's radius, outside the strict 250 ms.
+        let near = [silero_distance(
+            word("tak", 0, 9_600, Some(false), None, None),
+            SileroSpeechDistance::Ms(400),
+            SilenceUnderSpan::SoundWithoutSpeech,
+        )];
+        assert!(judge_whisper_words(&near)[0].admits());
+        assert!(!judge_whisper_words_tuned(&near, &strict)[0].admits());
+
+        // A separated one-syllable repeat of 130 ms (6 240 samples at 48 kHz):
+        // above today's 100 ms floor, below the strict 160 ms one.
+        let repeat = [
+            word("nie", 0, 6_240, Some(true), Some(true), None),
+            word("nie", 9_600, 15_840, Some(true), Some(true), Some(true)),
+        ];
+        assert!(judge_whisper_words(&repeat)[1].admits());
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat, &strict)[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
+        );
+        // 80 ms: below today's floor, above the loose 60 ms one.
+        let short_repeat = [
+            word("nie", 0, 3_840, Some(true), Some(true), None),
+            word("nie", 9_600, 13_440, Some(true), Some(true), Some(true)),
+        ];
+        assert!(!judge_whisper_words(&short_repeat)[1].admits());
+        assert!(judge_whisper_words_tuned(&short_repeat, &loose)[1].admits());
+
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat, &EngineTuning::with_ledger_sensitivity(0)),
+            judge_whisper_words(&repeat),
+            "the slider's centre is today's judge"
         );
     }
 
