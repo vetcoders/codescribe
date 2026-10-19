@@ -835,6 +835,7 @@ mod session_tests {
             stability: TailEvidenceStability::Final,
             timing_quality: TailTimingQuality::ExactSampleRange,
             avg_logprob: Some(-0.21),
+            vad_selected_samples: None,
         };
         let payload = TailProviderPayload {
             identity: identity.clone(),
@@ -1121,6 +1122,7 @@ mod local_execution_tests {
                         stability: TailEvidenceStability::Final,
                         timing_quality: TailTimingQuality::ExactSampleRange,
                         avg_logprob: None,
+                        vad_selected_samples: None,
                     },
                 })
             },

@@ -636,6 +636,7 @@ pub(crate) fn transcribe_dictation_witness(
             timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
             avg_logprob: None,
             segment_grain: TailSegmentGrain::Phrase,
+            vad_selected_samples: None,
         },
     };
     payload.validate()?;

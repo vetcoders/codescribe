@@ -2040,6 +2040,9 @@ struct AppleSealState {
     /// Original returns retained until closed physical owners can consume them.
     /// No waveform is retained here and replay cannot create a fresh witness.
     retained_word_decodes: VecDeque<TailProviderPayload>,
+    /// Returned Whisper windows with their own VAD verdict: `true` when that
+    /// VAD selected speech. Only measured verdicts are kept.
+    tail_vad_windows: Vec<(u64, u64, bool)>,
     replayed_window_owners: BTreeSet<(u64, OccurrenceIdentity)>,
     refinement_submitted: BTreeMap<(u64, u64, u64, u64), TailPatchInFlight>,
     /// Edge words retain the authenticated decode request until admission or
@@ -2712,6 +2715,7 @@ impl AppleSealState {
             terminal_archive_pending: false,
             refinement_pending: VecDeque::new(),
             retained_word_decodes: VecDeque::new(),
+            tail_vad_windows: Vec::new(),
             replayed_window_owners: BTreeSet::new(),
             refinement_submitted: BTreeMap::new(),
             pending_whisper_stubs: Vec::new(),
@@ -3604,6 +3608,18 @@ impl AppleSealState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .close_word_trial(trial, reason);
+    }
+
+    fn note_tail_vad(&mut self, payload: &TailProviderPayload) {
+        let range = &payload.identity.range;
+        if range.session != self.session_id || range.capture_epoch != self.capture_epoch {
+            return;
+        }
+        if let Some(selected) = payload.evidence.vad_selected_samples {
+            let heard = selected > 0 || !payload.segments.is_empty();
+            self.tail_vad_windows
+                .push((range.sample_start, range.sample_end, heard));
+        }
     }
 
     fn retain_word_decode(&mut self, payload: &TailProviderPayload) {
@@ -4510,6 +4526,7 @@ impl AppleSealState {
                 self.complete_word_trial(ev_tx, trial, Some(&payload));
             }
             self.window_plan_receipt(&job.request_identity.range, "returned");
+            self.note_tail_vad(&payload);
             self.retain_word_decode(&payload);
             self.admit_completed_window(ev_tx, &payload, true);
             // An observed Silero onset fixes the past before that onset.
@@ -7754,8 +7771,62 @@ fn coverage_speech_evidence(state: &AppleSealState) -> AcousticSpeechEvidence {
         if acoustic.observed_speech() {
             return within_capture(acoustic, captured_samples);
         }
+        let silero = within_capture(acoustic, captured_samples);
+        if loudness_is_measured_silence(state, &silero, &capture_energy) {
+            return silero;
+        }
     }
     within_capture(capture_energy, captured_samples)
+}
+
+/// The energy ladder measures loudness, not speech. Its ranges stop counting
+/// as speech only when the speech model measured silence twice over them and
+/// no recognizer produced a word anywhere in the take: Silero heard nothing
+/// across the whole capture, and every loud range lies inside returned
+/// Whisper windows whose own VAD selected nothing, with no window over it
+/// that heard speech. Anything less keeps the ladder, and its refusal.
+fn loudness_is_measured_silence(
+    state: &AppleSealState,
+    silero: &AcousticSpeechEvidence,
+    energy: &AcousticSpeechEvidence,
+) -> bool {
+    let silero_silent = matches!(silero.availability(), AcousticAvailability::Observed { .. })
+        && silero.ranges().is_empty();
+    let energy_measured = matches!(energy.availability(), AcousticAvailability::Observed { .. })
+        && !energy.ranges().is_empty();
+    let apple_silent = state.last_apple_segment_end <= 0.0
+        && state.open_partial.trim().is_empty()
+        && state.closed_phrases.is_empty()
+        && state.refused_untimed_words.is_empty();
+    if !(silero_silent && energy_measured && apple_silent) {
+        return false;
+    }
+    energy.ranges().iter().all(|loud| {
+        let heard = state.tail_vad_windows.iter().any(|&(start, end, heard)| {
+            heard && start < loud.sample_end && loud.sample_start < end
+        });
+        !heard && vad_silent_windows_cover(&state.tail_vad_windows, loud)
+    })
+}
+
+fn vad_silent_windows_cover(windows: &[(u64, u64, bool)], range: &TailSampleRange) -> bool {
+    let mut silent = windows
+        .iter()
+        .filter(|&&(_, _, heard)| !heard)
+        .map(|&(start, end, _)| (start, end))
+        .collect::<Vec<_>>();
+    silent.sort_unstable();
+    let mut reached = range.sample_start;
+    for (start, end) in silent {
+        if start > reached {
+            break;
+        }
+        reached = reached.max(end);
+        if reached >= range.sample_end {
+            return true;
+        }
+    }
+    reached >= range.sample_end
 }
 
 /// Hold an observer's measured extent against the capture the take produced.
@@ -11591,6 +11662,7 @@ mod c13a_lifecycle_tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: Some(-0.2),
+                vad_selected_samples: None,
             },
         };
         payload.validate().expect("repro payload must be valid");
@@ -12453,6 +12525,7 @@ mod c13a_lifecycle_tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: Some(-0.2),
+                vad_selected_samples: None,
             },
         };
         assert!(payload.validate().is_ok());
@@ -12729,6 +12802,7 @@ mod layer1_frontier_contracts {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         }
     }
@@ -13574,6 +13648,93 @@ mod rc_w1_live_ledger_tests {
         assert_eq!(acoustic.ranges()[0].sample_start, at(2.0) - PAD);
     }
 
+    /// Take 09ededb1: the energy ladder heard -70 dB crumbs, Silero heard
+    /// nothing, and every Whisper window's own VAD selected nothing over them.
+    /// That take is measured silence and ends as "no speech detected". Each
+    /// missing witness, or one that heard speech, keeps the ladder and its
+    /// refusal, so speech never turns into silence.
+    #[test]
+    fn loudness_is_silence_only_when_both_speech_passes_measured_none() {
+        let take = |name: &str| {
+            let mut state = AppleSealState::new_for_session(RATE, name.into(), 0);
+            push_capture(&mut state, 10.0);
+            let mut writer = CaptureLevelAccumulator::bound_to(&state.capture_energy);
+            writer.push_samples(&vec![0.0f32; at(2.0) as usize]);
+            writer.push_samples(&vec![0.25f32; at(1.0) as usize]);
+            writer.push_samples(&vec![0.0f32; at(7.0) as usize]);
+            let mut ingress = SileroIngress::new(RATE, state.session_id.clone(), 0);
+            ingress.ingest(
+                &vec![0.0f32; at(10.0) as usize],
+                &vec![0.0f32; at(10.0) as usize],
+                at(10.0),
+            );
+            state.fusion = Some(ingress);
+            state
+        };
+        let quiet_windows = [(0, at(5.0), false), (at(4.0), at(10.0), false)];
+
+        let unmeasured = take("rc-w3-loud-unmeasured");
+        let evidence = coverage_speech_evidence(&unmeasured);
+        assert_eq!(evidence.producer(), CAPTURE_ENERGY_PRODUCER);
+        assert!(
+            evidence.observed_speech(),
+            "without a tail VAD verdict the ladder stays the observer"
+        );
+
+        let mut silent = take("rc-w3-loud-silent");
+        silent.tail_vad_windows.extend(quiet_windows);
+        let evidence = coverage_speech_evidence(&silent);
+        assert_eq!(evidence.producer(), SILERO_BOUNDARIES_PRODUCER);
+        assert!(evidence.ranges().is_empty());
+        let mut ledger = AcousticLedger::new();
+        let receipt = ledger.assess_seal_coverage(&silent.session_id, 0, &evidence, 0);
+        ledger.record_seal_coverage(receipt);
+        assert!(
+            matches!(
+                ledger.terminal_finality(&silent.session_id, 0),
+                crate::pipeline::acoustic_ledger::TerminalFinality::ObservedSilence(_)
+            ),
+            "two measured speech passes over the loud crumbs are no speech detected"
+        );
+
+        let mut heard = take("rc-w3-loud-heard");
+        heard.tail_vad_windows.extend(quiet_windows);
+        heard.tail_vad_windows.push((at(2.0), at(4.0), true));
+        assert_eq!(
+            coverage_speech_evidence(&heard).producer(),
+            CAPTURE_ENERGY_PRODUCER,
+            "one window whose VAD selected speech over the loud range keeps it speech"
+        );
+
+        let mut uncovered = take("rc-w3-loud-uncovered");
+        uncovered.tail_vad_windows.push((0, at(2.5), false));
+        assert_eq!(
+            coverage_speech_evidence(&uncovered).producer(),
+            CAPTURE_ENERGY_PRODUCER,
+            "loudness outside every measured window keeps the ladder"
+        );
+
+        let mut apple = take("rc-w3-loud-apple");
+        apple.tail_vad_windows.extend(quiet_windows);
+        apple.last_apple_segment_end = 2.5;
+        assert_eq!(
+            coverage_speech_evidence(&apple).producer(),
+            CAPTURE_ENERGY_PRODUCER,
+            "a recognizer that produced a word rules out measured silence"
+        );
+
+        // Quiet speech: the ladder is loud and Silero caught an utterance.
+        let mut quiet_speech = take("rc-w3-loud-quiet-speech");
+        quiet_speech.tail_vad_windows.extend(quiet_windows);
+        quiet_speech.fusion.as_mut().unwrap().observe_boundaries(&[
+            crossing(VadBoundaryKind::SpeechStart, at(2.0)),
+            crossing(VadBoundaryKind::SpeechEnd, at(3.0)),
+        ]);
+        let evidence = coverage_speech_evidence(&quiet_speech);
+        assert_eq!(evidence.producer(), SILERO_BOUNDARIES_PRODUCER);
+        assert!(evidence.observed_speech(), "caught speech is never silence");
+    }
+
     /// Ownership padding cannot raise the acoustic speech figure, and a real
     /// measured gap still refuses. Both halves in one witness, because the
     /// failure this cut exists for was the padded set passing as coverage.
@@ -14105,6 +14266,7 @@ mod rc_w2_acoustic_tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         }
     }
@@ -14609,11 +14771,20 @@ mod rc_w2_acoustic_tests {
         (state, tx, rx, last)
     }
 
-    /// Worker time spent per tick on owners that can no longer change must
-    /// not grow with the length of the take. Ten times the stuck owners may
-    /// cost ten times the lookups, never ten times the lookups per owner.
+    /// Ten times the stuck owners must cost about ten times per tick, not a
+    /// hundred: no walk over owners may also walk every component or every
+    /// retained decode. The baseline 80c7f3c96 measured 38x, this cut 13x.
+    ///
+    /// Still linear in unsealed owners on every tick, and not fixed here:
+    /// `unsealed_word_owners` (clone of every owner plus the pending-event map,
+    /// several calls per tick), the `close_admission_horizon` sweep (frontier
+    /// and trail lookups per owner), `publish_resolved_word_seals` (one seal
+    /// attempt per owner) and `replay_completed_windows` (one ordered lookup
+    /// per retained decode). Bounding these to the live window needs owners
+    /// that stop being visited once settled; repaying their text recovery
+    /// live removes most of them altogether.
     #[test]
-    fn long_take_tick_cost_is_bounded_by_the_live_window() {
+    fn long_take_tick_cost_grows_with_owners_not_owners_times_components() {
         fn tick_cost(owners: u64) -> (std::time::Duration, usize, usize) {
             let (mut state, tx, mut rx, last) = stuck_recovery_take(owners);
             while rx.try_recv().is_ok() {}
@@ -15858,6 +16029,7 @@ mod rc_w2_acoustic_tests {
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
 
@@ -16750,6 +16922,7 @@ mod rc_w2_acoustic_tests {
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: Some(-0.2),
+                vad_selected_samples: None,
             },
         };
         state.complete_whisper_window(
@@ -21902,6 +22075,7 @@ mod live_refinement_admission_tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         });
         completion
@@ -25207,6 +25381,7 @@ mod relay_l1_overlap_admission_tests {
                     stability: TailEvidenceStability::Final,
                     timing_quality: TailTimingQuality::ExactSampleRange,
                     avg_logprob: Some(-0.2),
+                    vad_selected_samples: None,
                 },
             }),
             member_occurrences: request.member_occurrences.clone(),
@@ -26978,6 +27153,7 @@ mod relay_l1_overlap_admission_tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: Some(-0.2),
+                vad_selected_samples: None,
             },
         }
     }
@@ -31496,6 +31672,7 @@ mod relay_l1_overlap_admission_tests {
                 stability: crate::stt::tail_provider::TailEvidenceStability::Final,
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: Some(-0.2),
+                vad_selected_samples: None,
             },
         }
     }
@@ -31932,6 +32109,7 @@ mod tc2_window_contract_tests {
                     stability: TailEvidenceStability::Final,
                     timing_quality: TailTimingQuality::ExactSampleRange,
                     avg_logprob: Some(-0.2),
+                    vad_selected_samples: None,
                 },
             }),
             member_occurrences: request.member_occurrences.clone(),
@@ -33514,6 +33692,7 @@ mod forensic_word_conservation_fixture {
                     stability: TailEvidenceStability::Final,
                     timing_quality: TailTimingQuality::ExactSampleRange,
                     avg_logprob: Some(-0.2),
+                    vad_selected_samples: None,
                 },
             }),
             member_occurrences: request.member_occurrences.clone(),
@@ -33816,6 +33995,7 @@ mod bounded_lexical_trial_tests {
                 timing_quality: crate::stt::tail_provider::TailTimingQuality::ExactSampleRange,
                 avg_logprob: None,
                 segment_grain: TailSegmentGrain::Word,
+                vad_selected_samples: None,
             },
             segments: vec![TimedTailSegment {
                 text: "PNPM".into(),
