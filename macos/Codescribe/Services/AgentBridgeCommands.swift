@@ -884,8 +884,8 @@ extension RealAgentBridgeInstaller {
     installer: RealAgentBridgeInstaller
   ) -> URL? {
     let candidates: [URL?] = [
-      installer.bridgeRoot.appendingPathComponent("runtime/bin/codescribe"),
       Bundle.main.resourceURL?.appendingPathComponent("agent-bridge/bin/codescribe"),
+      installer.bridgeRoot.appendingPathComponent("runtime/bin/codescribe"),
       installer.homeDirectory.appendingPathComponent(".cargo/bin/codescribe"),
       installer.homeDirectory.appendingPathComponent(".local/bin/codescribe"),
     ]
