@@ -681,7 +681,8 @@ struct OverlayChannelStatusView: View {
   }
 
   /// An open channel records for its agent; the button then is that agent's
-  /// microphone, violet and pulsing (Maciej, 2026-10-19 08:52).
+  /// microphone, violet and pulsing (Maciej, 2026-10-19 08:52), drawn as a
+  /// megaphone so it never reads as a second dictation microphone (09:36).
   var agentCaptureOpen: Bool {
     hudStates.values.contains(where: \.open)
   }
@@ -696,7 +697,7 @@ struct OverlayChannelStatusView: View {
   @ViewBuilder
   private var headerGlyph: some View {
     if agentCaptureOpen {
-      OverlayMicrophoneGlyph(symbol: "mic.fill", tint: OverlayRecordingLight.agent.color)
+      OverlayMicrophoneGlyph(symbol: "megaphone.fill", tint: OverlayRecordingLight.agent.color)
         .symbolEffect(.pulse, isActive: animates && !reduceMotion)
     } else {
       // The chrome owns the selected wash; the glyph drops its own plate.
