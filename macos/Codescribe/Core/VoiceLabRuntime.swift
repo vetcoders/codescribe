@@ -93,7 +93,7 @@ actor VoiceLabRuntime {
       let choice = await Self.choosePort(
         remembered: Self.rememberedPort(),
         candidates: Self.candidatePorts,
-        probe: Self.probe
+        probe: { await Self.probe($0) }
       )
     else {
       Self.logger.error("voice-lab: every candidate port is held by another process")
