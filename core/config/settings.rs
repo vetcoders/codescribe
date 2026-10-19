@@ -225,6 +225,9 @@ pub struct UserSettings {
     pub whisper_adaptive_buffer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub light_plus_sentence_pause_sec: Option<f32>,
+    /// Lab ledger slider, -100..=100. `None` keeps today's engine (0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger_sensitivity: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     /// `CODESCRIBE_FORMAT_ON_DEVICE`: format on the Apple system model first.
@@ -1578,6 +1581,8 @@ struct SpeechEngineV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ledger_sensitivity: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
     // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
     // gateway session-mint endpoint it uses when cloud is armed.
@@ -1766,6 +1771,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "WHISPER_ADAPTIVE_BUFFER",
     "CODESCRIBE_FORMAT_ON_DEVICE",
     "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
+    "CODESCRIBE_LEDGER_SENSITIVITY",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     "AGENT_CHANNEL_MODIFIER",
@@ -1905,6 +1911,9 @@ typed_setting_writes! {
         "AGENT_AUTO_SEND" => agent_auto_send,
         "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => stt_initial_prompt_enabled,
     }
+    store_i32: i32, |value: &str| value.parse::<i32>().ok() => {
+        "CODESCRIBE_LEDGER_SENSITIVITY" => ledger_sensitivity => super::normalize_ledger_sensitivity,
+    }
     store_u32: u32, |value: &str| value.parse::<u32>().ok() => {
         AGENT_SEND_HOLD_ENV => agent_send_hold_sec,
     }
@@ -1984,6 +1993,7 @@ impl UserSettings {
                         self.light_plus_sentence_pause_sec
                             .unwrap_or_else(super::default_light_plus_sentence_pause_sec),
                     ),
+                    ledger_sensitivity: self.ledger_sensitivity,
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                     asr_mode: self.asr_mode.clone(),
                     gateway_session_url: self.asr_gateway_url.clone(),
@@ -2208,6 +2218,7 @@ impl UserSettings {
             whisper_context_window_sec: copy!(v2.speech, engine, whisper_context_window_sec),
             whisper_adaptive_buffer: copy!(v2.speech, engine, whisper_adaptive_buffer),
             light_plus_sentence_pause_sec: copy!(v2.speech, engine, light_plus_sentence_pause_sec),
+            ledger_sensitivity: copy!(v2.speech, engine, ledger_sensitivity),
             backend_max_upload_mb: copy!(v2.speech, engine, cloud_max_upload_mb),
             stt_initial_prompt_enabled: copy!(v2.speech, engine, initial_prompt_enabled),
             asr_mode: cloned!(v2.speech, engine, asr_mode),

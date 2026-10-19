@@ -32,6 +32,11 @@ pub fn normalize_light_plus_sentence_pause_sec(value: f32) -> f32 {
     }
 }
 
+/// The Lab ledger slider spans -100..=100; 0 is today's engine.
+pub fn normalize_ledger_sensitivity(value: i32) -> i32 {
+    value.clamp(-100, 100)
+}
+
 /// Seconds of captured PCM a Layer 1 Whisper window must cover, ending at
 /// the occurrence. Shorter than the occurrence, the existing pad stands.
 pub fn default_whisper_context_window_sec() -> f32 {

@@ -94,13 +94,14 @@ use crate::pipeline::contracts::{
     SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
     UnadmittedAppleWord, UnadmittedAppleWordSource,
 };
+use crate::pipeline::engine_tuning::EngineTuning;
 use crate::pipeline::speech_islands::{
     SpeechIslandEvidence, SpeechIslandInput, measure_speech_islands,
 };
 use crate::pipeline::whisper_word_speech::{
-    SileroSpeechDistance, WHISPER_WORD_SPEECH_NEAR_MS, WhisperWordSpeech,
-    WhisperWordSpeechDecision, WhisperWordSpeechVerdict, judge_whisper_words, repeat_key,
-    separation_window, window_has_energy_valley, window_has_silero_dip,
+    SileroSpeechDistance, WhisperWordSpeech, WhisperWordSpeechDecision, WhisperWordSpeechVerdict,
+    judge_whisper_words_tuned, repeat_key, separation_window, window_has_energy_valley,
+    window_has_silero_dip,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -2088,6 +2089,9 @@ struct AppleSealState {
     /// lifecycle needs the VAD even when an operator has pinned the seal path
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
+    /// Word-admission knobs frozen from the take's settings snapshot (the Lab
+    /// ledger slider). [`EngineTuning::DEFAULT`] until the worker binds it.
+    engine_tuning: EngineTuning,
     /// Summary admission window opened only by the armed EOF early seal.
     /// Hands-free epoch close never opens it; finish and residue close consume it.
     stop_trailing_finish: bool,
@@ -2729,6 +2733,7 @@ impl AppleSealState {
             tail_patch_refusals: 0,
             fusion: None,
             fusion_seal_armed: false,
+            engine_tuning: EngineTuning::DEFAULT,
             stop_trailing_finish: false,
             // One source of truth for the default cut. Without a Silero
             // ingress nothing reads this field; when one arms, `from_env`
@@ -7114,7 +7119,7 @@ fn measure_whisper_window_speech(
         previous_key = key;
         previous_span = Some((segment.range.sample_start, segment.range.sample_end));
     }
-    let decisions = judge_whisper_words(&facts);
+    let decisions = judge_whisper_words_tuned(&facts, &state.engine_tuning);
     if decisions
         .iter()
         .any(|decision| matches!(decision.verdict, WhisperWordSpeechVerdict::Unmeasured))
@@ -7371,11 +7376,12 @@ fn energy_valley_between(
     Some(window_has_energy_valley(window, &voiced))
 }
 
-/// Silero and the calibrated floor on the span widened by
-/// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. Where the widened end is past
+/// Silero and the calibrated floor on the span widened by the take's speech
+/// radius ([`EngineTuning::whisper_word_speech_near_ms`]) on each side. Where the widened end is past
 /// what a channel has observed yet, that channel reads the span's own end.
 fn speech_near_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
-    let pad = u64::from(state.sample_rate) * WHISPER_WORD_SPEECH_NEAR_MS / 1_000;
+    let pad =
+        u64::from(state.sample_rate) * state.engine_tuning.whisper_word_speech_near_ms / 1_000;
     let start = start.saturating_sub(pad);
     let wide_end = end.saturating_add(pad);
     let silero = silero_speech_on_span(state, start, wide_end)
@@ -7414,11 +7420,12 @@ fn silero_speech_distance(state: &AppleSealState, start: u64, end: u64) -> Siler
         .min()
         .map(|samples| samples.saturating_mul(1_000) / rate);
     if let Some(distance) = nearest
-        && distance <= WHISPER_WORD_SPEECH_NEAR_MS
+        && distance <= state.engine_tuning.whisper_word_speech_near_ms
     {
         return SileroSpeechDistance::Ms(distance);
     }
-    let mut radius_end = end.saturating_add(rate * WHISPER_WORD_SPEECH_NEAR_MS / 1_000);
+    let mut radius_end =
+        end.saturating_add(rate * state.engine_tuning.whisper_word_speech_near_ms / 1_000);
     if state.capture_stopping {
         // No audio follows a stopped capture, so its end closes the radius.
         radius_end = radius_end.min(state.audio.session_sample_end().max(end));
@@ -9818,6 +9825,18 @@ fn apple_stream_worker(
     // ledger-free direct lane is a third consumer: opting out of admission
     // must not switch off the take's only audio observer.
     state.fusion_seal_armed = runtime_settings.seal_lane_armed();
+    state.engine_tuning =
+        EngineTuning::with_ledger_sensitivity(runtime_settings.values().ledger_sensitivity);
+    if state.engine_tuning != EngineTuning::DEFAULT {
+        info!(
+            session = %state.session_id,
+            ledger_sensitivity = runtime_settings.values().ledger_sensitivity,
+            whisper_word_speech_near_ms = state.engine_tuning.whisper_word_speech_near_ms,
+            whisper_repeat_min_ms_per_syllable =
+                state.engine_tuning.whisper_repeat_min_ms_per_syllable,
+            "ledger slider moved word admission off the default for this take"
+        );
+    }
     // Voice Lab witness: the immutable snapshot verdict replaces the
     // construction-time env read; the return lane belongs to this worker.
     state.dictation_witness_armed =

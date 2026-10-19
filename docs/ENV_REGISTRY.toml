@@ -477,6 +477,13 @@ reload = "hot"
 category = "stt"
 description = "Minimum PCM gap between committed occurrences that opens a new Light+ sentence. Range 0.3-2.0 seconds; next recording session."
 
+[vars.CODESCRIBE_LEDGER_SENSITIVITY]
+default = "0"
+type = "int"
+reload = "hot"
+category = "stt"
+description = "Lab slider for live Whisper word admission, next recording session. Range -100 to 100; 0 is the shipped engine. Left (negative) refuses more identical repeats and words far from speech: fewer repeated and stray words, more cut words. Right (positive) keeps more of both."
+
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"

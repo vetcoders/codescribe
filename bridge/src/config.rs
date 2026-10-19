@@ -108,6 +108,8 @@ pub struct CsSettings {
     pub seal_ledger_enabled: bool,
     pub apple_live_enabled: bool,
     pub light_plus_sentence_pause_sec: f32,
+    /// Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+    pub ledger_sensitivity: i32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
@@ -243,6 +245,7 @@ impl CsSettings {
             seal_ledger_enabled: runtime.seal_ledger_enabled(),
             apple_live_enabled: runtime.apple_live_enabled(),
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
+            ledger_sensitivity: config.ledger_sensitivity,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
