@@ -504,8 +504,6 @@ private final class SheetRun {
     ) {
       let model = TrayViewModel(engine: nil, isRecording: recording)
       model.onQuit = {}
-      model.onCheckForUpdates = {}
-      model.onOpenSetupWizard = {}
       model.onHelp = {}
       model.onAbout = {}
       model.onIntent = { _ in }
