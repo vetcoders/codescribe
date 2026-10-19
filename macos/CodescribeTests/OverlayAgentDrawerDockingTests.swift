@@ -413,6 +413,64 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
+  /// ⌘+ grew the docked column and the conversation, but the roster's own text
+  /// stayed at 1.0 (Maciej, 2026-10-19): the overlay calls `monitorBody` on a
+  /// status view that is never installed, so its environment read the default.
+  func testDockedRosterTextFollowsTheOverlayTextScale() throws {
+    func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
+      guard let element = object as? any NSAccessibilityProtocol else { return [] }
+      let native = (object as? NSView)?.subviews ?? []
+      return [element] + ((element.accessibilityChildren() ?? []) + native).flatMap(elements)
+    }
+    let heading = String(localized: "Agents")
+    var headingHeights: [CGFloat] = []
+    for scale in [1.0, 1.5] as [CGFloat] {
+      let (broadcast, lena, astra) = try rosterFixture()
+      let state = OverlayState.previewFormatted()
+      state.applyConversationSnapshot(
+        .init(deliveries: [], conversations: [broadcast, lena, astra]))
+      state.selectConversation(broadcast.id)
+      let recorder = OverlayDrawerFrameRecorder()
+      let host = NSHostingView(
+        rootView:
+          DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+          .frame(width: 1400, height: 600))
+      host.sizingOptions = []
+      let panel = NSPanel(
+        contentRect: CGRect(x: 0, y: 0, width: 1400, height: 600),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.contentView = host
+      panel.orderFrontRegardless()
+      defer { panel.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+
+      let drawer = recorder.frame
+      XCTAssertGreaterThan(drawer.width, 0, "scale \(scale): the roster docks at 1400")
+      let hostOnScreen = panel.convertToScreen(host.frame)
+      let drawerOnScreen = CGRect(
+        x: hostOnScreen.minX + drawer.minX, y: hostOnScreen.maxY - drawer.maxY,
+        width: drawer.width, height: drawer.height)
+      let frames = elements(host).filter {
+        $0.accessibilityRole() == .staticText
+          && (($0.accessibilityLabel() ?? "") == heading
+            || ($0.accessibilityValue() as? String ?? "") == heading)
+      }.map { $0.accessibilityFrame() }.filter {
+        !$0.isEmpty && drawerOnScreen.contains(CGPoint(x: $0.midX, y: $0.midY))
+      }
+      headingHeights.append(
+        try XCTUnwrap(
+          frames.map(\.height).max(),
+          "scale \(scale): no roster heading inside the column \(drawerOnScreen)"))
+    }
+    XCTAssertGreaterThan(
+      headingHeights[1], headingHeights[0] * 1.3,
+      "the docked roster's text grows with ⌘+ like the conversation: \(headingHeights)")
+  }
+
   func testRememberedDrawerWidthLeavesConversationSpaceAndScalesWithText() throws {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
     defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
