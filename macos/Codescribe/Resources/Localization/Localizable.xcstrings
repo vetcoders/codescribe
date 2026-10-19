@@ -2777,6 +2777,16 @@
         }
       }
     },
+    "Agent listener is not running in Frame." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odbiornik agenta nie działa we Frame."
+          }
+        }
+      }
+    },
     "Agent listening..." : {
       "comment" : "Tray status: the assistive (agent) lane is recording",
       "localizations" : {
@@ -7583,16 +7593,6 @@
         }
       }
     },
-    "Finish setup above" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dokończ konfigurację powyżej"
-          }
-        }
-      }
-    },
     "Finish the current take before opening a saved transcript." : {
       "comment" : "History is disabled while a take is being recorded or finished",
       "localizations" : {
@@ -8468,6 +8468,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zainstaluj integrację agentów, aby zmieniać ich preferencje."
+          }
+        }
+      }
+    },
+    "Install the agent bridge to focus agent panels in Frame." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zainstaluj most agenta, aby przechodzić do jego paneli we Frame."
           }
         }
       }
@@ -13706,26 +13716,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uruchamia formatowanie między nagraniami"
-          }
-        }
-      }
-    },
-    "Required before a recording can start." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do rozpoczęcia nagrywania."
-          }
-        }
-      }
-    },
-    "Required before a recording can start. The switch is on the Lab desk." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do rozpoczęcia nagrywania. Przełącznik znajduje się w zakładce Lab."
           }
         }
       }
@@ -20808,16 +20798,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączony"
-          }
-        }
-      }
-    },
-    "measured profile" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Profil kalibracji mikrofonu"
           }
         }
       }
