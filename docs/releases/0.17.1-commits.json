@@ -1,7 +1,7 @@
 {
   "version": "0.17.1",
   "from_sha": "c39fb7409b8c8c124975d953b9f57c6fe33ab29e",
-  "to_sha": "0073019865e8bb0a13f1cebc6fd71c5ecb2db555",
+  "to_sha": "db655ac32ea53ad8e245e668e070ff912d5dec0a",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1682,6 +1682,36 @@
       "sha": "0073019865e8bb0a13f1cebc6fd71c5ecb2db555",
       "date": "2026-10-19",
       "subject": "test(overlay): paint initial mini panel before morph trace and restore persisted size",
+      "squash_headings": []
+    },
+    {
+      "sha": "6e1ba91f61546f412dbc38e8fb595f7058477b84",
+      "date": "2026-10-19",
+      "subject": "docs(release): freeze source after the measured Swift test repairs",
+      "squash_headings": []
+    },
+    {
+      "sha": "21b644a82b6cd12819f23abeb03e32d791d79e29",
+      "date": "2026-10-19",
+      "subject": "test(overlay): wait for the initial panel readiness events",
+      "squash_headings": []
+    },
+    {
+      "sha": "46592b828dee2dc8a828cf188e7cdbec94459529",
+      "date": "2026-10-19",
+      "subject": "fix(settings): honor controller admission.ready in audio readiness projection",
+      "squash_headings": []
+    },
+    {
+      "sha": "d0a13e33b861f43f9d69ed95fa6bef799adf3dba",
+      "date": "2026-10-19",
+      "subject": "fix(settings): preserve admission causes and neutral optional audio facts",
+      "squash_headings": []
+    },
+    {
+      "sha": "db655ac32ea53ad8e245e668e070ff912d5dec0a",
+      "date": "2026-10-19",
+      "subject": "docs(audio): calibration is optional for direct transcription and required only with the ledger",
       "squash_headings": []
     }
   ]
