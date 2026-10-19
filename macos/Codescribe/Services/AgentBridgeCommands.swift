@@ -1163,11 +1163,15 @@ private struct VcFrameFileStat: Hashable, Sendable {
   let path: String
   let resolvedPath: String
   let exists: Bool
+  let isExecutable: Bool
+  let mode: mode_t
   let device: dev_t
   let inode: ino_t
   let size: off_t
   let modifiedSeconds: Int
   let modifiedNanoseconds: Int
+  let statusChangedSeconds: Int
+  let statusChangedNanoseconds: Int
 
   init(path: String) {
     let url = URL(fileURLWithPath: path)
@@ -1177,20 +1181,28 @@ private struct VcFrameFileStat: Hashable, Sendable {
       self.path = path
       self.resolvedPath = resolved.path
       self.exists = true
+      self.isExecutable = FileManager.default.isExecutableFile(atPath: resolved.path)
+      self.mode = statBuf.st_mode
       self.device = statBuf.st_dev
       self.inode = statBuf.st_ino
       self.size = statBuf.st_size
       self.modifiedSeconds = statBuf.st_mtimespec.tv_sec
       self.modifiedNanoseconds = statBuf.st_mtimespec.tv_nsec
+      self.statusChangedSeconds = statBuf.st_ctimespec.tv_sec
+      self.statusChangedNanoseconds = statBuf.st_ctimespec.tv_nsec
     } else {
       self.path = path
       self.resolvedPath = resolved.path
       self.exists = false
+      self.isExecutable = false
+      self.mode = 0
       self.device = 0
       self.inode = 0
       self.size = 0
       self.modifiedSeconds = 0
       self.modifiedNanoseconds = 0
+      self.statusChangedSeconds = 0
+      self.statusChangedNanoseconds = 0
     }
   }
 }

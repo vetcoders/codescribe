@@ -509,6 +509,21 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       "restoring a missing wrapper dependency must turn capability true without touching the outer wrapper"
     )
 
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o644], ofItemAtPath: engineURL.path)
+    let afterChmodNonExec = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: wrapperInstaller)
+    XCTAssertFalse(
+      afterChmodNonExec,
+      "losing execute permission on a wrapper dependency must invalidate the positive capability cache"
+    )
+
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755], ofItemAtPath: engineURL.path)
+    let afterChmodRestored = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: wrapperInstaller)
+    XCTAssertTrue(afterChmodRestored)
+
     try FileManager.default.removeItem(at: engineURL)
     let afterRemoval = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
       installer: wrapperInstaller)
