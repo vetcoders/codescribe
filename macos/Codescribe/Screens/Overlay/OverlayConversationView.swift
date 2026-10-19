@@ -96,6 +96,7 @@ struct OverlayConversationView: View {
   /// First rendered message. Pinned by id so an arriving reply never drops a
   /// row above someone reading; "Show earlier" moves it back a window.
   @State private var windowStartID: String?
+  @State private var windowConversationID: String?
 
   var onDeliveryControl:
     (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
@@ -424,12 +425,12 @@ struct OverlayConversationView: View {
   static let messageWindow = 40
 
   private var windowStart: Int {
-    if let windowStartID,
-      let index = orderedMessages.firstIndex(where: { $0.id == windowStartID })
-    {
-      return index
+    guard windowConversationID == conversation.id, let windowStartID else {
+      return max(0, orderedMessages.count - Self.messageWindow)
     }
-    return max(0, orderedMessages.count - Self.messageWindow)
+    // Only the oldest-row trim removes a pinned row, so its window starts at
+    // the top that is left rather than jumping to the newest rows.
+    return orderedMessages.firstIndex(where: { $0.id == windowStartID }) ?? 0
   }
 
   /// Pins the window to its current first row, or starts a fresh window at the
@@ -445,13 +446,18 @@ struct OverlayConversationView: View {
     if followsLatest, count - start > 2 * Self.messageWindow {
       start = count - Self.messageWindow
     }
-    let id = orderedMessages[start].id
-    if windowStartID != id { windowStartID = id }
+    pinMessageWindow(at: start)
   }
 
   private func showEarlierMessages() {
-    let start = max(0, windowStart - Self.messageWindow)
-    windowStartID = orderedMessages.indices.contains(start) ? orderedMessages[start].id : nil
+    pinMessageWindow(at: max(0, windowStart - Self.messageWindow))
+  }
+
+  private func pinMessageWindow(at start: Int) {
+    guard orderedMessages.indices.contains(start) else { return }
+    let id = orderedMessages[start].id
+    if windowStartID != id { windowStartID = id }
+    if windowConversationID != conversation.id { windowConversationID = conversation.id }
   }
 
   @ViewBuilder
