@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import Codescribe
@@ -374,5 +375,86 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
     XCTAssertEqual(outs, 1, "a handoff still hides the take it actually fed")
     XCTAssertEqual(panel.alphaValue, 1)
     withExtendedLifetime(controller) {}
+  }
+
+  /// F7: a faded-out overlay used to keep its screenshot monitors, so the next
+  /// ⌘⇧3/4/5 anywhere in the system ordered the hidden panel back on screen.
+  /// `orderOut()` already stopped them; the fade path did not.
+  @MainActor
+  func testFadedOutOverlayStopsWatchingScreenshotChordsUntilShownAgain() throws {
+    let state = OverlayState()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state,
+        textScale: TextScaleController(key: "OverlayRefusalLayoutHangTests.fadePresence.textScale")
+      ) as? FloatingOverlayPanel
+    )
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    var pendingFade: (@MainActor @Sendable () -> Void)?
+    let controller = OverlayController(
+      state: state,
+      engine: nil,
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelOut: { $0.orderOut(nil) },
+      runFade: { faded, _, completed in
+        faded.alphaValue = 0
+        pendingFade = completed
+      }
+    )
+    state.onRecordingPreparing = { [unowned controller] in controller.showForRecording() }
+    state.onRecordingStarted = { [unowned controller] in controller.showForRecording() }
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertTrue(panel.isObservingPresence, "a shown overlay watches for screenshot chords")
+
+    controller.hideForAgentHandoff()
+    try XCTUnwrap(pendingFade, "the handoff must run a fade")()
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(
+      panel.isObservingPresence, "a faded-out overlay must stop watching, like orderOut()")
+
+    // The next take shows the panel and watches again.
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertTrue(panel.isObservingPresence, "showing the panel restarts its monitors")
+    withExtendedLifetime(controller) {}
+  }
+
+  /// F7, second guard: even with monitors running, a screenshot chord lifts
+  /// only a panel that is already on screen. It never shows a hidden one.
+  @MainActor
+  func testScreenshotChordLiftsOnlyAVisibleOverlay() throws {
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let presence = OverlayPresence(panel: panel)
+    defer {
+      presence.invalidate()
+      panel.orderOut(nil)
+    }
+    let chord = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0,
+        windowNumber: 0, context: nil, characters: "4", charactersIgnoringModifiers: "4",
+        isARepeat: false, keyCode: 21))
+    XCTAssertTrue(OverlayPresencePolicy.isScreenshotChord(chord))
+
+    presence.noteScreenshotIfNeeded(chord)
+    XCTAssertFalse(panel.isVisible, "a screenshot chord must not show a hidden overlay")
+
+    panel.orderFrontRegardless()
+    presence.noteScreenshotIfNeeded(chord)
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertEqual(panel.level, .statusBar, "a visible overlay still rises for the screenshot")
   }
 }

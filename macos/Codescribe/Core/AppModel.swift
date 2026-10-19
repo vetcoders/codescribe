@@ -720,6 +720,9 @@ final class OverlayController: ObservableObject {
           self.panelPresented = false
           self.state.suspendAutoCollapse()
         }
+        // Like `orderOut()`: a faded-out panel stops watching for screenshot
+        // chords, or the next ⌘⇧3/4/5 brings the hidden overlay back.
+        (fadedPanel as? FloatingOverlayPanel)?.invalidatePresence()
         self.orderPanelOut(fadedPanel)
       }
     )

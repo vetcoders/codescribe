@@ -259,6 +259,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     presence?.invalidate()
   }
 
+  /// True while the screenshot and app-activation monitors are installed.
+  var isObservingPresence: Bool { presence?.isObserving ?? false }
+
   override var canBecomeKey: Bool { allowsKeyForTranscript }
   override var canBecomeMain: Bool { false }
   /// Only explicit transcript interaction opens the keyboard gate.
@@ -1162,6 +1165,10 @@ final class OverlayPresence {
     apply()
   }
 
+  var isObserving: Bool {
+    localMonitor != nil || globalMonitor != nil || workspaceObserver != nil
+  }
+
   func invalidate() {
     if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
@@ -1176,7 +1183,7 @@ final class OverlayPresence {
     captureUntil = nil
   }
 
-  private func noteScreenshotIfNeeded(_ event: NSEvent) {
+  func noteScreenshotIfNeeded(_ event: NSEvent) {
     guard OverlayPresencePolicy.isScreenshotChord(event) else { return }
     captureUntil = Date().addingTimeInterval(4)
     apply()
@@ -1201,7 +1208,9 @@ final class OverlayPresence {
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
     }
-    if policy == .capture {
+    // A screenshot lifts the overlay only when it is already on screen. An
+    // ordered-out panel stays hidden: the chord is not a reason to show it.
+    if policy == .capture, panel.isVisible {
       panel.orderFrontRegardless()
     }
   }
