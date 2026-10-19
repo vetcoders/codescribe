@@ -2547,8 +2547,8 @@ def frame_context(environ: Any) -> dict[str, Any] | None:
     """Name the vc-frame pane that hosts this provider session, or None outside vc-frame.
 
     The follower is spawned from the agent's own shell, so it inherits the
-    pane, session and terminal-host coordinates of that pane. The vc-frame
-    binary is not recorded: it is resolved on PATH at each click.
+    pane, session and terminal-host coordinates of that pane. Which vc-frame
+    program answers is not part of the address: see frame_cli.
     """
     pane = str(environ.get("VC_FRAME_PANE_ID") or environ.get("ZELLIJ_PANE_ID") or "")
     session = str(environ.get("VC_FRAME_SESSION_NAME") or environ.get("ZELLIJ_SESSION_NAME") or "")
@@ -2570,17 +2570,15 @@ def frame_context(environ: Any) -> dict[str, Any] | None:
 
 
 def frame_cli(environ: Any) -> str | None:
-    """Resolve `vc-frame` on PATH the way the installed shim does.
+    """The public `vc-frame` on PATH, resolved at each action.
 
-    Release directories are skipped: VIBECRAFTED_VC_FRAME_BIN and any
-    releases/<build>/bin entry name one generation, and a follower outlives
-    upgrades. The shim in ~/.local/bin always execs the current release.
+    Contract of the vibecrafted maintainer (Leo, 2026-10-19): an external
+    client runs the public command; VIBECRAFTED_VC_FRAME_BIN pins Vibecrafted's
+    internal engine and is not a fallback. PATH semantics belong to Vibecrafted.
     """
     import shutil
 
-    entries = [entry for entry in str(environ.get("PATH") or "").split(os.pathsep)
-               if entry and not re.search(r"/vibecrafted/releases/[^/]+/bin/?$", entry)]
-    return shutil.which("vc-frame", path=os.pathsep.join(entries))
+    return shutil.which("vc-frame", path=environ.get("PATH"))
 
 
 def panel_focus_request(raw: str) -> dict[str, Any] | None:
