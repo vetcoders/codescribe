@@ -5,10 +5,14 @@ import SwiftUI
 /// name pill's width). One threshold in one text scale, so ⌘+ moves both
 /// surfaces together (mockup `szuflada-agentow.html`, Founder 2026-10-16).
 enum OverlayAgentDrawerLayout {
-  /// Docking needs the drawer and an unsqueezed conversation side by side.
-  /// At very large text a medium window falls back to pills instead.
+  /// Docking needs the drawer and a conversation that still reads well side by
+  /// side: 300 + 420 points in the overlay's text scale. 520 for the
+  /// conversation kept a 900-point window at text 1.2 on pills with room to
+  /// spare, while the same column docked on dragon at text 0.8 (Maciej,
+  /// 2026-10-19: "Breaking point dla trybu rozwiniętego jest zbyt szeroko").
+  /// At very large text a medium window still falls back to pills.
   static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
-    windowWidth >= (300 + 520) * textScale
+    windowWidth >= (300 + 420) * textScale
   }
 
   /// The preference is in unscaled points and has no upper bound (Maciej,

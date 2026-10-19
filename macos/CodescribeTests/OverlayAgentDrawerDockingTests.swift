@@ -74,16 +74,18 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       OverlayAgentDrawerLayout.isDocked(windowWidth: 1200, textScale: 1.0),
       "1200 at 1.0 docks")
     XCTAssertFalse(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 800, textScale: 1.0),
-      "800 at 1.0 falls back to pills")
+      OverlayAgentDrawerLayout.isDocked(windowWidth: 680, textScale: 1.0),
+      "680 at 1.0 falls back to pills")
     XCTAssertFalse(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 1200, textScale: 1.6),
-      "1200 at 1.6 needs 1312 — pills, so large text never squeezes bubbles")
+      OverlayAgentDrawerLayout.isDocked(windowWidth: 1100, textScale: 1.6),
+      "1100 at 1.6 needs 1152 — pills, so large text never squeezes bubbles")
     XCTAssertTrue(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 820, textScale: 1.0),
-      "the exact 820 × scale boundary docks")
-    XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 1312, textScale: 1.6))
-    XCTAssertFalse(OverlayAgentDrawerLayout.isDocked(windowWidth: 819.9, textScale: 1.0))
+      OverlayAgentDrawerLayout.isDocked(windowWidth: 720, textScale: 1.0),
+      "the exact 720 × scale boundary docks")
+    XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 1152, textScale: 1.6))
+    XCTAssertFalse(OverlayAgentDrawerLayout.isDocked(windowWidth: 719.9, textScale: 1.0))
+    // Maciej 2026-10-19: a 900-point overlay at text 1.2 stayed on pills.
+    XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 898, textScale: 1.2))
     XCTAssertEqual(OverlayAgentDrawerLayout.drawerWidth(textScale: 1.4), 420, accuracy: 0.001)
     // Maciej 2026-10-18: no cap; dragged fully left the roster is the window.
     XCTAssertEqual(
@@ -289,17 +291,17 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       rootView:
         DictationOverlayView(state: state)
         .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
-        .frame(width: 800, height: 500))
+        .frame(width: 700, height: 500))
     host.sizingOptions = []
     let panel = NSPanel(
-      contentRect: CGRect(x: 0, y: 0, width: 800, height: 500),
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
     panel.orderFrontRegardless()
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
-    XCTAssertEqual(recorder.frame, .zero, "800 wide at 1.0: no docked column")
+    XCTAssertEqual(recorder.frame, .zero, "700 wide at 1.0: no docked column")
     panel.orderOut(nil)
   }
 
