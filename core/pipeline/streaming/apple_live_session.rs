@@ -2215,6 +2215,10 @@ enum SidePin {
     Unanchored(NoAuthorityReason),
     /// Measured range, no voiced hop. Refusal, not paint.
     NoVoicedHop,
+    /// No qualified occurrence holds this PCM, and the calibrated existence
+    /// predicate that qualification applies measured it below the shortest
+    /// region. Refusal, not paint.
+    BelowExistence,
 }
 
 /// One original timed pin routed to a single member. Only ledger slot
@@ -4186,6 +4190,19 @@ impl AppleSealState {
                     side.push((index, pin, text.to_string(), SidePin::NoVoicedHop));
                     continue;
                 }
+                // An unanchored pin is painted as evidence. When no qualified
+                // occurrence holds its PCM and that PCM measures below the
+                // existence predicate qualification refused, the paint would
+                // show a word over sound the ledger did not admit.
+                if matches!(class, OverlapPinClass::Unanchored(_))
+                    && !ledger
+                        .qualified_occurrences_overlapping(&pin)
+                        .any(|owner| pin_intersects(&pin, owner))
+                    && pcm_measured_below_existence(self, &pin)
+                {
+                    side.push((index, pin, text.to_string(), SidePin::BelowExistence));
+                    continue;
+                }
                 match class {
                     OverlapPinClass::ExclusiveTail { member_index } => {
                         routes[member_index].exclusive.push(RoutedPin {
@@ -4241,7 +4258,7 @@ impl AppleSealState {
             let ledger_reason = match &disposition {
                 SidePin::Replay => "replayed_range_identity",
                 SidePin::Unanchored(reason) => reason.as_str(),
-                SidePin::NoVoicedHop => "no_voiced_hop_in_pin",
+                SidePin::NoVoicedHop | SidePin::BelowExistence => "no_voiced_hop_in_pin",
             };
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: "overlap_pin_refused".into(),
@@ -4333,6 +4350,13 @@ impl AppleSealState {
                             RefuseReason::NoVoicedHopInPin,
                         )
                     }
+                    // Hops did reach the floor, so the voiced-hop lookup
+                    // counter is not touched; the refusal is the same.
+                    SidePin::BelowExistence => ledger.refuse_replacement(
+                        &observation,
+                        &text,
+                        RefuseReason::NoVoicedHopInPin,
+                    ),
                 }
             };
             let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -6884,12 +6908,23 @@ fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdent
     if window.samples.is_empty() {
         return false;
     }
-    let energy_integral = window
-        .samples
-        .iter()
-        .map(|sample| f64::from(*sample) * f64::from(*sample))
-        .sum::<f64>();
-    let mean_rms = (energy_integral / window.samples.len() as f64).sqrt();
+    let energy = |samples: &[f32]| {
+        samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>()
+    };
+    let span_energy = energy(window.samples.as_slice());
+    // `min_energy_integral` is the energy of the shortest region that sits at
+    // the calibrated existence floor, so only PCM inside hops that reach that
+    // floor counts toward it. Summed over the whole span, sub-floor noise
+    // qualified 1.17 s of gated EarPods capture whose hops cleared the floor
+    // for 20 ms of a 64 ms region (take agent-channel-0-73e58303), and Whisper
+    // then wrote "Dziękuję." into that owner. Without a measured floor or a
+    // hop clock covering the span nothing is excluded: a missing channel is
+    // not silence.
+    let energy_integral = floor_clearing_energy(state, occurrence, &window).unwrap_or(span_energy);
+    let mean_rms = (span_energy / window.samples.len() as f64).sqrt();
     let peak = window
         .samples
         .iter()
@@ -7401,6 +7436,67 @@ fn energy_above_existence_floor(state: &AppleSealState, start: u64, end: u64) ->
         floor,
     )?;
     Some(!hops.is_empty())
+}
+
+/// Σx² of owned PCM inside the hops that reach the calibrated existence floor,
+/// the quantity `min_energy_integral` is defined against. `None` when the take
+/// has no floor or the hop clock cannot speak for the whole span.
+fn floor_clearing_energy(
+    state: &AppleSealState,
+    span: &OccurrenceIdentity,
+    window: &ResolvedAudioWindow,
+) -> Option<f64> {
+    let hops = existence_floor_hops(state, span)?;
+    let offset = |sample: u64| {
+        usize::try_from(sample.saturating_sub(window.sample_start))
+            .unwrap_or(usize::MAX)
+            .min(window.samples.len())
+    };
+    Some(
+        hops.iter()
+            .map(|&(start, end)| {
+                let from = offset(start);
+                window.samples[from..offset(end).max(from)]
+                    .iter()
+                    .map(|sample| f64::from(*sample) * f64::from(*sample))
+                    .sum::<f64>()
+            })
+            .sum(),
+    )
+}
+
+/// `true` only when the take's calibration, floor, hop clock and retained PCM
+/// all measured `span` below the existence predicate qualification applies.
+/// Any missing channel answers `false`: unmeasured sound is not refused.
+fn pcm_measured_below_existence(state: &AppleSealState, span: &OccurrenceIdentity) -> bool {
+    let Some(calibration) = state.energy_calibration.as_ref() else {
+        return false;
+    };
+    let Some(window) = state.window_by_samples(span.sample_start, span.sample_end) else {
+        return false;
+    };
+    floor_clearing_energy(state, span, &window)
+        .is_some_and(|energy| energy < calibration.min_energy_integral)
+}
+
+/// Sample ranges of one occurrence whose capture hops reach the calibrated
+/// existence floor. `None` when the take has no floor or the hop clock cannot
+/// speak for the whole occurrence; `Some` empty is measured sub-floor sound.
+fn existence_floor_hops(
+    state: &AppleSealState,
+    occurrence: &OccurrenceIdentity,
+) -> Option<Vec<(u64, u64)>> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        occurrence.sample_start,
+        occurrence.sample_end,
+        floor,
+    )
 }
 
 fn energy_valley_between(
@@ -34140,3 +34236,7 @@ mod bounded_lexical_trial_tests {
 #[cfg(test)]
 #[path = "transcription_controls_tests.rs"]
 mod transcription_controls_tests;
+
+#[cfg(test)]
+#[path = "calibrated_energy_qualification_tests.rs"]
+mod calibrated_energy_qualification_tests;
