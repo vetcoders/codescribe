@@ -171,7 +171,10 @@ final class OverlayRecordingLightTests: XCTestCase {
     }
   }
 
-  func testBusCaptureUsesAgentLightOverSettledOrdinaryTakeAndQuietMeter() {
+  /// Maciej, 2026-10-19 08:52: the header microphone records dictation only;
+  /// an agent's capture lives on the Agents button. The waveform keeps the
+  /// agent accent because it draws that capture's audio.
+  func testBusCaptureLeavesTheHeaderLightToDictationOverSettledTakeAndQuietMeter() {
     let state = OverlayState()
     state.applyTranscriptProjection(
       transcriptProjection(
@@ -191,10 +194,10 @@ final class OverlayRecordingLightTests: XCTestCase {
     ])
     XCTAssertTrue(state.audioCaptureActive)
     XCTAssertTrue(state.usesAgentAccent)
-    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertNil(state.recordingLight, "the header microphone stays ready for dictation")
     feed(state, db: -60, from: 0, seconds: 2)
     XCTAssertTrue(state.levelMeter.isSilent)
-    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertNil(state.recordingLight)
     XCTAssertEqual(state.activeText, text)
     XCTAssertEqual(state.revision, revision)
     state.applyChannelRoster([])
@@ -204,7 +207,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertEqual(state.activeText, text)
   }
 
-  func testBroadcastAndNamedBusStayVioletDuringOrdinaryFinalization() {
+  func testBroadcastAndNamedBusLeaveOrdinaryFinalizationOnTheHeaderLight() {
     for channel in ["0", "4"] {
       let state = OverlayState()
       state.applyTranscriptProjection(
@@ -224,7 +227,7 @@ final class OverlayRecordingLightTests: XCTestCase {
       ])
       XCTAssertTrue(state.channelAudioCaptureActive)
       XCTAssertTrue(state.usesAgentAccent)
-      XCTAssertEqual(state.recordingLight, .agent)
+      XCTAssertEqual(state.recordingLight, .processing, "dictation's own phase, not the bus")
       XCTAssertEqual(state.activeText, text)
       XCTAssertEqual(state.revision, revision)
       state.applyChannelRoster([])

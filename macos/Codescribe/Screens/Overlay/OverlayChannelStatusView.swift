@@ -581,6 +581,8 @@ struct OverlayChannelStatusView: View {
   let onSelectConversation: ((String?) -> Void)?
   let onShowMonitor: (() -> Void)?
   var headerSelected = false
+  /// The recording agent is on screen: a press stops its capture.
+  var agentMicrophoneStops = false
   var mutedChannels: [String: Bool] = [:]
   var pendingMuteChannels: Set<String> = []
   var onTogglePlayback: ((String) -> Void)?
@@ -678,8 +680,25 @@ struct OverlayChannelStatusView: View {
     return title + " (" + String(count) + ")"
   }
 
-  var body: some View {
-    Button(action: showMonitor) {
+  /// An open channel records for its agent; the button then is that agent's
+  /// microphone, violet and pulsing (Maciej, 2026-10-19 08:52).
+  var agentCaptureOpen: Bool {
+    hudStates.values.contains(where: \.open)
+  }
+
+  private var headerTitle: String {
+    guard agentCaptureOpen else { return String(localized: "Agents") }
+    let action =
+      agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
+    return action + ". " + OverlayRecordingLight.agent.tooltip
+  }
+
+  @ViewBuilder
+  private var headerGlyph: some View {
+    if agentCaptureOpen {
+      OverlayMicrophoneGlyph(symbol: "mic.fill", tint: OverlayRecordingLight.agent.color)
+        .symbolEffect(.pulse, isActive: animates && !reduceMotion)
+    } else {
       // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.agents,
@@ -687,29 +706,37 @@ struct OverlayChannelStatusView: View {
           ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
         plateOpacity: headerSelected ? 0 : 0.12
       )
-      .contentShape(Circle())
-      .overlay(alignment: .topTrailing) {
-        if unreadCounts.values.contains(where: { $0 > 0 }) {
-          Circle()
-            .fill(palette.primaryText.color)
-            .frame(width: 5, height: 5)
-            .offset(x: 2, y: -2)
-            .accessibilityLabel("Unread replies")
-            .accessibilityIdentifier("overlay-unread-replies")
+    }
+  }
+
+  var body: some View {
+    Button(action: showMonitor) {
+      headerGlyph
+        .contentShape(Circle())
+        .overlay(alignment: .topTrailing) {
+          if unreadCounts.values.contains(where: { $0 > 0 }) {
+            Circle()
+              .fill(palette.primaryText.color)
+              .frame(width: 5, height: 5)
+              .offset(x: 2, y: -2)
+              .accessibilityLabel("Unread replies")
+              .accessibilityIdentifier("overlay-unread-replies")
+          }
         }
-      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .fixedSize()
     .modifier(
       OverlayHeaderControlChrome(
-        title: String(localized: "Agents"), accent: .agents, palette: palette,
+        title: headerTitle, accent: .agents, palette: palette,
         selected: headerSelected)
     )
-    .accessibilityLabel("Agents")
+    .accessibilityLabel(
+      agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
+    )
     .accessibilityAddTraits(headerSelected ? .isSelected : [])
-    .accessibilityValue(glyph.label)
+    .accessibilityValue(agentCaptureOpen ? OverlayRecordingLight.agent.name : glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
   }
 

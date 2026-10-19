@@ -1433,6 +1433,36 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
+  /// Maciej, 2026-10-19 07:06Z: mini has no room for another control. While an
+  /// agent records, its microphone takes the expand arrow's place; the arrow
+  /// returns when the recording ends. The dictation microphone stays.
+  func testMiniSwapsTheExpandArrowForTheRecordingAgentsMicrophone() throws {
+    let state = OverlayState()
+    state.setPresentationMode(.mini)
+    try withPanel(state: state) { _, root in
+      func shown(_ identifier: String) -> Bool {
+        accessibilityTree(root).contains { $0.accessibilityIdentifier() == identifier }
+      }
+      XCTAssertTrue(shown("overlay-live-preview-toggle"))
+      XCTAssertFalse(shown("overlay-agent-glyph"))
+      state.applyChannelRoster([
+        .init(
+          channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+          open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil)
+      ])
+      state.setPresentationMode(.mini)
+      settle(root)
+      XCTAssertTrue(shown("overlay-agent-glyph"), "the agent's microphone in the arrow's place")
+      XCTAssertFalse(shown("overlay-live-preview-toggle"))
+      XCTAssertTrue(shown("overlay-start-recording"), "the dictation microphone stays")
+      state.applyChannelRoster([])
+      settle(root)
+      XCTAssertTrue(shown("overlay-live-preview-toggle"), "the arrow returns")
+      XCTAssertFalse(shown("overlay-agent-glyph"))
+    }
+  }
+
   private func withPanel(
     state: OverlayState, width: CGFloat = 470,
     _ check: (FloatingOverlayPanel, NSView) throws -> Void
