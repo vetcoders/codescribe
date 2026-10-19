@@ -2078,7 +2078,7 @@ impl AcousticLedger {
             .iter()
             .enumerate()
             .filter_map(|(index, c)| {
-                if c.owner.sample_end > horizon || !c.conflict || self.is_sealed(&c.owner) {
+                if !c.conflict || c.owner.sample_end > horizon || self.is_sealed(&c.owner) {
                     return None;
                 }
                 let sources = self.word_trial_sources(index, fresh_decode)?;
@@ -2203,6 +2203,19 @@ impl AcousticLedger {
             })
     }
 
+    /// Owners holding a conflict no trial has attempted: the only owners for
+    /// which [`Self::close_word_adjudication_horizon`] can do any work. One
+    /// pass over the components lets a horizon sweep skip every other owner
+    /// instead of scanning all components once per owner.
+    pub(crate) fn owners_with_unattempted_conflicts(&self) -> BTreeSet<OccurrenceIdentity> {
+        self.word_adjudication
+            .components
+            .iter()
+            .filter(|component| component.conflict && !component.attempted)
+            .map(|component| component.owner.clone())
+            .collect()
+    }
+
     /// The live scheduler proved that every window able to own these words
     /// returned. Keep unresolved incumbents and record expiry through the
     /// existing trial receipts; expiry supplies no new acoustic witness.
@@ -2213,7 +2226,7 @@ impl AcousticLedger {
             .components
             .iter()
             .position(|component| {
-                &component.owner == owner && component.conflict && !component.attempted
+                component.conflict && !component.attempted && &component.owner == owner
             })
         {
             let Some(trial) = self.open_word_trial(index, false) else {
@@ -2465,6 +2478,16 @@ impl AcousticLedger {
             refusal.unwrap_or(if resolved { "resolved" } else { "unresolved" }),
         );
         receipt
+    }
+
+    /// Components held for adjudication, settled or not.
+    #[cfg(test)]
+    pub(crate) fn word_component_count(&self) -> (usize, usize) {
+        let components = &self.word_adjudication.components;
+        (
+            components.len(),
+            components.iter().filter(|c| c.conflict).count(),
+        )
     }
 
     #[cfg(test)]
