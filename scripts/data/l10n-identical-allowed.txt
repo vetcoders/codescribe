@@ -25,6 +25,7 @@
 
 # Product, vendor and tool names.
 Codescribe - %@
+Codescribe Bus
 AICX MCP
 Loctree MCP
 
@@ -49,7 +50,6 @@ hotkeys.mode.agent
 Commit
 Commit: %@
 Model
-Model: %@
 Plan
 Status
 OK
