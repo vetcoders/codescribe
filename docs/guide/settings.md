@@ -37,13 +37,32 @@ mistaken for one that was never read; the requests themselves are the cards
 below. While the check runs, the button says so; if the journal cannot be read,
 the error replaces the line.
 
-The coding-agent rows name the client — Codex, Claude Code, Other agents — and
+The coding-agent card opens with what the Codescribe skill is: once it is
+installed, the agent can join the Codescribe Bus under its own name, receive
+what you dictate or type to it and answer in text or out loud. Installing only
+adds the skill; a conversation connects when you invoke `/codescribe` in it.
+
+The rows below name the client — Codex, Claude Code, Other agents — and
 whether its installed skill is the one this app carries: **Up to date**, or
-**Update available** when the app brings a newer one (the same **Update skill**
-button installs it). A folder the app manages whose receipt no longer describes
-it also reads as **Update available**; updating re-adopts it. The folders each
-client reads moved into **Skill locations**, a disclosure at the bottom of the
-card.
+**Update available** when the app brings a newer one. A folder the app manages
+whose receipt no longer describes it also reads as **Update available**;
+updating re-adopts it. The row's button follows that state: **Install skill…**
+when the client has no skill, **Update skill…** when an update is waiting, and
+a disabled **Update skill…** when the copy is already up to date.
+
+**Install skill…** and **Update skill…** write nothing on their own. They open a
+confirmation that names the folder (for example `~/.codex/skills/codescribe`),
+the skill version and whether anything is replaced: an install never replaces a
+folder Codescribe did not create — it stops without changing it — and an update
+replaces only the folder Codescribe installed there, so changes made inside it
+are not kept. If another installed client has an outdated copy, the
+confirmation says it is updated in the same step. It also says that Codescribe
+refreshes its own commands in `~/.local/bin` and never overwrites a command it
+did not install. Only **Install** or **Update** in that confirmation writes
+files; **Cancel** leaves everything as it was. A manually installed copy keeps
+its own recovery, **Replace manual copy…**, which moves the original to a
+backup first. The folders each client reads are listed under **Skill
+locations**, a disclosure at the bottom of the card.
 
 ### Languages
 
