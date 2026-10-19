@@ -58,6 +58,9 @@ Validation and distribution have separate receipts.
 
 ### Fixed
 
+- The live transcript activity marker keeps its position through width changes instead of retaining the wrapping of a discarded layout proposal.
+- Switching agents opens the loaded conversation at its latest reply while retaining the composer and unsent draft.
+
 - A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
 - An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
 - An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
@@ -81,9 +84,9 @@ Validation and distribution have separate receipts.
 
 <!-- release-notes:0.17.1:start -->
 
-Source history: 287 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history: 290 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.17.1 87c3ebfa0a7fe6a525c2db5912a442de2f7e81fe -->
+<!-- release-boundary: 0.17.1 50e3f312f0f6ca34d327e31dee35dcf96bed912d -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
