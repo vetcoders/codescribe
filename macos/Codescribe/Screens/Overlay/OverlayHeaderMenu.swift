@@ -128,8 +128,9 @@ struct OverlayHeaderMenu: View {
     // The chosen interval stays tinted like a hovered item, never a checkmark
     // (Maciej, 2026-10-19: "niech po prostu trwa na niej podbarwienie jak przy
     // hoverze"). A plain menu item cannot keep the hover highlight, so the
-    // choices are one palette row whose selection is that tint.
-    Menu("Auto fold after…") {
+    // choices are one palette row whose selection is that tint. The menu's own
+    // title names the current interval (Lena, release 0.17.2).
+    Menu {
       Picker(
         selection: Binding(
           get: { state.autoFoldSeconds },
@@ -149,10 +150,16 @@ struct OverlayHeaderMenu: View {
       }
       .pickerStyle(.palette)
       .labelsHidden()
+    } label: {
+      Text("Auto fold after… \(currentAutoFoldTitle)")
     }
   }
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
+
+  private var currentAutoFoldTitle: Text {
+    state.autoFoldSeconds == 0 ? Text("Never") : Text("\(Int(state.autoFoldSeconds)) s")
+  }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {
     guard !state.freeMotion, state.placementAnchor == anchor else {

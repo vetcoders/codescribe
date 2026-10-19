@@ -193,6 +193,16 @@ def section(text, version):
 def previous_boundary(root, changelog, target, explicit):
     if explicit:
         return git(root, "rev-parse", explicit + "^{commit}")
+    inventory = root / f"docs/releases/{target}-commits.json"
+    if inventory.exists():
+        recorded = json.loads(inventory.read_text())
+        start = recorded.get("from_sha", "")
+        if recorded.get("version") != target or not re.fullmatch(r"[0-9a-f]{40}", start):
+            raise ValueError(f"Invalid recorded release boundary: {inventory}")
+        # A squash tag and an integration branch can represent the same work
+        # with different ancestry. Refresh the range already reviewed for this
+        # version; only --from may deliberately replace that boundary.
+        return git(root, "rev-parse", start + "^{commit}")
     choices = []
     tagged_versions = set()
     for tag in git(root, "tag", "--merged", "HEAD").splitlines():
@@ -310,7 +320,10 @@ def run(args):
             inventory_path: (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode(),
             changelog_path: update_changelog(changelog, target, date, end, commits,
                 promote=args.command == "bump" and not existing,
-                summarize=not args.inventory_only).encode(),
+                # A commit title is not a verified product claim. Bump records
+                # history and promotes authored notes; prose generation is an
+                # explicit notes operation, never a side effect of numbering.
+                summarize=args.command == "notes" and not args.inventory_only).encode(),
         }
         if args.command == "bump" and target != current:
             changes[manifest] = replace_cargo_version(cargo, current, target).encode()
