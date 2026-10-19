@@ -143,6 +143,7 @@ struct OverlayConversationView: View {
           conversation.id, conversation.historyLoaded ? "loaded" : "loading",
           orderedMessages.isEmpty ? "empty" : "rows",
         ])
+
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.

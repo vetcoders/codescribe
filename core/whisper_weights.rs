@@ -95,6 +95,7 @@ fn bundle_identity(path: &Path) -> Option<Vec<BundleFileIdentity>> {
     for entry in fs::read_dir(path).ok()? {
         let entry = entry.ok()?;
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Metadata of an entry returned by read_dir of that directory.
+
         let metadata = fs::metadata(entry.path()).ok()?;
         if !metadata.is_file() {
             continue;

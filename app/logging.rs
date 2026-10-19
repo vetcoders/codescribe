@@ -184,7 +184,6 @@ mod tests {
             .args([
                 "--exact",
                 "logging::tests::logging_subprocess_witness",
-                "--ignored",
                 "--nocapture",
             ])
             .env("RUST_LOG", "warn")
@@ -203,7 +202,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "subprocess fixture for the log-channel regression"]
     fn logging_subprocess_witness() {
         init_logging_with_default_filter("warn");
         tracing::warn!("codescribe-log-channel-witness");

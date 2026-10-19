@@ -203,7 +203,9 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
 /// stored id is poison for THIS key, so drop it and go unchained.
 pub(crate) fn is_stale_chain_error(error: &anyhow::Error) -> bool {
-    error.to_string().contains("previous_response_not_found")
+    let msg = error.to_string();
+    msg.contains("previous_response_not_found")
+        || (msg.contains("response_not_found") && msg.contains("previous_response_id"))
 }
 
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
@@ -1098,8 +1100,13 @@ async fn format_text_with_status_channels_for_policy(
             if attempt == 0 {
                 info!("Using assistive mode (model: {})", lane.model());
             }
-        } else {
-            if attempt == 0 {
+        } else if attempt == 0 {
+            if runtime_settings.values().format_on_device {
+                info!(
+                    "Using formatting mode (on-device: Apple FoundationModels, cloud fallback: {})",
+                    lane.model()
+                );
+            } else {
                 info!("Using formatting mode (model: {})", lane.model());
             }
         }
@@ -1639,27 +1646,59 @@ async fn call_llm_endpoint(
         temperature
     );
 
-    let (ai_mode, _previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, false, false);
+    let (ai_mode, previous_response_id, request) = responses_chain_request(
+        user_message,
+        system_prompt,
+        assistive,
+        model.clone(),
+        false,
+        false,
+    );
 
-    // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
-    // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
-    let mut request_builder = get_client()
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request);
-    if !api_key.trim().is_empty() {
-        request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
-        if !bearer_only {
-            request_builder = request_builder.header("x-api-key", &api_key);
+    let send_once = |req: &ResponsesRequest| {
+        let mut builder = get_client()
+            .post(&endpoint)
+            .header("Content-Type", "application/json")
+            .json(req);
+        if !api_key.trim().is_empty() {
+            builder = builder.header("Authorization", format!("Bearer {}", api_key));
+            if !bearer_only {
+                builder = builder.header("x-api-key", &api_key);
+            }
         }
-    }
-    let response = request_builder.send().await.context("Request failed")?;
+        builder
+    };
+    let mut response = send_once(&request).send().await.context("Request failed")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP {} - {}", status, body);
+        if previous_response_id.is_some() && is_stale_chain_error(&anyhow::anyhow!("{body}")) {
+            warn!(
+                "Clearing rejected previous_response_id for {:?} and retrying unchained",
+                ai_mode
+            );
+            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            let (_, _, unchained) = responses_chain_request(
+                user_message,
+                system_prompt,
+                assistive,
+                model,
+                false,
+                false,
+            );
+            response = send_once(&unchained)
+                .send()
+                .await
+                .context("Request failed")?;
+            if !response.status().is_success() {
+                let retry_status = response.status();
+                let retry_body = response.text().await.unwrap_or_default();
+                anyhow::bail!("HTTP {} - {}", retry_status, retry_body);
+            }
+        } else {
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
     }
 
     let responses_result: ResponsesResponse =
@@ -1762,7 +1801,7 @@ async fn call_llm_endpoint_streaming(
         user_message,
         system_prompt,
         assistive,
-        model,
+        model.clone(),
         true,
         account_backend,
     );
@@ -1776,13 +1815,42 @@ async fn call_llm_endpoint_streaming(
         get_client(),
         &endpoint,
         &api_key,
-        callbacks,
+        callbacks.clone(),
         initial_response_timeout,
         inter_chunk_timeout,
     )
     .with_auth_header_mode(auth_header_mode)
-    .with_extra_headers(extra_headers);
-    let streamed = manager.stream(&request).await?;
+    .with_extra_headers(extra_headers.clone());
+    let streamed = match manager.stream(&request).await {
+        Ok(streamed) => streamed,
+        Err(err) if previous_response_id.is_some() && is_stale_chain_error(&err) => {
+            warn!(
+                "Clearing rejected previous_response_id for {:?} and retrying SSE unchained",
+                ai_mode
+            );
+            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            let (_, _, unchained) = responses_chain_request(
+                user_message,
+                system_prompt,
+                assistive,
+                model,
+                true,
+                account_backend,
+            );
+            let retry_manager = ResponsesStreamingManager::new(
+                get_client(),
+                &endpoint,
+                &api_key,
+                callbacks,
+                initial_response_timeout,
+                inter_chunk_timeout,
+            )
+            .with_auth_header_mode(auth_header_mode)
+            .with_extra_headers(extra_headers);
+            retry_manager.stream(&unchained).await?
+        }
+        Err(err) => return Err(err),
+    };
     let output = ProviderOutput {
         assistant_text: streamed.assistant_text,
         reasoning_text: streamed.reasoning_text,
@@ -1869,6 +1937,10 @@ mod tests {
             "HTTP 400 Bad Request - {{\"error\":{{\"code\":\"previous_response_not_found\"}}}}"
         );
         assert!(is_stale_chain_error(&stale));
+        let buddy_404 = anyhow::anyhow!(
+            "HTTP 404 Not Found - {{\"error\":{{\"message\":\"response 'resp-1' was not found\",\"type\":\"invalid_request_error\",\"param\":\"previous_response_id\",\"code\":\"response_not_found\"}}}}"
+        );
+        assert!(is_stale_chain_error(&buddy_404));
         let pair = anyhow::anyhow!("HTTP 400 - instructions and previous_response_id together");
         assert!(!is_stale_chain_error(&pair));
         let auth = anyhow::anyhow!("HTTP 401 Unauthorized - missing scopes");
@@ -2726,5 +2798,97 @@ mod tests {
         assert!(should_retry_provider_error(&anyhow::anyhow!(
             "SSE stream inter-chunk timeout"
         )));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stale_previous_response_id_resets_chain_and_retries_unchained() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let mut server = mockito::Server::new_async().await;
+        crate::state::conversation::set_response_id_for_mode(
+            crate::state::conversation::AiMode::Assistive,
+            "resp-expired-123".to_string(),
+        );
+
+        let stale_mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(json!({
+                "previous_response_id": "resp-expired-123"
+            })))
+            .with_status(404)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "response 'resp-expired-123' was not found",
+                        "type": "invalid_request_error",
+                        "param": "previous_response_id",
+                        "code": "response_not_found"
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let unchained_mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Regex(r#""instructions":"system prompt""#.to_string()))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fresh-456\"}}\n\n\
+                 data: {\"type\":\"response.output_text.delta\",\"delta\":\"Fresh answer.\"}\n\n\
+                 data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fresh-456\"}}\n\n",
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let endpoint = format!("{}/v1/responses", server.url());
+        let provider = crate::llm::provider::CustomProvider::new(
+            "test-buddy",
+            crate::llm::provider::WireFamily::OpenAiResponses,
+            &endpoint,
+        )
+        .unwrap();
+        let user_settings = crate::config::UserSettings {
+            ai_formatting_enabled: Some(true),
+            llm_assistive_provider: Some(format!("custom:{}", provider.id)),
+            llm_assistive_model: Some("buddy".into()),
+            llm_custom_providers: vec![provider],
+            ..Default::default()
+        };
+        user_settings.save().unwrap();
+        let settings = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let output = call_llm_endpoint_streaming(
+            "pytanie",
+            "system prompt",
+            true,
+            settings.llm_lanes().assistive(),
+            StreamRequestContext {
+                callbacks: StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                initial_response_timeout: Duration::from_secs(5),
+                inter_chunk_timeout: Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect("stale previous_response_id must recover via unchained retry");
+
+        assert_eq!(output.assistant_text, "Fresh answer.");
+        assert_eq!(
+            crate::state::conversation::get_previous_response_id_for_mode(
+                crate::state::conversation::AiMode::Assistive
+            )
+            .as_deref(),
+            Some("resp-fresh-456")
+        );
+        stale_mock.assert_async().await;
+        unchained_mock.assert_async().await;
     }
 }

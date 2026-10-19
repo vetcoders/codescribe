@@ -1397,6 +1397,10 @@ pub trait EventSink: Send + Sync {
     /// ledger receipt, or public IPC message.
     fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
 
+    /// Report whether per-occurrence formatter jobs are currently queued or in
+    /// flight for this take. Passive sinks ignore this signal.
+    fn on_formatter_pending(&self, _pending: bool) {}
+
     /// Acknowledge FIFO publication for this exact capture after its producers
     /// have joined. Only the committed presentation owner can complete this
     /// protocol; an observer or unwired sink must refuse it. Cancellation or

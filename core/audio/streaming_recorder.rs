@@ -3391,38 +3391,28 @@ mod tests {
 
     /// Live mic: SpeechSession emits chunks for lt/eq/gt VAD block sizes (opt-in).
     #[test]
-    #[ignore] // Manual: requires microphone + Silero model (set CODESCRIBE_E2E_MIC=1)
     fn test_vad_gate_live_chunk_sizes() {
-        if !env_bool("CODESCRIBE_E2E_MIC") {
-            eprintln!("Skipping mic gate test (set CODESCRIBE_E2E_MIC=1 to enable)");
-            return;
-        }
+        let (wav_path, remove_after) = if env_bool("CODESCRIBE_E2E_MIC") {
+            let record_sec = env_f32("CODESCRIBE_E2E_MIC_SEC", 6.0).max(2.0);
+            println!("Speak now for ~{:.1}s...", record_sec);
 
-        let model_path = vad::default_model_path();
-        if !model_path.exists() {
-            eprintln!(
-                "Skipping: Silero VAD model not found at {}",
-                model_path.display()
-            );
-            return;
-        }
+            let mut recorder = Recorder::new().expect("Failed to create recorder");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let path = rt
+                .block_on(async {
+                    recorder.start().await.expect("Failed to start recorder");
+                    tokio::time::sleep(Duration::from_secs_f32(record_sec)).await;
+                    recorder.stop().await.expect("Failed to stop recorder")
+                })
+                .expect("No WAV produced");
+            (path, true)
+        } else {
+            let path = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+                .join(".codescribe/data_assets/01_no-to-dobra.wav");
+            (path, false)
+        };
 
-        let record_sec = env_f32("CODESCRIBE_E2E_MIC_SEC", 6.0).max(2.0);
-        println!("Speak now for ~{:.1}s...", record_sec);
-
-        let mut recorder = Recorder::new().expect("Failed to create recorder");
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let wav_path = rt
-            .block_on(async {
-                recorder.start().await.expect("Failed to start recorder");
-                tokio::time::sleep(Duration::from_secs_f32(record_sec)).await;
-                recorder.stop().await.expect("Failed to stop recorder")
-            })
-            .expect("No WAV produced");
-
-        let (samples, sample_rate) =
-            load_audio_file(&wav_path).expect("Failed to load recorded audio");
-
+        let (samples, sample_rate) = load_audio_file(&wav_path).expect("Failed to load audio");
         let mut resampler = vad::Resampler::new(sample_rate);
         let samples_16k = resampler.resample(&samples);
         let chunk_sec = 4.0f32;
@@ -3460,7 +3450,9 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_file(&wav_path);
+        if remove_after {
+            let _ = fs::remove_file(&wav_path);
+        }
     }
 
     /// Opt-in flag: true only for `1` or case-insensitive `true`.

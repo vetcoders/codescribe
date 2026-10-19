@@ -755,7 +755,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "explicit P0 PCM replay; needs signed Apple bridge and cached local Whisper"]
     async fn forensic_formatter_refusal_keeps_full_live_pcm_session() {
         use crate::presentation::emitter::PresentationEmitter;
         use codescribe_core::llm::provider::{CustomProvider, WireFamily};
@@ -780,8 +779,22 @@ mod tests {
             }
         }
 
-        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
-            .expect("explicitly select the private P0 audio fixture");
+        if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
+            let installed =
+                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+            if installed.is_file() {
+                unsafe {
+                    std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
+                    std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
+                }
+            }
+        }
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
+            Path::new(&std::env::var("HOME").expect("HOME"))
+                .join(".vibecrafted/artifacts/vetcoders/codescribe/2026_1006/reports/word-ledger-integration/5c8ec179-0755-4e0f-a883-6e0cd2e7d93b.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
         assert_eq!(
             hex::encode(Sha256::digest(std::fs::read(&wav).unwrap())),
             "bbc3a7e22ad871e7f733a857d53c372143367b8d7ad58f7d98f607e63146df6b",
@@ -964,10 +977,23 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "explicit private PCM replay; needs signed Apple bridge and cached local Whisper"]
     async fn forensic_saved_pcm_produces_authenticated_projection() {
-        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
-            .expect("explicitly select the private audio fixture");
+        if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
+            let installed =
+                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+            if installed.is_file() {
+                unsafe {
+                    std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
+                    std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
+                }
+            }
+        }
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
+            Path::new(&std::env::var("HOME").expect("HOME"))
+                .join(".codescribe/data_assets/01_no-to-dobra.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || runtime.block_on(async move {
             let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav))

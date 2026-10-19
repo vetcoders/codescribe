@@ -4,9 +4,13 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 
 #[test]
-#[ignore = "needs a local Whisper model and CODESCRIBE_STREAM_TEST_WAV longer than one window"]
 fn file_stream_emits_before_completion_and_matches_the_plain_verdict() {
-    let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").expect("set the private test WAV path");
+    let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
+        std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+            .join(".codescribe/data_assets/01_no-to-dobra.wav")
+            .to_string_lossy()
+            .into_owned()
+    });
     let binary = env!("CARGO_BIN_EXE_codescribe");
     let mut child = Command::new(binary)
         .args([
@@ -41,8 +45,11 @@ fn file_stream_emits_before_completion_and_matches_the_plain_verdict() {
         .expect("plain CLI");
     assert!(plain.status.success());
     let plain = String::from_utf8(plain.stdout).expect("UTF-8 transcript");
+    let delivered = text
+        .rsplit_once("⟲ final:")
+        .map_or(text.as_str(), |(_, final_text)| final_text);
     assert_eq!(
-        text.split_whitespace().collect::<Vec<_>>(),
+        delivered.split_whitespace().collect::<Vec<_>>(),
         plain.split_whitespace().collect::<Vec<_>>()
     );
 }
