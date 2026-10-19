@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No changes recorded yet.
 
-## [0.17.1] - Unreleased
+## [0.17.1] - 2026-10-19
 
 Validation and distribution have separate receipts.
 
@@ -81,9 +81,9 @@ Validation and distribution have separate receipts.
 
 <!-- release-notes:0.17.1:start -->
 
-Source history is recorded by `scripts/release-version.py` at the release commit.
+Source history: 269 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-<!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
+<!-- release-boundary: 0.17.1 9ba037e26740b456d5912555f58036278a91ba45 -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
