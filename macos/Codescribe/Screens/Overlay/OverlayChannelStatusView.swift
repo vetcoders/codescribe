@@ -556,7 +556,12 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.csTextScale) private var textScale
+  /// Not `@Environment`: the overlay calls `monitorBody` on this value from its
+  /// own body, so the struct is never installed and an environment property
+  /// reads its default. ⌘+ grew the docked column and the conversation while
+  /// the roster's text stayed at 1.0 (Maciej, 2026-10-19). `monitorBody` sets
+  /// the scale read where the column is installed.
+  private var textScale: CGFloat = 1
 
   let channels: [OverlayChannelDelivery]
   let rosterReady: Bool
@@ -733,6 +738,15 @@ struct OverlayChannelStatusView: View {
   /// chooser's focus scrolls into view, as in the pill stack. The narrow
   /// window's surface is `pillStack(onSelect:onDismiss:)`.
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
+    OverlayTextScaleReader { scale in
+      var installed = self
+      installed.textScale = scale
+      return installed.scaledMonitorBody(
+        maximumHeight: maximumHeight, focusRevision: focusRevision)
+    }
+  }
+
+  private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
@@ -1322,30 +1336,31 @@ struct OverlayChannelStatusView: View {
           DisclosureGroup("Saved conversations") {
             savedConversationsContent
           }
+          .font(.system(size: 13 * textScale))
         }
       }
       if unavailable {
         Text("Channel status unavailable — last open state retained")
-          .font(.system(size: 13, weight: .medium))
+          .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.processingStatus.color)
           .accessibilityIdentifier("overlay-channel-status-unavailable")
       }
       if let toggleError {
         // A refused toggle is an error, not a pending state (N roster palette).
         Text("Channel toggle failed: \(toggleError)")
-          .font(.system(size: 13, weight: .medium))
+          .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-channel-toggle-error")
       }
       if let playbackError {
         Text(verbatim: playbackError)
-          .font(.system(size: 11))
+          .font(.system(size: 11 * textScale))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-agent-playback-error")
       }
       if let archiveError {
         Text(verbatim: archiveError)
-          .font(.system(size: 11))
+          .font(.system(size: 11 * textScale))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-agent-archive-error")
       }
@@ -2043,6 +2058,14 @@ struct ChannelRosterStyle: Equatable {
     mutedText = palette.mutedText
     colorScheme = palette.appearance == .dark ? .dark : .light
   }
+}
+
+/// Reads `\.csTextScale` where it is installed and hands it to a builder.
+private struct OverlayTextScaleReader<Content: View>: View {
+  @Environment(\.csTextScale) private var textScale
+  let content: (CGFloat) -> Content
+
+  var body: some View { content(textScale) }
 }
 
 struct ChannelRosterContent<Content: View>: View {
