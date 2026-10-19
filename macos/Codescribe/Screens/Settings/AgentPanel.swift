@@ -137,6 +137,31 @@ private struct LLMLaneEditor: View {
 
       // The settings keys behind these rows live under "Active configuration
       // details" on the tab; the card itself stays free of identifiers.
+      if lane == .formatting {
+        SettingsControlRow(
+          title: String(localized: "Text formatting"),
+          subtitle: String(
+            localized:
+              "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle."
+          ),
+          inset: 10
+        ) {
+          Picker(
+            "",
+            selection: Binding(
+              get: { model.settings.formatOnDevice },
+              set: { model.setFormatOnDevice($0) }
+            )
+          ) {
+            Text("Cloud provider").tag(false)
+            Text("Apple on-device (experimental)").tag(true)
+          }
+          .labelsHidden()
+          .fixedSize()
+          .accessibilityLabel(String(localized: "Text formatting"))
+        }
+      }
+
       SettingsControlRow(title: String(localized: "Provider"), inset: 10) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
