@@ -94,9 +94,16 @@ was spawned from the agent's pane and inherits its coordinates.
 
 At start the follower records them in its lease as `frame`: `session`,
 `pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
-`host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`) and `frame_bin`.
-`frame` is `null` for an agent outside vc-frame. A follower that predates this
-contract reports no `frame` until it is restarted.
+and `host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`). `frame` is `null`
+for an agent outside vc-frame. A follower that predates this contract reports
+no `frame` until it is restarted. The address comes from the owner's own pane
+(`VC_FRAME_PANE_ID`, `VC_FRAME_SESSION_NAME`, `VC_FRAME_SOCKET_DIR`, with the
+`ZELLIJ_*` names as fallback), the exported Vibecrafted contract.
+
+The program is not part of the address. Each click runs the public `vc-frame`
+resolved on PATH at that moment (contract of the Vibecrafted maintainer,
+2026-10-19). `VIBECRAFTED_VC_FRAME_BIN` pins Vibecrafted's internal engine and
+is not a fallback; with no `vc-frame` on PATH the click answers `error`.
 
 The request is a row on the agent's bus, schema
 `codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with

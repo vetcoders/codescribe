@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,8 +19,7 @@ sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
 
 FRAME = {"session": "vibecrafted", "pane_id": 9, "socket_dir": "/tmp/vc-frame-501",
-         "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854,
-         "frame_bin": "/opt/vc-frame"}
+         "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854}
 
 
 class FrameContextTests(unittest.TestCase):
@@ -29,17 +29,15 @@ class FrameContextTests(unittest.TestCase):
                    "__CFBundleIdentifier": "io.vetcoders.vibecrafted",
                    "ALACRITTY_SOCKET": "/var/folders/T/Alacritty-43854.sock",
                    "VIBECRAFTED_VC_FRAME_BIN": sys.executable}
-        self.assertEqual(DEMUX.frame_context(environ), {
-            "session": "vibecrafted", "pane_id": 9, "socket_dir": "/tmp/vc-frame-501",
-            "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854,
-            "frame_bin": sys.executable})
+        # The engine pin is not part of the pane address.
+        self.assertEqual(DEMUX.frame_context(environ), FRAME)
 
     def test_zellij_names_are_accepted_and_the_log_names_the_host(self):
         frame = DEMUX.frame_context({"ZELLIJ_PANE_ID": "3", "ZELLIJ_SESSION_NAME": "work",
                                      "ZELLIJ_SOCKET_DIR": "/tmp/z",
-                                     "ALACRITTY_LOG": "/tmp/Alacritty-77.log", "PATH": ""})
+                                     "ALACRITTY_LOG": "/tmp/Alacritty-77.log"})
         self.assertEqual((frame["pane_id"], frame["session"], frame["socket_dir"],
-                          frame["host_pid"], frame["frame_bin"]), (3, "work", "/tmp/z", 77, None))
+                          frame["host_pid"]), (3, "work", "/tmp/z", 77))
 
     def test_an_agent_outside_vc_frame_has_no_frame(self):
         self.assertIsNone(DEMUX.frame_context({"VC_FRAME_SESSION_NAME": "vibecrafted"}))
@@ -51,7 +49,8 @@ class FrameContextTests(unittest.TestCase):
 class RunPanelFocusTests(unittest.TestCase):
     def run_with(self, returncode=0, stderr="", error=None):
         completed = subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
-        with mock.patch("subprocess.run", side_effect=error, return_value=completed) as run:
+        with mock.patch.object(DEMUX, "frame_cli", return_value="/opt/vc-frame"), \
+                mock.patch("subprocess.run", side_effect=error, return_value=completed) as run:
             outcome = DEMUX.run_panel_focus(FRAME)
         return outcome, run
 
@@ -75,7 +74,8 @@ class RunPanelFocusTests(unittest.TestCase):
         self.assertEqual(self.run_with(error=FileNotFoundError("vc-frame"))[0], ("error", None))
         self.assertEqual(self.run_with(error=subprocess.TimeoutExpired("vc-frame", 5))[0],
                          ("error", None))
-        self.assertEqual(DEMUX.run_panel_focus({**FRAME, "frame_bin": None}), ("error", None))
+        with mock.patch.object(DEMUX, "frame_cli", return_value=None):
+            self.assertEqual(DEMUX.run_panel_focus(FRAME), ("error", None))
 
 
 class PanelFocusLeaseTests(unittest.TestCase):
@@ -197,6 +197,93 @@ class PanelFocusLeaseTests(unittest.TestCase):
         self.assertEqual(state["pending"], [])
         self.assertEqual(state["cursor"], self.bus.stat().st_size)
         self.assertNotIn(DEMUX.AGENT_PANEL_FOCUS_SCHEMA, output.getvalue())
+
+
+class VcFrameOnPathTests(unittest.TestCase):
+    """Leo, vibecrafted maintainer, 2026-10-19: an external client runs the public
+    `vc-frame` found on PATH at each action, never the engine pin; the pane
+    address keeps coming from the owner's own native context."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        self.root = self.home / "bridge"
+        self.bus = self.home / "channel-5.jsonl"
+        self.bus.touch()
+        self.provider, self.session = "claude-code", "path-session"
+        self.lease_id = DEMUX.lease_identifier(self.provider, self.session)
+        reader = mock.patch.object(DEMUX, "NativeProviderModelReader", return_value=None)
+        reader.start()
+        self.addCleanup(reader.stop)
+        self.pinned = self.executable(self.home / "releases/4.4.0+gold/libexec")
+        self.first = self.executable(self.home / "first/bin")
+        self.second = self.executable(self.home / "second/bin")
+        environ = mock.patch.dict(os.environ, {
+            "VC_FRAME_PANE_ID": "9", "VC_FRAME_SESSION_NAME": "vibecrafted",
+            "VC_FRAME_SOCKET_DIR": "/tmp/vc-frame-501",
+            "VIBECRAFTED_VC_FRAME_BIN": str(self.pinned), "PATH": str(self.first.parent)})
+        environ.start()
+        self.addCleanup(environ.stop)
+
+    def executable(self, directory):
+        directory.mkdir(parents=True)
+        path = directory / "vc-frame"
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def lease(self):
+        lease = DEMUX.SessionLease(
+            root=self.root, provider=self.provider, provider_session_id=self.session,
+            name="stanisław", bus=self.bus, requested_id=None, ttl_seconds=120,
+            follow_from_end=False)
+        self.addCleanup(lease.close)
+        return lease
+
+    def click(self, lease, request_id="5" * 24):
+        request = {"schema": DEMUX.AGENT_PANEL_FOCUS_SCHEMA, "kind": "focus_agent_panel",
+                   "request_id": request_id, "emitted_at": DEMUX.utc_now(),
+                   "provider": self.provider, "provider_session_id": self.session,
+                   "lease_id": self.lease_id, "bus": str(self.bus), "channel": "5",
+                   "source": "overlay_click"}
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with mock.patch("subprocess.run", return_value=completed) as run:
+            result = lease.focus_panel(request)
+        return result, run
+
+    def test_the_engine_pin_never_wins(self):
+        result, run = self.click(self.lease())
+        self.assertEqual(result["status"], "focused")
+        self.assertEqual(run.call_args.args[0][0], str(self.first))
+
+    def test_a_path_change_after_attach_selects_the_new_command(self):
+        lease = self.lease()
+        os.environ["PATH"] = str(self.second.parent)
+        _, run = self.click(lease)
+        self.assertEqual(run.call_args.args[0][0], str(self.second))
+
+    def test_the_pane_address_does_not_move_with_the_command(self):
+        lease = self.lease()
+        recorded = json.loads(lease.path.read_text())["frame"]
+        os.environ["PATH"] = str(self.second.parent)
+        _, run = self.click(lease)
+        self.assertEqual(run.call_args.args[0][1:], ["action", "focus-pane-id", "terminal_9"])
+        environ = run.call_args.kwargs["env"]
+        self.assertEqual((environ["VC_FRAME_SESSION_NAME"], environ["VC_FRAME_SOCKET_DIR"]),
+                         ("vibecrafted", "/tmp/vc-frame-501"))
+        self.assertEqual(json.loads(lease.path.read_text())["frame"], recorded)
+        self.assertEqual((recorded["session"], recorded["pane_id"], recorded["socket_dir"]),
+                         ("vibecrafted", 9, "/tmp/vc-frame-501"))
+
+    def test_without_vc_frame_on_path_there_is_no_fallback(self):
+        lease = self.lease()
+        os.environ["PATH"] = str(self.home / "empty")
+        result, run = self.click(lease)
+        # assert_not_called() would print the call, and the call carries the
+        # whole process environment.
+        self.assertFalse(run.called, "vc-frame ran although PATH has none")
+        self.assertEqual((result["status"], result["exit_code"]), ("error", None))
 
 
 if __name__ == "__main__":
