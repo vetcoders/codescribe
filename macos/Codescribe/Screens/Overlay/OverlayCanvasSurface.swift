@@ -6,6 +6,8 @@ import SwiftUI
 struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
+  @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
 
@@ -13,8 +15,9 @@ struct OverlayCanvasSurface<Content: View>: View {
     content
       .background {
         OverlayCanvasBackdrop(
-          palette: palette, reduceTransparency: reduceTransparency,
-          increasedContrast: contrast == .increased)
+          palette: palette,
+          reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
+          increasedContrast: (contrastOverride ?? contrast) == .increased)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {

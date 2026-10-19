@@ -44,7 +44,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(view.contains(".csSidebarToggle(expanded: $sidebarExpanded)"))
     let column = try sidebarColumnSource()
     XCTAssertTrue(column.contains(".listStyle(.sidebar)"))
-    XCTAssertTrue(column.contains(".searchable(text: $search, placement: .sidebar, prompt: prompt)"))
+    XCTAssertTrue(
+      column.contains(".searchable(text: $search, placement: .sidebar, prompt: prompt)"))
     XCTAssertTrue(view.contains(".csFocusPolicy()"))
     XCTAssertTrue(view.contains(".controlSize(.regular)"))
     XCTAssertTrue(view.contains("func settingsGroupedInset("))
@@ -96,7 +97,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let sources = try settingsSources()
     let view = try XCTUnwrap(sources["SettingsView.swift"])
     XCTAssertTrue(view.contains("width: .navigation,"))
-    XCTAssertEqual(CSSidebarWidth.navigation, CSSidebarWidth(minimum: 196, ideal: 216, maximum: 300))
+    XCTAssertEqual(
+      CSSidebarWidth.navigation, CSSidebarWidth(minimum: 196, ideal: 216, maximum: 300))
     // An 880 pt window with the sidebar at its ideal width.
     XCTAssertEqual(SettingsView.detailMinWidth, 880 - 216)
     let pane = try XCTUnwrap(sources["SettingsTabbedPane.swift"])
@@ -1054,12 +1056,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("func recordingStartHint(_ dictationShortcut: String?) -> String"))
     XCTAssertFalse(panel.contains("Use \\(dictationShortcut) or choose Start recording."))
 
-    // The one switch that can disarm the recorder's own precondition is a
-    // power-user control, and the Lab desk is where it now lives.
+    // The optional committing lane lives on the Lab desk. Its existing
+    // projection words the setting; it is not a universal recording blocker.
     let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
     XCTAssertTrue(
       lab.contains("Toggle(\"Committing transcript fragments\", isOn: sealLaneBinding)"))
-    XCTAssertTrue(lab.contains("Text(\"Required before a recording can start.\")"))
+    XCTAssertTrue(lab.contains("Text(sealLane.detail)"))
+    XCTAssertFalse(lab.contains("Required before a recording can start."))
+    XCTAssertFalse(panel.contains("Required before a recording can start."))
   }
 
   /// Settings → About: the app, its data and the resets, in English and in

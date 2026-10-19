@@ -5,16 +5,18 @@ use syn::{Block, parse_quote};
 
 pub(super) fn close_capture(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
-        match self.release_take_pcm_feed() {
+        let was_active = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.close_capture().await
             }
             TakeFeedRelease::CaptureShared => false,
-        }
+        };
+        self.closed_capture_was_active = Some(was_active);
+        was_active
     });
-    g.require(body == &expected, "BOUNDARY: unsupported release take PCM feed; close physical recorder only for last or absent take, keep shared capture alive");
+    g.require(body == &expected, "BOUNDARY: unsupported release take PCM feed; close physical recorder only for last or absent take, keep shared capture alive; retain and return this stop's close result");
     if body == &expected {
-        g.events.push("release take PCM feed; close physical recorder only for last or absent take, keep shared capture alive".into());
+        g.events.push("release take PCM feed; close physical recorder only for last or absent take, keep shared capture alive; retain and return this stop's close result".into());
     }
 }
 
@@ -69,13 +71,14 @@ pub(super) fn finish_closed_capture(g: &mut Grammar, body: &Block) {
         let result = take.finish().await;
         if take.is_settled() {
             self.terminal_take = None;
+            self.closed_capture_was_active = None;
         }
         result
     });
-    g.require(body == &expected, "BOUNDARY: unsupported retain one terminal_take across borrowed finish await; clear only fully settled owner");
+    g.require(body == &expected, "BOUNDARY: unsupported retain one terminal_take across borrowed finish await; clear only fully settled owner and its close result");
     if body == &expected {
         g.events.push(
-            "retain one terminal_take across borrowed finish await; clear only fully settled owner"
+            "retain one terminal_take across borrowed finish await; clear only fully settled owner and its close result"
                 .into(),
         );
     }
@@ -83,6 +86,7 @@ pub(super) fn finish_closed_capture(g: &mut Grammar, body: &Block) {
 
 pub(super) fn detach_closed_take(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
+        self.closed_capture_was_active = None;
         if let Some(take) = self.terminal_take.take() {
             return take;
         }
@@ -99,9 +103,9 @@ pub(super) fn detach_closed_take(g: &mut Grammar, body: &Block) {
         });
         self.detach_take_state(stopped, archive, physical_archive)
     });
-    g.require(body == &expected, "BOUNDARY: unsupported transfer existing terminal owner or exact take archive and optional closed physical spill once");
+    g.require(body == &expected, "BOUNDARY: unsupported consume the retained close result; transfer existing terminal owner or exact take archive and optional closed physical spill once");
     if body == &expected {
-        g.events.push("transfer existing terminal owner or exact take archive and optional closed physical spill once".into());
+        g.events.push("consume the retained close result; transfer existing terminal owner or exact take archive and optional closed physical spill once".into());
     }
 }
 
@@ -124,15 +128,20 @@ pub(super) fn detach_take_state(g: &mut Grammar, body: &Block) {
             capture_epoch: self.capture_epoch,
             sample_rate: self.sample_rate,
             seal_lane_armed: self.seal_lane_armed(),
+            direct_transcript: self
+                .runtime_settings
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.seal_ledger_enabled()),
+            direct_decoder_complete: None,
             captured_samples: Arc::clone(&self.captured_samples),
             terminal_audio_sender: self.terminal_audio_sender.take(),
             lifecycle_handle: self.lifecycle_handle.take(),
             last_window_closed: self.last_window_closed.take(),
         }
     });
-    g.require(body == &expected, "BOUNDARY: unsupported move original task/sink/terminal sender/transcript; retain original ledger, identity, rate and PCM counter");
+    g.require(body == &expected, "BOUNDARY: unsupported move original task/sink/terminal sender/transcript; retain original ledger, identity, rate and PCM counter; take direct mode from the frozen snapshot with no completion yet");
     if body == &expected {
-        g.events.push("move original task/sink/terminal sender/transcript; retain original ledger, identity, rate and PCM counter".into());
+        g.events.push("move original task/sink/terminal sender/transcript; retain original ledger, identity, rate and PCM counter; take direct mode from the frozen snapshot with no completion yet".into());
     }
 }
 
@@ -150,7 +159,7 @@ pub(super) fn is_settled(g: &mut Grammar, body: &Block) {
     }
 }
 
-pub(super) fn finish(g: &mut Grammar, body: &Block) {
+pub(super) fn prepare_terminal_audio(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
         if self.archive_worker.is_none()
             && (self.archive.is_some() || self.physical_archive.is_some())
@@ -237,6 +246,16 @@ pub(super) fn finish(g: &mut Grammar, body: &Block) {
             };
             let _ = sender.send(receipt);
         }
+    });
+    g.require(body == &expected, "BOUNDARY: unsupported retain blocking archive worker before await; hand off one terminal audio receipt from the owned archive outcome");
+    if body == &expected {
+        g.events.push("retain blocking archive worker before await; hand off one terminal audio receipt from the owned archive outcome".into());
+    }
+}
+
+pub(super) fn finish(g: &mut Grammar, body: &Block) {
+    let expected: Block = parse_quote!({
+        self.prepare_terminal_audio().await;
         self.lifecycle_handle = None;
 
         if let Some(handle) = self.transcription_handle.as_mut() {
@@ -247,6 +266,8 @@ pub(super) fn finish(g: &mut Grammar, body: &Block) {
                 .err();
             self.transcription_handle = None;
         }
+        let direct_decoder_complete =
+            self.direct_transcript && self.wait_live_finals_admitted().await;
 
         let drain_failure = match self.event_sink.as_ref() {
             Some(sink) => match self.authority_session_id.as_deref() {
@@ -334,6 +355,20 @@ pub(super) fn finish(g: &mut Grammar, body: &Block) {
             }));
         }
 
+        if self.direct_transcript {
+            return if direct_decoder_complete {
+                Ok((transcript, audio_path))
+            } else {
+                Err(anyhow::Error::new(CaptureStopFailure {
+                    session_id: self.authority_session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    audio_path,
+                    cause: anyhow!("direct recognizer completion unavailable or failed"),
+                    task_failure: None,
+                }))
+            };
+        }
+
         let captured_samples = self.captured_samples.load(Ordering::Relaxed);
         let empty_capture = captured_samples <= u64::from(self.sample_rate) * 3 / 10
             && transcript.is_empty()
@@ -379,9 +414,9 @@ pub(super) fn finish(g: &mut Grammar, body: &Block) {
             })),
         }
     });
-    g.require(body == &expected, "BOUNDARY: unsupported retain blocking archive worker before await; borrow producer join and sink; preserve retry outcomes; inspect ledger finality only after publication and transcript awaits");
+    g.require(body == &expected, "BOUNDARY: unsupported hand off terminal audio before the producer join; borrow producer join and sink; direct output succeeds only on its recognizer completion; preserve retry outcomes; inspect ledger finality only after publication and transcript awaits");
     if body == &expected {
-        g.events.push("retain blocking archive worker before await; borrow producer join and sink; preserve retry outcomes; inspect ledger finality only after publication and transcript awaits".into());
+        g.events.push("hand off terminal audio before the producer join; borrow producer join and sink; direct output succeeds only on its recognizer completion; preserve retry outcomes; inspect ledger finality only after publication and transcript awaits".into());
     }
 }
 

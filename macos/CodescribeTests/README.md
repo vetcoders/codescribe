@@ -175,11 +175,23 @@ run both arms again.
 of that time (14.4 s in `OverlayRefusalLayoutHangTests`), and the slowest single
 test took 5.4 s. Every test above `SWIFT_TEST_MAX_TEST_SECONDS` (default 10 s)
 is printed and fails the gate. The suite budget, `SWIFT_TEST_MAX_SECONDS`
-(default 60 s), was set as a coarse backstop at about twice that 2026-09-25
+(originally 60 s), was set as a coarse backstop at about twice that 2026-09-25
 measurement. The per-test ceiling targets the one-test hang shape seen in the
-old Keychain regression. The defaults stay 60 s and 10 s. An over-budget run
-requires investigation of the test harness and host load; it does not move
-those limits.
+old Keychain regression.
+
+On 2026-10-19 the full-suite budget was rebaselined to **240 s**, retaining the
+**10 s per-test ceiling**. The current 1774-test run took 192.636 s; the
+1608-test release-line run from 2026-10-16 took 160.422 s. The 1588 common
+tests took 156.260 s then and 155.495 s now. Thus the existing test set did not
+slow down: added render/acceptance coverage outgrew the September budget.
+The 240 s limit leaves about 25% headroom over the measured full suite; it
+does not waive failed assertions, zero-test protection or the independent
+per-test ceiling. The comparison is retained in the local PR 178 release
+receipts (`swift-timing-independent.json`).
+
+An over-budget run still requires investigation of the test harness and host
+load. Do not raise a limit merely to hide a slow test or a blocking operation;
+any later coverage-driven rebaseline needs the same comparison of common tests.
 
 Note on exit codes: the _recipe_ exits 3 (zero tests), 4 (suite over budget),
 or 5 (one or more tests over the per-test ceiling), which
@@ -192,8 +204,8 @@ should branch on non-zero, not on the specific code.
 Static inventory on 2026-10-07, counted in `macos/CodescribeTests`: 82 Swift
 files and 1163 methods whose declaration line is `func test`. A same-day host
 log executed 1162 tests, with 1 test skipped and 0 failures, in 73.510 s.
-Those two counts are not the same number. That run is over
-`SWIFT_TEST_MAX_SECONDS` (default 60). The budget is unchanged. The inventory
+Those two counts are not the same number. That run exceeded the then-current
+60 s suite budget. The coverage-driven rebaseline above is later; this inventory
 still includes the two surfaces the W12 plan could previously only verify by
 compilation:
 

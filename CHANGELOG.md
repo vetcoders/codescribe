@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+No changes recorded yet.
+
+## [0.17.1] - 2026-10-19
+
+Validation and distribution have separate receipts.
+
 ### Added
 
 - A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
+- A middle click can pick an agent. With **Middle click picks an agent** on (Settings › Shortcuts & control › Dictation control; off by default, `MIDDLE_MOUSE_AGENT_GESTURE`), a middle click opens the overlay's agents with the first row focused; the wheel or the pointer moves the focus, a left click opens that conversation, and a middle click on it opens its microphone until the next middle click, which closes and sends. Escape or 20 seconds without input ends the choice. While the setting is on, Codescribe takes the middle click, and while you choose also the wheel, the left click and Escape; with the middle button acting as Fn, a hold still dictates.
+- An agent row in the overlay can bring that agent's terminal panel to the front in vc-frame. The button (“Focus agent panel in Frame”) appears only when a compatible `vc-frame` is installed on the `PATH` and is disabled while the agent's reader is disconnected. The agent's bus reader runs `vc-frame action focus-pane-id` from the agent's own pane, so Codescribe never drives the terminal; the overlay folds, the terminal app comes forward, and the row reports when the panel is not found, the agent is not running in Frame or the request expired.
+- An agent can write to you alone: `cs-bus --send "…" --to founder` (or `--to 10`) appears in that agent's conversation as “name → You” and reaches no other agent.
+- `codescribe replay <session|wav>` runs a recorded take through the production session again and prints the text the overlay would show. `--runs N` checks that repeated runs agree, `--json` prints a receipt naming every input that differs from the take, and `--ledger on|off` and `--device NAME` replay the take as a what-if with seal-ledger admission switched or on another microphone. Each run keeps its evidence under `replays/<session>/` in the data folder. Replay needs Speech Recognition permission for the terminal it runs in.
+- Every recording writes `sessions/<session>.replay-card.json` in the data folder (`~/.codescribe`): the build, the capture device, language, capture turn and a copy of the settings in which API keys are recorded only as present or absent.
+- Agent voice replies are kept as audio. Each synthesis is stored in `~/.codescribe/agent-bridge/speech/` (`<hash>.wav` with a `<hash>.json` sidecar holding the spoken text), so playing a reply again, or repeating the same words in the same voice, is neither synthesized nor paid for again.
 
 ### Changed
 
@@ -37,53 +49,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Settings health line under the sidebar is ordinary secondary text beside its coloured dot.
 - The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 - No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
+- The app spends less CPU on the bus while the overlay is open and while you record. The overlay stops reparsing and re-polling acknowledgements that settle on another agent's bus and checks each bus's segment manifest once per change instead of on every 500 ms pass; the app no longer reparses agent acknowledgement markers on every pass; live-lexicon rules are compiled once instead of on every rewrite.
+- Transcription publishes the recognizer's text directly by default. Seal-ledger admission is off unless chosen. Apple-only keeps Apple live recognition on by default, including on a fresh install without Whisper weights; Local power and consented Cloud leave Apple off unless chosen. Explicit Apple and ledger choices are preserved. The independent switches live in Lab, which only developer builds show. The default direct transcription starts without a measured microphone calibration: Settings › Audio shows the calibration as "Optional" and a switched-off committing lane as a neutral "Off", and when a recording is refused it names that refusal and offers only its remedy. With seal-ledger admission enabled, a recording still needs the calibration, the committing lane and its detector. Local transcription shows Whisper's text as each stretch of up to 9 seconds is decoded. Agent channel takes follow the same choice.
+- Agent rows in the overlay fit in five lines and say who wrote to whom: the title with the channel-0 mark, the unread badge and the time; the agent's provider and model; a two-line preview such as “You → All”, “lena → You” or “lena → astra”; one state line. Every row and pill marks which of the three channel-0 states the agent is in, and “Skipped: off channel 0” appears only when the agent's reader recorded skipping that very broadcast, so a later change of the setting never rewrites an old message's receipt. A direct message between two agents shows in both of their conversations.
+- The docked agent list resizes from its divider and keeps its width.
+- The product name is written “Codescribe” however the recognizer heard it (“CodeScript”, “code script”, “kod skrajb” …), in transcripts and in every formatted version. Code blocks, inline code, quoted literals and paths such as `~/.codescribe` keep their spelling.
+- `cs-bus --status` reports whether the session's `--watch --until-event` task is alive (`listener.until_event_alive`), for every provider.
 
 ### Fixed
+
+- The live transcript activity marker keeps its position through width changes instead of retaining the wrapping of a discarded layout proposal.
+- Switching agents opens the loaded conversation at its latest reply while retaining the composer and unsent draft.
 
 - A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
 - An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
 - An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
-- A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- A conversation title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
-
-## [0.17.1] - 2026-10-17
-
-Source changes in preparation; validation and distribution have separate receipts.
-
-### Fixed
-
+- After an agent's channel take ends, the overlay header is ready again instead of looking like a dictation still waiting for its text.
+- With keyboard navigation turned on in macOS, focus entering the overlay's agent list lands on the selected conversation instead of staying on "0 · All".
+- Whisper no longer leaves words where nobody spoke. A word with no speech heard within half a second of it is dropped, while a word just beside speech, such as one translated from another language, stays; a decoder loop that writes one word dozens of times is cut back to the copies the audio supports; and a phrase recognized from a cough or room tone (“Dziękuję.”) is dropped when both the speech detector and the level meter measured the whole stretch as quiet. Audio that was not measured keeps its words.
+- A spoken agent message waits through the same send pause as a typed one, with Cancel, Edit and Send now. Before, a take that the ledger did not seal was sent at once.
+- A spoken agent message ends at a pause in your speech measured on the capture, not at a pause in the recognized text; without a measurement the take does not assume silence.
+- When a new agent take opens while the previous one is still finishing, the previous message is no longer delivered before its last words arrive.
+- The overlay's timer runs during an agent channel take, not only during dictation.
+- ⌘C copies text selected in an overlay conversation bubble instead of reaching the app behind the overlay.
+- The docked agent list follows the overlay's text size, like the conversation beside it.
+- A broadcast reply appears in “0 · All” only, no longer also in the replying agent's private conversation.
+- A delivery whose wake notice was lost wakes the agent once more after 10 minutes while it is still unread (Claude Code and OMP plugins), and the six-hour idle receipt lists the deliveries still unacknowledged instead of saying that no message arrived.
 - Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
 - Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
-- Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
 
 <!-- release-notes:0.17.1:start -->
-<!-- release-summary: generated -->
 
-### Added
+Source history: 290 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
 
-- restructure the Shortcuts tab around honest save semantics
-- About tab replaces User with readable diagnostics
-
-### Fixed
-
-- speak the chosen language in the restart row
-- let the formatting level picker size to its labels
-
-### Changed
-
-- l10n(settings): catalog entries for the restructured Shortcuts tab
-- l10n(settings): catalog for round 5 and a shorter Polish "Ask"
-
-### Documentation
-
-- record the gap between the Shortcuts picker and routed gestures
-- state the Max consultation self-heal contract
-
-Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
-
-<!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
+<!-- release-boundary: 0.17.1 50e3f312f0f6ca34d327e31dee35dcf96bed912d -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
@@ -226,6 +229,7 @@ Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.j
   when it is on; MINI remains the idle entry form.
 - Resize cursors are reused and no longer compete with a whole-window arrow
   cursor rectangle or native text tracking at the window edges.
+- Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
 
 <!-- release-notes:0.17.0:start -->
 
