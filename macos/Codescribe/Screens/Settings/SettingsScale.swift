@@ -73,9 +73,6 @@ enum SettingsScale {
   static let pageBlurb = CSFont.ui(12)
   /// A peer section's title, above its cards.
   static let sectionTitle = CSFont.ui(13.5, .semibold)
-  /// A section that groups other sections — the only rung above
-  /// `sectionTitle` that a page body may use.
-  static let sectionTitleStrong = CSFont.ui(15, .bold)
   /// The name of one setting, inside a card.
   static let settingName = CSFont.ui(12.5, .semibold)
   /// The current value of one setting, inside a card.

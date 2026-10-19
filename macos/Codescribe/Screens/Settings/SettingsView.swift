@@ -359,19 +359,16 @@ struct SettingsPageHeader: View {
 
 /// The one title of a peer section, above the cards it introduces. It reads at
 /// primary strength and one rung above a setting's own name, because a header
-/// that is quieter than the rows beneath it stops being a header.
-/// `emphasized` is the single rung above it, for a section that groups other
-/// sections.
+/// that is quieter than the rows beneath it stops being a header. Every
+/// section of a page is a peer, so there is no rung above this one.
 struct SettingsSectionLabel: View {
   let text: String
-  let emphasized: Bool
-  init(_ text: String, emphasized: Bool = false) {
+  init(_ text: String) {
     self.text = text
-    self.emphasized = emphasized
   }
   var body: some View {
     Text(text)
-      .font(emphasized ? SettingsScale.sectionTitleStrong : SettingsScale.sectionTitle)
+      .font(SettingsScale.sectionTitle)
       .foregroundStyle(.primary)
       .accessibilityAddTraits(.isHeader)
   }
@@ -383,19 +380,14 @@ struct SettingsSectionLabel: View {
 /// without an action uses the `EmptyView` init below or `SettingsSectionLabel`.
 struct SettingsSectionHeaderRow<Action: View>: View {
   let text: String
-  let emphasized: Bool
   @ViewBuilder var action: () -> Action
-  init(
-    _ text: String, emphasized: Bool = false,
-    @ViewBuilder action: @escaping () -> Action
-  ) {
+  init(_ text: String, @ViewBuilder action: @escaping () -> Action) {
     self.text = text
-    self.emphasized = emphasized
     self.action = action
   }
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
-      SettingsSectionLabel(text, emphasized: emphasized)
+      SettingsSectionLabel(text)
         .frame(maxWidth: .infinity, alignment: .leading)
       action()
         .controlSize(.small)
@@ -404,8 +396,8 @@ struct SettingsSectionHeaderRow<Action: View>: View {
 }
 
 extension SettingsSectionHeaderRow where Action == EmptyView {
-  init(_ text: String, emphasized: Bool = false) {
-    self.init(text, emphasized: emphasized) { EmptyView() }
+  init(_ text: String) {
+    self.init(text) { EmptyView() }
   }
 }
 

@@ -380,9 +380,9 @@ A panel reads the role, never a bare number.
   it introduces: `pageTitle` (16 semibold) > `sectionTitle` (13.5 semibold) ≥
   `settingName` (12.5 semibold) > `helper` (11.5), all at primary strength
   except the helper rung. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
-  in `SettingsView.swift` are the only header owners; a panel that needs the
-  one rung above a section title passes `emphasized: true` instead of
-  declaring a header of its own. Sections are 20 pt apart and a title sits
+  in `SettingsView.swift` are the only header owners, and they have no rung
+  above `sectionTitle`: the sections of a page are peers, so none outranks
+  another. Sections are 20 pt apart and a title sits
   6 pt above its card, so a title visibly belongs to what follows it.
 - **Card.** 12 pt padding inside a `CSRadius.card` corner, 8 pt between two
   stacked settings. The radius stays shared on purpose: it is the product's
