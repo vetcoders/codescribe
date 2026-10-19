@@ -104,6 +104,33 @@ final class DeveloperSurfaceTests: XCTestCase {
     )
   }
 
+  func testVoiceLabSkipsAForeignPortInsteadOfRefusing() async {
+    let candidates = Array(8765...8768)
+    let screenscribeOn8765: (Int) async -> VoiceLabRuntime.PortState = {
+      $0 == 8765 ? .foreign : .free
+    }
+    let first = await VoiceLabRuntime.choosePort(
+      remembered: nil, candidates: candidates, probe: screenscribeOn8765)
+    XCTAssertEqual(first?.port, 8766)
+    XCTAssertEqual(first?.running, false)
+
+    let labOn8767: (Int) async -> VoiceLabRuntime.PortState = {
+      switch $0 {
+      case 8765: .foreign
+      case 8767: .voiceLab
+      default: .free
+      }
+    }
+    let remembered = await VoiceLabRuntime.choosePort(
+      remembered: 8767, candidates: candidates, probe: labOn8767)
+    XCTAssertEqual(remembered?.port, 8767)
+    XCTAssertEqual(remembered?.running, true)
+
+    let everythingTaken = await VoiceLabRuntime.choosePort(
+      remembered: nil, candidates: candidates, probe: { _ in .foreign })
+    XCTAssertNil(everythingTaken)
+  }
+
   func testTrayOffHidesOverlayEvenWhenLabModeIsOff() {
     let defaults = UserDefaults(suiteName: UUID().uuidString)!
     XCTAssertFalse(
