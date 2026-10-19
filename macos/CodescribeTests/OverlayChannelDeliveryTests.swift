@@ -2632,6 +2632,106 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertLessThanOrEqual(bytes, OverlayChannelDeliveryReader.tailWindow)
   }
 
+  /// Rolls the hot file into a second closed generation the way the bus
+  /// writer does: the same root path gets a new inode and the manifest is
+  /// replaced with the longer chain.
+  private func rollSyntheticGeneration(_ fixture: Fixture) throws {
+    let receipt = URL(fileURLWithPath: fixture.bus.path + ".generations.json")
+    var manifest = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+    var closed = try XCTUnwrap(manifest["segments"] as? [[String: Any]])
+    let start = try XCTUnwrap((manifest["active"] as? [String: Any])?["start"] as? NSNumber)
+    let hot = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    let length = try fixture.busSize()
+    let archive = fixture.root.appendingPathComponent("events/2026_1003/rolled.jsonl")
+    try FileManager.default.createDirectory(
+      at: archive.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.moveItem(at: fixture.bus, to: archive)
+    try Data().write(to: fixture.bus, options: .atomic)
+    let next = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    closed.append([
+      "id": "rolled", "path": archive.path, "start": start, "length": length,
+      "dev": try XCTUnwrap(hot[.systemNumber] as? NSNumber),
+      "ino": try XCTUnwrap(hot[.systemFileNumber] as? NSNumber), "day": "2026_1003",
+      "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
+    ])
+    manifest["segments"] = closed
+    manifest["active"] = [
+      "id": "active", "path": fixture.bus.path, "start": start.uint64Value + length,
+      "length": 0, "dev": try XCTUnwrap(next[.systemNumber] as? NSNumber),
+      "ino": try XCTUnwrap(next[.systemFileNumber] as? NSNumber), "day": "2026_1004",
+      "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
+    ]
+    try fixture.write(manifest, to: receipt)
+  }
+
+  /// Idle passes reuse the verified generations manifest. A grown hot file, a
+  /// manifest rewritten in place to the same size, and a rollover to a new hot
+  /// inode each reach the reader in the pass that follows.
+  func testIdlePollsReuseTheGenerationManifestUntilItOrTheHotFileChanges() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try pinSyntheticGeneration(fixture)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let opened = try await reader.read()
+    XCTAssertNotEqual(opened.first?.stage, .sent)
+    let cold = await reader.generationManifestReads
+    XCTAssertGreaterThan(cold, 0, "the first pass verifies the manifest")
+    for _ in 0..<10 { _ = try await reader.read() }
+    var reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold, "idle passes reuse the verified manifest")
+
+    // The hot file grows under the same inode: no manifest read, new row seen.
+    var consumed = await reader.consumedBytes
+    var hotSize = try fixture.busSize()
+    try fixture.append(fixture.seal(1))
+    let grown = try await reader.read()
+    XCTAssertEqual(grown.first?.stage, .sent, "a row appended to the hot file arrives")
+    var delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize() - hotSize)
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold, "growth of the hot file needs no manifest read")
+
+    // Same inode, same size, new modification time: the stamp changed.
+    let receipt = URL(fileURLWithPath: fixture.bus.path + ".generations.json")
+    let bytes = try Data(contentsOf: receipt)
+    let inodeBefore =
+      try FileManager.default.attributesOfItem(atPath: receipt.path)[.systemFileNumber]
+      as? NSNumber
+    let handle = try FileHandle(forWritingTo: receipt)
+    try handle.seek(toOffset: 0)
+    try handle.write(contentsOf: bytes)
+    try handle.close()
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSinceNow: 60)], ofItemAtPath: receipt.path)
+    let rewritten = try FileManager.default.attributesOfItem(atPath: receipt.path)
+    XCTAssertEqual(rewritten[.systemFileNumber] as? NSNumber, inodeBefore)
+    XCTAssertEqual((rewritten[.size] as? NSNumber)?.intValue, bytes.count)
+    consumed = await reader.consumedBytes
+    hotSize = try fixture.busSize()
+    try fixture.append(fixture.seal(2))
+    _ = try await reader.read()
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 1, "a same-size rewrite with a new mtime is reread")
+    delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize() - hotSize, "the row arrives in that pass")
+
+    // Rollover: the root path gets a new inode and the manifest a longer chain.
+    try rollSyntheticGeneration(fixture)
+    XCTAssertEqual(try fixture.busSize(), 0)
+    consumed = await reader.consumedBytes
+    try fixture.append(fixture.seal(3))
+    _ = try await reader.read()
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 2, "a rollover rereads the manifest")
+    delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize(), "the row after the rollover arrives in that pass")
+    for _ in 0..<5 { _ = try await reader.read() }
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 2, "the new chain is reused again")
+  }
+
   // MARK: - Saved Conversation Search & Sorting Tests
 
   func testSavedConversationSearchNarrowsLiveAndSortsNewestOldestName() async throws {
