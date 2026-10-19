@@ -492,10 +492,14 @@
               "required_code": [
                 "snapshot.energy_calibration()",
                 ".for_capture_at(&capture, now_unix_ms)",
-                "if !seal_lane.armed",
-                "if !seal_lane.vad_available",
+                "let ledger_enabled = snapshot.seal_ledger_enabled();",
+                "let calibration = if ledger_enabled {",
+                "Some(calibration?)",
+                "calibration.ok()",
+                "if ledger_enabled && !seal_lane.armed",
+                "if ledger_enabled && !seal_lane.vad_available",
                 "Ok(AdmissionGrant {",
-                "calibration_version: calibration.version"
+                "calibration_version: calibration.map(|calibration| calibration.version)"
               ]
             },
             {
@@ -2316,6 +2320,12 @@
               "ast_contract": "is_settled"
             },
             {
+              "symbol": "prepare_terminal_audio",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "prepare_terminal_audio"
+            },
+            {
               "symbol": "finish",
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
@@ -2531,6 +2541,13 @@
             },
             {
               "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "prepare_terminal_audio",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "prepare_terminal_audio",
               "caller_file": "core/audio/streaming_recorder.rs",
               "callee": "finalize_take_archive",
               "callee_file": "core/audio/streaming_recorder.rs",
@@ -2991,6 +3008,7 @@
                 "detach_closed_take",
                 "detach_take_state",
                 "is_settled",
+                "prepare_terminal_audio",
                 "finish",
                 "copy_stop_error",
                 "finalize_take_archive",
