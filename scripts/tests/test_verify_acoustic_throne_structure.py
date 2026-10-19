@@ -2904,6 +2904,41 @@ class CurrentChainMutantTests(unittest.TestCase):
                     any("settings_to_capture_admission" in failure and symbol in failure
                         for failure in failures), (name, failures))
 
+    def test_direct_decode_is_the_ledger_lanes_alternative_not_a_second_writer(self):
+        """One frozen choice routes each admitted request to one decoder path.
+
+        Ledger mode queues the request on the tail-patch lane; direct mode runs
+        the same request on the same retained executor, and only direct mode
+        reads the direct completion. Running both, reading the direct result in
+        ledger mode, deciding outside the take's snapshot, decoding off the
+        retained executor or dropping the single in-flight gate is refused.
+        """
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = ("apple_stream_transcription_session",
+                        "core/pipeline/streaming/apple_live_session.rs")
+        cases = [
+            ("both_paths_run",
+             "if seal_ledger_enabled {\n                    tail_patch_lane.push_request(req);\n"
+             "                } else {",
+             "tail_patch_lane.push_request(req);\n                {"),
+            ("direct_completion_read_in_ledger_mode",
+             "}, if !seal_ledger_enabled && tail_patch_in_flight => {",
+             "}, if tail_patch_in_flight => {"),
+            ("choice_not_from_the_take_snapshot",
+             "let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();",
+             "let seal_ledger_enabled = false;"),
+            ("direct_decode_off_the_retained_executor",
+             "let receiver = tail_patch_lane.execution.spawn(move |control| {",
+             "let receiver = spawn_detached_decoder(move |control| {"),
+            ("single_flight_gate_dropped", "                tail_patch_in_flight = true;\n", ""),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertTrue(
+                    any("capture_to_ledger" in failure and symbol in failure
+                        for failure in failures), (name, failures))
+
     def test_inline_take_archive_ownership_cannot_be_removed_or_reordered(self):
         self.assertEqual(self.positive_failures, [])
         symbol, file = "start_event_session", "core/audio/streaming_recorder.rs"
@@ -3263,6 +3298,45 @@ class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
             mutant, [contract]
         )
         self.assertTrue(any("competing or missing owners" in row for row in failures))
+
+    def test_whisper_decode_has_four_owners_and_refuses_a_fifth_or_a_lost_direct_lane(self):
+        """The direct lane is the ledger lane's alternative, not a fifth writer.
+
+        `transcribe_selected_controlled(` is declared once, wrapped once, and
+        called by the ledger lane's job builder and by the direct-mode branch
+        of `apple_stream_transcription_session`. Another caller is refused, and
+        so is the owner set with the direct lane gone.
+        """
+        literal = "transcribe_selected_controlled("
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        contract = next(
+            row for row in manifest["stages"]["wired"]["exclusive_production_literal_owners"]
+            if row["literal"] == literal
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            self.seed, [contract]
+        )
+        self.assertEqual(failures, [])
+        rows = copy.deepcopy(VERIFIER.require_complete_literal_evidence(
+            self.seed.literal_occurrences(literal), literal
+        ))
+        direct = "core/pipeline/streaming/apple_live_session.rs"
+        cases = [
+            ("fifth_caller", rows + [occurrence(
+                literal, file=direct, line=99_999, enclosing_symbol="parallel_whisper_writer",
+            )]),
+            ("direct_lane_lost", [row for row in rows if row["file"] != direct]),
+        ]
+        for name, mutated in cases:
+            with self.subTest(mutation=name):
+                mutant = StubVerifier(
+                    self.repo, literal_responses={literal: literal_payload(literal, *mutated)}
+                )
+                _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+                    mutant, [contract]
+                )
+                self.assertTrue(any("competing or missing owners" in row for row in failures),
+                                (name, failures))
 
     def test_stop_paste_requires_both_identity_checks_and_optional_epoch(self):
         for label, old, new in (
