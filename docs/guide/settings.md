@@ -107,8 +107,8 @@ This tab owns the transcript pipeline itself:
 
 The Dictation pane is one tab per concern:
 
-1. **Engine** — **Recognition mode** is the first and only editable row (Apple
-   only, Local power, Cloud). The two on-device modes carry a one-line
+1. **Engine** — **Recognition mode** is the first row and the only recognition
+   choice (Apple only, Local power, Cloud). The two on-device modes carry a one-line
    description; Cloud carries none — selecting it opens a confirmation dialog
    stating that dictation audio will leave the Mac, and only confirming grants
    consent (Cancel leaves the previous mode untouched). A missing consent
@@ -121,6 +121,14 @@ The Dictation pane is one tab per concern:
    The language applies to Apple live recognition, local Whisper and the cloud
    tail alike. The selected mode and the engine that actually served the last
    take are two different facts and may disagree.
+   At the foot of the tab, **Transcript markers** — one switch, _Add markers to
+   text_, which marks the text delivered to other apps. **Edit template and
+   preview** is closed by default and holds the editor, the field chips
+   (`{mode}`, `{lang}`, `{text}`, `{conf}`, `{flags}` — each chip appends its
+   field to the template), the warning when `{text}` is missing, **Restore
+   default template** and the rendered **Template preview**. The markers moved
+   here from the former About page; saved templates and the marking mechanics
+   did not change.
 2. **Whisper** — one card of two rows: **Model** (the picker; the name is not
    repeated under it) and the install state — **Installed** / **Not installed**
    in bold, the residency line under it, which never calls the next load “in
@@ -904,15 +912,20 @@ learned, and where the active rules come from.
   quality store, a failed save, a recording that cannot be played — stay
   visible where they happen.
 
-## About
+## User
 
-**Settings → About** (the last item under _Account_) describes the app and its
-data instead of a profile; Codescribe has no account. Everyday facts stay
-visible; technical values and the resets open on demand.
+**Settings → User** (the only item under _Account_) gathers the license, the
+app and its data; Codescribe has no account, so this is not a profile. It
+replaced the separate About and License tabs. Everyday facts stay visible;
+technical values and the resets open on demand. From top to bottom:
 
+- **License** — the section described under [License access](#license-access)
+  below.
 - **Version** — one line, _Codescribe 0.16.0_ with _Build 526_ under it.
-  **Version details** opens the commit and the build date in the interface
-  language.
+  **Check for Updates…** beside it starts Sparkle's manual check (the same
+  updater the app runs in the background); it is disabled while a check is
+  running. **Version details** opens the commit and the build date in the
+  interface language.
 - **Configuration notice** — shown only when the launch repair receipt (see
   [CONFIG.md](../CONFIG.md)) has something to say, directly under the version.
   Its weight follows the real problem. When every named `.env` key is one
@@ -929,7 +942,7 @@ visible; technical values and the resets open on demand.
   or correct the line and restart to clear the notice); a `FORMATTING_LEVEL`
   note means a level set outside the app differs from the one in Settings and
   is in effect. A completed repair or a refusal has its own sentence. The
-  original receipt line stays at the bottom for support. Nothing in About edits
+  original receipt line stays at the bottom for support. Nothing in User edits
   `.env`.
 - **Local data** — the app-data folder and the Transcripts folder, shown
   home-relative (`~/.codescribe`), with a copy button for the full path.
@@ -938,14 +951,6 @@ visible; technical values and the resets open on demand.
   (`ActivationPingConfiguration.production`), the opt-in switch is not shown at
   all, because no position of it would send anything. The stored choice is kept
   and the switch returns with the service.
-- **Transcript markers** — one switch, _Add markers to text_, which marks the
-  text delivered to other apps. **Edit template and preview** is closed by
-  default and holds the editor, the field chips (`{mode}`, `{lang}`, `{text}`,
-  `{conf}`, `{flags}` — each chip appends its field to the template), the
-  warning when `{text}` is missing, **Restore default template** and the
-  rendered **Template preview**. Saved templates and the marking mechanics do
-  not change. The markers change delivered dictation, so they are expected to
-  move to the Dictation settings; until then they live here.
 - **Information and documentation** — a section heading with three link rows
   under it: Privacy Policy, Terms of Use, Documentation. Each row is clickable
   across its full width and carries the open-elsewhere icon at its right edge.
@@ -955,7 +960,7 @@ visible; technical values and the resets open on demand.
 
 ## Reset / Fresh Start
 
-Both resets live under **Settings → About → Reset data**, closed by default.
+Both resets live under **Settings → User → Reset data**, closed by default.
 Each block names its scope in one sentence; the confirmation sheet shows the
 live counts and the full scope before anything moves, and asks for a typed
 word. Only the two buttons are red.
@@ -983,17 +988,19 @@ _Created by Vetcoders (c)2026_
 
 ## License access
 
-Open **Settings → License** to activate, restore or remove a CSK1 license.
-The page opens with one compact card: the state — labelled **Status**, or
+Open **Settings → User** to activate, restore or remove a CSK1 license; the
+**License** section opens the page, under one sentence saying that Basic mode
+stays free and a license unlocks Agent mode. One card holds the state — labelled **Status**, or
 **Mode** while no key is stored — with a dot that is lit while Agent mode is
 allowed, then **Mode** once a license state beyond "no key" is known, and
 **License** (_Agent · one-time purchase_) for the one-time offer. While a
 verified key runs on offline grace the state carries the remaining period
 (_Active · N days left_). No raw SKU is shown anywhere and there is no
-updates-window row. Under **License key** the field and **Activate** share one
-row; **Get license key** (opens the self-service page) and **Remove key** sit
-on the row below, and the footnote states that the key is stored in the macOS
-Keychain.
+updates-window row. In the same card, under a divider, the key field and
+**Activate** share one row, with the note that the key is stored in the macOS
+Keychain under them. **Get license key** (opens the self-service page) and
+**Remove key** sit on the row below the card. The Agent window's **Enter
+license** opens Settings → User at this section.
 
 License storage runs in the background, and **Checking license…** or an access
 error remains visible while Settings stays interactive. **Retry license access**
@@ -1003,7 +1010,7 @@ preserves the previously verified license.
 
 The Settings sidebar health footer includes license restoration. While a
 license read is pending it does not claim readiness; if restoration cannot
-be verified it shows a warning that opens License settings. A confirmed read
+be verified it shows a warning that opens Settings → User. A confirmed read
 with no paid license is not an error: basic dictation remains free. Known
 speech or recording failures retain their own higher-priority status.
 Error details preserve the bridge's cause without displaying its Swift enum
