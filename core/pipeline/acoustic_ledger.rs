@@ -5056,7 +5056,9 @@ pub struct AcousticEvidence {
     pub occurrence: OccurrenceIdentity,
     /// Duration of the region in milliseconds on the capture clock.
     pub duration_ms: f64,
-    /// Summed `rms^2 * sample_count` over the region's hops.
+    /// Summed `rms^2 * sample_count` over the region's hops that reach the
+    /// calibrated existence floor, the same floor `min_energy_integral` is
+    /// derived from. Sub-floor hops do not add up to existence.
     pub energy_integral: f64,
     /// Mean RMS of the region in dBFS.
     pub mean_rms_dbfs: f64,

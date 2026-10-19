@@ -6833,12 +6833,37 @@ fn qualify_owned_occurrence(state: &AppleSealState, occurrence: &OccurrenceIdent
     if window.samples.is_empty() {
         return false;
     }
-    let energy_integral = window
-        .samples
-        .iter()
-        .map(|sample| f64::from(*sample) * f64::from(*sample))
-        .sum::<f64>();
-    let mean_rms = (energy_integral / window.samples.len() as f64).sqrt();
+    let energy = |samples: &[f32]| {
+        samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>()
+    };
+    let span_energy = energy(window.samples.as_slice());
+    // `min_energy_integral` is the energy of the shortest region that sits at
+    // the calibrated existence floor, so only PCM inside hops that reach that
+    // floor counts toward it. Summed over the whole span, sub-floor noise
+    // qualified 1.17 s of gated EarPods capture whose hops cleared the floor
+    // for 20 ms of a 64 ms region (take agent-channel-0-73e58303), and Whisper
+    // then wrote "Dziękuję." into that owner. Without a measured floor or a
+    // hop clock covering the span nothing is excluded: a missing channel is
+    // not silence.
+    let energy_integral = match existence_floor_hops(state, occurrence) {
+        Some(hops) => hops
+            .iter()
+            .map(|&(start, end)| {
+                let offset = |sample: u64| {
+                    usize::try_from(sample.saturating_sub(window.sample_start))
+                        .unwrap_or(usize::MAX)
+                        .min(window.samples.len())
+                };
+                let from = offset(start);
+                energy(&window.samples[from..offset(end).max(from)])
+            })
+            .sum::<f64>(),
+        None => span_energy,
+    };
+    let mean_rms = (span_energy / window.samples.len() as f64).sqrt();
     let peak = window
         .samples
         .iter()
@@ -7350,6 +7375,26 @@ fn energy_above_existence_floor(state: &AppleSealState, start: u64, end: u64) ->
         floor,
     )?;
     Some(!hops.is_empty())
+}
+
+/// Sample ranges of one occurrence whose capture hops reach the calibrated
+/// existence floor. `None` when the take has no floor or the hop clock cannot
+/// speak for the whole occurrence; `Some` empty is measured sub-floor sound.
+fn existence_floor_hops(
+    state: &AppleSealState,
+    occurrence: &OccurrenceIdentity,
+) -> Option<Vec<(u64, u64)>> {
+    let floor = state.existence_floor_rms?;
+    if !floor.is_finite() || floor <= 0.0 {
+        return None;
+    }
+    state.capture_energy.hops_at_or_above(
+        &state.session_id,
+        state.capture_epoch,
+        occurrence.sample_start,
+        occurrence.sample_end,
+        floor,
+    )
 }
 
 fn energy_valley_between(
