@@ -37,37 +37,22 @@ final class OverlayRecordingLightTests: XCTestCase {
       ).ordered, [])
   }
 
-  func testTechnicalCoverageRequiresBothDeveloperBuildAndLabToggle() {
-    for developerBuild in [false, true] {
-      for labEnabled in [false, true] {
-        let power = DeveloperSurface.isPowerModeEnabled(
-          labMode: labEnabled, surfaceEnabled: developerBuild)
-        let slots = OverlayBottomChromeSlots(
-          mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: false,
-          showsDiagnostics: power)
-        XCTAssertEqual(
-          slots.ordered,
-          developerBuild && labEnabled ? [.rail, .coverageWarning] : [.rail],
-          "developer build=\(developerBuild), lab=\(labEnabled)")
-        let quiet = OverlayBottomChromeSlots(
-          mode: .listening, hasPresentationStatus: false, isCollapsed: false,
-          hasLowInputSignal: true, showsDiagnostics: power)
-        XCTAssertEqual(quiet.ordered, [.rail, .coverageWarning])
-      }
-    }
-  }
-
-  func testDeveloperCoverageDiagnosticsRespectCollapseAndActionableStatus() {
+  /// Maciej, 2026-10-19: ledger coverage ("Ledger: 1177.0 s to verify ·
+  /// ranges: 139") belongs in Voice Lab, so no build and no lab toggle puts it
+  /// in the bar; only the measured quiet microphone still does.
+  func testLedgerCoverageNeverTakesTheBar() {
     for collapsed in [false, true] {
       for actionableStatus in [false, true] {
         let slots = OverlayBottomChromeSlots(
           mode: .coverageRefused, hasPresentationStatus: actionableStatus,
-          isCollapsed: collapsed, showsDiagnostics: true)
-        XCTAssertEqual(
-          slots.ordered,
-          collapsed ? [] : actionableStatus ? [.rail] : [.rail, .coverageWarning])
+          isCollapsed: collapsed)
+        XCTAssertEqual(slots.ordered, collapsed ? [] : [.rail])
       }
     }
+    let quiet = OverlayBottomChromeSlots(
+      mode: .listening, hasPresentationStatus: false, isCollapsed: false,
+      hasLowInputSignal: true)
+    XCTAssertEqual(quiet.ordered, [.rail, .coverageWarning])
   }
 
   func testDiagnosticVisibilityDoesNotChangeTranscriptAuthorityOrRecoveryActions() {
@@ -88,16 +73,13 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertFalse(text.isEmpty)
     XCTAssertTrue(state.isTranscriptEditable)
     XCTAssertNotNil(notice)
-    for power in [false, true] {
-      _ = OverlayBottomChromeSlots(
-        mode: state.mode, hasPresentationStatus: false,
-        isCollapsed: false, showsDiagnostics: power)
-      XCTAssertEqual(state.activeText, text)
-      XCTAssertEqual(state.revision, revision)
-      XCTAssertEqual(state.coverageRefusalNotice, notice)
-      XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), intents)
-      XCTAssertTrue(state.isTranscriptEditable)
-    }
+    _ = OverlayBottomChromeSlots(
+      mode: state.mode, hasPresentationStatus: false, isCollapsed: false)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.revision, revision)
+    XCTAssertEqual(state.coverageRefusalNotice, notice)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), intents)
+    XCTAssertTrue(state.isTranscriptEditable)
   }
 
   // MARK: One table: state → colour → name

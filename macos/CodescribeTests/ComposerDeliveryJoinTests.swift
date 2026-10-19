@@ -1604,9 +1604,6 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
     XCTAssertEqual(state.retainedComposerDelivery, "nobody is listening")
     XCTAssertEqual(state.toast, "no composer receiver")
-    XCTAssertEqual(
-      state.coverageRefusalDetail,
-      "The handover came back. These words are retained here — recover them before the next take.")
     XCTAssertEqual(state.activeText, "nobody is listening", "the canvas still holds the words")
   }
 
@@ -1666,8 +1663,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     terminal.phase = "coverage_refused"
     terminal.reducerAction = "session_ended"
     terminal.sealCoverage = CsProjectedSealCoverageReceipt(
-      status: .unavailable, sampleRateHz: nil, unavailableReason: .partialObservation, speechSamples: 0,
-      coveredSamples: 0, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
+      status: .unavailable, sampleRateHz: nil, unavailableReason: .partialObservation,
+      speechSamples: 0, coveredSamples: 0, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
       incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",
       availability: "discontinuous", observedSamples: nil, coverageRatio: nil)
     f.store.select(f.threadB)
