@@ -1,7 +1,7 @@
 {
   "version": "0.17.1",
   "from_sha": "c39fb7409b8c8c124975d953b9f57c6fe33ab29e",
-  "to_sha": "50e3f312f0f6ca34d327e31dee35dcf96bed912d",
+  "to_sha": "c55f8bc4d9faee2231ff7dff11e19e76cef4daca",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1729,19 +1729,25 @@
     {
       "sha": "8a01c29d851e4ed2319a7362a8d3c9e118df4411",
       "date": "2026-10-19",
-      "subject": "[codex/vc-release] docs(release): pin the compiler-verified final catalog",
+      "subject": "docs(release): pin the compiler-verified final catalog",
       "squash_headings": []
     },
     {
       "sha": "c848b3e6a18be3a8ebc92c1715b1192744ff1314",
       "date": "2026-10-19",
-      "subject": "[codex/vc-release] fix(overlay): wrap the live activity text at its placed width",
+      "subject": "fix(overlay): wrap the live activity text at its placed width",
       "squash_headings": []
     },
     {
       "sha": "50e3f312f0f6ca34d327e31dee35dcf96bed912d",
       "date": "2026-10-19",
-      "subject": "[codex/vc-release] fix(overlay): initialize the live edge after history loads",
+      "subject": "fix(overlay): initialize the live edge after history loads",
+      "squash_headings": []
+    },
+    {
+      "sha": "c55f8bc4d9faee2231ff7dff11e19e76cef4daca",
+      "date": "2026-10-19",
+      "subject": "docs(release): include the proven live layout repairs",
       "squash_headings": []
     }
   ]
