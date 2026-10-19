@@ -14609,11 +14609,20 @@ mod rc_w2_acoustic_tests {
         (state, tx, rx, last)
     }
 
-    /// Worker time spent per tick on owners that can no longer change must
-    /// not grow with the length of the take. Ten times the stuck owners may
-    /// cost ten times the lookups, never ten times the lookups per owner.
+    /// Ten times the stuck owners must cost about ten times per tick, not a
+    /// hundred: no walk over owners may also walk every component or every
+    /// retained decode. The baseline 80c7f3c96 measured 38x, this cut 13x.
+    ///
+    /// Still linear in unsealed owners on every tick, and not fixed here:
+    /// `unsealed_word_owners` (clone of every owner plus the pending-event map,
+    /// several calls per tick), the `close_admission_horizon` sweep (frontier
+    /// and trail lookups per owner), `publish_resolved_word_seals` (one seal
+    /// attempt per owner) and `replay_completed_windows` (one ordered lookup
+    /// per retained decode). Bounding these to the live window needs owners
+    /// that stop being visited once settled; repaying their text recovery
+    /// live removes most of them altogether.
     #[test]
-    fn long_take_tick_cost_is_bounded_by_the_live_window() {
+    fn long_take_tick_cost_grows_with_owners_not_owners_times_components() {
         fn tick_cost(owners: u64) -> (std::time::Duration, usize, usize) {
             let (mut state, tx, mut rx, last) = stuck_recovery_take(owners);
             while rx.try_recv().is_ok() {}
