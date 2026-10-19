@@ -2810,6 +2810,14 @@ final class SettingsViewModel: ObservableObject {
     persist("LIGHT_PLUS_SENTENCE_PAUSE_SEC", String(format: "%.1f", bounded))
   }
 
+  /// Lab ledger slider. Applies to the next recording; 0 is today's engine.
+  func setLedgerSensitivity(_ position: Int32) {
+    guard DeveloperSurface.isEnabled() else { return }
+    let bounded = min(100, max(-100, position))
+    settings.ledgerSensitivity = bounded
+    persist("CODESCRIBE_LEDGER_SENSITIVITY", String(bounded))
+  }
+
   func setSoundFeedbackEnabled(_ enabled: Bool) {
     settings.beepOnStart = enabled
     persist("BEEP_ON_START", enabled ? "1" : "0")
