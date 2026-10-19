@@ -152,6 +152,7 @@ struct OverlayHeaderMenu: View {
       .labelsHidden()
     } label: {
       Text("Auto fold after… \(currentAutoFoldTitle)")
+
     }
   }
 
@@ -160,6 +161,7 @@ struct OverlayHeaderMenu: View {
   private var currentAutoFoldTitle: Text {
     state.autoFoldSeconds == 0 ? Text("Never") : Text("\(Int(state.autoFoldSeconds)) s")
   }
+
 
   private func menuImage(for anchor: OverlayAnchor) -> String {
     guard !state.freeMotion, state.placementAnchor == anchor else {

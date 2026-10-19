@@ -1820,7 +1820,6 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "requires a single-test child with RLIMIT_FSIZE=1024 and SIGXFSZ ignored"]
     fn forensic_actual_spill_write_failure_keeps_complete_native_pcm() {
         let mut limits = libc::rlimit {
             rlim_cur: 0,
@@ -1830,10 +1829,37 @@ mod tests {
             unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut limits) },
             0
         );
-        assert_eq!(
-            limits.rlim_cur, 1024,
-            "run only through the isolated fault harness"
-        );
+        if limits.rlim_cur != 1024 {
+            use std::os::unix::process::CommandExt as _;
+            let exe = std::env::current_exe().expect("test binary path");
+            let mut cmd = std::process::Command::new(exe);
+            cmd.args([
+                "--exact",
+                "audio::recorder::tests::forensic_actual_spill_write_failure_keeps_complete_native_pcm",
+                "--nocapture",
+            ]);
+            unsafe {
+                cmd.pre_exec(move || {
+                    libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+                    let child_limits = libc::rlimit {
+                        rlim_cur: 1024,
+                        rlim_max: limits.rlim_max,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_FSIZE, &child_limits) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let out = cmd.output().expect("spawn RLIMIT_FSIZE child");
+            assert!(
+                out.status.success(),
+                "child failed:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let sink = SpillSink::spawn(16_000, directory.path()).unwrap();
         let prefix = (0..256).map(|n| n as i16 - 128).collect::<Vec<_>>();

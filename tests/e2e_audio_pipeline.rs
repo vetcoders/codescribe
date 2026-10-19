@@ -13,10 +13,7 @@ use codescribe::audio;
 #[path = "support/e2e_stt_matrix.rs"]
 mod e2e_stt_matrix;
 
-use e2e_stt_matrix::{
-    STT_OPT_IN_ENV, discover_local_whisper_model, model_discovery_hint, skip_unless_opt_in,
-    test_audio_path,
-};
+use e2e_stt_matrix::{discover_local_whisper_model, model_discovery_hint, test_audio_path};
 
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
@@ -126,14 +123,6 @@ fn test_16k_passthrough() {
 /// Run with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_audio_pipeline test_full_transcription
 #[test]
 fn test_full_transcription() {
-    if skip_unless_opt_in(
-        STT_OPT_IN_ENV,
-        "audio pipeline transcription E2E",
-        "Audio loading/resampling checks run by default; model-dependent transcription is opt-in.",
-    ) {
-        return;
-    }
-
     use codescribe::whisper::LocalWhisperEngine;
 
     let model = match discover_local_whisper_model() {

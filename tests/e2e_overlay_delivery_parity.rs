@@ -44,11 +44,6 @@ use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
 use sha2::{Digest, Sha256};
 
-#[path = "support/e2e_stt_matrix.rs"]
-mod e2e_stt_matrix;
-
-use e2e_stt_matrix::{STT_OPT_IN_ENV, skip_unless_opt_in};
-
 // ── Independent receipt oracle for the shipped ledger projection ───────────
 
 #[derive(Debug, Default)]
@@ -1016,15 +1011,6 @@ fn init_e2e_tracing() {
 
 #[tokio::test]
 async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
-    if skip_unless_opt_in(
-        STT_OPT_IN_ENV,
-        "overlay/delivery parity E2E",
-        "Feeds data_assets WAVs as mic chunks through transcription_session, \
-         then file final-pass + length floor (same rules as stop adjudicate).",
-    ) {
-        return;
-    }
-
     init_e2e_tracing();
 
     let language = std::env::var("CODESCRIBE_E2E_LANG")

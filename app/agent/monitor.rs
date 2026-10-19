@@ -10,7 +10,7 @@
 //! tails are bounded terminal evidence.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -320,49 +320,25 @@ pub fn resume_monitors_on_startup() {
     }
 }
 
-/// Ownership record for the single resident service thread.
-struct MonitorServiceHandle {
-    /// Shutdown flag the loop checks each tick.
-    stop: &'static AtomicBool,
-    /// Join handle, taken on shutdown. `None` when the spawn failed.
-    thread: std::sync::Mutex<Option<JoinHandle<()>>>,
-}
-
 /// Set to stop the resident loop at its next tick.
 static MONITOR_STOP: AtomicBool = AtomicBool::new(false);
 /// The one service handle per process; its presence means the loop was started.
-static MONITOR_SERVICE: OnceLock<MonitorServiceHandle> = OnceLock::new();
+static MONITOR_SERVICE: LazyLock<Option<JoinHandle<()>>> = LazyLock::new(|| {
+    MONITOR_STOP.store(false, Ordering::SeqCst);
+    std::thread::Builder::new()
+        .name("codescribe-run-monitor".to_string())
+        .spawn(monitor_loop)
+        .map_err(|error| {
+            warn!(%error, "Failed to spawn run-monitor service thread");
+            error
+        })
+        .ok()
+});
 
 /// Start the resident polling loop once per process. Called on registration
 /// and from app startup so persisted monitors resume after a restart.
 pub fn ensure_monitor_service_started() {
-    MONITOR_SERVICE.get_or_init(|| {
-        MONITOR_STOP.store(false, Ordering::SeqCst);
-        let thread = std::thread::Builder::new()
-            .name("codescribe-run-monitor".to_string())
-            .spawn(monitor_loop)
-            .map_err(|error| {
-                warn!(%error, "Failed to spawn run-monitor service thread");
-                error
-            })
-            .ok();
-        MonitorServiceHandle {
-            stop: &MONITOR_STOP,
-            thread: std::sync::Mutex::new(thread),
-        }
-    });
-}
-
-/// Stop the resident loop and join it (app shutdown cleanup).
-pub fn shutdown_monitor_service() {
-    if let Some(handle) = MONITOR_SERVICE.get() {
-        handle.stop.store(true, Ordering::SeqCst);
-        if let Ok(mut slot) = handle.thread.lock()
-            && let Some(join) = slot.take()
-        {
-            let _ = join.join();
-        }
-    }
+    let _ = &*MONITOR_SERVICE;
 }
 
 /// The resident thread body: tick, log any failure, sleep, repeat until stopped.

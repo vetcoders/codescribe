@@ -57,7 +57,11 @@ final class OnDeviceFormatterHost: CsOnDeviceFormatter, Sendable {
     guard #available(macOS 26.0, *) else {
       throw FormatterUnavailable()
     }
-    let session = LanguageModelSession(instructions: instructions)
+    let model = SystemLanguageModel(
+      useCase: .general,
+      guardrails: .permissiveContentTransformations
+    )
+    let session = LanguageModelSession(model: model, instructions: instructions)
     let response = try await session.respond(
       to: userMessage,
       options: GenerationOptions(temperature: 0.2)

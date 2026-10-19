@@ -2932,7 +2932,6 @@ mod tests {
     ///     transcript_bus::tests::document_history_scan_budget_bounds_a_one_gib_bus \
     ///     -- --ignored --nocapture
     #[test]
-    #[ignore = "writes and scans a ~1 GiB fixture; run explicitly, see doc comment"]
     fn document_history_scan_budget_bounds_a_one_gib_bus() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("one-gib.jsonl");
@@ -2940,9 +2939,12 @@ mod tests {
             "{{\"schema\":\"codescribe.transcript.v1\",\"session_id\":\"other-take\",\"padding\":\"{}\"}}\n",
             "x".repeat(4096)
         );
+        let block = filler.repeat(256);
         let mut out = std::fs::File::create(&path).unwrap();
-        while out.metadata().unwrap().len() < 1024 * 1024 * 1024 {
-            out.write_all(filler.as_bytes()).unwrap();
+        let mut written = 0usize;
+        while written < 1024 * 1024 * 1024 {
+            out.write_all(block.as_bytes()).unwrap();
+            written += block.len();
         }
         drop(out);
 

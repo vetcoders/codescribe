@@ -87,13 +87,6 @@ fn find_model_path() -> Option<PathBuf> {
     codescribe_core::config::models::resolve_runtime_whisper_model_path(None).ok()
 }
 
-fn is_e2e_stt_enabled() -> bool {
-    std::env::var("CODESCRIBE_E2E_STT")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 fn load_real_env() {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let env_path = PathBuf::from(&home).join(".codescribe/.env");
@@ -145,10 +138,6 @@ fn word_overlap(a: &str, b: &str) -> f32 {
 #[test]
 #[serial]
 fn e2e_stage1_raw_whisper_canonical() {
-    if !is_e2e_stt_enabled() {
-        eprintln!("Skipping (set CODESCRIBE_E2E_STT=1)");
-        return;
-    }
     load_real_env();
 
     let model_path = match find_model_path() {
@@ -380,10 +369,6 @@ fn vad_gate_audio(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 #[test]
 #[serial]
 fn e2e_stage7_whisper_hallucination_vs_vad_gated() {
-    if !is_e2e_stt_enabled() {
-        eprintln!("Skipping (set CODESCRIBE_E2E_STT=1)");
-        return;
-    }
     load_real_env();
 
     let model_path = match find_model_path() {

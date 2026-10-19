@@ -3266,21 +3266,32 @@ impl TranscriptReducer {
                 .get(source)
                 .copied()
                 .unwrap_or(0);
-            let applied = proposal.disposition == LabelProposalDisposition::Propose
-                && !candidate_label.is_empty();
+            let (formatted_text, status) = match proposal.disposition {
+                LabelProposalDisposition::Propose if !candidate_label.is_empty() => {
+                    (candidate_label.to_string(), AiFormatStatus::Applied)
+                }
+                LabelProposalDisposition::PreserveExisting => {
+                    let preserved = self
+                        .shaped_by_occurrence
+                        .get(&occurrence)
+                        .filter(|shaped| shaped.source_label == proposal.source_text)
+                        .map_or_else(
+                            || proposal.source_text.clone(),
+                            |shaped| shaped.shaped_text.clone(),
+                        );
+                    (preserved, AiFormatStatus::Applied)
+                }
+                _ => (candidate_label.to_string(), AiFormatStatus::Failed),
+            };
             let projection = self.mint_derived_projection(
                 proposal.session.clone(),
                 source_revision,
                 proposal.source_text.clone(),
                 proposal.policy,
                 AiFormatResult {
-                    text: candidate_label.into(),
+                    text: formatted_text,
                     reasoning_text: None,
-                    status: if applied {
-                        AiFormatStatus::Applied
-                    } else {
-                        AiFormatStatus::Failed
-                    },
+                    status,
                 },
                 proposal.source_observation.clone(),
             );
@@ -3295,6 +3306,68 @@ impl TranscriptReducer {
             }
         }
         true
+    }
+
+    fn needs_occurrence_projection_wait(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+    ) -> bool {
+        if self.delivery_selection.is_some()
+            || !matches!(
+                policy,
+                FormattingPolicy::Correction | FormattingPolicy::Smart
+            )
+            || self.document_by_occurrence.is_empty()
+            || self.committed_rendered_text() != raw_at_handoff
+            || self.raw_human_revision
+            || !self.context_markers.is_empty()
+            || !self
+                .document_by_occurrence
+                .values()
+                .chain(self.direct_document.values())
+                .all(|entry| entry.seal_receipt.is_some())
+        {
+            return false;
+        }
+        if self.derived_projections.iter().rev().any(|projection| {
+            projection.source_observation.is_none()
+                && projection.source_state == "raw_document"
+                && projection.source_raw_revision == self.revision
+                && projection.requested_mode == policy.as_str()
+                && projection.source_raw_text == raw_at_handoff
+        }) {
+            return false;
+        }
+        let mut missing_any = false;
+        for entry in self.document_by_occurrence.values() {
+            if entry.label.trim().is_empty() || entry.manual_edit_receipt.is_some() {
+                return false;
+            }
+            let projection = self.derived_projections.iter().rev().find(|projection| {
+                projection.requested_mode == policy.as_str()
+                    && projection
+                        .source_observation
+                        .as_ref()
+                        .is_some_and(|source| {
+                            source.occurrence == entry.occurrence
+                                && projection.source_raw_text == entry.label
+                                && entry.manual_edit_receipt.is_none()
+                                && entry.observation_receipt.starts_with(&format!(
+                                    "{}:{}:{}:",
+                                    source.producer.as_str(),
+                                    source.request,
+                                    source.generation
+                                ))
+                        })
+            });
+            match projection {
+                Some(projection) if projection.status == "applied" => {}
+                Some(_) => return false,
+                None => missing_any = true,
+            }
+        }
+        missing_any
     }
 
     /// Record one controller-authenticated context reference. The captured
@@ -3864,6 +3937,8 @@ pub struct PresentationEmitter {
     transcription_controls: TranscriptionControls,
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
+    formatter_pending: std::sync::atomic::AtomicBool,
+    derived_projection_notify: tokio::sync::Notify,
     sentence_pause_sec: f32,
     tick_clock: Arc<dyn Fn() -> std::time::Duration + Send + Sync>,
     #[cfg(test)]
@@ -3878,6 +3953,7 @@ impl PresentationEmitter {
             .active_presentation
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = false;
+        self.derived_projection_notify.notify_waiters();
     }
 
     pub fn with_active_presentation(&self, publish: impl FnOnce()) {
@@ -4139,6 +4215,8 @@ impl PresentationEmitter {
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
             transcription_controls: TranscriptionControls::default(),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
+            formatter_pending: std::sync::atomic::AtomicBool::new(false),
+            derived_projection_notify: tokio::sync::Notify::new(),
             sentence_pause_sec: 0.7,
             tick_clock: {
                 let origin = std::time::Instant::now();
@@ -5062,6 +5140,51 @@ impl PresentationEmitter {
         )
     }
 
+    /// Wait while background occurrence formatter jobs are still in flight for
+    /// this active presentation and the current sealed document lacks complete
+    /// per-occurrence projections for `policy`.
+    pub async fn wait_for_occurrence_projections(
+        &self,
+        policy: FormattingPolicy,
+        raw_at_handoff: &str,
+        timeout: std::time::Duration,
+    ) {
+        if timeout.is_zero() {
+            return;
+        }
+        let _ = tokio::time::timeout(timeout, async {
+            loop {
+                let notified = self.derived_projection_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let should_wait = {
+                    let active = *self
+                        .active_presentation
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    if !active
+                        || !self
+                            .formatter_pending
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        false
+                    } else {
+                        let reducer = self
+                            .session_state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        reducer.needs_occurrence_projection_wait(policy, raw_at_handoff)
+                    }
+                };
+                if !should_wait {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await;
+    }
+
     /// Choose one whole-take version. An incomplete Smart set yields a single
     /// Corrections floor over all Raw; late versions never trigger delivery.
     pub fn delivery_projection(
@@ -5260,6 +5383,14 @@ impl EventSink for PresentationEmitter {
 
     fn consultation_destinations(&self) -> usize {
         1
+    }
+
+    fn on_formatter_pending(&self, pending: bool) {
+        self.formatter_pending
+            .store(pending, std::sync::atomic::Ordering::SeqCst);
+        if !pending {
+            self.derived_projection_notify.notify_waiters();
+        }
     }
 
     fn on_consultation_completed(&self, completed: &ConsultationGroupAnswer) -> anyhow::Result<()> {
@@ -5592,6 +5723,7 @@ impl EventSink for PresentationEmitter {
                 if let (Some(bus), Some(projection)) = (&self.transcript_bus, derived_projection) {
                     bus.record_derived_projection(&projection);
                 }
+                self.derived_projection_notify.notify_waiters();
                 if evidence_closed {
                     self.repaint_cursor();
                 }
@@ -10998,6 +11130,94 @@ mod tests {
         assert_eq!(deliveries, 1, "late Smart emitted another delivery receipt");
         take.emitter.finish().await;
         assert_eq!(*take.delivery.lock().await, raw.source_text);
+    }
+
+    #[tokio::test]
+    async fn smart_waits_for_in_flight_occurrence_proposals_and_preserves_short_spans() {
+        let take = live_take("smart-preserve-and-wait");
+        let first = OccurrenceIdentity::new("smart-preserve-and-wait", 22, 0, 16_000);
+        let second = OccurrenceIdentity::new("smart-preserve-and-wait", 22, 16_000, 32_000);
+        take.admit(&first, 1, "tak");
+        take.admit(&second, 2, "drugie zdanie bez kropki");
+        take.seal(&first);
+        take.seal(&second);
+        take.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "smart-preserve-and-wait".into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let raw = take.emitter.terminal_formatter_request().unwrap();
+        let first_source = take
+            .ledger
+            .lock()
+            .unwrap()
+            .layer_trail_for(&first)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        let second_source = take
+            .ledger
+            .lock()
+            .unwrap()
+            .layer_trail_for(&second)
+            .filter(|decision| decision.decision.grants_mutation())
+            .last()
+            .unwrap()
+            .observation
+            .clone();
+        take.emitter
+            .on_event(&EngineEvent::OccurrenceLabelProposal {
+                proposal: OccurrenceLabelProposal::for_existing_occurrence(
+                    first.session.clone(),
+                    first.capture_epoch,
+                    first.sample_start,
+                    first.sample_end,
+                    "",
+                    LabelProposalDisposition::PreserveExisting,
+                )
+                .with_source(first_source, "tak".into(), FormattingPolicy::Smart),
+            });
+        take.emitter.on_formatter_pending(true);
+        let emitter = Arc::new(take.emitter);
+        let emitter_for_job = Arc::clone(&emitter);
+        let second_clone = second.clone();
+        let job = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            emitter_for_job.on_event(&EngineEvent::OccurrenceLabelProposal {
+                proposal: OccurrenceLabelProposal::for_existing_occurrence(
+                    second_clone.session,
+                    second_clone.capture_epoch,
+                    second_clone.sample_start,
+                    second_clone.sample_end,
+                    "Drugie zdanie z kropką.",
+                    LabelProposalDisposition::Propose,
+                )
+                .with_source(
+                    second_source,
+                    "drugie zdanie bez kropki".into(),
+                    FormattingPolicy::Smart,
+                ),
+            });
+            emitter_for_job.on_formatter_pending(false);
+        });
+        emitter
+            .wait_for_occurrence_projections(
+                FormattingPolicy::Smart,
+                &raw.source_text,
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+        job.await.unwrap();
+        let selected = emitter
+            .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
+            .unwrap();
+        assert_eq!(selected.delivered_mode, "smart");
+        assert_eq!(selected.status, "applied");
+        assert!(selected.rendered_text.ends_with("Drugie zdanie z kropką."));
+        if let Ok(mut emitter) = Arc::try_unwrap(emitter) {
+            emitter.finish().await;
+        }
     }
 
     /// Acceptance: both emitter request/acknowledgement types keep the derives
