@@ -2757,6 +2757,26 @@
         }
       }
     },
+    "Agent is disconnected" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agent jest rozłączony"
+          }
+        }
+      }
+    },
+    "Agent is not running in Frame" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Agent nie działa we Frame"
+          }
+        }
+      }
+    },
     "Agent listening..." : {
       "comment" : "Tray status: the assistive (agent) lane is recording",
       "localizations" : {
@@ -5847,6 +5867,16 @@
         }
       }
     },
+    "Could not focus panel in Frame" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się przejść do panelu we Frame"
+          }
+        }
+      }
+    },
     "Could not load conversations. Try refreshing the list." : {
       "localizations" : {
         "pl" : {
@@ -5899,6 +5929,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się ponownie wczytać rozmów. Wyświetlana jest poprzednia lista."
+          }
+        }
+      }
+    },
+    "Could not request panel focus in Frame." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się poprosić o przejście do panelu we Frame."
           }
         }
       }
@@ -7629,6 +7669,26 @@
     },
     "Fixed windows" : {
       "shouldTranslate" : false
+    },
+    "Focus agent panel in Frame" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Przejdź do panelu agenta we Frame"
+          }
+        }
+      }
+    },
+    "Focused in Frame" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Panel pokazany we Frame"
+          }
+        }
+      }
     },
     "Fold this message back to its head" : {
       "localizations" : {
@@ -10641,6 +10701,16 @@
         }
       }
     },
+    "No response from agent panel in Frame." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Panel agenta we Frame nie odpowiedział."
+          }
+        }
+      }
+    },
     "No result summary was stored for this call." : {
       "localizations" : {
         "pl" : {
@@ -11482,6 +11552,16 @@
         }
       }
     },
+    "Opening panel in Frame…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Otwieranie panelu we Frame…"
+          }
+        }
+      }
+    },
     "Opens the Lab desk, which owns the committing switch" : {
       "localizations" : {
         "pl" : {
@@ -11726,6 +11806,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Integracja PRView"
+          }
+        }
+      }
+    },
+    "Panel focus request expired" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Prośba o przejście do panelu wygasła"
+          }
+        }
+      }
+    },
+    "Panel not found in Frame" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie znaleziono panelu we Frame"
           }
         }
       }
