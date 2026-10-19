@@ -94,6 +94,10 @@ final class OverlayPresentationTraceTests: XCTestCase {
     defer { panel.orderOut(nil) }
     let afterOrderFront = panelReadiness(panel, label: "afterOrderFront")
     panel.setPresentationMode(.mini)
+    // Measure the painted trajectory starting from an already laid-out and
+    // painted mini panel rather than assuming orderFrontRegardless painted synchronously.
+    panel.contentView?.layoutSubtreeIfNeeded()
+    panel.displayIfNeeded()
     let afterSetMini = panelReadiness(panel, label: "afterSetMini")
     let initialTrace = formatTraceEntries(trace.entries)
     let initialReadiness =
