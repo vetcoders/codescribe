@@ -1,7 +1,7 @@
 {
   "version": "0.17.1",
   "from_sha": "c39fb7409b8c8c124975d953b9f57c6fe33ab29e",
-  "to_sha": "db655ac32ea53ad8e245e668e070ff912d5dec0a",
+  "to_sha": "87c3ebfa0a7fe6a525c2db5912a442de2f7e81fe",
   "scope": "Committed source history; not runtime or distribution acceptance.",
   "commits": [
     {
@@ -1712,6 +1712,18 @@
       "sha": "db655ac32ea53ad8e245e668e070ff912d5dec0a",
       "date": "2026-10-19",
       "subject": "docs(audio): calibration is optional for direct transcription and required only with the ledger",
+      "squash_headings": []
+    },
+    {
+      "sha": "b377499c245c024f9291868ced29e96b1af4e446",
+      "date": "2026-10-19",
+      "subject": "docs(release): freeze the final audio readiness and test corrections",
+      "squash_headings": []
+    },
+    {
+      "sha": "87c3ebfa0a7fe6a525c2db5912a442de2f7e81fe",
+      "date": "2026-10-19",
+      "subject": "fix(l10n): synchronize compiler-observed Frame focus messages",
       "squash_headings": []
     }
   ]
