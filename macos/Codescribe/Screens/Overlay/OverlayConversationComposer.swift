@@ -12,6 +12,8 @@ struct OverlayConversationComposer: View {
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
+  /// Out of sight under the agents list or a folded bar.
+  var isCovered = false
   var onFocusChange: ((Bool) -> Void)? = nil
   var placeholder = String(localized: "Message the Agent")
   var clipboard: NSPasteboard = .general
@@ -96,7 +98,7 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision,
+        onCancel: onCancel, focusRevision: focusRevision, isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
@@ -265,6 +267,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
+  var isCovered = false
   var onFocusChange: (Bool) -> Void = { _ in }
   let clipboard: NSPasteboard
   let saveImage: (Data) throws -> URL
@@ -360,6 +363,22 @@ private struct ConversationMessageField: NSViewRepresentable {
         editor.window?.makeFirstResponder(editor)
       }
     }
+    // Typing under the agents list went into this field, out of sight. Covered,
+    // it gives the keyboard up; uncovered, it takes it back only from a panel
+    // that still holds the keyboard, so nothing is taken from another app.
+    if context.coordinator.isCovered != isCovered {
+      context.coordinator.isCovered = isCovered
+      if isCovered {
+        if editor.window?.firstResponder === editor { editor.window?.makeFirstResponder(nil) }
+      } else {
+        DispatchQueue.main.async { [weak editor, weak coordinator = context.coordinator] in
+          guard let editor, let window = editor.window, window.isKeyWindow,
+            coordinator?.isCovered == false
+          else { return }
+          window.makeFirstResponder(editor)
+        }
+      }
+    }
     scroll.needsLayout = true
   }
 
@@ -368,6 +387,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     var parent: ConversationMessageField
     var applyingExternalText = false
     var focusRevision: UInt64 = 0
+    var isCovered = false
     let scrollerPin = CSScrollerPin()
     private var pendingHeight: CGFloat?
     private var heightUpdateScheduled = false
