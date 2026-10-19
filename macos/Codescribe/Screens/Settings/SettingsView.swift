@@ -42,7 +42,7 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        .modifier(CSDetailHeaderFade())
+        .modifier(CSDetailHeaderGlass())
         .background(CSColor.sheet)
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
