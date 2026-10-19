@@ -44,6 +44,14 @@ actor OverlayChannelDeliveryReader {
   private(set) var consumedMetadataBytes: UInt64 = 0
   /// Opened metadata descriptors, including reads satisfied by the parse cache.
   private(set) var metadataFileOpens: UInt64 = 0
+  /// `.generations.json` documents opened and parsed. A manifest is reread
+  /// only when its own stamp or the hot file it names as active changes.
+  /// Before, every 500 ms pass reparsed each bus's manifest and re-stat'ed
+  /// every closed segment, a fifth of the reader at idle (sample of dfa35af17,
+  /// 2026-10-19 on div0).
+  private(set) var generationManifestReads: UInt64 = 0
+  private var generationInventories: [URL: GenerationStream.Inventory] = [:]
+  private static let generationInventoryEntries = 64
   private static let metadataCacheBudget = 8 << 20
   private static let metadataCacheEntries = 256
   private var metadataObjects: [URL: MetadataObject] = [:]
@@ -655,8 +663,44 @@ actor OverlayChannelDeliveryReader {
     }
   }
 
+  /// The stream at `root` for this pass. A manifest version is verified once
+  /// against its hot file; later passes re-stat only that file and the
+  /// manifest. Closed segments are sealed while a manifest names them, and
+  /// `GenerationStream.read(_:)` still checks a segment's identity before
+  /// reading its bytes.
+  private func generationStream(_ root: URL) throws -> GenerationStream {
+    let current = try GenerationStream.metadata(root)
+    let receipt = URL(fileURLWithPath: root.path + ".generations.json")
+    var metadata = stat()
+    guard fstatat(AT_FDCWD, receipt.path, &metadata, 0) == 0 else {
+      generationInventories[root] = nil
+      return GenerationStream(unlinked: root, current: current)
+    }
+    let stamp = MetadataObjectStamp(metadata)
+    if let cached = generationInventories[root], cached.manifestStamp == stamp,
+      cached.activeInode == current.0, cached.activeDevice == current.1
+    {
+      return try GenerationStream(linked: root, inventory: cached, current: current)
+    }
+    generationInventories[root] = nil
+    generationManifestReads &+= 1
+    let handle = try FileHandle(forReadingFrom: receipt)
+    defer { try? handle.close() }
+    let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
+    let inventory = try GenerationStream.Inventory(
+      root: root, manifest: bytes, stamp: stamp, current: current)
+    // Never retain a parse whose file changed during that read.
+    if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
+      if generationInventories.count >= Self.generationInventoryEntries {
+        generationInventories.removeAll()
+      }
+      generationInventories[root] = inventory
+    }
+    return try GenerationStream(linked: root, inventory: inventory, current: current)
+  }
+
   private func refresh(_ url: URL) throws {
-    let file = try GenerationStream(url)
+    let file = try generationStream(url)
     let inode = file.inode
     let size = file.size
     // Explicit branches stay on this actor. Nil-coalescing would capture the
@@ -934,115 +978,146 @@ actor OverlayChannelDeliveryReader {
     let coldStart: UInt64
     var offset: UInt64 = 0
 
-    init(_ root: URL) throws {
-      func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
-        var value = stat()
-        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
-          throw CocoaError(.fileReadUnknown)
-        }
-        guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
-          throw CocoaError(.fileReadCorruptFile)
-        }
-        return (UInt64(value.st_ino), UInt64(value.st_dev), UInt64(value.st_size))
+    /// Identity and size of a regular file: (inode, device, size).
+    static func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
+      var value = stat()
+      guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
+        throw CocoaError(.fileReadUnknown)
       }
-      let current = try metadata(root)
-      let receipt = URL(fileURLWithPath: root.path + ".generations.json")
-      if !FileManager.default.fileExists(atPath: receipt.path) {
-        segments = [
-          Segment(
-            url: root, start: 0, length: current.2, inode: current.0, dev: current.1, day: nil)
-        ]
-        inode = current.0
-        size = current.2
-        linked = false
-        streamID = "\(current.1):\(current.0)"
-        originalFileStreamID = streamID
-        coldStart =
-          current.2 > OverlayChannelDeliveryReader.tailWindow
-          ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
-        return
-      }
-      let handle = try FileHandle(forReadingFrom: receipt)
-      defer { try? handle.close() }
-      let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
-      guard bytes.count <= 4 << 20,
-        let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-        Set(manifest.keys).subtracting(["volume_uuid"])
-          == Set([
-            "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
-            "segments", "active", "pending",
-          ]),
-        manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
-          || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
-        manifest["schema"] as? String == "codescribe.bus-generations.v1",
-        manifest["root"] as? String == root.path,
-        let stream = manifest["stream_inode"] as? NSNumber,
-        let streamDevice = manifest["stream_dev"] as? NSNumber,
-        let identity = manifest["stream_id"] as? String, !identity.isEmpty,
-        var active = manifest["active"] as? [String: Any],
-        var closed = manifest["segments"] as? [[String: Any]]
-      else { throw CocoaError(.fileReadCorruptFile) }
-      guard manifest["pending"] is NSNull || manifest["pending"] is [String: Any] else {
+      guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
         throw CocoaError(.fileReadCorruptFile)
       }
-      if let pending = manifest["pending"] as? [String: Any] {
-        guard Set(pending.keys) == Set(["closed", "next"]),
-          let next = pending["next"] as? [String: Any],
-          let old = pending["closed"] as? [String: Any]
+      return (UInt64(value.st_ino), UInt64(value.st_dev), UInt64(value.st_size))
+    }
+
+    /// One verified reading of a manifest version, made against the hot file
+    /// it names as active. The hot file's length is not part of it.
+    struct Inventory {
+      let manifestStamp: MetadataObjectStamp
+      let activeInode: UInt64
+      let activeDevice: UInt64
+      let closedSegments: [Segment]
+      let activeStart: UInt64
+      let activeDay: String?
+      let streamInode: UInt64
+      let streamID: String
+      let originalFileStreamID: String
+
+      init(
+        root: URL, manifest bytes: Data, stamp: MetadataObjectStamp,
+        current: (UInt64, UInt64, UInt64)
+      ) throws {
+        guard bytes.count <= 4 << 20,
+          let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+          Set(manifest.keys).subtracting(["volume_uuid"])
+            == Set([
+              "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
+              "segments", "active", "pending",
+            ]),
+          manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+            || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
+          manifest["schema"] as? String == "codescribe.bus-generations.v1",
+          manifest["root"] as? String == root.path,
+          let stream = manifest["stream_inode"] as? NSNumber,
+          let streamDevice = manifest["stream_dev"] as? NSNumber,
+          let identity = manifest["stream_id"] as? String, !identity.isEmpty,
+          var active = manifest["active"] as? [String: Any],
+          var closed = manifest["segments"] as? [[String: Any]]
         else { throw CocoaError(.fileReadCorruptFile) }
-        if (next["ino"] as? NSNumber)?.uint64Value == current.0
-          && (next["dev"] as? NSNumber)?.uint64Value == current.1
-        {
-          closed.append(old)
-          active = next
-        } else if (active["ino"] as? NSNumber)?.uint64Value != current.0
-          || (active["dev"] as? NSNumber)?.uint64Value != current.1
-        {
+        guard manifest["pending"] is NSNull || manifest["pending"] is [String: Any] else {
           throw CocoaError(.fileReadCorruptFile)
         }
-      }
-      originalFileStreamID = "\(streamDevice.uint64Value):\(stream.uint64Value)"
-      let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
-      var expected: UInt64 = 0
-      var inventory: [Segment] = []
-      for entry in closed {
-        guard
-          Set(entry.keys)
-            == Set([
-              "id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256",
-              "superseded",
-            ]),
-          let path = entry["path"] as? String, path.hasPrefix(events),
-          URL(fileURLWithPath: path).standardizedFileURL.path == path,
-          let start = entry["start"] as? NSNumber, let length = entry["length"] as? NSNumber,
-          let ino = entry["ino"] as? NSNumber, let dev = entry["dev"] as? NSNumber,
-          start.uint64Value == expected
+        if let pending = manifest["pending"] as? [String: Any] {
+          guard Set(pending.keys) == Set(["closed", "next"]),
+            let next = pending["next"] as? [String: Any],
+            let old = pending["closed"] as? [String: Any]
+          else { throw CocoaError(.fileReadCorruptFile) }
+          if (next["ino"] as? NSNumber)?.uint64Value == current.0
+            && (next["dev"] as? NSNumber)?.uint64Value == current.1
+          {
+            closed.append(old)
+            active = next
+          } else if (active["ino"] as? NSNumber)?.uint64Value != current.0
+            || (active["dev"] as? NSNumber)?.uint64Value != current.1
+          {
+            throw CocoaError(.fileReadCorruptFile)
+          }
+        }
+        originalFileStreamID = "\(streamDevice.uint64Value):\(stream.uint64Value)"
+        let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
+        var expected: UInt64 = 0
+        var inventory: [Segment] = []
+        for entry in closed {
+          guard
+            Set(entry.keys)
+              == Set([
+                "id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256",
+                "superseded",
+              ]),
+            let path = entry["path"] as? String, path.hasPrefix(events),
+            URL(fileURLWithPath: path).standardizedFileURL.path == path,
+            let start = entry["start"] as? NSNumber, let length = entry["length"] as? NSNumber,
+            let ino = entry["ino"] as? NSNumber, let dev = entry["dev"] as? NSNumber,
+            start.uint64Value == expected
+          else { throw CocoaError(.fileReadCorruptFile) }
+          let url = URL(fileURLWithPath: path)
+          let actual = try GenerationStream.metadata(url)
+          guard actual.0 == ino.uint64Value, actual.1 == dev.uint64Value,
+            actual.2 == length.uint64Value,
+            expected <= UInt64.max - actual.2
+          else { throw CocoaError(.fileReadCorruptFile) }
+          inventory.append(
+            Segment(
+              url: url, start: expected, length: actual.2, inode: actual.0, dev: actual.1,
+              day: entry["day"] as? String))
+          expected += actual.2
+        }
+        guard (active["start"] as? NSNumber)?.uint64Value == expected,
+          (active["ino"] as? NSNumber)?.uint64Value == current.0,
+          (active["dev"] as? NSNumber)?.uint64Value == current.1
         else { throw CocoaError(.fileReadCorruptFile) }
-        let url = URL(fileURLWithPath: path)
-        let actual = try metadata(url)
-        guard actual.0 == ino.uint64Value, actual.1 == dev.uint64Value,
-          actual.2 == length.uint64Value,
-          expected <= UInt64.max - actual.2
-        else { throw CocoaError(.fileReadCorruptFile) }
-        inventory.append(
-          Segment(
-            url: url, start: expected, length: actual.2, inode: actual.0, dev: actual.1,
-            day: entry["day"] as? String))
-        expected += actual.2
+        manifestStamp = stamp
+        activeInode = current.0
+        activeDevice = current.1
+        closedSegments = inventory
+        activeStart = expected
+        activeDay = active["day"] as? String
+        streamInode = stream.uint64Value
+        streamID = identity
       }
-      guard (active["start"] as? NSNumber)?.uint64Value == expected,
-        (active["ino"] as? NSNumber)?.uint64Value == current.0,
-        (active["dev"] as? NSNumber)?.uint64Value == current.1, expected <= UInt64.max - current.2
-      else { throw CocoaError(.fileReadCorruptFile) }
-      inventory.append(
+    }
+
+    /// A stream without a generations manifest is its one file.
+    init(unlinked root: URL, current: (UInt64, UInt64, UInt64)) {
+      segments = [
         Segment(
-          url: root, start: expected, length: current.2, inode: current.0, dev: current.1,
-          day: active["day"] as? String))
-      segments = inventory
-      inode = stream.uint64Value
-      size = expected + current.2
+          url: root, start: 0, length: current.2, inode: current.0, dev: current.1, day: nil)
+      ]
+      inode = current.0
+      size = current.2
+      linked = false
+      streamID = "\(current.1):\(current.0)"
+      originalFileStreamID = streamID
+      coldStart =
+        current.2 > OverlayChannelDeliveryReader.tailWindow
+        ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
+    }
+
+    init(linked root: URL, inventory: Inventory, current: (UInt64, UInt64, UInt64)) throws {
+      guard inventory.activeStart <= UInt64.max - current.2 else {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      segments =
+        inventory.closedSegments + [
+          Segment(
+            url: root, start: inventory.activeStart, length: current.2, inode: current.0,
+            dev: current.1, day: inventory.activeDay)
+        ]
+      inode = inventory.streamInode
+      size = inventory.activeStart + current.2
       linked = true
-      streamID = identity
+      streamID = inventory.streamID
+      originalFileStreamID = inventory.originalFileStreamID
       // Cold observation is the newest tail of the whole logical stream, for
       // dated chains and an undated prefix alike. Inventory metadata above is
       // the check; historical segment bytes stay unread.
