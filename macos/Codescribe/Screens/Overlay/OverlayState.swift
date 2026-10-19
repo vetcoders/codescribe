@@ -567,6 +567,10 @@ final class OverlayState {
   /// the counter halts at the session's true duration instead of ticking
   /// through the final pass.
   private(set) var captureEndedAtUptime: TimeInterval?
+  /// The clock was started by the dictation lifecycle. An agent channel take
+  /// runs the same counter without ever entering that lifecycle, so its stamps
+  /// must not read as a dictation awaiting its text.
+  private(set) var captureClockIsDictation = false
 
   // MARK: Panel placement (persisted; the window orchestrator repositions live)
   /// Anchored placement: one of six screen anchors, applied on every show().
@@ -2253,7 +2257,7 @@ final class OverlayState {
       // dictation keeps its own clock.
       if !recording {
         if channelAudioCaptureActive {
-          beginCaptureClock()
+          beginCaptureClock(dictation: false)
         } else {
           freezeCaptureClock()
         }
@@ -2369,6 +2373,21 @@ final class OverlayState {
   /// frozen value after stop.
   var showsSessionTimer: Bool {
     captureStartedAtUptime != nil
+  }
+
+  /// A dictation clock no terminal projection has closed yet.
+  var dictationClockOpen: Bool {
+    captureStartedAtUptime != nil && captureClockIsDictation
+  }
+
+  /// A dictation take between its stop and its terminal projection: the header
+  /// shows a disabled stop and a new start is refused. An agent take used to
+  /// leave the header there under its frozen length, with nothing recording,
+  /// because the channel clock passed for a stopped dictation (Maciej,
+  /// 2026-10-19, div0: stop and 02:07 while idle).
+  var isFinalizingDictation: Bool {
+    !terminal
+      && (transcribing || mode == .finalizing || (!recording && dictationClockOpen))
   }
 
   /// The visible dictation canvas stays ready even before a take starts.
@@ -2564,11 +2583,7 @@ final class OverlayState {
   /// Start through the same controller and current mode snapshot as the tray.
   /// Preparing synchronously reserves this take against a second click.
   func start(language: CsLanguage? = nil) {
-    guard let engine, !recording,
-      terminal || (!transcribing && mode != .finalizing && captureStartedAtUptime == nil)
-    else {
-      return
-    }
+    guard let engine, !recording, !isFinalizingDictation else { return }
     let assistive = engine.startsInAssistiveMode()
     prepareForExternalStart()
     Task { @MainActor in await self.runStart(assistive: assistive, language: language) }
@@ -2592,9 +2607,10 @@ final class OverlayState {
       : String(format: "%02d:%02d", m, s)
   }
 
-  private func beginCaptureClock() {
+  private func beginCaptureClock(dictation: Bool = true) {
     captureStartedAtUptime = nowProvider()
     captureEndedAtUptime = nil
+    captureClockIsDictation = dictation
   }
 
   private func freezeCaptureClock() {
@@ -5465,7 +5481,7 @@ extension OverlayState {
       recording || warmingUp || transcribing
       || (archivedTranscript == nil && !terminal
         && (mode == .listening || mode == .finalizing)
-        && (captureStartedAtUptime != nil || latestTranscriptProjection != nil))
+        && (dictationClockOpen || latestTranscriptProjection != nil))
     if captureInFlight {
       return String(
         localized: "Finish the current take before opening a saved transcript.",

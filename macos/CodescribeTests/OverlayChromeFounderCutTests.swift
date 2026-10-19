@@ -1413,7 +1413,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains(".accessibilityIdentifier(recordingIdentifier)"))
     XCTAssertTrue(source.contains(".disabled(recordingDisabled)"))
     XCTAssertTrue(source.contains("canFinish: state.recording && !state.transcribing"))
-    XCTAssertTrue(source.contains("|| (!state.recording && state.showsSessionTimer)"))
+    XCTAssertTrue(source.contains("isFinalizing: state.isFinalizingDictation,"))
 
     for state in [OverlayState(), OverlayState.previewFormatted()] {
       XCTAssertFalse(state.recording)
