@@ -201,6 +201,14 @@ func audioReadinessSteps(
         detail: String(
           localized: "Codescribe has measured how loudly you speak into this microphone.")
       )
+    } else if admission.ready {
+      calibration = AudioReadinessStep(
+        id: .calibration,
+        tone: .healthy,
+        title: String(localized: "Optional", comment: "Status chip"),
+        detail: String(
+          localized: "Measure about 10 seconds of normal speech on the current microphone.")
+      )
     } else {
       calibration = AudioReadinessStep(
         id: .calibration,
@@ -231,7 +239,7 @@ func audioReadinessSteps(
       detail: String(localized: "Complete step 1 before checking this.")
     )
   } else if let admission {
-    if admission.code == "admission_seal_vad_unavailable" {
+    if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
       sealLane = AudioReadinessStep(
         id: .sealLane,
         tone: .unavailable,
@@ -242,25 +250,31 @@ func audioReadinessSteps(
       // One title plus the readable switch state; the sentence also says who
       // owns the switch, because an override keeps the Lab switch read-only.
       let detail: String
-      switch (admission.sealLaneSource == "env_override", admission.sealLaneArmed) {
-      case (true, true):
+      switch (
+        admission.sealLaneSource == "env_override", admission.sealLaneArmed, admission.ready
+      ) {
+      case (true, true, _):
         detail = String(
           localized: "On, set by the \(admission.sealLaneEnv) override; the switch is read-only.",
           comment: "The placeholder is an environment variable name")
-      case (true, false):
+      case (true, false, false):
         detail = String(
           localized:
             "Off, set by the \(admission.sealLaneEnv) override. Recording stays blocked until the override is removed.",
           comment: "The placeholder is an environment variable name")
-      case (false, true):
+      case (false, true, _):
         detail = String(localized: "On. Change it with the switch in Settings › Lab.")
-      case (false, false):
+      case (false, false, false):
         detail = String(
           localized: "Off. Recording cannot start until it is turned on in Settings › Lab.")
+      case (_, false, true):
+        detail = String(
+          localized: "audio.readiness.sealLane.off", defaultValue: "Off",
+          comment: "Value of the committing fragments row; keep it as short as the UI allows")
       }
       sealLane = AudioReadinessStep(
         id: .sealLane,
-        tone: admission.sealLaneArmed ? .healthy : .unavailable,
+        tone: (admission.sealLaneArmed || admission.ready) ? .healthy : .unavailable,
         title: sealLaneTitle,
         detail: detail
       )
@@ -428,12 +442,12 @@ func audioReadinessRemedy(
   case .microphone:
     return microphonePermission == .granted ? .none : .microphonePermission
   case .calibration:
-    guard microphonePermission == .granted, let admission else { return .none }
+    guard microphonePermission == .granted, let admission, !admission.ready else { return .none }
     let sealed = admission.calibrationVersion != nil && admission.calibrationStatus == "sealed"
     return sealed ? .none : .calibrate
   case .sealLane:
     // An override is removed outside the app; Lab cannot edit it.
-    guard let admission, admission.code != "admission_seal_vad_unavailable",
+    guard let admission, !admission.ready, admission.code != "admission_seal_vad_unavailable",
       admission.sealLaneSource != "env_override", !admission.sealLaneArmed
     else { return .none }
     return .openLab
@@ -466,6 +480,14 @@ func audioCalibrationFact(
       tone: .healthy
     )
   }
+  if admission.ready {
+    return AudioReadinessFact(
+      id: .calibration,
+      label: label,
+      value: String(localized: "Optional", comment: "Status chip"),
+      tone: .healthy
+    )
+  }
   return AudioReadinessFact(
     id: .calibration,
     label: label,
@@ -484,7 +506,7 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
     return AudioReadinessFact(
       id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
   }
-  if admission.code == "admission_seal_vad_unavailable" {
+  if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
     return AudioReadinessFact(
       id: .sealLane,
       label: label,
@@ -508,7 +530,7 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       value: String(
         localized: "audio.readiness.sealLane.off", defaultValue: "Off",
         comment: "Value of the committing fragments row; keep it as short as the UI allows"),
-      tone: .unavailable)
+      tone: admission.ready ? .healthy : .unavailable)
 }
 
 private func audioReadinessCheckingValue() -> String {
