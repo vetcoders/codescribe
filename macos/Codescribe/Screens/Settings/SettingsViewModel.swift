@@ -308,7 +308,6 @@ enum SettingsPanelDestination: Equatable {
   case audio
   case dictionary
   case lab
-  case license
   case user
 }
 
@@ -337,7 +336,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case audio
   case voiceLab
   case lab
-  case license
   case user
 
   var id: String { rawValue }
@@ -356,9 +354,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       return String(localized: "Dictionary", comment: "Settings section: custom vocabulary")
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
-    case .license: return String(localized: "License", comment: "Settings section")
     case .user:
-      return String(localized: "About", comment: "Settings section: the app, its data and resets")
+      return String(
+        localized: "User",
+        comment: "Settings section: license, app version, local data and resets")
     }
   }
 
@@ -372,7 +371,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return .audio
     case .voiceLab: return .dictionary
     case .lab: return .lab
-    case .license: return .license
     case .user: return .user
     }
   }
@@ -381,7 +379,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .lab:
       return DeveloperSurface.isEnabled() ? .available : .hidden
-    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .license, .user:
+    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .user:
       return .available
     }
   }
@@ -395,7 +393,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .creator, .shortcuts, .audio: return .setup
     case .keys, .agent, .engine, .voiceLab, .lab: return .intelligence
-    case .license, .user: return .account
+    case .user: return .account
     }
   }
 
@@ -411,8 +409,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return "mic"
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
-    case .license: return "checkmark.seal"
-    case .user: return "info.circle"
+    case .user: return "person.crop.circle"
     }
   }
 
@@ -488,22 +485,24 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       // Developer surface: its names are not interface copy.
       settingsSearchTerms(fixed: ["lab", "voice lab", "three-judge", "seismograph"])
-    case .license:
-      settingsSearchTerms(
-        localized: String(
-          localized: "settings.search.section.license",
-          defaultValue: "subscription, activation, trial, billing",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
     case .user:
+      // User carries the license since the License tab folded into it
+      // (Founder decision, 2026-10-19), so both alias lists land here.
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
+          defaultValue:
+            "about, version, build, commit, updates, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
+        + settingsSearchTerms(
+          localized: String(
+            localized: "settings.search.section.license",
+            defaultValue: "license, license key, subscription, activation, trial, billing",
+            comment:
+              "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+          ))
     }
   }
 
@@ -614,7 +613,7 @@ func healthState(
         localized: "License verification unavailable",
         comment: "Settings health footer, sentence case"
       ),
-      targetSection: .license
+      targetSection: .user
     )
   }
   if keys == .missing {
@@ -662,7 +661,7 @@ func healthState(
         localized: "Checking license…",
         comment: "Settings health footer, sentence case"
       )
-      pendingSection = .license
+      pendingSection = .user
     } else {
       pendingMessage = nil
       pendingSection = nil
@@ -744,6 +743,8 @@ enum SettingsAnchor: String, Hashable {
   case audioReadiness
   case maxConsultation
   case providersCloudTranscription
+  /// The License section at the top of Settings › User.
+  case license
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -1188,6 +1189,12 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var maxConsultationNotice: String?
   /// Called only after the Rust owner accepts a fresh consultation.
   var onNewMaxConsultation: (() -> Void)?
+  /// User-initiated update check. The app wires it to its one Sparkle owner
+  /// (`UpdaterService`); Settings never starts an updater of its own.
+  var onCheckForUpdates: () -> Void = {}
+  /// Mirrors `UpdaterService.canCheckForUpdates`: false while a check is in
+  /// flight or no updater runs, so the button cannot start a second check.
+  @Published var canCheckForUpdates = false
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?
@@ -1550,7 +1557,7 @@ final class SettingsViewModel: ObservableObject {
     if section == .keys || engine?.shouldShowOnboarding() == false {
       refreshProviderAccess()
     }
-    if section == .license { refreshLicense() }
+    if section == .user { refreshLicense() }
     refreshDictationReadiness()
   }
 
