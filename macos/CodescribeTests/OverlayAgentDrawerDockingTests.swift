@@ -237,7 +237,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       body.contains(".onChange(of: focusedRowID)"),
       "a focused row follows a selection made with the pointer")
-    let wiring = try section(of: source, from: "func monitorBody(", to: "\n  }\n")
+    // `monitorBody` reads the installed text scale, then builds the column here.
+    let wiring = try section(of: source, from: "private func scaledMonitorBody(", to: "\n  }\n")
     XCTAssertTrue(
       wiring.contains("focusedRowID: selectedConversationID"),
       "the followed row is the selected conversation")
@@ -392,6 +393,55 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       row.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
+  }
+
+  /// ⌘+ grew the docked column and the conversation, but the roster's own text
+  /// stayed at 1.0 (Maciej, 2026-10-19): the overlay calls `monitorBody` on a
+  /// status view that is never installed, so its environment read the default.
+  func testDockedRosterTextFollowsTheOverlayTextScale() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    // The roster's height is its text: a heading and three rows. Measured
+    // alone at a fixed width, it grows with the scale only if the text does.
+    // `fittingSize` reads 0 with `sizingOptions = []`, so the roster reports
+    // its own ideal height.
+    func rosterHeight(at scale: CGFloat) -> CGFloat {
+      let recorder = OverlayRosterHeightRecorder()
+      let view = OverlayChannelStatusView(
+        channels: [
+          OverlayChannelDelivery(
+            channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
+          OverlayChannelDelivery(
+            channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
+        ],
+        unavailable: false, palette: .dark, animates: false,
+        hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+        conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+        onSelectConversation: { _ in })
+      let host = NSHostingView(
+        rootView:
+          view.monitorBody(maximumHeight: 4000)
+          .environment(\.csTextScale, scale)
+          .frame(width: 300)
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { recorder.height = $0 })
+      host.sizingOptions = []
+      host.frame = CGRect(x: 0, y: 0, width: 300, height: 4000)
+      // The scroll viewport takes the rows' measured height one pass later.
+      for _ in 0..<3 {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      }
+      return recorder.height
+    }
+    let normal = rosterHeight(at: 1)
+    let large = rosterHeight(at: 1.5)
+    XCTAssertGreaterThan(normal, 40, "the roster lays out its heading and rows")
+    XCTAssertLessThan(normal, 1000, "the viewport took the rows' height, not the 4000 pt bound")
+    // Fixed paddings and glyphs do not scale, so the whole is below 1.5×; before
+    // the fix nothing in the roster scaled and the ratio was 1.
+    XCTAssertGreaterThan(
+      large, normal * 1.1,
+      "the docked roster's text grows with ⌘+ like the conversation: \(normal) → \(large)")
   }
 
   func testRememberedDrawerWidthLeavesConversationSpaceAndScalesWithText() throws {
@@ -595,4 +645,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 @MainActor
 private final class OverlayDrawerFrameRecorder {
   var frame = CGRect.zero
+}
+
+@MainActor
+private final class OverlayRosterHeightRecorder {
+  var height: CGFloat = 0
 }
