@@ -256,7 +256,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       body.contains(".onChange(of: focusedRowID)"),
       "a focused row follows a selection made with the pointer")
-    let wiring = try section(of: source, from: "func monitorBody(", to: "\n  }\n")
+    // `monitorBody` reads the installed text scale, then builds the column here.
+    let wiring = try section(of: source, from: "private func scaledMonitorBody(", to: "\n  }\n")
     XCTAssertTrue(
       wiring.contains("focusedRowID: selectedConversationID"),
       "the followed row is the selected conversation")
