@@ -138,68 +138,49 @@ final class OverlayMenuCursorTests: XCTestCase {
     XCTAssertEqual(panel.cursor(at: NSPoint(x: 40, y: 30)), .iBeam, "text keeps its cursor")
   }
 
-  // MARK: - Pill stack, composer chips, bubble chips (Maciej, 2026-10-17 01:15Z)
+  // MARK: - Narrow agent list, composer chips, bubble chips (Maciej, 2026-10-17 01:15Z)
 
-  /// Maciej, 2026-10-17 01:15Z (channel 0, three screenshots): an I-beam sat
-  /// on the agent pills and their microphone/speaker in the unfolded stack and
-  /// on the attachment chip in the composer. The non-activating panel gets no
-  /// native cursor updates, so the I-beam a text view set stays until the
-  /// panel resets it, and the panel resets it only above registered regions.
-  /// Each pill row claims the arrow the way the audio pair already does.
-  func testAgentPillRowsClaimTheArrowAboveTheTranscript() throws {
+  /// Maciej, 2026-10-17 01:15Z: the non-activating panel gets no native
+  /// cursor updates, so an I-beam a text view set stays until the panel
+  /// resets it, and it resets it only above registered regions. Below the
+  /// threshold the agents list covers the window (2026-10-19) and claims the
+  /// arrow across its whole width, as the docked column does.
+  func testNarrowAgentListClaimsTheArrowAcrossTheWindow() throws {
+    let state = OverlayState.previewFormatted()
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "cursor-list",
+        "lease_id": String(repeating: "c", count: 32), "channel": "2", "name": "lena",
+      ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "2", name: "lena", owner: owner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.selectConversation(conversation.id)
+    state.showAgentMonitor()
+    let size = NSSize(width: 470, height: 280)
     let panel = FloatingOverlayPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+      contentRect: NSRect(origin: .zero, size: size),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     defer { panel.close() }
-    let content = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 260))
-    let text = NSTextView(frame: content.bounds)
-    text.isHorizontallyResizable = false
-    text.isVerticallyResizable = false
-    text.isEditable = false
-    text.string = String(repeating: "Transkrypcja pod stosem pigułek agentów. ", count: 14)
-    content.addSubview(text)
-    // Rows without audio controls: two listeners whose controls stayed home.
-    // Any region found belongs to the row itself.
-    func entry(_ channel: String, _ name: String, unread: Int) -> OverlayAgentPillEntry {
-      OverlayAgentPillEntry(
-        id: "channel-\(channel)", conversationID: "codex:\(name)", title: "\(channel) · \(name)",
-        descriptor: nil, unread: unread, dot: .listening, broadcastPolicy: nil, isBroadcast: false,
-        disconnected: false,
-        controls: .init(
-          channel: channel, open: false, muted: nil, microphoneEnabled: false,
-          playbackEnabled: false, broadcast: false, speaking: false,
-          onMicrophone: {}, onPlayback: {}))
-    }
-    let entries = [entry("2", "stasiu", unread: 5), entry("3", "lena", unread: 0)]
-    let stack = NSHostingView(
-      rootView: OverlayAgentPillStack(
-        palette: .dark, entries: entries, broadcastMembers: [], broadcastEnabled: true,
-        onSelect: { _ in }, onDismiss: {}))
-    stack.frame = NSRect(x: 190, y: 30, width: 240, height: 210)
-    content.addSubview(stack)
-    panel.contentView = content
-    content.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    content.layoutSubtreeIfNeeded()
+    let host = NSHostingView(
+      rootView: DictationOverlayView(state: state).frame(width: size.width, height: size.height))
+    host.sizingOptions = []
+    panel.contentView = host
+    panel.orderFrontRegardless()
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    XCTAssertFalse(state.agentDrawerDocked, "470 wide at 1.0 is below the threshold")
 
-    let rows = panel.menuCursorRegions.allObjects.filter {
+    let lists = panel.menuCursorRegions.allObjects.filter {
       $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
-    }
-    // The audio pair registers its own small regions; only the row-wide ones count.
-    let frames = rows.map { $0.convert($0.bounds, to: nil) }.filter { $0.width > 120 }
-    XCTAssertEqual(frames.count, entries.count, "one region per pill row, got \(frames)")
+    }.map { $0.convert($0.bounds, to: nil) }.filter { $0.width > size.width - 20 }
+    let list = try XCTUnwrap(lists.first, "the list registers one window-wide region")
     let saved = NSCursor.current
     defer { saved.set() }
-    for frame in frames {
-      XCTAssertGreaterThan(frame.width, 120, "the row covers the pill, not a glyph: \(frame)")
-      NSCursor.iBeam.set()
-      XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: frame.midX, y: frame.midY)), "row \(frame)")
-      XCTAssertEqual(NSCursor.current, .arrow)
-    }
     NSCursor.iBeam.set()
-    XCTAssertFalse(
-      panel.refreshCursor(at: NSPoint(x: 40, y: 30)), "the transcript keeps native tracking")
-    XCTAssertEqual(NSCursor.current, .iBeam)
+    XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: list.midX, y: list.midY)), "list \(list)")
+    XCTAssertEqual(NSCursor.current, .arrow)
   }
 
   /// The composer's attachment chips sit above the editor whose tracking set

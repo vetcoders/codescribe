@@ -764,8 +764,8 @@ struct OverlayChannelStatusView: View {
   /// The roster body. Wide windows dock it as the right-hand column, so the
   /// header carries the agent count, not a close button; `focusRevision` is the
   /// docked name pill's channel for focusing the selected row. The middle-click
-  /// chooser's focus scrolls into view, as in the pill stack. The narrow
-  /// window's surface is `pillStack(onSelect:onDismiss:)`.
+  /// chooser's focus scrolls into view. Below the threshold the same body
+  /// covers the whole window.
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
     OverlayTextScaleReader { scale in
       var installed = self
@@ -1102,7 +1102,7 @@ struct OverlayChannelStatusView: View {
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
-    conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind,
+    conversation: OverlayConversation?, dot: OverlayAgentDotKind,
     receiptText: String? = nil
   ) -> some View {
     HStack(alignment: .top, spacing: 6) {
@@ -1592,7 +1592,7 @@ struct OverlayChannelStatusView: View {
   /// The roster dot shares the row's status predicates: lit while listening or
   /// with delivery progress, a ring for an asleep channel or one with no
   /// deliveries yet (mockup `.dot`).
-  func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentPillEntry.DotKind {
+  func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
     if unavailable { return .idle }
     if isOpen(channel) { return .listening }
     if hasDeadFollower(channel) || hasStalledFollower(channel) { return .sleeping }
@@ -1634,21 +1634,8 @@ struct OverlayChannelStatusView: View {
       comment: "Channel row; the placeholder is the delivery state of that channel")
   }
 
-  /// One pill per conversation other than the selected one, 0 · All first.
-  /// Transcription is not a row: the header's own control opens it (Maciej,
-  /// 2026-10-17: "te transkrypcje możemy wywalić z listy").
-  var pillEntries: [OverlayAgentPillEntry] {
-    rosterOrderedConversations
-      .filter { $0.id != selectedConversationID }
-      .map(pillEntry(for:))
-  }
-
   /// Channel 0 first, then the bound channels in roster order, then any
   /// passive current conversation the roster snapshot has not caught up with.
-  var rosterOrderedConversations: [OverlayConversation] {
-    Self.rosterOrder(current: currentConversations, channels: channels)
-  }
-
   static func rosterOrder(
     current: [OverlayConversation], channels: [OverlayChannelDelivery]
   ) -> [OverlayConversation] {
@@ -1666,51 +1653,6 @@ struct OverlayChannelStatusView: View {
       ordered.append(conversation)
     }
     return ordered
-  }
-
-  private func pillEntry(for conversation: OverlayConversation) -> OverlayAgentPillEntry {
-    let channel = channels.first { $0.channel == conversation.channel }
-    let descriptor = channel.flatMap { agentDescriptor(for: $0) } ?? conversation.owner?.provider
-    return OverlayAgentPillEntry(
-      id: conversation.id, conversationID: conversation.id,
-      title:
-        conversation.channel == "0"
-        ? String(localized: "0 · All") : "\(conversation.channel) · \(conversation.name)",
-      // The shared channel's wake count lives on its broadcast disclosure.
-      descriptor: conversation.channel == "0" ? nil : descriptor,
-      unread: unreadCounts[conversation.id] ?? 0,
-      dot: conversation.channel == "0"
-        ? .broadcast : (channel.map { statusDotKind(for: $0) } ?? .received),
-      broadcastPolicy: channel?.broadcastPolicy,
-      isBroadcast: conversation.channel == "0",
-      disconnected: channel.map(hasDeadFollower) ?? false,
-      controls: pillControls(for: conversation, channel: channel))
-  }
-
-  /// The pill row's microphone and speaker, wired exactly like the docked
-  /// column's row (`channelRow`) and its 0 · All row (Founder, 2026-10-16:
-  /// "identyczne piguły mikrofon + głośnik + nazwa + agent/model/repo jakie te
-  /// agenty mają na swoich kartach").
-  private func pillControls(
-    for conversation: OverlayConversation, channel: OverlayChannelDelivery?
-  ) -> OverlayAgentPillEntry.Controls {
-    let id = conversation.channel
-    let digit = Self.toggleDigit(for: id)
-    let broadcast = id == "0"
-    // A dead reader cannot be spoken to; its recorded replies still play.
-    let disconnected = channel.map(hasDeadFollower) ?? false
-    return OverlayAgentPillEntry.Controls(
-      channel: id,
-      open: channel.map { isOpen($0) } ?? (hudStates[id]?.open == true),
-      muted: mutedChannels[id],
-      microphoneEnabled: !unavailable && onToggleChannel != nil && digit != nil
-        && !pendingToggleChannels.contains(id) && (!broadcast || hudStates[id] != nil)
-        && !disconnected,
-      playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(id),
-      broadcast: broadcast,
-      speaking: conversation.replySpeaking,
-      onMicrophone: { if let digit { onToggleChannel?(digit) } },
-      onPlayback: { onTogglePlayback?(id) })
   }
 
   /// The drawer's one-glance preview of the last message, naming who
@@ -1765,60 +1707,15 @@ struct OverlayChannelStatusView: View {
     let named = names.prefix(2).joined(separator: ", ")
     return names.count == 2 ? named : "\(named) +\(names.count - 2)"
   }
-
-  /// The narrow-window roster surface under the name pill, built from the
-  /// same projection as the docked column.
-  func pillStack(
-    onSelect: @escaping (String?) -> Void, onDismiss: @escaping () -> Void
-  ) -> OverlayAgentPillStack {
-    OverlayAgentPillStack(
-      palette: palette, entries: pillEntries,
-      broadcastMembers: broadcastMembers, broadcastEnabled: !unavailable,
-      onSelect: onSelect, onDismiss: onDismiss,
-      focusedConversationID: gestureFocusID, onHoverConversation: onGestureHover)
-  }
 }
 
-/// One narrow-mode pill: a conversation switch target under the name pill.
-struct OverlayAgentPillEntry: Identifiable {
-  /// Status dot kinds, mapped to palette tones by the pill view; the shared
-  /// channel's `broadcast` draws an antenna instead of a dot.
-  enum DotKind {
-    case broadcast, listening, received, waiting, sleeping, idle
-  }
-
-  let id: String
-  let conversationID: String
-  let title: String
-  let descriptor: String?
-  let unread: Int
-  let dot: DotKind
-  /// This agent's channel-0 state, marked on every agent pill; nil on the
-  /// shared channel's own pill and on a conversation without a bound channel.
-  let broadcastPolicy: AgentBroadcastPolicy?
-  let isBroadcast: Bool
-  /// The roster keeps this channel's binding but its reader process is gone
-  /// (the shape a restarted host leaves): the row dims and its microphone sleeps.
-  let disconnected: Bool
-  /// The row's microphone and speaker.
-  let controls: Controls
-
-  /// What `OverlayAgentAudioControls` needs for one row, resolved by the
-  /// roster view from the same projection as the docked column's rows.
-  struct Controls {
-    let channel: String
-    let open: Bool
-    let muted: Bool?
-    let microphoneEnabled: Bool
-    let playbackEnabled: Bool
-    let broadcast: Bool
-    let speaking: Bool
-    let onMicrophone: () -> Void
-    let onPlayback: () -> Void
-  }
+/// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
+/// the shared channel's `broadcast` draws an antenna instead of a dot.
+enum OverlayAgentDotKind {
+  case broadcast, listening, received, waiting, sleeping, idle
 }
 
-/// Glass pills and their controls morph as one group on macOS 26; older
+/// Glass rows and their controls morph as one group on macOS 26; older
 /// systems render the content as it is. Main-actor like the views that call
 /// it: a nonisolated generic cannot hand a `View` conformance to
 /// `GlassEffectContainer` (Swift 6.2 isolated conformances).
@@ -1836,7 +1733,7 @@ private func overlayGlassGroup<Content: View>(_ content: Content) -> some View {
 /// The shared channel wears an antenna: it has no reader of its own.
 struct OverlayAgentStatusDot: View {
   @Environment(\.csTextScale) private var textScale
-  let kind: OverlayAgentPillEntry.DotKind
+  let kind: OverlayAgentDotKind
   let palette: OverlayAppearancePalette
 
   private var filled: Bool {
@@ -1875,190 +1772,6 @@ struct OverlayAgentStatusDot: View {
         }
         .frame(width: 8 * textScale, height: 8 * textScale)
     }
-  }
-}
-
-/// The narrow-window roster: one glass row per conversation directly under
-/// the name pill, a mirror of the header's own cluster: the row's microphone
-/// and speaker lead, the pill (dot, name, agent/model/repo, unread) trails,
-/// right edges under the name pill, so pills stand in one column and controls
-/// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
-/// precyzyjniejszy"). Clicking a pill selects; Esc
-/// closes; wake policy rides each row's context menu (Maciej, 2026-10-17,
-/// "Słowo"). Rows stagger in unless the user asked for reduced motion.
-struct OverlayAgentPillStack: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.csTextScale) private var textScale
-  let palette: OverlayAppearancePalette
-  let entries: [OverlayAgentPillEntry]
-  let broadcastMembers: [OverlayChannelDelivery]
-  let broadcastEnabled: Bool
-  let onSelect: (String?) -> Void
-  let onDismiss: () -> Void
-  /// The middle-click chooser's focus; the stack scrolls to keep it in view.
-  var focusedConversationID: String?
-  var onHoverConversation: ((String) -> Void)?
-  @State private var revealed = false
-
-  var body: some View {
-    ScrollViewReader { proxy in
-      stack
-        .onChange(of: focusedConversationID) { _, focused in
-          guard let focused else { return }
-          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-            proxy.scrollTo(focused, anchor: .center)
-          }
-        }
-    }
-  }
-
-  private var stack: some View {
-    ScrollView(.vertical) {
-      overlayGlassGroup(
-        VStack(alignment: .trailing, spacing: 6) {
-          ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-            Group {
-              pillEntryView(entry)
-              if entry.isBroadcast {
-                // A hairline parts the shared channel from the agents under it.
-                Rectangle()
-                  .fill(palette.agentAccent.color.opacity(0.35))
-                  .frame(height: 1)
-                  .padding(.horizontal, 10)
-                  .accessibilityHidden(true)
-              }
-            }
-            .opacity(revealed ? 1 : 0)
-            .offset(y: revealed ? 0 : -10)
-            .animation(
-              reduceMotion ? nil : .easeOut(duration: 0.2).delay(Double(index) * 0.026),
-              value: revealed)
-          }
-        }
-        // The column width belongs to the rows, not only to the viewport: a
-        // glass container proposes its content's ideal width, so a width set
-        // on the scroll view alone let each row lay out wider than the column
-        // and hung the audio pair outside it (Founder screenshot 2026-10-18).
-        .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
-      )
-      .padding(.vertical, 2)
-      // `.scrollIndicators(.hidden)` stood on the scroll view and still let
-      // the legacy bar through with a mouse attached (Founder, 2026-10-18).
-      .csAutohidingScrollers()
-    }
-    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-agent-pill-stack")
-    .onAppear { revealed = true }
-    .onExitCommand { onDismiss() }
-    .background {
-      GeometryReader { proxy in
-        Color.clear.preference(
-          key: OverlayDrawerFramePreferenceKey.self,
-          value: proxy.frame(in: .named("overlay-canvas")))
-      }
-      .allowsHitTesting(false)
-    }
-  }
-
-  @ViewBuilder
-  private func pillEntryView(_ entry: OverlayAgentPillEntry) -> some View {
-    let pill = Button {
-      onSelect(entry.conversationID)
-    } label: {
-      HStack(spacing: 9) {
-        OverlayAgentStatusDot(kind: entry.dot, palette: palette)
-        VStack(alignment: .leading, spacing: 1) {
-          HStack(spacing: 4) {
-            Text(verbatim: entry.title)
-              .font(.system(size: 13 * textScale, weight: .bold))
-            if let policy = entry.broadcastPolicy {
-              Image(systemName: policy.statusSymbol)
-                .font(.system(size: 10 * textScale))
-                .foregroundStyle(
-                  policy == .on ? palette.agentAccent.color : palette.mutedText.color
-                )
-                .help(policy.statusHelp)
-                .accessibilityLabel(policy.statusHelp)
-            }
-          }
-          .lineLimit(1)
-          .truncationMode(.middle)
-          if let descriptor = entry.descriptor, !descriptor.isEmpty {
-            Text(verbatim: descriptor)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-        }
-        Spacer(minLength: 4)
-        if entry.unread > 0 {
-          Text(verbatim: String(entry.unread))
-            .font(.system(size: 11 * textScale, weight: .semibold))
-            .monospacedDigit()
-            .foregroundStyle(palette.processingStatus.color)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
-            .accessibilityLabel("\(entry.unread) unread replies")
-        }
-      }
-      .foregroundStyle(palette.primaryText.color)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 5)
-      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .csFocusOutline()
-    // The shared channel is marked the way the docked drawer marks it: first
-    // in the stack, the antenna in place of a status dot, and the hairline
-    // below. No accent fill behind the pill (Founder, 2026-10-18).
-    .modifier(OverlayNamePillGlass(interactive: true))
-    .modifier(
-      OverlayGestureFocusRing(
-        focused: entry.conversationID == focusedConversationID, shape: Capsule(),
-        palette: palette, targetID: entry.conversationID, onHover: onHoverConversation)
-    )
-    .help(
-      entry.disconnected
-        ? String(localized: "Disconnected")
-        : String(localized: "View conversation without changing the microphone")
-    )
-    .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
-    let controls = entry.controls
-    HStack(spacing: 6) {
-      OverlayAgentAudioControls(
-        open: controls.open, muted: controls.muted,
-        microphoneEnabled: controls.microphoneEnabled,
-        playbackEnabled: controls.playbackEnabled,
-        palette: palette, onMicrophone: controls.onMicrophone,
-        onPlayback: controls.onPlayback, broadcast: controls.broadcast,
-        speaking: controls.speaking
-      )
-      .fixedSize()
-      .accessibilityIdentifier("overlay-agent-pill-controls-\(controls.channel)")
-      pill
-    }
-    .modifier(OverlayDisconnectedRowDim(disconnected: entry.disconnected))
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
-    // Maciej, 2026-10-17 01:15Z: the stack floats above the transcript, whose
-    // tracking set the I-beam, and the panel resets the cursor only above its
-    // registered regions. The row, its audio pair and the gap between claim
-    // the arrow the way the docked drawer column does.
-    .background { OverlayMenuCursorRegion() }
-    .modifier(
-      OverlayBroadcastPolicyMenu(
-        members: policyMembers(for: entry), palette: palette,
-        enabled: broadcastEnabled, errorAlignment: .trailing))
-  }
-
-  /// The 0 · All row carries every member's wake policy; an agent's own row
-  /// carries only its own.
-  private func policyMembers(for entry: OverlayAgentPillEntry) -> [OverlayChannelDelivery] {
-    if entry.isBroadcast { return broadcastMembers }
-    return broadcastMembers.filter { $0.channel == entry.controls.channel }
   }
 }
 

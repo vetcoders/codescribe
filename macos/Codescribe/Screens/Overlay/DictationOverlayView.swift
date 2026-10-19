@@ -447,6 +447,10 @@ struct DictationOverlayView: View {
         let columnShown =
           docked && !state.isCollapsed
           && (state.selectedConversation != nil || state.showsAgentMonitor)
+        // Below the threshold the same list covers the whole width in place
+        // of the conversation or the transcription, which keep their layout
+        // underneath: choosing a row brings the conversation back.
+        let listShown = !docked && !state.isCollapsed && state.showsAgentMonitor
         let drawerWidth = OverlayAgentDrawerLayout.drawerWidth(
           textScale: textScale,
           preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
@@ -456,7 +460,7 @@ struct DictationOverlayView: View {
           geometry.size.width
             - (columnShown ? drawerWidth : 0))
         // The roster dragged across the whole window: agents view only.
-        let canvasHidden = canvasWidth < 1
+        let canvasHidden = canvasWidth < 1 || listShown
         HStack(alignment: .top, spacing: 0) {
           ZStack {
             // Both ends are numbers, so the fold interpolates with the window's
@@ -507,11 +511,6 @@ struct DictationOverlayView: View {
                   }
                 },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
-                agentPillStack: state.showsAgentMonitor && !docked
-                  ? channelStatusView.pillStack(
-                    onSelect: { state.selectConversation($0) },
-                    onDismiss: { state.hideAgentSidebar() })
-                  : nil,
                 hidesNavigation: columnShown,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
                 onComposerTypingActivity: { state.noteComposerTypingActivity() }
@@ -532,26 +531,24 @@ struct DictationOverlayView: View {
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
           )
-          // Narrow + transcription has no name pill: the stack hangs top-right
-          // under the header, where the conversation's pill sits (mockup).
-          .overlay(alignment: .topTrailing) {
-            if state.showsAgentMonitor && !docked && !state.isCollapsed
-              && state.selectedConversation == nil
-            {
-              channelStatusView.pillStack(
-                onSelect: { state.selectConversation($0) },
-                onDismiss: { state.hideAgentSidebar() }
-              )
-              .frame(maxHeight: max(160, geometry.size.height - headerHeight - 120))
-              .padding(.top, headerHeight + 12)
-              .padding(.trailing, 20)
-              .onExitCommand { state.hideAgentSidebar() }
+          .overlay {
+            // The fade stays on the list: an animation over the cell would
+            // also animate the transcript's frame when the docked flag flips.
+            ZStack {
+              if listShown {
+                agentDrawerColumn(
+                  maximumHeight: geometry.size.height, width: geometry.size.width,
+                  windowWidth: geometry.size.width, docked: false
+                )
+                .transition(.opacity)
+                .onExitCommand { state.hideAgentSidebar() }
+              }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: listShown)
           }
           // The wide window docks the roster as a column beside the
           // conversation; nothing overlays the bubbles (mockup, Founder
-          // 2026-10-16). Below the threshold the name pill opens the pill
-          // stack instead. Esc on the transcription gives the width back.
+          // 2026-10-16). Esc on the transcription gives the width back.
           if columnShown {
             agentDrawerColumn(
               maximumHeight: geometry.size.height, width: drawerWidth,
@@ -766,11 +763,13 @@ struct DictationOverlayView: View {
     .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
   }
 
-  /// The docked roster column (wide windows): full height under the header,
+  /// The roster list. Docked (wide windows): full height under the header,
   /// user-sized, with a draggable left edge, never overlaying the
-  /// conversation. The name pill focuses the selected row via the revision.
+  /// conversation; the name pill focuses the selected row via the revision.
+  /// Below the threshold the same list takes the whole width, with no edge
+  /// to drag, and its corner button closes it.
   private func agentDrawerColumn(
-    maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat
+    maximumHeight: CGFloat, width: CGFloat, windowWidth: CGFloat, docked: Bool = true
   ) -> some View {
     channelStatusView.monitorBody(
       maximumHeight: max(0, maximumHeight - headerHeight - 8 - 16),
@@ -787,14 +786,20 @@ struct DictationOverlayView: View {
     .clipped()
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
-      agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
+      if docked {
+        agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
+      }
     }
     .overlay(alignment: .bottomLeading) {
       // Agents view only: the conversation slides back out from here
       // (or by dragging the edge), at the default roster width.
       if OverlayAgentDrawerLayout.fillsWindow(drawerWidth: width, windowWidth: windowWidth) {
         Button {
-          preferredAgentDrawerWidth = 300
+          if docked {
+            preferredAgentDrawerWidth = 300
+          } else {
+            state.hideAgentSidebar()
+          }
         } label: {
           Image(systemName: "sidebar.left")
             .font(.system(size: 13 * textScale, weight: .semibold))

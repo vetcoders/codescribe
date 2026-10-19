@@ -1169,8 +1169,8 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
-  /// Wide windows pin the roster as a docked column; the pill stack only
-  /// exists below the threshold. Reported by the overlay's layout pass.
+  /// Wide windows pin the roster as a docked column; below the threshold the
+  /// same list covers the window while asked for. Reported by the layout pass.
   private(set) var agentDrawerDocked = false
   /// Bumped when the name pill asks the docked column to focus its selected row.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
@@ -1188,9 +1188,9 @@ final class OverlayState {
   }
 
   /// The layout owns the call. Engaging the docked column beside a
-  /// conversation closes the pill stack; the selection, drafts and scroll
-  /// follow survive the switch. On the transcription surface the open stack
-  /// becomes the column instead of vanishing.
+  /// conversation closes the full-width list; the selection, drafts and
+  /// scroll follow survive the switch. On the transcription surface the open
+  /// list becomes the column instead of vanishing.
   func setAgentDrawerDocked(_ docked: Bool) {
     guard docked != agentDrawerDocked else { return }
     agentDrawerDocked = docked
@@ -1871,16 +1871,14 @@ final class OverlayState {
     return nil
   }
 
-  /// What the list on screen shows, in its order: 0 · All, then the roster.
-  /// The pill stack leaves out the conversation already open; the docked
-  /// column lists it too.
+  /// What the list on screen shows, in its order: 0 · All, then the roster,
+  /// the conversation already open included, at every window width.
   var agentGestureTargets: [OverlayConversation] {
     let current = OverlayChannelStatusView.currentConversations(
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates)
-    let ordered = OverlayChannelStatusView.rosterOrder(
+    return OverlayChannelStatusView.rosterOrder(
       current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
-    return dockedRosterColumnShown ? ordered : ordered.filter { $0.id != selectedConversationID }
   }
 
   private var agentListOnScreen: Bool {
@@ -2026,7 +2024,7 @@ final class OverlayState {
     guard matches.count == 1 else {
       selectedConversationID = nil
       // No conversation to dock beside: the flag shows the roster, as the
-      // column on a wide window or as the pill stack on a narrow one.
+      // column on a wide window or as the full-width list on a narrow one.
       showsAgentMonitor = true
       return
     }

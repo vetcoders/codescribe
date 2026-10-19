@@ -8018,14 +8018,16 @@ final class OverlayAgentGestureTests: XCTestCase {
     XCTAssertEqual(f.captures.calls.last, true, "the wheel stays for another row")
   }
 
-  func testThePillStackLeavesOutTheOpenConversation() throws {
+  /// Below the threshold the list is the docked one over the whole window:
+  /// the open conversation keeps its row, so the wheel walks it too.
+  func testTheNarrowListKeepsTheOpenConversationInTheWheelOrder() throws {
     let f = try fixture()
     f.state.selectConversation(f.lena.id)
 
     f.state.handleAgentGesture(.middleClick)
     f.state.handleAgentGesture(.scroll(steps: 1))
 
-    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.olek.id))
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.lena.id))
   }
 
   func testEscapeLeavesTheChooserAndClosesTheList() throws {
