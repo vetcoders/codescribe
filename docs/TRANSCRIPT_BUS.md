@@ -1562,3 +1562,17 @@ The overlay reader ignores archive metadata while that exact owner remains
 bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
+
+## Agent panel focus in Frame
+
+The overlay drawer renders **Focus agent panel in Frame** (`overlay-focus-panel-CHANNEL`)
+only when a public `vc-frame` command on `PATH` (including `~/.local/bin` for
+`launchd`-spawned GUI processes) supports `vc-frame action focus-pane-id <PANE_ID>`.
+Capability detection probes `vc-frame action focus-pane-id --help` with session
+and socket variables stripped and memoizes the result by executable file stamp,
+so older compatible `vc-frame` releases and current releases are both accepted
+without version-string equality, focus changes, or session side effects.
+`VIBECRAFTED_VC_FRAME_BIN` is never used as a fallback. When a compatible
+`vc-frame` is absent or unsupported, the button is excluded from rendering;
+when a compatible `vc-frame` is installed and a channel's follower is
+disconnected, the button remains rendered and disabled.

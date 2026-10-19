@@ -2581,6 +2581,51 @@ def frame_cli(environ: Any) -> str | None:
     return shutil.which("vc-frame", path=environ.get("PATH"))
 
 
+def frame_cli_supports_panel_focus(environ: Any) -> bool:
+    """True when the public `vc-frame` on PATH supports `action focus-pane-id`.
+
+    Probes `vc-frame action focus-pane-id --help` without session or socket
+    coordinates so capability detection never connects to a server, changes
+    focus, or spawns a session. Older compatible vc-frame releases (such as
+    4.4.0+g959bf184) and current releases both exit 0 and print the
+    `focus-pane-id <PANE_ID>` usage; binaries without `FocusPaneId` exit 2.
+    """
+    import subprocess
+
+    binary = frame_cli(environ)
+    if not binary:
+        return False
+    probe_env = {
+        key: str(value)
+        for key, value in dict(environ).items()
+        if key not in (
+            "ZELLIJ_SESSION_NAME",
+            "VC_FRAME_SESSION_NAME",
+            "ZELLIJ_SOCKET_DIR",
+            "VC_FRAME_SOCKET_DIR",
+        )
+        and value is not None
+    }
+    try:
+        result = subprocess.run(
+            [binary, "action", "focus-pane-id", "--help"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PANEL_FOCUS_TIMEOUT_SECONDS,
+            env=probe_env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    return (
+        result.returncode == 0
+        and "focus-pane-id" in output
+        and "<PANE_ID>" in output
+    )
+
+
 def panel_focus_request(raw: str) -> dict[str, Any] | None:
     """Decode one panel-focus request row; every other bus row is None."""
     if AGENT_PANEL_FOCUS_SCHEMA not in raw:

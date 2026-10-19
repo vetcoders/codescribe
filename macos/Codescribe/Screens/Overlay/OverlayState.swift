@@ -1340,7 +1340,12 @@ final class OverlayState {
 
   // MARK: Agent panel focus in Frame (`codescribe.agent-panel-focus.v1`)
 
+  private(set) var agentPanelFocusAvailable: Bool = true
   private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  @ObservationIgnored var detectAgentPanelFocusAvailability:
+    @MainActor () async -> Bool = {
+      await RealAgentBridgeInstaller.supportsAgentPanelFocus()
+    }
   @ObservationIgnored var requestAgentPanelFocusCommand:
     @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
       try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
@@ -1353,10 +1358,20 @@ final class OverlayState {
   @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
   @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
 
+  func setAgentPanelFocusAvailable(_ available: Bool) {
+    guard agentPanelFocusAvailable != available else { return }
+    agentPanelFocusAvailable = available
+    if !available, !agentPanelFocusStates.isEmpty {
+      agentPanelFocusStates.removeAll()
+    }
+    onChannelPresentationChanged?()
+  }
+
   /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
   /// while immediately (<1 frame) updating the row state with a spinner.
   func focusAgentPanel(_ owner: OverlayConversationOwner) {
     guard !channelStatusUnavailable,
+      agentPanelFocusAvailable,
       channelHudStates[owner.channel]?.followerAlive != false,
       agentPanelFocusStates[owner.channel]?.isRequesting != true
     else { return }
@@ -1665,9 +1680,11 @@ final class OverlayState {
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
     let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
+    let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
+    setAgentPanelFocusAvailable(panelFocusAvailable)
     channelPlaybackAgents = bound
     broadcastPolicies = broadcastSnapshot
     if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }

@@ -1090,7 +1090,9 @@ struct DictationOverlayView: View {
     view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
     view.archiveError = state.agentArchiveError
     view.panelFocusStates = state.agentPanelFocusStates
-    view.onFocusAgentPanel = { state.focusAgentPanel($0) }
+    view.panelFocusAvailable = state.agentPanelFocusAvailable
+    view.onFocusAgentPanel =
+      state.agentPanelFocusAvailable ? { state.focusAgentPanel($0) } : nil
     view.gestureFocusID = state.agentGestureFocusID
     view.onGestureHover = { state.hoverAgentGestureTarget($0) }
     return view
