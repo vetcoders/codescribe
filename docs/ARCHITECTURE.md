@@ -393,7 +393,10 @@ A panel reads the role, never a bare number.
 - **Control family.** Every flat Settings action is a `SettingsChipButton`
   (`KeyRows.swift`): one label rung, 10 / 5 insets and `CSRadius.chip` for
   both the chip and the focus ring it wears, so the keyboard outline follows
-  the chip's own shape.
+  the chip's own shape. Text fields (`settingsInputChrome`) and the accent
+  `SettingsSaveButton` sit on the same 10 / 5 insets, so a field and the
+  actions beside it are one height — in Settings and in onboarding, which
+  shares that field chrome.
 
 ### Agent window header
 
