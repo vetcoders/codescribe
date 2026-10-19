@@ -87,15 +87,10 @@ struct LabPanel: View {
       .disabled(!sealLane.isEnabled)
       .accessibilityValue(sealLaneAccessibilityValue(sealLane))
       .accessibilityIdentifier("lab-committing-transcript-fragments")
-    Text("Required before a recording can start.")
+    Text(sealLane.detail)
       .font(.caption)
       .foregroundStyle(.secondary)
-    if !sealLane.isEnabled {
-      Text(sealLane.detail)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
+      .fixedSize(horizontal: false, vertical: true)
   }
 
   private var transcriptionTracks: some View {

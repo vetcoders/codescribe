@@ -641,7 +641,7 @@ final class AcousticAdmissionPanelTests: XCTestCase {
       dictationShortcut: "Hold Fn/Globe"
     )
     XCTAssertEqual(steps.map(\.id), [.microphone, .calibration, .sealLane, .recording])
-    XCTAssertEqual(steps.map(\.tone), [.healthy, .healthy, .healthy, .healthy])
+    XCTAssertEqual(steps.map(\.tone), [.healthy, .neutral, .neutral, .healthy])
     XCTAssertEqual(steps[1].title, "Optional")
     XCTAssertEqual(steps[2].detail, "Off")
     XCTAssertFalse(steps[2].detail.contains("cannot start"))
@@ -656,6 +656,7 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertEqual(summary.title, "Ready to record")
     XCTAssertNil(summary.detail)
     XCTAssertEqual(summary.remedy, .none)
+    XCTAssertEqual(admissionDisplayState(grantedWithoutLedger).detail, "Ready to record")
 
     XCTAssertEqual(
       audioReadinessRemedy(
@@ -671,13 +672,57 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     XCTAssertEqual(
       audioCalibrationFact(grantedWithoutLedger, microphonePermission: .granted),
       AudioReadinessFact(
-        id: .calibration, label: "Microphone calibration", value: "Optional", tone: .healthy)
+        id: .calibration, label: "Microphone calibration", value: "Optional", tone: .neutral)
     )
     XCTAssertEqual(
       audioSealLaneFact(grantedWithoutLedger),
       AudioReadinessFact(
-        id: .sealLane, label: "Committing fragments", value: "Off", tone: .healthy)
+        id: .sealLane, label: "Committing fragments", value: "Off", tone: .neutral)
     )
+  }
+
+  func testOtherControllerRefusalsKeepTheirCauseWithoutInventingPrerequisites() {
+    for code in [
+      "admission_capture_device_unavailable", "admission_speech_recognition_unavailable",
+    ] {
+      var refused = CsAdmissionReadiness.sampleMissing
+      refused.code = code
+      refused.message = "Controller refusal: " + code
+      refused.sealLaneArmed = false
+      refused.sealLaneSettingArmed = false
+
+      let summary = audioReadinessSummary(
+        input: .sample, microphonePermission: .granted, admission: refused)
+      XCTAssertEqual(summary.tone, .unavailable)
+      XCTAssertEqual(summary.title, admissionDisplayState(refused).title)
+      XCTAssertEqual(summary.detail, refused.message)
+      XCTAssertEqual(summary.remedy, .none)
+      XCTAssertEqual(
+        audioCalibrationFact(refused, microphonePermission: .granted),
+        AudioReadinessFact(
+          id: .calibration, label: "Microphone calibration", value: "Not calibrated", tone: .neutral
+        ))
+      XCTAssertEqual(audioSealLaneFact(refused).tone, .neutral)
+      XCTAssertEqual(
+        audioReadinessRemedy(for: .calibration, admission: refused, microphonePermission: .granted),
+        .none)
+      XCTAssertEqual(
+        audioReadinessRemedy(for: .sealLane, admission: refused, microphonePermission: .granted),
+        .none)
+    }
+
+    let calibrationRefused = audioReadinessSummary(
+      input: .sample, microphonePermission: .granted, admission: .sampleMissing)
+    XCTAssertEqual(calibrationRefused.tone, .unavailable)
+    XCTAssertEqual(calibrationRefused.remedy, .calibrate)
+    XCTAssertEqual(
+      audioCalibrationFact(.sampleMissing, microphonePermission: .granted).value, "Required")
+
+    let laneRefused = readiness(armed: false, settingArmed: false, source: "settings")
+    XCTAssertEqual(audioSealLaneFact(laneRefused).tone, .unavailable)
+    XCTAssertEqual(
+      audioReadinessRemedy(for: .sealLane, admission: laneRefused, microphonePermission: .granted),
+      .openLab)
   }
 
   /// One name for the committing row in every state, a readable switch state in

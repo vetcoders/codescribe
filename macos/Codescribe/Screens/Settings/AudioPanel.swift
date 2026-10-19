@@ -2,6 +2,7 @@ import SwiftUI
 
 enum AudioInputDisplayTone: Equatable {
   case healthy
+  case neutral
   case fallback
   case unavailable
 }
@@ -148,6 +149,17 @@ func audioRetentionDetail(_ choice: String) -> String? {
   }
 }
 
+private func audioCalibrationBlocksRecording(_ admission: CsAdmissionReadiness) -> Bool {
+  guard !admission.ready else { return false }
+  switch admission.code {
+  case "admission_calibration_missing", "admission_calibration_no_profile",
+    "admission_calibration_refused", "admission_calibration_unusable":
+    return true
+  default:
+    return false
+  }
+}
+
 /// Stable four-step projection of recording readiness. The bridge verdict is
 /// still authoritative; this only makes its prerequisites visible together so
 /// users do not discover them one failed take at a time. The panel reads this
@@ -204,12 +216,12 @@ func audioReadinessSteps(
     } else if admission.ready {
       calibration = AudioReadinessStep(
         id: .calibration,
-        tone: .healthy,
+        tone: .neutral,
         title: String(localized: "Optional", comment: "Status chip"),
         detail: String(
           localized: "Measure about 10 seconds of normal speech on the current microphone.")
       )
-    } else {
+    } else if audioCalibrationBlocksRecording(admission) {
       calibration = AudioReadinessStep(
         id: .calibration,
         tone: .unavailable,
@@ -217,6 +229,12 @@ func audioReadinessSteps(
         detail: String(
           localized: "Measure about 10 seconds of normal speech on the current microphone.")
       )
+    } else {
+      calibration = AudioReadinessStep(
+        id: .calibration, tone: .neutral,
+        title: String(localized: "Microphone not calibrated yet"),
+        detail: String(
+          localized: "Measure about 10 seconds of normal speech on the current microphone."))
     }
   } else {
     calibration = AudioReadinessStep(
@@ -250,31 +268,32 @@ func audioReadinessSteps(
       // One title plus the readable switch state; the sentence also says who
       // owns the switch, because an override keeps the Lab switch read-only.
       let detail: String
+      let laneBlocks = !admission.ready && admission.code == "admission_seal_lane_disarmed"
       switch (
-        admission.sealLaneSource == "env_override", admission.sealLaneArmed, admission.ready
+        admission.sealLaneSource == "env_override", admission.sealLaneArmed, laneBlocks
       ) {
       case (true, true, _):
         detail = String(
           localized: "On, set by the \(admission.sealLaneEnv) override; the switch is read-only.",
           comment: "The placeholder is an environment variable name")
-      case (true, false, false):
+      case (true, false, true):
         detail = String(
           localized:
             "Off, set by the \(admission.sealLaneEnv) override. Recording stays blocked until the override is removed.",
           comment: "The placeholder is an environment variable name")
       case (false, true, _):
         detail = String(localized: "On. Change it with the switch in Settings › Lab.")
-      case (false, false, false):
+      case (false, false, true):
         detail = String(
           localized: "Off. Recording cannot start until it is turned on in Settings › Lab.")
-      case (_, false, true):
+      case (_, false, false):
         detail = String(
           localized: "audio.readiness.sealLane.off", defaultValue: "Off",
           comment: "Value of the committing fragments row; keep it as short as the UI allows")
       }
       sealLane = AudioReadinessStep(
         id: .sealLane,
-        tone: (admission.sealLaneArmed || admission.ready) ? .healthy : .unavailable,
+        tone: admission.sealLaneArmed ? .healthy : (laneBlocks ? .unavailable : .neutral),
         title: sealLaneTitle,
         detail: detail
       )
@@ -332,7 +351,7 @@ func audioReadinessSteps(
       tone: admission.ready ? .healthy : .unavailable,
       title: admission.ready
         ? String(localized: "Ready to record")
-        : String(localized: "Finish setup above"),
+        : admissionDisplayState(admission).title,
       detail: admission.ready
         ? recordingStartHint(dictationShortcut)
         : admission.message
@@ -399,7 +418,8 @@ func audioReadinessSummary(
   let prerequisites = steps.filter { $0.id != .recording }
   let blocker =
     prerequisites.first { $0.tone == .unavailable }
-    ?? (recordingStep.tone == .healthy ? nil : prerequisites.first { $0.tone == .fallback })
+    ?? (admission == nil && recordingStep.tone != .healthy
+      ? prerequisites.first { $0.tone == .fallback } : nil)
 
   if let blocker {
     return AudioReadinessSummary(
@@ -442,12 +462,14 @@ func audioReadinessRemedy(
   case .microphone:
     return microphonePermission == .granted ? .none : .microphonePermission
   case .calibration:
-    guard microphonePermission == .granted, let admission, !admission.ready else { return .none }
+    guard microphonePermission == .granted, let admission,
+      audioCalibrationBlocksRecording(admission)
+    else { return .none }
     let sealed = admission.calibrationVersion != nil && admission.calibrationStatus == "sealed"
     return sealed ? .none : .calibrate
   case .sealLane:
     // An override is removed outside the app; Lab cannot edit it.
-    guard let admission, !admission.ready, admission.code != "admission_seal_vad_unavailable",
+    guard let admission, !admission.ready, admission.code == "admission_seal_lane_disarmed",
       admission.sealLaneSource != "env_override", !admission.sealLaneArmed
     else { return .none }
     return .openLab
@@ -485,8 +507,13 @@ func audioCalibrationFact(
       id: .calibration,
       label: label,
       value: String(localized: "Optional", comment: "Status chip"),
-      tone: .healthy
+      tone: .neutral
     )
+  }
+  if !audioCalibrationBlocksRecording(admission) {
+    return AudioReadinessFact(
+      id: .calibration, label: label,
+      value: String(localized: "Not calibrated"), tone: .neutral)
   }
   return AudioReadinessFact(
     id: .calibration,
@@ -530,7 +557,8 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       value: String(
         localized: "audio.readiness.sealLane.off", defaultValue: "Off",
         comment: "Value of the committing fragments row; keep it as short as the UI allows"),
-      tone: admission.ready ? .healthy : .unavailable)
+      tone: !admission.ready && admission.code == "admission_seal_lane_disarmed"
+        ? .unavailable : .neutral)
 }
 
 private func audioReadinessCheckingValue() -> String {
@@ -626,15 +654,20 @@ func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisp
   }
   if readiness.ready {
     let device = readiness.deviceName ?? String(localized: "input device")
-    let version = readiness.calibrationVersion ?? String(localized: "measured profile")
+    let detail: String
+    if let version = readiness.calibrationVersion, readiness.sealLaneArmed {
+      detail = String(
+        localized: "Calibration \(version); seal lane armed.",
+        comment: "The placeholder is a calibration profile version")
+    } else {
+      detail = String(localized: "Ready to record")
+    }
     return AudioInputDisplayState(
       tone: .healthy,
       title: String(
         localized: "Ready to record on \(device)",
         comment: "The placeholder is an input device name"),
-      detail: String(
-        localized: "Calibration \(version); seal lane armed.",
-        comment: "The placeholder is a calibration profile version")
+      detail: detail
     )
   }
   let title: String
@@ -945,11 +978,9 @@ struct AudioPanel: View {
           .foregroundStyle(statusColor(sealLane.tone))
       }
       .padding(.vertical, 5)
-      .help(Text("Required before a recording can start."))
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(sealLane.label)
       .accessibilityValue(sealLane.value)
-      .accessibilityHint("Required before a recording can start. The switch is on the Lab desk.")
       .accessibilityIdentifier("audio-readiness-committing-status")
     }
     .padding(CSSpace.md)
@@ -1316,6 +1347,7 @@ struct AudioPanel: View {
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
     case .healthy: return CSColor.oliveLight
+    case .neutral: return Color.secondary
     case .fallback: return CSColor.amber
     case .unavailable: return CSColor.terracotta
     }
