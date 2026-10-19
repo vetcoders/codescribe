@@ -904,9 +904,7 @@ enum DictationOverlayWindow {
   /// (`OverlayHeaderDensity.waveformMinWidth`) + 47 session counter (`h:mm:ss`
   /// at `CSFont.mono(11)`, a 0.6 em advance) + 141 trailing (three 22 pt glyph
   /// buttons + the 51 pt recording pair + 3 × 8 spacing) = 351, rounded up to
-  /// 360 for the close dot's hover growth. The pill stack's own footprint —
-  /// `OverlayAgentDrawerLayout.pillWidth` 224 + its 20 pt trailing inset + the
-  /// body's 20 pt gutter = 264 — clears the same floor.
+  /// 360 for the close dot's hover growth.
   static let minSize = NSSize(width: 360, height: 260)
   /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
   /// Founder spec: the resting state is a horizontal bar (waveform + a few
