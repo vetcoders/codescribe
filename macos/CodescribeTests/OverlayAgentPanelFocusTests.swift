@@ -74,7 +74,11 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     return host.fittingSize
   }
 
-  private func armRoster(on state: OverlayState, owner: OverlayConversationOwner) {
+  private func armRoster(
+    on state: OverlayState,
+    owner: OverlayConversationOwner,
+    panelFocusAvailable: Bool = true
+  ) {
     state.applyChannelRoster([
       CsChannelRosterState(
         channel: "0", audience: "All", provider: nil, providerSessionId: nil, open: false,
@@ -84,6 +88,9 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         providerSessionId: owner.providerSessionID, open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
     ])
+    if panelFocusAvailable {
+      state.setAgentPanelFocusAvailable(true)
+    }
   }
 
   func testFocusAgentPanelImmediatelyEntersRequestingStateBeforeAsyncCommand() throws {
@@ -277,6 +284,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       unreadCounts: [:],
       onSelectConversation: { selectedIDs.append($0) })
     view.archiveCandidates = ["5": owner]
+    view.panelFocusAvailable = true
     view.onFocusAgentPanel = { focusedOwners.append($0) }
 
     view.viewConversation(row)
@@ -335,20 +343,40 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         exit 0
         """)
 
-    // 1. No vc-frame on PATH or in homeDirectory/.local/bin, even with VIBECRAFTED_VC_FRAME_BIN set:
+    // 1. No vc-frame on PATH, even when HOME/.local/bin/vc-frame and VIBECRAFTED_VC_FRAME_BIN exist:
+    let unconfiguredHome = tempRoot.appendingPathComponent("home-absent", isDirectory: true)
+    let unconfiguredLocalLog = tempRoot.appendingPathComponent("unconfigured-local.log")
+    _ = try writeExecutable(
+      at: unconfiguredHome.appendingPathComponent(".local/bin", isDirectory: true),
+      body: """
+        printf 'local %s\\n' "$*" >> '\(unconfiguredLocalLog.path)'
+        cat <<'EOF'
+        \(Self.currentSupportedHelp)
+        EOF
+        exit 0
+        """)
+    let absentEnv = [
+      "PATH": emptyBin.path,
+      "VIBECRAFTED_VC_FRAME_BIN": pinnedExecutable.path,
+    ]
+    XCTAssertNil(
+      RealAgentBridgeInstaller.vcFrameExecutableURL(
+        homeDirectory: unconfiguredHome, environment: absentEnv),
+      "vcFrameExecutableURL must agree with PATH-only resolution and never append a literal HOME/.local/bin fallback"
+    )
     let absentInstaller = RealAgentBridgeInstaller(
       resourceRoot: nil,
-      homeDirectory: tempRoot.appendingPathComponent("home-absent", isDirectory: true),
-      environment: [
-        "PATH": emptyBin.path,
-        "VIBECRAFTED_VC_FRAME_BIN": pinnedExecutable.path,
-      ])
+      homeDirectory: unconfiguredHome,
+      environment: absentEnv)
     let absentSupported = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
       installer: absentInstaller)
     XCTAssertFalse(absentSupported)
     XCTAssertFalse(
       FileManager.default.fileExists(atPath: pinnedLog.path),
       "VIBECRAFTED_VC_FRAME_BIN must never be probed as a fallback")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: unconfiguredLocalLog.path),
+      "HOME/.local/bin must never be probed when absent from PATH")
 
     // 2. Installed vc-frame on PATH that lacks `focus-pane-id` (exits 2):
     let unsupportedBin = tempRoot.appendingPathComponent("unsupported-bin", isDirectory: true)
@@ -419,8 +447,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       ["action focus-pane-id --help||"],
       "probe must strip session/socket env vars and memoize unchanged binary by stat stamp")
 
-    // 2. Current supported release (`4.4.0+ga3f8214c`) installed in `~/.local/bin` while
-    //    the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
+    // 2. Current supported release (`4.4.0+ga3f8214c`) on the user's configured `.zshenv` PATH
+    //    while the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
     let launchdHome = tempRoot.appendingPathComponent("home-launchd", isDirectory: true)
     let localBin = launchdHome.appendingPathComponent(".local/bin", isDirectory: true)
     let currentLog = tempRoot.appendingPathComponent("current.log")
@@ -436,13 +464,15 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         fi
         exit 99
         """)
-    let emptyPathDir = tempRoot.appendingPathComponent("empty-system-bin", isDirectory: true)
-    try FileManager.default.createDirectory(at: emptyPathDir, withIntermediateDirectories: true)
+    try "export PATH=\"$HOME/.local/bin:$PATH\"\n".write(
+      to: launchdHome.appendingPathComponent(".zshenv"),
+      atomically: true,
+      encoding: .utf8)
     let launchdInstaller = RealAgentBridgeInstaller(
       resourceRoot: nil,
       homeDirectory: launchdHome,
       environment: [
-        "PATH": emptyPathDir.path,
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "ZELLIJ_SESSION_NAME": "vibecrafted",
         "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
       ])
@@ -451,6 +481,40 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertTrue(currentSupported)
     let currentLines = try String(contentsOf: currentLog, encoding: .utf8).split(separator: "\n")
     XCTAssertEqual(currentLines, ["action focus-pane-id --help||"])
+
+    // 3. Public wrapper whose internal engine executable is initially missing and then restored
+    //    without modifying the outer wrapper file:
+    let wrapperRoot = tempRoot.appendingPathComponent("wrapper-repair", isDirectory: true)
+    let wrapperBin = wrapperRoot.appendingPathComponent("bin", isDirectory: true)
+    let engineURL = wrapperRoot.appendingPathComponent("engine")
+    _ = try writeExecutable(
+      at: wrapperBin,
+      body: "exec '\(engineURL.path)' \"$@\"\n")
+    let wrapperInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: wrapperRoot,
+      environment: ["PATH": wrapperBin.path])
+    let beforeRepair = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: wrapperInstaller)
+    XCTAssertFalse(beforeRepair)
+
+    try "#!/bin/sh\nprintf 'vc-frame action focus-pane-id <PANE_ID>\\n'\n".write(
+      to: engineURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755], ofItemAtPath: engineURL.path)
+    let afterRepair = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: wrapperInstaller)
+    XCTAssertTrue(
+      afterRepair,
+      "restoring a missing wrapper dependency must turn capability true without touching the outer wrapper"
+    )
+
+    try FileManager.default.removeItem(at: engineURL)
+    let afterRemoval = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: wrapperInstaller)
+    XCTAssertFalse(
+      afterRemoval,
+      "removing a referenced wrapper dependency must invalidate the cached capability")
   }
 
   func testPanelFocusButtonExcludedWhenUnavailableAndRenderedWhenAvailableIncludingDeadFollower()
@@ -461,6 +525,41 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       id: "conv-5", channel: "5", name: "stanislaw", owner: owner, messages: [])
     let row = OverlayChannelDelivery(
       channel: "5", agent: "stanislaw", deliveryID: nil, stage: nil, isOpen: false)
+
+    // Initial unknown state before any async probe completes must fail-closed:
+    let initialState = OverlayState.previewFormatted()
+    armRoster(on: initialState, owner: owner, panelFocusAvailable: false)
+    XCTAssertFalse(
+      initialState.agentPanelFocusAvailable,
+      "OverlayState must start fail-closed (false) before capability detection completes")
+    var initialRequests: [OverlayAgentPanelFocusRequest] = []
+    initialState.requestAgentPanelFocusCommand = { initialRequests.append($0) }
+    initialState.focusAgentPanel(owner)
+    XCTAssertNil(initialState.agentPanelFocusStates[owner.channel])
+    XCTAssertTrue(initialRequests.isEmpty)
+
+    var defaultStatusView = OverlayChannelStatusView(
+      channels: [row],
+      unavailable: false,
+      palette: .dark,
+      animates: false,
+      hudStates: [
+        "5": OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: owner.provider, providerSessionID: owner.providerSessionID)
+      ],
+      conversations: [conversation],
+      selectedConversationID: conversation.id,
+      unreadCounts: [:])
+    defaultStatusView.archiveCandidates = ["5": owner]
+    defaultStatusView.onArchiveAgent = { _ in }
+    defaultStatusView.onFocusAgentPanel = { _ in }
+    XCTAssertFalse(
+      defaultStatusView.panelFocusAvailable,
+      "OverlayChannelStatusView must default panelFocusAvailable to false")
+    XCTAssertFalse(
+      defaultStatusView.showsPanelFocusButton(for: row),
+      "first render before capability evidence must exclude the Focus in Frame button")
 
     func makeStatusView(
       panelFocusAvailable: Bool,
@@ -502,10 +601,16 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       availableDeadFollowerView.panelFocusHelp(for: row, state: nil),
       String(localized: "Agent is disconnected"))
 
+    let defaultInitialSize = renderedRowSize(in: defaultStatusView, for: row)
     let unavailableSize = renderedRowSize(in: unavailableView, for: row)
     let availableLiveSize = renderedRowSize(in: availableLiveView, for: row)
     let availableDeadSize = renderedRowSize(in: availableDeadFollowerView, for: row)
 
+    XCTAssertEqual(
+      defaultInitialSize.width,
+      unavailableSize.width,
+      accuracy: 1.0,
+      "initial unprobed render excludes the Focus in Frame button")
     XCTAssertGreaterThan(
       availableLiveSize.width,
       unavailableSize.width + 20,

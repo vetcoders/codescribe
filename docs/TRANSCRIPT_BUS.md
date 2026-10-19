@@ -1565,14 +1565,19 @@ an archive entry. Reusing the channel exposes the new owner independently.
 
 ## Agent panel focus in Frame
 
-The overlay drawer renders **Focus agent panel in Frame** (`overlay-focus-panel-CHANNEL`)
-only when a public `vc-frame` command on `PATH` (including `~/.local/bin` for
-`launchd`-spawned GUI processes) supports `vc-frame action focus-pane-id <PANE_ID>`.
-Capability detection probes `vc-frame action focus-pane-id --help` with session
-and socket variables stripped and memoizes the result by executable file stamp,
-so older compatible `vc-frame` releases and current releases are both accepted
-without version-string equality, focus changes, or session side effects.
-`VIBECRAFTED_VC_FRAME_BIN` is never used as a fallback. When a compatible
-`vc-frame` is absent or unsupported, the button is excluded from rendering;
-when a compatible `vc-frame` is installed and a channel's follower is
-disconnected, the button remains rendered and disabled.
+The overlay drawer starts fail-closed and renders **Focus agent panel in Frame**
+(`overlay-focus-panel-CHANNEL`) only after a public `vc-frame` command on `PATH`
+(or on the user's non-interactive `zsh` `PATH` when a `launchd`-spawned GUI
+process inherits only `/usr/bin:/bin:/usr/sbin:/sbin` and `$HOME/.zshenv` or
+`$HOME/.zprofile` is present) is verified to support
+`vc-frame action focus-pane-id <PANE_ID>`. Capability detection probes
+`vc-frame action focus-pane-id --help` with session and socket variables
+stripped. Positive results are memoized by the executable and wrapper-target
+file stamps so older compatible `vc-frame` releases and current releases are
+both accepted without version-string equality, focus changes, or session side
+effects, while negative results are never cached so repairing a missing wrapper
+dependency restores availability on the next poll without restarting Codescribe.
+Literal `~/.local/bin` fallbacks and `VIBECRAFTED_VC_FRAME_BIN` are never used.
+When a compatible `vc-frame` is absent or unsupported, the button is excluded
+from rendering; when a compatible `vc-frame` is installed and a channel's
+follower is disconnected, the button remains rendered and disabled.
