@@ -218,6 +218,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   override var canBecomeMain: Bool { false }
   /// Only explicit transcript interaction opens the keyboard gate.
   private(set) var allowsKeyForTranscript = false
+  /// Set while a click that opened the gate is dispatched. That click hands
+  /// first responder to text inside this panel, so the transcript canvas
+  /// resigning on the way out must not give the keyboard back.
+  private var dispatchingGateClick = false
 
   /// The transcript canvas needs keyboard input for selection or editing.
   func takeKeyForTranscript() {
@@ -228,7 +232,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// The canvas resigned. Drop key status so keystrokes return to the app the
   /// user was dictating into.
   func releaseKeyAfterTranscript() {
-    guard allowsKeyForTranscript else { return }
+    guard allowsKeyForTranscript, !dispatchingGateClick else { return }
     allowsKeyForTranscript = false
     if isKeyWindow { resignKey() }
   }
@@ -369,10 +373,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       if moved { onUserDragEnded?(origin) }
       if clickedPresentation { onPresentationClick?() }
     default:
+      var openedKeyboardGate = false
       if event.type == .leftMouseDown {
         for case let region as OverlaySelectableTextRegionView in selectableTextRegions.allObjects
         where region.contains(windowPoint: event.locationInWindow) {
           takeKeyForTranscript()
+          openedKeyboardGate = true
           break
         }
       }
@@ -383,12 +389,19 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
           // Follow public responder capabilities, not a private class name.
           if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
             takeKeyForTranscript()
+            openedKeyboardGate = true
             break
           }
           hit = view.superview
         }
       }
+      // The transcript canvas is first responder until something takes it, and
+      // its resign closed the gate in the middle of this click: the bubble text
+      // was selected in a panel that was no longer key, so ⌘C went to the app
+      // behind it (Maciej, 2026-10-19).
+      dispatchingGateClick = openedKeyboardGate
       super.sendEvent(event)
+      dispatchingGateClick = false
       if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }
   }
