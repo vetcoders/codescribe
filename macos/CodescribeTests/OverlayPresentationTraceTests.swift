@@ -66,16 +66,46 @@ final class OverlayPresentationTraceTests: XCTestCase {
     return deltas.allSatisfy { $0 > 0 } || deltas.allSatisfy { $0 < 0 }
   }
 
+  private func panelReadiness(_ panel: FloatingOverlayPanel, label: String) -> String {
+    let visibleOcc = panel.occlusionState.contains(.visible)
+    let needsLayout = panel.contentView?.needsLayout ?? false
+    let needsDisplay = panel.contentView?.needsDisplay ?? false
+    return "\(label){frame=\(NSStringFromRect(panel.frame)),isVisible=\(panel.isVisible),"
+      + "occVisible=\(visibleOcc)(raw=\(panel.occlusionState.rawValue)),"
+      + "winNum=\(panel.windowNumber),viewsNeedDisplay=\(panel.viewsNeedDisplay),"
+      + "needsLayout=\(needsLayout),needsDisplay=\(needsDisplay),"
+      + "style=\(panel.styleMask.rawValue),rec=\(trace.recorded)}"
+  }
+
+  private func formatTraceEntries(_ entries: [OverlayPresentationTrace.Entry]) -> String {
+    let t0 = trace.entries.first?.at ?? entries.first?.at ?? 0
+    return entries.map { entry in
+      let ms = String(format: "%.2fms", (entry.at - t0) * 1000)
+      return "\(ms):\(OverlayPresentationTrace.line(entry))"
+    }.joined(separator: " | ")
+  }
+
   func testAnimatedMorphsLedgerOneWriterPerGenerationAndLandOnTarget() throws {
     let (state, panel) = try makePanel("morph")
+    let afterMake = panelReadiness(panel, label: "afterMake")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    let beforeOrderFront = panelReadiness(panel, label: "beforeOrderFront")
     panel.orderFrontRegardless()
     defer { panel.orderOut(nil) }
+    let afterOrderFront = panelReadiness(panel, label: "afterOrderFront")
     panel.setPresentationMode(.mini)
+    let afterSetMini = panelReadiness(panel, label: "afterSetMini")
+    let initialTrace = formatTraceEntries(trace.entries)
+    let initialReadiness =
+      "init=[\(afterMake); \(beforeOrderFront); \(afterOrderFront); \(afterSetMini); "
+      + "reduceMotion=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion); "
+      + "appActive=\(NSApp.isActive); initTrace=(\(initialTrace))]"
 
     for mode in [OverlayPresentationMode.midi, .expanded, .mini] {
       let mark = trace.recorded
+      let preMorph = panelReadiness(panel, label: "preMorph(\(mode))")
       panel.setPresentationMode(mode, animated: true)
+      let postStart = panelReadiness(panel, label: "postStart(\(mode))")
       let began = try XCTUnwrap(
         trace.entries(after: mark).first { $0.kind == .frameTransitionBegan },
         "\(mode): the panel ledgers its target before animating")
@@ -85,6 +115,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
 
       let after = trace.entries(after: mark)
       let completed = try XCTUnwrap(after.first { $0.kind == .frameTransitionCompleted })
+      let postMorph = panelReadiness(panel, label: "postMorph(\(mode))")
       XCTAssertEqual(completed.generation, generation)
       XCTAssertEqual(completed.frame, target, "\(mode): the landing is the chosen target")
       XCTAssertNil(completed.note, "\(mode): no frame≠target note on a clean landing")
@@ -92,17 +123,28 @@ final class OverlayPresentationTraceTests: XCTestCase {
 
       let steps = after.filter { $0.kind == .windowResized && $0.generation == generation }
         .compactMap(\.frame)
+      let declared = DictationOverlayWindow.presentationDuration(
+        from: try XCTUnwrap(began.frame), to: target)
+      let elapsed = completed.at - began.at
+      let diag =
+        "diag={beganFrame=\(began.frame.map(NSStringFromRect) ?? "nil"), "
+        + "beganTarget=\(NSStringFromRect(target)), "
+        + "completedFrame=\(completed.frame.map(NSStringFromRect) ?? "nil"), "
+        + "actualFrame=\(NSStringFromRect(panel.frame)), "
+        + "steps=\(steps.count), elapsed=\(String(format: "%.6f", elapsed))s, "
+        + "declared=\(String(format: "%.6f", declared))s, "
+        + "lastMorphDuration=\(String(format: "%.6f", panel.lastMorphDuration))s, "
+        + "\(preMorph), \(postStart), \(postMorph), "
+        + "afterMark=(\(formatTraceEntries(after))), \(initialReadiness)}"
       XCTAssertGreaterThanOrEqual(
-        steps.count, 3, "\(mode): the animator paints intermediate frames")
+        steps.count, 3, "\(mode): the animator paints intermediate frames -- \(diag)")
       XCTAssertTrue(
         isOneWay(steps.map(\.width)), "\(mode): width steps back: \(steps.map(\.width))")
       XCTAssertTrue(
         isOneWay(steps.map(\.height)), "\(mode): height steps back: \(steps.map(\.height))")
-      let declared = DictationOverlayWindow.presentationDuration(
-        from: try XCTUnwrap(began.frame), to: target)
       XCTAssertEqual(
-        completed.at - began.at, declared, accuracy: 0.25,
-        "\(mode): the morph takes its declared duration")
+        elapsed, declared, accuracy: 0.25,
+        "\(mode): the morph takes its declared duration -- \(diag)")
 
       // Nothing rewrites the frame once the morph has landed.
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
