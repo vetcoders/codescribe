@@ -478,10 +478,18 @@ private struct AgentEmptyThread: View {
 /// folded away and loads one more window per click. Deliberately a plain row,
 /// not infinite scroll — paging must stay an explicit operator action so the
 /// hang guard cannot be defeated by an idle scroll position.
-private struct ShowEarlierButton: View {
+struct ShowEarlierButton: View {
   let hiddenCount: Int
+  /// Turns one click renders; the overlay conversation pages a smaller window.
+  let window: Int
   let action: () -> Void
   @State private var hovering = false
+
+  init(hiddenCount: Int, window: Int = MessageList.turnWindow, action: @escaping () -> Void) {
+    self.hiddenCount = hiddenCount
+    self.window = window
+    self.action = action
+  }
 
   var body: some View {
     Button(action: action) {
@@ -506,7 +514,7 @@ private struct ShowEarlierButton: View {
     .csFocusRing(cornerRadius: CSRadius.pill)
     .onHover { hovering = $0 }
     .accessibilityLabel("Show earlier messages")
-    .help("Render the previous \(MessageList.turnWindow) turns")
+    .help("Render the previous \(window) turns")
   }
 }
 

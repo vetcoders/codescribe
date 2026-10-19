@@ -93,6 +93,9 @@ struct OverlayConversationView: View {
   @State private var revisionFocus: UInt64 = 0
   @State private var pendingDeliveryControls: Set<String> = []
   @State private var deliveryControlErrors: [String: String] = [:]
+  /// First rendered message. Pinned by id so an arriving reply never drops a
+  /// row above someone reading; "Show earlier" moves it back a window.
+  @State private var windowStartID: String?
 
   var onDeliveryControl:
     (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
@@ -209,6 +212,7 @@ struct OverlayConversationView: View {
           }
         }
         .onAppear {
+          settleMessageWindow(reset: true)
           scrollFocusConversationID = conversation.id
           scrollFocusWasPresented = isPresented
           if #available(macOS 15.0, *) {
@@ -219,6 +223,7 @@ struct OverlayConversationView: View {
           }
         }
         .onChange(of: conversation.id) { _, _ in
+          settleMessageWindow(reset: true)
           if #available(macOS 15.0, *) {
             // The new `.id` rebuilds the list at the bottom anchor. scrollTo on
             // this frame races that remeasurement.
@@ -262,6 +267,7 @@ struct OverlayConversationView: View {
           }
         }
         .onChange(of: orderedMessages.last) { _, _ in
+          settleMessageWindow()
           if #available(macOS 15.0, *) {
             // Size-change anchoring keeps the bottom while the morph grows the list.
             // scrollTo on the new last row races the lazy remeasurement.
@@ -409,16 +415,48 @@ struct OverlayConversationView: View {
     }
   }
 
-  /// Newest rows built eagerly at the foot of the list. A LazyVStack sizes the
-  /// document from estimated row heights, so the bottom anchor of a long
-  /// history landed past the real last bubble: the thread opened empty and
-  /// painted only after a scroll measured its rows (Maciej, 2026-10-19).
-  /// Measured rows own the bottom now; older history stays lazy.
-  static let eagerTailCount = 12
+  /// Rows per window of the rendered list. Every rendered row is built and
+  /// measured: a LazyVStack sized the document from estimates, so a long thread
+  /// opened past its last bubble, and rows realized while scrolling changed the
+  /// document by thousands of points, which threw the reader off the bottom
+  /// and left an empty viewport (Maciej, 2026-10-19). The Agent window bounds
+  /// its list the same way; older rows wait behind "Show earlier".
+  static let messageWindow = 40
+
+  private var windowStart: Int {
+    if let windowStartID,
+      let index = orderedMessages.firstIndex(where: { $0.id == windowStartID })
+    {
+      return index
+    }
+    return max(0, orderedMessages.count - Self.messageWindow)
+  }
+
+  /// Pins the window to its current first row, or starts a fresh window at the
+  /// newest rows. A list following the live edge drops rows beyond two windows;
+  /// the bottom anchor keeps that removal out of sight.
+  private func settleMessageWindow(reset: Bool = false) {
+    let count = orderedMessages.count
+    guard count > 0 else {
+      windowStartID = nil
+      return
+    }
+    var start = reset ? max(0, count - Self.messageWindow) : windowStart
+    if followsLatest, count - start > 2 * Self.messageWindow {
+      start = count - Self.messageWindow
+    }
+    let id = orderedMessages[start].id
+    if windowStartID != id { windowStartID = id }
+  }
+
+  private func showEarlierMessages() {
+    let start = max(0, windowStart - Self.messageWindow)
+    windowStartID = orderedMessages.indices.contains(start) ? orderedMessages[start].id : nil
+  }
 
   @ViewBuilder
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
-    let lazyEnd = max(0, orderedMessages.count - Self.eagerTailCount)
+    let start = windowStart
     let list = ScrollView {
       VStack(alignment: .leading, spacing: 12) {
         if !conversation.historyLoaded {
@@ -430,15 +468,14 @@ struct OverlayConversationView: View {
             .font(.system(size: 13 * textScale))
             .foregroundStyle(palette.mutedText.color)
         }
-        if lazyEnd > 0 {
-          LazyVStack(alignment: .leading, spacing: 12) {
-            ForEach(orderedMessages[..<lazyEnd]) { message in
-              messageRow(message, maxBubbleWidth: maxBubbleWidth)
-                .id(message.id)
-            }
+        if start > 0 {
+          ShowEarlierButton(hiddenCount: start, window: Self.messageWindow) {
+            showEarlierMessages()
           }
+          .frame(maxWidth: .infinity)
+          .accessibilityIdentifier("overlay-conversation-show-earlier")
         }
-        ForEach(orderedMessages[lazyEnd...]) { message in
+        ForEach(orderedMessages[start...]) { message in
           messageRow(message, maxBubbleWidth: maxBubbleWidth)
             .id(message.id)
         }
