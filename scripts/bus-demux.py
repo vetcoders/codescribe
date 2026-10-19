@@ -3689,6 +3689,224 @@ def read_pending_command(args: argparse.Namespace) -> int:
     return 0
 
 
+#: `--since 6h`: a span back from now in minutes, hours or days.
+HISTORY_SPAN = re.compile(r"(\d{1,5})([mhd])")
+
+
+def history_moment(value: str, now: datetime.datetime) -> datetime.datetime:
+    """`--since`/`--until`: a span back from now (90m, 6h, 2d) or an ISO date/time.
+
+    A date or time without an offset is local, the way the Founder says it.
+    """
+    span = HISTORY_SPAN.fullmatch(value.strip())
+    if span:
+        seconds = int(span.group(1)) * {"m": 60, "h": 3600, "d": 86400}[span.group(2)]
+        return now - datetime.timedelta(seconds=seconds)
+    moment = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def history_time(value: Any) -> datetime.datetime | None:
+    if not isinstance(value, str):
+        return None
+    # Producers write up to nanoseconds; older Pythons parse at most six digits.
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+    try:
+        moment = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=datetime.timezone.utc)
+
+
+def history_message(event: dict[str, Any]) -> dict[str, Any] | None:
+    """One conversational message in a normalized bus event, or None.
+
+    The same three lanes a mailbox delivers: typed Founder messages, sealed
+    Founder takes and agent replies. Drafts, ACKs and controls are not words.
+    """
+    text = event.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    schema = event.get("schema")
+    if schema == AGENT_REPLY_SCHEMA:
+        identity = event.get("message_id")
+        if event.get("kind") != "agent_reply" or not isinstance(identity, str):
+            return None
+        sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+        target = event.get("target") if isinstance(event.get("target"), dict) else {}
+        recipients = [str(row["name"]) for row in target.get("recipients") or []
+                      if isinstance(row, dict) and row.get("name")]
+        if target.get("channel") == "0":
+            to = ["all"]
+        elif recipients:
+            to = recipients
+        elif isinstance(event.get("peer_to"), str):
+            to = [event["peer_to"]]
+        else:
+            # A spoken reply without a peer recipient answers the Founder.
+            to = ["Founder"]
+        return {"key": ("reply", identity), "ids": {identity}, "lane": "agent",
+                "from": str(sender.get("name") or event.get("name") or "agent"), "to": to, "text": text}
+    if schema == AGENT_USER_MESSAGE_SCHEMA:
+        identity = event.get("message_id")
+        if (event.get("kind") != "agent_user_message" or event.get("source") != "typed"
+                or not isinstance(identity, str)):
+            return None
+        audience = event.get("audience")
+        to = ["all"] if event.get("origin_channel") == "0" or audience == "*" else [str(audience)]
+        return {"key": ("typed", identity), "ids": {identity}, "lane": "typed",
+                "from": "Founder (typed)", "to": to, "text": text}
+    if event.get("status") == SEALED and event.get("producer_schema") not in (AGENT_REPLY_SCHEMA, AGENT_USER_MESSAGE_SCHEMA):
+        session = str(event.get("session_id") or "")
+        identity = event.get("message_id") or event.get("utterance_id") or event.get("source_event_id")
+        audience = event.get("audience")
+        channel = channel_of_session(session)
+        to = ["all"] if audience == "*" or channel == "0" else [str(audience or f"channel {channel}")]
+        # A held take is revised or withdrawn by its message or utterance identity.
+        ids = {value for value in (identity, event.get("utterance_id")) if isinstance(value, str)}
+        return {"key": ("voice", session, identity), "ids": ids, "lane": "voice",
+                "from": "Founder (voice)", "to": to, "text": text}
+    return None
+
+
+def history_messages(root: Path) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
+    """Every retained channel message once, oldest first.
+
+    Each channel bus keeps all its generations, and a broadcast is written
+    into every recipient's bus, so copies merge on the message identity. The
+    normalizer is the one the mailboxes use: a sealed take reads here exactly
+    as it was delivered. A held message shows its last revision; one withdrawn
+    before delivery is left out and counted. Returns the messages, counts of
+    withdrawn messages and undecodable rows, and the buses that could not be
+    opened.
+    """
+    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+    controls: dict[str, list[dict[str, Any]]] = {}
+    unreadable = 0
+    skipped: list[str] = []
+    for path in sorted((root / "buses").glob("channel-*.jsonl")):
+        channel = path.name[len("channel-"):-len(".jsonl")]
+        normalizer = EvidenceNormalizer()
+        try:
+            with GenerationFile(path) as handle:
+                while True:
+                    raw = handle.readline()
+                    # A line without its newline is still being written.
+                    if not raw or not raw.endswith(b"\n"):
+                        break
+                    try:
+                        events = normalized_revision_events(raw.decode("utf-8"), normalizer)
+                    except ValueError:
+                        unreadable += 1
+                        normalizer.storage = ChunkDecoder()
+                        continue
+                    for event in events:
+                        if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                            identity = event.get("identity") or event.get("message_id") or event.get("utterance_id")
+                            if isinstance(identity, str):
+                                controls.setdefault(identity, []).append(event)
+                            continue
+                        message = history_message(event)
+                        if message is None:
+                            continue
+                        key = message.pop("key")
+                        moment = history_time(event.get("emitted_at"))
+                        known = found.get(key)
+                        if known is None:
+                            found[key] = {**message, "at": moment, "channels": {channel}}
+                            continue
+                        known["channels"].add(channel)
+                        known["ids"] |= message["ids"]
+                        known["to"] += [name for name in message["to"] if name not in known["to"]]
+                        if moment is not None and (known["at"] is None or moment < known["at"]):
+                            known["at"] = moment
+        except (OSError, ValueError) as error:
+            skipped.append(f"{path.name}: {error}")
+    withdrawn = 0
+    rows: list[dict[str, Any]] = []
+    for row in found.values():
+        applied = sorted((control for identity in row.pop("ids") for control in controls.get(identity, [])),
+                         key=lambda control: str(control.get("emitted_at") or ""))
+        if any(control.get("kind") == "withdraw" for control in applied):
+            withdrawn += 1
+            continue
+        for control in applied:
+            if control.get("kind") == "revise" and isinstance(control.get("text"), str) and control["text"].strip():
+                row.update(text=control["text"], revised=True)
+        rows.append(row)
+    oldest = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    rows.sort(key=lambda row: row["at"] or oldest)
+    # One agent sending the same words to several peers at once wrote one
+    # message per recipient; read it once, addressed to all of them.
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        twin = next((earlier for earlier in reversed(merged[-4:])
+                     if row["lane"] == earlier["lane"] == "agent" and row["from"] == earlier["from"]
+                     and row["text"] == earlier["text"] and row["at"] and earlier["at"]
+                     and (row["at"] - earlier["at"]).total_seconds() <= 5), None)
+        if twin is None:
+            merged.append(row)
+            continue
+        twin["to"] += [name for name in row["to"] if name not in twin["to"]]
+        twin["channels"] |= row["channels"]
+    return merged, {"withdrawn": withdrawn, "unreadable": unreadable}, skipped
+
+
+def history_markdown(
+    messages: list[dict[str, Any]], *, root: Path, since: datetime.datetime | None,
+    until: datetime.datetime | None, channel: str | None, counts: dict[str, int], skipped: list[str],
+) -> str:
+    local = datetime.datetime.now().astimezone()
+    lanes = {lane: sum(1 for row in messages if row["lane"] == lane) for lane in ("voice", "typed", "agent")}
+    start = f"{since.astimezone():%Y-%m-%d %H:%M}" if since else "first retained"
+    end = f"{until.astimezone():%Y-%m-%d %H:%M}" if until else "now"
+    lines = [
+        "# Codescribe bus history",
+        "",
+        f"- Source: `{root / 'buses'}/channel-*.jsonl`, every retained generation, read-only",
+        f"- Window: {start} → {end} (times in {local:%Z}, UTC{local:%z})",
+    ]
+    if channel is not None:
+        lines.append("- Channel: 0, messages to everyone" if channel == "0" else f"- Channel: {channel}")
+    lines.append(f"- Messages: {len(messages)} (Founder voice {lanes['voice']}, "
+                 f"Founder typed {lanes['typed']}, agents {lanes['agent']})")
+    if counts["withdrawn"]:
+        lines.append(f"- Withdrawn before delivery, not shown: {counts['withdrawn']} (whole history)")
+    if counts["unreadable"]:
+        lines.append(f"- Rows that could not be decoded: {counts['unreadable']} (whole history)")
+    lines += [f"- Not read: {item}" for item in skipped]
+    day = None
+    for row in messages:
+        moment = row["at"].astimezone() if row["at"] else None
+        if moment is not None and moment.date() != day:
+            day = moment.date()
+            lines += ["", f"## {day.isoformat()}"]
+        clock = f"{moment:%H:%M:%S}" if moment else "unknown time"
+        note = " (revised before delivery)" if row.get("revised") else ""
+        lines += ["", f"### {clock} · {row['from']} → {', '.join(row['to'])}{note}", ""]
+        # Quoted, so a heading or fence inside a message stays inside it.
+        lines += ["> " + line if line else ">" for line in row["text"].splitlines()]
+    return "\n".join(lines) + "\n"
+
+
+def history_command(args: argparse.Namespace) -> int:
+    """Print the retained channel conversation as Markdown. Reads only; never ACKs."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = history_moment(args.since, now) if args.since else None
+    until = history_moment(args.until, now) if args.until else None
+    messages, counts, skipped = history_messages(args.bridge_home)
+    if since is not None or until is not None:
+        messages = [row for row in messages if row["at"] is not None
+                    and (since is None or row["at"] >= since) and (until is None or row["at"] <= until)]
+    if args.channel == "0":
+        messages = [row for row in messages if "all" in row["to"]]
+    elif args.channel is not None:
+        messages = [row for row in messages if args.channel in row["channels"]]
+    sys.stdout.write(history_markdown(messages, root=args.bridge_home, since=since, until=until,
+                                      channel=args.channel, counts=counts, skipped=skipped))
+    return 0
+
+
 # =============================================================================
 # § 9. Native queue wakeup
 # =============================================================================
@@ -7634,6 +7852,7 @@ def main() -> int:
                "  cs-bus --watch --provider codex --session THREAD\n"
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
+               "  cs-bus --history --since 1d > bus-history.md\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
                "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
@@ -7727,6 +7946,10 @@ def main() -> int:
     parser.add_argument("--read-pending", action="store_true", help="read complete unread non-draft envelopes as a bounded batch; never ACK automatically")
     parser.add_argument("--read-limit", type=int, default=None, help="with --read-pending: maximum envelopes, default 8 (1..256)")
     parser.add_argument("--read-bytes", type=int, default=None, help="with --read-pending: maximum UTF-8 output bytes, default 65536 (up to 16 MiB)")
+    parser.add_argument("--history", action="store_true",
+                        help="print the retained channel conversation as Markdown, every message once; reads only, never ACKs")
+    parser.add_argument("--since", metavar="WHEN", help="with --history: a span back from now (90m, 6h, 2d) or an ISO date/time, local unless it has an offset")
+    parser.add_argument("--until", metavar="WHEN", help="with --history: the same forms as --since")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -7937,6 +8160,20 @@ def main() -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write(f"cs-bus: global playback mute refused: {error}\n")
             return 3
+    if args.history:
+        allowed = {"history", "since", "until", "channel", "bridge_home", "entrypoint"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--history combines only with --since/--until/--channel/--bridge-home")
+        if args.channel is not None and (len(args.channel) != 1 or args.channel not in "0123456789"):
+            parser.error("--history --channel takes one digit 0-9; 0 keeps messages to everyone")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return history_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: history refused: {error}\n")
+            return 3
+    if args.since is not None or args.until is not None:
+        parser.error("--since and --until require --history")
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
     if args.release_reader and args.archive_agent is None:
