@@ -2099,34 +2099,12 @@
         }
       }
     },
-    "About" : {
-      "comment" : "Settings section: the app, its data and resets",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "O aplikacji"
-          }
-        }
-      }
-    },
     "About codescribe" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "O codescribe"
-          }
-        }
-      }
-    },
-    "About the app and your data" : {
-      "comment" : "About panel header",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "O aplikacji i danych"
           }
         }
       }
@@ -2323,7 +2301,7 @@
       }
     },
     "Add markers to text" : {
-      "comment" : "About panel: switch",
+      "comment" : "Dictation panel: switch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2767,12 +2745,12 @@
         }
       }
     },
-    "Agent mode requires a license. Open Settings → License." : {
+    "Agent mode requires a license. Open Settings → User." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Tryb agentowy wymaga licencji. Otwórz Ustawienia → Licencja."
+            "state" : "translated",
+            "value" : "Tryb agentowy wymaga licencji. Otwórz Ustawienia → Użytkownik."
           }
         }
       }
@@ -2990,7 +2968,7 @@
       }
     },
     "Also remove API keys from Keychain (not recoverable from Trash)" : {
-      "comment" : "About panel: reset checkbox",
+      "comment" : "User panel: reset checkbox",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3001,7 +2979,7 @@
       }
     },
     "Also reset my base prompts (assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt)" : {
-      "comment" : "About panel: reset checkbox; the four file names stay verbatim",
+      "comment" : "User panel: reset checkbox; the four file names stay verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3107,7 +3085,7 @@
       }
     },
     "App data" : {
-      "comment" : "About panel: the ~/.codescribe folder",
+      "comment" : "User panel: the ~/.codescribe folder",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3597,7 +3575,7 @@
       }
     },
     "Basic mode stays free. A license unlocks Agent mode." : {
-      "comment" : "License panel: what is available without a key and what a license unlocks",
+      "comment" : "User panel, License section: what is available without a key and what a license unlocks",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3693,7 +3671,7 @@
       }
     },
     "Build %@" : {
-      "comment" : "About panel: the build number under the version",
+      "comment" : "User panel: the build number under the version",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4317,12 +4295,13 @@
         }
       }
     },
-    "Check for Updates" : {
+    "Check for Updates…" : {
+      "comment" : "App menu item that triggers a Sparkle update check\nUser panel: starts a manual update check next to the version",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdź uaktualnienia"
+            "value" : "Sprawdź uaktualnienia…"
           }
         }
       }
@@ -4870,6 +4849,17 @@
         }
       }
     },
+    "Codescribe also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started." : {
+      "comment" : "Install confirmation; ~/.local/bin is a folder path — keep it verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe odświeża też własne polecenia w ~/.local/bin; polecenia, którego nie zainstalował, nigdy nie nadpisuje. Nasłuch nie jest uruchamiany."
+          }
+        }
+      }
+    },
     "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions." : {
       "localizations" : {
         "pl" : {
@@ -5033,13 +5023,13 @@
         }
       }
     },
-    "Codescribe version, local data and privacy." : {
-      "comment" : "About panel blurb",
+    "Codescribe will add the codescribe skill bundled in this app to %@. Nothing is replaced: if that folder already exists and Codescribe did not install it, installation stops without changing it." : {
+      "comment" : "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wersja Codescribe, lokalne dane i prywatność."
+            "state" : "translated",
+            "value" : "Codescribe doda skill codescribe dołączony do tej aplikacji do %@. Nic nie zostanie zastąpione: jeśli ten folder już istnieje, a nie zainstalował go Codescribe, instalacja zatrzyma się bez zmian."
           }
         }
       }
@@ -5067,6 +5057,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe uruchomi się ponownie jak po pierwszej instalacji."
+          }
+        }
+      }
+    },
+    "Codescribe will replace the skill folder it installed at %@ with the codescribe skill bundled in this app. Changes made inside that folder are not kept." : {
+      "comment" : "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe zastąpi zainstalowany przez siebie folder skilla w %@ skillem codescribe dołączonym do tej aplikacji. Zmiany wprowadzone w tym folderze nie zostaną zachowane."
           }
         }
       }
@@ -5701,7 +5702,7 @@
       }
     },
     "Copy path" : {
-      "comment" : "About panel: copy button tooltip",
+      "comment" : "User panel: copy button tooltip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5722,7 +5723,7 @@
       }
     },
     "Copy the %@ path" : {
-      "comment" : "About panel: copy button",
+      "comment" : "User panel: copy button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6115,12 +6116,12 @@
         }
       }
     },
-    "Couldn't read the saved license. Try again in Settings → License." : {
+    "Couldn't read the saved license. Try again in Settings → User." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie w Ustawieniach → Licencja."
+            "state" : "translated",
+            "value" : "Nie można odczytać zapisanej licencji. Spróbuj ponownie w Ustawieniach → Użytkownik."
           }
         }
       }
@@ -6884,7 +6885,7 @@
       }
     },
     "Documentation" : {
-      "comment" : "About panel: docs link",
+      "comment" : "User panel: docs link",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7149,7 +7150,7 @@
       }
     },
     "Edit template and preview" : {
-      "comment" : "About panel: disclosure with the marker template editor",
+      "comment" : "Dictation panel: disclosure with the marker template editor",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7618,7 +7619,7 @@
       }
     },
     "First dictation confirmation" : {
-      "comment" : "About panel section",
+      "comment" : "User panel section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8322,7 +8323,7 @@
       }
     },
     "Information and documentation" : {
-      "comment" : "About panel section",
+      "comment" : "User panel section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8353,7 +8354,7 @@
       }
     },
     "Insert %@ into the template" : {
-      "comment" : "About panel: template field chip",
+      "comment" : "Dictation panel: template field chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8393,12 +8394,24 @@
         }
       }
     },
-    "Install skill" : {
+    "Install skill…" : {
+      "comment" : "Coding-agent row action: opens the confirmation to install the skill",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zainstaluj skill"
+            "value" : "Zainstaluj skill…"
+          }
+        }
+      }
+    },
+    "Install the Codescribe skill for %@?" : {
+      "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstalować skill Codescribe dla %@?"
           }
         }
       }
@@ -8743,7 +8756,7 @@
       }
     },
     "Launch record" : {
-      "comment" : "About panel: the raw repair line",
+      "comment" : "User panel: the raw repair line",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8880,22 +8893,12 @@
         }
       }
     },
-    "License access ended. Check Settings → License." : {
+    "License access ended. Check Settings → User." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Licencja jest nieaktywna. Sprawdź Ustawienia → Licencja."
-          }
-        }
-      }
-    },
-    "License key" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Klucz licencyjny"
+            "state" : "translated",
+            "value" : "Licencja jest nieaktywna. Sprawdź Ustawienia → Użytkownik."
           }
         }
       }
@@ -9291,7 +9294,7 @@
       }
     },
     "Mark text delivered to other apps" : {
-      "comment" : "About panel: switch subtitle; the template decides the marker",
+      "comment" : "Dictation panel: switch subtitle; the template decides the marker",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9704,7 +9707,7 @@
       }
     },
     "Mode" : {
-      "comment" : "License panel: operating mode",
+      "comment" : "License section: operating mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9985,7 +9988,7 @@
       }
     },
     "Moves Agent conversations, MCP configuration and tool state to Trash. Agent provider keys and MCP connector secrets are deleted permanently. Everything else stays." : {
-      "comment" : "About panel: short scope of the Agent reset; the confirmation shows the full scope",
+      "comment" : "User panel: short scope of the Agent reset; the confirmation shows the full scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10016,7 +10019,7 @@
       }
     },
     "Moves recordings, transcripts, conversations, logs, preferences and local configuration to Trash. Your base prompts stay unless you choose otherwise below." : {
-      "comment" : "About panel: short scope of the app-data reset; the confirmation shows the full scope",
+      "comment" : "User panel: short scope of the app-data reset; the confirmation shows the full scope",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11276,7 +11279,7 @@
       }
     },
     "One anonymous event with the app version and the macOS version. Never audio or text." : {
-      "comment" : "About panel: opt-in switch subtitle",
+      "comment" : "User panel: opt-in switch subtitle",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13684,7 +13687,7 @@
       }
     },
     "Reset Agent data" : {
-      "comment" : "About panel: the Agent reset",
+      "comment" : "User panel: the Agent reset",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13725,7 +13728,7 @@
       }
     },
     "Reset app data" : {
-      "comment" : "About panel: the full app-data reset",
+      "comment" : "User panel: the full app-data reset",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13746,7 +13749,7 @@
       }
     },
     "Reset data" : {
-      "comment" : "About panel: section holding both resets",
+      "comment" : "User panel: section holding both resets",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13851,7 +13854,7 @@
       }
     },
     "Restore default template" : {
-      "comment" : "About panel: button",
+      "comment" : "Dictation panel: button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14644,7 +14647,7 @@
       }
     },
     "Send a confirmation after the first successful dictation" : {
-      "comment" : "About panel: opt-in switch title",
+      "comment" : "User panel: opt-in switch title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14900,16 +14903,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Konfiguracja"
-          }
-        }
-      }
-    },
-    "Setup Wizard" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kreator"
           }
         }
       }
@@ -15235,6 +15228,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Foldery skilla"
+          }
+        }
+      }
+    },
+    "Skill version: %@." : {
+      "comment" : "Install confirmation; the placeholder is a version number such as 0.13.2",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersja skilla: %@."
           }
         }
       }
@@ -16026,7 +16030,7 @@
       }
     },
     "Status" : {
-      "comment" : "License panel: current license status",
+      "comment" : "License section: current license status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16608,7 +16612,7 @@
       }
     },
     "Template preview" : {
-      "comment" : "About panel: label over the rendered template",
+      "comment" : "Dictation panel: label over the rendered template",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16629,7 +16633,7 @@
       }
     },
     "Terms of Use" : {
-      "comment" : "About panel: legal link",
+      "comment" : "User panel: legal link",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16783,6 +16787,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Obecny skill Codescribe dla %@ zostanie zachowany jako kopia zapasowa, a następnie zastąpiony wersją dołączoną do tej aplikacji.\nPozostałe skille i ustawienia agenta pozostaną bez zmian. Instalacja nie uruchomi nasłuchiwania."
+          }
+        }
+      }
+    },
+    "The Codescribe skill lets your coding agent work with Codescribe. Once it is installed, the agent can join the Codescribe Bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it." : {
+      "comment" : "Description at the top of the coding-agent card in Settings › Creator. Codescribe Bus is a product name; /codescribe is a command the user types — keep both verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skill Codescribe pozwala agentowi do kodowania pracować z Codescribe. Po instalacji agent może dołączyć do Codescribe Bus pod własną nazwą, odbierać to, co do niego dyktujesz lub piszesz, i odpowiadać tekstem albo głosem. Instalacja tylko dodaje skill; rozmowa łączy się, gdy wywołasz w niej /codescribe."
           }
         }
       }
@@ -17005,7 +17020,7 @@
       }
     },
     "The key is stored in the macOS Keychain." : {
-      "comment" : "License panel footnote: where the key lives",
+      "comment" : "User panel, License section footnote: where the key lives",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17042,6 +17057,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wiadomość jest za długa (limit 64 KB)."
+          }
+        }
+      }
+    },
+    "The outdated copy for %@ is updated at the same time." : {
+      "comment" : "Install confirmation; the placeholder lists coding-agent clients such as Claude Code",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przy okazji zaktualizowana zostanie nieaktualna kopia dla %@."
           }
         }
       }
@@ -17626,7 +17652,7 @@
       }
     },
     "Transcript markers" : {
-      "comment" : "About panel section",
+      "comment" : "Dictation panel section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -18070,12 +18096,24 @@
         }
       }
     },
-    "Update skill" : {
+    "Update skill…" : {
+      "comment" : "Coding-agent row action: opens the confirmation to update the skill",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zaktualizuj skill"
+            "value" : "Zaktualizuj skill…"
+          }
+        }
+      }
+    },
+    "Update the Codescribe skill for %@?" : {
+      "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaktualizować skill Codescribe dla %@?"
           }
         }
       }
@@ -18137,6 +18175,17 @@
         }
       }
     },
+    "User" : {
+      "comment" : "Settings section: license, app version, local data and resets\nUser panel header",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Użytkownik"
+          }
+        }
+      }
+    },
     "Uses audio from the take currently shown in the overlay." : {
       "localizations" : {
         "pl" : {
@@ -18169,6 +18218,17 @@
         }
       }
     },
+    "Version" : {
+      "comment" : "User panel section: app version and updates",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wersja"
+          }
+        }
+      }
+    },
     "Version %llu" : {
       "comment" : "Dictionary: correction revision",
       "localizations" : {
@@ -18181,7 +18241,7 @@
       }
     },
     "Version details" : {
-      "comment" : "About panel: opens the commit and the build date",
+      "comment" : "User panel: opens the commit and the build date",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19162,6 +19222,17 @@
         }
       }
     },
+    "Your license, Codescribe version, local data and privacy." : {
+      "comment" : "User panel blurb",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja licencja, wersja Codescribe, lokalne dane i prywatność."
+          }
+        }
+      }
+    },
     "Your own values — edit them under Detailed settings." : {
       "localizations" : {
         "pl" : {
@@ -19776,6 +19847,42 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Dostępna aktualizacja"
+          }
+        }
+      }
+    },
+    "creator.agentBridge.confirmInstall" : {
+      "comment" : "Confirms installing the Codescribe skill for one coding-agent client",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Install"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj"
+          }
+        }
+      }
+    },
+    "creator.agentBridge.confirmUpdate" : {
+      "comment" : "Confirms updating the Codescribe skill for one coding-agent client",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Update"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaktualizuj"
           }
         }
       }
@@ -20578,7 +20685,7 @@
       }
     },
     "license.mode.agent" : {
-      "comment" : "License panel, Mode row value: agent operating mode",
+      "comment" : "License section, Mode row value: agent operating mode",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -20596,7 +20703,7 @@
       }
     },
     "license.mode.basic" : {
-      "comment" : "License panel, Mode row value: basic operating mode",
+      "comment" : "License section, Mode row value: basic operating mode",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -20614,7 +20721,7 @@
       }
     },
     "license.offer.agentLifetime" : {
-      "comment" : "License panel, License row value: name of the purchased offer",
+      "comment" : "License section, License row value: name of the purchased offer",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -22012,13 +22119,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "subscription, activation, trial, billing"
+            "value" : "license, license key, subscription, activation, trial, billing"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "subscription, activation, trial, billing, subskrypcja, abonament, aktywacja, okres próbny, płatności, rozliczenia"
+            "value" : "license, license key, subscription, activation, trial, billing, licencja, klucz licencyjny, subskrypcja, abonament, aktywacja, okres próbny, płatności, rozliczenia"
           }
         }
       }
@@ -22048,13 +22155,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "about, version, build, commit, data folder, privacy, reset, trash"
+            "value" : "about, version, build, commit, updates, data folder, privacy, reset, trash"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "about, version, build, commit, data folder, privacy, reset, trash, o aplikacji, wersja, kompilacja, dane, prywatność, reset, kosz"
+            "value" : "about, version, build, commit, updates, data folder, privacy, reset, trash, o aplikacji, użytkownik, wersja, kompilacja, aktualizacje, dane, prywatność, reset, kosz"
           }
         }
       }
@@ -22192,13 +22299,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "engine, runtime"
+            "value" : "engine, runtime, markers, tag, template"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "engine, runtime, silnik, działanie, uruchomienie"
+            "value" : "engine, runtime, markers, tag, template, silnik, działanie, uruchomienie, znaczniki, znacznik, szablon"
           }
         }
       }
