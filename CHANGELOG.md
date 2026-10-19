@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+No changes recorded yet.
+
+## [0.17.1] - Unreleased
+
+In preparation and not published; the latest published release is 0.17.0. Validation and distribution have separate receipts.
+
 ### Added
 
 - A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
@@ -37,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Settings health line under the sidebar is ordinary secondary text beside its coloured dot.
 - The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
 - No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
+- The app spends less CPU on the bus while the overlay is open and while you record. The overlay stops reparsing and re-polling acknowledgements that settle on another agent's bus and checks each bus's segment manifest once per change instead of on every 500 ms pass; the app no longer reparses agent acknowledgement markers on every pass; live-lexicon rules are compiled once instead of on every rewrite.
 
 ### Fixed
 
@@ -45,43 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
-- A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- A conversation title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
-
-## [0.17.1] - 2026-10-17
-
-Source changes in preparation; validation and distribution have separate receipts.
-
-### Fixed
-
+- After an agent's channel take ends, the overlay header is ready again instead of looking like a dictation still waiting for its text.
+- With keyboard navigation turned on in macOS, focus entering the overlay's agent list lands on the selected conversation instead of staying on "0 · All".
 - Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
 - Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
 - Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
 
 <!-- release-notes:0.17.1:start -->
-<!-- release-summary: generated -->
 
-### Added
-
-- restructure the Shortcuts tab around honest save semantics
-- About tab replaces User with readable diagnostics
-
-### Fixed
-
-- speak the chosen language in the restart row
-- let the formatting level picker size to its labels
-
-### Changed
-
-- l10n(settings): catalog entries for the restructured Shortcuts tab
-- l10n(settings): catalog for round 5 and a shorter Polish "Ask"
-
-### Documentation
-
-- record the gap between the Shortcuts picker and routed gestures
-- state the Max consultation self-heal contract
-
-Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+Source history is recorded by `scripts/release-version.py` at the release commit.
 
 <!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
 <!-- release-notes:0.17.1:end -->
