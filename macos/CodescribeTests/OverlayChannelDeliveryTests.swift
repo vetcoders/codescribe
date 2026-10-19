@@ -1700,6 +1700,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   }
 
   func testLoudOpenStateShowsPanelAndRefusesHideWithoutChangingTranscript() throws {
+    let savedSize = DictationOverlayWindow.restoredContentSize()
+    defer { DictationOverlayWindow.persist(size: savedSize) }
     let state = OverlayState.previewFormatted()
     let transcript = state.activeText
     var shown = 0

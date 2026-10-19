@@ -972,14 +972,15 @@ smoke-macos27:
 # budget stays because the next such regression should be a red gate, not
 # folklore about an unexplained hang.
 #
-# In the 2026-09-25 suite (663 tests), three runs took 30.6-31.4 s. Designed
-# waits dominate: OverlayRefusalLayoutHangTests takes 14.4 s and the slowest
-# individual test takes 5.4 s. A 10 s per-test ceiling catches a stalled test;
-# the 60 s suite budget remains a coarse ~2x backstop. Raise the suite budget
-# for a genuinely busy box:
-#   make test-swift SWIFT_TEST_MAX_SECONDS=90
+# Rebaselined 2026-10-19 for 1774 tests: 192.6 s, versus 1608 tests / 160.4 s
+# on 2026-10-16. The 1588 common tests took 156.3 s then and 155.5 s now;
+# coverage growth, rather than slower existing tests, outgrew the 60 s budget
+# set for 663 tests in September. A 240 s suite ceiling leaves ~25% headroom.
+# Keep the independent 10 s per-test ceiling: the old blocking Keychain fault
+# manifested as one 43 s test. Investigate either ceiling breach before an
+# explicit override; more coverage never waives assertion failures.
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
-SWIFT_TEST_MAX_SECONDS ?= 60
+SWIFT_TEST_MAX_SECONDS ?= 240
 SWIFT_TEST_MAX_TEST_SECONDS ?= 10
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
