@@ -1616,10 +1616,13 @@ mod retranscribe_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "real retained audio and local Whisper model"]
     async fn local_file_button_pass_uses_configured_language_on_retained_audio() {
-        let wav = std::env::var("PROOF_WAV").expect("explicit PROOF_WAV required");
-        // The test-process fence must not read the account's live settings.
+        let wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+                .join(".codescribe/data_assets/01_no-to-dobra.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
         // Supply the confirmed setting explicitly at the same dispatch boundary.
         let config = codescribe_core::config::Config {
             whisper_language: codescribe_core::config::Language::Polish,
@@ -1759,20 +1762,34 @@ mod retranscribe_tests {
     ///   PROOF_WAV=~/.codescribe/sessions/<id>.wav \
     ///   cargo test -p codescribe-ffi -- --ignored --nocapture retranscribe_passes_on_real_session_audio
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "real audio + real STT credentials"]
     async fn retranscribe_passes_on_real_session_audio() {
         let wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
-            codescribe_core::config::Config::config_dir()
-                .join("last_session.wav")
-                .to_string_lossy()
-                .into_owned()
+            let fallback = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+                .join(".codescribe/data_assets/01_no-to-dobra.wav");
+            if fallback.is_file() {
+                fallback.to_string_lossy().into_owned()
+            } else {
+                codescribe_core::config::Config::config_dir()
+                    .join("last_session.wav")
+                    .to_string_lossy()
+                    .into_owned()
+            }
         });
         assert!(
             std::path::Path::new(&wav).exists(),
             "PROOF_WAV missing: {wav}"
         );
 
-        let hq = transcribe_session_file(format!("hq:{wav}"))
+        let config = codescribe_core::config::Config {
+            stt_file_endpoint: Some(
+                std::env::var("STT_FILE_ENDPOINT")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8444/v1/audio/transcriptions".into()),
+            ),
+            stt_file_api_key: std::env::var("STT_FILE_API_KEY").ok(),
+            ..Default::default()
+        };
+
+        let hq = transcribe_session_file_with_settings(format!("hq:{wav}"), None, config.clone())
             .await
             .expect("HQ file pass");
         eprintln!("HQ pass: {} chars: {:?}", hq.text.chars().count(), hq.text);
@@ -1781,7 +1798,7 @@ mod retranscribe_tests {
             "HQ pass returned no text for real speech"
         );
 
-        match transcribe_session_file(format!("cloud:{wav}")).await {
+        match transcribe_session_file_with_settings(format!("cloud:{wav}"), None, config).await {
             Ok(cloud) => {
                 eprintln!(
                     "Cloud pass: {} chars: {:?}",

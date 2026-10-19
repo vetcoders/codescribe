@@ -577,7 +577,6 @@ fn test_vad_committed_tts_fixture_detects_speech() {
 
 /// Smoke test: real audio → AccumulatingVad must detect speech
 #[test]
-#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_smoke() {
     let wav_path = private_clip("01_no-to-dobra.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
@@ -603,7 +602,6 @@ fn test_vad_real_audio_smoke() {
 
 /// Test AccumulatingVad on real Polish speech — should detect speech regions
 #[test]
-#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_speech_detection() {
     let recordings = [
         ("01_no-to-dobra.wav", "casual Polish"),
@@ -650,7 +648,6 @@ fn test_vad_real_audio_speech_detection() {
 
 /// Test VAD detects silence gaps between sentences in real audio
 #[test]
-#[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_silence_gaps() {
     let wav_path = private_clip("02_kubernetes-wymaga-konfiguracji.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
@@ -694,7 +691,6 @@ fn test_vad_real_audio_silence_gaps() {
 
 /// Test VAD on dedicated pause recording (59s with intentional silence gaps)
 #[test]
-#[ignore = "needs the private data_assets corpus (VAD_voice_real_pauses.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_pauses_recording() {
     let wav_path = private_clip("VAD_voice_real_pauses.wav");
     let (samples, sample_rate) = load_wav(&wav_path);

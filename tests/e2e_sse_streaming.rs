@@ -43,24 +43,54 @@ fn load_codescribe_env() {
     }
 }
 
+fn runtime_settings_with_local_buddy() -> (
+    Option<tempfile::TempDir>,
+    codescribe_core::config::RuntimeSettingsSnapshot,
+) {
+    load_codescribe_env();
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+    }
+    if let Ok(snapshot) = Config::load_runtime_snapshot()
+        && snapshot.llm_lanes().formatting().available()
+        && snapshot.llm_lanes().assistive().available()
+    {
+        return (None, snapshot);
+    }
+    let temp = tempfile::tempdir().expect("isolated buddy settings dir");
+    unsafe {
+        std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
+    }
+    let provider = codescribe_core::llm::provider::CustomProvider::new(
+        "local-buddy",
+        codescribe_core::llm::provider::WireFamily::OpenAiResponses,
+        "http://127.0.0.1:8000/v1/responses",
+    )
+    .expect("local buddy custom provider");
+    let settings = codescribe_core::config::UserSettings {
+        ai_formatting_enabled: Some(true),
+        formatting_level: Some("smart".into()),
+        llm_formatting_provider: Some(format!("custom:{}", provider.id)),
+        llm_formatting_model: Some("buddy".into()),
+        llm_assistive_provider: Some(format!("custom:{}", provider.id)),
+        llm_assistive_model: Some("buddy".into()),
+        llm_custom_providers: vec![provider],
+        ..Default::default()
+    };
+    settings.save().expect("save isolated buddy settings");
+    let snapshot = Config::load_runtime_snapshot_without_keychain()
+        .expect("seal local buddy runtime settings");
+    (Some(temp), snapshot)
+}
+
 /// Test real SSE streaming for FORMATTING mode
 /// Run with: make test-sse
 #[tokio::test]
 #[serial]
-#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_real_formatting() {
-    load_codescribe_env();
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-    }
-    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let (_temp, runtime_settings) = runtime_settings_with_local_buddy();
     let lane = runtime_settings.llm_lanes().formatting();
-    if !lane.available() {
-        eprintln!("Skipping: formatting lane unavailable");
-        return;
-    }
-
+    assert!(lane.available(), "formatting lane must be available");
     eprintln!("=== FORMATTING MODE TEST ===");
     eprintln!("Endpoint: {}", lane.endpoint());
     eprintln!("Model: {}", lane.model());
@@ -82,24 +112,14 @@ async fn e2e_sse_streaming_real_formatting() {
 /// Run with: make test-sse
 #[tokio::test]
 #[serial]
-#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_real_assistive() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new("codescribe_core::llm=debug"))
         .with_writer(std::io::stderr)
         .try_init();
-    load_codescribe_env();
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-    }
-    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let (_temp, runtime_settings) = runtime_settings_with_local_buddy();
     let lane = runtime_settings.llm_lanes().assistive();
-    if !lane.available() {
-        eprintln!("Skipping: assistive lane unavailable");
-        return;
-    }
-
+    assert!(lane.available(), "assistive lane must be available");
     eprintln!("=== ASSISTIVE MODE TEST ===");
     eprintln!("Endpoint: {}", lane.endpoint());
     eprintln!("Model: {}", lane.model());
@@ -125,20 +145,10 @@ async fn e2e_sse_streaming_real_assistive() {
 /// Test SSE streaming with KURIER mode (pass-through dictation)
 #[tokio::test]
 #[serial]
-#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_kurier_mode() {
-    load_codescribe_env();
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
-    }
-    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let (_temp, runtime_settings) = runtime_settings_with_local_buddy();
     let lane = runtime_settings.llm_lanes().assistive();
-    if !lane.available() {
-        eprintln!("Skipping: assistive lane unavailable");
-        return;
-    }
-
+    assert!(lane.available(), "assistive lane must be available");
     eprintln!("=== KURIER MODE TEST (pass-through) ===");
 
     // KURIER trigger: "przekaż" or dictation without question
@@ -160,21 +170,14 @@ async fn e2e_sse_streaming_kurier_mode() {
 /// Direct SSE parsing test - validates raw stream handling
 #[tokio::test]
 #[serial]
-#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_direct_stream_parsing() {
     use futures_util::StreamExt;
     use reqwest::Client;
     use serde_json::json;
 
-    load_codescribe_env();
-
-    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let (_temp, runtime_settings) = runtime_settings_with_local_buddy();
     let lane = runtime_settings.llm_lanes().formatting();
-    let Some(api_key) = lane.credential().api_key() else {
-        eprintln!("Skipping: No API key found");
-        return;
-    };
-
+    let api_key = lane.credential().api_key();
     let endpoint = lane.endpoint();
     let model = lane.model();
 
@@ -183,11 +186,14 @@ async fn e2e_sse_direct_stream_parsing() {
     eprintln!("Model: {}", model);
 
     let client = Client::new();
-    let response = client
+    let mut req = client
         .post(endpoint)
-        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
+        .header("Accept", "text/event-stream");
+    if let Some(api_key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let response = req
         .json(&json!({
             "model": model,
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Powiedz cześć po polsku"}]}],

@@ -7641,11 +7641,6 @@ impl RecordingController {
             State::RecHold | State::RecToggle
         )
     }
-
-    /// Check if controller is busy processing
-    pub async fn is_busy(&self) -> bool {
-        self.current_state().await == State::Busy
-    }
 }
 
 impl Default for RecordingController {

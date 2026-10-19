@@ -388,30 +388,8 @@ pub(crate) fn is_runtime_available() -> bool {
     }
 }
 
-/// Transcribe a single chunk (same implementation as long for this backend).
-// FORGOTTEN-GEM(vc-prune 2026-06-10): parked sync transcription contract —
-// see core/stt/mod.rs::candle_transcribe_chunk for the cluster rationale.
-#[allow(dead_code)]
-pub(crate) fn transcribe_chunk(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<String> {
-    Ok(transcribe_long_with_segments(audio, sample_rate, language)?.text)
-}
-
 /// Transcribe audio with optional segment timestamps.
 pub(crate) fn transcribe_long_with_segments(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<RawTranscript> {
-    transcribe_via_bridge(audio, sample_rate, language)
-}
-
-/// "Try" variant kept for scheduler API symmetry.
-#[allow(dead_code)]
-pub(crate) fn try_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,

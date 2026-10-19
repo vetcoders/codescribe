@@ -35,14 +35,19 @@ fn continuous_speech_coverage_survives_maximum_duration_splits() {
 
 /// Explicit local corpus acceptance; recordings stay outside Git.
 #[test]
-#[ignore = "Requires .vibecrafted/fixtures/silero-regression/{quiet,long,silence}.wav"]
 fn preserved_capture_silero_ingress_keeps_long_speech() {
     use crate::vad::AccumulatingVad;
     use codescribe_core::audio::{load_audio_file, resample_to_16k};
-    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let workspace_fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .join(".vibecrafted/fixtures/silero-regression");
+    let fixtures = if workspace_fixtures.join("long.wav").is_file() {
+        workspace_fixtures
+    } else {
+        std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+            .join(".codescribe/data_assets/silero-regression")
+    };
     for (name, minimum) in [("quiet", 2.0), ("long", 80.0), ("silence", 0.0)] {
         let (raw, rate) = load_audio_file(&fixtures.join(format!("{name}.wav"))).unwrap();
         assert_eq!(rate, 48_000);
