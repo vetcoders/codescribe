@@ -1561,7 +1561,7 @@ final class SettingsViewModel: ObservableObject {
   func refreshDictationReadiness() {
     refreshPermissions()
     // Every sidebar click lands here: validate the model off the main actor.
-    if engine != nil { whisperDownloadStore.refreshInBackground() }
+    refreshWhisperModelStatus()
     guard engine != nil else { return }
     Task { @MainActor [weak self] in await self?.refreshAdmission() }
   }
