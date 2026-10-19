@@ -484,6 +484,7 @@ struct DictationOverlayView: View {
                 },
                 focusRevision: state.conversationFocusRevision,
                 isPresented: !state.isCollapsed,
+                isCovered: canvasHidden,
                 draft: Binding(
                   get: { state.conversationDrafts[conversation.id] ?? "" },
                   set: { state.conversationDrafts[conversation.id] = $0 }),
@@ -569,6 +570,11 @@ struct DictationOverlayView: View {
         }
         .onChange(of: columnShown) { _, shown in
           if !shown { agentDrawerResize = nil }
+        }
+        // The keyboard follows what is on screen: the composer under the list
+        // lets it go, and the list's selected row takes it.
+        .onChange(of: canvasHidden) { _, hidden in
+          if hidden { state.focusAgentRoster() }
         }
       }
       VStack(spacing: 0) {
