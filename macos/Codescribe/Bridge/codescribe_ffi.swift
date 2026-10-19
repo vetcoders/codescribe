@@ -13635,6 +13635,10 @@ public struct CsSettings: Equatable, Hashable {
     public var appleLiveEnabled: Bool
     public var lightPlusSentencePauseSec: Float
     /**
+     * Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+     */
+    public var ledgerSensitivity: Int32
+    /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
      * from the canonical merged config snapshot. `"disabled"` is the
      * product default when no persisted choice exists.
@@ -13783,6 +13787,9 @@ public struct CsSettings: Equatable, Hashable {
          * Independent next-take publication and Apple producer choices.
          */sealLedgerEnabled: Bool, appleLiveEnabled: Bool, lightPlusSentencePauseSec: Float,
         /**
+         * Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+         */ledgerSensitivity: Int32,
+        /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
          * product default when no persisted choice exists.
@@ -13862,6 +13869,7 @@ public struct CsSettings: Equatable, Hashable {
         self.sealLedgerEnabled = sealLedgerEnabled
         self.appleLiveEnabled = appleLiveEnabled
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
+        self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
         self.fnTapTogglesDictation = fnTapTogglesDictation
@@ -13949,6 +13957,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 sealLedgerEnabled: FfiConverterBool.read(from: &buf),
                 appleLiveEnabled: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
+                ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
                 fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
@@ -14024,6 +14033,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.sealLedgerEnabled, into: &buf)
         FfiConverterBool.write(value.appleLiveEnabled, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
+        FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
         FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)

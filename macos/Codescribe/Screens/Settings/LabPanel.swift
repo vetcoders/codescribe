@@ -5,6 +5,8 @@ import SwiftUI
 struct LabPanel: View {
   @ObservedObject var model: SettingsViewModel
   @AppStorage("codescribe.lab_mode") private var labMode = false
+  /// A drag on the ledger slider persists once, at release.
+  @State private var ledgerGate = SliderCommitGate()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -67,6 +69,8 @@ struct LabPanel: View {
       .foregroundStyle(CSColor.chromeAccent)
 
       recognitionParameters
+
+      ledgerSensitivity
     }
     .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -184,6 +188,82 @@ struct LabPanel: View {
       : String(
         localized: "\(value), overridden",
         comment: "VoiceOver value: a toggle state frozen by an override")
+  }
+
+  /// One slider over live word admission. Left refuses more identical
+  /// repeats and words far from speech; right keeps more of both. The centre
+  /// is the shipped engine. The take freezes the value when it starts.
+  private var ledgerSensitivity: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SettingsSectionLabel(
+        String(
+          localized: "Word admission",
+          comment: "Lab group: the ledger sensitivity slider"))
+
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .firstTextBaseline) {
+          Text("Ledger sensitivity")
+            .font(.body)
+          Spacer()
+          Text(verbatim: ledgerSensitivityLabel)
+            .font(CSFont.ui(11, .semibold))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
+        Slider(
+          value: Binding(
+            get: { ledgerGate.displayed(persisted: model.ledgerSensitivitySlider) },
+            set: { newValue in
+              if let direct = ledgerGate.valueChanged(newValue) {
+                model.ledgerSensitivitySlider = direct
+              }
+            }
+          ),
+          in: -100...100,
+          step: 5
+        ) {
+          Text("Ledger sensitivity")
+        } onEditingChanged: { editing in
+          if let committed = ledgerGate.editingChanged(editing) {
+            model.ledgerSensitivitySlider = committed
+          }
+        }
+        .labelsHidden()
+        .tint(CSColor.chromeAccent)
+        .accessibilityValue(ledgerSensitivityLabel)
+        .accessibilityIdentifier("lab-ledger-sensitivity")
+        HStack {
+          Text("Fewer repeats")
+          Spacer()
+          Text("Fewer cut words")
+        }
+        .font(CSFont.ui(11))
+        .foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline) {
+          Text(
+            "Too many repeated words: move it left. Too many cut words: move it right. The centre is the shipped engine. Applies to the next recording."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 8)
+          Button("Centre") {
+            model.setLedgerSensitivity(0)
+          }
+          .font(CSFont.ui(11, .semibold))
+          .foregroundStyle(CSColor.chromeAccent)
+          .buttonStyle(.plain)
+          .disabled(model.settings.ledgerSensitivity == 0)
+        }
+      }
+      .settingsGroupedInset()
+    }
+  }
+
+  /// Signed position; mid-drag it follows the draft, not the persisted value.
+  private var ledgerSensitivityLabel: String {
+    let position = Int(ledgerGate.displayed(persisted: model.ledgerSensitivitySlider).rounded())
+    return position > 0 ? "+\(position)" : "\(position)"
   }
 
   /// Experimental recognition parameters. The speech-pause limit is a

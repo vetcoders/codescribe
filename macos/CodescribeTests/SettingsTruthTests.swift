@@ -979,6 +979,8 @@ final class SettingsTruthTests: XCTestCase {
     model.setAppleLiveEnabled(false)
     model.setSealLedgerEnabled(true)
     model.setAppleLiveEnabled(true)
+    model.setLedgerSensitivity(-40)
+    model.setLedgerSensitivity(250)
 
     guard DeveloperSurface.isEnabled() else {
       XCTAssertTrue(writes.isEmpty, "production bundle must not persist Lab knobs")
@@ -994,8 +996,12 @@ final class SettingsTruthTests: XCTestCase {
         "CODESCRIBE_APPLE_LIVE_ENABLED",
         "CODESCRIBE_SEAL_LEDGER_ENABLED",
         "CODESCRIBE_APPLE_LIVE_ENABLED",
+        "CODESCRIBE_LEDGER_SENSITIVITY",
+        "CODESCRIBE_LEDGER_SENSITIVITY",
       ])
-    XCTAssertEqual(writes.map(\.value), ["1", "1", "0", "0", "0", "1", "1"])
+    XCTAssertEqual(
+      writes.map(\.value), ["1", "1", "0", "0", "0", "1", "1", "-40", "100"],
+      "the ledger slider is clamped to -100...100 before it is written")
   }
 
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {
