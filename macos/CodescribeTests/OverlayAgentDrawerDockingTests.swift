@@ -402,7 +402,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   func testDockedRowsKeepProviderModelVisibleAlongsideTimePreviewAndBadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let row = try section(
-      of: source, from: "private func channelRow(", to: "private func conversationRow(")
+      of: source, from: "func channelRow(", to: "private func conversationRow(")
     XCTAssertTrue(row.contains("lineLimit(2)"), "rows carry a two-line message preview")
     XCTAssertTrue(row.contains("drawerPreview("), "rows render the last message preview")
     XCTAssertTrue(
