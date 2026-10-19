@@ -1732,9 +1732,14 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         projection.conversations(busPath: busPath).first { $0.channel == "0" })
       XCTAssertEqual(zero.messages.map(\.text), ["Do wszystkich", "Odpowiedź"])
       XCTAssertEqual(zero.messages.last?.replyTo, delivery)
-      XCTAssertEqual(
-        try lenaConversation(projection).messages.count, 5, "private conversation retains every row"
-      )
+      // A reply to the broadcast lives in All only (797ebf10b, "keep
+      // broadcast replies out of private conversations"); every private row
+      // stays.
+      let lena = try lenaConversation(projection)
+      XCTAssertEqual(lena.messages.count, 4, "private conversation retains every private row")
+      XCTAssertFalse(
+        lena.messages.contains { $0.id == "reply:" + String(repeating: "e", count: 24) },
+        "the broadcast reply does not echo into the private conversation")
     }
   }
 
@@ -1769,8 +1774,11 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertEqual(all.messages.map(\.text), ["Do wszystkich", "Odpowiedź"])
       XCTAssertEqual(all.messages.last?.id, "reply:" + associatedID)
       XCTAssertEqual(all.messages.last?.replyTo, delivery)
-      XCTAssertFalse(
+      // The sender's own thread keeps the direct message too (95ae69192,
+      // "bidirectional peer DM visibility"); it never reaches All.
+      XCTAssertTrue(
         try lenaConversation(projection).messages.contains { $0.id == "reply:" + privateID })
+      XCTAssertFalse(all.messages.contains { $0.id == "reply:" + privateID })
       let adam = try XCTUnwrap(conversations.first { $0.owner?.leaseID == leaseB })
       XCTAssertEqual(adam.messages.map(\.id), ["reply:" + privateID])
       XCTAssertEqual(adam.messages.first?.owner?.name, "Lena")
