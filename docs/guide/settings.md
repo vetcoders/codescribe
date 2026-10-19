@@ -655,19 +655,29 @@ numbered steps:
   Hotkeys binds one. After a failed start it uses the same fresh-capture
   admission as the tray, so it can retry without a stale capture fence; it waits
   for the tray's previous start to settle and cannot turn that retry into a Stop.
-- **Microphone calibration** — `Ready` or `Required`, with **Recalibrate**.
-  Calibration measures about 10 seconds of normal speech through the real
-  recorder path, and is unavailable while a take is active, starting or
-  finishing.
+- **Microphone calibration** — `Ready` when a usable measurement exists for
+  the microphone. The default direct transcription records without one, so the
+  row then reads `Optional` in a neutral tone. With seal-ledger admission
+  enabled (off unless chosen: the **Lab** desk in developer builds, or
+  `audio.seal_ledger_enabled` in `settings.json`), a missing or unusable
+  measurement blocks the recording and the row reads `Required`. When a
+  recording is refused for another reason, such as an unavailable input device,
+  the row reads `Not calibrated`, also neutral, because the calibration is not
+  what blocks it. **Recalibrate** measures about 10 seconds of normal speech
+  through the real recorder path, and is unavailable while a take is active,
+  starting or finishing.
 - **Committing fragments** — `On`, `Off` or `Unavailable`. Audio states the
-  effective value and nothing else; the switch lives on the **Lab** desk.
+  effective value and nothing else; the switch lives on the **Lab** desk. `Off`
+  is neutral for the default direct transcription and marks a blocker only when
+  seal-ledger admission refuses the recording because the lane is off.
 
-A neutral status never hides a blocker. When microphone access is missing,
-calibration has not been measured, the committing lane is off or its detector is
-unavailable, or there is no input device, the status line becomes that problem
-and carries its remedy — **Allow** or **System Settings** for the permission,
-**Calibrate**, or **Open Lab** for the committing switch. The explanation is the same sentence the readiness
-rows used before; it is simply shown only when it applies.
+A neutral status never hides a blocker. When the recorder refuses a recording,
+the status line names that refusal and offers only its remedy — **Allow** or
+**System Settings** for the microphone permission and, with seal-ledger
+admission enabled, **Calibrate** for a missing calibration or **Open Lab** for a
+committing lane that is off. A missing calibration or a lane that is off never
+blocks the default direct transcription. The explanation is the same sentence
+the readiness rows used before; it is simply shown only when it applies.
 
 These controls borrow the existing `RecordingController`; opening Audio never
 creates a second recorder.
@@ -677,12 +687,14 @@ the loader verdict and the calibration file sit under the collapsed **Calibratio
 details**, as label and value pairs.
 
 **Committing transcript fragments** lives on the **Lab** desk (developer builds
-only), as a switch with one line: _Required before a recording can start._
+only), as a switch with one line: _Required for committed utterances; stored in
+Settings._ Committed utterances belong to seal-ledger admission; the default
+direct transcription records with the switch off.
 Turning the recorder's own precondition off is a power-user act, so only that
 desk can do it. When `CODESCRIBE_SILERO_FUSION` is set the switch is read-only
 and says so: remove the override to edit the setting again. A build without the
-developer surface shows the `Off` state and its blocker in Audio, but has no
-switch — the setting is then changed in `settings.json` or by removing the
+developer surface shows the `Off` state in Audio, a blocker only with seal-ledger
+admission enabled, but has no switch — the setting is then changed in `settings.json` or by removing the
 override.
 
 **Audio retention** — `Keep completed recordings`. `Forever` (the default) adds
