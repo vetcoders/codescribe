@@ -295,5 +295,188 @@ class VcFrameOnPathTests(unittest.TestCase):
         self.assertEqual((result["status"], result["exit_code"]), ("error", None))
 
 
+class ClaudeDaemonFrameTests(unittest.TestCase):
+    """Daemon-hosted Claude sessions (`--bg-pty-host`) inherit no pane env in the
+    worker process; the vc-frame pane lives on the attached `claude agents` client.
+    """
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        self.root = self.home / "bridge"
+        self.bus = self.home / "channel-4.jsonl"
+        self.bus.touch()
+        self.claude_dir = self.home / ".claude"
+        (self.claude_dir / "sessions").mkdir(parents=True)
+        (self.claude_dir / "daemon" / "attach-journal").mkdir(parents=True)
+        reader = mock.patch.object(DEMUX, "NativeProviderModelReader", return_value=None)
+        reader.start()
+        self.addCleanup(reader.stop)
+        clean_env = {
+            k: v for k, v in os.environ.items()
+            if k not in DEMUX._FRAME_ENV_KEYS
+        }
+        env_patch = mock.patch.dict(os.environ, clean_env, clear=True)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+
+    def write_session(self, repl_pid: int, session_id: str, name: str):
+        (self.claude_dir / "sessions" / f"{repl_pid}.json").write_text(
+            json.dumps({
+                "pid": repl_pid,
+                "sessionId": session_id,
+                "cwd": "/Users/maciejgad/vc-workspace/vetcoders/codescribe",
+                "startedAt": 1792252228000,
+                "kind": "bg",
+                "name": name,
+            })
+        )
+
+    def test_pty_coupled_claude_agents_panes_resolve_only_attached_workers(self):
+        stasiu_sid = "dbf5de70-4790-4df3-bc51-f953b2e120d6"
+        claudit_sid = "243a0eb0-4d6c-497b-8d36-5b58fa319b7f"
+        klaudiusz_sid = "43a1778a-1e6d-4878-8326-dba5588c9114"
+        explorek_sid = "9842280b-805c-4cf2-8088-963342eedae8"
+
+        self.write_session(29034, stasiu_sid, "stasiu")
+        self.write_session(38260, claudit_sid, "claudit")
+        self.write_session(5560, klaudiusz_sid, "klaudiusz")
+        self.write_session(96531, explorek_sid, "explorek")
+
+        procs = {
+            29022: {"pid": 29022, "ppid": 1, "tty": "ttys007", "command": "claude --bg-pty-host /tmp/a.sock"},
+            29034: {"pid": 29034, "ppid": 29022, "tty": "ttys007", "command": f"claude --resume {stasiu_sid}"},
+            38250: {"pid": 38250, "ppid": 1, "tty": "ttys010", "command": "claude --bg-pty-host /tmp/b.sock"},
+            38260: {"pid": 38260, "ppid": 38250, "tty": "ttys010", "command": f"claude --resume {claudit_sid}"},
+            5549: {"pid": 5549, "ppid": 1, "tty": "ttys003", "command": "claude --bg-pty-host /tmp/c.sock"},
+            5560: {"pid": 5560, "ppid": 5549, "tty": "ttys003", "command": f"claude --resume {klaudiusz_sid}"},
+            96428: {"pid": 96428, "ppid": 1, "tty": "ttys001", "command": "claude --bg-pty-host /tmp/d.sock"},
+            96531: {"pid": 96531, "ppid": 96428, "tty": "ttys001", "command": f"claude --resume {explorek_sid}"},
+            38226: {"pid": 38226, "ppid": 73198, "tty": "ttys008", "command": "claude agents"},
+            8278: {"pid": 8278, "ppid": 73198, "tty": "ttys009", "command": "claude agents"},
+        }
+        envs = {
+            38226: {
+                "VC_FRAME_PANE_ID": "3",
+                "VC_FRAME_SESSION_NAME": "codescribe",
+                "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
+                "__CFBundleIdentifier": "io.vetcoders.vc-terminal",
+                "ALACRITTY_SOCKET": "/tmp/Alacritty-73155.sock",
+            },
+            8278: {
+                "VC_FRAME_PANE_ID": "4",
+                "VC_FRAME_SESSION_NAME": "codescribe",
+                "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
+                "__CFBundleIdentifier": "io.vetcoders.vc-terminal",
+                "ALACRITTY_SOCKET": "/tmp/Alacritty-73155.sock",
+            },
+        }
+        ttys = {
+            "ttys008": {"path": "/dev/ttys008", "atime": 1792412896.878546, "winsz": (35, 112)},
+            "ttys010": {"path": "/dev/ttys010", "atime": 1792412896.878549, "winsz": (35, 112)},
+            "ttys009": {"path": "/dev/ttys009", "atime": 1792415016.397545, "winsz": (35, 112)},
+            "ttys007": {"path": "/dev/ttys007", "atime": 1792415016.397929, "winsz": (35, 112)},
+            "ttys003": {"path": "/dev/ttys003", "atime": 1792395276.0, "winsz": (32, 106)},
+            "ttys001": {"path": "/dev/ttys001", "atime": 1792387238.0, "winsz": (36, 138)},
+        }
+
+        with mock.patch.object(DEMUX, "process_table", return_value=procs), \
+                mock.patch.object(DEMUX, "process_environ", side_effect=lambda pid: envs.get(pid, {})), \
+                mock.patch.object(DEMUX, "tty_window_and_access", side_effect=lambda tty: ttys.get(tty)):
+            claudit_frame = DEMUX.resolve_claude_frame_context(claudit_sid, home=self.home)
+            stasiu_frame = DEMUX.resolve_claude_frame_context(stasiu_sid, home=self.home)
+            klaudiusz_frame = DEMUX.resolve_claude_frame_context(klaudiusz_sid, home=self.home)
+            explorek_frame = DEMUX.resolve_claude_frame_context(explorek_sid, home=self.home)
+
+        self.assertEqual(claudit_frame["pane_id"], 3)
+        self.assertEqual(claudit_frame["session"], "codescribe")
+        self.assertEqual(stasiu_frame["pane_id"], 4)
+        self.assertEqual(stasiu_frame["session"], "codescribe")
+        self.assertIsNone(klaudiusz_frame)
+        self.assertIsNone(explorek_frame)
+
+    def test_focus_panel_refreshes_frame_when_daemon_worker_attaches_later(self):
+        claudit_sid = "243a0eb0-4d6c-497b-8d36-5b58fa319b7f"
+        self.write_session(38260, claudit_sid, "claudit")
+        (self.claude_dir / "daemon" / "roster.json").write_text(
+            json.dumps({
+                "version": 1,
+                "workers": {
+                    "243a0eb0": {
+                        "sessionId": claudit_sid,
+                        "pid": 38250,
+                        "firedInteractiveMarks": [
+                            {"kind": "loaded", "msgsLoaded": 874, "msgsInJsonl": 877}
+                        ],
+                    }
+                },
+            })
+        )
+
+        # At lease creation time, no `claude agents` client is attached yet.
+        with mock.patch.object(DEMUX, "process_table", return_value={}):
+            lease = DEMUX.SessionLease(
+                root=self.root,
+                provider="claude-code",
+                provider_session_id=claudit_sid,
+                name="claudit",
+                bus=self.bus,
+                requested_id=None,
+                ttl_seconds=120,
+                follow_from_end=False,
+                provider_metadata_home=self.home,
+            )
+            self.addCleanup(lease.close)
+        self.assertIsNone(lease.frame)
+
+        # Later, user opens `claude agents` in pane 3 and attaches to `claudit`.
+        (self.claude_dir / "daemon" / "attach-journal" / "gesture-1.json").write_text(
+            json.dumps({
+                "gestureId": "gesture-1",
+                "startedAtEpochMs": 1792389042530,
+                "pid": 38226,
+                "msgsLoaded": 874,
+                "msgsInJsonl": 877,
+            })
+        )
+        procs = {
+            38250: {"pid": 38250, "ppid": 1, "tty": "ttys010", "command": "claude --bg-pty-host /tmp/b.sock"},
+            38260: {"pid": 38260, "ppid": 38250, "tty": "ttys010", "command": f"claude --resume {claudit_sid}"},
+            38226: {"pid": 38226, "ppid": 73198, "tty": "ttys008", "command": "claude agents"},
+        }
+        envs = {
+            38226: {
+                "VC_FRAME_PANE_ID": "3",
+                "VC_FRAME_SESSION_NAME": "codescribe",
+                "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
+            }
+        }
+        request = {
+            "schema": DEMUX.AGENT_PANEL_FOCUS_SCHEMA,
+            "kind": "focus_agent_panel",
+            "request_id": "8" * 24,
+            "emitted_at": DEMUX.utc_now(),
+            "provider": "claude-code",
+            "provider_session_id": claudit_sid,
+            "lease_id": lease.lease_id,
+            "bus": str(self.bus),
+            "channel": "4",
+            "source": "overlay_click",
+        }
+        with mock.patch.object(DEMUX, "process_table", return_value=procs), \
+                mock.patch.object(DEMUX, "process_environ", side_effect=lambda pid: envs.get(pid, {})), \
+                mock.patch.object(DEMUX, "tty_window_and_access", return_value=None), \
+                mock.patch.object(DEMUX, "run_panel_focus", return_value=("focused", 0)) as run_focus:
+            result = lease.focus_panel(request)
+
+        self.assertEqual(result["status"], "focused")
+        self.assertEqual(result["frame"]["pane_id"], 3)
+        self.assertEqual(result["frame"]["session"], "codescribe")
+        run_focus.assert_called_once()
+        persisted = json.loads(lease.path.read_text())
+        self.assertEqual(persisted["frame"]["pane_id"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
