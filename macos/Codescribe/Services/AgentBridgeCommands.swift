@@ -988,12 +988,21 @@ extension RealAgentBridgeInstaller {
     }
     let zshenv = homeDirectory.appendingPathComponent(".zshenv")
     let zprofile = homeDirectory.appendingPathComponent(".zprofile")
+    let resolvedHomePath = homeDirectory.resolvingSymlinksInPath().path
+    let profileStamp = VcFrameShellProfileStamp(
+      homePath: resolvedHomePath,
+      zshenv: VcFrameFileStat(path: zshenv.path),
+      zprofile: VcFrameFileStat(path: zprofile.path)
+    )
     let fileManager = FileManager.default
     guard
-      fileManager.fileExists(atPath: zshenv.path) || fileManager.fileExists(atPath: zprofile.path),
+      profileStamp.zshenv.exists || profileStamp.zprofile.exists,
       fileManager.isExecutableFile(atPath: "/bin/zsh")
     else {
       return provided
+    }
+    if let cached = VcFrameShellPathCache.shared.value(for: profileStamp) {
+      return cached
     }
     let process = Process()
     let stdoutPipe = Pipe()
@@ -1030,6 +1039,15 @@ extension RealAgentBridgeInstaller {
       !resolved.isEmpty
     else {
       return provided
+    }
+    VcFrameShellPathCache.shared.store(resolved, for: profileStamp)
+    let postStamp = VcFrameShellProfileStamp(
+      homePath: resolvedHomePath,
+      zshenv: VcFrameFileStat(path: zshenv.path),
+      zprofile: VcFrameFileStat(path: zprofile.path)
+    )
+    if postStamp != profileStamp {
+      VcFrameShellPathCache.shared.store(resolved, for: postStamp)
     }
     return resolved
   }
@@ -1123,7 +1141,8 @@ extension RealAgentBridgeInstaller {
       )
       if supported {
         await AgentPanelFocusCapabilityCache.shared.store(true, for: stamp)
-        if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp {
+        if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp
+        {
           await AgentPanelFocusCapabilityCache.shared.store(true, for: postProbeStamp)
         }
       } else {
@@ -1256,7 +1275,8 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
 
     let scriptURL = URL(fileURLWithPath: path)
     if scriptURL.deletingLastPathComponent().lastPathComponent == "bin" {
-      let siblingLibexec = scriptURL
+      let siblingLibexec =
+        scriptURL
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .appendingPathComponent("libexec")
@@ -1312,5 +1332,32 @@ private actor AgentPanelFocusCapabilityCache {
 
   func remove(for stamp: VcFrameExecutableStamp) {
     entries.removeValue(forKey: stamp)
+  }
+}
+
+private struct VcFrameShellProfileStamp: Hashable, Sendable {
+  let homePath: String
+  let zshenv: VcFrameFileStat
+  let zprofile: VcFrameFileStat
+}
+
+private final class VcFrameShellPathCache: @unchecked Sendable {
+  static let shared = VcFrameShellPathCache()
+  private let lock = NSLock()
+  private var entries: [VcFrameShellProfileStamp: String] = [:]
+
+  func value(for stamp: VcFrameShellProfileStamp) -> String? {
+    lock.lock()
+    defer { lock.unlock() }
+    return entries[stamp]
+  }
+
+  func store(_ path: String, for stamp: VcFrameShellProfileStamp) {
+    lock.lock()
+    defer { lock.unlock() }
+    if entries.count >= 64 {
+      entries.removeAll(keepingCapacity: true)
+    }
+    entries[stamp] = path
   }
 }
