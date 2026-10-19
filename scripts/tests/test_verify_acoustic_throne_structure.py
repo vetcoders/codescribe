@@ -2128,8 +2128,21 @@ class NeutralAstTests(unittest.TestCase):
             ("release_capture_subscriber", "feed.id != id", "false"),
             ("finish_closed_capture", "self.terminal_take.as_mut()", "self.terminal_take.take()"),
             ("finish_closed_capture", "if take.is_settled()", "if true"),
-            ("finish", "self.archive_worker.as_mut()", "self.archive_worker.take()"),
+            ("prepare_terminal_audio", "self.archive_worker.as_mut()", "self.archive_worker.take()"),
+            ("prepare_terminal_audio", "let _ = sender.send(receipt);", ""),
+            ("finish", "self.prepare_terminal_audio().await;", ""),
             ("finish", "self.transcription_handle.as_mut()", "self.transcription_handle.take()"),
+            # Direct mode: success needs the recognizer's own completion, the
+            # close result is retained once and cleared, and the mode comes
+            # from the take's frozen settings with no completion yet.
+            ("finish", "self.direct_transcript && self.wait_live_finals_admitted().await",
+             "self.direct_transcript"),
+            ("finish", "return if direct_decoder_complete {", "return if true {"),
+            ("close_capture", "self.closed_capture_was_active = Some(was_active);", ""),
+            ("finish_closed_capture", "self.closed_capture_was_active = None;", ""),
+            ("detach_closed_take", "self.closed_capture_was_active = None;", ""),
+            ("detach_take_state", "direct_decoder_complete: None", "direct_decoder_complete: Some(true)"),
+            ("detach_take_state", "!snapshot.seal_ledger_enabled()", "true"),
             ("is_settled", "&& self.event_sink.is_none()", ""),
             ("is_settled", "&& self.archive_worker.is_none()", ""),
             ("finalize_take_archive", "count as u64 == expected_samples", "true"),
@@ -2178,7 +2191,7 @@ class NeutralAstTests(unittest.TestCase):
             ("incomplete_success_decoy", "finish", "if empty_capture {", "if empty_capture || bypass {"),
             ("audio_receipt_removed", "finish", "                    finality,\n                    audio_path,", "                    finality,"),
             ("committed_receipt_removed", "finish", "                    committed_text: transcript,", ""),
-            ("shutdown_bypass", "finish", "if let Some(sender)", "if bypass { return Ok((String::new(), None)); } if let Some(sender)"),
+            ("shutdown_bypass", "prepare_terminal_audio", "if let Some(sender)", "if bypass { return; } if let Some(sender)"),
             ("shutdown_order", "finish", "self.transcription_handle = None;", ""),
             ("stop_bypass", "stop", "let was_active =", "if bypass { return Ok((String::new(), None)); } let was_active ="),
         ]
@@ -2510,7 +2523,8 @@ class NeutralAstTests(unittest.TestCase):
             contracts.append({"name": corridor["name"], "hops": hops,
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
-                    {"execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"}]})
+                    {"execute_clipboard_paste", "paste_to_stop_target", "finish",
+                     "prepare_terminal_audio", "terminal_finality"}]})
         return contracts
 
     def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
@@ -2564,8 +2578,9 @@ class NeutralAstTests(unittest.TestCase):
         live = VERIFIER.StructuralVerifier(self.repo)
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
-        self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 4)
-        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"):
+        self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 5)
+        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish",
+                       "prepare_terminal_audio", "terminal_finality"):
             original = live.occurrences(symbol)
             missing = copy.deepcopy(original)
             missing["occurrences"] = [row for row in missing["occurrences"] if row.get("match_role") != "reference"]
@@ -2859,6 +2874,34 @@ class CurrentChainMutantTests(unittest.TestCase):
                 self.assertTrue(failures, name)
                 self.assertTrue(
                     any("settings_to_capture_admission" in failure and obligation in failure
+                        for failure in failures), (name, failures))
+
+    def test_ledger_admission_guards_cannot_be_bypassed(self):
+        """Direct transcription opts out of the ledger; the ledger keeps its gate.
+
+        The choice comes from the frozen snapshot, a calibration refusal still
+        refuses a ledger take, and the lane and detector guards still apply to
+        it. Each bypass must be refused at the admission hop itself.
+        """
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = "evaluate_probed_admission_at", "app/controller/admission.rs"
+        cases = [
+            ("ledger_choice_forged", "let ledger_enabled = snapshot.seal_ledger_enabled();",
+             "let ledger_enabled = false;"),
+            ("ledger_calibration_refusal_swallowed", "Some(calibration?)", "calibration.ok()"),
+            ("lane_guard_inverted", "if ledger_enabled && !seal_lane.armed",
+             "if !ledger_enabled && !seal_lane.armed"),
+            ("vad_guard_inverted", "if ledger_enabled && !seal_lane.vad_available",
+             "if !ledger_enabled && !seal_lane.vad_available"),
+            ("calibration_version_forged",
+             "calibration_version: calibration.map(|calibration| calibration.version)",
+             "calibration_version: None"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertTrue(
+                    any("settings_to_capture_admission" in failure and symbol in failure
                         for failure in failures), (name, failures))
 
     def test_inline_take_archive_ownership_cannot_be_removed_or_reordered(self):
