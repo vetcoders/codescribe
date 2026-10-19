@@ -1,8 +1,12 @@
 //! Integrator regressions for the production occurrence qualification path.
 //! Synthetic capture proves admission geometry, not recognition accuracy.
 
-use super::{AppleSealState, EnergyCalibration, OccurrenceIdentity, qualify_owned_occurrence};
+use super::{
+    AdmitWindow, AppleSealState, EnergyCalibration, EngineEvent, LedgerObservationProducer,
+    MutationReceipt, OccurrenceIdentity, qualify_owned_occurrence,
+};
 use crate::audio::capture_receipt::CaptureLevelAccumulator;
+use crate::stt::tail_provider::{TailSampleRange, TailSegmentGrain, TimedTailSegment};
 
 const RATE: u32 = 1_000;
 const FLOOR: f32 = 0.05;
@@ -64,4 +68,72 @@ fn repeated_real_bursts_keep_both_physical_occurrences() {
     let ledger = state.acoustic_ledger.lock().unwrap();
     assert!(ledger.serial_of(&first).is_some());
     assert!(ledger.serial_of(&second).is_some());
+}
+
+fn route_unanchored(pcm: &[f32], label: &str) -> Vec<EngineEvent> {
+    let session = "measured-unanchored-pin";
+    let mut state = capture(session, pcm);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    state.route_overlap_pins(
+        &tx,
+        AdmitWindow {
+            request_id: 1,
+            sample_start: 0,
+            sample_end: pcm.len() as u64,
+        },
+        &[],
+        &[TimedTailSegment {
+            text: label.into(),
+            range: TailSampleRange {
+                session: session.into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: pcm.len() as u64,
+            },
+            grain: TailSegmentGrain::Word,
+            confidence: None,
+        }],
+        LedgerObservationProducer::Whisper,
+    );
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+#[test]
+fn sub_floor_pin_cannot_reappear_as_visible_unanchored_text() {
+    let mut pcm = vec![0.04; 1_000];
+    pcm[..20].fill(0.06);
+    for label in ["Dziękuję.", "dowolne"] {
+        let events = route_unanchored(&pcm, label);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                receipt: MutationReceipt::Refuse { .. },
+                ..
+            }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            EngineEvent::LedgerMutation {
+                receipt: MutationReceipt::KeepVisibleUnanchored { .. },
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn real_unanchored_sound_keeps_its_visible_evidence() {
+    let mut pcm = vec![0.04; 1_000];
+    pcm[..80].fill(0.06);
+    assert!(
+        route_unanchored(&pcm, "dowolne")
+            .iter()
+            .any(|event| matches!(
+                event,
+                EngineEvent::LedgerMutation {
+                    receipt: MutationReceipt::KeepVisibleUnanchored { .. },
+                    ..
+                }
+            ))
+    );
 }
