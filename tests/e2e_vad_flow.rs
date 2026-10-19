@@ -507,8 +507,16 @@ fn assets_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CODESCRIBE_DATA_ASSETS") {
         return PathBuf::from(dir);
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let local = PathBuf::from(home).join(".codescribe/data_assets");
+    for candidate in [
+        std::env::var("HOME").ok().map(PathBuf::from),
+        std::env::var("CARGO_HOME")
+            .ok()
+            .and_then(|c| PathBuf::from(c).parent().map(std::path::Path::to_path_buf)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let local = candidate.join(".codescribe/data_assets");
         if local.is_dir() {
             return local;
         }

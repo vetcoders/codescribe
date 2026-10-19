@@ -5,14 +5,30 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn file_stream_emits_before_completion_and_matches_the_plain_verdict() {
+    let operator_home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .filter(|h| h.join(".codescribe/data_assets").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME").ok().and_then(|c| {
+                std::path::PathBuf::from(c)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+        .expect("operator home");
     let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
-        std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+        operator_home
             .join(".codescribe/data_assets/01_no-to-dobra.wav")
             .to_string_lossy()
             .into_owned()
     });
+    let models_dir = operator_home.join(".codescribe/models");
+    let data_dir = tempfile::tempdir().expect("isolated data dir");
     let binary = env!("CARGO_BIN_EXE_codescribe");
     let mut child = Command::new(binary)
+        .env("CODESCRIBE_MODELS_DIR", &models_dir)
+        .env("CODESCRIBE_DATA_DIR", data_dir.path())
         .args([
             "transcribe",
             "--no-bus",
@@ -40,6 +56,8 @@ fn file_stream_emits_before_completion_and_matches_the_plain_verdict() {
         "output was dumped at completion rather than between decode windows"
     );
     let plain = Command::new(binary)
+        .env("CODESCRIBE_MODELS_DIR", &models_dir)
+        .env("CODESCRIBE_DATA_DIR", data_dir.path())
         .args(["transcribe", "--no-bus", "--language", "pl", &wav])
         .output()
         .expect("plain CLI");

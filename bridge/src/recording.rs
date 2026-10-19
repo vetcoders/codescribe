@@ -1617,8 +1617,24 @@ mod retranscribe_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn local_file_button_pass_uses_configured_language_on_retained_audio() {
+        let operator_home = std::env::var("HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.join(".codescribe/data_assets").is_dir())
+            .or_else(|| {
+                std::env::var("CARGO_HOME").ok().and_then(|c| {
+                    std::path::PathBuf::from(c)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+            })
+            .expect("operator home");
+        let _models_dir = codescribe_core::test_isolation::EnvGuard::set(
+            "CODESCRIBE_MODELS_DIR",
+            &operator_home.join(".codescribe/models"),
+        );
         let wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
+            operator_home
                 .join(".codescribe/data_assets/01_no-to-dobra.wav")
                 .to_string_lossy()
                 .into_owned()
@@ -1763,9 +1779,24 @@ mod retranscribe_tests {
     ///   cargo test -p codescribe-ffi -- --ignored --nocapture retranscribe_passes_on_real_session_audio
     #[tokio::test(flavor = "multi_thread")]
     async fn retranscribe_passes_on_real_session_audio() {
+        let operator_home = std::env::var("HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.join(".codescribe/data_assets").is_dir())
+            .or_else(|| {
+                std::env::var("CARGO_HOME").ok().and_then(|c| {
+                    std::path::PathBuf::from(c)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+            })
+            .expect("operator home");
+        let _models_dir = codescribe_core::test_isolation::EnvGuard::set(
+            "CODESCRIBE_MODELS_DIR",
+            &operator_home.join(".codescribe/models"),
+        );
         let wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
-            let fallback = std::path::PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join(".codescribe/data_assets/01_no-to-dobra.wav");
+            let fallback = operator_home.join(".codescribe/data_assets/01_no-to-dobra.wav");
             if fallback.is_file() {
                 fallback.to_string_lossy().into_owned()
             } else {

@@ -24,6 +24,35 @@ use serial_test::serial;
 /// Synthesize 24 kHz mono speech via `codescribe_core::tts` when CSM-1B weights
 /// are installed locally, or via macOS native `/usr/bin/say` (`Samantha` / `Zosia`)
 /// when running without local CSM-1B safetensors.
+fn ensure_operator_model_env() {
+    let Some(operator_home) = std::env::var("HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.join(".codescribe/models").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME").ok().and_then(|c| {
+                std::path::PathBuf::from(c)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+    else {
+        return;
+    };
+    if std::env::var_os("CODESCRIBE_MODELS_DIR").is_none() {
+        let models = operator_home.join(".codescribe/models");
+        if models.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_MODELS_DIR", models) };
+        }
+    }
+    if std::env::var_os("CODESCRIBE_HF_CACHE").is_none() {
+        let hf = operator_home.join(".cache/huggingface/hub");
+        if hf.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_HF_CACHE", hf) };
+        }
+    }
+}
+
 fn synthesize_for_roundtrip(text: &str, lang: &str) -> Result<Vec<f32>> {
     if codescribe_core::tts::init().is_ok() {
         return codescribe_core::tts::synthesize(text);
@@ -118,6 +147,7 @@ fn test_whisper_embedded_readiness_contract() {
 #[test]
 #[serial]
 fn test_tts_stt_round_trip_english() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Hello, this is a test of the speech pipeline.";
@@ -153,6 +183,7 @@ fn test_tts_stt_round_trip_english() -> Result<()> {
 #[test]
 #[serial]
 fn test_tts_stt_round_trip_polish() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Cześć, to jest test systemu rozpoznawania mowy.";
@@ -182,6 +213,7 @@ fn test_tts_stt_round_trip_polish() -> Result<()> {
 #[test]
 #[serial]
 fn test_embedding_round_trip_similarity() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
     codescribe_core::embedder::init()?;
 
@@ -213,6 +245,7 @@ fn test_embedding_round_trip_similarity() -> Result<()> {
 #[test]
 #[serial]
 fn test_embedding_preserves_meaning() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::embedder::init()?;
 
     // Similar meaning, different words
@@ -248,6 +281,7 @@ fn test_embedding_preserves_meaning() -> Result<()> {
 #[test]
 #[serial]
 fn test_full_pipeline_double_round_trip() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
     codescribe_core::embedder::init()?;
 
@@ -291,6 +325,7 @@ fn test_whisper_embedded_model_works() -> Result<()> {
     let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
     eprintln!("Whisper embedded model available: {}", embedded);
 
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     // Generate test audio (simple sine wave as speech proxy)
@@ -348,6 +383,7 @@ fn test_embedded_model_works() -> Result<()> {
     let embedded = codescribe_core::embedder::embedded::is_embedded_available();
     eprintln!("Embedded model available: {}", embedded);
 
+    ensure_operator_model_env();
     codescribe_core::embedder::init()?;
 
     let text = "Hello world";
@@ -379,6 +415,7 @@ fn test_embedded_model_works() -> Result<()> {
 #[test]
 #[serial]
 fn test_numbers_survive_round_trip() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
     let inputs = [
         "My phone number is 555-1234.",
@@ -402,6 +439,7 @@ fn test_numbers_survive_round_trip() -> Result<()> {
 #[test]
 #[serial]
 fn test_punctuation_handling() -> Result<()> {
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Hello! How are you? I'm fine, thanks.";
