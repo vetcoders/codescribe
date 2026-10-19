@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import OSLog
 
 /// Frame coordinates published by an attached follower in `leases/<lease_id>.json`
 /// and echoed in `codescribe.agent-panel-focus-result.v1`.
@@ -860,21 +861,34 @@ extension RealAgentBridgeInstaller {
         withJSONObject: request.eventObject(busPath: bus))
       let process = Process()
       let input = Pipe()
+      let diagnostics = Pipe()
       process.executableURL = URL(fileURLWithPath: executablePath)
       process.arguments = ["bus", "append-event", "--bus", bus]
       process.standardInput = input
       process.standardOutput = FileHandle.nullDevice
-      process.standardError = FileHandle.nullDevice
+      process.standardError = diagnostics
       try process.run()
       try input.fileHandleForWriting.write(contentsOf: payload)
       try input.fileHandleForWriting.close()
+      let refusalData = diagnostics.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        let refusal =
+          String(data: refusalData.suffix(4096), encoding: .utf8)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+          .components(separatedBy: "\n").last?
+          .replacingOccurrences(of: "codescribe: ", with: "") ?? ""
+        Logger(
+          subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+          category: "agent-panel-focus"
+        ).error(
+          "panel focus publish failed channel=\(owner.channel, privacy: .public) request_id=\(request.requestID, privacy: .public) exit=\(process.terminationStatus, privacy: .public) executable=\(executablePath, privacy: .public) stderr=\(refusal, privacy: .public)"
+        )
+        let headline = String(localized: "Could not request panel focus in Frame.")
         throw NSError(
           domain: "Codescribe.PanelFocus", code: Int(process.terminationStatus),
           userInfo: [
-            NSLocalizedDescriptionKey: String(
-              localized: "Could not request panel focus in Frame.")
+            NSLocalizedDescriptionKey: refusal.isEmpty ? headline : "\(headline) (\(refusal))"
           ])
       }
     }.value
