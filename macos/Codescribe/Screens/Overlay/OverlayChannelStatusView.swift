@@ -2015,8 +2015,18 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
         }
       }
     }
+    // With keyboard navigation on (System Settings › Keyboard) every row is
+    // focusable, and the system ring stayed on "0 · All", the first row, while
+    // clicks moved the selection bar: two marks naming two rows, and a message
+    // typed under the ring went to the bar's agent (Maciej, 2026-10-19, div0).
+    // Focus entering the roster lands on the open conversation, and a focused
+    // row follows the selection.
+    .defaultFocus($rowFocus, focusedRowID)
     .onChange(of: focusRevision) { _, _ in
       rowFocus = focusedRowID
+    }
+    .onChange(of: focusedRowID) { _, id in
+      if rowFocus != nil, let id { rowFocus = id }
     }
   }
 }
