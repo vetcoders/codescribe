@@ -142,6 +142,24 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
 
     let channelBus = busesDir.appendingPathComponent("channel-5.jsonl")
+    let leasesDir = tempRoot.appendingPathComponent("leases", isDirectory: true)
+    try FileManager.default.createDirectory(at: leasesDir, withIntermediateDirectories: true)
+    let leaseReceipt: [String: Any] = [
+      "schema": "codescribe.agent-bridge.lease.v1",
+      "lease_id": owner.leaseID,
+      "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID,
+      "channel": owner.channel,
+      "name": owner.name,
+      "bus": channelBus.path,
+    ]
+    let leaseJSON = try String(
+      data: JSONSerialization.data(withJSONObject: leaseReceipt, options: [.sortedKeys]),
+      encoding: .utf8)!
+    try leaseJSON.write(
+      to: leasesDir.appendingPathComponent("\(owner.leaseID).json"),
+      atomically: true,
+      encoding: .utf8)
     let resultRow: [String: Any] = [
       "schema": "codescribe.agent-panel-focus-result.v1",
       "kind": "agent_panel_focus_result",
