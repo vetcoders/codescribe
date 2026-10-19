@@ -10855,6 +10855,16 @@
         }
       }
     },
+    "Not calibrated" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Niewykonana"
+          }
+        }
+      }
+    },
     "Not checked yet" : {
       "comment" : "Diagnostics summary headline before the first probe has run",
       "localizations" : {

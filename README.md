@@ -538,7 +538,7 @@ Permissions apply to the features you use:
 - **Full Disk Access** — Optional access to protected files for the Agent
 
 The current setup completion check also includes Screen Recording, even for Basic mode; Full Disk Access is optional.
-See the [user tutorial](docs/codescribe-step-by-step-tutorial.html#permissions) for the permission steps and the distinction between closing the wizard and recording readiness. Microphone calibration and local Whisper availability are separate prerequisites described there.
+See the [user tutorial](docs/codescribe-step-by-step-tutorial.html#permissions) for the permission steps and the distinction between closing the wizard and recording readiness. Local Whisper availability is a separate prerequisite described there. A microphone calibration is needed only with seal-ledger admission, which is off by default (see Recording readiness in [the Settings guide](docs/guide/settings.md)).
 
 ## Current Focus
 
