@@ -84,15 +84,6 @@ final class OverlayTrayCoherenceTests: XCTestCase {
     }
   }
 
-  /// The evidence chip's words moved onto the brand ramp; only its waveform
-  /// glyph keeps system sizing.
-  func testEvidenceChipTextUsesBrandTypeRamp() throws {
-    let text = try source("Overlay/OverlayEvidenceList.swift")
-    let label = try XCTUnwrap(text.range(of: "private func label(count: Int"))
-    let body = String(text[label.lowerBound...].prefix(400))
-    XCTAssertTrue(body.contains(".font(CSFont.ui(11, .medium))"))
-  }
-
   // MARK: - Tray consumes tokens, never local hex
 
   /// `TrayLocal.subnote` (#C7CABF) was a mock-only fixed-dark tint competing

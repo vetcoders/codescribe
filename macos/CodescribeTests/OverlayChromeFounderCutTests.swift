@@ -17,53 +17,21 @@ import XCTest
 /// does expose: the native hierarchy and window drag hit-testing.
 @MainActor
 final class OverlayChromeFounderCutTests: XCTestCase {
-  func testEvidenceChipCountsAllItemsAndShowsLatestTwelveInPCMOrder() throws {
-    let evidence = (0..<13).map { index in
-      CsUnanchoredEvidence(
-        sampleStart: UInt64(index * 1600), sampleEnd: UInt64((index + 1) * 1600),
-        text: "word \(index)", reason: "late_apple_word_not_current")
-    }
-    let chip = try XCTUnwrap(OverlayEvidencePresentation.chip(evidence: evidence))
-    XCTAssertEqual(chip.count, 13)
-    XCTAssertEqual(chip.line, (1..<13).map { "word \($0)" }.joined(separator: " · "))
-    XCTAssertNil(OverlayEvidencePresentation.chip(evidence: []))
-  }
-
-  func testEvidenceChipPreservesRepeatedWordsAndVerbatimLabels() throws {
-    let evidence = (0..<5).map { index in
-      CsUnanchoredEvidence(
-        sampleStart: UInt64(index * 1600), sampleEnd: UInt64((index + 1) * 1600),
-        text: "Iwo", reason: "late_apple_word_not_current")
-    }
-    let chip = try XCTUnwrap(OverlayEvidencePresentation.chip(evidence: evidence))
-    XCTAssertEqual(chip.count, 5)
-    XCTAssertEqual(chip.line, "Iwo · Iwo · Iwo · Iwo · Iwo")
-    let verbatim = CsUnanchoredEvidence(
-      sampleStart: 0, sampleEnd: 1600, text: " żarty.  Krawędziach ", reason: "unanchored")
-    XCTAssertEqual(
-      OverlayEvidencePresentation.chip(evidence: [verbatim])?.line, verbatim.text)
-  }
-
-  func testEvidenceChipExpandsOnlyAfterSelectionWhileToolsAreClosed() {
-    XCTAssertFalse(OverlayEvidencePresentation.isExpanded(selected: false, actionsOpen: false))
-    XCTAssertTrue(OverlayEvidencePresentation.isExpanded(selected: true, actionsOpen: false))
-    XCTAssertFalse(OverlayEvidencePresentation.isExpanded(selected: true, actionsOpen: true))
-  }
-
-  func testEvidenceChipReplacesBodyRowsInsideTheSharedBottomGlassContainer() throws {
-    let evidence = try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift")
-    XCTAssertFalse(evidence.contains("ForEach"))
-    XCTAssertFalse(evidence.contains("toolsHandleClearance"))
-    XCTAssertFalse(evidence.contains("VStack"))
+  /// Maciej, 2026-10-19: "na chuj mie te 5000+ jako informacja, jak ja sobie
+  /// moge odpalić voice lab i mieć czytelniejsze i lepsze". The uncommitted
+  /// words are read in Voice Lab; the bar keeps only the actions capsule and
+  /// the transcript never shows them either.
+  func testBottomBarCarriesNoUncommittedEvidenceChip() throws {
+    XCTAssertThrowsError(
+      try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift"),
+      "the evidence chip is removed, not hidden")
     let overlay = try overlaySource()
-    let body = try section(
-      of: overlay, from: "private var bodySection", to: "private var transcriptScroll")
-    XCTAssertFalse(body.contains("OverlayEvidence"))
+    XCTAssertFalse(overlay.contains("OverlayEvidence"))
     let transcript = try section(
       of: overlay, from: "private var transcriptScroll", to: "private var revisionStatusRow")
     XCTAssertFalse(
       transcript.contains("state.liveEvidence"),
-      "Uncommitted hypotheses stay in the bounded evidence chip, outside transcript height")
+      "Uncommitted hypotheses never take transcript height")
     let container = try section(
       of: overlay, from: "private func bottomChromeContainer", to: "private func canvasStack")
     XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
@@ -73,42 +41,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let bottom = try section(
       of: overlay, from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    XCTAssertTrue(bottom.contains("OverlayEvidenceChip("))
-    XCTAssertTrue(bottom.contains("HStack(spacing: 6)"))
-    XCTAssertTrue(bottom.contains("actionsOpen: actions.phase == .open"))
-    XCTAssertTrue(bottom.contains("glassNamespace: bottomChromeNamespace"))
-    XCTAssertTrue(bottom.contains(".layoutPriority(-1)"))
+    XCTAssertFalse(bottom.contains("HStack(spacing: 6)"), "the actions capsule stands alone")
     XCTAssertTrue(bottom.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(bottom.contains(".padding(.horizontal, OverlayResizeChrome.actionsSideInset)"))
     XCTAssertTrue(overlay.contains("@Namespace private var bottomChromeNamespace"))
-    XCTAssertTrue(evidence.contains(".glassEffect(.regular.interactive(), in: Capsule())"))
-    XCTAssertTrue(evidence.contains(".glassEffectID(\"overlay-evidence\", in: glassNamespace)"))
-    XCTAssertTrue(evidence.contains("if reduceTransparency"))
-    XCTAssertTrue(evidence.contains(".background(palette.desktopBackground.color, in: Capsule())"))
-    XCTAssertTrue(evidence.contains(".background(.regularMaterial, in: Capsule())"))
   }
 
-  func testEvidenceChipUsesExplicitButtonActivationAndRespectsReducedMotion() throws {
-    let evidence = try source(at: "Codescribe/Screens/Overlay/OverlayEvidenceList.swift")
-    XCTAssertTrue(evidence.contains(".lineLimit(1)"))
-    XCTAssertTrue(evidence.contains(".truncationMode(.head)"))
-    XCTAssertTrue(evidence.contains(".frame(height: OverlayResizeChrome.actionsHeight)"))
-    XCTAssertFalse(evidence.contains(".onHover"))
-    XCTAssertTrue(evidence.contains("selected.toggle()"))
-    XCTAssertTrue(evidence.contains("OverlayEvidencePresentation.isExpanded("))
-    XCTAssertTrue(evidence.contains(".accessibilityElement(children: .ignore)"))
-    XCTAssertTrue(evidence.contains("Also heard, not committed:"))
-    XCTAssertTrue(evidence.contains("OverlayMiniTooltip("))
-    for forbidden in ["onTapGesture", ".tint(", ".allowsHitTesting(false)"] {
-      XCTAssertFalse(evidence.contains(forbidden), forbidden)
-    }
-    XCTAssertTrue(
-      evidence.contains(".glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)"))
-    XCTAssertTrue(evidence.contains("transaction.animation = nil"))
-    XCTAssertTrue(evidence.contains("transaction.disablesAnimations = true"))
-  }
-
-  func testActionsGlassMorphsInTheEvidenceNamespaceWithoutPaintingTheBottomBar() throws {
+  func testActionsGlassMorphsInTheBottomNamespaceWithoutPaintingTheBottomBar() throws {
     let overlay = try overlaySource()
     let material = try section(
       of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
@@ -126,12 +65,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: overlay, from: "private func canvasStack",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
     XCTAssertEqual(
-      bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 2)
+      bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 1)
     let actionSurface = try XCTUnwrap(bottom.range(of: "OverlayActionsSurface(palette:"))
     let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.bottom, OverlayResizeChrome"))
     XCTAssertLessThan(actionSurface.lowerBound, clearMargin.lowerBound)
     XCTAssertFalse(
-      bottom.contains(".glassEffect("), "Only the two capsules may claim glass hit regions")
+      bottom.contains(".glassEffect("), "Only the actions capsule may claim a glass hit region")
     XCTAssertTrue(
       bottom.contains(
         ".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)"))
@@ -1023,8 +962,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(capsule.contains("state.toast"))
     XCTAssertTrue(source.contains("overlay-footer-notice"))
     XCTAssertTrue(source.contains("OverlayCoverageStatus("))
-    XCTAssertTrue(
-      source.contains("diagnosticDetail: showsDiagnostics ? state.coverageRefusalDetail : nil"))
+    XCTAssertFalse(
+      source.contains("coverageRefusalDetail"),
+      "ledger refusal detail is Voice Lab's, not the bar's")
   }
 
   func testEveryToolHasACaptionAndDispatchResetsInteraction() {

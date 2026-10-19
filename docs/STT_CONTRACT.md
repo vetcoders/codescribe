@@ -182,9 +182,9 @@ casing, commas and whitespace keep their existing bytes, including when the last
 owner spans a long take or its live shaping cache is incomplete. Explicit human
 formatting remains a separate action. The main overlay field projects the
 committed document throughout capture and terminal review; unresolved recognizer
-words remain visibly labelled “Also heard · not committed” in a separate,
-scrollable review area. This projection change neither admits those words nor
-certifies delivery coverage or restored recognition quality. Untimed Apple
+words and ledger coverage are reviewed in Voice Lab, not in the overlay (Maciej,
+2026-10-19). This projection change neither admits those words nor certifies
+delivery coverage or restored recognition quality. Untimed Apple
 partial revisions never inherit PCM identity from word indexes or token counts.
 
 ### File observations and Apple backend identity (2026-10-02)
