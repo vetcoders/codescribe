@@ -4349,6 +4349,76 @@ mod slot_ops_tests {
         }
     }
 
+    // Founder take 19 X 09:55 ("Jest."): at Stop Apple held only the last word
+    // heard; the 16-word Whisper decode carried "czy nie?" far from that word
+    // and lost adjudication, then every later Apple generation bounced off the
+    // occupied range. Order replayed as in life: Stop, one Apple word, Whisper,
+    // the full Apple sentence.
+    #[test]
+    fn forensic_div0_stop_stub_cannot_veto_a_decode_with_a_distant_negation() {
+        const SENTENCE: [&str; 16] = [
+            "Dobra,",
+            "czy",
+            "ja",
+            "mam",
+            "coś",
+            "do",
+            "podmienienia",
+            "ewentualnie,",
+            "czy",
+            "nie?",
+            "Czy",
+            "zostajemy",
+            "na",
+            "tym,",
+            "co",
+            "jest?",
+        ];
+        let expected = SENTENCE.join(" ");
+        let (mut ledger, owner, pcm) = forensic_split_empty_capture("stop-stub-jest");
+        let pins = |window_end: Option<u64>| {
+            let width = (owner.sample_end - owner.sample_start) / SENTENCE.len() as u64;
+            SENTENCE
+                .iter()
+                .enumerate()
+                .map(|(index, word)| {
+                    let start = owner.sample_start + index as u64 * width;
+                    let pin = WordPin::new(start, start + width, *word);
+                    match window_end {
+                        Some(end) => pin.with_decode_window(0, end),
+                        None => pin,
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let stub = ObservationIdentity::new(ObservationProducer::Apple, 11, 0, owner.clone());
+        assert!(ledger.admit(&stub, "jest").grants_mutation());
+        let source = ledger.slots_of(&owner).unwrap()[0].clone();
+        assert!(!ledger.complete_word_slot(&source));
+        ledger.schedule_frontier(
+            owner.clone(),
+            [ObservationProducer::Whisper, ObservationProducer::Apple],
+        );
+        assert!(ledger.require_text_recovery(&owner));
+
+        let whisper = ledger.next_word_observation(ObservationProducer::Whisper, 73, &owner);
+        let receipt = ledger.admit_word_slots(&whisper, &pins(Some(pcm.len() as u64)));
+        assert!(receipt.grants_mutation(), "{receipt:?}");
+        assert_eq!(
+            ledger.text_of(&owner),
+            Some(expected.as_str()),
+            "a negation outside the stub's reach does not reverse the stub: {:?}",
+            ledger.word_choices()
+        );
+        assert!(!ledger.text_recovery_pending(&owner));
+
+        let apple = ledger.next_word_observation(ObservationProducer::Apple, 11, &owner);
+        ledger.admit_word_slots(&apple, &pins(None));
+        assert_eq!(ledger.text_of(&owner), Some(expected.as_str()));
+        assert_eq!(ledger.slots_of(&owner).unwrap().len(), SENTENCE.len());
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
     #[test]
     fn forensic_div0_unbounded_label_cannot_append_to_a_complete_word_source() {
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {

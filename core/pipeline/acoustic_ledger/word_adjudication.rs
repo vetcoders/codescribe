@@ -301,6 +301,24 @@ pub(super) fn coarse_polarity_disagrees(held: &str, candidate: &str) -> bool {
         let cand_prefix = cand_words[..prefix_end].join(" ");
         return negation_contexts(&cand_prefix) != held_neg;
     }
+    // A stub can also be the phrase's tail or middle: at Stop Apple can hold
+    // only the last word heard (Maciej, 19 X 09:55: "jest" for a 16-word
+    // sentence with "czy nie?"). A negation-free stub reached with no negation
+    // beside it reverses nothing; other negations belong to unreached clauses.
+    if held_neg.is_empty() && !held_words.is_empty() && cand_words.len() > held_words.len() {
+        let unreversed = cand_words
+            .windows(held_words.len())
+            .enumerate()
+            .filter(|(_, run)| *run == held_words.as_slice())
+            .any(|(start, _)| {
+                let from = start.saturating_sub(1);
+                let to = (start + held_words.len() + 1).min(cand_words.len());
+                negation_contexts(&cand_words[from..to].join(" ")).is_empty()
+            });
+        if unreversed {
+            return false;
+        }
+    }
     true
 }
 
