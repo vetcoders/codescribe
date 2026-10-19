@@ -667,9 +667,9 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
-  func testRosterSurfaceFitsNarrowCanvasAsPillsAndDocksOnWideCanvas() throws {
-    // Narrow windows: the roster is the pill stack under the name pill, fixed
-    // to the pill width at scale 1 (mockup, Founder 2026-10-16).
+  func testRosterSurfaceCoversNarrowCanvasAndDocksOnWideCanvas() throws {
+    // Narrow windows: the roster is the docked column's list over the whole
+    // canvas, in place of the conversation (2026-10-19).
     for size in [
       DictationOverlayWindow.minSize, CGSize(width: 470, height: 280),
       CGSize(width: 700, height: 400),
@@ -703,12 +703,9 @@ final class OverlayResizeHitTests: XCTestCase {
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       let drawer = recorder.drawer
-      XCTAssertEqual(
-        drawer.width, 224, accuracy: 1, "the pills share the name pill's width at scale 1")
-      XCTAssertGreaterThanOrEqual(drawer.minX, 0)
-      XCTAssertGreaterThanOrEqual(drawer.minY, 46, "the stack hangs below the header pill")
-      XCTAssertLessThanOrEqual(drawer.maxX, size.width + 0.5)
-      XCTAssertLessThanOrEqual(drawer.maxY, size.height + 0.5)
+      XCTAssertEqual(drawer.minX, 0, accuracy: 0.5, "the list starts at the left edge")
+      XCTAssertEqual(drawer.width, size.width, accuracy: 1, "and covers the canvas width")
+      XCTAssertEqual(drawer.maxY, size.height, accuracy: 0.5, "and its height")
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.activeText, text)
       XCTAssertEqual(state.captureGeneration, generation)

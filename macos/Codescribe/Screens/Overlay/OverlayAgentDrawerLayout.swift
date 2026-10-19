@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Wide/narrow hosting decision for the agents roster, shared by the overlay
-/// canvas (docked column) and the conversation surface (pill stack and the
-/// name pill's width). One threshold in one text scale, so ⌘+ moves both
-/// surfaces together (mockup `szuflada-agentow.html`, Founder 2026-10-16).
+/// Wide/narrow hosting decision for the agents roster: a docked column beside
+/// the conversation, or the same list over the whole window below the
+/// threshold. One threshold in one text scale, so ⌘+ moves both surfaces
+/// together (mockup `szuflada-agentow.html`, Founder 2026-10-16).
 enum OverlayAgentDrawerLayout {
   /// Docking needs the drawer and a conversation that still reads well side by
   /// side: 300 + 420 points in the overlay's text scale. 520 for the
   /// conversation kept a 900-point window at text 1.2 on pills with room to
   /// spare, while the same column docked on dragon at text 0.8 (Maciej,
   /// 2026-10-19: "Breaking point dla trybu rozwiniętego jest zbyt szeroko").
-  /// At very large text a medium window still falls back to pills.
+  /// At very large text a medium window still falls back to the full-width list.
   static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
     windowWidth >= (300 + 420) * textScale
   }
@@ -51,6 +51,6 @@ enum OverlayAgentDrawerLayout {
       ? fillsWindowPreference : shown / textScale
   }
 
-  /// The name pill and every pill in the stack share this width: 224 at 1.0.
+  /// The name pill's width: 224 at 1.0.
   static func pillWidth(textScale: CGFloat) -> CGFloat { 224 * textScale }
 }
