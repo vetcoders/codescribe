@@ -200,7 +200,11 @@ final class CSSidebarMaterialTests: XCTestCase {
   // MARK: - Appearance Adaptation
 
   func testSettingsHeaderKeepsTheSharedHeightAndFullSidebarMaterial() async throws {
-    let host = NSHostingController(rootView: SettingsView(model: .preview(.creator)))
+    let host = NSHostingController(
+      rootView: SettingsView(model: .preview(.creator))
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    )
     let window = NSWindow(contentViewController: host)
     window.isReleasedWhenClosed = false
     window.setContentSize(NSSize(width: 1120, height: 720))

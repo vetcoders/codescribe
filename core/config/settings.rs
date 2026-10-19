@@ -1390,8 +1390,13 @@ impl RuntimeSettingsSnapshot {
     }
 
     /// Frozen persisted choice, shared by the producer and presentation owners.
+    /// Apple-only needs its recognizer without downloading local weights.
+    /// Other modes retain direct transcription unless Apple was explicitly enabled.
     pub fn apple_live_enabled(&self) -> bool {
-        self.user_settings.apple_live_enabled.unwrap_or(false)
+        self.user_settings.apple_live_enabled.unwrap_or_else(|| {
+            self.user_settings.resolved_asr_mode().mode
+                == super::cloud_asr::AsrProductMode::AppleOnly
+        })
     }
 
     /// Agent-channel send hold for this generation. Zero means immediate delivery.

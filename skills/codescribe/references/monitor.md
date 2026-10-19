@@ -384,21 +384,35 @@ inside **one** `functions.exec` cell that then calls `yield_control()`.
 // @exec: {"yield_time_ms": 2000, "max_output_tokens": 2000}
 const start = await tools.exec_command({
   cmd: "exec cs-bus --watch --until-event --provider codex --session THREAD_ID",
-  tty: true, yield_time_ms: 1000, max_output_tokens: 5000
+  tty: true,
+  yield_time_ms: 1000,
+  max_output_tokens: 5000,
 });
 if (!start.session_id) {
-  notify({kind: "codescribe_until_event_completion", ...start});
+  notify({ kind: "codescribe_until_event_completion", ...start });
 } else {
   const sid = start.session_id;
-  text({mode: "monitor-until-event", session_id: sid, read_pending_polling: false});
+  text({
+    mode: "monitor-until-event",
+    session_id: sid,
+    read_pending_polling: false,
+  });
   await yield_control();
   while (true) {
     const r = await tools.write_stdin({
-      session_id: sid, chars: "", yield_time_ms: 25000, max_output_tokens: 5000
+      session_id: sid,
+      chars: "",
+      yield_time_ms: 25000,
+      max_output_tokens: 5000,
     });
     if (r.output || !r.session_id) {
-      notify({kind: "codescribe_until_event_completion", tool_session_id: sid,
-              output: r.output, exit_code: r.exit_code, still_running: Boolean(r.session_id)});
+      notify({
+        kind: "codescribe_until_event_completion",
+        tool_session_id: sid,
+        output: r.output,
+        exit_code: r.exit_code,
+        still_running: Boolean(r.session_id),
+      });
     }
     if (!r.session_id) break;
   }

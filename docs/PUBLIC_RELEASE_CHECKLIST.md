@@ -16,10 +16,11 @@ version, inspect GitHub Releases. The candidate and the public release can diffe
       selected test counts and outstanding runtime acceptance separately.
 - [ ] Update the version, changelog and release notes to describe delivered
       behavior. A worker report, commit or green suite is not installed acceptance.
-- [ ] Confirm the candidate `CFBundleVersion` equals the tagged release version and is newer than the published
-      stable build. `scripts/build-app.sh` derives it from Git history; a squash
-      merge can shorten that history. Preserve proven release ancestry and verify
-      the resulting tree instead of silently publishing a lower build number.
+- [ ] Confirm the candidate `CFBundleVersion` equals the tagged release version
+      (the Cargo semver) and is newer than the published release version. The
+      Git commit count goes only to `CSBuildNumber`, a diagnostic that a squash
+      merge may shorten without affecting update order; see
+      [Update version identity](#update-version-identity).
 - [ ] Confirm `LICENSE` and public product copy agree on `FSL-1.1-ALv2`.
 
 ## Sign, notarize and verify the slim DMG

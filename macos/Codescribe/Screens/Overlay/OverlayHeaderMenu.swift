@@ -154,6 +154,7 @@ struct OverlayHeaderMenu: View {
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
 
+
   private func menuImage(for anchor: OverlayAnchor) -> String {
     guard !state.freeMotion, state.placementAnchor == anchor else {
       return anchor.systemImage

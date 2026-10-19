@@ -732,11 +732,11 @@ category = "stt"
 description = "Promoted Settings write token for audio.seal_ledger_enabled. The next take reads this choice from its immutable settings snapshot. Disabling selects direct decoder publication without word-admission or acoustic-seal certification. This token is a settings router key, not a process-environment override."
 
 [vars.CODESCRIBE_APPLE_LIVE_ENABLED]
-default = "0"
+default = "mode-dependent"
 type = "bool"
 reload = "hot"
 category = "stt"
-description = "Promoted Settings write token for audio.apple_live_enabled. The next take reads this independent choice from its immutable settings snapshot. Disabling prevents Apple live recognition and Apple witness text from affecting transcription. This token is a settings router key, not a process-environment override."
+description = "Promoted Settings write token for audio.apple_live_enabled. Without a saved choice, Apple-only enables its recognizer; Local power and consented Cloud leave Apple off. An explicit choice wins in every mode. The next take reads the choice from its immutable settings snapshot. Disabling prevents Apple live recognition and Apple witness text from affecting transcription. This token is a settings router key, not a process-environment override."
 
 [vars.STT_FILE_ENDPOINT]
 default = ""

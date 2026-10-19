@@ -77,7 +77,7 @@ import { SITE_VERSION } from '../lib/release';
             <h3 class="lang-text" data-pl="Kanały agentów" data-en="Agent Channels">Kanały agentów</h3>
             <p class="lang-text"
               data-pl="Zwracaj się do zewnętrznej sesji agenta (Codex, Claude, Gemini) przez numer kanału 1–9. W tej samej rozmowie możesz wysyłać tekst i czytać odpowiedzi z potwierdzeniem dostarczenia."
-              data-en="Address external agent sessions (Codex, Claude, Gemini) via channel numbers 1–9. In the same thread you can send text or speech and receive verified replies.">
+              data-en="Address external agent sessions (Codex, Claude, Gemini) via channel numbers 1–9. In the same conversation you can send text or speech and receive verified replies.">
               Zwracaj się do zewnętrznej sesji agenta (Codex, Claude, Gemini) przez numer kanału 1–9. W tej samej rozmowie możesz wysyłać tekst i czytać odpowiedzi z potwierdzeniem dostarczenia.
             </p>
             <a href="#connect" class="card-link lang-text" data-pl="Podłączenie sesji →" data-en="Connecting sessions →">Podłączenie sesji →</a>
@@ -195,16 +195,16 @@ import { SITE_VERSION } from '../lib/release';
           <article class="card">
             <h3 class="lang-text" data-pl="Pełny widok" data-en="Full View">Pełny widok</h3>
             <p class="lang-text"
-              data-pl="Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub wątek rozmowy z polem edycji. Zmiana widoku nigdy nie kasuje bufora."
+              data-pl="Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub rozmowę z polem edycji. Zmiana widoku nigdy nie kasuje bufora."
               data-en="Expand to reveal complete transcript buffer or conversation history with input field. Folding never destroys text state.">
-              Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub wątek rozmowy z polem edycji. Zmiana widoku nigdy nie kasuje bufora.
+              Rozwiń widget przyciskiem. Otrzymasz zachowany tekst transkrypcji lub rozmowę z polem edycji. Zmiana widoku nigdy nie kasuje bufora.
             </p>
           </article>
           <article class="card">
-            <h3 class="lang-text" data-pl="Szuflada agentów" data-en="Agent Drawer">Szuflada agentów</h3>
+            <h3 class="lang-text" data-pl="Agenci" data-en="Agents">Agenci</h3>
             <p class="lang-text"
               data-pl="W nagłówku otworzysz listę agentów i zapisanych rozmów na kanałach 1–9. Wybór rozmowy służy przeglądaniu; mikrofon ma osobny gest."
-              data-en="Access connected agents and history across channels 1–9. Selecting a thread is strictly browsing; mic capture has dedicated hotkeys.">
+              data-en="Access connected agents and history across channels 1–9. Selecting a conversation is strictly browsing; mic capture has dedicated hotkeys.">
               W nagłówku otworzysz listę agentów i zapisanych rozmów na kanałach 1–9. Wybór rozmowy służy przeglądaniu; mikrofon ma osobny gest.
             </p>
           </article>
@@ -310,7 +310,7 @@ import { SITE_VERSION } from '../lib/release';
           <article class="card">
             <h3 class="lang-text" data-pl="Wiadomość tekstowa" data-en="Text Message">Wiadomość tekstowa</h3>
             <ol class="step-list">
-              <li class="lang-text" data-pl="Wybierz rozmowę podłączonego agenta w szufladzie." data-en="Select the connected agent in the drawer.">Wybierz rozmowę podłączonego agenta w szufladzie.</li>
+              <li class="lang-text" data-pl="Wybierz rozmowę podłączonego agenta w panelu Agenci." data-en="Select the connected agent's conversation in the Agents sidebar.">Wybierz rozmowę podłączonego agenta w panelu Agenci.</li>
               <li class="lang-text" data-pl="Wpisz treść w polu wiadomości na dole widgetu." data-en="Type your message into the compose bar.">Wpisz treść w polu wiadomości na dole widgetu.</li>
               <li class="lang-text" data-pl="Wyślij przez Enter (Shift + Enter tworzy nowy wiersz)." data-en="Send with Enter (Shift + Enter inserts a newline).">Wyślij przez Enter (Shift + Enter tworzy nowy wiersz).</li>
             </ol>
@@ -321,7 +321,7 @@ import { SITE_VERSION } from '../lib/release';
           <strong class="lang-text" data-pl="Przeglądanie ≠ nagrywanie." data-en="Browsing ≠ recording.">Przeglądanie ≠ nagrywanie.</strong>
           <span class="lang-text"
             data-pl="Kliknięcie nazwy rozmowy lub kanału zmienia wyłącznie widok. Nagrywanie wymaga świadomego gestu skrótu lub przycisku mikrofonu."
-            data-en="Selecting a thread only changes view projection. Recording always requires an intentional hotkey or mic trigger.">
+            data-en="Selecting a conversation or channel only changes the view. Recording always requires an intentional hotkey or mic trigger.">
             Kliknięcie nazwy rozmowy lub kanału zmienia wyłącznie widok. Nagrywanie wymaga świadomego gestu skrótu lub przycisku mikrofonu.
           </span>
         </div>
@@ -989,7 +989,7 @@ import { SITE_VERSION } from '../lib/release';
     },
     full: {
       pl: 'Pełny widok mieści zachowaną transkrypcję lub rozmowę, z polem wiadomości na dole.',
-      en: 'Full view holds complete transcript or conversation thread with compose bar.'
+      en: 'Full view holds the complete transcript or conversation with a compose bar.'
     }
   };
 
@@ -1023,7 +1023,7 @@ import { SITE_VERSION } from '../lib/release';
     },
     {
       pl: ['Pojawia się odpowiedź', 'Tekst wraca do rozmowy w overlay. Jeśli skonfigurowano profil głosu, audio odtwarza się w tle.'],
-      en: ['Response arrives', 'Text returns to the overlay thread. If TTS voice profile is configured, speech streams in background.']
+      en: ['Response arrives', 'Text returns to the overlay conversation. If a TTS voice profile is configured, speech plays in the background.']
     },
     {
       pl: ['Spóźniony dzwonek (Idempotencja)', 'Agent sprawdza skrzynkę po dzwonku. Gdy jest pusta, nie powtarza zadania i nie dubluje odpowiedzi.'],
