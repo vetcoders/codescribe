@@ -965,9 +965,7 @@ struct DictationOverlayView: View {
       presentationMode: state.presentationMode, compact: compact, palette: palette,
       onIntent: state.requestHeaderRecording,
       onPreviewToggle: state.toggleCollapsed,
-      isFinalizing: !state.terminal
-        && (state.transcribing || state.mode == .finalizing
-          || (!state.recording && state.showsSessionTimer)),
+      isFinalizing: state.isFinalizingDictation,
       recordingLight: state.recordingLight, animates: overlayVisible)
     controls.showsRecordingButton = showsMicrophone
     controls.onShowDictation = state.showTranscription
