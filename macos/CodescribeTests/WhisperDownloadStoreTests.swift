@@ -45,6 +45,37 @@ private final class StoppedClock: @unchecked Sendable {
   func advance(_ seconds: TimeInterval) { lock.withLock { stored += seconds } }
 }
 
+/// Counts model reads and where they ran, and can hold the first one open. The
+/// store reads off the main actor, so this is locked rather than isolated.
+private final class StatusReads: @unchecked Sendable {
+  private let lock = NSLock()
+  private var reads = 0
+  private var mainThreadReads = 0
+  private let firstReadGate: DispatchSemaphore?
+
+  init(holdingFirstRead: Bool = false) {
+    firstReadGate = holdingFirstRead ? DispatchSemaphore(value: 0) : nil
+  }
+
+  var count: Int { lock.withLock { reads } }
+  var onMainThread: Int { lock.withLock { mainThreadReads } }
+
+  func releaseFirstRead() { firstReadGate?.signal() }
+
+  func read() -> CsWhisperModelStatus {
+    let number = lock.withLock {
+      reads += 1
+      if Thread.isMainThread { mainThreadReads += 1 }
+      return reads
+    }
+    if number == 1 { firstReadGate?.wait() }
+    var status = CsWhisperModelStatus.sampleUnavailable
+    status.available = true
+    status.path = "/fixture/whisper"
+    return status
+  }
+}
+
 @MainActor
 final class WhisperDownloadStoreTests: XCTestCase {
   /// 1539 MB: the shape of the real weights file, in whole megabytes.
@@ -72,6 +103,45 @@ final class WhisperDownloadStoreTests: XCTestCase {
     await Task.yield()
     XCTAssertEqual(transfer.starts, 0)
     XCTAssertFalse(store.inFlight)
+  }
+
+  /// A Settings page switch refreshes the model status; the bundle validation
+  /// behind it must not hold the main thread (sidebar lag, 2026-10-19).
+  func testRefreshReadsTheModelOffTheMainThreadAndPublishesIt() async {
+    let reads = StatusReads()
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    await store.refresh().value
+    XCTAssertEqual(reads.count, 1)
+    XCTAssertEqual(reads.onMainThread, 0)
+    XCTAssertTrue(store.status.available)
+    XCTAssertEqual(store.readiness, .installed)
+  }
+
+  func testRefreshesBeforeAReadBeginsShareThatRead() async {
+    let reads = StatusReads()
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    let first = store.refresh()
+    let second = store.refresh()
+    store.refresh()
+    await first.value
+    await second.value
+    XCTAssertEqual(reads.count, 1, "the one read began after all three requests")
+  }
+
+  func testARefreshDuringARunningReadGetsAReadThatStartsAfterIt() async {
+    let reads = StatusReads(holdingFirstRead: true)
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    let running = store.refresh()
+    await awaitCondition { reads.count == 1 }
+    let later = store.refresh()
+    reads.releaseFirstRead()
+    await later.value
+    XCTAssertEqual(reads.count, 2, "the running read began before the second request")
+    await running.value
+    XCTAssertTrue(store.status.available)
   }
 
   func testOpeningTheSetupModelStepNeverStartsARequestedModelTransfer() async {

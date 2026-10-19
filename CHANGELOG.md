@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
 - `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
 - A thread title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- Switching pages in Settings no longer freezes the window for a quarter of a second. Every switch re-validated the whole Whisper model on the main thread; the check now runs in the background and the page shows the last known model state until it lands.
 - ⌘C copies text selected in an overlay bubble. A click into the bubble moved focus off the transcript and the panel gave up the keyboard in the same click, so the shortcut went to the app behind it.
 - The agent list docked beside the overlay conversation grows with the overlay text size like the conversation does, instead of staying at the default size while its column widens.
 - Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
