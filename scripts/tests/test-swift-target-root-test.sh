@@ -82,9 +82,9 @@ elif name == 'xcodebuild':
     if s['mode'] == 'xcode-error':
         print('unfiltered tool failure')
         sys.exit(65)
-    count = 0 if s['mode'] == 'zero' else 8 if s['mode'] == 'suite-over' else 7
-    seconds = (75 if s['mode'] in ('slow', 'budget') else
-               68 if s['mode'] == 'suite-over' else
+    count = 0 if s['mode'] == 'zero' else 30 if s['mode'] == 'suite-over' else 7
+    seconds = (255 if s['mode'] in ('slow', 'budget') else
+               255 if s['mode'] == 'suite-over' else
                30 if s['mode'] == 'two-over' else
                18 if s['mode'] == 'one-over' else
                25 if s['mode'] == 'under' else 1.25)
@@ -92,7 +92,7 @@ elif name == 'xcodebuild':
         'one-over': [('testSlow', 12)],
         'two-over': [('testSlow', 12), ('testAlsoSlow', 11.5)],
         'under': [('testFirst', 9), ('testSecond', 8)],
-        'suite-over': [(f'testWait{i}', 8.5) for i in range(8)],
+        'suite-over': [(f'testWait{i}', 8.5) for i in range(30)],
     }
     for test, duration in durations.get(s['mode'], []):
         print(f"Test Case '-[CodescribeTests.FixtureTests {test}]' passed ({duration} seconds).")
@@ -188,7 +188,7 @@ def run_case(base, profile, layout, mode='success'):
     if mode == 'override-helper':
         args.append('ENGINE_BRIDGE=' + str(bridge))
     if mode == 'budget':
-        args.append('SWIFT_TEST_MAX_SECONDS=90')
+        args.append('SWIFT_TEST_MAX_SECONDS=300')
     result = subprocess.run(args, cwd=base, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     calls = [json.loads(l) for l in Path(spec['calls']).read_text().splitlines()] if Path(spec['calls']).exists() else []
     if evidence:

@@ -495,11 +495,12 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       ["action focus-pane-id --help||"],
       "probe must strip session/socket env vars and memoize unchanged binary by stat stamp")
 
-    // 2. Current supported release (`4.4.0+ga3f8214c`) on the user's configured `.zshenv` PATH
-    //    while the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
+    // 2. Current supported release (`4.4.0+ga3f8214c`) on the user's configured `.zshenv`/`.zprofile`
+    //    PATH while the GUI process runs under launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`):
     let launchdHome = tempRoot.appendingPathComponent("home-launchd", isDirectory: true)
     let localBin = launchdHome.appendingPathComponent(".local/bin", isDirectory: true)
     let currentLog = tempRoot.appendingPathComponent("current.log")
+    let zprofileEvalLog = tempRoot.appendingPathComponent("zprofile-eval.log")
     _ = try writeExecutable(
       at: localBin,
       body: """
@@ -512,10 +513,11 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         fi
         exit 99
         """)
-    try "export PATH=\"$HOME/.local/bin:$PATH\"\n".write(
-      to: launchdHome.appendingPathComponent(".zshenv"),
-      atomically: true,
-      encoding: .utf8)
+    let zprofileURL = launchdHome.appendingPathComponent(".zprofile")
+    try """
+    printf 'eval-1\\n' >> '\(zprofileEvalLog.path)'
+    export PATH="$HOME/.local/bin:$PATH"
+    """.write(to: zprofileURL, atomically: true, encoding: .utf8)
     let launchdInstaller = RealAgentBridgeInstaller(
       resourceRoot: nil,
       homeDirectory: launchdHome,
@@ -524,11 +526,190 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         "ZELLIJ_SESSION_NAME": "vibecrafted",
         "ZELLIJ_SOCKET_DIR": "/tmp/vc-frame-501",
       ])
-    let currentSupported = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+    let currentSupportedFirst = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
       installer: launchdInstaller)
-    XCTAssertTrue(currentSupported)
+    let currentSupportedSecond = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    let currentSupportedThird = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    XCTAssertTrue(currentSupportedFirst)
+    XCTAssertTrue(currentSupportedSecond)
+    XCTAssertTrue(currentSupportedThird)
     let currentLines = try String(contentsOf: currentLog, encoding: .utf8).split(separator: "\n")
     XCTAssertEqual(currentLines, ["action focus-pane-id --help||"])
+    let evalLinesBeforeEdit = try String(contentsOf: zprofileEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalLinesBeforeEdit,
+      ["eval-1"],
+      "launchd PATH resolution must memoize .zprofile/.zshenv by file stats instead of spawning /bin/zsh on every poll"
+    )
+
+    try """
+    printf 'eval-2\\n' >> '\(zprofileEvalLog.path)'
+    export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+    """.write(to: zprofileURL, atomically: true, encoding: .utf8)
+    let currentSupportedAfterProfileEdit = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: launchdInstaller)
+    let currentSupportedAfterProfileEditCached =
+      await RealAgentBridgeInstaller.supportsAgentPanelFocus(installer: launchdInstaller)
+    XCTAssertTrue(currentSupportedAfterProfileEdit)
+    XCTAssertTrue(currentSupportedAfterProfileEditCached)
+    let evalLinesAfterEdit = try String(contentsOf: zprofileEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalLinesAfterEdit,
+      ["eval-1", "eval-2"],
+      "modifying .zprofile must invalidate VcFrameShellPathCache once and memoize the updated stamp"
+    )
+
+    // 2b. Mid-flight profile mutation during /bin/zsh execution (`postStamp != profileStamp`)
+    //     must NOT cache the stale pre-mutation PATH under the new file stamp:
+    let midflightHome = tempRoot.appendingPathComponent("home-midflight", isDirectory: true)
+    let midflightBin = midflightHome.appendingPathComponent(".local/bin", isDirectory: true)
+    let midflightEvalLog = tempRoot.appendingPathComponent("midflight-eval.log")
+    _ = try writeExecutable(
+      at: midflightBin,
+      body: """
+        if [ "$1" = "action" ] && [ "$2" = "focus-pane-id" ] && [ "$3" = "--help" ]; then
+          cat <<'EOF'
+        \(Self.currentSupportedHelp)
+        EOF
+          exit 0
+        fi
+        exit 99
+        """)
+    let midflightZprofileURL = midflightHome.appendingPathComponent(".zprofile")
+    try """
+    printf 'midflight-1\\n' >> '\(midflightEvalLog.path)'
+    export PATH="/usr/bin:/bin"
+    cat > "$HOME/.zprofile" <<'EOF'
+    printf 'midflight-2\\n' >> '\(midflightEvalLog.path)'
+    export PATH="$HOME/.local/bin:/usr/bin:/bin"
+    EOF
+    """.write(to: midflightZprofileURL, atomically: true, encoding: .utf8)
+    let midflightInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: midflightHome,
+      environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+    let midflightFirst = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: midflightInstaller)
+    let midflightSecond = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: midflightInstaller)
+    let midflightThird = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: midflightInstaller)
+    XCTAssertFalse(
+      midflightFirst,
+      "first call evaluates the pre-mutation .zprofile which did not include ~/.local/bin")
+    XCTAssertTrue(
+      midflightSecond,
+      "second call must re-evaluate the newly written .zprofile instead of serving stale PATH under postStamp"
+    )
+    XCTAssertTrue(midflightThird)
+    let midflightEvalLines = try String(contentsOf: midflightEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      midflightEvalLines,
+      ["midflight-1", "midflight-2"],
+      "mid-flight .zprofile change must force one re-evaluation on the next poll and then memoize the stable stamp"
+    )
+
+    // 2c. Broken/empty .zprofile under launchd PATH must be throttled by bounded failure cooldown
+    //     (preventing /bin/zsh spawn on every 500ms poll), retry after cooldown expiry, and
+    //     immediately invalidate when .zprofile is edited on disk:
+    let failureHome = tempRoot.appendingPathComponent("home-failure", isDirectory: true)
+    let failureBin = failureHome.appendingPathComponent(".local/bin", isDirectory: true)
+    let failureEvalLog = tempRoot.appendingPathComponent("failure-eval.log")
+    _ = try writeExecutable(
+      at: failureBin,
+      body: """
+        if [ "$1" = "action" ] && [ "$2" = "focus-pane-id" ] && [ "$3" = "--help" ]; then
+          cat <<'EOF'
+        \(Self.currentSupportedHelp)
+        EOF
+          exit 0
+        fi
+        exit 99
+        """)
+    let failureZprofileURL = failureHome.appendingPathComponent(".zprofile")
+    try """
+    printf 'fail-nonzero\\n' >> '\(failureEvalLog.path)'
+    exit 1
+    """.write(to: failureZprofileURL, atomically: true, encoding: .utf8)
+    let failureInstaller = RealAgentBridgeInstaller(
+      resourceRoot: nil,
+      homeDirectory: failureHome,
+      environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    let failInitial = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: t0)
+    let failThrottled = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: t0.addingTimeInterval(0.5))
+    XCTAssertFalse(failInitial)
+    XCTAssertFalse(failThrottled)
+    let evalAfterThrottledPoll = try String(contentsOf: failureEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalAfterThrottledPoll,
+      ["fail-nonzero"],
+      "non-zero .zprofile exit must be throttled within failureCooldown instead of spawning /bin/zsh on the next 500ms poll"
+    )
+
+    let tRetry = t0.addingTimeInterval(RealAgentBridgeInstaller.vcFrameShellFailureCooldown + 0.1)
+    let failAfterCooldown = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tRetry)
+    let failAfterCooldownThrottled = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tRetry.addingTimeInterval(0.5))
+    XCTAssertFalse(failAfterCooldown)
+    XCTAssertFalse(failAfterCooldownThrottled)
+    let evalAfterCooldownRetry = try String(contentsOf: failureEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalAfterCooldownRetry,
+      ["fail-nonzero", "fail-nonzero"],
+      "once failureCooldown expires, the next poll must retry /bin/zsh once and re-arm the cooldown"
+    )
+
+    // Editing .zprofile during an active failure cooldown (here to an empty-PATH failure, then to a
+    // valid PATH) must immediately invalidate the previous stamp's cooldown without waiting for TTL:
+    try """
+    printf 'fail-empty\\n' >> '\(failureEvalLog.path)'
+    export PATH=""
+    """.write(to: failureZprofileURL, atomically: true, encoding: .utf8)
+    let tEmpty = tRetry.addingTimeInterval(1.0)
+    let failEmptyInitial = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tEmpty)
+    let failEmptyThrottled = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tEmpty.addingTimeInterval(0.5))
+    XCTAssertFalse(failEmptyInitial)
+    XCTAssertFalse(failEmptyThrottled)
+    let evalAfterEmpty = try String(contentsOf: failureEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalAfterEmpty,
+      ["fail-nonzero", "fail-nonzero", "fail-empty"],
+      "empty PATH output must also be throttled after immediate invalidation on profile edit"
+    )
+
+    try """
+    printf 'repaired\\n' >> '\(failureEvalLog.path)'
+    export PATH="$HOME/.local/bin:/usr/bin:/bin"
+    """.write(to: failureZprofileURL, atomically: true, encoding: .utf8)
+    let repairedDuringCooldown = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tEmpty.addingTimeInterval(1.0))
+    let repairedCached = await RealAgentBridgeInstaller.supportsAgentPanelFocus(
+      installer: failureInstaller, now: tEmpty.addingTimeInterval(1.5))
+    XCTAssertTrue(
+      repairedDuringCooldown,
+      "repairing .zprofile on disk must immediately bypass the previous stamp's failure cooldown"
+    )
+    XCTAssertTrue(repairedCached)
+    let evalAfterRepair = try String(contentsOf: failureEvalLog, encoding: .utf8)
+      .split(separator: "\n")
+    XCTAssertEqual(
+      evalAfterRepair,
+      ["fail-nonzero", "fail-nonzero", "fail-empty", "repaired"]
+    )
 
     // 3. Public wrapper whose internal engine executable is initially missing and then restored
     //    without modifying the outer wrapper file:

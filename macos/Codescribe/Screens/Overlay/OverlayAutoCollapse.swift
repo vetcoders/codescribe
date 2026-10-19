@@ -128,15 +128,15 @@ final class OverlayAutoCollapse {
 /// App-level menu and popover tracking. SwiftUI does not expose whether a
 /// `Menu` or `.popover` in the overlay is open, and the uncertain-word explainer
 /// is an `NSPopover`; all of them post these AppKit notifications on main.
-/// Any open menu or popover holds the overlay's auto-fold; closing one
-/// reports the end of that interaction.
+/// Any open menu or popover holds folding and hiding. Only the first open and
+/// final close change the interaction state, including nested menus.
 ///
 /// Selector observers are removed by NotificationCenter when this object goes.
 @MainActor
 final class OverlayTransientInteractionMonitor: NSObject {
   private var open: Set<ObjectIdentifier> = []
   var isActive: Bool { !open.isEmpty }
-  var onInteractionEnded: (() -> Void)?
+  var onInteractionChanged: (() -> Void)?
 
   override init() {
     super.init()
@@ -164,11 +164,13 @@ final class OverlayTransientInteractionMonitor: NSObject {
   }
 
   func begin(_ id: ObjectIdentifier) {
+    let wasActive = isActive
     open.insert(id)
+    if !wasActive { onInteractionChanged?() }
   }
 
   func end(_ id: ObjectIdentifier) {
     guard open.remove(id) != nil else { return }
-    if open.isEmpty { onInteractionEnded?() }
+    if open.isEmpty { onInteractionChanged?() }
   }
 }

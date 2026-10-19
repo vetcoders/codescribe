@@ -361,15 +361,15 @@ column.
 ### Agent window header
 
 The detail chrome (`AgentChatView.swift`) carries one title — the current
-thread's — and nothing that competes with it. The native titlebar keeps the
+conversation's — and nothing that competes with it. The native titlebar keeps the
 window title, dragging and the close / minimise / fullscreen controls; the
 content never repeats a window-level header. The minimise button and ⌘M are
 enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
 miniaturising it, so App Exposé never shows an empty tile; the tray's
 "Open chat", the summon shortcut and the passive voice reveal bring it back.
 
-- **Left:** the sidebar toggle, then the wordmark, then the thread title
-  followed by the turn count, the thread's model and the live turn status.
+- **Left:** the sidebar toggle, then the wordmark, then the conversation title
+  followed by the turn count, the conversation's model and the live turn status.
   The toggle belongs to the shared sidebar column (see "The sidebar" above),
   so it stays reachable while the column is collapsed and behaves exactly as
   it does in Settings.
@@ -378,20 +378,20 @@ miniaturising it, so App Exposé never shows an empty tile; the tray's
   with the `selected` trait and an "On" Accessibility value, unpinned is the
   outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
   `AgentWindowCapabilities` applies the window level.
-- **"•••" menu:** the single home for the header's actions — thread section
-  (Rename, Add to / Remove from favorites, Markdown exports when the thread
+- **"•••" menu:** the single home for the header's actions — conversation section
+  (Rename, Add to / Remove from favorites, Markdown exports when the conversation
   is persisted), the "Conversation width" submenu (Standard / Wide / Full
   width, the conversation column's density — not the window size), "Open
-  settings", and the destructive "Delete Thread" last, behind the shared
+  settings", and the destructive "Delete Conversation" last, behind the shared
   confirmation. There is no separate width selector or Settings gear in the
   chrome.
 
-An empty thread does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
+An empty conversation does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
 no-turns block to the viewport minus everything else the scroll document
 carries (list padding on both edges, the stack gap and the live-edge anchor),
 so the content fits exactly instead of overshooting by those points.
 
-### Thread history interactions
+### Conversation history interactions
 
 The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
 share three contracts:
@@ -399,7 +399,7 @@ share three contracts:
 - **Selection is one action with three entry points.** A pointer click, the
   row's Accessibility activation and the keyboard all call the same `select`
   path in `ThreadRail`. To Accessibility a row is a single button labelled
-  with the thread title, with the `selected` trait on the open thread and
+  with the conversation title, with the `selected` trait on the open conversation and
   Rename / Add to favorites / Delete as named actions, worded exactly as the
   header menu words them; while a title is being renamed
   the row exposes its children so the text field stays reachable. Rows are
@@ -409,12 +409,12 @@ share three contracts:
   like the app's other custom buttons.
 - **Deletion always confirms.** Both the rail's context menu and the toolbar
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
-  thread and Cancel keeps it. There is no undo path, and the copy says so.
+  conversation and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
   destination (the Transcripts folder from Settings › About › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
-  "Export failed" alert naming the thread and the folder to check. Finder is
+  "Export failed" alert naming the conversation and the folder to check. Finder is
   never opened as a side effect of the menu action. `ThreadExportOutcome`
   carries the result; `RealThreadsEngine` still collapses the bridge error
   into `nil`, so the failure alert cannot quote the underlying reason.
