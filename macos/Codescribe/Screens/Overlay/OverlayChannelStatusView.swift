@@ -591,6 +591,7 @@ struct OverlayChannelStatusView: View {
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
   var panelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  var panelFocusAvailable = true
   var onFocusAgentPanel: ((OverlayConversationOwner) -> Void)?
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
@@ -862,9 +863,14 @@ struct OverlayChannelStatusView: View {
     currentConversations.first { $0.channel == channel.channel }
   }
 
+  func showsPanelFocusButton(for channel: OverlayChannelDelivery) -> Bool {
+    panelFocusAvailable && archiveCandidates[channel.channel] != nil && onFocusAgentPanel != nil
+  }
+
   func viewConversation(_ channel: OverlayChannelDelivery) {
     guard let conversation = conversation(for: channel) else { return }
     if selectedConversationID == conversation.id,
+      showsPanelFocusButton(for: channel),
       let owner = archiveCandidates[channel.channel],
       !hasDeadFollower(channel),
       let onFocusAgentPanel
@@ -893,7 +899,7 @@ struct OverlayChannelStatusView: View {
     .accessibilityHidden(true)
   }
 
-  private func channelRow(
+  func channelRow(
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {
     let conversation = conversation(for: channel)
@@ -925,7 +931,8 @@ struct OverlayChannelStatusView: View {
             }
             .buttonStyle(.plain)
             .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
-          } else if let owner = archiveCandidates[channel.channel],
+          } else if showsPanelFocusButton(for: channel),
+            let owner = archiveCandidates[channel.channel],
             !hasDeadFollower(channel),
             let onFocusAgentPanel
           {
@@ -964,7 +971,10 @@ struct OverlayChannelStatusView: View {
         )
         .fixedSize()
         .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
-        if let owner = archiveCandidates[channel.channel], let onFocusAgentPanel {
+        if showsPanelFocusButton(for: channel),
+          let owner = archiveCandidates[channel.channel],
+          let onFocusAgentPanel
+        {
           let focusState = panelFocusStates[channel.channel]
           let focusHelp = panelFocusHelp(for: channel, state: focusState)
           Button {
@@ -1033,8 +1043,7 @@ struct OverlayChannelStatusView: View {
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
         enabled: (conversation != nil && onSelectConversation != nil)
-          || (archiveCandidates[channel.channel] != nil && !hasDeadFollower(channel)
-            && onFocusAgentPanel != nil)
+          || (showsPanelFocusButton(for: channel) && !hasDeadFollower(channel))
       )
     )
     .modifier(

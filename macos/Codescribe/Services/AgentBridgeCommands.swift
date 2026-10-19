@@ -935,6 +935,133 @@ extension RealAgentBridgeInstaller {
     return false
   }
 
+  /// Resolves the public `vc-frame` command on `PATH` (plus `~/.local/bin` for
+  /// `launchd`-spawned GUI processes whose inherited `PATH` omits user bin
+  /// directories). Never falls back to `VIBECRAFTED_VC_FRAME_BIN` or scans
+  /// private `releases/*/bin` directories.
+  nonisolated static func vcFrameExecutableURL(
+    homeDirectory: URL,
+    environment: [String: String]
+  ) -> URL? {
+    var directories: [String] = []
+    if let rawPath = environment["PATH"] {
+      for entry in rawPath.split(separator: ":", omittingEmptySubsequences: true) {
+        let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continue }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        if !directories.contains(expanded) {
+          directories.append(expanded)
+        }
+      }
+    }
+    let userLocalBin = homeDirectory.appendingPathComponent(".local/bin", isDirectory: true).path
+    if !directories.contains(userLocalBin) {
+      directories.append(userLocalBin)
+    }
+    let fileManager = FileManager.default
+    for directory in directories {
+      let candidate = URL(fileURLWithPath: directory, isDirectory: true)
+        .appendingPathComponent("vc-frame")
+      var isDirectory: ObjCBool = false
+      if fileManager.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+        !isDirectory.boolValue,
+        fileManager.isExecutableFile(atPath: candidate.path)
+      {
+        return candidate
+      }
+    }
+    return nil
+  }
+
+  /// Side-effect-free capability probe: runs `vc-frame action focus-pane-id --help`
+  /// with session and socket environment variables stripped so it never connects
+  /// to a live server, changes focus, or spawns a session. Accepts both older
+  /// compatible releases (such as `4.4.0+g959bf184`) and current releases.
+  nonisolated static func probeVcFramePanelFocusCapability(
+    executableURL: URL,
+    environment: [String: String]
+  ) -> Bool {
+    let process = Process()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    process.executableURL = executableURL
+    process.arguments = ["action", "focus-pane-id", "--help"]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+
+    var probeEnvironment = environment
+    for key in [
+      "ZELLIJ_SESSION_NAME",
+      "VC_FRAME_SESSION_NAME",
+      "ZELLIJ_SOCKET_DIR",
+      "VC_FRAME_SOCKET_DIR",
+    ] {
+      probeEnvironment.removeValue(forKey: key)
+    }
+    let systemPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+    if let existingPath = probeEnvironment["PATH"], !existingPath.isEmpty {
+      probeEnvironment["PATH"] = "\(existingPath):\(systemPath)"
+    } else {
+      probeEnvironment["PATH"] = systemPath
+    }
+    process.environment = probeEnvironment
+
+    do {
+      try process.run()
+    } catch {
+      return false
+    }
+    let deadline = Date().addingTimeInterval(2.0)
+    while process.isRunning, Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    if process.isRunning {
+      process.terminate()
+      return false
+    }
+    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+    guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+      return false
+    }
+    let stdoutText = String(data: stdoutData, encoding: .utf8) ?? ""
+    let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
+    let combined = stdoutText + "\n" + stderrText
+    return combined.contains("focus-pane-id") && combined.contains("<PANE_ID>")
+  }
+
+  /// True when a public `vc-frame` supporting `action focus-pane-id` is installed.
+  /// Memoized by executable file stamp so periodic HUD polls do not re-spawn
+  /// `vc-frame` unless the binary or symlink target changes on disk.
+  @MainActor
+  static func supportsAgentPanelFocus(
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async -> Bool {
+    let homeDirectory = installer.homeDirectory
+    let environment = installer.environment
+    return await Task.detached(priority: .utility) {
+      guard
+        let executableURL = vcFrameExecutableURL(
+          homeDirectory: homeDirectory,
+          environment: environment
+        ),
+        let stamp = VcFrameExecutableStamp(url: executableURL)
+      else {
+        return false
+      }
+      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp) {
+        return cached
+      }
+      let supported = probeVcFramePanelFocusCapability(
+        executableURL: executableURL,
+        environment: environment
+      )
+      await AgentPanelFocusCapabilityCache.shared.store(supported, for: stamp)
+      return supported
+    }.value
+  }
+
   /// Brings the terminal host application that owns the `vc-frame` pane to the front.
   @MainActor
   static func activateAgentTerminalHost(
@@ -958,5 +1085,44 @@ extension RealAgentBridgeInstaller {
       }
     }
     return false
+  }
+}
+
+private struct VcFrameExecutableStamp: Hashable, Sendable {
+  let path: String
+  let resolvedPath: String
+  let device: dev_t
+  let inode: ino_t
+  let size: off_t
+  let modifiedSeconds: Int
+  let modifiedNanoseconds: Int
+
+  init?(url: URL) {
+    let resolved = url.resolvingSymlinksInPath()
+    var statBuf = Darwin.stat()
+    guard fstatat(AT_FDCWD, resolved.path, &statBuf, 0) == 0 else { return nil }
+    self.path = url.path
+    self.resolvedPath = resolved.path
+    self.device = statBuf.st_dev
+    self.inode = statBuf.st_ino
+    self.size = statBuf.st_size
+    self.modifiedSeconds = statBuf.st_mtimespec.tv_sec
+    self.modifiedNanoseconds = statBuf.st_mtimespec.tv_nsec
+  }
+}
+
+private actor AgentPanelFocusCapabilityCache {
+  static let shared = AgentPanelFocusCapabilityCache()
+  private var entries: [VcFrameExecutableStamp: Bool] = [:]
+
+  func value(for stamp: VcFrameExecutableStamp) -> Bool? {
+    entries[stamp]
+  }
+
+  func store(_ supported: Bool, for stamp: VcFrameExecutableStamp) {
+    if entries.count >= 64 {
+      entries.removeAll(keepingCapacity: true)
+    }
+    entries[stamp] = supported
   }
 }
