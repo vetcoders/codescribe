@@ -125,34 +125,35 @@ struct OverlayHeaderMenu: View {
     )
     .help("New recordings open with the transcript. Turn off to show only the recording bar.")
     .accessibilityIdentifier("overlay-expanded-by-default")
-    Menu("Auto fold after…") {
+    Menu {
       ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
         Button {
           state.setAutoFoldSeconds(seconds)
         } label: {
           // Int, not UInt32: the catalog key is "%lld s", a UInt32 would extract "%u s".
-          autoFoldChoice("\(Int(seconds)) s", selected: state.autoFoldSeconds == seconds)
+          autoFoldChoice(Text("\(Int(seconds)) s"), selected: state.autoFoldSeconds == seconds)
         }
         .accessibilityIdentifier("overlay-auto-fold-\(seconds)")
       }
       Button {
         state.setAutoFoldSeconds(0)
       } label: {
-        autoFoldChoice("Never", selected: state.autoFoldSeconds == 0)
+        autoFoldChoice(Text("Never"), selected: state.autoFoldSeconds == 0)
       }
       .accessibilityIdentifier("overlay-auto-fold-never")
+    } label: {
+      Text("Auto fold after… \(currentAutoFoldTitle)")
     }
   }
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
 
-  @ViewBuilder
-  private func autoFoldChoice(_ title: LocalizedStringKey, selected: Bool) -> some View {
-    if selected {
-      Label(title, systemImage: "checkmark")
-    } else {
-      Text(title)
-    }
+  private var currentAutoFoldTitle: Text {
+    state.autoFoldSeconds == 0 ? Text("Never") : Text("\(Int(state.autoFoldSeconds)) s")
+  }
+
+  private func autoFoldChoice(_ title: Text, selected: Bool) -> Text {
+    selected ? Text("\(title) · selected") : title
   }
 
   private func menuImage(for anchor: OverlayAnchor) -> String {
