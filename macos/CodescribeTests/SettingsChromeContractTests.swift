@@ -1431,6 +1431,46 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Creator › Appearance (Founder, 2026-10-20): light, dark or system applied
+  /// at once, and the sheet-shade candidates per appearance behind the same
+  /// restart line as the language. The palette reads the shade at launch.
+  func testCreatorOffersAppearanceAndSheetShadeCandidates() throws {
+    let sources = try settingsSources()
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(creator.contains("String(localized: \"Appearance\", comment: \"Settings group"))
+    XCTAssertTrue(creator.contains("AppearanceRow(model: model)"))
+    XCTAssertTrue(creator.contains("SheetShadeRows(model: model)"))
+    XCTAssertTrue(creator.contains("ForEach(AppAppearanceChoice.allCases)"))
+    XCTAssertTrue(creator.contains("shadePicker(SheetShade.darkChoices"))
+    XCTAssertTrue(creator.contains("shadePicker(SheetShade.lightChoices"))
+    XCTAssertTrue(creator.contains("if model.sheetShadeNeedsRestart {"))
+    XCTAssertTrue(creator.contains("Button(model.sheetShadeRestartTitle) { model.applySheetShade() }"))
+    let tokens = try String(
+      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/DesignSystem/Tokens.swift"), encoding: .utf8)
+    XCTAssertTrue(tokens.contains("static let sheetLightHex: UInt32 = SheetShadePreference.launchHex(dark: false)"))
+    XCTAssertTrue(tokens.contains("static let sheetDarkHex: UInt32 = SheetShadePreference.launchHex(dark: true)"))
+    XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
+    XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
+    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E"])
+    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD"])
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "Appearance": "Wygląd",
+      "Follow macOS, or keep Codescribe light or dark on its own.":
+        "Podążaj za macOS albo trzymaj Codescribe na stałe w jasnym lub ciemnym.",
+      "System": "System", "Light": "Jasny", "Dark": "Ciemny",
+      "Panel shade, dark": "Odcień panelu, ciemny", "Panel shade, light": "Odcień panelu, jasny",
+      "Today": "Dziś", "Soft graphite": "Miękki grafit", "Warm carbon": "Ciepły węgiel",
+      "Limestone": "Wapień", "Travertine": "Trawertyn",
+      "Codescribe will restart with the new shade. Your recording must finish first.":
+        "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć.",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+  }
+
   /// One switch, one track width (Founder, 2026-10-20): every switch in
   /// Settings takes its shape from `settingsSwitch()`, the Lab desk holds its
   /// switches in one column of rows, and every slider track stops at

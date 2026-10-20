@@ -87,6 +87,21 @@ control: Multilingual (automatic detection per recording), Polish or English
 (fine-tuned models). It writes the dictation language in `settings.json` and
 has nothing to do with the interface language above it.
 
+### Appearance
+
+**Appearance** keeps Codescribe light or dark on its own, or follows macOS
+(_System_, the default). The choice applies at once to every window, the tray
+menu and the overlay; it is saved in the app's own preferences, not in
+`settings.json`.
+
+**Panel shade, dark** and **Panel shade, light** are a click-through for the
+content sheet (the colour behind every window's content area and the overlay):
+_Today_ plus two candidates per appearance, each named with its hex. The app
+reads the shade once at launch, so after a change the rows show the same
+restart line as the interface language: **Restart now** waits for an idle
+moment. The candidate the team settles on becomes the token's value, and these
+two rows go away.
+
 ## Transcription
 
 Open **Settings → Transcription**.

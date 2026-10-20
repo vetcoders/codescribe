@@ -75,8 +75,11 @@ enum CSPalette {
   /// dark sheet keeps the hue of the Vibecrafted terminal's navy (#0B0B12,
   /// `~/.config/vibecrafted/terminal-theme.toml`) lifted one step above the
   /// 6 % bubble lift.
-  static let sheetLightHex: UInt32 = 0xF6F3EE
-  static let sheetDarkHex: UInt32 = 0x16161C
+  /// Shipped values are `SheetShade.todayLight` / `.todayDark`; a saved
+  /// click-through candidate (`SheetShadePreference`) replaces them for the
+  /// life of the process, so the whole app paints one sheet per launch.
+  static let sheetLightHex: UInt32 = SheetShadePreference.launchHex(dark: false)
+  static let sheetDarkHex: UInt32 = SheetShadePreference.launchHex(dark: true)
   static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))

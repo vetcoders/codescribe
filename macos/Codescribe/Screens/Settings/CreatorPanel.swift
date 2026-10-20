@@ -59,6 +59,16 @@ struct CreatorPanel: View {
       }
       .padding(.top, SettingsScale.headerGap)
 
+      SettingsSectionLabel(
+        String(localized: "Appearance", comment: "Settings group: light or dark, and the sheet shade")
+      )
+      .padding(.top, SettingsScale.sectionGap)
+      VStack(spacing: 8) {
+        AppearanceRow(model: model)
+        SheetShadeRows(model: model)
+      }
+      .padding(.top, SettingsScale.headerGap)
+
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
       SettingsSectionHeaderRow(String(localized: "Permissions")) {
@@ -676,6 +686,104 @@ private struct InterfaceLanguageRow: View {
       get: { model.interfaceLanguage },
       set: { model.selectInterfaceLanguage($0) }
     )
+  }
+}
+
+// MARK: - Appearance row
+
+/// Light, dark or system. Applies at once: AppKit repaints every window.
+private struct AppearanceRow: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    SettingsControlRow(
+      title: String(localized: "Appearance", comment: "Settings row: light, dark or system"),
+      subtitle: String(
+        localized: "Follow macOS, or keep Codescribe light or dark on its own.",
+        comment: "Appearance row explanation")
+    ) {
+      Picker("", selection: selection) {
+        ForEach(AppAppearanceChoice.allCases) { choice in
+          Text(choice.title).tag(choice)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityIdentifier("settings-appearance")
+    }
+  }
+
+  private var selection: Binding<AppAppearanceChoice> {
+    Binding(get: { model.appearanceChoice }, set: { model.selectAppearance($0) })
+  }
+}
+
+// MARK: - Sheet shade rows
+
+/// Click-through candidates for the content sheet, one row per appearance
+/// (Founder and Maciej, 2026-10-20). A shade is read at launch, so the rows
+/// end with the same restart line the language uses.
+private struct SheetShadeRows: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    SettingsControlRow(
+      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark")
+    ) {
+      shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
+    }
+    SettingsControlRow(
+      title: String(localized: "Panel shade, light", comment: "Settings row: sheet shade for light")
+    ) {
+      shadePicker(SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
+    }
+    if model.sheetShadeNeedsRestart {
+      HStack(spacing: 12) {
+        Text(
+          "Codescribe will restart with the new shade. Your recording must finish first.",
+          comment: "Sheet shade restart explanation"
+        )
+        .font(SettingsScale.helper)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(model.sheetShadeRestartTitle) { model.applySheetShade() }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(model.applyingSheetShade)
+          .accessibilityIdentifier("settings-sheet-shade-restart")
+      }
+    }
+    if let notice = model.sheetShadeNotice {
+      Text(notice)
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.terracotta)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("settings-sheet-shade-notice")
+    }
+  }
+
+  private func shadePicker(_ choices: [SheetShade], selection: Binding<SheetShade>, id: String)
+    -> some View
+  {
+    Picker("", selection: selection) {
+      ForEach(choices) { shade in
+        Text(verbatim: "\(shade.title) · #\(shade.rawValue)").tag(shade)
+      }
+    }
+    .pickerStyle(.menu)
+    .labelsHidden()
+    .fixedSize()
+    .accessibilityIdentifier(id)
+  }
+
+  private var darkSelection: Binding<SheetShade> {
+    Binding(get: { model.sheetShadeDark }, set: { model.selectSheetShade($0) })
+  }
+
+  private var lightSelection: Binding<SheetShade> {
+    Binding(get: { model.sheetShadeLight }, set: { model.selectSheetShade($0) })
   }
 }
 
