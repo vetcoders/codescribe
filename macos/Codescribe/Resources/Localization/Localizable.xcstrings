@@ -2548,7 +2548,7 @@
       }
     },
     "Agent" : {
-      "comment" : "Agent window title\nSettings section",
+      "comment" : "Agent window title\nConversation header subtitle without a model\nSettings section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2636,6 +2636,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent potwierdził odbiór"
+          }
+        }
+      }
+    },
+    "Agent context" : {
+      "comment" : "Title of the Agent window's context panel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kontekst Agenta"
           }
         }
       }
@@ -2823,6 +2834,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Agent niedostępny"
+          }
+        }
+      }
+    },
+    "Agent · %@" : {
+      "comment" : "Conversation header subtitle; the placeholder is the conversation's model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · %@"
           }
         }
       }
@@ -4628,6 +4650,17 @@
         }
       }
     },
+    "Close the context panel" : {
+      "comment" : "Tooltip and accessibility label of the context panel's close button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zamknij panel kontekstu"
+          }
+        }
+      }
+    },
     "Closes the dictation overlay" : {
       "localizations" : {
         "pl" : {
@@ -5421,6 +5454,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie można teraz rozpocząć nowej konsultacji."
+          }
+        }
+      }
+    },
+    "Context" : {
+      "comment" : "Agent header button that opens the context panel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kontekst"
           }
         }
       }
@@ -8864,6 +8908,17 @@
         }
       }
     },
+    "Last updated" : {
+      "comment" : "Context panel fact: when the conversation last changed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia aktualizacja"
+          }
+        }
+      }
+    },
     "Latest recorded take" : {
       "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
       "localizations" : {
@@ -9671,6 +9726,17 @@
         }
       }
     },
+    "Messages" : {
+      "comment" : "Context panel fact: how many turns the conversation holds",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomości"
+          }
+        }
+      }
+    },
     "Messages (/v1/messages)" : {
       "localizations" : {
         "pl" : {
@@ -9907,7 +9973,7 @@
       }
     },
     "Model" : {
-      "comment" : "Whisper tab row: the model selector",
+      "comment" : "Context panel fact: the conversation's model\nWhisper tab row: the model selector",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11649,6 +11715,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz ustawienia"
+          }
+        }
+      }
+    },
+    "Open Settings › Agent › Tools" : {
+      "comment" : "Tooltip on the Tool settings row of the context panel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Ustawienia › Agent › Narzędzia"
           }
         }
       }
@@ -15468,6 +15545,17 @@
         }
       }
     },
+    "Show this conversation's context and tool settings" : {
+      "comment" : "Tooltip on the Context button while the context panel is closed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż kontekst tej rozmowy i ustawienia narzędzi"
+          }
+        }
+      }
+    },
     "Show transcript by default" : {
       "localizations" : {
         "pl" : {
@@ -17745,6 +17833,17 @@
         }
       }
     },
+    "This conversation" : {
+      "comment" : "Context panel section about the selected conversation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta rozmowa"
+          }
+        }
+      }
+    },
     "This draft is unsaved. Continue with dictation, then go Back in this Setup session to save it once provider access is available." : {
       "comment" : "Setup API key editor note shown while provider access is unavailable",
       "localizations" : {
@@ -17890,7 +17989,7 @@
       }
     },
     "Today" : {
-      "comment" : "Sheet shade: the value shipped today\nThread rail section",
+      "comment" : "Day separator between conversation turns\nSheet shade: the value shipped today\nThread rail section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17982,6 +18081,17 @@
         }
       }
     },
+    "Tool settings" : {
+      "comment" : "Context panel row that opens Settings › Agent › Tools",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienia narzędzi"
+          }
+        }
+      }
+    },
     "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent." : {
       "localizations" : {
         "pl" : {
@@ -17993,7 +18103,7 @@
       }
     },
     "Tools" : {
-      "comment" : "Settings tab: tool permissions",
+      "comment" : "Context panel section that links to tool settings\nSettings tab: tool permissions",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -18839,6 +18949,17 @@
     "Voice Lab" : {
       "shouldTranslate" : false
     },
+    "Voice Lab power mode" : {
+      "comment" : "Agent header mark on a developer build while Voice Lab power mode is on",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryb Voice Lab"
+          }
+        }
+      }
+    },
     "Voice chat" : {
       "comment" : "Fallback title for a dictated thread",
       "localizations" : {
@@ -19584,10 +19705,6 @@
         }
       }
     },
-    "You use dev power mode" : {
-      "comment" : "Corner mark on a developer build while Voice Lab power mode is on",
-      "shouldTranslate" : false
-    },
     "You → %@: %@" : {
       "comment" : "Drawer preview of the user's direct message: the agent names, then the text",
       "localizations" : {
@@ -19782,17 +19899,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "aplikacja · %@"
-          }
-        }
-      }
-    },
-    "attach file / image" : {
-      "comment" : "Composer hint: what can be attached",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "załącz plik/obraz"
           }
         }
       }
@@ -23194,17 +23300,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "zatrzymano"
-          }
-        }
-      }
-    },
-    "streaming" : {
-      "comment" : "Composer hint: the reply streams in live",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "na żywo"
           }
         }
       }
