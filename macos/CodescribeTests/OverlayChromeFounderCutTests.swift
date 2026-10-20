@@ -32,48 +32,32 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(
       transcript.contains("state.liveEvidence"),
       "Uncommitted hypotheses never take transcript height")
-    let container = try section(
-      of: overlay, from: "private func bottomChromeContainer", to: "private func canvasStack")
-    XCTAssertTrue(container.contains("GlassEffectContainer(spacing: 0)"))
-    XCTAssertTrue(container.contains("{ intentRail }"))
-    XCTAssertFalse(
-      container.contains("canvasStack(intentRail)"), "glass must not extract the whole canvas")
-    let bottom = try section(
-      of: overlay, from: "private func canvasStack",
+    XCTAssertFalse(overlay.contains("bottomChromeContainer"))
+    XCTAssertFalse(overlay.contains("overlay-tools-handle"))
+    XCTAssertFalse(overlay.contains("OverlayActionsSurface"))
+    let footer = try section(
+      of: overlay,
+      from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
       to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    XCTAssertFalse(bottom.contains("HStack(spacing: 6)"), "the actions capsule stands alone")
-    XCTAssertTrue(bottom.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertTrue(bottom.contains(".padding(.horizontal, OverlayResizeChrome.actionsSideInset)"))
-    XCTAssertTrue(overlay.contains("@Namespace private var bottomChromeNamespace"))
+    XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
+    XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
+    XCTAssertTrue(overlay.contains("CSSidebarMaterial()"))
+    XCTAssertTrue(overlay.contains("overlay-transcript-actions"))
   }
 
   func testActionsGlassMorphsInTheBottomNamespaceWithoutPaintingTheBottomBar() throws {
     let overlay = try overlaySource()
-    let material = try section(
-      of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
-    XCTAssertTrue(material.contains("else if #available(macOS 26.0, *)"))
-    XCTAssertTrue(material.contains(".glassEffect(.regular.interactive(), in: Capsule())"))
-    XCTAssertTrue(material.contains(".glassEffectID(\"overlay-actions\", in: glassNamespace)"))
-    XCTAssertTrue(
-      material.contains(".glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)"))
-    let glass = try section(
-      of: material, from: "else if #available(macOS 26.0, *)", to: "} else {")
-    XCTAssertFalse(glass.contains(".background"))
-    XCTAssertFalse(glass.contains(".overlay"))
-    XCTAssertFalse(glass.contains(".tint"))
-    let bottom = try section(
-      of: overlay, from: "private func canvasStack",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    XCTAssertEqual(
-      bottom.components(separatedBy: "glassNamespace: bottomChromeNamespace").count - 1, 1)
-    let actionSurface = try XCTUnwrap(bottom.range(of: "OverlayActionsSurface(palette:"))
-    let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.bottom, OverlayResizeChrome"))
-    XCTAssertLessThan(actionSurface.lowerBound, clearMargin.lowerBound)
-    XCTAssertFalse(
-      bottom.contains(".glassEffect("), "Only the actions capsule may claim a glass hit region")
-    XCTAssertTrue(
-      bottom.contains(
-        ".animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)"))
+    XCTAssertFalse(overlay.contains("OverlayActionsSurface"))
+    XCTAssertFalse(overlay.contains(".glassEffect("))
+    let column = try section(
+      of: overlay, from: "private func transcriptActionsColumn",
+      to: "private func agentDrawerColumn")
+    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    XCTAssertTrue(column.contains(".focusable(false)"))
+    XCTAssertTrue(column.contains("overlay-transcript-actions"))
+    let material = try source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    XCTAssertTrue(material.contains("reduceTransparency"))
+    XCTAssertFalse(material.contains(".glassEffect("))
   }
 
   func testCoverageWarningStacksWithActionsWithoutHidingOperationErrors() throws {
@@ -490,7 +474,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertTrue(state.showsAgentMonitor)
       XCTAssertTrue(findTranscript(in: root) === canvas)
-      XCTAssertEqual(panel.frame.size, fullSize)
+      XCTAssertEqual(
+        panel.frame.size, DictationOverlayWindow.defaultSize,
+        "Agents keeps its own profile; opening it does not adopt the transcription frame")
       state.hideAgentSidebar()
       XCTAssertTrue(findTranscript(in: root) === canvas)
     }
@@ -705,25 +691,30 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   // UX35C-a contracts, authored under W1; execution belongs to the integrator.
+  /// The transcript column is the surface, not a second bar opened by a toggle.
+  /// Pin, VoiceOver and the idle clock do not mount or hide those commands.
   func testActionsAreInsertedOnlyAfterActivationAndHaveNoPinState() throws {
     let source = try overlaySource()
-    let tools = try section(
-      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
-    XCTAssertTrue(containsGuardedIntentRail(tools))
-    XCTAssertTrue(tools.contains("actions.toggle()"))
-    XCTAssertTrue(tools.contains(".onHover { actions.pointerChanged($0) }"))
-    XCTAssertTrue(tools.contains(".focusable()"))
-    XCTAssertTrue(tools.contains("actions.phase == .open ? \"Expanded\" : \"Collapsed\""))
-    XCTAssertTrue(tools.contains("overlay-retained-work-badge"))
+    XCTAssertFalse(containsGuardedIntentRail(source))
+    XCTAssertFalse(source.contains("actions.toggle()"))
+    XCTAssertFalse(source.contains("actions.pointerChanged"))
+    XCTAssertFalse(source.contains("overlay-retained-work-badge"))
+    XCTAssertFalse(source.contains("overlay-tools-handle"))
     XCTAssertFalse(source.contains("togglePin"))
     XCTAssertFalse(source.contains("isPinned"))
     XCTAssertFalse(source.contains("voiceOverEnabled"))
-    XCTAssertTrue(tools.contains(".onExitCommand { actions.dismiss() }"))
-    XCTAssertTrue(tools.contains("if collapsed { actions.reset() }"))
+    XCTAssertFalse(source.contains(".task(id: actions.hideDeadline)"))
+    XCTAssertFalse(source.contains("@State private var actions"))
+    let canvas = try section(
+      of: source, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertEqual(canvas.components(separatedBy: "transcriptActionsColumn(").count - 1, 1)
     XCTAssertTrue(
-      tools.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
-    XCTAssertTrue(tools.contains(".task(id: actions.hideDeadline)"))
-    XCTAssertTrue(tools.contains("guard !Task.isCancelled else { return }"))
+      canvas.contains("let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+    let column = try section(
+      of: source, from: "private func transcriptActionsColumn",
+      to: "private func agentDrawerColumn")
+    XCTAssertTrue(column.contains(".focusable(false)"))
+    XCTAssertEqual(column.components(separatedBy: "overlay-transcript-actions").count - 1, 1)
   }
 
   func testActionsExpireThreeSecondsAfterLastOutsideInteraction() {
@@ -776,16 +767,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testIdleRetainedTakeAndVoiceOverDoNotMountToolsThenCapOpensAndCloses() throws {
     let source = try overlaySource()
-    let tools = try section(
-      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
-    let cap = try section(of: tools, from: "Button {", to: "if actions.phase == .open {")
-    XCTAssertTrue(cap.contains("actions.toggle()"))
-    XCTAssertTrue(cap.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
+    XCTAssertFalse(source.contains("overlay-tools-handle"))
+    XCTAssertFalse(source.contains("overlay-retained-work-badge"))
+    XCTAssertFalse(containsGuardedIntentRail(source))
+    XCTAssertTrue(source.contains("overlay-transcript-actions"))
     XCTAssertTrue(
-      cap.contains(".accessibilityValue(actions.phase == .open ? \"Expanded\" : \"Collapsed\")"))
-    XCTAssertTrue(cap.contains("if state.hasRecoverableSupersededWork && actions.phase != .open {"))
-    XCTAssertTrue(cap.contains("overlay-retained-work-badge"))
-    XCTAssertTrue(containsGuardedIntentRail(tools))
+      source.contains(
+        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
     XCTAssertTrue(source.contains("OverlayIntentRail.projectedIntents(for: state)"))
     XCTAssertTrue(source.contains("OverlayRecordingControls.railIntents(from: projectedIntents)"))
     XCTAssertTrue(source.contains("intents: railIntents"))
@@ -820,23 +808,22 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // `accessibilityVoiceOverEnabled` is read-only in the environment, so the
     // guard pins its absence; no XCTest environment write or AX walk is needed.
     XCTAssertFalse(source.contains("accessibilityVoiceOverEnabled"))
-    XCTAssertTrue(source.contains("@State private var actions = OverlayActionsPresentation()"))
+    XCTAssertFalse(source.contains("@State private var actions = OverlayActionsPresentation()"))
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
   }
 
   func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
     let source = try overlaySource()
-    let normalized = source.components(separatedBy: .whitespacesAndNewlines)
-      .filter { !$0.isEmpty }.joined(separator: " ")
-    let handle = try section(
-      of: normalized, from: "Button { actions.toggle()",
-      to: "if actions.phase == .open {")
-    XCTAssertTrue(handle.contains("Image(systemName: actions.controlSymbol)"))
-    XCTAssertTrue(
-      handle.contains(".contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))"))
-    XCTAssertTrue(handle.contains(".accessibilityLabel(actions.controlTitle)"))
-    XCTAssertTrue(handle.contains("OverlayMiniTooltip(title: actions.controlTitle"))
-    XCTAssertTrue(handle.contains(".accessibilityIdentifier(\"overlay-tools-handle\")"))
+    XCTAssertFalse(source.contains("actions.toggle()"))
+    XCTAssertFalse(source.contains("overlay-tools-handle"))
+    let column = try section(
+      of: source, from: "private func transcriptActionsColumn",
+      to: "private func agentDrawerColumn")
+    XCTAssertTrue(column.contains(".focusable(false)"))
+    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    let rail = try railSource()
+    XCTAssertTrue(rail.contains("OverlayHoverControl("))
+    XCTAssertTrue(rail.contains(".accessibilityIdentifier(\"overlay-intent-dock\")"))
   }
 
   func testFormatRequiresAnExplicitChoiceAndNeverUsesAPrimaryAction() throws {
@@ -882,25 +869,21 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
-      canvas.range(
-        of:
-          #"if !state\.isCollapsed && state\.showsMyDictation && !state\.showsAgentMonitor \{\s*VStack\(spacing: CSSpace\.sm\) \{\s*bottomChromeContainer\(\s*HStack\(spacing: 2\) \{\s*Button \{\s*actions\.toggle\(\)"#,
-        options: .regularExpression) != nil)
+      canvas.contains(
+        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+    XCTAssertTrue(
+      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
     XCTAssertTrue(
       canvas.range(
         of: #"footerMessageRow\s*\.frame\(height: 18\)"#,
         options: .regularExpression) != nil,
-      "The floating tools retain one fixed-height message row")
+      "Footer notices keep one fixed-height message row")
     XCTAssertFalse(canvas.contains("transcriptStatus"))
-    XCTAssertTrue(containsGuardedIntentRail(canvas))
-    XCTAssertTrue(canvas.contains("actions.toggle()"))
+    XCTAssertFalse(containsGuardedIntentRail(canvas))
+    XCTAssertFalse(canvas.contains("actions.toggle()"))
     XCTAssertTrue(
-      canvas.contains(".onChange(of: state.captureGeneration) { _, _ in actions.reset() }"))
-    let fold = try section(
-      of: canvas, from: ".onChange(of: state.isCollapsed)",
-      to: ".onChange(of: state.captureGeneration)")
-    XCTAssertTrue(fold.contains("if collapsed { actions.reset() }"))
-    XCTAssertFalse(fold.contains("actions.toggle()"), "Expanding must not reopen tools")
+      canvas.contains("state.refreshRetranscriptionAvailability()"))
+    XCTAssertFalse(canvas.contains("actions.reset()"))
 
     let state = OverlayState.previewFormatted()
     defer { state.finishControllerRecording() }
@@ -930,36 +913,33 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testBottomCapsulesAreCenteredWithSymmetricOpenActionsInsets() throws {
-    let bottom = try section(
-      of: overlaySource(), from: "private func canvasStack",
-      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
-    let capsule = try section(
-      of: bottom, from: "HStack(spacing: 2)", to: "OverlayActionsSurface(palette:")
-    XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 10 : 0)"))
-    XCTAssertTrue(capsule.contains(".padding(.horizontal, actions.phase == .open ? 0 : 10)"))
-    XCTAssertTrue(capsule.contains("minWidth: actions.phase == .open"))
-    XCTAssertTrue(
-      capsule.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: true)"))
-    XCTAssertFalse(capsule.contains(".padding(.trailing"))
-    XCTAssertFalse(capsule.contains(".padding(.leading"))
-    XCTAssertTrue(capsule.contains(".fixedSize(horizontal: false, vertical: true)"))
-    let groupFrame = try XCTUnwrap(
-      bottom.range(of: ".frame(maxWidth: .infinity, alignment: .center)"))
-    let capsuleSurface = try XCTUnwrap(bottom.range(of: "OverlayActionsSurface(palette:"))
-    let clearMargin = try XCTUnwrap(bottom.range(of: ".padding(.horizontal, OverlayResizeChrome"))
-    XCTAssertLessThan(capsuleSurface.lowerBound, groupFrame.lowerBound)
-    XCTAssertLessThan(groupFrame.lowerBound, clearMargin.lowerBound)
-    XCTAssertFalse(bottom.contains("Spacer("))
+    let source = try overlaySource()
+    let canvas = try section(
+      of: source, from: "private func canvasStack", to: "private var header: some View")
+    let columnCall = canvas.range(of: "transcriptActionsColumn(")
+    let rail = canvas.range(of: "if railShown {")
+    XCTAssertNotNil(columnCall)
+    XCTAssertNotNil(rail)
+    XCTAssertFalse(canvas.contains("OverlayActionsSurface"))
+    XCTAssertFalse(canvas.contains("HStack(spacing: 2)"))
+    XCTAssertTrue(canvas.contains("transcriptActionsWidth"))
+    let column = try section(
+      of: source, from: "private func transcriptActionsColumn",
+      to: "private func agentDrawerColumn")
+    XCTAssertFalse(
+      column.contains("Spacer("),
+      "action buttons stay in the column and do not push across the text")
   }
 
   func testNoticesAndCoverageStayOutsideTheActionCapsule() throws {
     let source = try overlaySource()
-    let capsule = try section(
-      of: source, from: "HStack(spacing: 2)",
-      to: ".padding(.vertical, actions.phase == .open ? 2 : 0)")
-    XCTAssertTrue(containsGuardedIntentRail(capsule))
-    XCTAssertFalse(capsule.contains("Text("))
-    XCTAssertFalse(capsule.contains("state.toast"))
+    let footer = try section(
+      of: source,
+      from: "if !state.isCollapsed && state.windowContentSurface == .transcription {",
+      to: "} else if let label = OverlayActionsPresentation.finishingLabel(")
+    XCTAssertFalse(footer.contains("intentRail"))
+    XCTAssertFalse(footer.contains("state.toast"))
+    XCTAssertTrue(footer.contains("footerMessageRow"))
     XCTAssertTrue(source.contains("overlay-footer-notice"))
     XCTAssertTrue(source.contains("OverlayCoverageStatus("))
     XCTAssertFalse(
@@ -985,16 +965,19 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testReducedMotionAndTransparencyApplyToTheEntireActionsSurface() throws {
     let source = try overlaySource()
-    let tools = try section(
-      of: source, from: "HStack(spacing: 2)", to: "private var header: some View")
-    XCTAssertTrue(tools.contains(".animation(reduceMotion ? nil :"))
-    XCTAssertTrue(tools.contains("transaction.animation = nil"))
-    XCTAssertTrue(tools.contains("transaction.disablesAnimations = true"))
-    let material = try section(
-      of: railSource(), from: "struct OverlayActionsSurface", to: "/// Symbols shared")
-    XCTAssertTrue(material.contains("if reduceTransparency"))
-    XCTAssertTrue(material.contains("Capsule().fill(palette.desktopBackground.color)"))
-    XCTAssertTrue(material.contains(".background { Capsule().fill(.regularMaterial) }"))
+    let canvas = try section(
+      of: source, from: "private func canvasStack", to: "private var header: some View")
+    XCTAssertTrue(canvas.contains(".animation(reduceMotion ? nil :"))
+    XCTAssertTrue(canvas.contains("transaction.animation = nil"))
+    XCTAssertTrue(canvas.contains("transaction.disablesAnimations = true"))
+    let column = try section(
+      of: source, from: "private func transcriptActionsColumn",
+      to: "private func agentDrawerColumn")
+    XCTAssertTrue(column.contains("CSSidebarMaterial()"))
+    let material = try self.source(at: "Codescribe/DesignSystem/CSSidebarMaterial.swift")
+    XCTAssertTrue(material.contains("reduceTransparency"))
+    XCTAssertTrue(material.contains("increaseContrast"))
+    XCTAssertTrue(material.contains("colorSchemeContrast"))
   }
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
@@ -1062,10 +1045,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     let chrome = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
-    XCTAssertTrue(
-      chrome.contains("? nil : OverlayResizeChrome.actionsWidth(narrow: true)")
-    )
-    XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.actionsHeight"))
+    XCTAssertTrue(chrome.contains("OverlayTranscriptActionsLayout.columnWidth"))
+    XCTAssertFalse(chrome.contains("overlay-tools-handle"))
     XCTAssertTrue(chrome.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
     XCTAssertTrue(chrome.contains("width: OverlayResizeChrome.gripSize.width"))
     XCTAssertTrue(chrome.contains("height: OverlayResizeChrome.gripSize.height"))
@@ -1074,7 +1055,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(chrome.contains("sideIndicatorAnimation(reduceMotion: reduceMotion)"))
     XCTAssertTrue(chrome.contains("transaction.disablesAnimations = true"))
     XCTAssertTrue(source.contains("pointerInsideOverlay = inside"))
-    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 7)
+    XCTAssertEqual(chrome.components(separatedBy: ".allowsHitTesting(false)").count - 1, 8)
     XCTAssertEqual(chrome.components(separatedBy: ".accessibilityHidden(true)").count - 1, 4)
     // The folded list's rail (2026-10-19) brought two of them: its leading
     // hairline and its frame reader, neither of which takes a click.
@@ -1534,9 +1515,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state: OverlayState, width: CGFloat = 470,
     _ check: (FloatingOverlayPanel, NSView) throws -> Void
   ) throws {
+    let suite = "OverlayChromeFounderCutTests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
-        state: state, textScale: TextScaleController(key: "OverlayChromeFounderCutTests.scale")
+        state: state,
+        textScale: TextScaleController(key: "OverlayChromeFounderCutTests.scale"),
+        sizeDefaults: defaults
       ) as? FloatingOverlayPanel)
     defer {
       panel.orderOut(nil)
@@ -1546,7 +1532,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     if let visible = NSScreen.main?.visibleFrame {
       panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 40, y: visible.maxY - 320))
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     settle(root)
     try check(panel, root)

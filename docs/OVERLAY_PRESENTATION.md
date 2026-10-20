@@ -95,10 +95,15 @@ does not need changes to these owners.
 
 ## Requirements that survive a new skin
 
-- In the expanded overlay, the compact agent rail and its reveal button are
+- On the Agents surface, the compact agent rail and its reveal button are
   available from the first reveal, before any conversation has been selected.
   A visible full list replaces the rail. Hover over the folded rail reveals
   that same list. Do not mount either only after opening an agent conversation.
+  The transcription surface does not mount that rail, its pills, or the agent
+  list. Its trailing column is the transcript actions sidebar
+  (`overlay-intent-dock` inside `overlay-transcript-actions`). That column
+  does not read the agents drawer width. A nil conversation on Agents stays
+  on Agents.
 - The conversation's agent pill focuses an available, detected Frame pane.
   When that target is unavailable, the label stays passive; a new shell must
   not display an unsupported navigation option.

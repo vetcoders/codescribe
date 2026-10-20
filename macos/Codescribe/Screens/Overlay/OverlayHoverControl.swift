@@ -78,6 +78,9 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   let palette: OverlayAppearancePalette
   @Binding var presented: String?
   var action: (() -> Void)? = nil
+  /// The transcript column sits on the trailing edge, so its menus open over
+  /// the document. Other chrome keeps the menu below the control.
+  var popoverArrow: Edge = .top
   @ViewBuilder var label: LabelContent
   @ViewBuilder var detail: (@escaping () -> Void) -> Detail
   @State private var hovered = false
@@ -101,6 +104,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         .contentShape(Rectangle())
     }
     .csFocusRing()
+    .focusable(false)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
     .onHover { hovered = $0 }
@@ -110,7 +114,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
         get: { presented == id },
         set: { if !$0 && presented == id { presented = nil } }
       ),
-      attachmentAnchor: .rect(.bounds), arrowEdge: .top
+      attachmentAnchor: .rect(.bounds), arrowEdge: popoverArrow
     ) {
       detail { presented = nil }
         .font(CSFont.ui(12, .medium))
