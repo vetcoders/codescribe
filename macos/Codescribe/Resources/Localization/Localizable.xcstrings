@@ -1965,34 +1965,12 @@
         }
       }
     },
-    "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools stay blocked, and a path that may hold secrets always asks." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Reguła narzędzia ma pierwszeństwo przed regułą serwera, a obie przed tymi ustawieniami domyślnymi. Narzędzia destrukcyjne pozostają zablokowane, a ścieżka mogąca zawierać sekrety zawsze wymaga zgody."
-          }
-        }
-      }
-    },
     "A saved consent does not mean audio is being sent now." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Zgoda nie oznacza, że dźwięk jest teraz wysyłany."
-          }
-        }
-      }
-    },
-    "A server gives the Agent extra tools, such as code or web search." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Serwer daje Agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie albo w sieci."
           }
         }
       }
@@ -2268,17 +2246,6 @@
         }
       }
     },
-    "Add MCP servers and manage the tools the Agent may use." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent."
-          }
-        }
-      }
-    },
     "Add custom provider." : {
       "localizations" : {
         "pl" : {
@@ -2338,17 +2305,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj serwer"
-          }
-        }
-      }
-    },
-    "Add this provider's API key under Providers to list its models, or enter a model ID below." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dodaj klucz API tego dostawcy w sekcji Dostawcy, aby pobrać listę modeli, albo wpisz identyfikator modelu poniżej."
           }
         }
       }
@@ -2745,18 +2701,6 @@
         }
       }
     },
-    "Agent environment status" : {
-      "comment" : "Settings tab: Diagnostics headline",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan środowiska Agenta"
-          }
-        }
-      }
-    },
     "Agent is disconnected" : {
       "comment" : "Agent row help: the follower is gone",
       "localizations" : {
@@ -3020,23 +2964,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu Codescribe."
-          }
-        }
-      }
-    },
-    "Also heard, not committed: %@, %lld total" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Also heard, not committed: %1$@, %2$lld total"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wykryto też, niezatwierdzone: %1$@ · razem %2$lld"
           }
         }
       }
@@ -3527,18 +3454,6 @@
         }
       }
     },
-    "Auto fold after…" : {
-      "comment" : "Overlay header menu: how long an expanded overlay stays open",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zwijaj po…"
-          }
-        }
-      }
-    },
     "Auto fold after… %@" : {
       "localizations" : {
         "pl" : {
@@ -3735,17 +3650,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uszkodzony"
-          }
-        }
-      }
-    },
-    "Browse and edit the base prompts." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przeglądaj i edytuj prompty bazowe."
           }
         }
       }
@@ -4593,17 +4497,6 @@
         }
       }
     },
-    "Choose how to start Codescribe's modes and how to control recording." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz, jak uruchamiać tryby Codescribe i sterować nagrywaniem."
-          }
-        }
-      }
-    },
     "Choose how you want to use Codescribe." : {
       "comment" : "Setup chapter heading",
       "localizations" : {
@@ -4957,17 +4850,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe odświeża też własne polecenia w ~/.local/bin; polecenia, którego nie zainstalował, nigdy nie nadpisuje. Nasłuch nie jest uruchamiany."
-          }
-        }
-      }
-    },
-    "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe sprawdza względem tych folderów ścieżki plików oraz katalogi robocze i argumenty ścieżkowe poleceń terminala. Procesy i serwery MCP mogą korzystać z innych ścieżek zgodnie z własnymi uprawnieniami."
           }
         }
       }
@@ -5411,17 +5293,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Źródło konfiguracji:"
-          }
-        }
-      }
-    },
-    "Configuration state of the Agent, its available tools and integrations." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan konfiguracji Agenta, dostępnych narzędzi i integracji."
           }
         }
       }
@@ -6047,7 +5918,14 @@
       }
     },
     "Could not request panel focus in Frame." : {
-
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się poprosić Frame o fokus panelu."
+          }
+        }
+      }
     },
     "Could not save note" : {
       "comment" : "Tray banner: writing the daily note failed",
@@ -7234,17 +7112,6 @@
         }
       }
     },
-    "During dictation" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Podczas dyktowania"
-          }
-        }
-      }
-    },
     "Edit" : {
       "comment" : "Dictation panel: template segment, the raw template",
       "localizations" : {
@@ -7723,17 +7590,6 @@
         }
       }
     },
-    "Finish setup above" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dokończ konfigurację powyżej"
-          }
-        }
-      }
-    },
     "Finish the current take before opening a saved transcript." : {
       "comment" : "History is disabled while a take is being recorded or finished",
       "localizations" : {
@@ -7967,17 +7823,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziom formatowania"
-          }
-        }
-      }
-    },
-    "Formatting limited to corrections." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie ograniczone do poprawek."
           }
         }
       }
@@ -8611,17 +8456,6 @@
         }
       }
     },
-    "Individual tools" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poszczególne narzędzia"
-          }
-        }
-      }
-    },
     "Information and documentation" : {
       "comment" : "User panel section",
       "localizations" : {
@@ -8727,7 +8561,14 @@
       }
     },
     "Install the agent bridge to focus agent panels in Frame." : {
-
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj mostek agenta, aby ustawiać fokus paneli agentów we Frame."
+          }
+        }
+      }
     },
     "Install the agent bridge to play replies." : {
       "localizations" : {
@@ -8943,18 +8784,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Język"
-          }
-        }
-      }
-    },
-    "Languages" : {
-      "comment" : "Settings group: app language and speech language",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Języki"
           }
         }
       }
@@ -9726,18 +9555,6 @@
         }
       }
     },
-    "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only." : {
-      "comment" : "Formatting lane usage while the Max level is selected",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Max korzysta z modelu i endpointu Agenta. Ta ścieżka obsługuje tylko poziomy Smart i Korekta."
-          }
-        }
-      }
-    },
     "Max uses the Agent model. Set up the Agent endpoint to use Max." : {
       "comment" : "Shown when the Max level is selected but the Agent lane is unavailable",
       "localizations" : {
@@ -10126,18 +9943,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły modelu"
-          }
-        }
-      }
-    },
-    "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers." : {
-      "comment" : "Model discovery failed while the provider account stays signed in",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Lista modeli niedostępna: zapisany klucz API został odrzucony. Połączone konto nadal obsługuje żądania. Sprawdź klucz w sekcji Dostawcy."
           }
         }
       }
@@ -10669,17 +10474,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma obecnie zapisanych danych uwierzytelniających dostawcy Agenta ani połączeń MCP."
-          }
-        }
-      }
-    },
-    "No MCP servers yet — this is optional." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie masz jeszcze serwerów MCP — są opcjonalne."
           }
         }
       }
@@ -11259,7 +11053,14 @@
       }
     },
     "Not calibrated" : {
-
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak kalibracji"
+          }
+        }
+      }
     },
     "Not checked yet" : {
       "comment" : "Diagnostics summary headline before the first probe has run",
@@ -14208,28 +14009,6 @@
         }
       }
     },
-    "Required before a recording can start." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do rozpoczęcia nagrywania."
-          }
-        }
-      }
-    },
-    "Required before a recording can start. The switch is on the Lab desk." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wymagane do rozpoczęcia nagrywania. Przełącznik znajduje się w zakładce Lab."
-          }
-        }
-      }
-    },
     "Required for committed utterances; stored in Settings." : {
       "localizations" : {
         "pl" : {
@@ -15723,17 +15502,6 @@
         }
       }
     },
-    "Shows the agents list" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokazuje listę agentów"
-          }
-        }
-      }
-    },
     "Shows the live impact, names whether base prompts are preserved, and requires typing %@ before data moves to Trash." : {
       "localizations" : {
         "pl" : {
@@ -16398,18 +16166,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie mowy"
-          }
-        }
-      }
-    },
-    "Speech recognition language" : {
-      "comment" : "Settings row: dictation language",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Język rozpoznawania mowy"
           }
         }
       }
@@ -17627,17 +17383,6 @@
         }
       }
     },
-    "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połączone konto obsługuje żądania do modelu, ale lista modeli wymaga klucza API tego dostawcy. Zachowaj obecny model albo wpisz identyfikator modelu poniżej."
-          }
-        }
-      }
-    },
     "The custom file is created on save." : {
       "localizations" : {
         "pl" : {
@@ -17894,17 +17639,6 @@
         }
       }
     },
-    "The transcript cleanup model" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Model poprawiania transkrypcji"
-          }
-        }
-      }
-    },
     "The visible take has no session identity" : {
       "localizations" : {
         "pl" : {
@@ -17942,17 +17676,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ograniczona wydajność z powodu wysokiej temperatury"
-          }
-        }
-      }
-    },
-    "These three shortcuts need saving. Everything else saves automatically." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te trzy skróty wymagają zapisu. Pozostałe ustawienia zapisują się automatycznie."
           }
         }
       }
@@ -19121,17 +18844,6 @@
         }
       }
     },
-    "Voice & formatting" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Głos i formatowanie"
-          }
-        }
-      }
-    },
     "Voice Lab" : {
       "shouldTranslate" : false
     },
@@ -19254,18 +18966,6 @@
         }
       }
     },
-    "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay." : {
-      "comment" : "Creator: what reopening the setup wizard does",
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przejdź jeszcze raz przez pierwsze kroki: język, tryb, uprawnienia, model Whisper i dostawcę. Twoje obecne ustawienia zostają."
-          }
-        }
-      }
-    },
     "Warm carbon" : {
       "comment" : "Sheet shade, dark",
       "localizations" : {
@@ -19273,17 +18973,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ciepły węgiel"
-          }
-        }
-      }
-    },
-    "We send recordings only in Cloud mode or during a manual cloud re-transcription." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nagrania wysyłamy tylko w trybie chmurowym lub przy ręcznej retranskrypcji w chmurze."
           }
         }
       }
@@ -19886,17 +19575,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Możesz przejść do kolejnego kroku. Pobieranie zakończy się w tle."
-          }
-        }
-      }
-    },
-    "You choose the mode under Dictation." : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tryb wybierzesz w Dyktowaniu."
           }
         }
       }
@@ -21363,24 +21041,6 @@
         }
       }
     },
-    "hotkeys.mode.dictation.blurb" : {
-      "comment" : "Work mode description on the Shortcuts screen",
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Turns speech into text."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zamienia mowę na tekst"
-          }
-        }
-      }
-    },
     "hotkeys.mode.formatting" : {
       "comment" : "Work mode name on the Shortcuts screen",
       "extractionState" : "extracted_with_value",
@@ -21739,17 +21399,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włączony"
-          }
-        }
-      }
-    },
-    "measured profile" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Profil kalibracji mikrofonu"
           }
         }
       }

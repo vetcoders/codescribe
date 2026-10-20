@@ -209,7 +209,7 @@ struct LabPanel: View {
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .firstTextBaseline) {
           Text("Ledger sensitivity")
-            .font(.body)
+            .font(SettingsScale.settingName)
           Spacer()
           Text(verbatim: ledgerSensitivityLabel)
             .font(CSFont.ui(11, .semibold))
