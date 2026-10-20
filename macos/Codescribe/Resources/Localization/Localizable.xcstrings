@@ -3110,19 +3110,30 @@
         }
       }
     },
-    "Apple on-device (experimental)" : {
-      "shouldTranslate" : false
-    },
-    "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. %@" : {
-      "comment" : "The placeholder is the resolved cloud lane availability",
+    "Apple on this Mac (experimental)" : {
+      "comment" : "Formatting engine choice",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poziomy Smart i Korekta formatuje lokalnie Apple, bez danych dostępowych do chmury. Ta ścieżka działa, gdy Apple zawiedzie. %@"
+            "value" : "Apple na tym Macu (eksperymentalne)"
           }
         }
       }
+    },
+    "Apple on your Mac first; this provider steps in when Apple fails." : {
+      "comment" : "Formatting engine row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."
+          }
+        }
+      }
+    },
+    "Apple on-device (experimental)" : {
+      "shouldTranslate" : false
     },
     "Apple only" : {
       "comment" : "Dictation lane: on-device Apple Speech",
@@ -4755,6 +4766,7 @@
       }
     },
     "Cloud provider" : {
+      "comment" : "Formatting engine choice",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7768,6 +7780,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmiany formatowania (surowa transkrypcja → tekst przekazany)"
+          }
+        }
+      }
+    },
+    "Formatting engine" : {
+      "comment" : "Settings row: Apple on this Mac or the cloud provider formats the text",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silnik formatowania"
           }
         }
       }
@@ -18747,6 +18770,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Użyj zachowanej transkrypcji, gdy automatyczne wklejanie jest niedostępne."
+          }
+        }
+      }
+    },
+    "Used when Apple fails. %@" : {
+      "comment" : "The placeholder is the resolved cloud lane availability",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Używany, gdy Apple zawiedzie. %@"
           }
         }
       }
