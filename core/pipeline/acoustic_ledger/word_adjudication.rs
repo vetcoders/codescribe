@@ -197,8 +197,17 @@ struct DeferredAnchorWord {
 }
 
 fn acoustic_pair(a: ObservationProducer, b: ObservationProducer) -> bool {
-    matches!(a, ObservationProducer::Apple | ObservationProducer::AppleDictation | ObservationProducer::Whisper)
-        && matches!(b, ObservationProducer::Apple | ObservationProducer::AppleDictation | ObservationProducer::Whisper)
+    matches!(
+        a,
+        ObservationProducer::Apple
+            | ObservationProducer::AppleDictation
+            | ObservationProducer::Whisper
+    ) && matches!(
+        b,
+        ObservationProducer::Apple
+            | ObservationProducer::AppleDictation
+            | ObservationProducer::Whisper
+    )
 }
 
 fn trial_digest(trial: &WordTrial) -> [u8; 32] {
@@ -220,13 +229,17 @@ impl AcousticLedger {
         word: &WordSlot,
         sources: &[WordSlot],
     ) -> Option<WordSlot> {
-        if word.producer != ObservationProducer::Whisper { return None; }
+        if word.producer != ObservationProducer::Whisper {
+            return None;
+        }
         let identity = self.word_anchor_identity(word)?;
-        if identity.anchors.is_empty() { return None; }
+        if identity.anchors.is_empty() {
+            return None;
+        }
         let decode_of = |slot: &WordSlot| {
-            self.word_anchor_source(slot).and_then(|(pin, _)| {
-                pin.decode_sample_start.zip(pin.decode_sample_end)
-            }).or_else(|| self.decoded_word_windows.get(&slot.observation).copied())
+            self.word_anchor_source(slot)
+                .and_then(|(pin, _)| pin.decode_sample_start.zip(pin.decode_sample_end))
+                .or_else(|| self.decoded_word_windows.get(&slot.observation).copied())
         };
         let decode = decode_of(word)?;
         sources.iter().filter(|source| {
@@ -234,7 +247,7 @@ impl AcousticLedger {
                 && self.complete_word_slot(source)
                 && source.observation.occurrence.same_capture(&word.observation.occurrence)
                 && !self.unresolved_word_target_groups(&source.observation.occurrence).iter().any(|group| {
-                    group.contains(&SlotTarget::from(source))
+                    group.contains(&SlotTarget::from(*source))
                 })
         }).find(|source| {
             let Some(prior_decode) = decode_of(source) else { return false; };
@@ -271,17 +284,30 @@ impl AcousticLedger {
         outputs: &mut [WordSlot],
     ) {
         let independent = sources.iter().any(|source| {
-            matches!(source.producer, ObservationProducer::Apple | ObservationProducer::AppleDictation)
-                != matches!(observation.producer, ObservationProducer::Apple | ObservationProducer::AppleDictation)
+            matches!(
+                source.producer,
+                ObservationProducer::Apple | ObservationProducer::AppleDictation
+            ) != matches!(
+                observation.producer,
+                ObservationProducer::Apple | ObservationProducer::AppleDictation
+            )
         });
-        if !independent { return; }
+        if !independent {
+            return;
+        }
         let agrees = label_equal(&compose_label(sources), &compose_label(outputs));
         for output in outputs {
-            output.witness = if agrees { SlotWitness::Confirmed } else {
+            output.witness = if agrees {
+                SlotWitness::Confirmed
+            } else {
                 SlotWitness::Contested {
                     witness_label: output.text.clone(),
-                    range: OccurrenceIdentity::new(&observation.occurrence.session,
-                        observation.occurrence.capture_epoch, output.sample_start, output.sample_end),
+                    range: OccurrenceIdentity::new(
+                        &observation.occurrence.session,
+                        observation.occurrence.capture_epoch,
+                        output.sample_start,
+                        output.sample_end,
+                    ),
                 }
             };
         }
@@ -293,24 +319,36 @@ impl AcousticLedger {
         &mut self,
         observation: &ObservationIdentity,
     ) -> Option<MutationReceipt> {
-        let decode = self.word_evidence_input(observation)?.producer_request.as_ref()?.range.clone();
+        let decode = self
+            .word_evidence_input(observation)?
+            .producer_request
+            .as_ref()?
+            .range
+            .clone();
         if !decode.session.eq(&observation.occurrence.session)
             || decode.capture_epoch != observation.occurrence.capture_epoch
-            || self.is_sealed(&observation.occurrence) {
+            || self.is_sealed(&observation.occurrence)
+        {
             return None;
         }
         let held = self.slots_of(&observation.occurrence)?.to_vec();
         let mut outputs = held.clone();
         let mut operations = Vec::new();
         for (source, output) in held.iter().zip(&mut outputs) {
-            if source.sample_start < decode.sample_start || source.sample_end > decode.sample_end
-                || !matches!(&source.witness, SlotWitness::Unwitnessed) {
+            if source.sample_start < decode.sample_start
+                || source.sample_end > decode.sample_end
+                || !matches!(&source.witness, SlotWitness::Unwitnessed)
+            {
                 continue;
             }
-            output.witness = SlotWitness::Absent { range: OccurrenceIdentity::from(&decode) };
+            output.witness = SlotWitness::Absent {
+                range: OccurrenceIdentity::from(&decode),
+            };
             operations.push(SlotOperationReceipt {
-                observation: observation.clone(), kind: SlotOperationKind::Correct,
-                sources: vec![source.clone()], outputs: vec![output.clone()],
+                observation: observation.clone(),
+                kind: SlotOperationKind::Correct,
+                sources: vec![source.clone()],
+                outputs: vec![output.clone()],
                 source_ranges: self.slot_source_ranges(source),
                 rule_id: "witness_absence_preserves_speech/v1".into(),
             });
@@ -466,9 +504,9 @@ impl WordHypothesis {
     fn family(&self) -> ObservationProducer {
         if self.observation.producer == ObservationProducer::AppleDictation
             || self
-            .backend
-            .as_ref()
-            .is_some_and(|backend| backend.ends_with(":apple_speech"))
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.ends_with(":apple_speech"))
         {
             ObservationProducer::Apple
         } else {
@@ -636,9 +674,10 @@ impl AcousticLedger {
             .provider
             .as_ref()
             .filter(|(request, _, _, _)| {
-                matches!(observation.producer,
-                    ObservationProducer::Whisper | ObservationProducer::AppleDictation)
-                    && request.range.session == observation.occurrence.session
+                matches!(
+                    observation.producer,
+                    ObservationProducer::Whisper | ObservationProducer::AppleDictation
+                ) && request.range.session == observation.occurrence.session
                     && request.range.capture_epoch == observation.occurrence.capture_epoch
                     && original.iter().all(|pin| {
                         pin.decode_sample_start == Some(request.range.sample_start)
@@ -1655,23 +1694,37 @@ impl AcousticLedger {
         let held_label = compose_label(sources);
         let candidate_label = compose_label(outputs);
         let coarse_witness = observation.producer == ObservationProducer::AppleDictation
-            && sources.len() == 1 && outputs.len() == 1 && all_coarse
+            && sources.len() == 1
+            && outputs.len() == 1
+            && all_coarse
             && sources[0].producer == ObservationProducer::Whisper
-            && matches!(&sources[0].witness, SlotWitness::Unwitnessed | SlotWitness::Absent { .. })
+            && matches!(
+                &sources[0].witness,
+                SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
+            )
             && sources[0].sample_start == outputs[0].sample_start
             && sources[0].sample_end == outputs[0].sample_end
             && self.word_evidence_input(observation).is_some_and(|input| {
-                input.words.len() == 1 && input.words[0].decode.is_some_and(|(start, end)| {
-                    start < input.words[0].sample_start && input.words[0].sample_end < end
-                        && start <= sources[0].sample_start && sources[0].sample_end <= end
-                })
+                input.words.len() == 1
+                    && input.words[0].decode.is_some_and(|(start, end)| {
+                        start < input.words[0].sample_start
+                            && input.words[0].sample_end < end
+                            && start <= sources[0].sample_start
+                            && sources[0].sample_end <= end
+                    })
             })
             && self.speech_evidence.as_ref().is_some_and(|speech| {
-                speech.is_observed() && speech.identity().matches(
-                    &observation.occurrence.session, observation.occurrence.capture_epoch)
-                    && speech.producer() == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
-                    && speech.ranges().iter().any(|range| range.sample_start < outputs[0].sample_end
-                        && outputs[0].sample_start < range.sample_end)
+                speech.is_observed()
+                    && speech.identity().matches(
+                        &observation.occurrence.session,
+                        observation.occurrence.capture_epoch,
+                    )
+                    && speech.producer()
+                        == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    && speech.ranges().iter().any(|range| {
+                        range.sample_start < outputs[0].sample_end
+                            && outputs[0].sample_start < range.sample_end
+                    })
             });
         let negation_disagrees = if all_coarse {
             coarse_polarity_disagrees(&held_label, &candidate_label)

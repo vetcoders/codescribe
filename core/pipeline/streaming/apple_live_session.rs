@@ -5806,7 +5806,8 @@ impl AppleSealState {
         maybe_spawn_utterance_witness(self, ev_tx, captured_end);
         if self.dictation_witness_inflight
             && !self.dictation_witness_owners.contains(occurrence)
-            && !self.capture_stopping {
+            && !self.capture_stopping
+        {
             if !self.dictation_witness_waiting.contains(occurrence) {
                 self.dictation_witness_waiting.push(occurrence.clone());
             }
@@ -7194,7 +7195,10 @@ fn admit_ledger_label<'a>(
     if producer == LedgerObservationProducer::Lexicon {
         state.apply_lexicon_merges(ev_tx, &occurrence, request);
     }
-    if matches!(producer, LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon) {
+    if matches!(
+        producer,
+        LedgerObservationProducer::Apple | LedgerObservationProducer::Lexicon
+    ) {
         let captured_end = state.audio.session_sample_end();
         maybe_spawn_utterance_witness(state, ev_tx, captured_end);
     }
@@ -7295,13 +7299,16 @@ fn measure_whisper_window_speech(
     if let Some(speech) = observed_silero(state) {
         for (fact, decision) in facts.iter().zip(&mut decisions) {
             if decision.admits() {
-                let covered_end = speech.ranges().iter().fold(fact.sample_start, |end, range| {
-                    if range.sample_start <= end {
-                        end.max(range.sample_end)
-                    } else {
-                        end
-                    }
-                });
+                let covered_end = speech
+                    .ranges()
+                    .iter()
+                    .fold(fact.sample_start, |end, range| {
+                        if range.sample_start <= end {
+                            end.max(range.sample_end)
+                        } else {
+                            end
+                        }
+                    });
                 if covered_end < fact.sample_end {
                     decision.verdict = WhisperWordSpeechVerdict::KeepVisibleUnanchored;
                 }
@@ -8495,19 +8502,24 @@ fn witness_recovery_targets(
         .acoustic_ledger
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let pending = ledger
-        .qualified_occurrences()
-        .filter(|owner| owner.session == state.session_id
-            && owner.capture_epoch == state.capture_epoch
-            && !ledger.is_sealed(owner)
-            && (ledger.text_recovery_pending(owner)
-                || ledger.slots_of(owner).is_some_and(|slots| slots.iter().any(|slot| {
+    let pending =
+        ledger
+            .qualified_occurrences()
+            .filter(|owner| {
+                owner.session == state.session_id
+                    && owner.capture_epoch == state.capture_epoch
+                    && !ledger.is_sealed(owner)
+                    && (ledger.text_recovery_pending(owner)
+                        || ledger.slots_of(owner).is_some_and(|slots| {
+                            slots.iter().any(|slot| {
                     matches!(&slot.witness,
                         crate::pipeline::acoustic_ledger::SlotWitness::Unwitnessed
                         | crate::pipeline::acoustic_ledger::SlotWitness::Absent { .. })
-                }))))
-        .cloned()
-        .collect::<Vec<_>>();
+                })
+                        }))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
     let gaps = uncovered_gap_ranges(
         &ledger,
         &state.session_id,
@@ -8663,16 +8675,27 @@ fn maybe_spawn_utterance_witness(
     // or oversized questions belong to serialized terminal reconciliation;
     // a returned producer cannot protect another live job from sealing.
     let pending_owners = {
-        let ledger = state.acoustic_ledger.lock()
+        let ledger = state
+            .acoustic_ledger
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pending_owners.into_iter().filter(|owner| {
-            owner.sample_end.saturating_sub(owner.sample_start)
-                <= u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS)
-                && ledger.frontier_of(owner).is_some_and(|frontier| !frontier.is_closed())
-                && !state.dictation_witness_attempts.iter().any(|(range, attempts)| {
-                    *range == (owner.sample_start, owner.sample_end) && *attempts > 0
-                })
-        }).collect::<Vec<_>>()
+        pending_owners
+            .into_iter()
+            .filter(|owner| {
+                owner.sample_end.saturating_sub(owner.sample_start)
+                    <= u64::from(state.sample_rate)
+                        .saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS)
+                    && ledger
+                        .frontier_of(owner)
+                        .is_some_and(|frontier| !frontier.is_closed())
+                    && !state
+                        .dictation_witness_attempts
+                        .iter()
+                        .any(|(range, attempts)| {
+                            *range == (owner.sample_start, owner.sample_end) && *attempts > 0
+                        })
+            })
+            .collect::<Vec<_>>()
     };
 
     // Only closed PCM may be asked about: the decoder never reads past the
@@ -8744,13 +8767,17 @@ fn maybe_spawn_utterance_witness(
     state.dictation_witness_requests = state.dictation_witness_requests.saturating_add(1);
     state.dictation_witness_inflight = true;
     state.dictation_witness_owners = {
-        let mut ledger = state.acoustic_ledger.lock()
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut reserved = Vec::new();
         for owner in &pending_owners {
             if owner.sample_start >= identity.range.sample_start
                 && owner.sample_end <= identity.range.sample_end
-                && ledger.schedule_observer(owner.clone(), LedgerObservationProducer::AppleDictation) {
+                && ledger
+                    .schedule_observer(owner.clone(), LedgerObservationProducer::AppleDictation)
+            {
                 reserved.push(owner.clone());
             }
         }
@@ -8870,7 +8897,9 @@ fn resume_witness_waiting_closures(
 ) {
     let waiting = std::mem::take(&mut state.dictation_witness_waiting);
     if state.capture_stopping {
-        let mut ledger = state.acoustic_ledger.lock()
+        let mut ledger = state
+            .acoustic_ledger
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for owner in waiting {
             ledger.note_frontier_return(&owner, LedgerObservationProducer::Whisper);
@@ -8889,7 +8918,9 @@ fn finish_dictation_witness_frontier(
     _ev_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) {
     let owners = std::mem::take(&mut state.dictation_witness_owners);
-    let mut ledger = state.acoustic_ledger.lock()
+    let mut ledger = state
+        .acoustic_ledger
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for owner in owners {
         ledger.note_frontier_return(&owner, LedgerObservationProducer::AppleDictation);
@@ -8938,7 +8969,8 @@ fn run_terminal_dictation_witness(
                 state.dictation_witness_inflight = false;
                 let _ = ev_tx.send(EngineEvent::Warning {
                     code: "dictation_witness_terminal_boundary".into(),
-                    message: "bounded live witness did not return; terminal targets remain open".into(),
+                    message: "bounded live witness did not return; terminal targets remain open"
+                        .into(),
                 });
                 finish_dictation_witness_frontier(state, ev_tx);
                 resume_witness_waiting_closures(state, ev_tx);
@@ -9079,7 +9111,9 @@ fn admit_dictation_witness_payload(
         return;
     }
     state.dictation_witness_payload = Some(payload.clone());
-    state.acoustic_ledger.lock()
+    state
+        .acoustic_ledger
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .bind_word_provider(payload);
     for owner in pending_owners {
@@ -9088,8 +9122,12 @@ fn admit_dictation_witness_payload(
         {
             continue;
         }
-        if state.acoustic_ledger.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner).is_sealed(owner) {
+        if state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_sealed(owner)
+        {
             continue;
         }
         // Preserve the returned grain. A phrase remains one measured group;
@@ -9139,27 +9177,41 @@ fn admit_dictation_witness_payload(
             // Dispatch success is not admission. Retire refused diagnostics
             // only when every borrowed range has a committed lexical source.
             let admitted = {
-                let ledger = state.acoustic_ledger.lock()
+                let ledger = state
+                    .acoustic_ledger
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                !timed.is_empty() && timed.iter().all(|segment| {
-                    let pin = OccurrenceIdentity::from(&segment.range);
-                    ledger.occurrences().filter(|owner| owner.same_capture(&pin)).any(|owner| {
-                        ledger.matching_word_slot(owner, &pin, &segment.text, false)
-                            || ledger.slots_of(owner).unwrap_or(&[]).iter().any(|slot| {
-                                slot.sample_start == pin.sample_start && slot.sample_end == pin.sample_end
-                                    && slot.text.split_whitespace().collect::<Vec<_>>()
-                                        == segment.text.split_whitespace().collect::<Vec<_>>()
+                !timed.is_empty()
+                    && timed.iter().all(|segment| {
+                        let pin = OccurrenceIdentity::from(&segment.range);
+                        ledger
+                            .occurrences()
+                            .filter(|owner| owner.same_capture(&pin))
+                            .any(|owner| {
+                                ledger.matching_word_slot(owner, &pin, &segment.text, false)
+                                    || ledger.slots_of(owner).unwrap_or(&[]).iter().any(|slot| {
+                                        slot.sample_start == pin.sample_start
+                                            && slot.sample_end == pin.sample_end
+                                            && slot.text.split_whitespace().collect::<Vec<_>>()
+                                                == segment
+                                                    .text
+                                                    .split_whitespace()
+                                                    .collect::<Vec<_>>()
+                                    })
                             })
                     })
-                })
             };
             if admitted {
                 state.refused_untimed_words.remove(&phrase_id);
             } else {
-                state.pending_untimed_finals.push((phrase_id, raw, start, end));
+                state
+                    .pending_untimed_finals
+                    .push((phrase_id, raw, start, end));
             }
         } else {
-            state.pending_untimed_finals.push((phrase_id, raw, start, end));
+            state
+                .pending_untimed_finals
+                .push((phrase_id, raw, start, end));
         }
     }
     state.publish_unadmitted_words(ev_tx);
@@ -9697,25 +9749,42 @@ fn witness_timed_segments(
     end: u64,
 ) -> Option<Vec<TranscriptSegment>> {
     let payload = state.dictation_witness_payload.as_ref()?;
-    if start >= end || payload.identity.range.session != state.session_id
+    if start >= end
+        || payload.identity.range.session != state.session_id
         || payload.identity.range.capture_epoch != state.capture_epoch
         || payload.identity.range.sample_start > start
-        || payload.identity.range.sample_end < end {
+        || payload.identity.range.sample_end < end
+    {
         return None;
     }
-    let timed = payload.segments.iter().filter(|segment| {
-        segment.range.sample_start >= start && segment.range.sample_end <= end
-    }).collect::<Vec<_>>();
-    let witnessed = timed.iter().map(|segment| segment.text.as_str()).collect::<Vec<_>>().join(" ");
-    if timed.is_empty() || witnessed.split_whitespace().collect::<Vec<_>>()
-        != raw.split_whitespace().collect::<Vec<_>>() {
+    let timed = payload
+        .segments
+        .iter()
+        .filter(|segment| segment.range.sample_start >= start && segment.range.sample_end <= end)
+        .collect::<Vec<_>>();
+    let witnessed = timed
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if timed.is_empty()
+        || witnessed.split_whitespace().collect::<Vec<_>>()
+            != raw.split_whitespace().collect::<Vec<_>>()
+    {
         return None;
     }
     let rate = state.sample_rate.max(1) as f32;
-    Some(timed.into_iter().map(|segment| TranscriptSegment {
-        text: segment.text.clone(), start_ts: segment.range.sample_start as f32 / rate,
-        end_ts: segment.range.sample_end as f32 / rate, confidence: segment.confidence,
-    }).collect())
+    Some(
+        timed
+            .into_iter()
+            .map(|segment| TranscriptSegment {
+                text: segment.text.clone(),
+                start_ts: segment.range.sample_start as f32 / rate,
+                end_ts: segment.range.sample_end as f32 / rate,
+                confidence: segment.confidence,
+            })
+            .collect(),
+    )
 }
 
 /// Close one phrase and publish the result of this exact seal call. Internal
@@ -9732,8 +9801,11 @@ fn close_apple_phrase(
     // Every caller has already cleared the open partial; its word clock ends
     // with it, so the next phrase cannot inherit stale arrivals.
     let segments = if segments.is_empty() {
-        let end = seconds_to_captured_sample(audio_secs, state.sample_rate,
-            state.audio.session_sample_end());
+        let end = seconds_to_captured_sample(
+            audio_secs,
+            state.sample_rate,
+            state.audio.session_sample_end(),
+        );
         witness_timed_segments(state, raw, state.open_partial_pin, end).unwrap_or(segments)
     } else {
         segments
@@ -9757,12 +9829,24 @@ fn close_apple_phrase(
     });
     let mut outcomes = BTreeMap::new();
     if untimed {
-        let end = seconds_to_captured_sample(audio_secs, state.sample_rate,
-            state.audio.session_sample_end());
+        let end = seconds_to_captured_sample(
+            audio_secs,
+            state.sample_rate,
+            state.audio.session_sample_end(),
+        );
         if state.open_partial_pin < end
-            && !state.pending_untimed_finals.iter().any(|(id, _, _, _)| *id == phrase_id)
-            && state.pending_untimed_finals.len() < 64 {
-            state.pending_untimed_finals.push((phrase_id, raw.to_owned(), state.open_partial_pin, end));
+            && !state
+                .pending_untimed_finals
+                .iter()
+                .any(|(id, _, _, _)| *id == phrase_id)
+            && state.pending_untimed_finals.len() < 64
+        {
+            state.pending_untimed_finals.push((
+                phrase_id,
+                raw.to_owned(),
+                state.open_partial_pin,
+                end,
+            ));
         }
         outcomes.insert(ApplePhraseOutcome::Untimed, raw.split_whitespace().count());
         state.refused_untimed_words.insert(
