@@ -222,6 +222,7 @@ enum OverlayDeliveryControl: String, CaseIterable, Sendable {
 enum AgentBusMessageValidationError: LocalizedError {
   case messageTooLong
   case emptyRevision
+  case invalidAttachment
 
   var errorDescription: String? {
     switch self {
@@ -229,6 +230,8 @@ enum AgentBusMessageValidationError: LocalizedError {
       String(localized: "The message is too long (64 KB limit).")
     case .emptyRevision:
       String(localized: "The revised message cannot be empty.")
+    case .invalidAttachment:
+      String(localized: "The files cannot be attached to this live capture.")
     }
   }
 }
@@ -641,6 +644,70 @@ extension RealAgentBridgeInstaller {
           domain: "Codescribe.BusText", code: Int(process.terminationStatus),
           userInfo: [
             NSLocalizedDescriptionKey: refusal.isEmpty ? headline : headline + "\n" + refusal
+          ])
+      }
+    }.value
+  }
+
+  /// Stages files against one exact open channel capture row. The helper
+  /// rechecks session, epoch and source sequence under the bus append lock;
+  /// stale targets fail so callers can keep the files in their draft.
+  @MainActor
+  static func stageCaptureAttachments(
+    paths: [String], target: OverlayCaptureAttachmentTarget,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws {
+    guard !paths.isEmpty, paths.count <= 64,
+      paths.allSatisfy({ $0.hasPrefix("/") && $0.utf8.count <= 4096 && !$0.contains("\0") }),
+      target.captureSessionID.hasPrefix("agent-channel-"),
+      !target.busPath.isEmpty, target.busPath.hasPrefix("/"),
+      target.sampleEnd > target.sampleStart,
+      !target.recipientIDs.isEmpty
+    else { throw AgentBusMessageValidationError.invalidAttachment }
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(
+        domain: "Codescribe.BusAttachment", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(localized: "Install the agent bridge to attach files.")
+        ])
+    }
+    var arguments = [
+      "--stage-capture-attachment",
+      "--capture-session", target.captureSessionID,
+      "--capture-epoch", String(target.captureEpoch),
+      "--capture-source-sequence", String(target.sourceSequence),
+      "--bus", target.busPath,
+    ]
+    for path in paths { arguments += ["--attach-file", path] }
+    let commandArguments = arguments
+    try await Task.detached(priority: .userInitiated) {
+      let process = Process()
+      let diagnostics = Pipe()
+      process.executableURL = executable
+      process.arguments = commandArguments
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = diagnostics
+      try process.run()
+      let diagnosticData = diagnostics.fileHandleForReading.readDataToEndOfFile()
+      process.waitUntilExit()
+      guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        let refusal = String(data: diagnosticData.suffix(4096), encoding: .utf8)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+          .components(separatedBy: "\n").last?
+          .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
+        throw NSError(
+          domain: "Codescribe.BusAttachment", code: Int(process.terminationStatus),
+          userInfo: [
+            NSLocalizedDescriptionKey: refusal.isEmpty
+              ? String(
+                localized:
+                  "Files could not be attached to this live capture. Keep them in your draft and try again."
+              )
+              : refusal
           ])
       }
     }.value
