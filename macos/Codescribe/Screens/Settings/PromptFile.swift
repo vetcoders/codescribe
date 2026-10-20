@@ -29,13 +29,14 @@ enum PromptFile: String, CaseIterable, Identifiable {
     }
   }
 
-  /// One plain sentence per prompt. File names stay under File details on the
-  /// panel; Agent requests and Max share assistive.txt through
+  /// At most one plain sentence per prompt; `nil` where the name says it
+  /// (Correction). File names stay under File details on the panel; Agent
+  /// requests and Max share assistive.txt through
   /// `compose_agent_system_prompt`, while voice chat carries its own persona.
-  var editorSubtitle: String {
+  var editorSubtitle: String? {
     switch self {
     case .correction:
-      String(localized: "Formatting limited to corrections.")
+      nil
     case .smart:
       String(localized: "Balanced editing of the transcript.")
     case .assistive:
