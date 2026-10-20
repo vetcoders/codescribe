@@ -42,6 +42,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var receiptCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
+    private var captureAttachmentStages: [String: OverlayCaptureAttachmentReceipt]? = nil
+    private var captureAttachmentCommits: [String: OverlayCaptureAttachmentCommit]? = nil
     private var sessionOpenedAt: [String: String] = [:]
     private(set) var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
     private struct DeliveryOrigin: Codable {
@@ -54,7 +56,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
       case seals, sessions, endedSessions, receipts, sealOrder, seenSeals, messages, messageOrder
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
-        messageSequence, messageRevisions, deliveryOrigins, revision, sessionOpenedAt,
+        messageSequence, messageRevisions, deliveryOrigins, captureAttachmentStages,
+        captureAttachmentCommits, revision, sessionOpenedAt,
         destinationVersion, holdProjectionVersion
     }
     private static let historyLimit = 256
@@ -360,12 +363,32 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       return (0..<count).map { result[(start + $0) % result.count] }
     }
 
-    func conversations(busPath: String, now: Date = Date()) -> [OverlayConversation] {
+    var verifiedCaptureAttachmentCommitPaths: [String: String] {
+      (captureAttachmentCommits ?? [:]).reduce(into: [:]) { result, entry in
+        result[entry.key] = entry.value.commitBus
+      }
+    }
+
+    var referencedCaptureAttachmentCommitBuses: Set<String> {
+      Set((captureAttachmentStages ?? [:]).values.map(\.commitBus))
+    }
+
+    func conversations(
+      busPath: String, now: Date = Date(),
+      verifiedCaptureAttachmentCommits: [String: String] = [:]
+    ) -> [OverlayConversation] {
+      var verifiedCommits: [String: String] = [:]
+      for (stageID, commitBus) in verifiedCaptureAttachmentCommits {
+        guard !commitBus.isEmpty else { continue }
+        verifiedCommits[stageID] = commitBus
+      }
       let ordered = messageOrder.compactMap { messages[$0] }.filter { $0.withdrawn != true }
         .map { message in
           var result = message
           result.busPath = busPath
           result.sourceRevision = messageRevisions[message.id]
+          Self.mergeCommittedCaptureAttachments(
+            into: &result, commits: verifiedCommits, stages: captureAttachmentStages ?? [:])
           return result.projectingDelivery(at: now)
         }
       let broadcastQuestions = ordered.filter {
@@ -513,6 +536,18 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func consumeConversation(_ row: [String: Any]) {
       let schema = row["schema"] as? String
+      if schema == "codescribe.capture-attachment.v1",
+        row["kind"] as? String == "capture_attachment"
+      {
+        consumeCaptureAttachment(row)
+        return
+      }
+      if schema == "codescribe.capture-attachment-commit.v1",
+        row["kind"] as? String == "capture_attachment_commit"
+      {
+        consumeCaptureAttachmentCommit(row)
+        return
+      }
       if schema == "codescribe.delivery-control.v1" {
         consumeDeliveryControl(row)
         return
@@ -897,16 +932,24 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           sampleStart: sampleStart,
           sampleEnd: sampleEnd,
           sourceSequence: sourceSequence,
+          reducerRevision: UInt64(Self.coordinate(row["reducer_revision"])) ?? 0,
           documentIndex: Self.coordinate(row["document_index"]),
           audience: audience,
           recipientIDs: owners.map(\.id))
         var segments = messages[key]?.captureAttachmentSegments ?? []
-        if let index = segments.firstIndex(where: { $0.occurrenceID == segment.occurrenceID }) {
+        if let index = segments.firstIndex(where: {
+          $0.occurrenceID == segment.occurrenceID
+            && $0.sourceSequence == segment.sourceSequence
+            && $0.reducerRevision == segment.reducerRevision
+        }) {
           segments[index] = segment
         } else {
           segments.append(segment)
         }
         message.captureAttachmentSegments = segments
+        message.activeCaptureAttachmentOccurrenceID = segment.occurrenceID
+        message.activeCaptureAttachmentSourceSequence = segment.sourceSequence
+        message.activeCaptureAttachmentReducerRevision = segment.reducerRevision
       }
       let components = session.split(separator: "-")
       message.sourceChannel =
@@ -928,6 +971,108 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       message.holdReleased = messages[key]?.holdReleased
       if let revised = message.revisedText { message.text = revised }
       store(message)
+    }
+
+    private mutating func consumeCaptureAttachment(_ row: [String: Any]) {
+      guard let stageID = row["stage_id"] as? String,
+        Self.isCaptureStageID(stageID),
+        let session = row["session_id"] as? String,
+        Self.channelMessageKey(session) != nil,
+        let epoch = (row["capture_epoch"] as? NSNumber)?.uint64Value,
+        let sequence = (row["source_sequence"] as? NSNumber)?.uint64Value,
+        let occurrenceSession = row["occurrence_session_id"] as? String,
+        !occurrenceSession.isEmpty,
+        let start = (row["sample_start"] as? NSNumber)?.uint64Value,
+        let end = (row["sample_end"] as? NSNumber)?.uint64Value, end > start,
+        let documentIndex = (row["document_index"] as? NSNumber)?.uint64Value,
+        let reducerRevision = (row["reducer_revision"] as? NSNumber)?.uint64Value,
+        let audience = row["audience"] as? String, !audience.isEmpty,
+        let rawRecipients = row["recipients"] as? [[String: Any]],
+        let commitBus = row["commit_bus"] as? String, commitBus.hasPrefix("/"),
+        let attachments = OverlayMessageAttachment.pointers(row["attachments"]),
+        !attachments.isEmpty
+      else { return }
+      let owners = rawRecipients.compactMap(OverlayConversationOwner.init(row:))
+      let recipientBusPaths = rawRecipients.compactMap { $0["bus"] as? String }
+      guard !owners.isEmpty, owners.count == rawRecipients.count,
+        recipientBusPaths.count == rawRecipients.count,
+        recipientBusPaths.contains(commitBus)
+      else { return }
+      let occurrenceID = "utterance:" + Self.identity([
+        "occurrence", occurrenceSession, String(epoch), String(start), String(end),
+      ])
+      var stages = captureAttachmentStages ?? [:]
+      stages[stageID] = OverlayCaptureAttachmentReceipt(
+        stageID: stageID,
+        captureSessionID: session,
+        captureEpoch: epoch,
+        sourceSequence: sequence,
+        occurrenceSessionID: occurrenceSession,
+        sampleStart: start,
+        sampleEnd: end,
+        documentIndex: documentIndex,
+        reducerRevision: reducerRevision,
+        audience: audience,
+        recipientIDs: owners.map(\.id),
+        recipientBusPaths: recipientBusPaths,
+        commitBus: commitBus,
+        attachments: attachments,
+        occurrenceID: occurrenceID)
+      captureAttachmentStages = stages
+    }
+
+    private mutating func consumeCaptureAttachmentCommit(_ row: [String: Any]) {
+      guard let stageID = row["stage_id"] as? String,
+        Self.isCaptureStageID(stageID),
+        let stage = captureAttachmentStages?[stageID],
+        row["session_id"] as? String == stage.captureSessionID,
+        (row["capture_epoch"] as? NSNumber)?.uint64Value == stage.captureEpoch,
+        (row["source_sequence"] as? NSNumber)?.uint64Value == stage.sourceSequence,
+        row["commit_bus"] as? String == stage.commitBus,
+        let emittedAt = row["emitted_at"] as? String,
+        Self.openingDate(emittedAt) != nil
+      else { return }
+      var commits = captureAttachmentCommits ?? [:]
+      commits[stageID] = OverlayCaptureAttachmentCommit(
+        stageID: stageID, commitBus: stage.commitBus)
+      captureAttachmentCommits = commits
+    }
+
+    private static func mergeCommittedCaptureAttachments(
+      into message: inout OverlayConversationMessage,
+      commits: [String: String],
+      stages: [String: OverlayCaptureAttachmentReceipt]
+    ) {
+      guard message.kind == .user, let session = message.captureSessionID,
+        let segments = message.captureAttachmentSegments, !segments.isEmpty
+      else { return }
+      var paths = Set((message.attachments ?? []).map(\.path))
+      var attachments = message.attachments ?? []
+      for (stageID, commitBus) in commits.sorted(by: { $0.key < $1.key }) {
+        guard let stage = stages[stageID], stage.stageID == stageID,
+          stage.commitBus == commitBus, stage.captureSessionID == session,
+          stage.recipientBusPaths.contains(commitBus),
+          let segment = segments.first(where: { $0.occurrenceID == stage.occurrenceID }),
+          segment.captureEpoch == stage.captureEpoch,
+          segment.sourceSequence == stage.sourceSequence,
+          segment.occurrenceSessionID == stage.occurrenceSessionID,
+          segment.sampleStart == stage.sampleStart, segment.sampleEnd == stage.sampleEnd,
+          let segmentDocumentIndex = UInt64(segment.documentIndex),
+          segmentDocumentIndex == stage.documentIndex,
+          segment.reducerRevision == stage.reducerRevision,
+          segment.audience == stage.audience,
+          segment.recipientIDs == stage.recipientIDs
+        else { continue }
+        for attachment in stage.attachments where paths.insert(attachment.path).inserted {
+          attachments.append(attachment)
+        }
+      }
+      message.attachments = attachments.isEmpty ? nil : attachments
+    }
+
+    private static func isCaptureStageID(_ value: String) -> Bool {
+      value.utf8.count == 24
+        && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     private mutating func consumeDeliveryControl(_ row: [String: Any]) {
@@ -1089,6 +1234,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         bytes -= messages.removeValue(forKey: id)?.text.utf8.count ?? 0
         messageRevisions.removeValue(forKey: id)
         deliveryOrigins.removeValue(forKey: id)
+      }
+      let retainedCaptureSessions = Set(messages.values.compactMap(\.captureSessionID))
+      if let stages = captureAttachmentStages {
+        captureAttachmentStages = stages.filter {
+          retainedCaptureSessions.contains($0.value.captureSessionID)
+        }
+      }
+      if let commits = captureAttachmentCommits {
+        let retainedStageIDs = Set((captureAttachmentStages ?? [:]).keys)
+        captureAttachmentCommits = commits.filter { retainedStageIDs.contains($0.key) }
       }
       let replies = Set(messages.values.compactMap { $0.playback?.replyID })
       playbackByReply = playbackByReply.filter { replies.contains($0.key) }
@@ -1274,6 +1429,9 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var controlIdentity: String? = nil
   var captureSessionID: String? = nil
   var captureAttachmentSegments: [OverlayCaptureAttachmentSegment]? = nil
+  var activeCaptureAttachmentOccurrenceID: String? = nil
+  var activeCaptureAttachmentSourceSequence: UInt64? = nil
+  var activeCaptureAttachmentReducerRevision: UInt64? = nil
   var deliverySealed: Bool? = nil
   var revisedText: String? = nil
   var withdrawn: Bool? = nil
@@ -1288,7 +1446,14 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     guard kind == .user, sourceChannel != nil, captureState == .receiving,
       deliverySealed != true, withdrawn != true,
       let captureSessionID, !captureSessionID.isEmpty,
-      let segment = captureAttachmentSegments?.last,
+      let activeCaptureAttachmentOccurrenceID,
+      let activeCaptureAttachmentSourceSequence,
+      let activeCaptureAttachmentReducerRevision,
+      let segment = captureAttachmentSegments?.first(where: {
+        $0.occurrenceID == activeCaptureAttachmentOccurrenceID
+          && $0.sourceSequence == activeCaptureAttachmentSourceSequence
+          && $0.reducerRevision == activeCaptureAttachmentReducerRevision
+      }),
       !segment.recipientIDs.isEmpty, !busPath.isEmpty
     else { return nil }
     return OverlayCaptureAttachmentTarget(
@@ -1352,6 +1517,7 @@ struct OverlayCaptureAttachmentSegment: Codable, Equatable, Sendable {
   let sampleStart: UInt64
   let sampleEnd: UInt64
   let sourceSequence: UInt64
+  let reducerRevision: UInt64
   let documentIndex: String
   let audience: String
   let recipientIDs: [String]
@@ -1369,6 +1535,30 @@ struct OverlayCaptureAttachmentTarget: Equatable, Sendable {
   let audience: String
   let recipientIDs: [String]
   let busPath: String
+}
+
+private struct OverlayCaptureAttachmentReceipt: Codable, Equatable, Sendable {
+  let stageID: String
+  let captureSessionID: String
+  let captureEpoch: UInt64
+  let sourceSequence: UInt64
+  let occurrenceSessionID: String
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let documentIndex: UInt64
+  let reducerRevision: UInt64
+  let audience: String
+  let recipientIDs: [String]
+  let recipientBusPaths: [String]
+  let commitBus: String
+  let attachments: [OverlayMessageAttachment]
+
+  let occurrenceID: String
+}
+
+private struct OverlayCaptureAttachmentCommit: Codable, Equatable, Sendable {
+  let stageID: String
+  let commitBus: String
 }
 
 /// One file pointer of a typed message (`attachments` on
