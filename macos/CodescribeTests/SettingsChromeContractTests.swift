@@ -1049,6 +1049,21 @@ final class SettingsChromeContractTests: XCTestCase {
   /// Creator (round 14, 2026-10-18): a client row says whether its skill is
   /// the generation this app carries, the folders sit in one disclosure
   /// instead of inside a client's name, and Max says whether anything waits.
+  /// The tray row that reopened the wizard is gone; the Creator offers it
+  /// under its header through the view model's hook (Founder, 2026-10-20).
+  func testCreatorReopensTheSetupWizardUnderItsHeader() throws {
+    let creator = try XCTUnwrap(try settingsSources()["CreatorPanel.swift"])
+    XCTAssertTrue(creator.contains("localized: \"Open Setup Wizard…\""))
+    XCTAssertTrue(creator.contains("model.onOpenSetupWizard()"))
+    XCTAssertTrue(creator.contains("\"settings-creator-open-wizard\""))
+    let tray = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/Tray/TrayMenuView.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(tray.contains("Setup Wizard"), "the wizard is reached from the Creator only")
+  }
+
   func testCreatorStatesTheSkillGenerationAndKeepsPathsInDetails() throws {
     let sources = try settingsSources()
     let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
