@@ -288,14 +288,23 @@ private struct AgentIntegratedChrome: ViewModifier {
   /// capsules. The bar stays visible as the turns scroll beneath it.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
+    // Without a principal item the unified bar packs `.primaryAction` right
+    // after the wordmark (seen on the installed build, 2026-10-21); the
+    // flexible space in the group keeps pin and menu on the trailing edge.
     if #available(macOS 26.0, *) {
       ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
         .sharedBackgroundVisibility(.hidden)
-      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
-        .sharedBackgroundVisibility(.hidden)
+      ToolbarItemGroup(placement: .primaryAction) {
+        Spacer()
+        CSWindowHeaderItem { trailingCluster }
+      }
+      .sharedBackgroundVisibility(.hidden)
     } else {
       ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
-      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
+      ToolbarItemGroup(placement: .primaryAction) {
+        Spacer()
+        CSWindowHeaderItem { trailingCluster }
+      }
     }
   }
 
