@@ -591,14 +591,15 @@ struct DictationOverlayView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: railShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: transcriptActionsShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.agentsLayout)
-        // Track the stable canvas instead of the disappearing rail. Choosing
-        // a row while still over its edge must not immediately reopen it.
+        // Hover reveals the list only over its disclosure control. Entering
+        // a numbered pill must leave that click target in place.
         .onContinuousHover { phase in
           switch phase {
           case .active(let point):
             let inside =
               point.x >= geometry.size.width - railWidth
               && point.y >= headerHeight + 8
+              && point.y < headerHeight + 16 + 22 * textScale
             let entered = inside && !pointerInsideAgentRail
             pointerInsideAgentRail = inside
             if entered && railShown { state.unfoldAgentList() }
@@ -860,6 +861,9 @@ struct DictationOverlayView: View {
     )
     .padding(.top, headerHeight + 8)
     .padding(.bottom, 16)
+    // The native panel owns the outer resize band before SwiftUI hit testing.
+    // Keep the entire numbered button outside it, including at small scales.
+    .padding(.trailing, OverlayResizeHit.band)
     .frame(width: width)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
@@ -966,11 +970,13 @@ struct DictationOverlayView: View {
       // Placement, the take-start preference and the panel routes live behind a
       // secondary click anywhere on the header, drag region included, in every form.
       .contextMenu { OverlayHeaderMenu(state: state) }
-      // The bar is flush with the window's top, leading and trailing edges, so
-      // its glass carries the window's corner. At the pill radius the glass
-      // corner and the canvas clip were two different curves a couple of points
-      // apart, and the trailing end read as cut off (Founder, 2026-10-18).
-      .modifier(OverlayControlGlass(cornerRadius: CSRadius.window))
+      // Mini and MIDI are the header itself: the canvas already supplies their
+      // glass. Raising a second sheet here draws an inset rim and shadow.
+      // Keep one header identity through morphs; only its material changes.
+      .modifier(
+        OverlayControlGlass(
+          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded)
+      )
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
       .background {

@@ -91,8 +91,10 @@ enum OverlayAgentDrawerLayout {
     (windowWidth - minimumConversationWidth(textScale: textScale)) / textScale
   }
 
-  /// The folded list's rail of agent pills: 44 at 1.0.
-  static func railWidth(textScale: CGFloat) -> CGFloat { 44 * textScale }
+  /// Pills keep their own column, clear of the panel's unscaled resize band.
+  static func railWidth(textScale: CGFloat) -> CGFloat {
+    44 * textScale + OverlayResizeHit.band
+  }
 
   /// The name pill's width: 224 at 1.0.
   static func pillWidth(textScale: CGFloat) -> CGFloat { 224 * textScale }

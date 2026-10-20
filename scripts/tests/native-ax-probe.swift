@@ -35,6 +35,7 @@ func query(_ request: Request) throws -> Reception {
   let admittedIdentifier =
     request.identifier.hasPrefix("overlay-conversation-")
     || request.identifier.hasPrefix("overlay-view-conversation-")
+    || request.identifier.hasPrefix("overlay-agent-rail-")
     || request.identifier.hasPrefix("overlay-message-")
     || (!request.press
       && (request.identifier.hasPrefix("overlay-agent-title-")
