@@ -1054,10 +1054,17 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       buttonFrame.minY,
       window.convertToScreen(input.convert(input.bounds, to: nil)).maxY,
       "The pill sits above the measured composer")
-    XCTAssertEqual(
+    // The pill removes itself from the accessibility tree inside its own
+    // action (reaching the live edge hides it), so AppKit reports
+    // kAXErrorFailure even though the press lands. Accept both statuses and
+    // let the observable contract below — scroll at the live edge, pill
+    // gone, composer untouched — judge the press.
+    let pressStatus = try XCTUnwrap(
       try NativeAccessibilityProbe.query("overlay-conversation-jump-to-current", press: true)
-        .pressStatus,
-      AXError.success.rawValue)
+        .pressStatus)
+    XCTAssertTrue(
+      pressStatus == AXError.success.rawValue || pressStatus == AXError.failure.rawValue,
+      "the press must reach the pill, got AX status \(pressStatus)")
     settle()
     XCTAssertGreaterThan(scroll.documentVisibleRect.maxY, document.bounds.height - 50)
     for width in [CGFloat(360), 680, 420, 600, 360, 532] {
