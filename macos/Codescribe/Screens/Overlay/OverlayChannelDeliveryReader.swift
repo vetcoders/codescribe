@@ -306,12 +306,13 @@ actor OverlayChannelDeliveryReader {
         $0.owner.id == selected.id && $0.owner.channel == selected.channel
       }).map { URL(fileURLWithPath: $0.bus).standardizedFileURL.path }
     }
-    let boundBusPaths = Set(bindings.values.compactMap { binding in
-      leases.first(where: {
-        $0["provider"] as? String == binding["provider"] as? String
-          && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
-      })?["bus"] as? String
-    })
+    let boundBusPaths = Set(
+      bindings.values.compactMap { binding in
+        leases.first(where: {
+          $0["provider"] as? String == binding["provider"] as? String
+            && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+        })?["bus"] as? String
+      })
     var protectedBusPaths = boundBusPaths
     protectedBusPaths.insert(URL(fileURLWithPath: founderBus).standardizedFileURL.path)
     if let sharedBus { protectedBusPaths.insert(sharedBus.standardizedFileURL.path) }
@@ -320,23 +321,26 @@ actor OverlayChannelDeliveryReader {
     if let selectedArchivePath {
       let selectedArchiveURL = URL(fileURLWithPath: selectedArchivePath).standardizedFileURL
       if let selectedProjection = buses[selectedArchiveURL]?.projection {
-        referencedCommitBuses.append(contentsOf:
-          selectedProjection.referencedCaptureAttachmentCommitBuses.sorted())
+        referencedCommitBuses.append(
+          contentsOf:
+            selectedProjection.referencedCaptureAttachmentCommitBuses.sorted())
       }
     }
     let allReferencedCommitBuses = usedBuses.reduce(into: Set<String>()) { result, bus in
       result.formUnion(buses[bus]?.projection.referencedCaptureAttachmentCommitBuses ?? [])
     }
     let selectedCommitBuses = Set(referencedCommitBuses)
-    referencedCommitBuses.append(contentsOf:
-      allReferencedCommitBuses.sorted().filter { !selectedCommitBuses.contains($0) })
+    referencedCommitBuses.append(
+      contentsOf:
+        allReferencedCommitBuses.sorted().filter { !selectedCommitBuses.contains($0) })
     for commitPath in referencedCommitBuses {
       guard let commitBus = captureCommitBusURL(commitPath), !usedBuses.contains(commitBus) else {
         continue
       }
       if usedBuses.count >= 16 {
-        guard let evicted = usedBuses.filter({ !protectedBusPaths.contains($0.path) })
-          .sorted(by: { $0.path > $1.path }).first
+        guard
+          let evicted = usedBuses.filter({ !protectedBusPaths.contains($0.path) })
+            .sorted(by: { $0.path > $1.path }).first
         else { continue }
         usedBuses.remove(evicted)
       }

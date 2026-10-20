@@ -24090,6 +24090,96 @@
           }
         }
       }
+    },
+    "Clear reply" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Usuń powiązanie odpowiedzi"
+          }
+        }
+      }
+    },
+    "Attachments for active recording" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Załączniki do bieżącego nagrania"
+          }
+        }
+      }
+    },
+    "Retry attachments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ponów dołączenie załączników"
+          }
+        }
+      }
+    },
+    "Stop dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj dyktowanie"
+          }
+        }
+      }
+    },
+    "Dictate message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podyktuj wiadomość"
+          }
+        }
+      }
+    },
+    "Reply" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odpowiedz"
+          }
+        }
+      }
+    },
+    "Recording is busy. Try stopping again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nagrywanie jest zajęte. Spróbuj ponownie je zatrzymać."
+          }
+        }
+      }
+    },
+    "Waiting for this recording to finish." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oczekiwanie na zakończenie tego nagrania."
+          }
+        }
+      }
+    },
+    "Wait for the spoken message, then retry these attachments." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poczekaj na tekst wypowiedzi, a następnie ponów dołączenie załączników."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -37,6 +37,8 @@ func query(_ request: Request) throws -> Reception {
     || request.identifier.hasPrefix("overlay-view-conversation-")
     || request.identifier.hasPrefix("overlay-agent-rail-")
     || (!request.press && request.identifier.hasPrefix("overlay-intent-"))
+    || (!request.press
+      && ["overlay-agent-microphone", "overlay-agent-speaker"].contains(request.identifier))
     || request.identifier.hasPrefix("overlay-message-")
     || (!request.press
       && (request.identifier.hasPrefix("overlay-agent-title-")

@@ -394,13 +394,27 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
 
 /// The system owns button material, contrast and pointer feedback alongside the composer.
 struct OverlayAgentControlStyle: ViewModifier {
+  var diameter: CGFloat? = nil
   @ViewBuilder
   func body(content: Content) -> some View {
-    if #available(macOS 26.0, *) {
+    if let diameter {
+      content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter))
+    } else if #available(macOS 26.0, *) {
       content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
     } else {
       content.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.regular)
     }
+  }
+}
+
+private struct OverlaySizedAudioButtonStyle: ButtonStyle {
+  let diameter: CGFloat
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(width: diameter, height: diameter)
+      .contentShape(Circle())
+      .modifier(OverlayControlGlass(cornerRadius: diameter / 2))
+      .opacity(configuration.isPressed ? 0.7 : 1)
   }
 }
 
@@ -419,6 +433,8 @@ struct OverlayAgentAudioControls: View {
   /// indikator na głośniku." The speaker of the agent whose reply is playing
   /// turns violet and animates its waves.
   var speaking = false
+  /// Only the conversation header opts into the measured identity-pill height.
+  var diameter: CGFloat? = nil
 
   private var speakingNow: Bool { speaking && muted == false }
 
@@ -431,6 +447,7 @@ struct OverlayAgentAudioControls: View {
   static let speakerFontSize: CGFloat = 12
   static let controlFrame: CGFloat = 16
   private var microphoneScale: CGFloat { broadcast ? Self.broadcastMicrophoneScale : 1 }
+  private var glyphSize: CGFloat { diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12 }
 
   /// The broadcast row speaks through a left-facing outline megaphone; agent
   /// rows keep the microphone. Open state keeps its pulse on both and takes
@@ -489,7 +506,7 @@ struct OverlayAgentAudioControls: View {
       Button(action: onMicrophone) {
         Image(systemName: microphoneSymbol)
           .overlayMirrored(broadcast)
-          .font(.system(size: Self.broadcastMicrophoneFontSize, weight: .semibold))
+          .font(.system(size: glyphSize, weight: .semibold))
           .foregroundStyle(open ? recordingAccent : palette.primaryText.color)
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(
@@ -513,7 +530,7 @@ struct OverlayAgentAudioControls: View {
             : muted == true
               ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
         )
-        .font(.system(size: Self.speakerFontSize, weight: .semibold))
+        .font(.system(size: glyphSize, weight: .semibold))
         .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
         .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: Self.controlFrame, height: Self.controlFrame)
@@ -526,7 +543,7 @@ struct OverlayAgentAudioControls: View {
       .accessibilityValue(playbackValue)
       .accessibilityIdentifier("overlay-agent-speaker")
     }
-    .modifier(OverlayAgentControlStyle())
+    .modifier(OverlayAgentControlStyle(diameter: diameter))
     // Founder, 2026-10-15: an I-beam showed between and over these buttons.
     // They float above message and transcript text, whose tracking set the
     // text cursor; the pair and its gap claim the arrow like the drawer does.

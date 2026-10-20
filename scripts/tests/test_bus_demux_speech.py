@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import fcntl
 import ssl
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -482,6 +483,48 @@ class SayReplyTests(unittest.TestCase):
         self.assertEqual(len(sidecars), 1)
         sidecar = json.loads(sidecars[0].read_text())
         self.assertEqual((sidecar["reply_id"], sidecar["text"]), (reply["reply_id"], reply["text"]))
+
+    def test_reply_audio_reopens_in_fresh_process_without_synthesis_or_credentials(self):
+        self.attach_lease("session-a", "filip")
+        _, reply, _ = self.say("--session", "session-a")
+        args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch.object(DEMUX, "_play_pcm_24k", return_value=(True, None, None)),
+            patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(DEMUX.speak_published_reply(args, self.bus, reply, "a" * 24), 0)
+        program = r'''
+import contextlib, importlib.util, io, json, sys
+from pathlib import Path
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("restart_demux", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+request = json.loads(sys.stdin.read())
+args = module.argparse.Namespace(bridge_home=Path(request["home"]))
+with (
+    patch.object(module, "_xai_speech_key", side_effect=AssertionError("credential lookup on cache hit")),
+    patch.object(module, "_tts_exchange", side_effect=AssertionError("paid synthesis after restart")),
+    patch.object(module, "_play_pcm_24k", return_value=(True, None, None)) as player,
+    patch.object(module, "publish_reply_event", return_value={}),
+    contextlib.redirect_stdout(io.StringIO()),
+):
+    code = module.speak_published_reply(args, Path(request["bus"]), request["reply"], "b" * 24)
+assert code == 0, code
+assert player.call_count == 1
+assert player.call_args.args[0] == b"\x01\x00"
+print("reopened_cached_reply")
+'''
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(Path(DEMUX.__file__).resolve())],
+            input=json.dumps({"home": str(self.home), "bus": str(self.bus), "reply": reply}),
+            text=True, capture_output=True, timeout=15, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "reopened_cached_reply")
 
     def test_malformed_mute_receipt_never_authorizes_automatic_speech(self):
         self.attach_lease("session-a", "filip")

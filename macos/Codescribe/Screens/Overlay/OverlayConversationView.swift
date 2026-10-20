@@ -89,6 +89,8 @@ struct OverlayConversationView: View {
   var onStageCaptureAttachments: (([String]) -> Bool)? = nil
   var pendingCaptureAttachments: [String] = []
   var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var captureAttachmentError: String? = nil
+  var onRetryCaptureAttachments: (() -> Void)? = nil
   var onReply: ((OverlayConversationMessage) -> Void)? = nil
   @State private var replyNavigationID: String?
 
@@ -99,6 +101,7 @@ struct OverlayConversationView: View {
   @State private var scrollFocusWasPresented = false
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
+  @State private var navigationPillHeight: CGFloat = 28
   /// Bumps the composer's focus after a held message returns to the draft.
   @State private var revisionFocus: UInt64 = 0
   @State private var pendingDeliveryControls: Set<String> = []
@@ -299,11 +302,14 @@ struct OverlayConversationView: View {
           focusRevision: revisionFocus, isCovered: isCovered || !isPresented,
           placeholder: composerPlaceholder,
           replySelection: replySelection, onClearReply: onClearReply,
-          draftMicrophoneRecording: draftMicrophoneRecording, draftMicrophoneBusy: draftMicrophoneBusy,
+          draftMicrophoneRecording: draftMicrophoneRecording,
+          draftMicrophoneBusy: draftMicrophoneBusy,
           onToggleDraftMicrophone: onToggleDraftMicrophone,
           onStageCaptureAttachments: onStageCaptureAttachments,
           pendingCaptureAttachments: pendingCaptureAttachments,
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
+          captureAttachmentError: captureAttachmentError,
+          onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) })
         if let sendError { composerError(sendError) }
         if let playbackError {
@@ -338,11 +344,17 @@ struct OverlayConversationView: View {
               open: microphoneOpen, muted: playbackMuted,
               microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
               palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking
+              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+              diameter: navigationPillHeight
             )
             .fixedSize()
           }
           conversationNamePill
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              navigationPillHeight = max(28, $0)
+            }
         }
         // The gap between the controls and the name is not text either.
         .background { OverlayMenuCursorRegion() }
@@ -401,7 +413,11 @@ struct OverlayConversationView: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
     // Mockup: 224 × scale.
-    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
+    .frame(
+      width: conversation.channel == "0"
+        ? nil : OverlayAgentDrawerLayout.pillWidth(textScale: textScale),
+      alignment: .leading
+    )
     .frame(minHeight: 28)
     .contentShape(Capsule())
     .accessibilityElement(children: .combine)
@@ -712,7 +728,9 @@ struct OverlayConversationView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-message-route-\(message.id)")
       if let parent = message.userReplyTo {
-        Button { navigateToReply(parent.messageID) } label: {
+        Button {
+          navigateToReply(parent.messageID)
+        } label: {
           VStack(alignment: .leading, spacing: 2) {
             Text(verbatim: parent.author).fontWeight(.semibold)
             Text(verbatim: parent.text).lineLimit(2)
