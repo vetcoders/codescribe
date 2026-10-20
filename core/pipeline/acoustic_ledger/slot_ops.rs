@@ -2160,6 +2160,54 @@ impl AcousticLedger {
         Ok(sources)
     }
 
+    /// A replacement may retire geometry only when its outputs cover it or
+    /// both capture observers prove every uncovered sample is quiet. Missing
+    /// labels and unavailable measurements supply no absence authority.
+    pub(super) fn slot_retirement_has_acoustic_coverage(
+        &self,
+        source: &WordSlot,
+        outputs: &[WordSlot],
+    ) -> bool {
+        let owner = &source.observation.occurrence;
+        let mut intervals = outputs.iter().filter(|output| {
+            output.observation.occurrence.same_capture(owner)
+                && output.sample_start < output.sample_end
+        }).map(|output| (output.sample_start, output.sample_end)).collect::<Vec<_>>();
+        intervals.sort_unstable();
+        let mut gaps = Vec::new();
+        let mut cursor = source.sample_start;
+        for (start, end) in intervals {
+            if end <= cursor || start >= source.sample_end { continue; }
+            if start > cursor { gaps.push((cursor, start.min(source.sample_end))); }
+            cursor = cursor.max(end).min(source.sample_end);
+        }
+        if cursor < source.sample_end { gaps.push((cursor, source.sample_end)); }
+        if gaps.is_empty() { return true; }
+        let Some(speech) = self.speech_evidence.as_ref() else { return false; };
+        if !speech.identity().matches(&owner.session, owner.capture_epoch)
+            || speech.producer() != super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+            || speech.availability().observed_samples().is_none_or(|end| end < source.sample_end) {
+            return false;
+        }
+        gaps.into_iter().all(|(start, end)| {
+            let no_speech = speech.ranges().iter().all(|range| {
+                range.sample_end <= start || range.sample_start >= end
+            });
+            // Use the capture owner's absolute active-speech floor in both
+            // live and restored proofs. A live contradiction never borrows
+            // a weaker historical quiet receipt.
+            let below_floor = if let Some(energy) = self.decode_fence_energy.as_ref() {
+                energy.owner.voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
+                    .is_some_and(|hops| hops.is_empty())
+            } else {
+                self.replay_quiet_fences.as_ref().is_some_and(|ranges| ranges.iter().any(|range| {
+                    range.same_capture(owner) && range.sample_start <= start && end <= range.sample_end
+                }))
+            };
+            no_speech && below_floor
+        })
+    }
+
     pub(super) fn commit_slot_operation(&mut self, receipt: SlotOperationReceipt) {
         let observation = &receipt.observation;
         let owner = &observation.occurrence;
@@ -2323,6 +2371,12 @@ impl AcousticLedger {
                 surface_rewritten: pin.surface_rewritten,
             })
             .collect::<Vec<_>>();
+        if observation.producer != ObservationProducer::ManualHuman
+            && sources.iter().any(|source| !self.slot_retirement_has_acoustic_coverage(source, &outputs)) {
+            self.record_word_choice(observation, &sources, &outputs,
+                "absence_requires_acoustic_evidence", false);
+            return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
+        }
         match self.adjudicate_word_sources(observation, &sources, &outputs) {
             Some(false) => {
                 return trace.finish(Err(SlotOperationRefusal::ProducerNotAuthorized), self);
