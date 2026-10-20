@@ -1375,6 +1375,13 @@ final class SettingsChromeContractTests: XCTestCase {
     // first switch row.
     XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
     XCTAssertFalse(panel.contains("DictionaryWordPins(configDir:"))
+    // Maciej, 2026-10-21: the pane leads with this Mac's recent takes, in
+    // human terms, above the corrections desk.
+    let recentTakes = try XCTUnwrap(
+      panel.range(of: "DictionaryRecentTakes(configDir: model.configDir)"))
+    let correctionsHeader = try XCTUnwrap(
+      panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
+    XCTAssertLessThan(recentTakes.lowerBound, correctionsHeader.lowerBound)
     let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
     let pins = try XCTUnwrap(lab.range(of: "DictionaryWordPins(configDir: model.configDir)"))
     let firstRow = try XCTUnwrap(lab.range(of: "SettingsControlRow("))
