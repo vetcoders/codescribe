@@ -139,7 +139,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     func settle() {
       host.layoutSubtreeIfNeeded()
@@ -281,7 +281,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
       panel.contentView = host
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
@@ -316,7 +316,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
@@ -340,7 +340,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: 1200, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     func settle() {
       host.layoutSubtreeIfNeeded()
@@ -381,7 +381,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     func settle() {
       host.layoutSubtreeIfNeeded()
@@ -758,7 +758,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     // Long enough for the 0.24 s slide of a leaving pane to end.
     let settle = {
       host.layoutSubtreeIfNeeded()
@@ -864,7 +864,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
       panel.contentView = host
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()

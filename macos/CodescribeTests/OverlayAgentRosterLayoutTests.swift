@@ -109,7 +109,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     settle(host)
     return window
   }

@@ -252,7 +252,7 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
         styleMask: .borderless, backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       let reception = try NativeAccessibilityProbe.waitForElements(
@@ -288,7 +288,7 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
         styleMask: .borderless, backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       let reception = try NativeAccessibilityProbe.waitForElements(

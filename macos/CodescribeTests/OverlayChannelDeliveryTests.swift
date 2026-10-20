@@ -2036,7 +2036,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         contentRect: .init(x: 0, y: 0, width: 440, height: 320),
         styleMask: [.titled], backing: .buffered, defer: false)
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
@@ -2071,7 +2071,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         contentRect: .init(x: 0, y: 0, width: 336, height: maximumHeight), styleMask: [.titled],
         backing: .buffered, defer: false)
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.15))

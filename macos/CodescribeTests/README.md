@@ -303,3 +303,19 @@ AppKit AX child graph under XCTest (the same boundary documented by
 assertions. Real Audio button activation, stop/final-pass presentation, calibration
 blocking and accessibility still require a separate signed native acceptance;
 these unit witnesses do not claim that acceptance.
+
+## Keep native fixtures behind the person's workspace
+
+Use `BackgroundTestWindow.present` for layout, rendering and accessibility
+fixtures. It orders the fixture below normal application windows and never
+requests activation or keyboard ownership. The XCTest-only Settings placeholder
+also configures its own host window below normal windows and parks it offscreen;
+production Settings retains its existing scene and activation path.
+
+The roster/header fixtures in the Astra UI cut use this presentation owner.
+Native tests that intentionally call `takeKeyForTranscript`, `makeKeyAndOrderFront`
+or activate another app still exercise real keyboard ownership. Run those in an
+isolated GUI session, rather than during the Founder's work. They are separate
+from background layout/AX acceptance; do not silently skip them and call the
+entire native focus gate passed. `BackgroundTestWindowTests` checks the host's
+Settings level, fixture level, key state and lack of host activation.

@@ -46,7 +46,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let control = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
     parent.contentView?.addSubview(control)
-    parent.orderFrontRegardless()
+    BackgroundTestWindow.present(parent)
     defer { parent.orderOut(nil) }
     let owner = OverlayHintAnchor()
     owner.view = control
@@ -211,32 +211,42 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(menu.contains(".help(help)"))
   }
 
-  /// The floating name pill toggles the Agents drawer for All as for one
-  /// agent (Maciej, 2026-10-17: with the clickable scrim gone, the second
-  /// click is the pointer's way back out); interactive glass gives it the
-  /// system's hover and press feedback.
-  func testConversationNamePillTogglesTheAgentsDrawer() throws {
-    let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains("Button(action: onShowAgents) { namePillLabel }"))
-    XCTAssertTrue(conversation.contains(".modifier(OverlayNamePillGlass(interactive: true))"))
-    XCTAssertTrue(
-      conversation.contains(
-        "content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())"))
-    let overlay = try source("Overlay/DictationOverlayView.swift")
-    XCTAssertTrue(overlay.contains("if state.showsAgentMonitor {"))
-    XCTAssertTrue(overlay.contains("state.hideAgentSidebar()"))
-
-    let state = OverlayState()
-    let broadcast = OverlayConversation(
-      id: "pill-all", channel: "0", name: "All", owner: nil, messages: [])
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast]))
-    state.selectConversation(broadcast.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertEqual(state.selectedConversationID, broadcast.id, "the drawer keeps the conversation")
-    state.hideAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor, "the same pill click closes the open stack")
-    XCTAssertEqual(state.selectedConversationID, broadcast.id, "closing keeps the conversation")
+  /// A name pill invokes only the supplied Frame action. With no target it
+  /// remains a passive label; the rail owns revealing the agents list.
+  func testConversationNamePillUsesOnlyAnAvailableFrameAction() throws {
+    let conversation = OverlayConversation(
+      id: "pill-agent", channel: "3", name: "Astra", owner: nil, messages: [])
+    var focused = 0
+    for available in [false, true] {
+      let action: (() -> Void)? = available ? { focused += 1 } : nil
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .dark, topInset: 48, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant(""), sending: false, sendError: nil, onSend: {},
+        onFocusAgentPanel: action)
+      let host = NSHostingView(rootView: view.frame(width: 600, height: 400))
+      let window = NSWindow(
+        contentRect: NSRect(x: 150, y: 150, width: 600, height: 400),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      BackgroundTestWindow.present(window)
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      let label = try XCTUnwrap(
+        NativeAccessibilityProbe.waitForElements("overlay-conversation-name").elements.first)
+      _ = try NativeAccessibilityProbe.query("overlay-conversation-name", press: true)
+      if available {
+        XCTAssertEqual(label.role, "AXButton")
+        XCTAssertEqual(focused, 1, "the press reaches the supplied Frame action")
+      } else {
+        XCTAssertNotEqual(label.role, "AXButton", "a passive name offers no button")
+        XCTAssertEqual(focused, 0)
+      }
+      XCTAssertFalse(window.isKeyWindow)
+      XCTAssertFalse(NSApp.isActive, "the synthetic AX press must not activate the host")
+    }
   }
 
   /// Clicking an agent's name in its reply bubble jumps to that agent's own
@@ -332,7 +342,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let host = NSHostingView(rootView: controls)
     host.frame = NSRect(x: 0, y: 0, width: 180, height: 46)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     headerSettle(host)
     let regions = panel.menuCursorRegions.allObjects.compactMap {
@@ -469,7 +479,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let host = NSHostingView(rootView: root)
     host.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     headerSettle(host)
     try headerPointer(false, on: host)
@@ -692,7 +702,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         .preferredColorScheme(palette.appearance == .dark ? .dark : .light))
     host.frame = NSRect(origin: .zero, size: size)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     headerSettle(host)
     let raster = headerRaster(host)
