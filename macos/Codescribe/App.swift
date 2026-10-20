@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -218,9 +219,23 @@ struct CodescribeApp: App {
       try await delegate.restartForInterfaceLanguage(
         relaunch: .plain, beforeTermination: beforeTermination)
     }
+    // Appearance applies at once through AppKit; a sheet shade is read at
+    // launch, so it rides the same idle-guarded restart as the language.
+    model.onApplyAppearance = { AppearancePreference().apply() }
+    model.onApplySheetShade = { beforeTermination in
+      try await delegate.restartForInterfaceLanguage(
+        relaunch: .plain, beforeTermination: beforeTermination)
+    }
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
+    // Settings › User checks for updates through the app's one Sparkle owner.
+    // No updater (the XCTest host) leaves the button disabled.
+    if let updater = delegate.updater {
+      model.onCheckForUpdates = { [weak updater] in updater?.checkForUpdates() }
+      updater.$canCheckForUpdates.assign(to: &model.$canCheckForUpdates)
+    }
+    model.onOpenSetupWizard = { [weak delegate] in delegate?.presentSetupWizard() }
     return model
   }
 
@@ -245,7 +260,52 @@ struct CodescribeApp: App {
         Button("Settings…") { openWindow.presentSettings() }
           .keyboardShortcut(",", modifiers: .command)
       }
+      // The tray's "Setup Wizard" row went without replacement (Settings
+      // already hosts the Creator tab); "Check for Updates…" moved here
+      // instead, right after About — the way iTerm2's app menu places it
+      // (Founder, 19 Oct 2026 recording).
+      CommandGroup(after: .appInfo) {
+        Divider()
+        CheckForUpdatesCommand(appDelegate: appDelegate)
+      }
     }
+  }
+}
+
+/// Reaches the single `UpdaterService` instance `AppDelegate` creates in
+/// `applicationDidFinishLaunching` — never a second one. `AppDelegate`
+/// publishes `updater` so this command rebuilds once launch populates it;
+/// `CheckForUpdatesButton` then tracks `canCheckForUpdates` directly off that
+/// instance so the item's enabled state stays live after launch.
+private struct CheckForUpdatesCommand: View {
+  @ObservedObject var appDelegate: AppDelegate
+
+  var body: some View {
+    if let updater = appDelegate.updater {
+      CheckForUpdatesButton(updater: updater)
+    } else {
+      Button(
+        String(
+          localized: "Check for Updates…",
+          comment: "App menu item that triggers a Sparkle update check")
+      ) {}
+      .disabled(true)
+    }
+  }
+}
+
+private struct CheckForUpdatesButton: View {
+  @ObservedObject var updater: UpdaterService
+
+  var body: some View {
+    Button(
+      String(
+        localized: "Check for Updates…",
+        comment: "App menu item that triggers a Sparkle update check")
+    ) {
+      updater.checkForUpdates()
+    }
+    .disabled(!updater.canCheckForUpdates)
   }
 }
 
@@ -286,7 +346,7 @@ enum InterfaceLanguageRestartError: Error, Equatable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
@@ -357,7 +417,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let terminationCoordinator = AppTerminationCoordinator()
   private var idleRestartCoordinator: IdleRestartCoordinator?
   // First-run onboarding wizard host. Presented at launch when the core gate
-  // (`shouldShowOnboarding`) reports setup is due.
+  // (`shouldShowOnboarding`) reports setup is due, and on demand from
+  // Settings › Creator through `presentSetupWizard()`.
   private lazy var onboarding = OnboardingWindowController(
     engine: RealOnboardingEngine(),
     applyInterfaceLanguage: { [weak self] beforeTermination in
@@ -370,8 +431,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
-  // scheduled updater alongside the live app.
-  private var updater: UpdaterService?
+  /// Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
+  /// gate), `present()` always fronts the window — resume when onboarding is
+  /// still due, or re-run from Welcome after completion.
+  func presentSetupWizard() {
+    onboarding.present()
+  }
+
+  // scheduled updater alongside the live app. Published so the app menu's
+  // "Check for Updates…" command (CodescribeApp.settingsWindow) rebuilds once
+  // launch populates it; Settings › User reads it for its own button. The
+  // buttons track the instance's `canCheckForUpdates` directly rather than
+  // through this delegate.
+  @Published private(set) var updater: UpdaterService?
   private let vocabularyAB = VocabularyABAction()
 
   /// True when the process is the XCTest host, not a user launch. The unit-test
@@ -464,6 +536,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+    // Light, dark or system, before the first window resolves a colour.
+    AppearancePreference().apply()
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
@@ -686,16 +760,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)
     }
-    model.tray.onCheckForUpdates = { [weak self] in
-      self?.updater?.checkForUpdates()
-    }
-    // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
-    // gate), `present()` always fronts the window — resume when onboarding is
-    // still due, or re-run from Welcome after completion.
-    model.tray.onOpenSetupWizard = { [onboarding] in
-      onboarding.present()
-    }
-
     // ── Notes ──
     model.tray.onOpenNotesFolder = { [notes] in
       NSWorkspace.shared.open(URL(fileURLWithPath: notes.notesDir()))

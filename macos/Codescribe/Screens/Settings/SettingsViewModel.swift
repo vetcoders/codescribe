@@ -47,6 +47,27 @@ struct LastServingVerdict: Equatable {
   let fallbackUsed: Bool
 }
 
+/// The one action a coding-agent row offers for its client.
+enum CreatorAgentBridgeAction: Equatable {
+  case install
+  case update
+  /// The installed skill is this app's generation; the button is disabled.
+  case upToDate
+}
+
+/// What Settings › Creator states before installing or updating the skill.
+struct CreatorAgentBridgeInstallPlan: Equatable, Identifiable {
+  let client: AgentBridgeClient
+  /// `.install` or `.update`, never `.upToDate`.
+  let action: CreatorAgentBridgeAction
+  let skillPath: String
+  let bundleVersion: String?
+  /// Other installed clients whose outdated copy the same install updates.
+  let alsoUpdated: [AgentBridgeClient]
+
+  var id: AgentBridgeClient { client }
+}
+
 /// The model preference row of the Engine tab: the model the selected mode
 /// actually loads. Nil when the mode has no model preference to show.
 struct SttModelRow: Equatable {
@@ -308,7 +329,6 @@ enum SettingsPanelDestination: Equatable {
   case audio
   case dictionary
   case lab
-  case license
   case user
 }
 
@@ -337,7 +357,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case audio
   case voiceLab
   case lab
-  case license
   case user
 
   var id: String { rawValue }
@@ -356,9 +375,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       return String(localized: "Dictionary", comment: "Settings section: custom vocabulary")
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
-    case .license: return String(localized: "License", comment: "Settings section")
     case .user:
-      return String(localized: "About", comment: "Settings section: the app, its data and resets")
+      return String(
+        localized: "User",
+        comment: "Settings section: license, app version, local data and resets")
     }
   }
 
@@ -372,7 +392,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return .audio
     case .voiceLab: return .dictionary
     case .lab: return .lab
-    case .license: return .license
     case .user: return .user
     }
   }
@@ -381,7 +400,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .lab:
       return DeveloperSurface.isEnabled() ? .available : .hidden
-    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .license, .user:
+    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .user:
       return .available
     }
   }
@@ -395,7 +414,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .creator, .shortcuts, .audio: return .setup
     case .keys, .agent, .engine, .voiceLab, .lab: return .intelligence
-    case .license, .user: return .account
+    case .user: return .account
     }
   }
 
@@ -411,8 +430,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return "mic"
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
-    case .license: return "checkmark.seal"
-    case .user: return "info.circle"
+    case .user: return "person.crop.circle"
     }
   }
 
@@ -488,22 +506,24 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       // Developer surface: its names are not interface copy.
       settingsSearchTerms(fixed: ["lab", "voice lab", "three-judge", "seismograph"])
-    case .license:
-      settingsSearchTerms(
-        localized: String(
-          localized: "settings.search.section.license",
-          defaultValue: "subscription, activation, trial, billing",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
     case .user:
+      // User carries the license since the License tab folded into it
+      // (Founder decision, 2026-10-19), so both alias lists land here.
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
+          defaultValue:
+            "about, version, build, commit, updates, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
+        + settingsSearchTerms(
+          localized: String(
+            localized: "settings.search.section.license",
+            defaultValue: "license, license key, subscription, activation, trial, billing",
+            comment:
+              "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+          ))
     }
   }
 
@@ -614,7 +634,7 @@ func healthState(
         localized: "License verification unavailable",
         comment: "Settings health footer, sentence case"
       ),
-      targetSection: .license
+      targetSection: .user
     )
   }
   if keys == .missing {
@@ -662,7 +682,7 @@ func healthState(
         localized: "Checking license…",
         comment: "Settings health footer, sentence case"
       )
-      pendingSection = .license
+      pendingSection = .user
     } else {
       pendingMessage = nil
       pendingSection = nil
@@ -744,6 +764,8 @@ enum SettingsAnchor: String, Hashable {
   case audioReadiness
   case maxConsultation
   case providersCloudTranscription
+  /// The License section at the top of Settings › User.
+  case license
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -1184,10 +1206,33 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var interfaceLanguageNotice: String?
   var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
   private let languagePreference: InterfaceLanguagePreference
+  // Appearance and sheet shade (Founder, 2026-10-20). The appearance is handed
+  // to AppKit at once; a shade is read once at launch by `CSPalette`, so it
+  // waits for the same idle-guarded restart as the interface language.
+  @Published private(set) var appearanceChoice: AppAppearanceChoice
+  @Published private(set) var sheetShadeDark: SheetShade
+  @Published private(set) var sheetShadeLight: SheetShade
+  @Published private(set) var applyingSheetShade = false
+  @Published private(set) var sheetShadeNotice: String?
+  var onApplyAppearance: (() -> Void)?
+  var onApplySheetShade: ((@escaping @MainActor () -> Void) async throws -> Void)?
+  private let appearancePreference: AppearancePreference
+  private let sheetShadePreference: SheetShadePreference
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   /// Called only after the Rust owner accepts a fresh consultation.
   var onNewMaxConsultation: (() -> Void)?
+  /// User-initiated update check. The app wires it to its one Sparkle owner
+  /// (`UpdaterService`); Settings never starts an updater of its own.
+  var onCheckForUpdates: () -> Void = {}
+  /// Mirrors `UpdaterService.canCheckForUpdates`: false while a check is in
+  /// flight or no updater runs, so the button cannot start a second check.
+  @Published var canCheckForUpdates = false
+  /// Re-open the first-run setup wizard from Settings › Creator. Bound by
+  /// App.swift to the onboarding window controller; `present()` always
+  /// fronts the window, mid-onboarding or after completion (Founder,
+  /// 2026-10-20: the tray row went away, the action lives in the Creator).
+  var onOpenSetupWizard: () -> Void = {}
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?
@@ -1394,6 +1439,11 @@ final class SettingsViewModel: ObservableObject {
       defaults: languagePreferences, preferredLanguages: preferredLanguages,
       processLanguage: processInterfaceLanguage)
     self.interfaceLanguage = languagePreference.current
+    self.appearancePreference = AppearancePreference(defaults: languagePreferences)
+    self.sheetShadePreference = SheetShadePreference(defaults: languagePreferences)
+    self.appearanceChoice = appearancePreference.current
+    self.sheetShadeDark = sheetShadePreference.current(dark: true)
+    self.sheetShadeLight = sheetShadePreference.current(dark: false)
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -1476,11 +1526,50 @@ final class SettingsViewModel: ObservableObject {
     creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
+  /// What the row's button would do for `client` under `status`. A client
+  /// whose installed skill is this app's generation has nothing to do, so its
+  /// button is disabled rather than offering a rewrite of identical files
+  /// (Founder decision, 2026-10-18).
+  static func creatorAgentBridgeAction(
+    for client: AgentBridgeClient, in status: AgentBridgeInstallationStatus
+  ) -> CreatorAgentBridgeAction {
+    guard status.installedClients.contains(client) else { return .install }
+    return status.clientsWithCurrentSkill.contains(client) ? .upToDate : .update
+  }
+
+  /// Everything the confirmation step has to say before a file is written:
+  /// the destination folder, whether it replaces this app's earlier copy and
+  /// which other installed clients the same transaction updates. `nil` when
+  /// there is nothing to do or no payload to install.
+  func creatorAgentBridgeInstallPlan(
+    for client: AgentBridgeClient
+  ) -> CreatorAgentBridgeInstallPlan? {
+    let status = creatorAgentBridgeStatus
+    guard status.payloadAvailable else { return nil }
+    let action = Self.creatorAgentBridgeAction(for: client, in: status)
+    guard action != .upToDate else { return nil }
+    // The installer rewrites every client already in its receipt; the ones
+    // whose copy is outdated change with this click too.
+    let alsoUpdated = status.installedClients.filter {
+      $0 != client && !status.clientsWithCurrentSkill.contains($0)
+    }
+    return CreatorAgentBridgeInstallPlan(
+      client: client,
+      action: action,
+      skillPath: client.skillPathLabel,
+      bundleVersion: status.bundleVersion,
+      alsoUpdated: alsoUpdated
+    )
+  }
+
   /// Add/update one client while preserving other managed clients. Creator
-  /// has no implicit deselection or deletion action.
+  /// has no implicit deselection or deletion action. The view calls this only
+  /// after the confirmation step; a client already up to date is left alone.
   func installCreatorAgentBridge(for client: AgentBridgeClient) {
     let current = creatorAgentBridge.status()
     creatorAgentBridgeStatus = current
+    // Nothing to do for a current client: the earlier notice stays on screen.
+    guard Self.creatorAgentBridgeAction(for: client, in: current) != .upToDate else { return }
     creatorAgentBridgeError = nil
     creatorAgentBridgeNotice = nil
     guard current.payloadAvailable else {
@@ -1550,7 +1639,7 @@ final class SettingsViewModel: ObservableObject {
     if section == .keys || engine?.shouldShowOnboarding() == false {
       refreshProviderAccess()
     }
-    if section == .license { refreshLicense() }
+    if section == .user { refreshLicense() }
     refreshDictationReadiness()
   }
 
@@ -2543,6 +2632,58 @@ final class SettingsViewModel: ObservableObject {
         try await onApplyInterfaceLanguage {}
       } catch {
         interfaceLanguageNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
+          .message(locale: interfaceLanguage.locale)
+      }
+    }
+  }
+
+  // MARK: - Appearance and sheet shade
+
+  /// Saves and applies at once: AppKit repaints every window.
+  func selectAppearance(_ choice: AppAppearanceChoice) {
+    appearanceChoice = choice
+    appearancePreference.select(choice)
+    onApplyAppearance?()
+  }
+
+  /// True while a saved shade differs from the one this process painted with.
+  var sheetShadeNeedsRestart: Bool {
+    sheetShadeDark.hex != CSPalette.sheetDarkHex || sheetShadeLight.hex != CSPalette.sheetLightHex
+  }
+
+  var sheetShadeRestartTitle: String {
+    applyingSheetShade
+      ? String(localized: "Restarting…", comment: "Sheet shade restart in flight")
+      : String(localized: "Restart now", comment: "Apply the sheet shade")
+  }
+
+  /// Saves the choice at once; the window keeps its launch shade until restart.
+  func selectSheetShade(_ shade: SheetShade) {
+    guard !applyingSheetShade else { return }
+    if shade.isDark { sheetShadeDark = shade } else { sheetShadeLight = shade }
+    sheetShadePreference.select(shade)
+    sheetShadeNotice = nil
+  }
+
+  /// Same idle guard as the language: a busy runtime keeps the choice saved
+  /// and explains how to retry.
+  func applySheetShade() {
+    guard sheetShadeNeedsRestart, !applyingSheetShade else { return }
+    guard let onApplySheetShade else {
+      sheetShadeNotice = InterfaceLanguageRestartError.unavailable.message(
+        locale: interfaceLanguage.locale)
+      return
+    }
+    applyingSheetShade = true
+    sheetShadeNotice = nil
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { applyingSheetShade = false }
+      do {
+        try sheetShadePreference.flush()
+        try await onApplySheetShade {}
+      } catch {
+        sheetShadeNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
           .message(locale: interfaceLanguage.locale)
       }
     }

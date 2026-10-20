@@ -306,17 +306,17 @@ is born localized at the place where it is written as a literal.**
 Founder decision 2026-10-06. These are the preferred terms throughout the UI,
 including buttons, settings, history, messages, help and accessibility copy.
 
-| Meaning                                                 | English                   | Polish                    |
-| ------------------------------------------------------- | ------------------------- | ------------------------- |
-| Basic operating mode                                    | Basic mode                | Tryb podstawowy           |
-| Agent operating mode                                    | Agent mode                | Tryb agentowy             |
-| Mode-row value: basic mode (License panel)              | Basic                     | Podstawowy                |
-| Mode-row value: agent mode (License panel)              | Agent                     | Agentowy                  |
-| License-row value: lifetime agent offer (License panel) | Agent · one-time purchase | Agent · zakup jednorazowy |
-| Converting audio to text                                | transcription             | transkrypcja              |
-| The resulting text                                      | transcript                | transkrypt                |
-| Command to convert audio to text                        | Transcribe                | Transkrybuj               |
-| Agent window's stored chat object                       | conversation              | rozmowa                   |
+| Meaning                                                   | English                   | Polish                    |
+| --------------------------------------------------------- | ------------------------- | ------------------------- |
+| Basic operating mode                                      | Basic mode                | Tryb podstawowy           |
+| Agent operating mode                                      | Agent mode                | Tryb agentowy             |
+| Mode-row value: basic mode (License section)              | Basic                     | Podstawowy                |
+| Mode-row value: agent mode (License section)              | Agent                     | Agentowy                  |
+| License-row value: lifetime agent offer (License section) | Agent · one-time purchase | Agent · zakup jednorazowy |
+| Converting audio to text                                  | transcription             | transkrypcja              |
+| The resulting text                                        | transcript                | transkrypt                |
+| Command to convert audio to text                          | Transcribe                | Transkrybuj               |
+| Agent window's stored chat object                         | conversation              | rozmowa                   |
 
 Founder decision 2026-10-18: the Agent window's stored chat object — what code
 calls a thread — is named "conversation" / "rozmowa" everywhere a user reads
@@ -332,9 +332,9 @@ decision. Code identifiers (`threadID`, `ThreadRail`, `ChatThread`,
 
 Mode names and license status describe different things. Do not call Basic
 mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
-The one exception is the License panel's Mode row: its label already says
-"Mode" / "Tryb", so the value is the short form — Basic / Agent in English,
-Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
+The one exception is the Mode row of Settings › User › License: its label
+already says "Mode" / "Tryb", so the value is the short form — Basic / Agent in
+English, Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
 word is the name of the offer ("Agent · zakup jednorazowy").
 These display names do not rename persisted identifiers or bridge enums (R6).
 

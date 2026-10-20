@@ -27,6 +27,25 @@ final class DictionaryWordPinsTests: XCTestCase {
     XCTAssertEqual(snapshot.pins.first?.id, "take-a:1:0:1000:whisper:4:5:100:200")
   }
 
+  /// A revisit opens on the last snapshot read for that config dir and take,
+  /// so the pane never flashes "No recorded word slots" before the receipts
+  /// are read again (Founder, 2026-10-20).
+  @MainActor func testRevisitRecallsTheLastSnapshotPerTake() throws {
+    DictionaryWordPins.forgetAll()
+    defer { DictionaryWordPins.forgetAll() }
+    let root = try fixture(row() + "\n")
+    XCTAssertNil(DictionaryWordPins.recall(configDir: root.path, session: ""))
+    let snapshot = try DictionaryPinSnapshot.read(root: root.path, requested: "")
+    DictionaryWordPins.remember(snapshot, configDir: root.path, session: "")
+    XCTAssertEqual(DictionaryWordPins.recall(configDir: root.path, session: "")?.pins.count, 1)
+    XCTAssertNil(
+      DictionaryWordPins.recall(configDir: root.path, session: "take-b"),
+      "another take has its own memory")
+    XCTAssertNil(
+      DictionaryWordPins.recall(configDir: root.path + "-other", session: ""),
+      "another config dir has its own memory")
+  }
+
   func testIncompleteAppendDoesNotEraseLastCompleteReceipt() throws {
     let root = try fixture(row() + "\n{\"schema\":")
     let snapshot = try DictionaryPinSnapshot.read(root: root.path, requested: "take-a")

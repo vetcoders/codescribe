@@ -11,9 +11,41 @@ struct DictionaryWordPins: View {
   static let expandedOnArrival = true
   @State private var session = ""
   @State private var refresh = 0
-  @State private var snapshot = DictionaryPinSnapshot()
+  @State private var snapshot: DictionaryPinSnapshot
+  /// False until the first read of the current take has landed. Before
+  /// that the section claims nothing: an empty snapshot is not "no slots".
+  @State private var loaded: Bool
   @State private var selected: String?
   @State private var failed = false
+
+  /// The last snapshot read per config dir and take, kept across visits.
+  /// Returning to the Dictionary used to paint the empty state ("No recorded
+  /// word slots…") and the cards under it for a frame or two, then the list
+  /// landed and pushed everything down (Founder, 2026-10-20, slowed-down
+  /// screencast). A revisit now opens on what it showed last and refreshes
+  /// in place; only the very first visit waits, and it waits quietly.
+  @MainActor private static var remembered: [String: DictionaryPinSnapshot] = [:]
+
+  static func rememberedKey(configDir: String, session: String) -> String {
+    "\(configDir)|\(session)"
+  }
+
+  @MainActor static func remember(_ snapshot: DictionaryPinSnapshot, configDir: String, session: String) {
+    remembered[rememberedKey(configDir: configDir, session: session)] = snapshot
+  }
+
+  @MainActor static func recall(configDir: String, session: String) -> DictionaryPinSnapshot? {
+    remembered[rememberedKey(configDir: configDir, session: session)]
+  }
+
+  @MainActor static func forgetAll() { remembered.removeAll() }
+
+  @MainActor init(configDir: String) {
+    self.configDir = configDir
+    let recalled = Self.recall(configDir: configDir, session: "")
+    _snapshot = State(initialValue: recalled ?? DictionaryPinSnapshot())
+    _loaded = State(initialValue: recalled != nil)
+  }
 
   var body: some View {
     DisclosureGroup(isExpanded: $expanded) {
@@ -28,6 +60,13 @@ struct DictionaryWordPins: View {
         if failed {
           Text("Word pins could not be read. No timing was inferred.")
             .foregroundStyle(.secondary)
+        } else if !loaded {
+          // First visit: the receipts are still being read. Hold the room
+          // the list takes so nothing below jumps when it lands.
+          Text("Reading the recorded slots…")
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 280, alignment: .topLeading)
+            .accessibilityIdentifier("dictionary-word-pins-reading")
         } else if snapshot.pins.isEmpty {
           Text("No recorded word slots for this take.")
             .foregroundStyle(.secondary)
@@ -110,6 +149,8 @@ struct DictionaryWordPins: View {
           guard !Task.isCancelled else { return }
           failed = result == nil
           snapshot = result ?? DictionaryPinSnapshot()
+          loaded = true
+          if let result { Self.remember(result, configDir: root, session: requested) }
           if !snapshot.pins.contains(where: { $0.id == selected }) {
             selected = snapshot.pins.first?.id
           }

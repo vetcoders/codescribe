@@ -18,7 +18,7 @@ struct DictationWhisperModelTab: View {
     VStack(alignment: .leading, spacing: CSSpace.md) {
       if embedded {
         Text("This build embeds Whisper. The on-disk model selection is ignored.")
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
@@ -31,7 +31,7 @@ struct DictationWhisperModelTab: View {
       } else if !status.available && !embedded {
         if let error = model.whisperDownloadStore.error {
           Text(error)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -89,7 +89,7 @@ struct DictationWhisperModelTab: View {
       if let catalog {
         cardRow {
           Text("Model", comment: "Whisper tab row: the model selector")
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
           Spacer(minLength: CSSpace.sm)
           Picker(
@@ -121,10 +121,10 @@ struct DictationWhisperModelTab: View {
             status.available
               ? String(localized: "Installed") : String(localized: "Not installed")
           )
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(status.available ? CSColor.oliveLight : CSColor.amber)
           Text(Self.residencyLabel(catalog))
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -148,19 +148,19 @@ struct DictationWhisperModelTab: View {
       VStack(alignment: .leading, spacing: CSSpace.xs) {
         if let overrideNote {
           Text(overrideNote)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(CSColor.amber)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let notice = model.whisperModelNotice {
           Text(notice)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let error = model.whisperModelError {
           Text(error)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(CSColor.amber)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -179,7 +179,7 @@ struct DictationWhisperModelTab: View {
           .controlSize(.small)
       }
       Text(model.whisperDownloadDetail ?? String(localized: "Downloading…"))
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .lineLimit(2)
     }
@@ -201,7 +201,7 @@ struct DictationWhisperModelTab: View {
   private func otherDetectedModels(_ catalog: CsWhisperModelCatalog) -> some View {
     let unavailable = catalog.options.filter { !$0.usable }
     if !unavailable.isEmpty {
-      VStack(alignment: .leading, spacing: CSSpace.control) {
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
         SettingsSectionLabel(
           String(
             localized: "Other detected models",
@@ -211,7 +211,7 @@ struct DictationWhisperModelTab: View {
             if entry.offset > 0 { divider }
             cardRow {
               Text(verbatim: entry.element.label)
-                .font(CSFont.ui(12.5, .semibold))
+                .font(SettingsScale.settingName)
                 .foregroundStyle(Color.primary)
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
@@ -236,7 +236,7 @@ struct DictationWhisperModelTab: View {
   @ViewBuilder
   private var diskSpaceSection: some View {
     if !storedModels.isEmpty || storageError != nil {
-      VStack(alignment: .leading, spacing: CSSpace.control) {
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
         SettingsSectionLabel(
           String(
             localized: "Disk space",
@@ -252,7 +252,7 @@ struct DictationWhisperModelTab: View {
         }
         if let storageError {
           Text(storageError)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(CSColor.amber)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -273,7 +273,7 @@ struct DictationWhisperModelTab: View {
           .truncationMode(.middle)
           .textSelection(.enabled)
         Text(modelFootprint(directory))
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -413,7 +413,7 @@ struct DictationWhisperModelTab: View {
     HStack(spacing: CSSpace.md) {
       content()
     }
-    .padding(.horizontal, CSSpace.card)
+    .padding(.horizontal, SettingsScale.cardPadding)
     .padding(.vertical, 11)
   }
 

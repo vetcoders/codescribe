@@ -30,18 +30,17 @@ struct ShortcutsPanel: View {
       header
 
       if permissionDegraded {
-        permissionNote.padding(.top, 18)
+        permissionNote.padding(.top, SettingsScale.sectionGap)
       }
 
-      modeSection.padding(.top, CSSpace.lg)
-      dictationControlSection.padding(.top, 12)
-      dictationContextSection.padding(.top, 12)
-      extraShortcutsSection.padding(.top, 12)
-      pasteModeSection.padding(.top, 12)
-      badgeLegend.padding(.top, 12)
+      modeSection.padding(.top, SettingsScale.sectionGap)
+      dictationControlSection.padding(.top, SettingsScale.sectionGap)
+      dictationContextSection.padding(.top, SettingsScale.sectionGap)
+      extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
+      pasteModeSection.padding(.top, SettingsScale.sectionGap)
+      badgeLegend.padding(.top, SettingsScale.sectionGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
   }
 
   // MARK: Header
@@ -64,7 +63,7 @@ struct ShortcutsPanel: View {
   /// conflicts that refuse the save, the save itself, and the notes that do not
   /// block it.
   private var modeSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       bindingRows
       if !blockingConflicts.isEmpty { conflictList }
       saveRow
@@ -79,21 +78,17 @@ struct ShortcutsPanel: View {
         bindingRow(row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
+    .settingsGroupedInset(padding: 0)
   }
 
   private func bindingRow(_ row: CsModeBinding) -> some View {
-    HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
+    HStack(spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(row.mode.visibleName)
-          .font(CSFont.ui(13.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(row.mode.blurb)
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -101,9 +96,8 @@ struct ShortcutsPanel: View {
 
       bindingPicker(row)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
-    .background(Color.primary.opacity(0.04))
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
   }
 
   /// The pill shows the terse gesture (`2× Left ⌥ (Option)`); VoiceOver reads
@@ -126,12 +120,12 @@ struct ShortcutsPanel: View {
     } label: {
       HStack(spacing: 8) {
         Text(row.binding.visibleName)
-          .font(CSFont.mono(12, .semibold))
+          .font(SettingsScale.monoValue)
           .foregroundStyle(CSColor.terracotta)
         CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
+      .padding(.horizontal, SettingsScale.controlInsetH)
+      .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
           .fill(Color.primary.opacity(0.08))
@@ -153,13 +147,13 @@ struct ShortcutsPanel: View {
   /// Directly under the three gestures, because these two buttons govern only
   /// those three.
   private var saveRow: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 12) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      HStack(spacing: SettingsScale.rowInsetH) {
         Button {
           model.saveBindings()
         } label: {
           Text("Save shortcuts")
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
             .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
@@ -178,7 +172,7 @@ struct ShortcutsPanel: View {
           model.resetBindingsToDefaults()
         } label: {
           Text("Restore defaults")
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.secondary)
         }
         .csFocusRing()
@@ -187,7 +181,7 @@ struct ShortcutsPanel: View {
       }
 
       Text("These three shortcuts need saving. Everything else saves automatically.")
-        .font(CSFont.ui(10.5, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
@@ -251,24 +245,24 @@ struct ShortcutsPanel: View {
   /// belongs to the running dictation hold. Placement and name carry that
   /// meaning, so the copy no longer has to deny switching to the Agent.
   private var dictationContextSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "During dictation"))
-      VStack(alignment: .leading, spacing: 7) {
-        VStack(alignment: .leading, spacing: 1) {
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        VStack(alignment: .leading, spacing: 2) {
           Text("Attach selection")
-            .font(CSFont.ui(13.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
           Text("While holding Fn, press the chosen key to attach the selection.")
-            .font(CSFont.ui(11.5, .medium))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
         // Arm modifier is attach-only (default Shift; Cmd alternative).
-        HStack(spacing: 8) {
+        HStack(spacing: SettingsScale.rowGap) {
           Text("Arm with")
-            .font(CSFont.ui(11, .medium))
+            .font(SettingsScale.controlLabel)
             .foregroundStyle(Color.secondary)
           Picker("Arm modifier", selection: armModifierBinding) {
             Text(verbatim: "Shift").tag("shift")
@@ -278,19 +272,9 @@ struct ShortcutsPanel: View {
           .labelsHidden()
           .frame(maxWidth: 180)
         }
-        .padding(.top, 2)
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 14)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(Color.primary.opacity(0.04))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-      )
+      .settingsGroupedInset()
     }
   }
 
@@ -307,41 +291,35 @@ struct ShortcutsPanel: View {
   /// and no line limit, so a longer translation wraps instead of ending in an
   /// ellipsis.
   private var badgeLegend: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Recording indicator"))
-      HStack(alignment: .top, spacing: 12) {
-        legendItem(color: CSColor.terracotta, text: "Recording")
-        legendItem(color: CSColor.assistive, text: "Agent")
-        legendItem(color: CSColor.amber, text: "Processing")
-      }
-      HStack(spacing: 12) {
-        Text("Size of the indicator next to the cursor")
-          .font(CSFont.ui(12.5, .semibold))
-          .foregroundStyle(Color.primary)
-          .frame(maxWidth: .infinity, alignment: .leading)
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        HStack(spacing: SettingsScale.rowInsetH) {
+          Text("Size of the indicator next to the cursor")
+            .font(SettingsScale.settingName)
+            .foregroundStyle(Color.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-        Picker("Pointer indicator", selection: holdBadgeBinding) {
-          ForEach(HoldBadgeOption.allCases) { option in
-            Text(option.visibleName).tag(option)
+          Picker("Pointer indicator", selection: holdBadgeBinding) {
+            ForEach(HoldBadgeOption.allCases) { option in
+              Text(option.visibleName).tag(option)
+            }
           }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .frame(width: 230)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 230)
+        // The dots belong under the size they are sized by, at the helper rung
+        // the rest of the page explains itself in (Founder review, 2026-10-18).
+        HStack(alignment: .top, spacing: SettingsScale.rowInsetH) {
+          legendItem(color: CSColor.terracotta, text: "Recording")
+          legendItem(color: CSColor.assistive, text: "Agent")
+          legendItem(color: CSColor.amber, text: "Processing")
+        }
       }
-      .padding(.top, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .settingsGroupedInset()
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 11)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.05))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 
   private var holdBadgeBinding: Binding<HoldBadgeOption> {
@@ -357,7 +335,7 @@ struct ShortcutsPanel: View {
   /// the mode table because they shape the same gestures; they are not extra
   /// app modes. Both write on change and default off.
   private var dictationControlSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Dictation control"))
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
@@ -365,8 +343,7 @@ struct ShortcutsPanel: View {
           detail: "Tap to start or stop. Hold to record while held."
         ) {
           Toggle("Tap Fn to dictate", isOn: fnTapBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
         divider
         inputSurfaceRow(
@@ -374,25 +351,19 @@ struct ShortcutsPanel: View {
           detail: "Works like Fn. Custom mouse-button mappings can block it."
         ) {
           Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
         divider
         inputSurfaceRow(
           title: "Middle click picks an agent",
           detail:
-            "Click opens the agents. Scroll moves, left click opens, middle click talks until the next one."
+            "Middle click opens the list, scroll chooses, left click opens the conversation, middle click starts and ends talking."
         ) {
           Toggle("Middle click picks an agent", isOn: middleGestureBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
       }
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-      )
+      .settingsGroupedInset(padding: 0)
     }
   }
 
@@ -403,7 +374,7 @@ struct ShortcutsPanel: View {
   /// closed core `DeferredInsertShortcut` set and stays off by default because
   /// the tap is listen-only (core/config/types.rs).
   private var extraShortcutsSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Extra shortcuts"))
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
@@ -421,24 +392,20 @@ struct ShortcutsPanel: View {
         divider
         pasteTranscriptRow
       }
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-      )
+      .settingsGroupedInset(padding: 0)
     }
   }
 
   /// Stacked, not trailing: four segments plus a warning would wrap after two
   /// words in a narrow window next to the title.
   private var pasteTranscriptRow: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      VStack(alignment: .leading, spacing: 3) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      VStack(alignment: .leading, spacing: 2) {
         Text("Deferred paste")
-          .font(CSFont.ui(13.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text("Use the saved transcript when automatic pasting is unavailable.")
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -454,9 +421,8 @@ struct ShortcutsPanel: View {
       .fixedSize()
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
-    .background(Color.primary.opacity(0.04))
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
   }
 
   /// Two sentences on screen and no tooltip: macOS caveats live in the user
@@ -465,22 +431,21 @@ struct ShortcutsPanel: View {
     title: LocalizedStringKey, detail: LocalizedStringKey,
     @ViewBuilder control: () -> Control
   ) -> some View {
-    HStack(alignment: .center, spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
+    HStack(alignment: .center, spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(CSFont.ui(13.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(detail)
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       control()
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
-    .background(Color.primary.opacity(0.04))
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
   }
 
   private var channelModifierBinding: Binding<String> {
@@ -509,36 +474,29 @@ struct ShortcutsPanel: View {
   /// squeezing the segmented control next to the title wrapped the label after
   /// two words in a narrow window.
   private var pasteModeSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Paste after dictation"))
 
-      Picker("Paste mode", selection: pasteModeBinding) {
-        ForEach(CsPasteMode.allModes, id: \.self) { mode in
-          Text(mode.visibleName).tag(mode)
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        Picker("Paste mode", selection: pasteModeBinding) {
+          ForEach(CsPasteMode.allModes, id: \.self) { mode in
+            Text(mode.visibleName).tag(mode)
+          }
         }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityIdentifier("settings.pasteMode")
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("settings.pasteMode")
 
-      Text(model.pasteMode.blurb)
-        .font(CSFont.ui(10.5, .medium))
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+        Text(model.pasteMode.blurb)
+          .font(SettingsScale.helper)
+          .foregroundStyle(Color.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .settingsGroupedInset()
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 11)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.05))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 
   private var pasteModeBinding: Binding<CsPasteMode> {
@@ -556,10 +514,10 @@ struct ShortcutsPanel: View {
   }
 
   private func legendItem(color: Color, text: LocalizedStringKey) -> some View {
-    HStack(alignment: .top, spacing: 6) {
+    HStack(alignment: .top, spacing: CSSpace.xs) {
       Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       Text(text)
-        .font(CSFont.ui(11.5, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -584,7 +542,7 @@ struct ShortcutsPanel: View {
   }
 
   private var conflictList: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
         validationRow(conflict, accent: CSColor.terracotta, marker: "!")
@@ -612,12 +570,12 @@ struct ShortcutsPanel: View {
         .frame(width: 14)
         .accessibilityHidden(true)
       Text(entry.message)
-        .font(CSFont.ui(11.5, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -665,14 +623,12 @@ struct ShortcutsPanel: View {
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 2) {
         Text("Shortcuts need Input Monitoring + Accessibility")
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(CSColor.amber)
-        Text(
-          "You can edit bindings here, but they won't fire until both are granted. Click to open System Settings."
-        )
-        .font(CSFont.ui(12, .medium))
-        .foregroundStyle(Color.primary)
-        .fixedSize(horizontal: false, vertical: true)
+        Text("Bindings won't fire until both are granted. Click to open System Settings.")
+          .font(SettingsScale.helper)
+          .foregroundStyle(Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(.horizontal, 14)

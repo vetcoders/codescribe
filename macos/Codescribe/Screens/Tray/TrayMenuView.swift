@@ -40,12 +40,6 @@ struct TrayMenuView: View {
           Task { await VoiceLabRuntime.shared.openConsole() }
         }
       }
-      TrayRow(icon: .setupWizard, title: String(localized: "Setup Wizard")) {
-        viewModel.onOpenSetupWizard()
-      }
-      TrayRow(icon: .refresh, title: String(localized: "Check for Updates")) {
-        viewModel.onCheckForUpdates()
-      }
       TrayRow(icon: .help, title: String(localized: "Help")) { viewModel.onHelp() }
       TrayRow(icon: .info, title: String(localized: "About codescribe")) { viewModel.onAbout() }
 
