@@ -22,28 +22,19 @@ use super::engine_tuning::EngineTuning;
 /// syllable. Digital zero and a span below the existence floor are refused by
 /// [`RefuseReason::NoVoicedHopInPin`] before this floor is consulted.
 ///
-/// The floor is not applied when speech evidence is unmeasured. The live
-/// "Iwo Iwo Iwo Iwo Iwo" capture trace uses 3 000-sample pins at 16 kHz
-/// (187 ms, two vowel groups, so 200 ms at this floor) on flat PCM and does
-/// not bind this floor; those pins stay on today's path.
+/// Missing speech evidence grants visibility only, never an insertion. The
+/// historical capture trace used 3,000-sample pins at 16 kHz (187 ms, two
+/// vowel groups, so 200 ms at this floor); unmeasured separation cannot
+/// establish an independent repeat occurrence.
 pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
 
 /// Radius retained for distance diagnostics and the existing tuning surface.
 /// It does not grant admission to a word without its own Silero intersection.
 ///
-/// Polish speech decoded to English is a working use of Whisper: the
-/// translated words do not line up one to one with the voiced words, and
-/// their timestamps can land on a short pause inside the sentence. Such a
-/// word keeps today's path with its own receipt. 500 ms is chosen, not
-/// measured; it is wider than the 200 ms Silero merge gap and shorter than
-/// the silences the corpus hallucinations sit on (47–612 s of digital zero).
-///
-/// The same radius bounds the Silero-only rule. Div0 census of 15–17 X
-/// (231 takes, 21 080 Whisper words, `stasiu-silence/REPORT.md`): 689 words
-/// have no Silero speech under their span; 303 of them lie within 500 ms of
-/// speech (pin jitter is 0.1–0.3 s), 49 at 0.5–1 s and 337 further than 1 s.
-/// Every such word but two is Whisper's, and most sit on sound without speech,
-/// not on digital zero.
+/// Archived Div0 evidence from 15–17 October contains 689 words without
+/// Silero speech under their spans; 303 lie within 500 ms of speech. That
+/// proximity was previously an admission path. It remains useful to diagnose
+/// timestamp jitter, but cannot establish a spoken occurrence.
 pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 500;
 
 /// Receipt label when required evidence was not measured. The word may stay
@@ -78,7 +69,7 @@ pub struct WhisperWordSpeech {
     pub silero_speech: Option<bool>,
     /// `Some` only when the calibrated existence floor was applied to this span.
     /// `true` when a hop inside the span is at or above that floor. `None`
-    /// keeps the word unmeasured, whatever Silero says.
+    /// is unknown energy; it cannot override Silero's speech measurement.
     pub energy_above_floor: Option<bool>,
     /// The same two channels on the span widened by
     /// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. `true` when either finds

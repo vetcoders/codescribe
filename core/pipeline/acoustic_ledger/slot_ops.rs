@@ -1627,7 +1627,8 @@ impl AcousticLedger {
             } else {
                 negation_contexts(&held) != negation_contexts(&candidate)
             };
-            let lexical_refinement = !all_coarse || polarity_disagrees;
+            let lexical_refinement = !all_coarse || polarity_disagrees
+                || observation.producer == ObservationProducer::AppleDictation;
             let local_choice = if lexical_refinement && source_complete && geometry && !ambiguous {
                 self.adjudicate_word_sources(observation, &sources, &outputs)
             } else {
@@ -1671,6 +1672,9 @@ impl AcousticLedger {
                     );
                 }
                 continue;
+            }
+            if local_choice == Some(true) {
+                self.stamp_word_witness(observation, &sources, &mut outputs);
             }
             if partial_refinement {
                 self.retain_slot_alternative(
@@ -2306,7 +2310,7 @@ impl AcousticLedger {
             return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
         }
         self.record_word_decode_bounds(observation, children);
-        let outputs = children
+        let mut outputs = children
             .iter()
             .map(|pin| WordSlot {
                 sample_start: pin.sample_start,
@@ -2330,7 +2334,7 @@ impl AcousticLedger {
                     return trace.finish(Err(refusal), self);
                 }
             }
-            Some(true) => {}
+            Some(true) => self.stamp_word_witness(observation, &sources, &mut outputs),
         }
         let receipt = SlotOperationReceipt {
             observation: observation.clone(),
