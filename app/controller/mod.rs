@@ -7408,7 +7408,10 @@ impl RecordingController {
         if presentation.literal_delivery() {
             return raw;
         }
-        if matches!(policy, FormattingPolicy::Correction | FormattingPolicy::Smart) {
+        if matches!(
+            policy,
+            FormattingPolicy::Correction | FormattingPolicy::Smart
+        ) {
             presentation
                 .wait_for_occurrence_projections(
                     policy,
