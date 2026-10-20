@@ -81,7 +81,7 @@ struct SttModelRow: Equatable {
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
     return String(
-      localized: "No transcription in this app session",
+      localized: "No transcription in this session",
       comment: "Last transcription engine row before the first transcription of this launch"
     )
   }

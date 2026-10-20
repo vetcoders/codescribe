@@ -23,11 +23,13 @@ struct TranscriptMarkersSection: View {
       SettingsSectionHeaderRow(
         String(localized: "Transcript markers", comment: "Dictation panel section")
       )
+      // No separate row title (Founder round-2 copy trim, 2026-10-20): the
+      // switch carries only the description below; the toggle keeps its own
+      // accessibility label.
       SettingsControlRow(
-        title: String(localized: "Add markers to text", comment: "Dictation panel: switch"),
-        subtitle: String(
+        title: String(
           localized: "Mark text delivered to other apps",
-          comment: "Dictation panel: switch subtitle; the template decides the marker")
+          comment: "Dictation panel: switch label; the template decides the marker")
       ) {
         Toggle("", isOn: taggingBinding)
           .settingsSwitch()
