@@ -1178,8 +1178,10 @@ final class SettingsChromeContractTests: XCTestCase {
     // power-user control, and the Lab desk is where it now lives.
     let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
     XCTAssertTrue(
-      lab.contains("Toggle(\"Committing transcript fragments\", isOn: sealLaneBinding)"))
-    XCTAssertTrue(lab.contains("Text(\"Required before a recording can start.\")"))
+      lab.contains("title: String(localized: \"Committing transcript fragments\")"))
+    XCTAssertTrue(
+      lab.contains("subtitle: String(localized: \"Required before a recording can start.\")"))
+    XCTAssertTrue(lab.contains("Toggle(\"\", isOn: sealLaneBinding)"))
   }
 
   /// Settings → User: the license, the app, its data and the resets, in
@@ -1461,7 +1463,8 @@ final class SettingsChromeContractTests: XCTestCase {
         "Podążaj za macOS albo trzymaj Codescribe na stałe w jasnym lub ciemnym.",
       "System": "System", "Light": "Jasny", "Dark": "Ciemny",
       "Panel shade, dark": "Odcień panelu, ciemny", "Panel shade, light": "Odcień panelu, jasny",
-      "Today": "Dziś", "Soft graphite": "Miękki grafit", "Warm carbon": "Ciepły węgiel",
+      // "Today" already lived in the catalog (thread rail) as "Dzisiaj"; one key, one word.
+      "Today": "Dzisiaj", "Soft graphite": "Miękki grafit", "Warm carbon": "Ciepły węgiel",
       "Limestone": "Wapień", "Travertine": "Trawertyn",
       "Codescribe will restart with the new shade. Your recording must finish first.":
         "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć.",
