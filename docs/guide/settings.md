@@ -1000,8 +1000,9 @@ app and its data; Codescribe has no account, so this is not a profile. It
 replaced the separate About and License tabs. Everyday facts stay visible;
 technical values and the resets open on demand. From top to bottom:
 
-- **License** — the section described under [License access](#license-access)
-  below.
+- **License** — one card: the product name and purchase kind with one status,
+  the saved key with **Manage key**, or the activation field when there is no
+  key. Described under [License access](#license-access) below.
 - **Version** — one line, _Codescribe 0.16.0_ with _Build 526_ under it.
   **Check for Updates…** beside it starts Sparkle's manual check (the same
   updater the app runs in the background); it is disabled while a check is
@@ -1070,18 +1071,38 @@ _Created by Vetcoders (c)2026_
 ## License access
 
 Open **Settings → User** to activate, restore or remove a CSK1 license; the
-**License** section opens the page, under one sentence saying that Basic mode
-stays free and a license unlocks Agent mode. One card holds the state — labelled **Status**, or
-**Mode** while no key is stored — with a dot that is lit while Agent mode is
-allowed, then **Mode** once a license state beyond "no key" is known, and
-**License** (_Agent · one-time purchase_) for the one-time offer. While a
-verified key runs on offline grace the state carries the remaining period
-(_Active · N days left_). No raw SKU is shown anywhere and there is no
-updates-window row. In the same card, under a divider, the key field and
-**Activate** share one row, with the note that the key is stored in the macOS
-Keychain under them. **Get license key** (opens the self-service page) and
-**Remove key** sit on the row below the card. The Agent window's **Enter
-license** opens Settings → User at this section.
+**License** section opens the page, under one sentence: _A license unlocks
+Agent mode._ Everything else sits in one card.
+
+- **Head** — the product name on the left: **Codescribe Agent** while the
+  license allows Agent mode, with the purchase kind under it (_One-time
+  purchase_ for the lifetime offer; other offers get no invented name), or
+  **Basic mode** with _No active license_ under it. A key that verifies but
+  does not include Agent mode says so in that line instead. On the right one
+  status: a green dot and **Active** while the license works (also on offline
+  grace), **Inactive** with no key or once a time limit has elapsed,
+  **Checking license…** while storage is read, **Unknown** when it cannot be
+  read. No raw SKU is shown anywhere and there is no updates-window row.
+- **Key row** — only with a saved key. While a verified key runs on offline
+  grace its title is the countdown, _Works offline for N more days_: the days
+  left of the 30-day window since the last successful validation (for now,
+  the activation itself). It is not license expiry, not an updates window and
+  not a trial; when it reaches zero the status reads **Inactive** until the key
+  is activated again. Under it, or alone when the license is plainly active,
+  the note _Key stored in the macOS Keychain_. On the right, **Manage key**
+  with a chevron expands key management inside the same card.
+- **Key management** — a _Key management_ head with **Change key**, which opens
+  the editor: _New license key_, the key field and **Activate** (disabled while
+  the field is empty or an operation runs) and **Cancel**, which closes the
+  editor and keeps the saved key. Under it **Get license key** (opens the
+  self-service page) on the left and **Remove key**, in red, set apart on the
+  right.
+- **Without a key** — the activation editor is open at once inside the card
+  (_License key_, the field and **Activate**), followed by **Get license key**
+  alone; there is no Manage key and no Remove key.
+
+Errors, their details and **Try again** stay under the card. The Agent window's
+**Enter license** opens Settings → User at this section.
 
 License storage runs in the background, and **Checking license…** or an access
 error remains visible while Settings stays interactive. **Retry license access**
