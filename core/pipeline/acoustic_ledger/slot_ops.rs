@@ -2289,6 +2289,17 @@ impl AcousticLedger {
         {
             return Err(SlotOperationRefusal::InvalidEvidence);
         }
+        // Dictionary spelling cannot collapse physically distinct repeats.
+        // Targets are resolved before labels corroborate duplicate sources.
+        for (index, left) in sources.iter().enumerate() {
+            for right in &sources[index + 1..] {
+                if super::word_adjudication::label_equal(&left.text, &right.text)
+                    && !self.word_anchor_identity(left).zip(self.word_anchor_identity(right))
+                        .is_some_and(|(a, b)| a.shares_word(b)) {
+                    return Err(SlotOperationRefusal::InvalidEvidence);
+                }
+            }
+        }
         let source_ranges = sources
             .iter()
             .flat_map(|source| self.slot_source_ranges(source))
@@ -2356,6 +2367,29 @@ impl AcousticLedger {
             || children.last().unwrap().sample_end != source.sample_end
         {
             return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
+        }
+        if observation.producer != ObservationProducer::ManualHuman {
+            let anchors = self.measured_word_anchors(&observation.occurrence);
+            for (index, left) in children.iter().enumerate() {
+                for right in &children[index + 1..] {
+                    if !super::word_adjudication::label_equal(&left.text, &right.text) { continue; }
+                    let Some(anchors) = anchors.as_ref() else {
+                        return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
+                    };
+                    let left_voice = anchors.iter().filter(|anchor| {
+                        anchor.range.sample_start < left.sample_end && left.sample_start < anchor.range.sample_end
+                    }).collect::<Vec<_>>();
+                    let right_voice = anchors.iter().filter(|anchor| {
+                        anchor.range.sample_start < right.sample_end && right.sample_start < anchor.range.sample_end
+                    }).collect::<Vec<_>>();
+                    if left_voice.is_empty() || right_voice.is_empty()
+                        || left_voice.iter().any(|a| right_voice.iter().any(|b| {
+                            a.range.sample_start == b.range.sample_start
+                        })) {
+                        return trace.finish(Err(SlotOperationRefusal::InvalidEvidence), self);
+                    }
+                }
+            }
         }
         self.record_word_decode_bounds(observation, children);
         let mut outputs = children

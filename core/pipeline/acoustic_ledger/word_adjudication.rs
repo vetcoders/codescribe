@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 /// has no decoder-fence completeness receipt.
 /// v30: owner projection cannot hide a new Whisper word's clipped onset or
 /// trailing fence; unprojected incomplete onsets retain visible evidence.
-pub const WORD_POLICY: &str = "word-adjudication/v33-acoustic-absence";
+pub const WORD_POLICY: &str = "word-adjudication/v34-voiced-replay";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +211,57 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
 }
 
 impl AcousticLedger {
+    /// Resolve rolling-window replays on capture-owned voiced bursts first.
+    /// Anchor starts are stable when a live burst extends. Shared bursts do
+    /// not alone identify a word: its capture-clipped spans must also share
+    /// the addressed word. Labels only corroborate that physical match.
+    pub(super) fn acoustic_replay_source(
+        &self,
+        word: &WordSlot,
+        sources: &[WordSlot],
+    ) -> Option<WordSlot> {
+        if word.producer != ObservationProducer::Whisper { return None; }
+        let identity = self.word_anchor_identity(word)?;
+        if identity.anchors.is_empty() { return None; }
+        let decode_of = |slot: &WordSlot| {
+            self.word_anchor_source(slot).and_then(|(pin, _)| {
+                pin.decode_sample_start.zip(pin.decode_sample_end)
+            }).or_else(|| self.decoded_word_windows.get(&slot.observation).copied())
+        };
+        let decode = decode_of(word)?;
+        sources.iter().filter(|source| {
+            source.producer == word.producer
+                && self.complete_word_slot(source)
+                && source.observation.occurrence.same_capture(&word.observation.occurrence)
+                && !self.unresolved_word_target_groups(&source.observation.occurrence).iter().any(|group| {
+                    group.contains(&SlotTarget::from(source))
+                })
+        }).find(|source| {
+            let Some(prior_decode) = decode_of(source) else { return false; };
+            if decode == prior_decode || decode.0 >= prior_decode.1 || prior_decode.0 >= decode.1 {
+                return false;
+            }
+            let Some(prior) = self.word_anchor_identity(source) else { return false; };
+            let same_voice = identity.anchors.len() == prior.anchors.len()
+                && identity.anchors.iter().zip(&prior.anchors).all(|(left, right)| {
+                    left.same_capture(right) && left.sample_start == right.sample_start
+                });
+            // A separate valley gives each real repeat a different burst.
+            // Neither missing anchors nor nearby speech proves a replay.
+            same_voice && identity.shares_word(prior)
+                && self.speech_evidence.as_ref().is_some_and(|speech| {
+                speech.is_observed()
+                    && speech.identity().matches(&word.observation.occurrence.session,
+                        word.observation.occurrence.capture_epoch)
+                    && speech.producer() == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    && speech.ranges().iter().any(|range| {
+                    range.sample_start < source.sample_end && source.sample_start < range.sample_end
+                        && range.sample_start < word.sample_end && word.sample_start < range.sample_end
+                })
+            }) && label_equal(&source.text, &word.text)
+        }).cloned()
+    }
+
     /// A lexical verdict is attached only after physical target resolution.
     /// Every geometric operation uses this same state, including group cuts.
     pub(super) fn stamp_word_witness(

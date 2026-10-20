@@ -1648,6 +1648,43 @@ impl AcousticLedger {
                 self,
             );
         };
+        // Reconcile while live, before resegmentation can treat a drifted
+        // copy as a new word. The same rule applies to every word of a
+        // re-emitted clause, not merely adjacent equal strings.
+        let known = self.committed.values().flat_map(|held| held.slots.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut voice_replays = Vec::new();
+        incoming.retain(|(word, _)| {
+            if let Some(source) = self.acoustic_replay_source(word, &known) {
+                voice_replays.push((word.clone(), source));
+                false
+            } else {
+                true
+            }
+        });
+        for (word, source) in &voice_replays {
+            // The predecessor is a committed source from a different
+            // overlapping decode, never a provisional within-batch token.
+            if self.slots_of(&source.observation.occurrence).is_some_and(|slots| slots.contains(source)) {
+                self.record_slot_operation(SlotOperationReceipt {
+                    observation: observation.clone(), kind: SlotOperationKind::Correct,
+                    sources: vec![source.clone()], outputs: vec![source.clone()],
+                    source_ranges: self.slot_source_ranges(source),
+                    rule_id: "overlapping_decode_same_voiced_burst/v1".into(),
+                });
+            }
+            if !incoming.is_empty() {
+                let pin = OccurrenceIdentity::new(&owner.session, owner.capture_epoch,
+                    word.sample_start, word.sample_end);
+                let mut replay = self.next_word_observation(observation.producer, observation.request, &pin);
+                if replay == *observation { replay.generation = replay.generation.saturating_add(1); }
+                self.refuse_replayed_range(&replay, &word.text);
+            }
+        }
+        if !voice_replays.is_empty() && incoming.is_empty() {
+            let candidate = original_words.iter().map(|pin| pin.text.as_str()).collect::<Vec<_>>().join(" ");
+            return trace.finish(self.refuse_replayed_range(observation, &candidate), self);
+        }
         let mut no_speech_refused = Vec::new();
         incoming.retain(|(word, pin)| {
             if observation.producer != ObservationProducer::ManualHuman
