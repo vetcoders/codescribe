@@ -1524,6 +1524,97 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Round 2 of the Founder's views review (2026-10-20, UI-30…UI-46) plus the
+  /// two round-1 decisions taken the same day (UI-02 wizard, UI-04 one
+  /// formatting switch): the copy that landed, where it landed, and its Polish.
+  func testRoundTwoCopyLandsWhereTheFounderPutIt() throws {
+    let sources = try settingsSources()
+    let engine = try XCTUnwrap(sources["DictationEngineControls.swift"])
+    let whisper = try XCTUnwrap(sources["DictationWhisperModelTab.swift"])
+    let privacy = try XCTUnwrap(sources["DictationCloudPrivacyTab.swift"])
+    let privacyCopy = try XCTUnwrap(sources["CloudPrivacyCopy.swift"])
+    let license = try XCTUnwrap(sources["LicenseSection.swift"])
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    let tab = try XCTUnwrap(sources["SettingsTab.swift"])
+
+    // UI-30/31/34: Local power caption; the refinement card lives on the
+    // Whisper tab only, with the approved caption, no FP16 in the user's way.
+    XCTAssertTrue(
+      engine.contains(
+        "\"Live speech recognition and correction in the background, without sending recordings.\""))
+    XCTAssertFalse(engine.contains("Live Whisper refinement"), "one owner: the Whisper tab")
+    XCTAssertTrue(whisper.contains("String(localized: \"Live Whisper refinement\")"))
+    XCTAssertTrue(
+      whisper.contains(
+        "\"Apple recognizes speech and Whisper corrects the text during the recording.\""))
+    XCTAssertFalse(whisper.contains("FP16 model repairs"))
+    XCTAssertTrue(whisper.contains("model.recheckLocalWhisperRuntime"))
+    // UI-35/36: one Status line beside Check model; no Disk space section.
+    XCTAssertTrue(whisper.contains("static func modelStatus(available: Bool, catalog: CsWhisperModelCatalog?)"))
+    XCTAssertTrue(whisper.contains("SettingsChipButton(\"Check model\""))
+    XCTAssertFalse(whisper.contains("\"Disk space\""))
+    XCTAssertFalse(whisper.contains("diskSpaceSection"))
+    // UI-37: Preview keeps its header, loses the blurb.
+    XCTAssertFalse(tab.contains("Adjust how quickly text appears in the preview window"))
+    // UI-38/39: the card is Data processing; one link, outside the details.
+    XCTAssertTrue(privacyCopy.contains("localized: \"Data processing\""))
+    XCTAssertTrue(privacyCopy.contains("localized: \"Set up the cloud in Providers\""))
+    XCTAssertEqual(
+      privacy.components(separatedBy: "CloudPrivacyCopy.configureCloudServices").count - 1, 1,
+      "exactly one entry point to Providers › Cloud transcription")
+    let link = try XCTUnwrap(privacy.range(of: "CloudPrivacyCopy.configureCloudServices"))
+    let details = try XCTUnwrap(privacy.range(of: "private var privacyDetails"))
+    XCTAssertLessThan(link.lowerBound, details.lowerBound, "the link sits in the main part")
+    XCTAssertTrue(privacy.contains("anchor: .providersCloudTranscription"))
+    // UI-45/46: one license card, Manage key inside it, the offline countdown
+    // named for what it is, the old repeated rows gone.
+    XCTAssertTrue(license.contains("\"A license unlocks Agent mode.\""))
+    XCTAssertFalse(license.contains("Basic mode stays free"))
+    for key in ["Manage key", "Change key", "Key management", "Get license key", "Remove key",
+      "Key stored in the macOS Keychain", "One-time purchase", "No active license",
+      "Works offline for \\(daysLeft) more days"] {
+      XCTAssertTrue(license.contains(key), key)
+    }
+    XCTAssertTrue(license.contains("\"Codescribe Agent\""))
+    XCTAssertFalse(license.contains("license.mode.agent"))
+    XCTAssertFalse(license.contains("license.offer.agentLifetime"))
+    // UI-04: the level is the only switch.
+    XCTAssertFalse(creator.contains("\"AI formatting\""))
+    XCTAssertFalse(creator.contains("aiFormattingEnabled"))
+    XCTAssertTrue(creator.contains("String(localized: \"Formatting level\")"))
+
+    let polish = try polishCatalog()
+    let expected: [String: String] = [
+      "No transcription in this session": "Brak transkrypcji w tej sesji",
+      "Live speech recognition and correction in the background, without sending recordings.":
+        "Rozpoznawanie mowy na żywo i korekta w tle, bez wysyłania nagrań.",
+      "Apple recognizes speech and Whisper corrects the text during the recording.":
+        "Apple rozpoznaje mowę, a Whisper poprawia tekst w trakcie nagrania.",
+      "Data processing": "Przetwarzanie danych",
+      "Set up the cloud in Providers": "Skonfiguruj chmurę w Dostawcach",
+      "A license unlocks Agent mode.": "Licencja odblokowuje tryb agentowy.",
+      "Key stored in the macOS Keychain": "Klucz zapisany w Pęku kluczy macOS",
+      "Manage key": "Zarządzaj kluczem",
+      "Change key": "Zmień klucz",
+      "Key management": "Zarządzanie kluczem",
+      "One-time purchase": "Zakup jednorazowy",
+      "No active license": "Bez aktywnej licencji",
+      "Basic mode": "Tryb podstawowy",
+      "Your custom shortcuts stay as they are unless you pick a preset.":
+        "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod.",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    for retired in [
+      "Cloud status", "Configure cloud services", "Disk space", "AI formatting",
+      "Basic mode stays free. A license unlocks Agent mode.", "No transcription in this app session",
+      "Browse corrections and dictionary rules.", "Add markers to text",
+    ] {
+      XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
+    }
+  }
+
   private func settingsSources() throws -> [String: String] {
     let root = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
