@@ -928,6 +928,29 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(
       preview(message(.reply, owner: lenaOwner, source: "3")),
       "lena → 3: first line second line")
+    func route(_ message: OverlayConversationMessage) -> String {
+      OverlayChannelStatusView.messageRoute(of: message).label
+    }
+    XCTAssertEqual(
+      route(message(.user, to: [lenaOwner, astraOwner], source: "2")), "You → lena, astra")
+    XCTAssertEqual(route(message(.reply, owner: lenaOwner, source: "10")), "lena → You")
+    var attachmentOnly = message(.user, to: [lenaOwner], source: "2")
+    attachmentOnly.text = "[attachment] shot.png (image/png, 4 bytes): /tmp/shot.png"
+    attachmentOnly.attachments = [
+      OverlayMessageAttachment(
+        name: "shot.png", path: "/tmp/shot.png", mediaType: "image/png", bytes: 4)
+    ]
+    XCTAssertEqual(attachmentOnly.bodyText, "")
+    XCTAssertEqual(
+      route(attachmentOnly), "You → lena", "a file-only delivery still names its route")
+    XCTAssertEqual(preview(attachmentOnly), "You → lena: ")
+    let bubbles = try overlaySource("OverlayConversationView.swift")
+    XCTAssertTrue(bubbles.contains("messageRoute(of: message)"))
+    XCTAssertTrue(bubbles.contains("overlay-message-route-"))
+    XCTAssertTrue(bubbles.contains("owner.id != conversation.owner?.id"))
+    XCTAssertFalse(
+      bubbles.contains("overlay-message-reply"),
+      "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
   func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {

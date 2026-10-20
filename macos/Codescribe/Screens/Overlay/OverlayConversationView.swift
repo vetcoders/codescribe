@@ -630,6 +630,31 @@ struct OverlayConversationView: View {
     }
   }
 
+  /// Sender and audience from this delivery, including a message that is only
+  /// attachments. A speaker who is not the open conversation stays a button;
+  /// the arrow and the audience are text, so the hit target is only the name.
+  /// The open conversation does not choose the names.
+  @ViewBuilder
+  private func messageSpeaker(_ message: OverlayConversationMessage) -> some View {
+    let route = OverlayChannelStatusView.messageRoute(of: message)
+    let font = Font.system(size: 10 * textScale, weight: .bold)
+    if let owner = message.owner, let onOpenOwnerConversation,
+      owner.id != conversation.owner?.id, route.speaker == owner.name
+    {
+      HStack(spacing: 0) {
+        BubbleOwnerNameButton(
+          name: owner.name, palette: palette, textScale: textScale, messageID: message.id
+        ) { onOpenOwnerConversation(owner) }
+        if let audience = route.audience, !audience.isEmpty {
+          Text(verbatim: " → \(audience)").font(font)
+        }
+      }
+    } else {
+      let fallback = message.owner?.name ?? conversation.name
+      Text(verbatim: route.label.isEmpty ? fallback : route.label).font(font)
+    }
+  }
+
   private func messageRow(_ message: OverlayConversationMessage, maxBubbleWidth: CGFloat)
     -> some View
   {
@@ -645,27 +670,8 @@ struct OverlayConversationView: View {
 
   func messageBubble(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack {
-        if message.kind == .user {
-          Text("You").font(.system(size: 10 * textScale, weight: .bold))
-        } else if let owner = message.owner, let onOpenOwnerConversation,
-          owner.id != conversation.owner?.id
-        {
-          BubbleOwnerNameButton(
-            name: owner.name, palette: palette, textScale: textScale, messageID: message.id
-          ) { onOpenOwnerConversation(owner) }
-        } else if let recipient = message.recipients.first?.owner,
-          message.owner?.id == conversation.owner?.id,
-          recipient.id != conversation.owner?.id,
-          message.sourceChannel != nil && message.sourceChannel != "0"
-            && message.sourceChannel != "10"
-        {
-          Text(verbatim: "\(message.owner?.name ?? conversation.name) → \(recipient.name)")
-            .font(.system(size: 10 * textScale, weight: .bold))
-        } else {
-          Text(verbatim: message.owner?.name ?? conversation.name)
-            .font(.system(size: 10 * textScale, weight: .bold))
-        }
+      HStack(spacing: 0) {
+        messageSpeaker(message)
         // Founder, 2026-10-18: whether a reply was asked for is routing truth,
         // not a badge — `unsolicited` keeps steering the channels, unlabelled.
         Spacer(minLength: 8)
@@ -674,6 +680,8 @@ struct OverlayConversationView: View {
           .accessibilityIdentifier("overlay-message-time-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-message-route-\(message.id)")
       if let question = addressedQuestion(for: message) {
         Text("In reply to: \(String(question.text.prefix(100)))")
           .font(.system(size: 10 * textScale))
