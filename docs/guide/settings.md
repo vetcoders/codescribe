@@ -377,7 +377,12 @@ for **Assistive** (the model behind the Agent and the voice assistant) and
 **Formatting** (Correction and Smart cleanup when using the cloud). The
 Formatting card says so in one line: **Corrections and Smart. Max uses the Agent
 model.** Max runs on the Agent lane's provider, endpoint, model, account and
-prompt; the Formatting lane never serves it. Each card shows the provider, the model
+prompt; the Formatting lane never serves it. The Formatting card also has a
+**Formatting engine** row: **Cloud provider** (the lane below) or **Apple on
+this Mac (experimental)**, in which case Apple runs first without any cloud
+credential and the lane below is used only when Apple fails; the lane's access
+line then reads **Used when Apple fails.** followed by its real state. The
+`CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
 field and one line about the lane's access: **Connected account**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a connected account does not open

@@ -239,6 +239,25 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertGreaterThan(fit, 0, "\(titles)")
       XCTAssertLessThanOrEqual(fit, width(titles), "\(titles): fit never exceeds equal widths")
     }
+    // Agent › AI models (audit 2026-10-21): the formatting-engine row is one
+    // title, one sentence and two translated choices; the four-sentence
+    // technical block and its translation exclusion are gone.
+    let agent = try XCTUnwrap(sources["AgentPanel.swift"])
+    XCTAssertFalse(agent.contains("Applies to Smart and Corrections from the next formatting pass"))
+    XCTAssertFalse(agent.contains("Text formatting"))
+    for (key, value) in [
+      ("Formatting engine", "Silnik formatowania"),
+      ("Apple on your Mac first; this provider steps in when Apple fails.",
+       "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."),
+      ("Cloud provider", "Dostawca w chmurze"),
+      ("Apple on this Mac (experimental)", "Apple na tym Macu (eksperymentalne)"),
+      ("Used when Apple fails. %@", "Używany, gdy Apple zawiedzie. %@"),
+    ] {
+      XCTAssertEqual(polish[key], value, key)
+    }
+    XCTAssertNil(polish["Text formatting"])
+    XCTAssertNil(polish["Apple on-device (experimental)"])
+
     // Shade menus name the shade; the hex reads as the row's subtitle.
     XCTAssertTrue(creator.contains("Text(verbatim: shade.title).tag(shade)"))
     XCTAssertTrue(creator.contains("subtitle: \"#\\(model.sheetShadeDark.rawValue)\""))

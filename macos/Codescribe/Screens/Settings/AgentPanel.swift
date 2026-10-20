@@ -130,12 +130,15 @@ private struct LLMLaneEditor: View {
       // The settings keys behind these rows live under "Active configuration
       // details" on the tab; the card itself stays free of identifiers.
       if lane == .formatting {
+        // One short row (audit of this page, 2026-10-21): where Correction and
+        // Smart run. Routing details and the .env override live in the guide.
         SettingsControlRow(
-          title: String(localized: "Text formatting"),
+          title: String(
+            localized: "Formatting engine",
+            comment: "Settings row: Apple on this Mac or the cloud provider formats the text"),
           subtitle: String(
-            localized:
-              "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle."
-          ),
+            localized: "Apple on your Mac first; this provider steps in when Apple fails.",
+            comment: "Formatting engine row explanation"),
           inset: 10
         ) {
           Picker(
@@ -145,12 +148,15 @@ private struct LLMLaneEditor: View {
               set: { model.setFormatOnDevice($0) }
             )
           ) {
-            Text("Cloud provider").tag(false)
-            Text("Apple on-device (experimental)").tag(true)
+            Text("Cloud provider", comment: "Formatting engine choice").tag(false)
+            Text("Apple on this Mac (experimental)", comment: "Formatting engine choice").tag(true)
           }
           .labelsHidden()
           .fixedSize()
-          .accessibilityLabel(String(localized: "Text formatting"))
+          .accessibilityLabel(
+            String(
+              localized: "Formatting engine",
+              comment: "Settings row: Apple on this Mac or the cloud provider formats the text"))
         }
       }
 
