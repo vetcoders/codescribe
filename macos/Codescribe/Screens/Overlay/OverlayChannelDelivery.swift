@@ -601,7 +601,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
         message.sourceChannel = (row["origin_channel"] as? String) ?? (row["channel"] as? String)
         message.attachments = OverlayMessageAttachment.pointers(row["attachments"])
-        message.userReplyTo = (row["user_reply_to"] as? [String: Any]).flatMap(OverlayUserReplyReference.init(row:))
+        message.userReplyTo = (row["user_reply_to"] as? [String: Any]).flatMap(
+          OverlayUserReplyReference.init(row:))
         message.controlIdentity = identity
         message.deliverySealed = true
         message.holdUntil = (row["hold_until"] as? String).flatMap(Self.openingDate)
@@ -1003,9 +1004,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         recipientBusPaths.count == rawRecipients.count,
         recipientBusPaths.contains(commitBus)
       else { return }
-      let occurrenceID = "utterance:" + Self.identity([
-        "occurrence", occurrenceSession, String(epoch), String(start), String(end),
-      ])
+      let occurrenceID =
+        "utterance:"
+        + Self.identity([
+          "occurrence", occurrenceSession, String(epoch), String(start), String(end),
+        ])
       var stages = captureAttachmentStages ?? [:]
       stages[stageID] = OverlayCaptureAttachmentReceipt(
         stageID: stageID,
@@ -1383,14 +1386,18 @@ struct OverlayUserReplyReference: Codable, Equatable, Sendable {
   let text: String
 
   enum CodingKeys: String, CodingKey {
-    case messageID = "message_id", author, text
+    case messageID = "message_id"
+    case author, text
   }
 
   init(message: OverlayConversationMessage) {
     messageID = message.id
-    author = String((message.kind == .user ? "You" : message.owner?.name ?? "Agent").prefix(128))
+    author = String(
+      (message.kind == .user
+        ? String(localized: "You") : message.owner?.name ?? String(localized: "Agent")).prefix(128))
     let body = message.bodyText
-    let context = body.isEmpty
+    let context =
+      body.isEmpty
       ? (message.attachments ?? []).map(\.name).joined(separator: ", ") : body
     text = String(context.prefix(512))
   }

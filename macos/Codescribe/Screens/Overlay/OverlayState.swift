@@ -961,6 +961,7 @@ final class OverlayState {
   @ObservationIgnored private var admittedComposerSessions: Set<String> = []
 
   func connectComposer(to store: AgentChatStore) {
+    otherComposerOwnsCapture = { [weak store] in store?.hasComposerCaptureRequest == true }
     receiverOwnsRecovery = { [weak store] in store != nil }
     onComposerTranscript = { [weak store] text, sessionID in
       store?.receiveDictationTranscript(text, captureID: sessionID) ?? .retained(text)
@@ -2339,13 +2340,31 @@ final class OverlayState {
   }
 
   var conversationDrafts: [String: String] = [:]
+  var conversationReplies: [String: OverlayUserReplyReference] = [:]
+  var draftCapture = OverlayDraftCapture()
+  struct CaptureAttachmentDraft {
+    var target: OverlayCaptureAttachmentTarget?
+    var paths: [String]
+  }
+  private(set) var captureAttachmentDrafts: [String: CaptureAttachmentDraft] = [:]
+  private(set) var pendingCaptureAttachmentSends: Set<String> = []
+  private(set) var captureAttachmentErrors: [String: String] = [:]
+  @ObservationIgnored var publishCaptureAttachments:
+    @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
+      try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
+    }
+  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
+    [:]
+  @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner?, String) async throws -> Void = {
-      owner, text in try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text)
-    }
+    @MainActor (OverlayConversationOwner?, String, OverlayUserReplyReference?) async throws -> Void =
+      {
+        owner, text, reply in
+        try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text, userReplyTo: reply)
+      }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
     guard conversation.owner != nil || conversation.channel == "0",
@@ -2354,15 +2373,126 @@ final class OverlayState {
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
+    let reply = conversationReplies[conversation.id]
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
     do {
-      try await publishConversationText(conversation.owner, draft)
+      try await publishConversationText(conversation.owner, draft, reply)
       // A newer draft belongs to the Founder, even if publication finishes late.
-      if conversationDrafts[conversation.id] == draft { conversationDrafts[conversation.id] = "" }
+      if conversationDrafts[conversation.id] == draft {
+        conversationDrafts[conversation.id] = ""
+        if conversationReplies[conversation.id] == reply {
+          conversationReplies.removeValue(forKey: conversation.id)
+        }
+      }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
     }
+  }
+
+  func toggleDraftMicrophone(in conversation: OverlayConversation) async {
+    draftCapture.onStartResolved = { [weak self] in
+      guard let self else { return }
+      let waiting = Array(pendingDraftProjections.values)
+      pendingDraftProjections.removeAll()
+      for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
+    }
+    await draftCapture.toggle(
+      conversationID: conversation.id,
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+  }
+
+  func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
+    draftCapture.transitioning
+      || (draftCapture.hasRequest && draftCapture.conversationID != conversation.id)
+      || (!draftCapture.hasRequest && (audioCaptureActive || otherComposerOwnsCapture?() == true))
+  }
+
+  /// Return true only when the live voice lane takes responsibility for these
+  /// paths. Ordinary draft dictation keeps its attachments for manual Send.
+  func stageConversationAttachments(_ paths: [String], in conversation: OverlayConversation) -> Bool
+  {
+    guard !draftCapture.hasRequest else { return false }
+    let existing = captureAttachmentDrafts[conversation.id]
+    let target =
+      existing?.target
+      ?? conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget).first
+    guard target != nil || existing != nil || conversationMicrophoneOpen(conversation) else {
+      return false
+    }
+    var staged = existing ?? CaptureAttachmentDraft(target: target, paths: [])
+    for path in paths where !staged.paths.contains(path) { staged.paths.append(path) }
+    guard !staged.paths.isEmpty else { return false }
+    captureAttachmentDrafts[conversation.id] = staged
+    Task { await sendCaptureAttachments(in: conversation.id) }
+    return true
+  }
+
+  func sendCaptureAttachments(in conversationID: String) async {
+    guard let staged = captureAttachmentDrafts[conversationID], !staged.paths.isEmpty,
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return }
+    guard let target = staged.target else {
+      captureAttachmentErrors[conversationID] = String(
+        localized: "Wait for the spoken message, then retry these attachments.")
+      return
+    }
+    pendingCaptureAttachmentSends.insert(conversationID)
+    captureAttachmentErrors.removeValue(forKey: conversationID)
+    var succeeded = false
+    defer {
+      pendingCaptureAttachmentSends.remove(conversationID)
+      if succeeded, captureAttachmentDrafts[conversationID]?.paths.isEmpty == false {
+        Task { await sendCaptureAttachments(in: conversationID) }
+      }
+    }
+    do {
+      try await publishCaptureAttachments(staged.paths, target)
+      succeeded = true
+      if var current = captureAttachmentDrafts[conversationID], current.target == staged.target {
+        current.paths.removeAll { staged.paths.contains($0) }
+        captureAttachmentDrafts[conversationID] = current.paths.isEmpty ? nil : current
+      }
+    } catch {
+      captureAttachmentErrors[conversationID] = error.userFacingMessage
+    }
+  }
+
+  func retryCaptureAttachments(in conversationID: String) async {
+    guard var staged = captureAttachmentDrafts[conversationID],
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return }
+    if let current = conversations.first(where: { $0.id == conversationID })?
+      .messages.reversed().compactMap(\.activeCaptureAttachmentTarget).first
+    {
+      if let original = staged.target {
+        // A retry may refresh a revision of the same occurrence, never move
+        // the file onto the next utterance or a newly bound audience.
+        if original.captureSessionID == current.captureSessionID,
+          original.captureEpoch == current.captureEpoch,
+          original.occurrenceID == current.occurrenceID,
+          original.recipientIDs == current.recipientIDs,
+          original.busPath == current.busPath
+        {
+          staged.target = current
+        }
+      } else {
+        // No evidence existed at paste time. Only this explicit retry chooses
+        // the now-visible occurrence; background polling cannot do so.
+        staged.target = current
+      }
+      captureAttachmentDrafts[conversationID] = staged
+    }
+    await sendCaptureAttachments(in: conversationID)
+  }
+
+  func removeCaptureAttachment(_ path: String, in conversationID: String) {
+    guard !pendingCaptureAttachmentSends.contains(conversationID),
+      var staged = captureAttachmentDrafts[conversationID]
+    else { return }
+    staged.paths.removeAll { $0 == path }
+    captureAttachmentDrafts[conversationID] = staged.paths.isEmpty ? nil : staged
+    if staged.paths.isEmpty { captureAttachmentErrors.removeValue(forKey: conversationID) }
   }
 
   func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {
@@ -4268,6 +4398,21 @@ final class OverlayState {
   }
 
   func handleError(message: String) {
+    if let projection = latestTranscriptProjection,
+      draftCapture.destination(for: projection.sessionId) != nil,
+      draftCapture.hasRequest
+    {
+      Task {
+        await draftCapture.failed(sessionID: projection.sessionId, message: message)
+        if !draftCapture.hasRequest {
+          let retained =
+            latestTranscriptProjection?.sessionId == projection.sessionId
+            ? latestTranscriptProjection! : projection
+          admitComposerDelivery(retained)
+        }
+      }
+      return
+    }
     // Since the bridge-side warning split (`warning_is_user_terminal`), quality
     // receipts (`tail_patch_under_commit`, `layer1_lane_degraded`,
     // `apple_final_window_overlap_normalized`, ...) never reach `on_error` —
@@ -4393,6 +4538,14 @@ final class OverlayState {
   /// receipts, or product actions in Swift — and it may only close the capture
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    if event.terminal, let sessionID = event.sessionId,
+      draftCapture.destination(for: sessionID) != nil
+    {
+      if let projection = latestTranscriptProjection, projection.sessionId == sessionID {
+        admitComposerDelivery(projection)
+      }
+      draftCapture.ended(sessionID: sessionID)
+    }
     let addressing = statusAddressing(for: event)
     let presentedHeadline = AdmissionRefusalCopy.headline(
       code: event.code, fallback: event.headline)
@@ -4514,6 +4667,7 @@ final class OverlayState {
           admitComposerDelivery(projection, affectsCurrentCapture: false)
         }
         if endedProjectionSessions.insert(projection.sessionId).inserted {
+          draftCapture.ended(sessionID: projection.sessionId)
           onCaptureEnded?(projection.sessionId)
         }
       }
@@ -4704,6 +4858,7 @@ final class OverlayState {
       if projection.delivery == .composerPending {
         admitComposerDelivery(projection)
       }
+      draftCapture.ended(sessionID: projection.sessionId)
       onCaptureEnded?(projection.sessionId)
       // Release capture before flipping `finalized`; abort uses the previous
       // value to decide whether the app-level stopped callback is still owed.
@@ -4821,6 +4976,19 @@ final class OverlayState {
     // controller-rendered delivery envelope separately for this one sink.
     let text = projection.deliveryText ?? projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    if let destination = draftCapture.destination(for: projection.sessionId) {
+      let parts = ConversationDraft.split(conversationDrafts[destination] ?? "")
+      conversationDrafts[destination] = ConversationDraft.compose(
+        text: parts.text.isEmpty ? text : parts.text + "\n" + text,
+        attachments: parts.attachments)
+      admittedComposerSessions.insert(projection.sessionId)
+      retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+      return
+    }
+    if draftCapture.awaitingStart {
+      pendingDraftProjections[projection.sessionId] = projection
+      return
+    }
     guard let onComposerTranscript else {
       retainComposerDelivery(
         text, sessionID: projection.sessionId,
@@ -5400,12 +5568,14 @@ final class OverlayState {
   /// A new ordinary capture shows its own canvas. The controller's roster
   /// resolves a channel snapshot that still describes the preceding capture.
   private func selectDictationSurfaceIfNeeded() {
+    guard !draftCapture.hasRequest else { return }
     if !hasOpenChannel, indicatorMode != .assistive, windowContentSurface != .transcription {
       selectConversation(nil)
     }
   }
 
   private func followDictationCapturePresentation() {
+    guard !draftCapture.hasRequest else { return }
     selectDictationSurfaceIfNeeded()
     guard let engine else { return }
     let generation = captureGeneration

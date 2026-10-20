@@ -397,6 +397,162 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  private final class DraftCaptureFixture: ComposerCaptureControlling, @unchecked Sendable {
+    var recording = false
+    var startFails = false
+    var starts = 0
+    var stops: [String] = []
+    var outcome: CsConditionalStop = .stopped
+    var onStart: (@MainActor @Sendable () async -> Void)?
+    func isRecording() async -> Bool { recording }
+    func startComposerTurnRecording() async throws -> CsCaptureHandle {
+      starts += 1
+      await onStart?()
+      if startFails { throw CocoaError(.fileReadUnknown) }
+      return CsCaptureHandle(captureId: "draft-capture")
+    }
+    func stopComposerTurnRecording(handle: CsCaptureHandle) async throws -> CsConditionalStop {
+      stops.append(handle.captureId)
+      return outcome
+    }
+  }
+
+  func testDraftMicrophoneDeliversToItsOriginAfterNavigationWithoutSending() async throws {
+    let state = OverlayState()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    let other = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin, other]))
+    state.openConversation(for: origin.owner!)
+    let file = ConversationAttachmentPointer.configDirectory.appendingPathComponent(
+      "assets/fixture.png")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data([1]).write(to: file)
+    defer { try? FileManager.default.removeItem(at: file) }
+    let attachment = file.resolvingSymlinksInPath().path
+    state.conversationDrafts[origin.id] = ConversationDraft.compose(
+      text: "Edited", attachments: [attachment])
+    state.conversationDrafts[other.id] = "Other draft"
+    var sends = 0
+    state.publishConversationText = { _, _, _ in sends += 1 }
+    await state.toggleDraftMicrophone(in: origin)
+    state.openConversation(for: other.owner!)
+    projectText(
+      "Dictated", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    projectText(
+      "Dictated", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    let parts = ConversationDraft.split(state.conversationDrafts[origin.id]!)
+    XCTAssertEqual(parts.text, "Edited\nDictated")
+    XCTAssertEqual(parts.attachments, [attachment])
+    XCTAssertEqual(state.conversationDrafts[other.id], "Other draft")
+    XCTAssertFalse(state.draftCapture.hasRequest)
+    XCTAssertEqual(sends, 0)
+    XCTAssertEqual(state.selectedConversation?.id, other.id)
+  }
+
+  func testDraftTerminalBeforeStartReplyJoinsOnlyAdmittedCapture() async throws {
+    let state = OverlayState()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    surface.onStart = { [weak self, weak state] in
+      guard let self, let state else { return }
+      self.projectText(
+        "Foreign recovery", to: state, terminal: true, delivery: .composerPending,
+        sessionId: "foreign-capture", reducerAction: "session_ended")
+      self.projectText(
+        "Early owned words", to: state, terminal: true, delivery: .composerPending,
+        sessionId: "draft-capture", reducerAction: "session_ended")
+      XCTAssertNil(state.conversationDrafts[origin.id])
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertEqual(state.conversationDrafts[origin.id], "Early owned words")
+    XCTAssertEqual(state.retainedComposerDelivery, "Foreign recovery")
+    XCTAssertFalse(state.draftCapture.hasRequest)
+  }
+
+  func testDraftCaptureRefusesBusyAndStopsOnlyItsOwnHandleUntilTerminal() async {
+    let surface = DraftCaptureFixture()
+    let capture = OverlayDraftCapture(controller: surface)
+    await capture.toggle(conversationID: "A", busy: true)
+    XCTAssertEqual(surface.starts, 0)
+    surface.recording = true
+    await capture.toggle(conversationID: "A", busy: false)
+    XCTAssertEqual(surface.starts, 0)
+    surface.recording = false
+    await capture.toggle(conversationID: "A", busy: false)
+    await capture.toggle(conversationID: "B", busy: true)
+    XCTAssertTrue(surface.stops.isEmpty)
+    surface.outcome = .pending
+    await capture.toggle(conversationID: "A", busy: true)
+    XCTAssertEqual(surface.stops, ["draft-capture"])
+    capture.ended(sessionID: "foreign-capture")
+    XCTAssertTrue(capture.hasRequest)
+    capture.ended(sessionID: "draft-capture")
+    XCTAssertFalse(capture.hasRequest)
+    XCTAssertEqual(capture.destination(for: "draft-capture"), "A")
+  }
+
+  func testEmptyDraftCaptureTerminalStillReleasesLease() async throws {
+    let state = OverlayState()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    await state.toggleDraftMicrophone(in: origin)
+    projectText(
+      "", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertFalse(state.draftCapture.hasRequest)
+    XCTAssertNil(state.conversationDrafts[origin.id])
+  }
+
+  func testDraftFailureAndNoLiveOwnerKeepLateTextAddressedAndExposeError() async throws {
+    let state = OverlayState()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    await state.toggleDraftMicrophone(in: origin)
+    surface.outcome = .noLiveCapture
+    await state.draftCapture.failed(sessionID: "draft-capture", message: "Interrupted")
+    XCTAssertFalse(state.draftCapture.hasRequest)
+    XCTAssertNotNil(state.draftCapture.error)
+    XCTAssertEqual(state.draftCapture.errorConversationID, origin.id)
+    projectText(
+      "Late retained text", to: state, terminal: true, delivery: .composerPending,
+      sessionId: "draft-capture", reducerAction: "session_ended")
+    XCTAssertEqual(state.conversationDrafts[origin.id], "Late retained text")
+    XCTAssertEqual(surface.stops, ["draft-capture"])
+  }
+
+  func testReplyPublicationFreezesReferenceAndPreservesNewerSelectionAndDraft() async throws {
+    let state = OverlayState()
+    let origin = try navigationConversation()
+    let first = try XCTUnwrap(
+      OverlayUserReplyReference(row: ["message_id": "parent-A", "author": "Lena", "text": "First"]))
+    let newer = try XCTUnwrap(
+      OverlayUserReplyReference(row: ["message_id": "parent-B", "author": "Astra", "text": "Next"]))
+    state.conversationDrafts[origin.id] = "Initial"
+    state.conversationReplies[origin.id] = first
+    state.publishConversationText = { owner, text, reference in
+      XCTAssertEqual(owner, origin.owner)
+      XCTAssertEqual(text, "Initial")
+      XCTAssertEqual(reference, first)
+      state.conversationDrafts[origin.id] = "Newer draft"
+      state.conversationReplies[origin.id] = newer
+    }
+    await state.sendConversationText(origin)
+    XCTAssertEqual(state.conversationDrafts[origin.id], "Newer draft")
+    XCTAssertEqual(state.conversationReplies[origin.id], newer)
+    state.publishConversationText = { _, _, reference in XCTAssertEqual(reference, newer) }
+    await state.sendConversationText(origin)
+    XCTAssertEqual(state.conversationDrafts[origin.id], "")
+    XCTAssertNil(state.conversationReplies[origin.id])
+  }
+
   private func navigationConversation(
     channel: String = "2", session: String = "lena-session", lease: String = "a"
   ) throws -> OverlayConversation {
@@ -1672,12 +1828,12 @@ final class OverlayStateTests: XCTestCase {
     let conversation = OverlayConversation(
       id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
     state.conversationDrafts[owner.id] = "Pierwszy szkic"
-    state.publishConversationText = { _, _ in throw CocoaError(.fileWriteUnknown) }
+    state.publishConversationText = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Pierwszy szkic")
     XCTAssertNotNil(state.textMessageErrors[owner.id])
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
-    state.publishConversationText = { recipient, text in
+    state.publishConversationText = { recipient, text, _ in
       XCTAssertEqual(recipient?.id, owner.id)
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
@@ -1685,7 +1841,7 @@ final class OverlayStateTests: XCTestCase {
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
     XCTAssertNil(state.textMessageErrors[owner.id])
-    state.publishConversationText = { _, _ in }
+    state.publishConversationText = { _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "")
     let focus = state.conversationFocusRevision
@@ -1701,14 +1857,14 @@ final class OverlayStateTests: XCTestCase {
     let conversation = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
     state.conversationDrafts["0"] = "Do wszystkich"
-    state.publishConversationText = { owner, _ in
+    state.publishConversationText = { owner, _, _ in
       XCTAssertNil(owner)
       throw CocoaError(.fileWriteUnknown)
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Do wszystkich")
     XCTAssertNotNil(state.textMessageErrors["0"])
-    state.publishConversationText = { owner, text in
+    state.publishConversationText = { owner, text, _ in
       XCTAssertNil(owner)
       XCTAssertEqual(text, "Do wszystkich")
       state.conversationDrafts["0"] = "Nowy szkic"
@@ -1716,7 +1872,7 @@ final class OverlayStateTests: XCTestCase {
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
     XCTAssertNil(state.textMessageErrors["0"])
-    state.publishConversationText = { _, _ in }
+    state.publishConversationText = { _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
