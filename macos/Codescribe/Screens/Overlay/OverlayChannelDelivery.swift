@@ -765,6 +765,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         row["occurrence_session_id"] is String
         && row["capture_epoch"] is NSNumber && row["sample_start"] is NSNumber
         && row["sample_end"] is NSNumber
+      let captureEpoch = UInt64(Self.coordinate(row["capture_epoch"]))
+      let sampleStart = UInt64(Self.coordinate(row["sample_start"]))
+      let sampleEnd = UInt64(Self.coordinate(row["sample_end"]))
       let occurrence =
         ledgerCoordinates
         ? Self.identity([
@@ -880,6 +883,30 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let identity = "utterance:" + occurrence
         if !occurrences.contains(identity) { occurrences.append(identity) }
         message.occurrenceIDs = occurrences
+      }
+      if channelMessage != nil, ledgerCoordinates,
+        let occurrenceSessionID = row["occurrence_session_id"] as? String,
+        !occurrenceSessionID.isEmpty,
+        let captureEpoch, let sampleStart, let sampleEnd, sampleEnd > sampleStart,
+        let sourceSequence = UInt64(Self.coordinate(row["sequence"]))
+      {
+        let segment = OverlayCaptureAttachmentSegment(
+          occurrenceID: "utterance:" + occurrence,
+          occurrenceSessionID: occurrenceSessionID,
+          captureEpoch: captureEpoch,
+          sampleStart: sampleStart,
+          sampleEnd: sampleEnd,
+          sourceSequence: sourceSequence,
+          documentIndex: Self.coordinate(row["document_index"]),
+          audience: audience,
+          recipientIDs: owners.map(\.id))
+        var segments = messages[key]?.captureAttachmentSegments ?? []
+        if let index = segments.firstIndex(where: { $0.occurrenceID == segment.occurrenceID }) {
+          segments[index] = segment
+        } else {
+          segments.append(segment)
+        }
+        message.captureAttachmentSegments = segments
       }
       let components = session.split(separator: "-")
       message.sourceChannel =
@@ -1246,12 +1273,37 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var holdUntil: Date? = nil
   var controlIdentity: String? = nil
   var captureSessionID: String? = nil
+  var captureAttachmentSegments: [OverlayCaptureAttachmentSegment]? = nil
   var deliverySealed: Bool? = nil
   var revisedText: String? = nil
   var withdrawn: Bool? = nil
   var holdReleased: Bool? = nil
   /// Paint derived by the existing bus poll, not a local delivery queue.
   var holdSecondsRemaining: Int? = nil
+
+  /// Exact live evidence the attachment action will ask the bus to revalidate.
+  /// The target carries capture-time recipients and segment coordinates; callers
+  /// must not reconstruct it from the latest transcript or current bindings.
+  var activeCaptureAttachmentTarget: OverlayCaptureAttachmentTarget? {
+    guard kind == .user, sourceChannel != nil, captureState == .receiving,
+      deliverySealed != true, withdrawn != true,
+      let captureSessionID, !captureSessionID.isEmpty,
+      let segment = captureAttachmentSegments?.last,
+      !segment.recipientIDs.isEmpty, !busPath.isEmpty
+    else { return nil }
+    return OverlayCaptureAttachmentTarget(
+      captureSessionID: captureSessionID,
+      captureEpoch: segment.captureEpoch,
+      sourceSequence: segment.sourceSequence,
+      occurrenceID: segment.occurrenceID,
+      occurrenceSessionID: segment.occurrenceSessionID,
+      sampleStart: segment.sampleStart,
+      sampleEnd: segment.sampleEnd,
+      documentIndex: segment.documentIndex,
+      audience: segment.audience,
+      recipientIDs: segment.recipientIDs,
+      busPath: busPath)
+  }
 
   func holdingSeconds(at now: Date) -> Int? {
     guard kind == .user, deliverySealed == true, showsDeliveryReceipts,
@@ -1291,6 +1343,32 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     while lines.last?.isEmpty == true { lines.removeLast() }
     return lines.joined(separator: "\n")
   }
+}
+
+struct OverlayCaptureAttachmentSegment: Codable, Equatable, Sendable {
+  let occurrenceID: String
+  let occurrenceSessionID: String
+  let captureEpoch: UInt64
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let sourceSequence: UInt64
+  let documentIndex: String
+  let audience: String
+  let recipientIDs: [String]
+}
+
+struct OverlayCaptureAttachmentTarget: Equatable, Sendable {
+  let captureSessionID: String
+  let captureEpoch: UInt64
+  let sourceSequence: UInt64
+  let occurrenceID: String
+  let occurrenceSessionID: String
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let documentIndex: String
+  let audience: String
+  let recipientIDs: [String]
+  let busPath: String
 }
 
 /// One file pointer of a typed message (`attachments` on
