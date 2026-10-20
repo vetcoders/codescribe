@@ -239,16 +239,15 @@ together with the mode. Leaving Cloud for Local power or Apple only writes
 
 ## Shortcuts & control
 
-Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**:
-how to start Codescribe's modes and how to control recording.
+Open **Settings → Hotkeys**. The page is headed **Shortcuts & control**.
 
-The tab holds two different save contracts, and the note under the Save
-buttons says so: the three mode gestures are a draft and need **Save
-shortcuts**; every other control on the page writes as soon as you change it.
+The tab holds two different save contracts: the three mode gestures are a
+draft and need **Save shortcuts**; every other control on the page writes as
+soon as you change it.
 
-**Mode gestures.** One gesture per work mode — **Dictation** (turns speech into
-text), **Formatting** (dictation with AI formatting) and **Agent** (passes the
-recognized text to the Agent). None of the three promises a paste: where the
+**Mode gestures.** One gesture per work mode — **Dictation**, **Formatting**
+(dictation with AI formatting) and **Agent** (passes the recognized text to
+the Agent). None of the three promises a paste: where the
 transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
 nowhere. The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver
 reads the spelled-out form, so the left and right Option gestures stay
@@ -287,7 +286,7 @@ software can block the standard middle-click signal the app listens for.
 **Middle click picks an agent**: middle click opens the list, scrolling chooses,
 left click opens the conversation, and middle click starts and ends talking.
 
-**During dictation** is a quiet neutral card: while holding Fn, pressing the
+**Attach extra context** is a quiet neutral card: while holding Fn, pressing the
 chosen key attaches the selected text to the take. **Arm with** chooses Shift
 (default) or Command. Further pulses during the same hold attach the next
 selections; the take, the overlay and the destination do not change.
