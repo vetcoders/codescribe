@@ -53,3 +53,6 @@ Model
 Plan
 Status
 OK
+
+# Appearance choice that follows macOS: "System" is the same word in Polish.
+System
