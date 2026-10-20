@@ -15,10 +15,11 @@ import SwiftUI
 // mechanics behind the tab-level "Technical details".
 //
 // Round 16: "Add server" is an ordinary section title above its card, not an
-// uppercase mono eyebrow inside it; the empty state says in one sentence what
-// MCP buys and never suggests skipping a step; the card actions are the one
-// Settings chip; and the form sits on the shared card with the pane's own
-// spacing (Founder brief, round 16, 2026-10-18).
+// uppercase mono eyebrow inside it; the card actions are the one Settings
+// chip; and the form sits on the shared card with the pane's own spacing
+// (Founder brief, round 16, 2026-10-18). Round 20 dropped the empty-state card
+// that used to sit above the form when there were no servers yet: the form
+// already is the only action, so the pane opens straight on it (UI-28).
 
 struct MCPServersSection: View {
   @ObservedObject var model: SettingsViewModel
@@ -27,9 +28,10 @@ struct MCPServersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      if model.mcpServers.isEmpty {
-        emptyState
-      } else {
+      // No empty-state card any more (UI-28, round 20): with no servers, the
+      // pane opens straight on the "Add server" form below instead of a card
+      // that only restated what the form already offers.
+      if !model.mcpServers.isEmpty {
         VStack(spacing: CSSpace.xs) {
           ForEach(model.mcpServers, id: \.name) { server in
             MCPServerRow(
@@ -52,7 +54,7 @@ struct MCPServersSection: View {
           localized: "Add server",
           comment: "MCP servers: header of the form that adds a server")
       )
-      .padding(.top, SettingsScale.sectionGap)
+      .padding(.top, model.mcpServers.isEmpty ? 0 : SettingsScale.sectionGap)
 
       MCPAddServerForm { name, command, args, endpoint, token in
         model.addMcpServer(
@@ -121,23 +123,6 @@ struct MCPServersSection: View {
         "Removes \(name) from mcp.json and deletes its Keychain token. The Agent loses this server's tools until you add it again."
       )
     }
-  }
-
-  /// Two lines: that there are none and that none are needed, then what one
-  /// would add. No "skip this step" — nothing here is a step, and the form
-  /// below already offers the only action (Founder brief, round 16).
-  private var emptyState: some View {
-    VStack(alignment: .leading, spacing: CSSpace.xxs) {
-      Text("No MCP servers yet — this is optional.")
-        .font(SettingsScale.settingName)
-        .foregroundStyle(Color.primary)
-      Text("A server gives the Agent extra tools, such as code or web search.")
-        .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .settingsGroupedInset()
   }
 }
 

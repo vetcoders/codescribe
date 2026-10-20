@@ -557,30 +557,32 @@ attach listeners.
 Tools is the permissions screen: when the Agent may use a tool without
 asking (Allow), when it needs approval (Ask), and when it must refuse (Deny).
 
-The tab has two bands under two titles of equal weight: **Defaults** and
-**Individual tools**. No rule is drawn between them — the second title is the
-separator.
+The tab has two bands: **Defaults** under its own title, then the per-tool
+catalog with no title of its own — the search field, the source filter, the
+tool count and the list of cards already read as their own band without a
+repeated caption.
 
 - **Defaults** — one row per category: Read data, Changes/processes/network,
   Unclassified. These are the stored category defaults and apply to every
   tool without a more specific rule.
-- **Resolution order** — a rule for one tool outranks its server's rule,
-  and both outrank these defaults. External destructive tools are
-  always refused, and an Allow never silently covers a path that may hold
-  secrets (`.env`, key material): that call asks first. The sentence under the
-  defaults card says only the two facts needed to read a level: what outranks
-  what, and what no setting here can lift.
-- **Individual tools · N tools** — N is the whole tool catalog, not the number
-  of individual rules. Opening the tab discovers the catalog by starting every
-  configured MCP server and asking it for its tools, so the list appears a few
-  seconds after the defaults; a "Discovering tools from the MCP servers…" row
-  stands in until then. One column, and one row carries both filters: the
-  search field over the whole catalog (name, identifier, source) and, beside
-  it, the **Source** popup listing Native plus every MCP server with its tool
-  count ("Native (26)", server names verbatim). The row shows no "Source"
-  caption — the popup's own entries name what it selects, and the word stays
-  its tooltip and its VoiceOver label. Under the row sit that source's tools at
-  the full width of the pane, as a compact list.
+- **Resolution order** — tool settings apply first, then the server's, then
+  the defaults. Destructive operations are blocked, and access to places that
+  may hold secrets (`.env`, key material) always needs consent — an Allow
+  never silently covers one of those paths, that call asks first. The sentence
+  under the defaults card says only the facts needed to read a level: what
+  applies first, and what no setting here can lift.
+- **N tools** — N is the whole tool catalog, not the number of individual
+  rules; it sits on its own row, trailing, above the list. Opening the tab
+  discovers the catalog by starting every configured MCP server and asking it
+  for its tools, so the list appears a few seconds after the defaults; a
+  "Discovering tools from the MCP servers…" row stands in until then. One
+  column, and one row carries both filters: the search field over the whole
+  catalog (name, identifier, source) and, beside it, the **Source** popup
+  listing Native plus every MCP server with its tool count ("Native (26)",
+  server names verbatim). The row shows no "Source" caption — the popup's own
+  entries name what it selects, and the word stays its tooltip and its
+  VoiceOver label. Under the row sit that source's tools at the full width of
+  the pane, as a compact list.
 - **One tool's card** — the tool's full name, which wraps onto a second line
   instead of ending in an ellipsis, with the rule that produced the current
   level opposite it: "Individual rule" when the tool carries one of its own,
@@ -588,13 +590,14 @@ separator.
   follows the rule above it. The word "inheritance" appears nowhere. Then one
   quiet line for source, server and localized risk class
   ("MCP · aicx-http · Read data"), the raw identity in the quietest mono rung —
-  selectable, so it can be copied into a config or a bug report — and the
-  Allow/Ask/Deny control across the card. Codescribe's own tools are named in
-  the interface language; an MCP server's tools keep the vendor's spelling,
-  except that `aicx` is always written in lower case. The card's tooltip
-  carries the name and the identifier together. "Remove rule" appears only on a
-  card that carries an individual rule and drops it; the card then shows the
-  server rule or the category default again.
+  selectable, so it can be copied into a config or a bug report — and, on a
+  row of its own right-aligned to the same edge as the Defaults pickers above,
+  the Allow/Ask/Deny control. Codescribe's own tools are named in the
+  interface language; an MCP server's tools keep the vendor's spelling, except
+  that `aicx` is always written in lower case. The card's tooltip carries the
+  name and the identifier together. "Remove rule" appears only on a card that
+  carries an individual rule and drops it; the card then shows the server rule
+  or the category default again.
 - The level a row shows is the level the gate applies to the tool's next call:
   Settings and the runtime read the same resolver, so a category default
   changed here takes effect without an explicit rule per tool.
@@ -700,10 +703,8 @@ and the list reads as servers, not as a config dump.
   test result, not a live connection indicator: the Agent starts servers per
   turn. Toggling the flag drops the cached result, so a card never reports a
   configuration that was just changed.
-- **No servers yet** — the tab opens on two lines: that there are none and
-  that none are required, then what a server would add. MCP is optional, so
-  nothing here is presented as a step and nothing offers to skip one; the
-  **Add server** form below is the only action.
+- **No servers yet** — no empty-state card; the list is simply absent and the
+  tab opens straight on the **Add server** form, which is the only action.
 - **Add server** — an ordinary section title above its card, in the same
   weight as every other section title in Settings. Inside: a segmented choice
   between a local process and an HTTP
