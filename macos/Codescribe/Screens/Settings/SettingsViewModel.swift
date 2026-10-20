@@ -2446,9 +2446,10 @@ final class SettingsViewModel: ObservableObject {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
+      // The engine row above already says Apple runs first; this line only
+      // adds the lane's role and its real access state.
       return String(
-        localized:
-          "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. \(llmLane(lane).availabilityDescription)",
+        localized: "Used when Apple fails. \(llmLane(lane).availabilityDescription)",
         comment: "The placeholder is the resolved cloud lane availability")
     }
     return llmLane(lane).availabilityDescription

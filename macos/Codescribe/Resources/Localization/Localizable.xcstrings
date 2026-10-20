@@ -4755,7 +4755,14 @@
       }
     },
     "Cloud provider" : {
-      "shouldTranslate" : false
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca w chmurze"
+          }
+        }
+      }
     },
     "Cloud transcription" : {
       "comment" : "Providers section: cloud STT lanes",
