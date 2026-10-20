@@ -2275,8 +2275,8 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
     // No runtime verdict yet — never project configured engine as Active STT.
     model.lastServingVerdict = nil
-    XCTAssertEqual(model.activeSTT, "No transcription in this app session")
-    XCTAssertEqual(formatActiveSTT(lastServing: nil), "No transcription in this app session")
+    XCTAssertEqual(model.activeSTT, "No transcription in this session")
+    XCTAssertEqual(formatActiveSTT(lastServing: nil), "No transcription in this session")
 
     // Deterministic Apple→Whisper fallback status.
     let fallback = LastServingVerdict(
@@ -2307,7 +2307,7 @@ final class SettingsTruthTests: XCTestCase {
         engine: engine, routingMode: "smart", disposition: nil, fallbackUsed: false)
       XCTAssertEqual(formatActiveSTT(lastServing: verdict), label)
     }
-    XCTAssertFalse(model.activeSTT.contains("No transcription in this app session"))
+    XCTAssertFalse(model.activeSTT.contains("No transcription in this session"))
   }
 
   func testActiveSTTRefreshesFromServingProviderOnDemand() {
@@ -2316,7 +2316,7 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(),
       servingStatusProvider: { snapshot }
     )
-    XCTAssertEqual(model.activeSTT, "No transcription in this app session")
+    XCTAssertEqual(model.activeSTT, "No transcription in this session")
 
     snapshot = LastServingVerdict(
       engine: "local_apple",

@@ -39,30 +39,41 @@ final class AudioPanelTests: XCTestCase {
   }
 
   /// `loaded` (resident weights) and `resolvedPath` (next load) are distinct
-  /// facts; the row never calls the next load "in use".
-  func testResidencyLabelDistinguishesLoadedFromNextLoad() {
+  /// facts; the Status line says the most specific true one and never calls
+  /// the next load "in use" (Founder review, round 2, 2026-10-20, UI-35).
+  func testModelStatusDistinguishesLoadedFromNextLoad() {
     let sample = CsWhisperModelCatalog.sample
-    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(sample), "Loaded in memory")
+    let loaded = DictationWhisperModelTab.modelStatus(available: true, catalog: sample)
+    XCTAssertEqual(loaded.label, "Loaded in memory")
+    XCTAssertEqual(loaded.tone, .ready)
 
     var pending = sample
     pending.loaded = nil
-    XCTAssertEqual(
-      DictationWhisperModelTab.residencyLabel(pending),
-      "Not loaded yet · loads on the next recording")
+    let installed = DictationWhisperModelTab.modelStatus(available: true, catalog: pending)
+    XCTAssertEqual(installed.label, "Installed")
+    XCTAssertEqual(installed.tone, .ready)
 
     var switched = sample
     switched.loaded = sample.options[1].path
     XCTAssertEqual(
-      DictationWhisperModelTab.residencyLabel(switched),
+      DictationWhisperModelTab.modelStatus(available: true, catalog: switched).label,
       "Loaded in memory: Large v3 · FP16 · next recording loads Large v3 Turbo · FP16")
 
     var unresolved = sample
     unresolved.resolvedPath = nil
+    let broken = DictationWhisperModelTab.modelStatus(available: true, catalog: unresolved)
     XCTAssertEqual(
-      DictationWhisperModelTab.residencyLabel(unresolved),
+      broken.label,
       "The selected model cannot be resolved; the next recording has no model to load.")
+    XCTAssertEqual(broken.tone, .missing)
 
-    XCTAssertEqual(DictationWhisperModelTab.residencyLabel(nil), "Checking the model catalog…")
+    let checking = DictationWhisperModelTab.modelStatus(available: true, catalog: nil)
+    XCTAssertEqual(checking.label, "Checking the model catalog…")
+    XCTAssertEqual(checking.tone, .pending)
+
+    let missing = DictationWhisperModelTab.modelStatus(available: false, catalog: sample)
+    XCTAssertEqual(missing.label, "Not installed")
+    XCTAssertEqual(missing.tone, .missing)
   }
 
   func testSelectedOptionLabelFallsBackToRawReference() {

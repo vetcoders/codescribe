@@ -1250,7 +1250,11 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(panel.contains("Transcript markers"))
     let markers = try XCTUnwrap(sources["TranscriptMarkersSection.swift"])
     XCTAssertTrue(markers.contains("String(localized: \"Transcript markers\""))
-    XCTAssertTrue(markers.contains("String(localized: \"Add markers to text\""))
+    // Round 2 (UI-33): the switch row carries one label, "Mark text delivered
+    // to other apps"; the former title "Add markers to text" survives only as
+    // the accessibility label.
+    XCTAssertFalse(markers.contains("String(localized: \"Add markers to text\""))
+    XCTAssertTrue(markers.contains(".accessibilityLabel(\"Add markers to text\")"))
     XCTAssertTrue(markers.contains("\"Mark text delivered to other apps\""))
     XCTAssertTrue(markers.contains("@State private var showingTemplate = false"))
     XCTAssertTrue(markers.contains("DisclosureGroup(isExpanded: $showingTemplate)"))
@@ -1311,7 +1315,6 @@ final class SettingsChromeContractTests: XCTestCase {
       "App data": "Dane aplikacji",
       "Transcripts": "Transkrypcje",
       "Transcript markers": "Znaczniki transkrypcji",
-      "Add markers to text": "Dodawaj znaczniki do tekstu",
       "Mark text delivered to other apps": "Oznacz tekst przekazywany do innych aplikacji",
       "Edit template and preview": "Edytuj szablon i podgląd",
       "Edit": "Edytuj",
@@ -1336,7 +1339,8 @@ final class SettingsChromeContractTests: XCTestCase {
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
     XCTAssertTrue(panel.contains("String(localized: \"Dictionary and corrections\")"))
-    XCTAssertTrue(panel.contains("\"Browse corrections and dictionary rules.\""))
+    // Round 2 (UI-43): no intro sentence under the Dictionary headline.
+    XCTAssertFalse(panel.contains("\"Browse corrections and dictionary rules.\""))
     XCTAssertFalse(panel.contains("dictionaryHeadline("), "no dynamic multi-line headline")
     XCTAssertFalse(panel.contains("dictionarySubtitle("), "no repeated provenance subtitle")
     XCTAssertTrue(panel.contains("dictionaryCounters("))
@@ -1392,7 +1396,6 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Dictionary and corrections": "Słownik i poprawki",
-      "Browse corrections and dictionary rules.": "Przeglądaj poprawki i reguły słownika.",
       "Changes in the transcript": "Zmiany w transkrypcji",
       "Corrected text": "Poprawiony tekst",
       "Learn from corrections": "Ucz z poprawek",
