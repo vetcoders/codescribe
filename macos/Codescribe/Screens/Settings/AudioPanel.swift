@@ -835,10 +835,11 @@ struct AudioPanel: View {
         .labelsHidden()
         // Content-sized up to a cap, same as the retention picker's own
         // content sizing: a long device name truncates in the button and
-        // stays whole in the menu, and the control still ends flush with the
-        // retention picker's right edge below instead of stretching past it.
+        // stays whole in the menu. The cap is a trailing-aligned frame: a
+        // centred one left a short device name floating 36 pt short of the
+        // retention picker's right edge below (views review, 2026-10-20).
         .fixedSize()
-        .frame(maxWidth: 300)
+        .frame(maxWidth: 300, alignment: .trailing)
         .accessibilityLabel("Audio input device")
         .accessibilityValue(inputDeviceAccessibilityValue)
       }
