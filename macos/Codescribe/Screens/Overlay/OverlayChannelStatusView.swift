@@ -1277,84 +1277,23 @@ struct OverlayChannelStatusView: View {
         palette: palette, enabled: !unavailable))
   }
 
-  /// One roster row in at most five lines (Maciej, 2026-10-17: "ustalmy budżet
-  /// 5 wierszy"): identity with the channel-0 mark, the unread badge and the
-  /// time; the provider descriptor; a two-line preview that names who
-  /// addressed whom. The state and controls share the footer below this label.
-  /// The badge counts replies the Founder has
-  /// not opened, the state line carries the agent's receipts, so the two
-  /// never mix. The five lines are a budget, not a shape: they sit on one
-  /// leading, so the card stays dense beside the conversation it steals
-  /// width from (Founder, 2026-10-18, on the drawer's padding).
-  @ViewBuilder
+  /// Compose display values here; the visual shell never reads state or
+  /// executes commands. Identity/descriptor/preview use the full row above
+  /// its separate state-and-controls footer (five text lines at most).
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
     conversation: OverlayConversation?, dot: OverlayAgentDotKind
   ) -> some View {
-    HStack(alignment: .top, spacing: 6) {
-      OverlayAgentStatusDot(kind: dot, palette: palette)
-        .padding(.top, 5 * textScale)
-        .accessibilityLabel(
-          Text(verbatim: statusChannel.map { shortStatus(for: $0) } ?? "")
-        )
-        .accessibilityValue(
-          Text(verbatim: statusChannel.map { detail(for: $0) } ?? "")
-        )
-        .accessibilityIdentifier(
-          statusChannel.map { "overlay-channel-delivery-\($0.channel)" }
-            ?? "overlay-channel-delivery"
-        )
-      VStack(alignment: .leading, spacing: 1) {
-        HStack(spacing: 6) {
-          // The identity gets the full row; the clock stays at its far edge.
-          Text(verbatim: title)
-            .font(.system(size: 13.5 * textScale, weight: .semibold))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(1)
-          if let statusChannel {
-            broadcastPolicyMark(statusChannel.broadcastPolicy)
-              .accessibilityIdentifier("overlay-broadcast-policy-\(statusChannel.channel)")
-          }
-          Spacer(minLength: 4)
-          if let conversation, let count = unreadCounts[conversation.id], count > 0 {
-            unreadBadge(count)
-              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversation.id)")
-          }
-          if let last = conversation?.messages.last,
-            let date = MessageTimestamp.date(fromISO8601: last.emittedAt)
-          {
-            MessageTimestampLabel(date: date, compact: true)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .fixedSize(horizontal: true, vertical: false)
-          }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        if let statusChannel, let descriptor = agentDescriptor(for: statusChannel) {
-          Text(verbatim: descriptor)
-            .font(.system(size: 11 * textScale))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .help(descriptor)
-            .accessibilityIdentifier("overlay-agent-descriptor-\(statusChannel.channel)")
-        }
-        if let conversation, let last = conversation.messages.last {
-          Text(verbatim: Self.drawerPreview(message: last))
-            .font(.system(size: 12.5 * textScale))
-            .foregroundStyle(
-              (unreadCounts[conversation.id] ?? 0) > 0
-                ? palette.bodyText.color : palette.mutedText.color
-            )
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .contentShape(Rectangle())
+    let last = conversation?.messages.last
+    return OverlayAgentRosterLabel(
+      title: title, channel: statusChannel?.channel, conversationID: conversation?.id,
+      descriptor: statusChannel.flatMap { agentDescriptor(for: $0) },
+      preview: last.map { Self.drawerPreview(message: $0) },
+      timestamp: last.flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) },
+      unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
+      dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
+      statusDetail: statusChannel.map { detail(for: $0) } ?? "",
+      broadcastPolicy: statusChannel?.broadcastPolicy, palette: palette, textScale: textScale)
   }
 
   private func rosterRowState(
@@ -1430,17 +1369,6 @@ struct OverlayChannelStatusView: View {
     return String(localized: "Focus agent panel in Frame")
   }
 
-  /// Every agent row and pill wears its channel-0 state: the antenna in the
-  /// accent while deliveries wake, the queue tray while they wait, the
-  /// slashed antenna off channel 0.
-  private func broadcastPolicyMark(_ policy: AgentBroadcastPolicy) -> some View {
-    Image(systemName: policy.statusSymbol)
-      .font(.system(size: 10 * textScale))
-      .foregroundStyle(policy == .on ? palette.agentAccent.color : palette.mutedText.color)
-      .help(policy.statusHelp)
-      .accessibilityLabel(policy.statusHelp)
-  }
-
   /// The "0 · All" row keeps the roster's model; its title carries the
   /// broadcast wake count and its context menu every member's policy.
   ///
@@ -1465,16 +1393,6 @@ struct OverlayChannelStatusView: View {
     .foregroundStyle(palette.primaryText.color)
     .help(String(localized: "View conversation without changing the microphone"))
     .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
-  }
-
-  private func unreadBadge(_ count: Int) -> some View {
-    Text(verbatim: String(count))
-      .font(.system(size: 11 * textScale, weight: .semibold))
-      .monospacedDigit()
-      .foregroundStyle(palette.processingStatus.color)
-      .padding(.horizontal, 6).padding(.vertical, 2)
-      .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
-      .accessibilityLabel("\(count) unread replies")
   }
 
   private func conversationRow(
@@ -1509,7 +1427,7 @@ struct OverlayChannelStatusView: View {
             .accessibilityIdentifier("overlay-saved-conversation-history-loading")
         }
         if let count = unreadCounts[conversation.id], count > 0 {
-          unreadBadge(count)
+          OverlayAgentUnreadBadge(count: count, palette: palette, textScale: textScale)
         }
         Image(systemName: selectedConversationID == conversation.id ? "checkmark" : "chevron.right")
           .font(.system(size: 10, weight: .medium))
