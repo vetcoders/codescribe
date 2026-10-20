@@ -12,18 +12,7 @@ struct InterfaceLanguageStepView: View {
   @ObservedObject var model: OnboardingViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      OnboardingStepHeader(
-        eyebrow: String(
-          localized: LocalizedStringResource(
-            "Interface language", locale: model.interfaceLocale, comment: "First setup step eyebrow"
-          )),
-        title: String(
-          localized: LocalizedStringResource(
-            "What language should Codescribe use?", locale: model.interfaceLocale,
-            comment: "First setup step heading")),
-        blurb: nil
-      )
+    VStack(alignment: .leading, spacing: 10) {
       ForEach(InterfaceLanguage.allCases, id: \.self) { language in
         OnboardingChoiceCard(
           title: language.nativeName,
@@ -63,37 +52,14 @@ struct InterfaceLanguageStepView: View {
   }
 }
 
-// MARK: - Step scaffold + selectable choice card (shared by Mode / Language / Hotkey)
-
-/// Shared heading (eyebrow + title + blurb) for the choice steps, matching the
-/// permission-step typography.
-private struct OnboardingStepHeader: View {
-  let eyebrow: String?
-  let title: String
-  let blurb: String?
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      if let eyebrow {
-        EyebrowLabel(text: eyebrow)
-      }
-      Text(title)
-        .font(.title2.weight(.semibold))
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-      if let blurb {
-        Text(blurb)
-          .font(.body)
-          .lineSpacing(3)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-  }
-}
+// MARK: - Shared step components
+//
+// The heading, the category label and the reading column belong to the frame
+// in OnboardingView.swift; these components fill that column.
 
 /// A single radio-style selectable card: title + optional subtitle, with a
-/// Brand-colored checkmark when selected. Reused by the choice steps.
+/// Brand-colored checkmark and the prominent card surface when selected.
+/// Reused by every choice step.
 struct OnboardingChoiceCard: View {
   let title: String
   let subtitle: String?
@@ -119,7 +85,7 @@ struct OnboardingChoiceCard: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(6)
     }
-    .csAction()
+    .csAction(prominent: isSelected)
     .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
@@ -144,17 +110,6 @@ struct ModeStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      OnboardingStepHeader(
-        eyebrow: String(
-          localized: LocalizedStringResource(
-            "Operating lane", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
-        title: String(
-          localized: LocalizedStringResource(
-            "How do you want to work?", locale: model.interfaceLocale,
-            comment: "Setup step heading")),
-        blurb: nil
-      )
-
       VStack(spacing: 10) {
         OnboardingChoiceCard(
           title: String(
@@ -175,12 +130,11 @@ struct ModeStepView: View {
               comment: "Operating lane choice: dictation plus the AI agent")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "Dictate, or work by voice with an AI agent.", locale: model.interfaceLocale,
+              "Dictate, or talk to an AI agent.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .agentic
         ) { model.selectMode(.agentic) }
       }
-      .padding(.top, 4)
     }
   }
 }
@@ -193,27 +147,14 @@ struct LanguageStepView: View {
   private let choices: [CsLanguage] = [.auto, .english, .polish]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      OnboardingStepHeader(
-        eyebrow: String(
-          localized: LocalizedStringResource(
-            "Language", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
-        title: String(
-          localized: LocalizedStringResource(
-            "Pick your dictation language.", locale: model.interfaceLocale,
-            comment: "Setup step heading")),
-        blurb: nil)
-
-      VStack(spacing: 10) {
-        ForEach(choices, id: \.self) { language in
-          OnboardingChoiceCard(
-            title: languageTitle(language),
-            subtitle: languageSubtitle(language),
-            isSelected: model.selectedLanguage == language
-          ) { model.selectLanguage(language) }
-        }
+    VStack(spacing: 10) {
+      ForEach(choices, id: \.self) { language in
+        OnboardingChoiceCard(
+          title: languageTitle(language),
+          subtitle: nil,
+          isSelected: model.selectedLanguage == language
+        ) { model.selectLanguage(language) }
       }
-      .padding(.top, 4)
     }
   }
 
@@ -234,18 +175,6 @@ struct LanguageStepView: View {
           "Polish", locale: model.interfaceLocale, comment: "Dictation language choice"))
     }
   }
-
-  private func languageSubtitle(_ language: CsLanguage) -> String? {
-    switch language {
-    case .auto:
-      return String(
-        localized: LocalizedStringResource(
-          "When you speak more than one language.",
-          locale: model.interfaceLocale,
-          comment: "Detail under the Auto-detect dictation language choice"))
-    default: return nil
-    }
-  }
 }
 
 // MARK: - Hotkey mode (recording-trigger preset)
@@ -255,16 +184,6 @@ struct HotkeyModeStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      OnboardingStepHeader(
-        eyebrow: String(
-          localized: LocalizedStringResource(
-            "Hotkeys", locale: model.interfaceLocale, comment: "Setup step eyebrow")),
-        title: String(
-          localized: LocalizedStringResource(
-            "How do you trigger recording?", locale: model.interfaceLocale,
-            comment: "Setup step heading")),
-        blurb: nil)
-
       VStack(spacing: 10) {
         ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
           OnboardingChoiceCard(
@@ -274,7 +193,6 @@ struct HotkeyModeStepView: View {
           ) { model.selectHotkeyMode(mode) }
         }
       }
-      .padding(.top, 4)
 
       if model.hotkeyBindingsAreCustom {
         OnboardingStepNote(
@@ -421,19 +339,15 @@ struct PermissionsStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      // Settings › Creator › Permissions repeats this checklist with the same
+      // request and System Settings actions (Full Disk Access through its
+      // System Settings… link), and no grant blocks Continue, so each can wait.
       Text(
         String(
           localized: LocalizedStringResource(
-            "Choose which features to allow", locale: model.interfaceLocale,
-            comment: "Heading above the unified onboarding permission checklist"))
-      )
-      .font(.title2.weight(.semibold))
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "You can continue without granting these permissions.",
+            "You can do this later in Settings.",
             locale: model.interfaceLocale,
-            comment: "Permissions never block Continue")
+            comment: "Setup permissions step: grants can be given later in the app's Settings")
         )
       )
       .font(.callout)
@@ -452,12 +366,6 @@ struct PermissionsStepView: View {
         model.refreshPermissions()
       }
       .csAction()
-      OnboardingStepNote(
-        text: String(
-          localized: LocalizedStringResource(
-            "You can change these permissions later in System Settings.",
-            locale: model.interfaceLocale,
-            comment: "Setup permissions footnote; System Settings is the macOS application")))
     }
   }
 }
@@ -561,13 +469,6 @@ struct LocalModelStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Whisper model for local dictation", locale: model.interfaceLocale,
-            comment: "Heading for the model that enables fully local transcription"))
-      )
-      .font(.title2.weight(.semibold))
-      Text(
-        String(
-          localized: LocalizedStringResource(
             "Download the dedicated Whisper model to transcribe entirely on your computer, without configuring cloud providers.",
             locale: model.interfaceLocale,
             comment:
@@ -617,28 +518,15 @@ struct ApiKeyStepView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Connect an AI provider", locale: model.interfaceLocale,
-            comment: "Setup step heading"))
-      )
-      .font(.title2.weight(.semibold))
-      .foregroundStyle(.primary)
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "One is enough: sign in with a provider account or add an API key. You can also do this later.",
-            locale: model.interfaceLocale,
-            comment: "Setup step description; the account and the key are alternatives"))
-      )
-      .font(.body)
-      .lineSpacing(3)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
+      if let description = accessDescription {
+        Text(description)
+          .font(.body)
+          .lineSpacing(3)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
 
       providerPicker
-        .padding(.top, 4)
 
       if let error = model.providerSelectionError {
         providerSelectionError(error)
@@ -795,6 +683,37 @@ struct ApiKeyStepView: View {
     }
   }
 
+  /// The sentence names only the access paths the selected provider really
+  /// has. An account is an alternative to the key only where account
+  /// credentials serve requests: Responses vendors with an account row
+  /// (OpenAI, xAI), the same test the Providers card uses. Anthropic speaks
+  /// Messages, so its account row, shown with a manual client id, never
+  /// replaces the key.
+  private var accessDescription: String? {
+    guard model.selectedProviderHasApiKeyAccount else { return nil }
+    let accountServesRequests =
+      model.selectedProviderHasAccountAccess && model.selectedProvider?.wire == "responses"
+    if accountServesRequests {
+      return String(
+        localized: LocalizedStringResource(
+          "One is enough: sign in with a provider account or add an API key. You can also do this later.",
+          locale: model.interfaceLocale,
+          comment: "Setup step description; the account and the key are alternatives"))
+    }
+    if model.selectedProviderRequiresApiKey {
+      return String(
+        localized: LocalizedStringResource(
+          "Add an API key for this provider. You can also do this later.",
+          locale: model.interfaceLocale,
+          comment: "Setup step description for a provider whose only access path is an API key"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "This provider doesn’t require an API key. Add one if your server expects it.",
+        locale: model.interfaceLocale,
+        comment: "Setup step description for a key-optional provider such as a local server"))
+  }
+
   private var canSubmitApiKey: Bool {
     model.apiKeySaveAvailable
       && !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -921,20 +840,8 @@ struct DoneStepView: View {
   var body: some View {
     let readiness = model.dictationReadiness
     VStack(alignment: .leading, spacing: 16) {
-      EyebrowLabel(
-        text: String(
-          localized: LocalizedStringResource(
-            "Summary", locale: model.interfaceLocale, comment: "Setup step eyebrow")))
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Review your setup.", locale: model.interfaceLocale,
-            comment: "Review setup choices without claiming recording readiness"))
-      )
-      .font(.title2.weight(.semibold))
-      .foregroundStyle(.primary)
-      // The chapter heading already states a ready verdict; only a blocked one
-      // needs a sentence here.
+      // The step heading already states the verdict; only a blocked one needs
+      // a sentence here.
       if let summary = blockedSummary(readiness) {
         Text(summary)
           .font(.body)

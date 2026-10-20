@@ -78,11 +78,13 @@ enum HotkeyModeChoice: String, CaseIterable {
     }
   }
 
-  var summary: String {
+  var summary: String? {
     summary(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
   }
 
-  func summary(locale: Locale) -> String {
+  /// The gesture each preset binds. Hybrid has none of its own to explain —
+  /// it is the other two together — so it carries no detail line.
+  func summary(locale: Locale) -> String? {
     switch self {
     case .hold:
       return String(
@@ -96,10 +98,7 @@ enum HotkeyModeChoice: String, CaseIterable {
           locale: locale,
           comment: "Hotkey preset detail; left and right Option activate different modes"))
     case .both:
-      return String(
-        localized: LocalizedStringResource(
-          "Use both methods.", locale: locale,
-          comment: "Hotkey preset detail: hold and toggle methods are both enabled"))
+      return nil
     }
   }
 

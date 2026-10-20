@@ -28,9 +28,11 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
 from its first screen, with no explanation beside the button. Each step opens
 on your current value and writes it when you press Continue; the shortcuts step
-writes the preset it shows (Hold, Toggle or Both) to all three mode bindings,
-so custom shortcuts are replaced if you continue past it. This is the wizard's
-only entry after first run — the tray menu no longer carries it.
+writes a preset (Hold, Toggle or Hybrid) to the three mode bindings only when
+you pick one, so custom shortcuts stay as they are if you continue past it.
+This is the wizard's only entry after first run — the tray menu no longer
+carries it. The wizard's steps and their layout are described in
+[Installation › First Launch](installation.md#first-launch).
 
 The first desk groups what a new install needs, separated by spacing rather
 than section headers (only Permissions, the coding-agent card and Quick start
