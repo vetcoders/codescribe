@@ -105,7 +105,7 @@ final class CredentialPresentationTests: XCTestCase {
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "no_key", message: nil, models: []))
     XCTAssertFalse(lane.usesDiscoveredPicker)
-    XCTAssertTrue(lane.discoveryDescription.contains("connected account"))
+    XCTAssertTrue(lane.discoveryDescription.contains("needs an API key"))
     XCTAssertTrue(lane.discoveryDescription.contains("model ID"))
     XCTAssertEqual(lane.availabilityDescription, "Connected account")
     XCTAssertFalse(lane.discoveryFailed, "a missing key is not a failed fetch")

@@ -186,11 +186,15 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let tools = try XCTUnwrap(sources["ToolPermissionsSection.swift"])
     XCTAssertEqual(tools.components(separatedBy: ".pickerStyle(.segmented)").count, 3)
-    // Round 12: the defaults rows keep `.fixedSize()`; the card picker sits on
-    // its own full-width row (`.frame(maxWidth: .infinity)` only widens), so
-    // it never competes with the tool name for space.
-    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 2)
-    XCTAssertTrue(tools.contains(".pickerStyle(.segmented)\n      .frame(maxWidth: .infinity)"))
+    // Round 12 kept the defaults rows at `.fixedSize()`; the views review
+    // (Founder, 2026-10-20) gives the card picker the same shape on its own
+    // row, right-aligned behind a Spacer, so it never competes with the tool
+    // name for space and shares the defaults' right edge.
+    XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 3)
+    XCTAssertTrue(
+      tools.contains(
+        "      HStack(spacing: CSSpace.md) {\n        Spacer(minLength: 0)\n        Picker(\"Permission for \\(item.displayName)\""))
+    XCTAssertFalse(tools.contains(".pickerStyle(.segmented)\n      .frame(maxWidth: .infinity)"))
     XCTAssertFalse(tools.contains(".frame(width: 180)"))
     XCTAssertFalse(tools.contains(".frame(maxWidth: 180)"))
     XCTAssertEqual(tools.components(separatedBy: "defaultRow(title: \"").count, 4)
@@ -802,7 +806,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testDiagnosticsTabReadsAsAStatusScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("String(localized: \"Agent environment configuration\""))
+    XCTAssertTrue(tab.contains("localized: \"Agent environment configuration\""))
     XCTAssertFalse(tab.contains("\"Agent environment status\""))
     XCTAssertFalse(tab.contains("\"Connection details.\""))
     XCTAssertFalse(
@@ -1450,7 +1454,10 @@ final class SettingsChromeContractTests: XCTestCase {
   func testCreatorOffersAppearanceAndSheetShadeCandidates() throws {
     let sources = try settingsSources()
     let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
-    XCTAssertTrue(creator.contains("String(localized: \"Appearance\", comment: \"Settings group"))
+    // Views review 1–10 (Founder, 2026-10-20): the group header repeated the
+    // row below it, so only the row keeps the word.
+    XCTAssertFalse(creator.contains("String(localized: \"Appearance\", comment: \"Settings group"))
+    XCTAssertTrue(creator.contains("String(localized: \"Appearance\", comment: \"Settings row"))
     XCTAssertTrue(creator.contains("AppearanceRow(model: model)"))
     XCTAssertTrue(creator.contains("SheetShadeRows(model: model)"))
     XCTAssertTrue(creator.contains("ForEach(AppAppearanceChoice.allCases)"))
