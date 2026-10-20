@@ -1251,10 +1251,9 @@ final class OverlayState {
     setAgentsLayout(.agents)
   }
 
-  /// `sidebar.right`: beside a conversation the list folds to its rail of
-  /// pills; over the transcription it only closes.
+  /// `sidebar.right`: the list folds to its rail of pills on either canvas.
   func foldAgentList() {
-    if selectedConversationID != nil { setAgentsLayout(.rail) }
+    setAgentsLayout(.rail)
     hideAgentSidebar()
   }
 
@@ -1262,7 +1261,7 @@ final class OverlayState {
   /// conversation. Below the threshold it cannot fit there, so it covers the
   /// window while asked for and the rail stays the choice.
   func unfoldAgentList() {
-    guard agentDrawerDocked else {
+    guard agentDrawerDocked, selectedConversationID != nil else {
       showAgentMonitor(expand: false)
       return
     }
@@ -1456,13 +1455,18 @@ final class OverlayState {
     onChannelPresentationChanged?()
   }
 
+  /// A saved conversation or unknown pane must never advertise a focus action.
+  func canFocusAgentPanel(_ owner: OverlayConversationOwner) -> Bool {
+    !channelStatusUnavailable && agentPanelFocusAvailable
+      && archiveCandidate(for: owner.channel) == owner
+      && channelHudStates[owner.channel]?.followerAlive == true
+      && channelHudStates[owner.channel]?.frameDetected == true
+  }
+
   /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
   /// while immediately (<1 frame) updating the row state with a spinner.
   func focusAgentPanel(_ owner: OverlayConversationOwner) {
-    guard !channelStatusUnavailable,
-      agentPanelFocusAvailable,
-      channelHudStates[owner.channel]?.followerAlive != false,
-      channelHudStates[owner.channel]?.frameDetected != false,
+    guard canFocusAgentPanel(owner),
       agentPanelFocusStates[owner.channel]?.isRequesting != true
     else { return }
     let request = OverlayAgentPanelFocusRequest(owner: owner)

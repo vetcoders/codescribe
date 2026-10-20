@@ -70,9 +70,8 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
-  /// Opens the Agents roster from the name pill: the docked column focuses its
-  /// selected row, the narrow window toggles the full-width list (state decides).
-  var onShowAgents: (() -> Void)? = nil
+  /// Only a current owner with a detected Frame pane exposes a navigation action.
+  var onFocusAgentPanel: (() -> Void)? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
   /// Wide windows dock the roster column, which already names the agent and
@@ -332,12 +331,12 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private var conversationNamePill: some View {
-    if let onShowAgents {
+    if let onFocusAgentPanel {
       // Interactive glass is the system's own hover and press feedback.
-      Button(action: onShowAgents) { namePillLabel }
+      Button(action: onFocusAgentPanel) { namePillLabel }
         .buttonStyle(.plain)
         .csFocusOutline()
-        .accessibilityHint("Shows the agents list")
+        .accessibilityHint("Focus agent panel in Frame")
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: true))
         .background { OverlayMenuCursorRegion() }
