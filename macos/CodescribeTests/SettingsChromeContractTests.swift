@@ -222,9 +222,29 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(formattingTail.contains(".fixedSize()"))
     XCTAssertNil(fixedFrameWidth(in: formattingTail))
 
+    // Creator's three choice rows (interface language, transcription language,
+    // appearance) share the tab bar's native control with `.fit` segments
+    // (Founder, 2026-10-21): no 200 pt frame, no three-times-the-widest-word
+    // picker, every segment hugs its own label in both languages.
+    XCTAssertEqual(creator.components(separatedBy: "SettingsSegmentedChoice(").count, 4)
+    XCTAssertFalse(creator.contains(".frame(width: 200)"))
+    XCTAssertFalse(creator.contains("Picker(\"\", selection: selection)"))
+    for titles in [
+      ["Multilingual", "Polish", "English"],
+      try ["Multilingual", "Polish", "English"].map { try XCTUnwrap(polish[$0]) },
+      ["Polski", "English"], ["System", "Light", "Dark"],
+      try ["System", "Light", "Dark"].map { try XCTUnwrap(polish[$0]) },
+    ] {
+      let fit = SettingsTabSegments.control(titles: titles).fittingSize.width
+      XCTAssertGreaterThan(fit, 0, "\(titles)")
+      XCTAssertLessThanOrEqual(fit, width(titles), "\(titles): fit never exceeds equal widths")
+    }
+    // Shade menus name the shade; the hex reads as the row's subtitle.
+    XCTAssertTrue(creator.contains("Text(verbatim: shade.title).tag(shade)"))
+    XCTAssertTrue(creator.contains("subtitle: \"#\\(model.sheetShadeDark.rawValue)\""))
+
     // Pickers that keep a fixed frame hold their Polish labels.
     let fixed: [(file: String, picker: String, titles: [String?])] = [
-      ("CreatorPanel.swift", "Picker(\"\", selection: selection)", ["Polski", "English"]),
       ("ShortcutsPanel.swift", "Picker(\"Arm modifier\"", ["Shift", "Command"]),
       (
         "ShortcutsPanel.swift", "Picker(\"Pointer indicator\"",

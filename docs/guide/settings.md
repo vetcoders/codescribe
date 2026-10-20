@@ -114,7 +114,8 @@ menu and the overlay; it is saved in the app's own preferences, not in
 
 **Panel shade, dark** and **Panel shade, light** are a click-through for the
 content sheet (the colour behind every window's content area and the overlay):
-_Today_ plus two candidates per appearance, each named with its hex. The app
+_Today_ plus two candidates per appearance; the menu names the shade and the
+hex of the current one reads under the row title. The app
 reads the shade once at launch, so after a change the rows show the same
 restart line as the interface language: **Restart now** waits for an idle
 moment. The candidate the team settles on becomes the token's value, and these

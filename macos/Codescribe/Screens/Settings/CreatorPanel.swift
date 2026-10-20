@@ -556,20 +556,21 @@ private struct RecognitionLanguageRow: View {
         comment: "Settings row: the language the speech is transcribed in"),
       subtitle: LanguageIdentityPresentation.supportingCopy
     ) {
-      Picker("", selection: $selection) {
-        ForEach(LanguageIdentityPresentation.choices) { choice in
-          Text(choice.title).tag(choice.language)
-        }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
-      .accessibilityLabel(
-        String(
+      SettingsSegmentedChoice(
+        titles: LanguageIdentityPresentation.choices.map(\.title),
+        selection: Binding(
+          get: {
+            LanguageIdentityPresentation.choices.firstIndex { $0.language == selection } ?? -1
+          },
+          set: { index in
+            guard LanguageIdentityPresentation.choices.indices.contains(index) else { return }
+            $selection.wrappedValue = LanguageIdentityPresentation.choices[index].language
+          }),
+        accessibilityLabel: String(
           localized: "Transcription language",
-          comment: "Settings row: the language the speech is transcribed in")
+          comment: "Settings row: the language the speech is transcribed in"),
+        accessibilityIdentifier: "settings-recognition-language"
       )
-      .accessibilityIdentifier("settings-recognition-language")
     }
   }
 }
@@ -620,16 +621,19 @@ private struct InterfaceLanguageRow: View {
           localized: "Menus, Settings and the Agent window. Dictation has its own language.",
           comment: "Interface language row explanation")
       ) {
-        Picker("", selection: selection) {
-          ForEach(InterfaceLanguage.allCases, id: \.self) { language in
-            Text(language.nativeName).tag(language)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 200)
-        .disabled(model.applyingInterfaceLanguage)
-        .accessibilityIdentifier("settings-interface-language")
+        SettingsSegmentedChoice(
+          titles: InterfaceLanguage.allCases.map(\.nativeName),
+          selection: Binding(
+            get: { InterfaceLanguage.allCases.firstIndex(of: model.interfaceLanguage) ?? -1 },
+            set: { index in
+              guard InterfaceLanguage.allCases.indices.contains(index) else { return }
+              model.selectInterfaceLanguage(InterfaceLanguage.allCases[index])
+            }),
+          isEnabled: !model.applyingInterfaceLanguage,
+          accessibilityLabel: String(
+            localized: "Interface language", comment: "Settings row: app language"),
+          accessibilityIdentifier: "settings-interface-language"
+        )
       }
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
@@ -653,12 +657,6 @@ private struct InterfaceLanguageRow: View {
     }
   }
 
-  private var selection: Binding<InterfaceLanguage> {
-    Binding(
-      get: { model.interfaceLanguage },
-      set: { model.selectInterfaceLanguage($0) }
-    )
-  }
 }
 
 // MARK: - Appearance row
@@ -674,20 +672,19 @@ private struct AppearanceRow: View {
         localized: "Follow macOS, or keep Codescribe light or dark on its own.",
         comment: "Appearance row explanation")
     ) {
-      Picker("", selection: selection) {
-        ForEach(AppAppearanceChoice.allCases) { choice in
-          Text(choice.title).tag(choice)
-        }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .fixedSize()
-      .accessibilityIdentifier("settings-appearance")
+      SettingsSegmentedChoice(
+        titles: AppAppearanceChoice.allCases.map(\.title),
+        selection: Binding(
+          get: { AppAppearanceChoice.allCases.firstIndex(of: model.appearanceChoice) ?? -1 },
+          set: { index in
+            guard AppAppearanceChoice.allCases.indices.contains(index) else { return }
+            model.selectAppearance(AppAppearanceChoice.allCases[index])
+          }),
+        accessibilityLabel: String(
+          localized: "Appearance", comment: "Settings row: light, dark or system"),
+        accessibilityIdentifier: "settings-appearance"
+      )
     }
-  }
-
-  private var selection: Binding<AppAppearanceChoice> {
-    Binding(get: { model.appearanceChoice }, set: { model.selectAppearance($0) })
   }
 }
 
@@ -701,12 +698,14 @@ private struct SheetShadeRows: View {
 
   var body: some View {
     SettingsControlRow(
-      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark")
+      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark"),
+      subtitle: "#\(model.sheetShadeDark.rawValue)"
     ) {
       shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
     }
     SettingsControlRow(
-      title: String(localized: "Panel shade, light", comment: "Settings row: sheet shade for light")
+      title: String(localized: "Panel shade, light", comment: "Settings row: sheet shade for light"),
+      subtitle: "#\(model.sheetShadeLight.rawValue)"
     ) {
       shadePicker(SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
     }
@@ -741,7 +740,7 @@ private struct SheetShadeRows: View {
   {
     Picker("", selection: selection) {
       ForEach(choices) { shade in
-        Text(verbatim: "\(shade.title) · #\(shade.rawValue)").tag(shade)
+        Text(verbatim: shade.title).tag(shade)
       }
     }
     .pickerStyle(.menu)
