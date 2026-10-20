@@ -99,6 +99,8 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
+CAPTURE_ATTACHMENT_SCHEMA = "codescribe.capture-attachment.v1"
+CAPTURE_ATTACHMENT_COMMIT_SCHEMA = "codescribe.capture-attachment-commit.v1"
 DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
@@ -914,7 +916,7 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
-    for key in ("message_id", "occurrences", "hold_until"):
+    for key in ("message_id", "occurrences", "hold_until", "user_reply_to", "attachments"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1018,6 +1020,8 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CHANNEL_SESSION_SCHEMA,
         PUBLICATION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
+        CAPTURE_ATTACHMENT_SCHEMA,
+        CAPTURE_ATTACHMENT_COMMIT_SCHEMA,
         # Replies enter the follower stream only for the peer text lane;
         # admission drops every reply that does not name a peer recipient.
         AGENT_REPLY_SCHEMA,
@@ -1289,6 +1293,11 @@ class EvidenceNormalizer:
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
             return None
+        if event.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA:
+            return None
+        if event.get("schema") == CAPTURE_ATTACHMENT_SCHEMA:
+            self._consume_capture_attachment(event)
+            return None
         if event.get("schema") == PUBLICATION_SCHEMA:
             self._consume_publication_refusal(event)
             return None
@@ -1366,6 +1375,14 @@ class EvidenceNormalizer:
             if not older_snapshot or key not in inventory:
                 inventory[key] = item
         clean["occurrences"] = list(inventory.values())
+        source_rows = event.get("occurrences") or [event]
+        clean["capture_source_sequence"] = event.get("capture_source_sequence")
+        if clean["capture_source_sequence"] is None:
+            clean["capture_source_sequence"] = source_rows[-1].get("sequence")
+        if previous:
+            for key in ("attachments", "capture_attachment_stages"):
+                if previous.get(key):
+                    clean[key] = previous[key]
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
             return False
@@ -1374,6 +1391,7 @@ class EvidenceNormalizer:
         ) == (incoming_revision, event.get("reducer_action"))
         if same_phase:
             previous["occurrences"] = clean["occurrences"]
+            previous["capture_source_sequence"] = clean["capture_source_sequence"]
             if event.get("status") == SEALED:
                 for key in ("hold_until", "utterance_id"):
                     if key in event:
@@ -1418,6 +1436,33 @@ class EvidenceNormalizer:
                          key=lambda key: self._channel_open_times[key][1])
             del self._channel_open_times[oldest]
 
+    def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
+        session = str(receipt.get("session_id") or "")
+        document = self._session_docs.get(session)
+        source_sequence = (document or {}).get("capture_source_sequence")
+        if source_sequence is None:
+            source_sequence = ((document or {}).get("occurrences") or [document or {}])[-1].get("sequence")
+        if (receipt.get("kind") != "capture_attachment" or document is None
+                or session in self._settled_sessions
+                or receipt.get("capture_epoch") != document.get("capture_epoch")
+                or receipt.get("source_sequence") != source_sequence
+                or receipt.get("audience") != document.get("audience")
+                or receipt.get("recipients") != document.get("recipients")):
+            return
+        attachments = receipt.get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            return
+        if any(not isinstance(item, dict) or set(item) != {"name", "path", "media_type", "bytes", "sha256"}
+               or not all(isinstance(item.get(key), str) for key in ("name", "path", "media_type"))
+               or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in attachments):
+            return
+        commit_bus = receipt.get("commit_bus")
+        if not isinstance(commit_bus, str) or not Path(commit_bus).is_absolute():
+            return
+        known = document.setdefault("capture_attachment_stages", [])
+        if not any(item.get("stage_id") == receipt.get("stage_id") for item in known):
+            known.append(receipt)
+
     def _flush_session(self, session: str, emitted_at: Any) -> None:
         self._channel_open_times.pop(session, None)
         clean = self._session_docs.pop(session, None)
@@ -1427,6 +1472,18 @@ class EvidenceNormalizer:
         if not (clean.get("text") or "").strip():
             return
         final = dict(clean)
+        attachments = list(clean.get("attachments", []))
+        for stage in clean.get("capture_attachment_stages", []):
+            if (stage.get("capture_epoch") == clean.get("capture_epoch")
+                    and stage.get("recipients") == clean.get("recipients")
+                    and stage.get("audience") == clean.get("audience")
+                    and capture_attachment_is_committed(stage)):
+                for pointer in stage["attachments"]:
+                    if pointer not in attachments:
+                        attachments.append(pointer)
+        if attachments:
+            final["attachments"] = attachments
+            final["text"] = final["text"].rstrip() + attachment_pointer_lines(attachments)
         final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
         if clean.get("reducer_action") == DIRECT_TERMINAL:
             final["coverage"] = "direct"
@@ -1579,6 +1636,11 @@ def consider(
                 or not re.fullmatch(r"[0-9a-f]{24}", event["message_id"])
                 or event.get("source_event_id") != event["message_id"]):
             return None
+        if "user_reply_to" in event:
+            try:
+                validate_user_reply_reference(event["user_reply_to"])
+            except ValueError:
+                return None
         audience = event.get("audience")
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
@@ -3998,7 +4060,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
         "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
-        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
     )
     return {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}
@@ -6543,8 +6605,82 @@ def note_skipped_broadcast_channel(
     return entry
 
 
+def capture_attachment_is_committed(stage: dict[str, Any]) -> bool:
+    """Require an exact decoded primary commit inside the verified 64 MiB tail."""
+    try:
+        with GenerationFile(Path(stage["commit_bus"])) as handle:
+            end = handle.size
+            start = max(0, end - (64 << 20))
+            handle.seek(start)
+            if start:
+                discarded = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
+                if not discarded.endswith(b"\n"):
+                    raise ValueError("capture commit tail begins outside a complete storage record")
+            decoder = ChunkDecoder()
+            while handle.tell() < end:
+                raw = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
+                if not raw or not raw.endswith(b"\n"):
+                    raise ValueError("capture commit tail has an incomplete storage record")
+                parsed = parse_line(raw.decode("utf-8", errors="strict"))
+                if parsed is None:
+                    if decoder.pending or b"persistence_encoding" in raw or b"codescribe.bus-chunk" in raw:
+                        raise ValueError("capture commit tail interrupted a verified storage record")
+                    continue
+                decoded = decoder.feed(parsed)
+                if decoded is None:
+                    continue
+                rows = evidence_revision_rows(decoded)
+                if rows is None:
+                    raise ValueError("capture commit tail has unknown revision encoding")
+                for row in rows:
+                    if (row.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
+                            and row.get("kind") == "capture_attachment_commit"
+                            and all(row.get(key) == stage.get(key) for key in
+                                    ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
+                        return True
+            if decoder.pending:
+                raise ValueError("capture commit tail ends inside a storage record")
+            raise ValueError("capture attachment has no verified primary commit within 64 MiB")
+    except (OSError, ValueError, KeyError) as error:
+        sys.stderr.write(f"bus-demux: capture attachment commit refused: {error}\n")
+        return False
+
+
+def stage_capture_attachment_command(args: argparse.Namespace) -> int:
+    """The canonical append owner validates the live target under its append lease."""
+    attachments = [describe_attachment(raw) for raw in args.attach_file]
+    event = {
+        "schema": CAPTURE_ATTACHMENT_SCHEMA, "kind": "capture_attachment",
+        "stage_id": _identity(("capture-attachment", args.capture_session, args.capture_epoch,
+                               args.capture_source_sequence, json.dumps(attachments, sort_keys=True))), "session_id": args.capture_session,
+        "capture_epoch": args.capture_epoch, "source_sequence": args.capture_source_sequence,
+        "attachments": attachments,
+        "emitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds"),
+    }
+    receipt = publish_reply_event(args.bus, event, bridge_root=args.bridge_home)
+    emit({"kind": "capture_attachment_staged", "stage_id": event["stage_id"],
+          "session_id": args.capture_session, "capture_epoch": args.capture_epoch,
+          "source_sequence": args.capture_source_sequence, "source": receipt})
+    return 0
+
+
+def validate_user_reply_reference(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {"message_id", "author", "text"}:
+        raise ValueError("invalid user reply reference")
+    identity, author, text = value["message_id"], value["author"], value["text"]
+    if (not isinstance(identity, str) or not identity or len(identity.encode("utf-8")) > 512
+            or any(ord(c) < 32 or ord(c) == 127 for c in identity)
+            or not isinstance(author, str) or not author.strip() or len(author) > 128
+            or any(ord(c) < 32 or ord(c) == 127 for c in author)
+            or not isinstance(text, str) or len(text) > 512):
+        raise ValueError("invalid user reply reference")
+    return {"message_id": identity, "author": author, "text": text}
+
+
 def send_text_command(args: argparse.Namespace) -> int:
     """Publish user text to every reachable owner of channel zero, or one exact owner."""
+    raw_reply = getattr(args, "user_reply_to", None)
+    user_reply = validate_user_reply_reference(json.loads(raw_reply)) if raw_reply is not None else None
     attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
     root = args.bridge_home
     broadcast = str(args.channel) == "0"
@@ -6602,6 +6738,8 @@ def send_text_command(args: argparse.Namespace) -> int:
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
                      "recipients": [owner]}
+            if user_reply is not None:
+                event["user_reply_to"] = user_reply
             if attachments:
                 event["attachments"] = attachments
             if broadcast:
@@ -8101,7 +8239,7 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     # acoustic envelope or every recipient's copy of the same coordinates.
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
                 "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
-                "routing_candidates", "instructions", "attachments"):
+                "routing_candidates", "instructions", "attachments", "user_reply_to"):
         if key in payload:
             line[key] = payload[key]
     return line
@@ -8630,11 +8768,37 @@ def main() -> int:
         help="TTS speed; defaults to the name's profile in voices.json, "
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
+    parser.add_argument("--stage-capture-attachment", action="store_true",
+                        help="bind stored file pointers to an exact currently open voice capture")
+    parser.add_argument("--capture-session", help="exact voice capture session ID")
+    parser.add_argument("--capture-epoch", type=int, help="physical capture epoch, greater than zero")
+    parser.add_argument("--capture-source-sequence", type=int, help="latest evidence sequence, including zero")
+    parser.add_argument("--user-reply-to", metavar="JSON", help="with --send-text: selected parent message_id, author and bounded text")
     parser.add_argument("--attach-file", metavar="PATH", action="append",
                         help="with --send-text: pointer to a pasted file the app already stored "
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.stage_capture_attachment:
+        allowed = {"stage_capture_attachment", "capture_session", "capture_epoch",
+                   "capture_source_sequence", "attach_file", "bus", "bridge_home", "entrypoint"}
+        if (not args.capture_session or channel_of_session(args.capture_session) is None
+                or args.capture_epoch is None or args.capture_epoch <= 0
+                or args.capture_source_sequence is None or args.capture_source_sequence < 0
+                or args.bus is None or not args.attach_file
+                or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
+            parser.error("capture attachment requires exact --capture-session/--capture-epoch/--capture-source-sequence/--bus and --attach-file")
+        args.bus = args.bus.expanduser().resolve(strict=False)
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return stage_capture_attachment_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: capture attachment refused: {error}; draft retained\n")
+            return 3
+    if any(value is not None for value in (args.capture_session, args.capture_epoch, args.capture_source_sequence)):
+        parser.error("capture target flags require --stage-capture-attachment")
+    if args.user_reply_to is not None and not args.send_text:
+        parser.error("--user-reply-to requires --send-text")
     if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
         parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):

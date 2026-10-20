@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
 
+## [0.18.0] - 2026-10-20
+
+Source changes in preparation; validation and distribution have separate receipts.
+
+<!-- release-notes:0.18.0:start -->
+
+Source history: 245 commits; [complete inventory](docs/releases/0.18.0-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.18.0 6aede4c05da926a940a1f0151b736d9742fd7817 -->
+<!-- release-notes:0.18.0:end -->
+
 ## [0.17.2] - Unreleased
 
 Source changes in preparation. This is not a published release.

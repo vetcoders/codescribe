@@ -1416,6 +1416,49 @@ the agent mailbox cursor, acknowledges delivery, or establishes transcript truth
 recorded only in the durable C11 report. Compiler, tests, runtime, app, install,
 and release behavior are `NOT_ASSESSED` under the C11 embargo.
 
+## Attachments bound to a live channel take
+
+The overlay stages files against the displayed capture evidence, using
+`cs-bus --stage-capture-attachment --capture-session ID --capture-epoch EPOCH --capture-source-sequence SEQUENCE --bus ABS --attach-file PATH` (repeat the
+last option for more files). Sequence zero is valid. A channel digit, current
+focus or latest text is never a substitute for the exact session and epoch.
+
+The Rust append owner validates that the capture remains open and the source
+sequence still names its latest evidence. It copies the source occurrence
+coordinates and frozen audience/recipients, then acquires every recipient bus's
+normal append lease in sorted order. It validates the same source on every bus
+before writing `codescribe.capture-attachment.v1` pending receipts. Only after
+all pending writes are durable does it append the exact
+`codescribe.capture-attachment-commit.v1` marker to the selected primary bus.
+Readers ignore pending pointers without this commit. A partial write therefore
+cannot authorize a partial broadcast; an idempotent stage ID permits an
+open-target retry. Closed or changed targets refuse and retain the UI's files.
+
+The follower preserves committed pointers across revisions/restart and adds
+structured `attachments` plus readable pointer lines to the same sealed voice
+envelope. It never emits a separate typed message or resolves new recipients.
+The overlay projects the pointers on the same capture bubble; secondary history
+resolves the named primary commit through its existing generation reader. The
+transcript reducer's document is unchanged. Files pasted before evidence exists
+remain staged with a retry prompt; only the user's explicit retry can choose
+the now-visible occurrence. A retry cannot move an already-bound file to a new
+occurrence or audience.
+
+## Overlay draft dictation and Reply
+
+The conversation composer's microphone uses the existing shared controller's
+single-turn composer capture and its admitted handle. Explicit Stop addresses
+only that handle. Delivered text joins the original conversation's editable
+draft, retaining its files and edits after navigation. It never auto-sends.
+Terminal projections and identified terminal status release that take; late
+projections still retain their original destination.
+
+Bubble Reply selects a bounded `{message_id, author, text}` reference. Clearing
+it leaves the draft intact; selecting the quote navigates to the retained
+parent. `--send-text --user-reply-to JSON` publishes it as `user_reply_to` on the
+actual user message and its queue envelope. It is separate from the agent's
+`reply_to` delivery receipt and carries no capture authority.
+
 ## Written messages from agent conversations
 
 `codescribe.agent-user-message.v1` / `agent_user_message` carries a random

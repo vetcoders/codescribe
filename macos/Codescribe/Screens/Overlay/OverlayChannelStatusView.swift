@@ -394,13 +394,27 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
 
 /// The system owns button material, contrast and pointer feedback alongside the composer.
 struct OverlayAgentControlStyle: ViewModifier {
+  var diameter: CGFloat? = nil
   @ViewBuilder
   func body(content: Content) -> some View {
-    if #available(macOS 26.0, *) {
+    if let diameter {
+      content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter))
+    } else if #available(macOS 26.0, *) {
       content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
     } else {
       content.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.regular)
     }
+  }
+}
+
+private struct OverlaySizedAudioButtonStyle: ButtonStyle {
+  let diameter: CGFloat
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(width: diameter, height: diameter)
+      .contentShape(Circle())
+      .modifier(OverlayControlGlass(cornerRadius: diameter / 2))
+      .opacity(configuration.isPressed ? 0.7 : 1)
   }
 }
 
@@ -419,26 +433,32 @@ struct OverlayAgentAudioControls: View {
   /// indikator na głośniku." The speaker of the agent whose reply is playing
   /// turns violet and animates its waves.
   var speaking = false
+  /// Only the conversation header opts into the measured identity-pill height.
+  var diameter: CGFloat? = nil
 
   private var speakingNow: Bool { speaking && muted == false }
 
-  /// Maciej, 2026-10-18 asked the channel-0 control for twice the diameter;
-  /// Maciej, 2026-10-20 found that too large and made it a megaphone. 1.5
-  /// sits halfway between an agent's 22 pt microphone and the old 2x, large
-  /// enough to read as speaking to everyone beside the speaker, small enough
-  /// not to dwarf the agent rows. Only the broadcast control grows.
-  static let broadcastMicrophoneScale: CGFloat = 1.5
-  // Shrink the megaphone mark, retaining its 24-point frame and hit area.
-  // It stays larger than the 12-point speaker (Founder, 2026-10-20).
-  static let broadcastMicrophoneFontSize: CGFloat = 14
+  /// The All pair matches the speaker: one mark size, one frame, one hit
+  /// target. The megaphone is the outline symbol. An earlier 1.5× frame
+  /// stayed in the type so callers that measured the scale still compile;
+  /// it no longer grows the control.
+  static let broadcastMicrophoneScale: CGFloat = 1
+  static let broadcastMicrophoneFontSize: CGFloat = 12
+  static let speakerFontSize: CGFloat = 12
+  static let controlFrame: CGFloat = 16
   private var microphoneScale: CGFloat { broadcast ? Self.broadcastMicrophoneScale : 1 }
+  private var glyphSize: CGFloat { diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12 }
 
-  /// The broadcast row speaks through a left-facing megaphone; agent rows keep
-  /// the microphone. Open state keeps its colour and pulse on both.
+  /// The broadcast row speaks through a left-facing outline megaphone; agent
+  /// rows keep the microphone. Open state keeps its pulse on both and takes
+  /// the same violet as a speaker that is playing a reply.
   var microphoneSymbol: String {
-    if broadcast { return "megaphone.fill" }
+    if broadcast { return "megaphone" }
     return open ? "mic.fill" : "mic"
   }
+
+  /// Recording shares the active-speaker accent. The pulse is unchanged.
+  private var recordingAccent: Color { palette.agentAccent.color }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -486,14 +506,14 @@ struct OverlayAgentAudioControls: View {
       Button(action: onMicrophone) {
         Image(systemName: microphoneSymbol)
           .overlayMirrored(broadcast)
-          .font(
-            .system(size: broadcast ? Self.broadcastMicrophoneFontSize : 12, weight: .semibold)
-          )
-          .foregroundStyle(open ? Color.red : palette.primaryText.color)
+          .font(.system(size: glyphSize, weight: .semibold))
+          .foregroundStyle(open ? recordingAccent : palette.primaryText.color)
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
-          .frame(width: 16 * microphoneScale, height: 16 * microphoneScale)
+          .frame(
+            width: Self.controlFrame * microphoneScale,
+            height: Self.controlFrame * microphoneScale)
       }
-      .tint(Self.litGlass(open ? Color.red : nil))
+      .tint(Self.litGlass(open ? recordingAccent : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
       .help(microphoneLabel)
@@ -510,10 +530,10 @@ struct OverlayAgentAudioControls: View {
             : muted == true
               ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
         )
-        .font(.system(size: 12, weight: .semibold))
+        .font(.system(size: glyphSize, weight: .semibold))
         .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
         .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-        .frame(width: 16, height: 16)
+        .frame(width: Self.controlFrame, height: Self.controlFrame)
       }
       .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
@@ -523,7 +543,7 @@ struct OverlayAgentAudioControls: View {
       .accessibilityValue(playbackValue)
       .accessibilityIdentifier("overlay-agent-speaker")
     }
-    .modifier(OverlayAgentControlStyle())
+    .modifier(OverlayAgentControlStyle(diameter: diameter))
     // Founder, 2026-10-15: an I-beam showed between and over these buttons.
     // They float above message and transcript text, whose tracking set the
     // text cursor; the pair and its gap claim the arrow like the drawer does.
@@ -987,10 +1007,25 @@ struct OverlayChannelStatusView: View {
           onSelectConversation != nil
         {
           rowGlassContainer(
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
               broadcastRow(broadcast, rowFocus: rowFocus)
-              HStack(spacing: 6) {
-                Spacer(minLength: 0)
+              // The pair sits beside the preview, not in the Agents header
+              // and not in the agent-row footer. Three lines belong to All.
+              HStack(alignment: .center, spacing: 8) {
+                if let last = broadcast.messages.last {
+                  let unread = unreadCounts[broadcast.id] ?? 0
+                  Text(verbatim: Self.drawerPreview(message: last))
+                    .font(.system(size: 12.5 * textScale))
+                    .foregroundStyle(
+                      unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                    )
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("overlay-all-preview")
+                } else {
+                  Spacer(minLength: 0)
+                }
                 OverlayAgentAudioControls(
                   open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
                   microphoneEnabled: !unavailable && hudStates["0"] != nil
@@ -1003,7 +1038,6 @@ struct OverlayChannelStatusView: View {
                 .fixedSize()
                 .accessibilityIdentifier("overlay-channel-toggle-0")
               }
-              .padding(.trailing, 6)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
           )
@@ -1287,13 +1321,14 @@ struct OverlayChannelStatusView: View {
   /// its separate state-and-controls footer (five text lines at most).
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
-    conversation: OverlayConversation?, dot: OverlayAgentDotKind
+    conversation: OverlayConversation?, dot: OverlayAgentDotKind,
+    includePreview: Bool = true
   ) -> some View {
     let last = conversation?.messages.last
     return OverlayAgentRosterLabel(
       title: title, channel: statusChannel?.channel, conversationID: conversation?.id,
       descriptor: statusChannel.flatMap { agentDescriptor(for: $0) },
-      preview: last.map { Self.drawerPreview(message: $0) },
+      preview: includePreview ? last.map { Self.drawerPreview(message: $0) } : nil,
       timestamp: last.flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) },
       unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
@@ -1390,8 +1425,11 @@ struct OverlayChannelStatusView: View {
     Button {
       onSelectConversation?(broadcast.id)
     } label: {
+      // Preview lives beside the All controls, so this button keeps the
+      // identity line (name, antenna, clock) and does not nest those controls.
       rosterRowLabel(
-        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast)
+        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast,
+        includePreview: false)
     }
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
@@ -1790,44 +1828,56 @@ struct OverlayChannelStatusView: View {
     return ordered
   }
 
+  /// Who addressed whom, from the message's own source channel and frozen
+  /// recipients. The row or conversation showing the message does not choose
+  /// the names. An empty audience means there is no arrow.
+  struct MessageRoute: Equatable {
+    var speaker: String
+    var audience: String?
+
+    var label: String {
+      guard let audience, !audience.isEmpty else { return speaker }
+      return "\(speaker) → \(audience)"
+    }
+  }
+
+  static func messageRoute(of message: OverlayConversationMessage) -> MessageRoute {
+    let named = recipientNames(of: message)
+    if message.kind == .user {
+      if message.sourceChannel == "0" {
+        return MessageRoute(speaker: String(localized: "You"), audience: String(localized: "All"))
+      }
+      if let named { return MessageRoute(speaker: String(localized: "You"), audience: named) }
+      if let channel = message.sourceChannel {
+        return MessageRoute(speaker: String(localized: "You"), audience: channel)
+      }
+      return MessageRoute(speaker: String(localized: "You"), audience: nil)
+    }
+    guard let sender = message.owner?.name, !sender.isEmpty else {
+      return MessageRoute(speaker: "", audience: nil)
+    }
+    // A reply without a destination, or one addressed on channel 10, answered
+    // the Founder. Channel 0 is the broadcast, whatever the current row is.
+    guard let destination = message.sourceChannel, destination != "10" else {
+      return MessageRoute(speaker: sender, audience: String(localized: "You"))
+    }
+    if destination == "0" {
+      return MessageRoute(speaker: sender, audience: String(localized: "All"))
+    }
+    return MessageRoute(speaker: sender, audience: named ?? destination)
+  }
+
   /// The drawer's one-glance preview of the last message, naming who
   /// addressed whom (Maciej, 2026-10-17: "brak informacji jak who addressed
   /// whom"). The route comes from the message itself — its source channel and
   /// frozen recipients — never from the row showing it: a broadcast copied
   /// into an agent's row still reads "→ All". Newlines fold so the two-line
-  /// cap holds.
+  /// cap holds. Attachment-only messages still carry the route.
   static func drawerPreview(message: OverlayConversationMessage) -> String {
     let body = message.bodyText.replacingOccurrences(of: "\n", with: " ")
-    let target = recipientNames(of: message) ?? message.sourceChannel
-    if message.kind == .user {
-      if message.sourceChannel == "0" {
-        return String(
-          localized: "You → All: \(body)",
-          comment: "Drawer preview of the user's channel-0 broadcast; the placeholder is the text")
-      }
-      guard let target else {
-        return String(
-          localized: "You: \(body)",
-          comment: "Drawer preview of the user's own message; the placeholder is the text")
-      }
-      return String(
-        localized: "You → \(target): \(body)",
-        comment: "Drawer preview of the user's direct message: the agent names, then the text")
-    }
-    guard let sender = message.owner?.name, !sender.isEmpty else { return body }
-    // A peer message records its destination channel; a reply without one or
-    // addressed to channel 10 answered the Founder.
-    guard let destination = message.sourceChannel, destination != "10" else {
-      return String(
-        localized: "\(sender) → You: \(body)",
-        comment: "Drawer preview of an agent's reply to the user: the agent, then the text")
-    }
-    if destination == "0" {
-      return String(
-        localized: "\(sender) → All: \(body)",
-        comment: "Drawer preview of an agent's message to channel 0: the agent, then the text")
-    }
-    return "\(sender) → \(target ?? destination): \(body)"
+    let route = messageRoute(of: message)
+    guard !route.speaker.isEmpty else { return body }
+    return "\(route.label): \(body)"
   }
 
   /// The frozen recipients' names in publication order, at most two named.

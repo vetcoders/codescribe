@@ -7,6 +7,176 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testCapturePasteDuringAnAwaitedPublicationDrainsTheSecondFile() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first(where: { $0.owner?.channel == "1" }))
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    let finished = expectation(description: "both pasted batches published")
+    finished.expectedFulfillmentCount = 2
+    var batches: [[String]] = []
+    state.publishCaptureAttachments = { paths, target in
+      XCTAssertEqual(target.captureSessionID, "agent-channel-0-fixture")
+      batches.append(paths)
+      if batches.count == 1 {
+        XCTAssertTrue(state.stageConversationAttachments(["/fixture/second.png"], in: conversation))
+      }
+      finished.fulfill()
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/first.png"], in: conversation))
+    await fulfillment(of: [finished], timeout: 2)
+    XCTAssertEqual(batches, [["/fixture/first.png"], ["/fixture/second.png"]])
+    XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
+    XCTAssertNil(
+      state.conversationDrafts[conversation.id], "a live file must never become a typed message")
+  }
+
+  func testRefusedCaptureAttachmentKeepsFrozenTargetAndFilesForRetry() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first(where: { $0.owner?.channel == "1" }))
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    let refused = expectation(description: "refused exact target")
+    state.publishCaptureAttachments = { _, _ in
+      refused.fulfill()
+      throw CocoaError(.fileWriteNoPermission)
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/image.png"], in: conversation))
+    await fulfillment(of: [refused], timeout: 2)
+    XCTAssertEqual(state.captureAttachmentDrafts[conversation.id]?.paths, ["/fixture/image.png"])
+    XCTAssertEqual(state.captureAttachmentDrafts[conversation.id]?.target?.sourceSequence, 1)
+    XCTAssertNotNil(state.captureAttachmentErrors[conversation.id])
+    XCTAssertNil(state.conversationDrafts[conversation.id])
+    state.removeCaptureAttachment("/fixture/image.png", in: conversation.id)
+    XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
+  }
+
+  func testCaptureAttachmentsKeepExactRevisionAndReplyReferenceThroughRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var previous = source
+    previous["sequence"] = 0
+    previous["reducer_revision"] = 1
+    bus.consume(previous)
+    bus.consume(source)
+    bus.consume(stage)
+    XCTAssertNil(
+      bus.conversations(busPath: fixture.bus.path).flatMap(\.messages).first?.attachments)
+    bus.consume(commit)
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path)
+          .flatMap(\.messages).first(where: { $0.kind == .user }))
+      XCTAssertEqual(message.attachments?.map(\.path), ["/fixture/image.png"])
+      XCTAssertEqual(message.text, "Spoken words")
+      XCTAssertEqual(message.activeCaptureAttachmentTarget?.sourceSequence, 1)
+    }
+    let parent = ["message_id": "reply:parent", "author": "Astra", "text": "Quoted"]
+    bus.consume([
+      "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+      "source": "typed", "message_id": String(repeating: "f", count: 24),
+      "text": "Answer", "channel": "1", "audience": "james", "recipients": [fixture.recipient()],
+      "user_reply_to": parent,
+    ])
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    let answer = try XCTUnwrap(
+      restored.conversations(busPath: fixture.bus.path).flatMap(\.messages).first(where: {
+        $0.text == "Answer"
+      }))
+    XCTAssertEqual(answer.userReplyTo?.messageID, "reply:parent")
+    XCTAssertEqual(answer.userReplyTo?.text, "Quoted")
+  }
+
+  func testSecondaryCaptureHistoryResolvesPrimaryCommitAfterReaderRestart() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let directory = fixture.root.appendingPathComponent("buses")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let primary = directory.appendingPathComponent("channel-2.jsonl")
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: primary)
+    try fixture.append(source)
+    try fixture.append(stage)
+    func encoded(_ rows: [[String: Any]]) throws -> Data {
+      try rows.reduce(into: Data()) { bytes, row in
+        bytes.append(try JSONSerialization.data(withJSONObject: row))
+        bytes.append(10)
+      }
+    }
+    try encoded([source, stage]).write(to: primary)
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: fixture.recipient()))
+    let initial = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+      selectedOwner: owner)
+    XCTAssertTrue(initial.conversations.flatMap(\.messages).allSatisfy { $0.attachments == nil })
+    try encoded([source, stage, commit]).write(to: primary)
+    let reopened = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+      selectedOwner: owner)
+    let message = try XCTUnwrap(
+      reopened.conversations.first(where: { $0.owner?.id == owner.id })?.messages.first)
+    XCTAssertEqual(message.attachments?.map(\.path), ["/fixture/image.png"])
+    XCTAssertEqual(message.text, "Spoken words")
+    let shared = fixture.root.appendingPathComponent("transcript-events.jsonl")
+    try encoded([source]).write(to: shared)
+    let mirrored = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot(selectedOwner: owner)
+    let all = try XCTUnwrap(mirrored.conversations.first(where: { $0.id == "0" }))
+    XCTAssertEqual(all.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
+    let privateCopy = try XCTUnwrap(
+      mirrored.conversations.first(where: { $0.owner?.id == owner.id }))
+    XCTAssertEqual(privateCopy.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
+  }
+
+  private func captureAttachmentRows(fixture: Fixture, primary: URL) -> (
+    [String: Any], [String: Any], [String: Any]
+  ) {
+    let session = "agent-channel-0-fixture"
+    var second = fixture.recipient()
+    second["bus"] = primary.path
+    second["channel"] = "2"
+    second["provider_session_id"] = "second"
+    second["lease_id"] = String(repeating: "b", count: 32)
+    let recipients = [fixture.recipient(), second]
+    let source: [String: Any] = [
+      "schema": "codescribe.transcript-evidence.v1", "session_id": session,
+      "sequence": 1, "reducer_revision": 2, "reducer_action": "record_ledger_projection",
+      "capture_epoch": 7, "occurrence_session_id": session, "sample_start": 10,
+      "sample_end": 100, "document_index": 0, "channel": "0", "audience": "all",
+      "recipients": recipients, "rendered_text": "Spoken words",
+      "emitted_at": "2026-10-20T22:00:00Z",
+    ]
+    let stage: [String: Any] = [
+      "schema": "codescribe.capture-attachment.v1", "kind": "capture_attachment",
+      "stage_id": String(repeating: "1", count: 24), "session_id": session,
+      "capture_epoch": 7, "source_sequence": 1, "reducer_revision": 2, "document_index": 0,
+      "occurrence_session_id": session, "sample_start": 10, "sample_end": 100,
+      "channel": "0", "audience": "all", "recipients": recipients, "commit_bus": primary.path,
+      "attachments": [
+        ["name": "image.png", "path": "/fixture/image.png", "media_type": "image/png", "bytes": 13]
+      ],
+      "emitted_at": "2026-10-20T22:00:01Z",
+    ]
+    let commit: [String: Any] = [
+      "schema": "codescribe.capture-attachment-commit.v1", "kind": "capture_attachment_commit",
+      "stage_id": String(repeating: "1", count: 24), "session_id": session, "capture_epoch": 7,
+      "source_sequence": 1, "commit_bus": primary.path, "emitted_at": "2026-10-20T22:00:02Z",
+    ]
+    return (source, stage, commit)
+  }
   func testAddressedSpeechBroadcastDoesNotEchoToAuthorAcrossRestore() throws {
     for destination in ["0", "1"] {
       let fixture = try Fixture()
@@ -1766,7 +1936,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(
-      header.range(of: ".modifier(OverlayControlGlass(cornerRadius: CSRadius.window))")
+      header.range(of: "OverlayControlGlass(")
     )
     XCTAssertLessThan(drag.lowerBound, glass.lowerBound)
     let status = try String(

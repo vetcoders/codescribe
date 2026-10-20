@@ -98,24 +98,30 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
   }
 
-  func testHeaderControlsRestHoverAndLeaveInLightAndDark() throws {
+  func testHeaderControlsRestHoverAndLeaveInLight() throws {
+    try assertHeaderControlsRestHoverAndLeave(palette: .light)
+  }
+
+  func testHeaderControlsRestHoverAndLeaveInDark() throws {
+    try assertHeaderControlsRestHoverAndLeave(palette: .dark)
+  }
+
+  private func assertHeaderControlsRestHoverAndLeave(palette: OverlayAppearancePalette) throws {
     let loose = OverlayState()
-    for palette in [OverlayAppearancePalette.light, OverlayAppearancePalette.dark] {
-      let name = palette.appearance == .dark ? "dark" : "light"
-      try assertNeutralHover(
-        "transcription-\(name)", palette: palette, view: HeaderHoverTranscription(palette: palette))
-      try assertNeutralHover(
-        "agents-\(name)", palette: palette,
-        view: HeaderHoverAgents(palette: palette, unread: true))
-      try assertNeutralHover(
-        "pin-resting-\(name)", palette: palette,
-        view: OverlayPinButton(state: loose, palette: palette))
-      try assertNeutralHover(
-        "presentation-\(name)", palette: palette,
-        view: headerHoverControls(palette: palette, microphone: false, preview: true))
-      try assertMicrophoneKeepsActivity(name, palette: palette)
-      try assertDisabledMicrophoneStaysCalm(name, palette: palette)
-    }
+    let name = palette.appearance == .dark ? "dark" : "light"
+    try assertNeutralHover(
+      "transcription-\(name)", palette: palette, view: HeaderHoverTranscription(palette: palette))
+    try assertNeutralHover(
+      "agents-\(name)", palette: palette,
+      view: HeaderHoverAgents(palette: palette, unread: true))
+    try assertNeutralHover(
+      "pin-resting-\(name)", palette: palette,
+      view: OverlayPinButton(state: loose, palette: palette))
+    try assertNeutralHover(
+      "presentation-\(name)", palette: palette,
+      view: headerHoverControls(palette: palette, microphone: false, preview: true))
+    try assertMicrophoneKeepsActivity(name, palette: palette)
+    try assertDisabledMicrophoneStaysCalm(name, palette: palette)
   }
 
   /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"

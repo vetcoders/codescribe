@@ -81,6 +81,19 @@ struct OverlayConversationView: View {
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
+  var replySelection: OverlayUserReplyReference? = nil
+  var onClearReply: () -> Void = {}
+  var draftMicrophoneRecording = false
+  var draftMicrophoneBusy = false
+  var onToggleDraftMicrophone: (() -> Void)? = nil
+  var onStageCaptureAttachments: (([String]) -> Bool)? = nil
+  var pendingCaptureAttachments: [String] = []
+  var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var captureAttachmentError: String? = nil
+  var onRetryCaptureAttachments: (() -> Void)? = nil
+  var onReply: ((OverlayConversationMessage) -> Void)? = nil
+  @State private var replyNavigationID: String?
+
   @State private var scrollFollow = StreamScrollFollowState()
   /// Conversation and presentation the focus handler last observed. Written
   /// after this turn's handlers, so a mini morph is not read as a re-select.
@@ -88,6 +101,7 @@ struct OverlayConversationView: View {
   @State private var scrollFocusWasPresented = false
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
+  @State private var navigationPillHeight: CGFloat = 28
   /// Bumps the composer's focus after a held message returns to the draft.
   @State private var revisionFocus: UInt64 = 0
   @State private var pendingDeliveryControls: Set<String> = []
@@ -132,6 +146,11 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: geometry.size.width, textScale: textScale)
         )
+        .onChange(of: replyNavigationID) { _, id in
+          guard let id else { return }
+          proxy.scrollTo(id, anchor: .center)
+          replyNavigationID = nil
+        }
         // One ScrollView per conversation. `.initialOffset` then starts at the
         // bottom instead of reusing the previous list's offset through the morph.
         // It places a list once, so the list is recreated when the history
@@ -281,7 +300,17 @@ struct OverlayConversationView: View {
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
           focusRevision: revisionFocus, isCovered: isCovered || !isPresented,
-          placeholder: composerPlaceholder)
+          placeholder: composerPlaceholder,
+          replySelection: replySelection, onClearReply: onClearReply,
+          draftMicrophoneRecording: draftMicrophoneRecording,
+          draftMicrophoneBusy: draftMicrophoneBusy,
+          onToggleDraftMicrophone: onToggleDraftMicrophone,
+          onStageCaptureAttachments: onStageCaptureAttachments,
+          pendingCaptureAttachments: pendingCaptureAttachments,
+          onRemoveCaptureAttachment: onRemoveCaptureAttachment,
+          captureAttachmentError: captureAttachmentError,
+          onRetryCaptureAttachments: onRetryCaptureAttachments,
+          onNavigateReply: { navigateToReply(replySelection?.messageID) })
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -315,11 +344,17 @@ struct OverlayConversationView: View {
               open: microphoneOpen, muted: playbackMuted,
               microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
               palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking
+              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+              diameter: navigationPillHeight
             )
             .fixedSize()
           }
           conversationNamePill
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              navigationPillHeight = max(28, $0)
+            }
         }
         // The gap between the controls and the name is not text either.
         .background { OverlayMenuCursorRegion() }
@@ -378,7 +413,11 @@ struct OverlayConversationView: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
     // Mockup: 224 × scale.
-    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
+    .frame(
+      width: conversation.channel == "0"
+        ? nil : OverlayAgentDrawerLayout.pillWidth(textScale: textScale),
+      alignment: .leading
+    )
     .frame(minHeight: 28)
     .contentShape(Capsule())
     .accessibilityElement(children: .combine)
@@ -447,6 +486,12 @@ struct OverlayConversationView: View {
     let id = orderedMessages[start].id
     if windowStartID != id { windowStartID = id }
     if windowConversationID != conversation.id { windowConversationID = conversation.id }
+  }
+
+  private func navigateToReply(_ id: String?) {
+    guard let id, let index = orderedMessages.firstIndex(where: { $0.id == id }) else { return }
+    pinMessageWindow(at: index)
+    replyNavigationID = id
   }
 
   @ViewBuilder
@@ -630,6 +675,31 @@ struct OverlayConversationView: View {
     }
   }
 
+  /// Sender and audience from this delivery, including a message that is only
+  /// attachments. A speaker who is not the open conversation stays a button;
+  /// the arrow and the audience are text, so the hit target is only the name.
+  /// The open conversation does not choose the names.
+  @ViewBuilder
+  private func messageSpeaker(_ message: OverlayConversationMessage) -> some View {
+    let route = OverlayChannelStatusView.messageRoute(of: message)
+    let font = Font.system(size: 10 * textScale, weight: .bold)
+    if let owner = message.owner, let onOpenOwnerConversation,
+      owner.id != conversation.owner?.id, route.speaker == owner.name
+    {
+      HStack(spacing: 0) {
+        BubbleOwnerNameButton(
+          name: owner.name, palette: palette, textScale: textScale, messageID: message.id
+        ) { onOpenOwnerConversation(owner) }
+        if let audience = route.audience, !audience.isEmpty {
+          Text(verbatim: " → \(audience)").font(font)
+        }
+      }
+    } else {
+      let fallback = message.owner?.name ?? conversation.name
+      Text(verbatim: route.label.isEmpty ? fallback : route.label).font(font)
+    }
+  }
+
   private func messageRow(_ message: OverlayConversationMessage, maxBubbleWidth: CGFloat)
     -> some View
   {
@@ -645,27 +715,8 @@ struct OverlayConversationView: View {
 
   func messageBubble(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack {
-        if message.kind == .user {
-          Text("You").font(.system(size: 10 * textScale, weight: .bold))
-        } else if let owner = message.owner, let onOpenOwnerConversation,
-          owner.id != conversation.owner?.id
-        {
-          BubbleOwnerNameButton(
-            name: owner.name, palette: palette, textScale: textScale, messageID: message.id
-          ) { onOpenOwnerConversation(owner) }
-        } else if let recipient = message.recipients.first?.owner,
-          message.owner?.id == conversation.owner?.id,
-          recipient.id != conversation.owner?.id,
-          message.sourceChannel != nil && message.sourceChannel != "0"
-            && message.sourceChannel != "10"
-        {
-          Text(verbatim: "\(message.owner?.name ?? conversation.name) → \(recipient.name)")
-            .font(.system(size: 10 * textScale, weight: .bold))
-        } else {
-          Text(verbatim: message.owner?.name ?? conversation.name)
-            .font(.system(size: 10 * textScale, weight: .bold))
-        }
+      HStack(spacing: 0) {
+        messageSpeaker(message)
         // Founder, 2026-10-18: whether a reply was asked for is routing truth,
         // not a badge — `unsolicited` keeps steering the channels, unlabelled.
         Spacer(minLength: 8)
@@ -674,6 +725,22 @@ struct OverlayConversationView: View {
           .accessibilityIdentifier("overlay-message-time-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-message-route-\(message.id)")
+      if let parent = message.userReplyTo {
+        Button {
+          navigateToReply(parent.messageID)
+        } label: {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: parent.author).fontWeight(.semibold)
+            Text(verbatim: parent.text).lineLimit(2)
+          }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityIdentifier("overlay-message-parent-\(message.id)")
+      }
       if let question = addressedQuestion(for: message) {
         Text("In reply to: \(String(question.text.prefix(100)))")
           .font(.system(size: 10 * textScale))
@@ -712,7 +779,20 @@ struct OverlayConversationView: View {
       if let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       }
-      messageFooter(message)
+      HStack {
+        messageFooter(message)
+        if let onReply, message.captureState != .receiving, message.withdrawn != true {
+          Spacer(minLength: 8)
+          Button("Reply", systemImage: "arrowshape.turn.up.left") {
+            onReply(message)
+            revisionFocus &+= 1
+          }
+          .buttonStyle(.plain)
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .accessibilityIdentifier("overlay-message-reply-\(message.id)")
+        }
+      }
     }
     .padding(12)
     .background(

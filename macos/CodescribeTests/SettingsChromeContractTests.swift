@@ -1423,13 +1423,23 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("corrections: Int(clamping: model.totalQualityCorrections),"))
     XCTAssertFalse(panel.contains("learnScopeMessage(corrections: corrections.count)"))
 
-    // Founder, 2026-10-15: the pane leads with the current take's word pins,
-    // open on arrival, above the newest correction however old it is.
+    // The user, 2026-10-15: the current take's word pins open on arrival.
+    // Since ada99ba3 they live in Lab, and the Dictionary pane stays a
+    // dictionary; Maciej, 2026-10-20: the pins lead the Lab desk, above its
+    // first switch row.
     XCTAssertTrue(DictionaryWordPins.expandedOnArrival)
-    let pins = try XCTUnwrap(panel.range(of: "DictionaryWordPins(configDir: model.configDir)"))
-    let recent = try XCTUnwrap(
+    XCTAssertFalse(panel.contains("DictionaryWordPins(configDir:"))
+    // Maciej, 2026-10-21: the pane leads with this Mac's recent takes, in
+    // human terms, above the corrections desk.
+    let recentTakes = try XCTUnwrap(
+      panel.range(of: "DictionaryRecentTakes(configDir: model.configDir)"))
+    let correctionsHeader = try XCTUnwrap(
       panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
-    XCTAssertLessThan(pins.lowerBound, recent.lowerBound)
+    XCTAssertLessThan(recentTakes.lowerBound, correctionsHeader.lowerBound)
+    let lab = try XCTUnwrap(try settingsSources()["LabPanel.swift"])
+    let pins = try XCTUnwrap(lab.range(of: "DictionaryWordPins(configDir: model.configDir)"))
+    let firstRow = try XCTUnwrap(lab.range(of: "SettingsControlRow("))
+    XCTAssertLessThan(pins.lowerBound, firstRow.lowerBound)
 
     let polish = try polishCatalog()
     let expected: [String: String] = [

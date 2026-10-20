@@ -133,14 +133,17 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 /// this canvas is drawn.
 struct OverlayControlGlass: ViewModifier {
   var cornerRadius: CGFloat = CSRadius.pill
+  var isEnabled = true
 
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     if #available(macOS 26.0, *) {
-      content.glassEffect(.regular.interactive(), in: shape)
+      content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
     } else {
-      content.background(.regularMaterial, in: shape)
+      content.background {
+        if isEnabled { shape.fill(.regularMaterial) }
+      }
     }
   }
 }

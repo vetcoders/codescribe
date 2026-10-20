@@ -23,6 +23,18 @@ struct OverlayConversationComposer: View {
   var saveFile: (Data, String) throws -> URL = { data, name in
     URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
   }
+  var replySelection: OverlayUserReplyReference? = nil
+  var onClearReply: () -> Void = {}
+  var draftMicrophoneRecording = false
+  var draftMicrophoneBusy = false
+  var onToggleDraftMicrophone: (() -> Void)? = nil
+  var onStageCaptureAttachments: (([String]) -> Bool)? = nil
+  var pendingCaptureAttachments: [String] = []
+  var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var captureAttachmentError: String? = nil
+  var onRetryCaptureAttachments: (() -> Void)? = nil
+  var onNavigateReply: (() -> Void)? = nil
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
 
@@ -49,6 +61,7 @@ struct OverlayConversationComposer: View {
   private var attachments: [String] { ConversationDraft.split(draft).attachments }
 
   private func attach(_ paths: [String]) {
+    if onStageCaptureAttachments?(paths) == true { return }
     let parts = ConversationDraft.split(draft)
     let added = paths.filter { !parts.attachments.contains($0) }
     guard !added.isEmpty else { return }
@@ -63,6 +76,50 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: 6) {
+      if let replySelection {
+        HStack(alignment: .top, spacing: 8) {
+          Button {
+            onNavigateReply?()
+          } label: {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(verbatim: replySelection.author).fontWeight(.semibold)
+              Text(verbatim: replySelection.text).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .buttonStyle(.plain)
+          .disabled(onNavigateReply == nil)
+          Button("Clear reply", systemImage: "xmark", action: onClearReply)
+            .labelStyle(.iconOnly).buttonStyle(.plain)
+            .accessibilityIdentifier("overlay-conversation-clear-reply")
+        }
+        .font(.system(size: 11 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityIdentifier("overlay-conversation-reply-context")
+      }
+      if !pendingCaptureAttachments.isEmpty {
+        Text("Attachments for active recording")
+          .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
+        WrapLayout(spacing: 6) {
+          ForEach(pendingCaptureAttachments, id: \.self) { path in
+            OverlayComposerAttachmentPill(path: path, palette: palette) {
+              onRemoveCaptureAttachment?(path)
+            }
+          }
+        }
+        .accessibilityIdentifier("overlay-conversation-capture-attachments")
+        if let captureAttachmentError {
+          HStack {
+            Text(verbatim: captureAttachmentError)
+              .foregroundStyle(palette.errorStatus.color)
+            if let onRetryCaptureAttachments {
+              Button("Retry attachments", action: onRetryCaptureAttachments)
+                .buttonStyle(.plain)
+            }
+          }
+          .font(.system(size: 10 * textScale))
+        }
+      }
       let attached = attachments
       if !attached.isEmpty {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -117,6 +174,25 @@ struct OverlayConversationComposer: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+      }
+      if let onToggleDraftMicrophone {
+        Button(action: onToggleDraftMicrophone) {
+          Image(systemName: draftMicrophoneRecording ? "mic.fill" : "mic")
+            .symbolEffect(
+              .pulse, options: .repeating,
+              isActive: draftMicrophoneRecording && !reduceMotion)
+        }
+        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+        .foregroundStyle(palette.agentAccent.color)
+        .frame(
+          width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+        )
+        .contentShape(Circle()).buttonStyle(.plain)
+        .disabled(draftMicrophoneBusy)
+        .accessibilityLabel(
+          draftMicrophoneRecording ? Text("Stop dictation") : Text("Dictate message")
+        )
+        .accessibilityIdentifier("overlay-conversation-draft-microphone")
       }
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)
         .labelStyle(.iconOnly)
