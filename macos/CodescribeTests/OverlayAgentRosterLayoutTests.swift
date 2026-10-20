@@ -44,9 +44,18 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       id: owner.id, channel: "3", name: "Astra", owner: owner, messages: [])
     let channel = OverlayChannelDelivery(
       channel: "3", agent: "Astra", deliveryID: nil, stage: nil, isOpen: false)
-    let row = OverlayChannelStatusView(
+    var row = OverlayChannelStatusView(
       channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "3": OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: owner.provider, providerSessionID: owner.providerSessionID, frameDetected: true)
+      ],
       onToggleChannel: { _ in }, conversations: [conversation], onSelectConversation: { _ in })
+    row.archiveCandidates = ["3": owner]
+    row.onArchiveAgent = { _ in }
+    row.panelFocusAvailable = true
+    row.onFocusAgentPanel = { _ in }
     for width in [CGFloat(240), 300, 400] {
       let host = NSHostingView(rootView: row.channelRow(channel).frame(width: width))
       let window = show(host, width: width)
@@ -54,12 +63,14 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       let label = try XCTUnwrap(
         NativeAccessibilityProbe.waitForElements("overlay-view-conversation-\(owner.id)")
           .elements.first)
-      let microphone = try XCTUnwrap(
-        NativeAccessibilityProbe.waitForElements("overlay-agent-microphone").elements.first)
+      let controls = try NativeAccessibilityProbe.waitForElements("overlay-agent-row-controls-3")
+      XCTAssertFalse(controls.elements.isEmpty, controls.trace.joined(separator: "\n"))
       XCTAssertGreaterThan(label.width, width * 0.8, "controls do not reserve a full-height column")
       // Native AX coordinates grow down from the top of the screen.
-      XCTAssertGreaterThanOrEqual(microphone.y, label.frame.maxY - 1)
-      XCTAssertLessThanOrEqual(microphone.frame.maxX, window.frame.maxX + 1)
+      for control in controls.elements {
+        XCTAssertGreaterThanOrEqual(control.y, label.frame.maxY - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxX, window.frame.maxX + 1)
+      }
     }
   }
 

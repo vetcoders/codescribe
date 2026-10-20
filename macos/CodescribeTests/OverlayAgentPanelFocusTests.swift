@@ -54,31 +54,11 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     return fileURL
   }
 
-  private func renderedRowSize(
-    in view: OverlayChannelStatusView,
-    for channel: OverlayChannelDelivery
-  ) -> NSSize {
-    let host = NSHostingView(rootView: view.channelRow(channel).fixedSize())
-    let window = NSWindow(
-      contentRect: NSRect(x: -10000, y: -10000, width: 440, height: 120),
-      styleMask: [.titled],
-      backing: .buffered,
-      defer: false)
-    window.contentView = host
-    window.orderFrontRegardless()
-    defer { window.orderOut(nil) }
-    host.layoutSubtreeIfNeeded()
-    window.displayIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    host.layoutSubtreeIfNeeded()
-    return host.fittingSize
-  }
-
   private func armRoster(
     on state: OverlayState,
     owner: OverlayConversationOwner,
     panelFocusAvailable: Bool = true,
-    frameDetected: Bool? = nil
+    frameDetected: Bool? = true
   ) {
     state.applyChannelRoster([
       CsChannelRosterState(
@@ -127,7 +107,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       String(localized: "Opening panel in Frame…"))
   }
 
-  func testAgentWithoutFramePaneRestsGreyedAndNeverRequestsFocus() throws {
+  func testAgentWithoutFramePaneNeverRequestsFocus() throws {
     let state = OverlayState.previewFormatted()
     let owner = makeOwner()
     armRoster(on: state, owner: owner, frameDetected: false)
@@ -325,7 +305,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       hudStates: [
         "5": OverlayChannelHudProjection(
           open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-          provider: owner.provider, providerSessionID: owner.providerSessionID)
+          provider: owner.provider, providerSessionID: owner.providerSessionID, frameDetected: true)
       ],
       conversations: [conversation],
       selectedConversationID: conversation.id,
@@ -761,7 +741,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       "removing a referenced wrapper dependency must invalidate the cached capability")
   }
 
-  func testPanelFocusButtonExcludedWhenUnavailableAndRenderedWhenAvailableIncludingDeadFollower()
+  func testPanelFocusButtonRequiresCapabilityDetectedPaneAndLiveFollower()
     throws
   {
     let owner = makeOwner(channel: "5", name: "stanislaw")
@@ -790,7 +770,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       hudStates: [
         "5": OverlayChannelHudProjection(
           open: false, loud: false, autosealDeadline: nil, followerAlive: true,
-          provider: owner.provider, providerSessionID: owner.providerSessionID)
+          provider: owner.provider, providerSessionID: owner.providerSessionID, frameDetected: true)
       ],
       conversations: [conversation],
       selectedConversationID: conversation.id,
@@ -819,7 +799,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         hudStates: [
           "5": OverlayChannelHudProjection(
             open: false, loud: false, autosealDeadline: nil, followerAlive: followerAlive,
-            provider: owner.provider, providerSessionID: owner.providerSessionID)
+            provider: owner.provider, providerSessionID: owner.providerSessionID,
+            frameDetected: true)
         ],
         conversations: [conversation],
         selectedConversationID: conversation.id,
@@ -838,33 +819,24 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
 
     XCTAssertFalse(unavailableView.showsPanelFocusButton(for: row))
     XCTAssertTrue(availableLiveView.showsPanelFocusButton(for: row))
-    XCTAssertTrue(
+    XCTAssertFalse(
       availableDeadFollowerView.showsPanelFocusButton(for: row),
-      "a disconnected follower must not hide the Focus in Frame button when vc-frame is installed")
+      "a disconnected follower is not an available Frame destination")
     XCTAssertEqual(
       availableDeadFollowerView.panelFocusHelp(for: row, state: nil),
       String(localized: "Agent is disconnected"))
 
-    let defaultInitialSize = renderedRowSize(in: defaultStatusView, for: row)
-    let unavailableSize = renderedRowSize(in: unavailableView, for: row)
-    let availableLiveSize = renderedRowSize(in: availableLiveView, for: row)
-    let availableDeadSize = renderedRowSize(in: availableDeadFollowerView, for: row)
-
-    XCTAssertEqual(
-      defaultInitialSize.width,
-      unavailableSize.width,
-      accuracy: 1.0,
-      "initial unprobed render excludes the Focus in Frame button")
-    XCTAssertGreaterThan(
-      availableLiveSize.width,
-      unavailableSize.width + 20,
-      "the Focus in Frame button is excluded from the rendered row when vc-frame is unavailable")
-    XCTAssertEqual(
-      availableDeadSize.width,
-      availableLiveSize.width,
-      accuracy: 1.0,
-      "a dead follower keeps the Focus in Frame button rendered (disabled) when vc-frame is installed"
-    )
+    var unknownPaneView = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "5": OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: owner.provider, providerSessionID: owner.providerSessionID)
+      ])
+    unknownPaneView.archiveCandidates = ["5": owner]
+    unknownPaneView.panelFocusAvailable = true
+    unknownPaneView.onFocusAgentPanel = { _ in }
+    XCTAssertFalse(unknownPaneView.showsPanelFocusButton(for: row), "unknown is not detected")
 
     // Clicking an already-selected row when panelFocusAvailable is false must not request panel focus:
     var focusedWhenUnavailable: [OverlayConversationOwner] = []
