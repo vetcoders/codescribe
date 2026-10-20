@@ -275,10 +275,16 @@ struct MessageList: View {
                   alignment: .center
                 )
             }
+            let dayBreaks = Self.dayBreaks(in: visibleMessages)
             ForEach(visibleMessages) { message in
-              turn(message, containerWidth: containerWidth, mode: widthMode)
-                .frame(maxWidth: .infinity, alignment: alignment(message.role))
-                .id(message.id)
+              VStack(spacing: ChatLayoutPolicy.turnSpacing) {
+                if let day = dayBreaks[message.id] {
+                  MessageDaySeparator(date: day)
+                }
+                turn(message, containerWidth: containerWidth, mode: widthMode)
+                  .frame(maxWidth: .infinity, alignment: alignment(message.role))
+              }
+              .id(message.id)
             }
             Color.clear
               .frame(height: ChatLayoutPolicy.liveEdgeAnchorHeight)
@@ -410,6 +416,25 @@ struct MessageList: View {
         + "-\(message.reasoning.utf8.count)-\(message.toolLines.count)-\(running)"
     }
     return signature
+  }
+
+  /// Turns that open a new calendar day, keyed to that day. The full date
+  /// lives in one separator above such a turn instead of in every bubble;
+  /// a turn without a time neither starts nor breaks a day.
+  static func dayBreaks(
+    in messages: some Collection<ChatMessage>,
+    calendar: Calendar = .autoupdatingCurrent
+  ) -> [UUID: Date] {
+    var breaks: [UUID: Date] = [:]
+    var previous: Date?
+    for message in messages {
+      guard let current = message.timestamp else { continue }
+      if MessageTimestamp.startsNewDay(previous: previous, current: current, calendar: calendar) {
+        breaks[message.id] = current
+      }
+      previous = current
+    }
+    return breaks
   }
 
   private func alignment(_ role: ChatRole) -> Alignment {
@@ -702,7 +727,7 @@ private struct YouTurn: View {
         HStack(spacing: 8) {
           Text("You")
           Spacer(minLength: 8)
-          MessageTimestampLabel(date: message.timestamp)
+          MessageTimestampLabel(date: message.timestamp, compact: true)
         }
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
@@ -729,8 +754,9 @@ private struct YouTurn: View {
             app: message.contextApp
           )
         }
-        HStack {
-          Spacer(minLength: 0)
+        // Actions sit in one quiet row at the bubble's bottom-leading edge,
+        // the same place as on Agent turns.
+        MessageActionRow {
           CopyMessageButton(text: copyText)
         }
       }
@@ -1318,7 +1344,7 @@ private struct ToolTurn: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         Spacer(minLength: 0)
-        MessageTimestampLabel(date: message.timestamp)
+        MessageTimestampLabel(date: message.timestamp, compact: true)
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
       }
@@ -1358,8 +1384,7 @@ private struct ToolTurn: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
-      HStack {
-        Spacer(minLength: 0)
+      MessageActionRow {
         CopyMessageButton(text: copyText)
       }
     }
@@ -1431,18 +1456,14 @@ private struct AssistantTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       VStack(alignment: .leading, spacing: 9) {
+        // Author and time only: the content comes first, and the actions
+        // wait in the quiet row under it.
         HStack(spacing: 8) {
           Text("Agent")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
-          speechButton
-          if !message.isThinking && !message.text.isEmpty {
-            RenderModeButton(mode: message.renderMode) {
-              onToggleRenderMode(message.id)
-            }
-          }
           Spacer(minLength: 8)
-          MessageTimestampLabel(date: message.timestamp)
+          MessageTimestampLabel(date: message.timestamp, compact: true)
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
@@ -1502,9 +1523,17 @@ private struct AssistantTurn: View {
           }
         }
         if !message.isThinking {
-          HStack {
-            Spacer(minLength: 0)
+          // Copy · Speak · raw/rich. The last one switches how this one
+          // message renders (markdown or the exact streamed text); it is not
+          // a response mode.
+          MessageActionRow {
             CopyMessageButton(text: message.text)
+            speechButton
+            if !message.text.isEmpty {
+              RenderModeButton(mode: message.renderMode) {
+                onToggleRenderMode(message.id)
+              }
+            }
           }
         }
       }
@@ -1643,10 +1672,11 @@ private struct RawText: View {
   }
 }
 
-/// Inline raw↔rich toggle in the assistant meta row, next to "copy". The label
-/// names the mode a click switches TO (mirrors the copy button's action-verb
-/// style). Mutation goes through the store via `onToggleRenderMode` — the view
-/// holds no render-mode state.
+/// Inline raw↔rich toggle, the last item of the assistant's action row after
+/// "copy" and "Speak". It switches how this one message renders: markdown, or
+/// the exact text that streamed in. The label names the mode a click switches
+/// TO (mirrors the copy button's action-verb style). Mutation goes through the
+/// store via `onToggleRenderMode` — the view holds no render-mode state.
 private struct RenderModeButton: View {
   let mode: MessageRenderMode
   let action: () -> Void
@@ -1673,6 +1703,19 @@ private struct RenderModeButton: View {
   }
 }
 
+/// One quiet row of message actions at a turn's bottom-leading edge: the same
+/// place on You, Agent and tool turns, the same 10 pt faint controls as before.
+struct MessageActionRow<Content: View>: View {
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    HStack(spacing: 12) {
+      content
+      Spacer(minLength: 0)
+    }
+  }
+}
+
 /// Shared by the bubble context menu and inline button. Success is reported
 /// only after the existing Rust copy authority has acknowledged the write.
 @MainActor
@@ -1695,7 +1738,7 @@ private struct CopyButton: View {
   }
 }
 
-/// Subtle inline "copy" affordance in a turn's meta row (mono 10, faint until
+/// Subtle inline "copy" affordance in a turn's action row (10 pt, faint until
 /// hovered). Copies the raw pre-render text via the same `chatCopy` path the
 /// context menu uses, then flips to a green "copied" for ~1.5s. Disabled when
 /// there is nothing to copy.
