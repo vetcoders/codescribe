@@ -4544,7 +4544,7 @@ final class OverlayState {
       if let projection = latestTranscriptProjection, projection.sessionId == sessionID {
         admitComposerDelivery(projection)
       }
-      draftCapture.ended(sessionID: sessionID)
+      draftCapture.completed(sessionID: sessionID)
     }
     let addressing = statusAddressing(for: event)
     let presentedHeadline = AdmissionRefusalCopy.headline(
@@ -4667,7 +4667,7 @@ final class OverlayState {
           admitComposerDelivery(projection, affectsCurrentCapture: false)
         }
         if endedProjectionSessions.insert(projection.sessionId).inserted {
-          draftCapture.ended(sessionID: projection.sessionId)
+          draftCapture.completed(sessionID: projection.sessionId)
           onCaptureEnded?(projection.sessionId)
         }
       }
@@ -4858,7 +4858,7 @@ final class OverlayState {
       if projection.delivery == .composerPending {
         admitComposerDelivery(projection)
       }
-      draftCapture.ended(sessionID: projection.sessionId)
+      draftCapture.completed(sessionID: projection.sessionId)
       onCaptureEnded?(projection.sessionId)
       // Release capture before flipping `finalized`; abort uses the previous
       // value to decide whether the app-level stopped callback is still owed.

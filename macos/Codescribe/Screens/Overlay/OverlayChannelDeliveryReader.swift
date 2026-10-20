@@ -606,6 +606,17 @@ actor OverlayChannelDeliveryReader {
       result.captureState = .finished
     }
     result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
+    // The shared capture stream can mirror the same document without the
+    // attachment receipt written on recipient buses. Revision/path ordering
+    // chooses the prose, but cannot discard independently committed pointers.
+    if let otherAttachments = other.attachments {
+      var paths = Set((result.attachments ?? []).map(\.path))
+      var attachments = result.attachments ?? []
+      for attachment in otherAttachments where paths.insert(attachment.path).inserted {
+        attachments.append(attachment)
+      }
+      result.attachments = attachments
+    }
     if let otherOccurrences = other.occurrenceIDs {
       var occurrences = result.occurrenceIDs ?? []
       for occurrence in otherOccurrences where !occurrences.contains(occurrence) {
