@@ -228,8 +228,6 @@ pub struct UserSettings {
     /// Lab ledger slider, -100..=100. `None` keeps today's engine (0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ledger_sensitivity: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ai_formatting_enabled: Option<bool>,
     /// `CODESCRIBE_FORMAT_ON_DEVICE`: format on the Apple system model first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format_on_device: Option<bool>,
@@ -1597,13 +1595,12 @@ struct SpeechEngineV2 {
     gateway_session_url: Option<String>,
 }
 
-/// LLM post-processing of the transcript: whether it runs, how aggressively,
-/// and on which provider + model. Legacy `llm_endpoint` is migration-only.
+/// LLM post-processing of the transcript: how aggressively (`level`, where
+/// `off` means not at all) and on which provider + model. Legacy
+/// `llm_endpoint` and the retired `enabled` switch are migration-only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FormattingV2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     on_device: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1784,7 +1781,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "MIDDLE_MOUSE_ACTS_AS_FN",
     "MIDDLE_MOUSE_AGENT_GESTURE",
     // AI / Formatting
-    "AI_FORMATTING_ENABLED",
     "PASTE_MODE",
     "TRANSCRIPT_TAGGING_ENABLED",
     "TRANSCRIPT_TAG_TEMPLATE",
@@ -1888,7 +1884,6 @@ macro_rules! typed_setting_writes {
 
 typed_setting_writes! {
     store_bool: bool, |value: &str| Some(matches!(value, "1" | "true" | "yes" | "on")) => {
-        "AI_FORMATTING_ENABLED" => ai_formatting_enabled,
         "TRANSCRIPT_TAGGING_ENABLED" => transcript_tagging_enabled,
         "BEEP_ON_START" => beep_on_start,
         "SHOW_DOCK_ICON" => show_dock_icon,
@@ -2004,7 +1999,6 @@ impl UserSettings {
                     gateway_session_url: self.asr_gateway_url.clone(),
                 }),
                 formatting: Some(FormattingV2 {
-                    enabled: self.ai_formatting_enabled,
                     on_device: self.format_on_device,
                     transcript_tagging_enabled: self.transcript_tagging_enabled,
                     transcript_tag_template: self.transcript_tag_template.clone(),
@@ -2129,7 +2123,6 @@ impl UserSettings {
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
-            ai_formatting_enabled: copy!(v2.speech, formatting, enabled),
             format_on_device: copy!(v2.speech, formatting, on_device),
             paste_mode: copy!(v2.interaction, paste_mode),
             transcript_tagging_enabled: copy!(v2.speech, formatting, transcript_tagging_enabled),
@@ -2462,6 +2455,7 @@ impl UserSettings {
             Ok(contents) => match super::repair::project_settings(&path, contents.as_bytes()) {
                 Ok(value) => {
                     let retired_paste_mode = Self::retired_auto_paste(&value);
+                    let retired_formatting_switch = Self::retired_formatting_switch(&value);
                     let value_for_legacy = value.clone();
                     if value.get("schema_version").is_some() {
                         match serde_json::from_value::<SettingsV2>(value) {
@@ -2472,6 +2466,12 @@ impl UserSettings {
                                 }
                                 debug!("Loaded settings V2 from {}", path.display());
                                 let mut settings = Self::from_v2(v2);
+                                // Fold before any save: `to_v2` never writes the
+                                // retired switch, so a save must already carry Off.
+                                Self::fold_retired_formatting_switch(
+                                    &mut settings,
+                                    retired_formatting_switch,
+                                );
                                 if let Some(mode) = retired_paste_mode {
                                     // One-shot: the saved V2 shape carries only
                                     // `paste_mode`, so the next load finds nothing.
@@ -2488,6 +2488,20 @@ impl UserSettings {
                                                 )
                                             }
                                         }
+                                    }
+                                } else if retired_formatting_switch.is_some()
+                                    && persist_migrations
+                                {
+                                    // One-shot: the saved V2 shape carries only
+                                    // `formatting.level`, so the next load finds nothing.
+                                    match settings.save_unlocked() {
+                                        Ok(()) => info!(
+                                            formatting_level = ?settings.formatting_level,
+                                            "Migrated formatting enabled switch to formatting level"
+                                        ),
+                                        Err(error) => warn!(
+                                            "Failed to persist migrated formatting level: {error}"
+                                        ),
                                     }
                                 }
                                 Self::migrate_retired_llm_lanes_once(
@@ -2519,6 +2533,10 @@ impl UserSettings {
                                 if let Some(mode) = retired_paste_mode {
                                     settings.paste_mode.get_or_insert(mode);
                                 }
+                                Self::fold_retired_formatting_switch(
+                                    &mut settings,
+                                    retired_formatting_switch,
+                                );
                                 // Keep the legacy endpoint mapping until its durable key
                                 // relocation intent is part of the first V2 write.
                                 Self::migrate_retired_llm_lanes_once(
@@ -2584,6 +2602,25 @@ impl UserSettings {
             .or_else(|| raw.get("auto_paste_enabled"))
             .and_then(serde_json::Value::as_bool)
             .map(PasteMode::from_retired_auto_paste)
+    }
+
+    /// The one reader of the retired formatting master switch (V1 flat
+    /// `ai_formatting_enabled` or V2 `speech.formatting.enabled`), or `None`
+    /// when the key is gone. The formatting level is the only on/off switch
+    /// now; `to_v2` never writes the old key, so the first save retires it.
+    fn retired_formatting_switch(raw: &serde_json::Value) -> Option<bool> {
+        raw.pointer("/speech/formatting/enabled")
+            .or_else(|| raw.get("ai_formatting_enabled"))
+            .and_then(serde_json::Value::as_bool)
+    }
+
+    /// A switched-off master switch becomes level Off whatever level was
+    /// stored beside it: the old switch overrode the level. `true` or a
+    /// missing key leaves the level untouched.
+    fn fold_retired_formatting_switch(settings: &mut Self, switch: Option<bool>) {
+        if switch == Some(false) {
+            settings.formatting_level = Some(FormattingPolicy::Off.as_str().to_string());
+        }
     }
 
     /// Run the one-shot legacy LLM lane migration when the raw document still

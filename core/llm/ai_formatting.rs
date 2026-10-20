@@ -2855,7 +2855,6 @@ mod tests {
         )
         .unwrap();
         let user_settings = crate::config::UserSettings {
-            ai_formatting_enabled: Some(true),
             llm_assistive_provider: Some(format!("custom:{}", provider.id)),
             llm_assistive_model: Some("buddy".into()),
             llm_custom_providers: vec![provider],

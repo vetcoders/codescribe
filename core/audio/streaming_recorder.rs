@@ -142,14 +142,10 @@ enum TakeFeedRelease {
 /// Transport admission only: never invoke the executor while opening audio.
 fn live_max_capability(
     intent: CaptureTurnIntent,
-    enabled: bool,
     policy: crate::config::FormattingPolicy,
     agent: Option<&Arc<dyn crate::ai_formatting::FormattingAgent>>,
 ) -> Option<Arc<dyn crate::ai_formatting::FormattingAgent>> {
-    if intent.schedules_live_formatting()
-        && enabled
-        && policy == crate::config::FormattingPolicy::Max
-    {
+    if intent.schedules_live_formatting() && policy == crate::config::FormattingPolicy::Max {
         agent.cloned()
     } else {
         None
@@ -1352,7 +1348,6 @@ impl StreamingRecorder {
         let capture_turn = self.capture_turn;
         let live_formatting_agent = live_max_capability(
             capture_turn,
-            runtime_settings.values().ai_formatting_enabled,
             runtime_settings.formatting_policy(),
             self.live_formatting_agent.as_ref(),
         );
@@ -2597,32 +2592,24 @@ mod tests {
         use crate::config::FormattingPolicy;
         let agent: Arc<dyn crate::ai_formatting::FormattingAgent> = Arc::new(TransportOnlyAgent);
         for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
-            for enabled in [false, true] {
-                for policy in [
-                    FormattingPolicy::Off,
-                    FormattingPolicy::Correction,
-                    FormattingPolicy::Smart,
-                    FormattingPolicy::Max,
-                ] {
-                    let selected = live_max_capability(intent, enabled, policy, Some(&agent));
-                    let admitted = intent == CaptureTurnIntent::HandsFree
-                        && enabled
-                        && policy == FormattingPolicy::Max;
-                    assert_eq!(selected.is_some(), admitted);
-                    if let Some(selected) = selected {
-                        assert!(Arc::ptr_eq(&selected, &agent));
-                    }
+            for policy in [
+                FormattingPolicy::Off,
+                FormattingPolicy::Correction,
+                FormattingPolicy::Smart,
+                FormattingPolicy::Max,
+            ] {
+                let selected = live_max_capability(intent, policy, Some(&agent));
+                let admitted =
+                    intent == CaptureTurnIntent::HandsFree && policy == FormattingPolicy::Max;
+                assert_eq!(selected.is_some(), admitted);
+                if let Some(selected) = selected {
+                    assert!(Arc::ptr_eq(&selected, &agent));
                 }
             }
         }
         assert!(
-            live_max_capability(
-                CaptureTurnIntent::HandsFree,
-                true,
-                FormattingPolicy::Max,
-                None,
-            )
-            .is_none()
+            live_max_capability(CaptureTurnIntent::HandsFree, FormattingPolicy::Max, None)
+                .is_none()
         );
     }
 
