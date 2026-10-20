@@ -5,9 +5,10 @@ import SwiftUI
 // (`listToolCapabilities`) and durable settings.json agent.permissions via the
 // MCP admin bridge. Identity contract: `server:tool` / `native:name`.
 //
-// One column, two bands under two equal section titles: "Defaults" with the
-// safety note that says what no setting here can lift, then "Individual tools"
-// (search and source on one row, then full-width cards). The sources used to be
+// One column, two bands: "Defaults" under its own section title with the
+// safety note that says what no setting here can lift, then the per-tool
+// catalog with no title of its own (search and source on one row, a trailing
+// count, then full-width cards — UI-26, round 20). The sources used to be
 // a sidebar beside the cards; it took the width the tool names need, so the
 // names truncated to an ellipsis ("Aicx index sta…"). The sources moved into a
 // popup, the cards took the full width, and a name now wraps instead of
@@ -16,18 +17,19 @@ import SwiftUI
 // Round 16 made the per-tool cards compact: one card owner
 // (`settingsGroupedInset`), the scale's own type rungs instead of five ad hoc
 // sizes, a tighter inset, a small picker, and the raw identifier dropped to the
-// quietest rung while staying selectable. Both band titles are
-// `SettingsSectionHeaderRow`, so neither reads weaker than the settings under
-// it (Founder brief, round 16, 2026-10-18).
+// quietest rung while staying selectable. The "Defaults" title is
+// `SettingsSectionHeaderRow`, so it never reads weaker than the settings
+// under it (Founder brief, round 16, 2026-10-18).
 //
-// Every `Allow · Ask · Deny` picker in the defaults sits at its own width
-// (`fixedSize`): a segmented control cannot shrink below its labels, and a
-// frame narrower than them lets it spill over both edges of its card. The
-// Settings window follows the content minimum, so a row of three such pickers
-// also forced the window wider than the screen and made it jump when this tab
-// opened. Defaults are therefore one row per category; a tool card instead
-// puts its picker on a row of its own at full width, which is exactly what
-// frees the name's line.
+// Every `Allow · Ask · Deny` picker — in the defaults and in a tool card
+// alike — sits at its own width (`fixedSize`) pinned to the row's trailing
+// edge behind a `Spacer`: a segmented control cannot shrink below its labels,
+// and a frame narrower than them lets it spill over both edges of its card.
+// The Settings window follows the content minimum, so a row of three such
+// pickers also forced the window wider than the screen and made it jump when
+// this tab opened. Defaults are therefore one row per category; a tool card
+// puts its picker on a row of its own, right-aligned to the same edge
+// (UI-25, round 20).
 
 struct ToolPermissionsSection: View {
   @ObservedObject var model: SettingsViewModel
@@ -55,7 +57,7 @@ struct ToolPermissionsSection: View {
       // The real resolution order, so nobody reads "Deny wins over everything"
       // into a screen where a tool rule outranks its server's rule.
       Text(
-        "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools stay blocked, and a path that may hold secrets always asks."
+        "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."
       )
       .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
@@ -73,9 +75,13 @@ struct ToolPermissionsSection: View {
             .padding(.top, SettingsScale.rowGap)
         }
       } else {
-        // No rule between the bands: two equal titles already separate them.
-        // The count is the whole catalog, not the number of individual rules.
-        SettingsSectionHeaderRow(String(localized: "Individual tools")) {
+        // No title here any more (UI-26, round 20): the search field, the
+        // source filter and the list below already read as their own band
+        // without a repeated "Individual tools" caption. The count is the
+        // whole catalog, not the number of individual rules, and keeps its
+        // trailing position on a row of its own.
+        HStack {
+          Spacer(minLength: 0)
           Text("\(model.toolCapabilities.count) tools", comment: "Plural: count of tools")
             .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
@@ -518,15 +524,21 @@ struct ToolCapabilityRow: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .help(fullIdentification)
 
-      Picker("Permission for \(item.displayName)", selection: $level) {
-        Text("Allow", comment: "Tool permission level").tag("allow")
-        Text("Ask", comment: "Tool permission level").tag("ask")
-        Text("Deny", comment: "Tool permission level").tag("deny")
+      // Right-aligned to one shared edge with the defaults rows above
+      // (`defaultRow`): a trailing `Spacer` plus `fixedSize`, not a stretched
+      // control centred in its row (UI-25, round 20).
+      HStack(spacing: CSSpace.md) {
+        Spacer(minLength: 0)
+        Picker("Permission for \(item.displayName)", selection: $level) {
+          Text("Allow", comment: "Tool permission level").tag("allow")
+          Text("Ask", comment: "Tool permission level").tag("ask")
+          Text("Deny", comment: "Tool permission level").tag("deny")
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .fixedSize()
       }
-      .labelsHidden()
-      .pickerStyle(.segmented)
-      .frame(maxWidth: .infinity)
-      .controlSize(.small)
 
       // The action names what it does, not "inheritance", and only a tool that
       // actually carries an individual rule can drop one. One button family:
