@@ -2802,6 +2802,33 @@ impl AcousticLedger {
                 non_mutating: None,
             }
         });
+        let blocked_sources = if observation.producer == ObservationProducer::ManualHuman {
+            Vec::new()
+        } else {
+            self.slots_of(&observation.occurrence).unwrap_or(&[]).iter().filter(|source| {
+                let operation_outputs = operations.iter().find(|operation| operation.sources.contains(source))
+                    .map(|operation| operation.outputs.as_slice());
+                let individual_outputs = slots.as_ref().filter(|proposed| proposed.iter().any(|output| {
+                    output != *source && self.same_anchored_word(source, output)
+                })).map(Vec::as_slice);
+                operation_outputs.or(individual_outputs).is_some_and(|outputs| {
+                    !self.slot_retirement_has_acoustic_coverage(source, outputs)
+                })
+            }).cloned().collect::<Vec<_>>()
+        };
+        if !blocked_sources.is_empty() {
+            let held_by = self.committed.get(&observation.occurrence)
+                .map_or(observation.producer, |held| held.producer);
+            self.offered_observations += 1;
+            self.note_answered(observation);
+            self.retain_slot_alternative(observation, text, blocked_sources,
+                "absence_requires_acoustic_evidence");
+            let decision = MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(), held_by,
+            };
+            self.record_layer_decision(observation, text, &decision, None);
+            return decision;
+        }
         self.offered_observations += 1;
         let has_pinned_sources = self
             .slots_of(&observation.occurrence)
@@ -2943,21 +2970,15 @@ impl AcousticLedger {
             && let Some(held) = self.committed.get_mut(&observation.occurrence)
         {
             self.word_pin_observations.insert(observation.clone());
-            // Every proposed source is applied individually. Omitted sources
-            // remain; this path has no deletion or implicit merge operation.
-            for slot in slots {
-                if !held.slots.contains(&slot) {
-                    held.slots.push(slot);
-                }
-            }
-            // Only explicit operation receipts retire old source geometry.
-            // Every source omitted without an operation remains held.
+            // Only explicit operations retire a source. Remove predecessors
+            // before inserting outputs: an identical output is still held.
             held.slots.retain(|source| {
                 !individual_sources.contains(source)
-                    && !operations
-                        .iter()
-                        .any(|group| group.sources.contains(source))
+                    && !operations.iter().any(|group| group.sources.contains(source))
             });
+            for slot in slots {
+                if !held.slots.contains(&slot) { held.slots.push(slot); }
+            }
             held.slots
                 .sort_by_key(|word| (word.sample_start, word.sample_end));
             held.recompose();
@@ -3179,6 +3200,11 @@ impl AcousticLedger {
         }
 
         if text.trim().is_empty() && observation.producer != ObservationProducer::ManualHuman {
+            if let Some(held) = self.committed.get(&observation.occurrence) {
+                return MutationReceipt::Preserve {
+                    occurrence: observation.occurrence.clone(), held_by: held.producer,
+                };
+            }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
                 reason: RefuseReason::EmptyLabel,
@@ -3222,21 +3248,10 @@ impl AcousticLedger {
                     let single_source = held.slots.len() == 1
                         && held.slots[0].sample_start == observation.occurrence.sample_start
                         && held.slots[0].sample_end == observation.occurrence.sample_end;
-                    // Explicit recovery may replace an occurrence-only hypothesis.
-                    // It supplies no word targets and cannot settle decoder debt.
-                    let recovering_label = single_source
-                        && self.pending_text_recovery.contains(&observation.occurrence)
-                        && !self
-                            .word_pin_observations
-                            .contains(&held.slots[0].observation)
-                        && matches!(
-                            observation.producer,
-                            ObservationProducer::Whisper | ObservationProducer::CloudLive
-                        );
-                    if single_source
-                        && !recovering_label
-                        && observation.producer != ObservationProducer::ManualHuman
-                    {
+                    // A recovery decode's omission is still not acoustic
+                    // absence. Whole-label revisions retain unpaired content;
+                    // measured word operations own any physical retirement.
+                    if single_source && observation.producer != ObservationProducer::ManualHuman {
                         let source = &held.slots[0];
                         let alignment = slot_ops::preserve_group_content(&source.text, text);
                         let (label, retained, reason) = match alignment {
@@ -3690,9 +3705,14 @@ impl AcousticLedger {
         );
         self.offered_observations += 1;
         self.note_answered(observation);
-        let decision = MutationReceipt::Refuse {
-            occurrence: observation.occurrence.clone(),
-            reason,
+        let decision = if text.trim().is_empty()
+            && matches!(reason, RefuseReason::EmptyLabel | RefuseReason::SlotAdmissionRejected)
+            && let Some(held) = self.committed.get(&observation.occurrence) {
+            MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(), held_by: held.producer,
+            }
+        } else {
+            MutationReceipt::Refuse { occurrence: observation.occurrence.clone(), reason }
         };
         self.record_layer_decision(observation, text, &decision, None);
         decision
