@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// One product mode selector with observed local refinement readiness. The row
-/// describes the selected mode only; the other two are one click away.
+/// One product mode selector. The row describes the selected mode only; the
+/// other two are one click away. Local power's refinement readiness lives on
+/// the Whisper tab, under the model it depends on (Founder review, round 2,
+/// 2026-10-20).
 struct DictationEngineControls: View {
   @ObservedObject var model: SettingsViewModel
 
@@ -32,24 +34,6 @@ struct DictationEngineControls: View {
           currentLabel: model.asrModeLabel,
           onSelect: handleAsrModeSelection
         )
-      }
-      if model.asrModeId == "local_power" {
-        SettingsControlRow(
-          title: String(localized: "Live Whisper refinement"),
-          subtitle: localWhisperRuntimeSubtitle
-        ) {
-          HStack(spacing: 8) {
-            // Readiness is an ordinary word, so it reads in the interface
-            // font; monospace stays for technical values on this pane
-            // (Founder brief, round 13, 2026-10-10).
-            Text(localWhisperRuntimeLabel)
-              .font(CSFont.ui(11.5, .semibold))
-              .foregroundStyle(localWhisperRuntimeColor)
-            Button("Recheck", action: model.recheckLocalWhisperRuntime)
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-          }
-        }
       }
     }
     .confirmationDialog(
@@ -98,7 +82,8 @@ struct DictationEngineControls: View {
     switch model.asrModeId {
     case "local_power":
       return String(
-        localized: "Live Apple recognition, refined by the local Whisper model.",
+        localized:
+          "Live speech recognition and correction in the background, without sending recordings.",
         comment: "ASR mode description: Local power")
     case "cloud":
       return nil
@@ -106,49 +91,6 @@ struct DictationEngineControls: View {
       return String(
         localized: "Live recognition by Apple.",
         comment: "ASR mode description: Apple only")
-    }
-  }
-
-  private var localWhisperRuntimeLabel: String {
-    switch model.localWhisperRuntimeState {
-    case .livePatchingNotReady: String(localized: "Not ready")
-    case .livePatchingConfigured: String(localized: "Ready")
-    case .degradedEnvOverride: String(localized: "Degraded (env override)")
-    case .notSelected: String(localized: "Not selected")
-    }
-  }
-
-  private var localWhisperRuntimeSubtitle: String {
-    switch model.localWhisperRuntimeState {
-    case .livePatchingConfigured:
-      String(
-        localized:
-          "Apple paints immediately; the validated local FP16 model repairs the same audio spans during the take."
-      )
-    case .livePatchingNotReady:
-      String(
-        localized:
-          "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes."
-      )
-    case .degradedEnvOverride:
-      String(
-        localized:
-          "CODESCRIBE_LAYERED_TRANSCRIPTION disables live refinement. Remove the diagnostic override from .env and restart.",
-        comment: "CODESCRIBE_LAYERED_TRANSCRIPTION is an environment variable name"
-      )
-    case .notSelected:
-      String(localized: "Local Whisper is not the selected provider.")
-    }
-  }
-
-  private var localWhisperRuntimeColor: Color {
-    switch model.localWhisperRuntimeState {
-    case .livePatchingConfigured:
-      CSColor.oliveLight
-    case .livePatchingNotReady, .degradedEnvOverride:
-      CSColor.amber
-    case .notSelected:
-      Color.secondary
     }
   }
 }

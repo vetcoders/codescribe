@@ -158,7 +158,9 @@ The Dictation pane is one tab per concern:
 
 1. **Engine** — **Recognition mode** is the first row and the only recognition
    choice (Apple only, Local power, Cloud). The two on-device modes carry a one-line
-   description; Cloud carries none — selecting it opens a confirmation dialog
+   description (Local power: “Live speech recognition and correction in the
+   background, without sending recordings.”; its refinement readiness is on
+   the Whisper tab); Cloud carries none — selecting it opens a confirmation dialog
    stating that dictation audio will leave the Mac, and only confirming grants
    consent (Cancel leaves the previous mode untouched). A missing consent
    never shows as Cloud at all: the mode reads Apple only until it is granted,
@@ -180,18 +182,29 @@ The Dictation pane is one tab per concern:
    `{text}` is missing and **Restore default template**. The markers moved
    here from the former About page; saved templates and the marking mechanics
    did not change.
-2. **Whisper** — one card of two rows: **Model** (the picker; the name is not
-   repeated under it) and the install state — **Installed** / **Not installed**
-   in bold, the residency line under it, which never calls the next load “in
-   use”, and **Check model** on the trailing edge. Then _Other detected models_
-   (models on disk the loader refuses, each with one short status such as
-   “Tokenizer problem” or “Unsupported”) and _Disk space_ (one row per installed
-   model: the directory, its size and state, and **Remove**, locked for the
-   selected model). An environment override, the engine's notice and its last
-   error all stay visible under the card. Full paths, sources and raw validation
-   errors live under the collapsed **Model details**, grouped as _Selected
-   model_, _Detected models_ and _On disk_, each path printed once and
-   selectable.
+2. **Whisper** — one card of two equal rows: **Model** (the picker; the name
+   is not repeated under it) and one **Status** line beside **Check model**.
+   The status names the most specific true state: _Not installed_ (amber),
+   _Loaded in memory_ when the selected model is resident, _Installed_ when it
+   is on disk but not in memory yet, _Checking the model catalog…_, the line
+   that the selected model cannot be resolved, or both model names when the
+   resident model differs from the one the next recording loads — it never
+   calls the next load “in use”. Neither _Installed_ nor _Loaded in memory_
+   means recognition is ready. In Local power only, **Live Whisper
+   refinement** sits right under the model card (after any notes about the
+   selection): _Ready_ (“Apple recognizes speech and Whisper corrects the text
+   during the recording.”), _Not ready_ when the local model files are missing
+   or invalid, or _Degraded (env override)_ when
+   `CODESCRIBE_LAYERED_TRANSCRIPTION` turns the refinement off, with
+   **Recheck**, which re-reads the settings and the model files. Apple only
+   and Cloud show no refinement card. Then _Other detected models_ (models on
+   disk the loader refuses, each with one short status such as “Tokenizer
+   problem” or “Unsupported”). An environment override, the engine's notice
+   and its last error all stay visible under the model card. Full paths,
+   sources and raw validation errors live under the collapsed **Model
+   details**, grouped as _Selected model_, _Detected models_ and _On disk_,
+   each path printed once and selectable; _On disk_ also gives each installed
+   directory its size and state and **Remove**, locked for the selected model.
 3. **Preview** — the transcript display pace; the presets, sliders and what they
    really drive are described under [Transcription](#transcription) above.
 4. **Privacy** — see [Cloud & privacy](#cloud--privacy) below.
