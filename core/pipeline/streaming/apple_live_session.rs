@@ -7213,14 +7213,30 @@ fn measure_whisper_window_speech(
         previous_key = key;
         previous_span = Some((segment.range.sample_start, segment.range.sample_end));
     }
-    let decisions = judge_whisper_words_tuned(&facts, &state.engine_tuning);
+    let mut decisions = judge_whisper_words_tuned(&facts, &state.engine_tuning);
+    if let Some(speech) = observed_silero(state) {
+        for (fact, decision) in facts.iter().zip(&mut decisions) {
+            if decision.admits() {
+                let covered_end = speech.ranges().iter().fold(fact.sample_start, |end, range| {
+                    if range.sample_start <= end {
+                        end.max(range.sample_end)
+                    } else {
+                        end
+                    }
+                });
+                if covered_end < fact.sample_end {
+                    decision.verdict = WhisperWordSpeechVerdict::KeepVisibleUnanchored;
+                }
+            }
+        }
+    }
     if decisions
         .iter()
         .any(|decision| matches!(decision.verdict, WhisperWordSpeechVerdict::Unmeasured))
     {
         debug!(
             words = facts.len(),
-            "whisper word speech evidence unmeasured; words kept"
+            "whisper word speech evidence unmeasured; visibility only"
         );
     }
     WhisperWindowSpeech { facts, decisions }
@@ -7257,18 +7273,13 @@ fn direct_text_heard_by_silero(
         .zip(&window.decisions)
         .zip(over_silence.iter_mut())
     {
-        if let WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-            silence,
-            distance_ms,
-        }) = decision.verdict
-        {
+        if let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict {
             *dropped = true;
             info!(
                 session = %state.session_id,
                 sample_start = segment.range.sample_start,
                 sample_end = segment.range.sample_end,
-                silence = silence.as_str(),
-                distance_ms = ?distance_ms,
+                reason = reason.as_str(),
                 "direct_word_over_silence"
             );
         }
@@ -7364,15 +7375,15 @@ fn retain_whisper_words_with_own_speech(
     let window = measure_whisper_window_speech(state, segments);
     let mut kept = Vec::with_capacity(segments.len());
     for (index, (segment, decision)) in segments.iter().zip(&window.decisions).enumerate() {
-        let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict else {
+        if decision.admits() {
             kept.push(segment.clone());
             continue;
-        };
+        }
         let energy_silent = window
             .facts
             .get(index)
             .is_some_and(|fact| fact.energy_above_floor == Some(false));
-        emit_whisper_word_speech_refusal(
+        emit_whisper_word_nonadmission(
             state,
             ev_tx,
             LedgerObservationIdentity::new(
@@ -7382,11 +7393,41 @@ fn retain_whisper_words_with_own_speech(
                 OccurrenceIdentity::from(&segment.range),
             ),
             segment.text.trim(),
-            reason,
+            *decision,
             energy_silent,
         );
     }
     kept
+}
+
+/// Every non-admission carries a durable receipt. Partial or unknown speech
+/// keeps its label visible without entering a routing path that can insert it.
+fn emit_whisper_word_nonadmission(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    observation: LedgerObservationIdentity,
+    label: &str,
+    decision: WhisperWordSpeechDecision,
+    energy_silent: bool,
+) {
+    if let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict {
+        emit_whisper_word_speech_refusal(state, ev_tx, observation, label, reason, energy_silent);
+        return;
+    }
+    let receipt = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .keep_visible_unanchored(
+            &observation,
+            label,
+            NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: label.to_string(),
+        receipt,
+    });
 }
 
 fn emit_whisper_word_speech_refusal(
@@ -7754,18 +7795,18 @@ fn admit_full_pass_gap_segments(
         );
         if let Some(window) = whisper_speech.as_ref()
             && let Some(decision) = window.decisions.get(generation)
-            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+            && !decision.admits()
         {
             let energy_silent = window
                 .facts
                 .get(generation)
                 .is_some_and(|fact| fact.energy_above_floor == Some(false));
-            emit_whisper_word_speech_refusal(
+            emit_whisper_word_nonadmission(
                 state,
                 ev_tx,
                 observation,
                 label,
-                reason,
+                *decision,
                 energy_silent,
             );
             continue;
@@ -8095,7 +8136,7 @@ fn admit_retained_unowned_words(
     let mut qualified = false;
     for (index, segment) in payload.segments.iter().enumerate() {
         if let Some(decision) = whisper_speech.decisions.get(index)
-            && let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict
+            && !decision.admits()
         {
             let observation = LedgerObservationIdentity::new(
                 LedgerObservationProducer::Whisper,
@@ -8107,12 +8148,12 @@ fn admit_retained_unowned_words(
                 .facts
                 .get(index)
                 .is_some_and(|fact| fact.energy_above_floor == Some(false));
-            emit_whisper_word_speech_refusal(
+            emit_whisper_word_nonadmission(
                 state,
                 ev_tx,
                 observation,
                 segment.text.trim(),
-                reason,
+                *decision,
                 energy_silent,
             );
             continue;
