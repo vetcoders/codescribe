@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// Dictation › Whisper model. The selected model and its install state share
-/// one card of two rows; below it, the models on disk the loader refuses, the
-/// space each installed model takes, and — collapsed — the diagnostic values
-/// (Founder brief, round 13, 2026-10-10). Paths, sources and raw validation
-/// errors live only under "Model details", each value printed once.
+/// Dictation › Whisper model. The selected model and its state share one card
+/// of two rows; under it, in Local power, the live refinement card; below
+/// that, the models on disk the loader refuses and — collapsed — the
+/// diagnostic values (Founder brief, round 13, 2026-10-10; Founder review,
+/// round 2, 2026-10-20). Paths, sources, sizes, raw validation errors and the
+/// Remove action for installed directories live only under "Model details",
+/// each value printed once.
 struct DictationWhisperModelTab: View {
   @ObservedObject var model: SettingsViewModel
   @State private var storedModels: [CsModelDirectory] = []
@@ -24,6 +26,12 @@ struct DictationWhisperModelTab: View {
       } else {
         selectedModelCard(status: status, catalog: catalog)
         selectionMessages(catalog: catalog)
+      }
+
+      // Readiness of the Local power refinement belongs next to the model it
+      // depends on; the other modes do not use it, so nothing renders there.
+      if model.asrModeId == "local_power" {
+        liveRefinementCard
       }
 
       if model.whisperDownloadInFlight {
@@ -51,8 +59,6 @@ struct DictationWhisperModelTab: View {
         otherDetectedModels(catalog)
       }
 
-      diskSpaceSection
-
       DisclosureGroup(isExpanded: $showingModelDetails) {
         modelDetails(status: status, catalog: catalog)
           .padding(.top, CSSpace.xs)
@@ -66,21 +72,24 @@ struct DictationWhisperModelTab: View {
       .accessibilityIdentifier("whisper-model-details")
     }
     .onAppear {
-      model.refreshWhisperModelCatalog()
+      // Install state and catalog together: the model card and the refinement
+      // card both read the install state, so neither opens on a stale one.
+      model.recheckWhisperModel()
       refreshStoredModels()
     }
     .onChange(of: model.whisperModelCatalog?.configured) { _, _ in
-      // A selection change moves the removal lock between disk-space rows.
+      // A selection change moves the removal lock between "On disk" rows.
       refreshStoredModels()
     }
   }
 
   // MARK: - Selected model
 
-  /// Two rows in one card: the selector, then the install state. The picker
-  /// already shows the selected model's name, so the row no longer repeats it
-  /// underneath, and install state and residency stay two separate facts on
-  /// two lines — "installed" never stands in for "loaded".
+  /// Two equal rows in one card: the selector, then one status line beside
+  /// Check model. The picker already shows the selected model's name, so the
+  /// row does not repeat it; the status line names the most specific true
+  /// state (see `modelStatus`). Neither "Installed" nor "Loaded in memory" is
+  /// recognition readiness — that is the refinement card's fact.
   @ViewBuilder
   private func selectedModelCard(status: CsWhisperModelStatus, catalog: CsWhisperModelCatalog?)
     -> some View
@@ -116,18 +125,17 @@ struct DictationWhisperModelTab: View {
         divider
       }
       cardRow {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(
-            status.available
-              ? String(localized: "Installed") : String(localized: "Not installed")
+        let line = Self.modelStatus(available: status.available, catalog: catalog)
+        Text(
+          String(
+            localized: "Status: \(line.label)",
+            comment:
+              "Whisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory"
           )
-          .font(SettingsScale.settingName)
-          .foregroundStyle(status.available ? CSColor.oliveLight : CSColor.amber)
-          Text(Self.residencyLabel(catalog))
-            .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        )
+        .font(SettingsScale.settingName)
+        .foregroundStyle(line.tone.color)
+        .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: CSSpace.sm)
         SettingsChipButton("Check model", tint: Color.secondary, action: checkModel)
           .accessibilityHint("Re-reads the install state, the model catalog and the disk")
@@ -165,6 +173,74 @@ struct DictationWhisperModelTab: View {
             .fixedSize(horizontal: false, vertical: true)
         }
       }
+    }
+  }
+
+  // MARK: - Live refinement (Local power)
+
+  /// Whether Local power's live Whisper correction can run, with Recheck.
+  /// Moved here from the Engine tab (Founder review, round 2, 2026-10-20);
+  /// this is its one owner. The state is computed from the settings snapshot
+  /// and the install state the `onAppear` above re-reads.
+  private var liveRefinementCard: some View {
+    SettingsControlRow(
+      title: String(localized: "Live Whisper refinement"),
+      subtitle: localWhisperRuntimeSubtitle
+    ) {
+      HStack(spacing: 8) {
+        // Readiness is an ordinary word, so it reads in the interface
+        // font; monospace stays for technical values on this pane
+        // (Founder brief, round 13, 2026-10-10).
+        Text(localWhisperRuntimeLabel)
+          .font(CSFont.ui(11.5, .semibold))
+          .foregroundStyle(localWhisperRuntimeColor)
+        Button("Recheck", action: model.recheckLocalWhisperRuntime)
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+      }
+    }
+  }
+
+  private var localWhisperRuntimeLabel: String {
+    switch model.localWhisperRuntimeState {
+    case .livePatchingNotReady: String(localized: "Not ready")
+    case .livePatchingConfigured: String(localized: "Ready")
+    case .degradedEnvOverride: String(localized: "Degraded (env override)")
+    case .notSelected: String(localized: "Not selected")
+    }
+  }
+
+  private var localWhisperRuntimeSubtitle: String {
+    switch model.localWhisperRuntimeState {
+    case .livePatchingConfigured:
+      String(
+        localized:
+          "Apple recognizes speech and Whisper corrects the text during the recording.",
+        comment: "Live Whisper refinement card: Local power is ready")
+    case .livePatchingNotReady:
+      String(
+        localized:
+          "The local Whisper model files are missing or invalid. Local power is not ready until they are valid.",
+        comment: "Live Whisper refinement card: the model files failed the check")
+    case .degradedEnvOverride:
+      String(
+        localized:
+          "CODESCRIBE_LAYERED_TRANSCRIPTION disables live refinement. Remove the diagnostic override from .env and restart.",
+        comment: "CODESCRIBE_LAYERED_TRANSCRIPTION is an environment variable name"
+      )
+    case .notSelected:
+      String(localized: "Local Whisper is not the selected provider.")
+    }
+  }
+
+  private var localWhisperRuntimeColor: Color {
+    switch model.localWhisperRuntimeState {
+    case .livePatchingConfigured:
+      CSColor.oliveLight
+    case .livePatchingNotReady, .degradedEnvOverride:
+      CSColor.amber
+    case .notSelected:
+      Color.secondary
     }
   }
 
@@ -228,52 +304,19 @@ struct DictationWhisperModelTab: View {
     }
   }
 
-  // MARK: - Disk space
+  // MARK: - On disk
 
-  /// One row per installed model: the directory name, its size and state, and
-  /// Remove. The selected model keeps its removal lock; the section disappears
-  /// entirely when there is nothing installed and nothing went wrong.
-  @ViewBuilder
-  private var diskSpaceSection: some View {
-    if !storedModels.isEmpty || storageError != nil {
-      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-        SettingsSectionLabel(
-          String(
-            localized: "Disk space",
-            comment: "Whisper tab section: installed model directories and what they take"))
-        if !storedModels.isEmpty {
-          VStack(spacing: 0) {
-            ForEach(Array(storedModels.enumerated()), id: \.element.name) { entry in
-              if entry.offset > 0 { divider }
-              diskSpaceRow(entry.element)
-            }
-          }
-          .settingsGroupedInset(padding: 0)
-        }
-        if let storageError {
-          Text(storageError)
-            .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.amber)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-    }
-  }
-
-  private func diskSpaceRow(_ directory: CsModelDirectory) -> some View {
+  /// One installed directory under Model details › On disk: its name and
+  /// location, its size and state, and Remove. This was the Disk space
+  /// section's row; the section is gone (Founder review, round 2,
+  /// 2026-10-20), and this is still the one place a size or Remove is shown.
+  private func storedModelLine(_ directory: CsModelDirectory) -> some View {
     let removable = Self.canRemoveModel(status: directory.status)
-    return cardRow {
-      VStack(alignment: .leading, spacing: 2) {
-        // A directory name is an identifier, so it keeps monospace while the
-        // line under it reads as ordinary copy.
-        Text(verbatim: directory.name)
-          .font(CSFont.mono(12, .medium))
-          .foregroundStyle(Color.primary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .textSelection(.enabled)
+    return HStack(alignment: .top, spacing: CSSpace.md) {
+      VStack(alignment: .leading, spacing: 1) {
+        detailLine(directory.name, value: directory.detail)
         Text(modelFootprint(directory))
-          .font(SettingsScale.helper)
+          .font(CSFont.ui(11))
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -283,8 +326,8 @@ struct DictationWhisperModelTab: View {
           remove(directory)
         }
       } else {
-        // Disabled, not hidden: the row must still show that removal is the
-        // action this line would otherwise offer, and say why it cannot.
+        // Disabled, not hidden: the line must still show that removal is the
+        // action it would otherwise offer, and say why it cannot.
         SettingsChipButton("Remove", tint: CSColor.terracotta, enabled: false) {}
           .help("The selected model cannot be removed.")
           .accessibilityHint("The selected model cannot be removed.")
@@ -305,7 +348,8 @@ struct DictationWhisperModelTab: View {
 
   /// Collapsed by default, and the only place a path is printed in full. Three
   /// groups of label–value pairs: what is selected and what the engine does
-  /// with it, every option the catalog found, and what sits on disk. The
+  /// with it, every option the catalog found, and what sits on disk with its
+  /// size and Remove. The
   /// selected option's path is the "Loads from"/"Next recording loads" line,
   /// so its own catalog row below does not repeat the same string.
   @ViewBuilder
@@ -352,12 +396,18 @@ struct DictationWhisperModelTab: View {
         }
       }
 
-      if !storedModels.isEmpty {
+      if !storedModels.isEmpty || storageError != nil {
         detailGroup(
           String(localized: "On disk", comment: "Model details group: installed directories")
         ) {
           ForEach(storedModels, id: \.name) { directory in
-            detailLine(directory.name, value: directory.detail)
+            storedModelLine(directory)
+          }
+          if let storageError {
+            Text(storageError)
+              .font(SettingsScale.helper)
+              .foregroundStyle(CSColor.amber)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
       }
@@ -434,35 +484,75 @@ struct DictationWhisperModelTab: View {
     selectedOption(catalog)?.label ?? catalog.configured
   }
 
-  /// `catalog.loaded` (resident weights) and `catalog.resolvedPath` (what the
-  /// next recording loads) are different facts; the row names both when they
-  /// differ and never calls the next load "in use".
-  static func residencyLabel(_ catalog: CsWhisperModelCatalog?) -> String {
+  /// How the selected-model status line reads: ready-ish (olive), missing
+  /// (amber), or still being read (secondary).
+  enum ModelStatusTone: Equatable {
+    case ready, missing, pending
+
+    var color: Color {
+      switch self {
+      case .ready: CSColor.oliveLight
+      case .missing: CSColor.amber
+      case .pending: Color.secondary
+      }
+    }
+  }
+
+  /// The one status line of the selected-model card: the most specific true
+  /// state. Not installed wins; then the catalog has to be read and the
+  /// selection resolved; then residency decides between "Loaded in memory"
+  /// and "Installed". `catalog.loaded` (resident weights) and
+  /// `catalog.resolvedPath` (what the next recording loads) are different
+  /// facts; the line names both when they differ and never calls the next
+  /// load "in use".
+  static func modelStatus(available: Bool, catalog: CsWhisperModelCatalog?)
+    -> (label: String, tone: ModelStatusTone)
+  {
+    guard available else {
+      return (
+        String(localized: "Not installed", comment: "Whisper tab status: no usable model on disk"),
+        .missing
+      )
+    }
     guard let catalog else {
-      return String(
-        localized: "Checking the model catalog…",
-        comment: "Whisper tab: catalog not loaded yet")
+      return (
+        String(
+          localized: "Checking the model catalog…",
+          comment: "Whisper tab: catalog not loaded yet"),
+        .pending
+      )
     }
     guard let resolved = catalog.resolvedPath else {
-      return String(
-        localized:
-          "The selected model cannot be resolved; the next recording has no model to load.",
-        comment: "Whisper tab: resolution failed")
+      return (
+        String(
+          localized:
+            "The selected model cannot be resolved; the next recording has no model to load.",
+          comment: "Whisper tab: resolution failed"),
+        .missing
+      )
     }
     guard let loaded = catalog.loaded else {
-      return String(
-        localized: "Not loaded yet · loads on the next recording",
-        comment: "Whisper tab: no resident weights")
+      return (
+        String(
+          localized: "Installed", comment: "Whisper tab status: on disk, not in memory yet"),
+        .ready
+      )
     }
     if loaded == resolved || loaded == "embedded" {
-      return String(
-        localized: "Loaded in memory", comment: "Whisper tab: the selected model is resident")
+      return (
+        String(
+          localized: "Loaded in memory", comment: "Whisper tab: the selected model is resident"),
+        .ready
+      )
     }
-    return String(
-      localized:
-        "Loaded in memory: \(label(forPath: loaded, in: catalog)) · next recording loads \(label(forPath: resolved, in: catalog))",
-      comment:
-        "Whisper tab: resident model differs from the next load. Placeholders: two model names"
+    return (
+      String(
+        localized:
+          "Loaded in memory: \(label(forPath: loaded, in: catalog)) · next recording loads \(label(forPath: resolved, in: catalog))",
+        comment:
+          "Whisper tab: resident model differs from the next load. Placeholders: two model names"
+      ),
+      .ready
     )
   }
 
@@ -537,7 +627,7 @@ struct DictationWhisperModelTab: View {
     }
   }
 
-  /// Disk-space row second line: size first, then what the state means, and a
+  /// "On disk" line under the location: size first, then what the state means, and a
   /// model sharing the same tokenizer. Why Remove is locked is on the button
   /// itself, so the common case reads as two short facts.
   private func modelFootprint(_ directory: CsModelDirectory) -> String {
@@ -548,7 +638,7 @@ struct DictationWhisperModelTab: View {
       parts.append(
         String(
           localized: "identical tokenizer: \(duplicate)",
-          comment: "Whisper tab disk-space row. Placeholder: name of the twin model"))
+          comment: "Whisper tab On disk line. Placeholder: name of the twin model"))
     }
     return parts.joined(separator: " · ")
   }

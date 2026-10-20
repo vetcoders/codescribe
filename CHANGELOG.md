@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
 - Settings says less, round 2: the Engine empty state reads "No transcription in this session", the markers switch loses its row title, Preview keeps only its header and the selected preset's line, Dictionary loses its intro sentence.
+- Dictation: the Local power caption reads "Live speech recognition and correction in the background, without sending recordings"; the Live Whisper refinement card moves to the Whisper tab under the model card and its caption reads "Apple recognizes speech and Whisper corrects the text during the recording"; the model card shows one Status line (Loaded in memory / Installed / Not installed) beside Check model; the Disk space section is gone.
 
 ## [0.17.2] - Unreleased
 
