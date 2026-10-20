@@ -351,10 +351,6 @@ private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
 
 struct VoiceLabPanel: View {
   @ObservedObject var model: SettingsViewModel
-  /// Word pins and PCM slots are engine apparatus. Founder, 2026-10-12: what
-  /// we need to develop the engine sits behind the Voice Lab gate; the
-  /// production app shows its results, not the apparatus.
-  @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var editor = VoiceLabEditorState()
   @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
@@ -427,11 +423,6 @@ struct VoiceLabPanel: View {
         .overlay(Color.primary.opacity(0.12))
         .padding(.top, CSSpace.lg)
 
-      if DeveloperSurface.isPowerModeEnabled(labMode: labMode) {
-        DictionaryWordPins(configDir: model.configDir)
-          .padding(.top, CSSpace.section)
-      }
-
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
         ProvidersSectionHeader(
           String(localized: "Suggested rules · \(model.ruleCandidates.count)")
@@ -447,6 +438,8 @@ struct VoiceLabPanel: View {
         correctionPager
       }
       .padding(.top, CSSpace.section)
+      correctionFreshness
+        .padding(.top, CSSpace.control)
       correctionsSection
         .padding(.top, CSSpace.control)
 
@@ -624,6 +617,24 @@ struct VoiceLabPanel: View {
     .buttonStyle(.plain)
     .disabled(!enabled)
     .accessibilityLabel(Text(label))
+  }
+
+  @ViewBuilder
+  private var correctionFreshness: some View {
+    if let latest = corrections.max(by: { $0.timestampMs < $1.timestampMs }) {
+      Text("Last correction on this Mac: \(timestampLabel(latest.timestampMs))")
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .accessibilityIdentifier("dictionary-last-correction")
+      Text("No newer correction has been saved on this Mac.")
+        .font(CSFont.ui(11))
+        .foregroundStyle(Color.secondary)
+    } else if model.voiceLabReadError == nil {
+      Text("Last correction on this Mac: none saved")
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .accessibilityIdentifier("dictionary-last-correction")
+    }
   }
 
   @ViewBuilder

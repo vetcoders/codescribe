@@ -6,9 +6,7 @@ import SwiftUI
 /// explicit: correction text is never used to guess its acoustic identity.
 struct DictionaryWordPins: View {
   let configDir: String
-  /// Open on arrival. Founder, 2026-10-15: the pane should lead with the
-  /// expanded pins or the current transcription, "nie stalled sprzed
-  /// miesiąca"; the pins of the latest recorded take are the current one.
+  /// Lab opens the latest take with its recorded acoustic evidence.
   @State private var expanded = DictionaryWordPins.expandedOnArrival
   static let expandedOnArrival = true
   @State private var session = ""
@@ -22,7 +20,7 @@ struct DictionaryWordPins: View {
       VStack(alignment: .leading, spacing: 12) {
         HStack {
           Picker("Recording", selection: $session) {
-            Text("Latest recorded slots").tag("")
+            Text("Latest recorded take").tag("")
             ForEach(snapshot.sessions, id: \.self) { Text($0).tag($0) }
           }
           Button("Refresh") { refresh += 1 }
@@ -33,8 +31,11 @@ struct DictionaryWordPins: View {
         } else if snapshot.pins.isEmpty {
           Text("No recorded word slots for this take.")
             .foregroundStyle(.secondary)
+          speechBand
         } else {
           Text(snapshot.session).font(CSFont.mono(11)).textSelection(.enabled)
+          Text("Pins in this take: \(snapshot.pins.count)")
+            .font(.caption).foregroundStyle(.secondary)
           Text("Select a pin to inspect its PCM range and source.")
             .font(.caption).foregroundStyle(.secondary)
           ScrollView(.vertical) {
@@ -47,8 +48,8 @@ struct DictionaryWordPins: View {
                     Text(verbatim: "#\(pin.index)").font(CSFont.mono(11)).frame(width: 38)
                     Text(pin.text).lineLimit(1).frame(width: 140, alignment: .leading)
                     GeometryReader { geometry in
-                      let span = max(1, pin.occurrenceEnd - pin.occurrenceStart)
-                      let left = Double(pin.start - pin.occurrenceStart) / Double(span)
+                      let span = snapshot.timelineEnd(epoch: pin.epoch)
+                      let left = Double(pin.start) / Double(span)
                       let length = Double(pin.end - pin.start) / Double(span)
                       ZStack(alignment: .leading) {
                         Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 3)
@@ -61,6 +62,9 @@ struct DictionaryWordPins: View {
                     .frame(minWidth: 100, maxWidth: .infinity, minHeight: 22, maxHeight: 22)
                     Text(pin.timeRange).font(CSFont.mono(11)).frame(width: 130)
                     Text(pin.producer).font(.caption).frame(width: 75, alignment: .leading)
+                    Text(pin.speechState.label)
+                      .font(.caption).foregroundStyle(pin.speechState.color)
+                      .frame(width: 105, alignment: .leading)
                   }
                   .padding(6)
                   .background(selected == pin.id ? Color.accentColor.opacity(0.15) : .clear)
@@ -69,17 +73,19 @@ struct DictionaryWordPins: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(pin.text))
                 .accessibilityValue(
-                  Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer)"))
+                  Text(verbatim: "#\(pin.index) · \(pin.timeRange) · \(pin.producer) · \(pin.speechState.label)"))
               }
             }
             .csAutohidingScrollers()
           }
           .frame(maxHeight: 280)
+          speechBand
           if let pin = snapshot.pins.first(where: { $0.id == selected }) {
             VStack(alignment: .leading, spacing: 5) {
               Text(pin.text).font(.headline)
               LabeledContent("PCM range", value: "\(pin.start)–\(pin.end) · \(pin.rate) Hz")
               LabeledContent("Capture epoch", value: String(pin.epoch))
+              LabeledContent("Acoustic evidence", value: pin.speechState.label)
               LabeledContent(
                 "Observation", value: "\(pin.producer) / \(pin.request) / \(pin.generation)")
               LabeledContent("Occurrence", value: "\(pin.occurrenceStart)–\(pin.occurrenceEnd)")
@@ -90,10 +96,6 @@ struct DictionaryWordPins: View {
             .font(CSFont.mono(11))
             .textSelection(.enabled)
           }
-          Text(
-            "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
-          )
-          .font(.caption).foregroundStyle(.secondary)
         }
       }
       .padding(.top, 10)
@@ -117,7 +119,52 @@ struct DictionaryWordPins: View {
     } label: {
       Label("Word pins and PCM slots", systemImage: "pin.circle")
     }
-    .accessibilityIdentifier("dictionary-word-pins")
+    .accessibilityIdentifier("lab-word-pins")
+  }
+
+  private var speechBand: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Silero speech · whole take")
+        .font(.caption).foregroundStyle(.secondary)
+      ForEach(snapshot.epochs, id: \.self) { epoch in
+        let end = snapshot.timelineEnd(epoch: epoch)
+        let ranges = snapshot.speechRanges.filter { $0.epoch == epoch }
+        HStack(spacing: 10) {
+          Text(verbatim: "#\(epoch)").font(CSFont.mono(11)).frame(width: 38)
+          Text(verbatim: "Silero").font(CSFont.mono(11)).frame(width: 140, alignment: .leading)
+          GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+              Capsule().fill(Color.secondary.opacity(0.15)).frame(height: 4)
+              ForEach(Array(ranges.enumerated()), id: \.offset) { _, range in
+                Rectangle().fill(Color.green.opacity(0.8))
+                  .frame(
+                    width: max(1, geometry.size.width * Double(range.end - range.start) / Double(end)),
+                    height: 10)
+                  .offset(x: geometry.size.width * Double(range.start) / Double(end))
+              }
+            }
+            .frame(height: 16)
+          }
+          .frame(minWidth: 100, maxWidth: .infinity, minHeight: 16, maxHeight: 16)
+          Group {
+            if let rate = snapshot.sampleRates[epoch] {
+              Text(verbatim: String(format: "%.3f s", Double(end) / Double(rate)))
+            } else {
+              Text(verbatim: "—")
+            }
+          }
+          .font(CSFont.mono(11)).frame(width: 130)
+          Color.clear.frame(width: 75, height: 1).accessibilityHidden(true)
+          Color.clear.frame(width: 105, height: 1).accessibilityHidden(true)
+        }
+        .padding(.horizontal, 6)
+        if snapshot.speechObserved[epoch] == nil {
+          Text("No VAD recorded for this capture epoch.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+      }
+    }
+    .accessibilityIdentifier("lab-word-pins-silero-band")
   }
 }
 
@@ -135,6 +182,7 @@ struct DictionaryPin: Identifiable, Sendable {
   let generation: UInt64
   let rate: UInt64
   let adjudication: String
+  var speechState: DictionaryPinSpeechState = .noVAD
 
   var timeRange: String {
     String(format: "%.3f–%.3f s", Double(start) / Double(rate), Double(end) / Double(rate))
@@ -145,55 +193,122 @@ struct DictionaryPinSnapshot: Sendable {
   var sessions: [String] = []
   var session = ""
   var pins: [DictionaryPin] = []
+  var speechRanges: [RecordedPinRange] = []
+  var speechObserved: [UInt64: UInt64] = [:]
+  var sampleRates: [UInt64: UInt64] = [:]
+
+  var epochs: [UInt64] { Array(Set(pins.map(\.epoch)).union(speechObserved.keys)).sorted() }
+
+  func timelineEnd(epoch: UInt64) -> UInt64 {
+    max(1, max(speechObserved[epoch] ?? 0, pins.filter { $0.epoch == epoch }.map(\.occurrenceEnd).max() ?? 0))
+  }
 
   nonisolated static func read(root: String, requested: String) throws -> Self {
     let directory = URL(fileURLWithPath: root).appendingPathComponent("sessions", isDirectory: true)
     let manager = FileManager.default
     guard manager.fileExists(atPath: directory.path) else { return Self() }
-    let suffix = ".slots.jsonl"
-    // One modification-date lookup per file. Inside the sort comparator it ran
-    // O(n log n) times on every 2 s refresh: 858 slot files made it the hottest
-    // frame of an open Dictionary (sample 2026-10-15).
+    let suffixes = [".slots.jsonl", ".trail.jsonl"]
+    // Read each resource date once; a comparator must never perform filesystem IO.
     let files = try manager.contentsOfDirectory(
-      at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+      at: directory, includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey],
       options: [.skipsHiddenFiles]
-    ).filter { $0.lastPathComponent.hasSuffix(suffix) }.map { url in
-      let modified =
-        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-        ?? .distantPast
-      return (url: url, modified: modified)
-    }.sorted { $0.modified > $1.modified }.map(\.url)
-    let candidates = Array(files.prefix(30))
-    var result = Self(
-      sessions: candidates.map { String($0.lastPathComponent.dropLast(suffix.count)) })
-    let url: URL?
-    if requested.isEmpty {
-      url = candidates.first {
-        ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+    ).compactMap { url -> (String, URL, Date)? in
+      guard let suffix = suffixes.first(where: { url.lastPathComponent.hasSuffix($0) }) else {
+        return nil
       }
-    } else {
-      url = candidates.first { $0.lastPathComponent == requested + suffix }
+      let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+      let recorded = values?.creationDate ?? values?.contentModificationDate ?? .distantPast
+      return (String(url.lastPathComponent.dropLast(suffix.count)), url, recorded)
+    }.sorted { $0.2 > $1.2 }
+    var result = Self()
+    var seen = Set<String>()
+    for (session, _, _) in files where seen.insert(session).inserted {
+      result.sessions.append(session)
     }
-    guard let url else { return result }
-    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-    guard size <= 8_000_000 else { throw CocoaError(.fileReadTooLarge) }
-    let data = try Data(contentsOf: url)
-    guard data.count <= 8_000_000 else { throw CocoaError(.fileReadTooLarge) }
-    result.session = String(url.lastPathComponent.dropLast(suffix.count))
-    // Append-only receipts: latest snapshot for each exact physical occurrence.
+    guard let session = requested.isEmpty ? result.sessions.first : result.sessions.first(where: { $0 == requested }) else {
+      return result
+    }
+    result.session = session
     var occurrences: [String: [String: Any]] = [:]
-    let lines = data.split(separator: 10)
-    for (index, line) in lines.enumerated() {
-      guard let row = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] else {
-        if index == lines.count - 1 && data.last != 10 { break }
-        throw CocoaError(.fileReadCorruptFile)
+    var rates: [UInt64: UInt64] = [:]
+    var subFloor: [RecordedPinRange] = []
+    let trail = directory.appendingPathComponent(session + ".trail.jsonl")
+    if manager.fileExists(atPath: trail.path) {
+      try readLines(trail) { row in
+        guard row["schema"] as? String == "codescribe.decision-trail.v3",
+          row["session"] as? String == session, let epoch = number(row["capture_epoch"])
+        else { throw CocoaError(.fileReadCorruptFile) }
+        let operation = row["operation"] as? [String: Any]
+        if let rate = number(operation?["capture_rate_hz"]), rate > 0 {
+          if let previous = rates[epoch], previous != rate {
+            throw CocoaError(.fileReadCorruptFile)
+          }
+          rates[epoch] = rate
+        }
+        if let speech = (operation?["speech"] ?? row["speech"]) as? [String: Any],
+          speech["producer"] as? String == "silero_boundaries",
+          speech["session"] as? String == session,
+          number(speech["capture_epoch"]) == epoch,
+          let observed = number(speech["observed_samples"]),
+          observed >= (result.speechObserved[epoch] ?? 0)
+        {
+          guard let ranges = speech["ranges"] as? [[String: Any]] else {
+            throw CocoaError(.fileReadCorruptFile)
+          }
+          let measured = try ranges.map { range -> RecordedPinRange in
+            guard range["session"] as? String == session,
+              number(range["capture_epoch"]) == epoch,
+              let a = number(range["sample_start"]), let b = number(range["sample_end"]),
+              a < b, b <= observed
+            else { throw CocoaError(.fileReadCorruptFile) }
+            return RecordedPinRange(epoch: epoch, start: a, end: b)
+          }
+          result.speechObserved[epoch] = observed
+          result.speechRanges.removeAll { $0.epoch == epoch }
+          result.speechRanges.append(contentsOf: measured)
+        }
+        if row["kind"] as? String == "qualification",
+          let evidence = row["evidence"] as? [String: Any],
+          let calibration = row["calibration"] as? [String: Any],
+          let version = calibration["version"] as? String,
+          evidence["evidence_calibration_version"] as? String == version,
+          let integral = evidence["energy_integral"] as? Double,
+          let floor = calibration["min_energy_integral"] as? Double,
+          integral.isFinite, floor.isFinite, integral >= 0, integral < floor,
+          let occurrence = evidence["occurrence"] as? [String: Any],
+          occurrence["session"] as? String == session,
+          number(occurrence["capture_epoch"]) == epoch,
+          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]), a < b
+        {
+          subFloor.append(RecordedPinRange(epoch: epoch, start: a, end: b))
+        }
+        if row["kind"] as? String == "slot_end", let operation,
+          let observation = operation["observation"] as? [String: Any],
+          let occurrence = observation["occurrence"] as? [String: Any],
+          occurrence["session"] as? String == session,
+          number(occurrence["capture_epoch"]) == epoch,
+          let a = number(occurrence["sample_start"]), let b = number(occurrence["sample_end"]), a < b,
+          let rate = rates[epoch], let slots = operation["result_slots"] as? [[String: Any]]
+        {
+          // A take is every completed occurrence snapshot, not the last operation.
+          occurrences["\(epoch):\(a):\(b)"] = [
+            "capture_epoch": epoch, "sample_start": a, "sample_end": b,
+            "sample_rate_hz": rate, "slots": slots,
+          ]
+        }
       }
-      guard row["schema"] as? String == "codescribe.occurrence_slots.v1",
-        row["session"] as? String == result.session,
-        let epoch = number(row["capture_epoch"]), let a = number(row["sample_start"]),
-        let b = number(row["sample_end"]), a < b
-      else { throw CocoaError(.fileReadCorruptFile) }
-      occurrences["\(epoch):\(a):\(b)"] = row
+    }
+    let slots = directory.appendingPathComponent(session + ".slots.jsonl")
+    if manager.fileExists(atPath: slots.path) {
+      try readLines(slots) { row in
+        guard row["schema"] as? String == "codescribe.occurrence_slots.v1",
+          row["session"] as? String == session,
+          let epoch = number(row["capture_epoch"]), let a = number(row["sample_start"]),
+          let b = number(row["sample_end"]), a < b
+        else { throw CocoaError(.fileReadCorruptFile) }
+        // Seals carry finality receipts for the same exact occurrence.
+        occurrences["\(epoch):\(a):\(b)"] = row
+      }
     }
     for (identity, row) in occurrences {
       guard let a = number(row["sample_start"]), let b = number(row["sample_end"]),
@@ -201,6 +316,10 @@ struct DictionaryPinSnapshot: Sendable {
         rate > 0,
         let slots = row["slots"] as? [[String: Any]]
       else { throw CocoaError(.fileReadCorruptFile) }
+      if let previous = rates[epoch], previous != rate {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      rates[epoch] = rate
       let finality = row["word_finality"] as? [[String: Any]] ?? []
       for (index, slot) in slots.enumerated() {
         guard let start = number(slot["sample_start"]), let end = number(slot["sample_end"]),
@@ -240,8 +359,50 @@ struct DictionaryPinSnapshot: Sendable {
     guard Set(result.pins.map(\.id)).count == result.pins.count else {
       throw CocoaError(.fileReadCorruptFile)
     }
+    result.sampleRates = rates
+    for index in result.pins.indices {
+      let pin = result.pins[index]
+      if result.speechRanges.contains(where: {
+        $0.epoch == pin.epoch && $0.start < pin.end && pin.start < $0.end
+      }) {
+        result.pins[index].speechState = .speech
+      } else if subFloor.contains(where: {
+        $0.epoch == pin.epoch && $0.start <= pin.start && pin.end <= $0.end
+      }) {
+        result.pins[index].speechState = .subFloor
+      } else if let observed = result.speechObserved[pin.epoch], pin.end <= observed {
+        result.pins[index].speechState = .noSpeech
+      }
+    }
     result.pins.sort { ($0.epoch, $0.start, $0.id) < ($1.epoch, $1.start, $1.id) }
     return result
+  }
+
+  /// Stream the entire take. Bound one row rather than silently truncating long takes.
+  /// An append still in flight is ignored; a malformed completed row is an error.
+  nonisolated private static func readLines(
+    _ url: URL, consume: ([String: Any]) throws -> Void
+  ) throws {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var pending = Data()
+    while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+      pending.append(chunk)
+      while let end = pending.firstIndex(of: 10) {
+        let line = pending[..<end]
+        guard line.count <= 8_000_000,
+          let row = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
+        else { throw CocoaError(.fileReadCorruptFile) }
+        try consume(row)
+        pending.removeSubrange(...end)
+      }
+      guard pending.count <= 8_000_000 else { throw CocoaError(.fileReadTooLarge) }
+    }
+    if !pending.isEmpty,
+      let row = (try? JSONSerialization.jsonObject(with: pending)) as? [String: Any]
+    {
+      try consume(row)
+    }
   }
 
   nonisolated private static func number(_ value: Any?) -> UInt64? {
@@ -251,5 +412,36 @@ struct DictionaryPinSnapshot: Sendable {
       value.doubleValue < Double(UInt64.max)
     else { return nil }
     return value.uint64Value
+  }
+}
+
+/// A persisted range on one capture epoch; text never participates in its identity.
+struct RecordedPinRange: Sendable {
+  let epoch: UInt64
+  let start: UInt64
+  let end: UInt64
+}
+
+enum DictionaryPinSpeechState: Sendable {
+  case speech
+  case subFloor
+  case noSpeech
+  case noVAD
+
+  var label: String {
+    switch self {
+    case .speech: String(localized: "Speech")
+    case .subFloor: String(localized: "Sub-floor energy")
+    case .noSpeech: String(localized: "No speech on range")
+    case .noVAD: String(localized: "No VAD recorded")
+    }
+  }
+
+  var color: Color {
+    switch self {
+    case .speech: .green
+    case .subFloor: .orange
+    case .noSpeech, .noVAD: .secondary
+    }
   }
 }
