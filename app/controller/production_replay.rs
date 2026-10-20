@@ -1002,7 +1002,7 @@ mod tests {
             .expect("operator home");
         let _models_dir = codescribe_core::test_isolation::EnvGuard::set(
             "CODESCRIBE_MODELS_DIR",
-            &operator_home.join(".codescribe/models"),
+            operator_home.join(".codescribe/models"),
         );
         let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
             operator_home
