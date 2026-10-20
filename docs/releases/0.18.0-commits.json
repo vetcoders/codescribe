@@ -1,0 +1,1638 @@
+{
+  "version": "0.18.0",
+  "from_sha": "4ced05b743ad18d5da2249a089d2f0f9a1dbf719",
+  "to_sha": "6aede4c05da926a940a1f0151b736d9742fd7817",
+  "scope": "Committed source history; not runtime or distribution acceptance.",
+  "commits": [
+    {
+      "sha": "1f7d6d581a8bb1e526945396f0f1d948066a0f77",
+      "date": "2026-10-17",
+      "subject": "feat(bus): restore the native mcp-event-key exchange the key store calls",
+      "squash_headings": []
+    },
+    {
+      "sha": "15d5640d5cc8bbaaa4ba9c2579776c7c624ef5d1",
+      "date": "2026-10-18",
+      "subject": "Integrate 17 Oct: release line after #170, dragon STT 503 and div0 cuts (#177)",
+      "squash_headings": [
+        "feat(bus): steer is global — quiet queues direct and peer deliveries too",
+        "test(bus): falsify Steer as a policy over every delivery",
+        "build: run the helper test files the gate was skipping",
+        "feat(overlay): the policy menu becomes two state checkboxes",
+        "fix(bus): watch suppresses quiet direct rows like broadcast rows",
+        "feat(overlay): preview a composer attachment from its chip and inset the preview image",
+        "feat(channel): a vacant-channel chord answers with sound and a pointer flash",
+        "feat(diagnostics): persist the presentation ledger in logs/diagnostic.log",
+        "feat(overlay): one header tree, density from the presentation mode",
+        "test(overlay): header morph falsifiers (controls collide mid-morph)",
+        "refactor(overlay): cut dead resize-hit policy",
+        "test(overlay): header morph contract - right overflow only, settled forms fit",
+        "fix(overlay): the one-tree header keeps the old resting geometry and one clock",
+        "fix(tray): keep the refused-chord badge mode out of the tray",
+        "fix(overlay): held-message controls brighten on hover like the other text buttons",
+        "fix(verify): gate materializes the Cargo target it exports",
+        "fix(overlay): pin the header frame to the offered width so mid-morph overflow stays trailing",
+        "test(mcp): quiet steer keeps the Stop waiter silent for every delivery",
+        "fix(overlay): sidebar names get room before a compact timestamp",
+        "fix(overlay): anchor the canvas leading so a wide sibling cannot push the header left",
+        "test(overlay): publish the actions handle frame for the morph falsifier",
+        "fix(overlay): the root asks for no minimum width, so a morph cannot centre it off the window",
+        "test(tray): one serial key for every test that touches the tray",
+        "feat(agent-bridge): select client skills from the install CLI",
+        "test(bus): arm the fake remote's TERM trap before it announces the wait",
+        "feat(overlay): fold the expanded overlay to midi when an app window becomes key",
+        "fix(overlay): step aside once per appearance of an app window, not on every click",
+        "test(gates): give the verify wiring harness the mkdir and target verify now needs",
+        "fix(overlay): hand the window, not the notification, to the main-actor yield",
+        "fix(overlay): ⌘C copies text selected in agent bubbles",
+        "test(overlay): pin how the expanded overlay yields to our own windows",
+        "fix(overlay): an unhandled ⌘C falls through to the default key-equivalent path",
+        "fix(tray): the Agent dot stays purple while its words are owed",
+        "chore(tokens): drop the Agent owed-words amber, which nothing reads any more",
+        "test(overlay): walk Command-C on an agent bubble through the real overlay",
+        "test(overlay): require the gate and the copy, record how they happen",
+        "fix(overlay): bubble controls show the arrow, not the text I-beam",
+        "fix(overlay): Pin decides whether the overlay stays above other windows",
+        "fix(bus): a scan that only ran out of budget no longer cuts the agent's voice",
+        "fix(overlay): edit withdraws a held message before its text returns to the composer",
+        "fix(overlay): one Cancel/Edit control takes a held message back",
+        "fix(overlay): a microphone click in the agent list keeps the list open",
+        "test(bus): import unittest.mock one way in two bus tests",
+        "feat(overlay): choose how soon an expanded overlay folds",
+        "fix(bridge): the auto-fold read falls back to 10 s instead of panicking",
+        "test(overlay): falsify an empty conversation canvas",
+        "fix(overlay): pin a fresh list instead of racing scrollTo",
+        "fix(overlay): re-expanding keeps a list the user scrolled up",
+        "chore(bindings): regenerate codescribe_ffi for the auto-fold setting",
+        "test(bus): name the fake callback's receiver self",
+        "fix(l10n): extract the auto-fold interval as \"%lld s\"",
+        "test(bus): name the MCP runtime fakes' receiver self",
+        "fix(light-plus): spell the product name Codescribe whichever engine heard it",
+        "fix(presentation): formatter versions spell the brand Codescribe",
+        "fix: wake remote Codex sessions on the client host",
+        "fix: preserve remote owner in queue instructions and ACK forms",
+        "fix: preserve source policy and nonblocking remote recovery",
+        "test(bus): import unittest.mock one way in the remote queue tests",
+        "fix(bus): keep remote Codex queueing inside the relay and survive bad lines",
+        "docs(skills): remote attach resolves an explicit codex-queue to off",
+        "test(bus): remove redundant local mock imports",
+        "fix(overlay): show agent identity in a resizable roster",
+        "fix(light-plus): keep code and quoted literals out of the brand rule",
+        "fix(light-plus): close literals the way CommonMark and JSON do",
+        "fix(light-plus): tell fenced code from inline spans",
+        "chore(bus): return run() from both main() branches",
+        "feat(bus): keep every paid speech synthesis on disk and replay it",
+        "fix(bus): one synthesis per speech key under concurrent misses",
+        "test(overlay): unwrap the accessibility press receipt",
+        "test(overlay): follow the current navigation lifecycle",
+        "feat(stt): expose independent transcription track choices",
+        "fix(agent): hold spoken channel messages when the ledger did not seal",
+        "test(settings): account for the developer Lab section",
+        "fix(voice-lab): install the Lab from main, not the sibling's branch",
+        "fix(stt): default direct transcription without requiring ledger readiness",
+        "feat(stt): integrate independent Apple live and ledger admission",
+        "feat(stt): publish direct transcripts through the reducer and delivery bus",
+        "test(controller): select ledger mode in the no-decoder timeout fixture",
+        "fix(stt): admit a Whisper word only with its own speech under it",
+        "fix(overlay): run the session counter during agent channel takes",
+        "fix(agent): bind channel publication to frozen transcription controls",
+        "fix(stt): find a repeat's split across touching Whisper spans",
+        "fix(stt): keep a Whisper word that sits beside speech",
+        "feat(ui): receive agent drawer delivery status with native tests",
+        "fix(presentation): admit terminal direct document operations",
+        "feat(hotkeys): opt-in middle-click agent gesture in the detector and event tap",
+        "feat(bridge): route agent gesture input to the app as a UI-only action",
+        "feat(settings): opt-in toggle for the middle-click agent chooser",
+        "feat(overlay): middle-click agent chooser with wheel focus and talk-until-next-click",
+        "fix(bus): await the named capture close before delivery",
+        "fix(overlay): the chooser never talks to a dead reader and stays open on refusal",
+        "fix(agent-channel): drive silence cadence from owned VAD edges",
+        "feat(stt): measured-quiet input gate for the ledger-free direct lane",
+        "fix(stt): both-observers fully-measured predicate for the direct input gate",
+        "test: admit held-message controls in the isolated AX probe",
+        "fix(presentation): name the terminal-continuation check clippy reads as one condition",
+        "feat(overlay): agent rows in five lines, who addressed whom, three channel-0 marks",
+        "style(overlay): swift-format the five files the row cut touches",
+        "test: falsify historical skip inference and bound native roster height",
+        "feat(bus): a per-delivery receipt for a skipped broadcast",
+        "fix(overlay): Skipped only on the follower's receipt, never from the current policy",
+        "fix(overlay): today's channel-0 policy never changes a delivery's receipt",
+        "fix(overlay): a skip file naming another owner never hides a real ACK",
+        "test: foreign skip receipts cannot suppress a valid ACK",
+        "test: retain exact broadcast skip across reader checkpoints",
+        "chore(bus): remove the private Miksa MCP participant",
+        "docs(agents): rewrite AGENTS.md as a public contract",
+        "test(bus): use placeholder hosts and agent names in bus tests",
+        "docs(code): drop private personae from comments and fixture metadata",
+        "test(overlay): use the approved home placeholder in path fixtures",
+        "chore(lexicon): drop vulgar slang rows from the shipped seed",
+        "test(quality): replace vulgar words in test text and comments",
+        "revert(lexicon): restore the clinic slang rows in the seed",
+        "fix(stt): ask the DT witness about retained debt, largest holes first",
+        "feat(live): refuse Whisper words Silero heard no speech near",
+        "feat(truth): keep the silence class and distance of over-silence refusals",
+        "feat(truth): count onsets and words per speech island between clamps",
+        "test(islands): give the third speech range a real extent",
+        "test(live): measure the Silero distance and the direct-path word filter directly",
+        "feat(config): record a settings capture without its secrets",
+        "feat(pipeline): write a replay card at every session start",
+        "fix(stt): name the witness sample span for clippy",
+        "fix(live): name the witness question type",
+        "feat(replay): rebuild a recorded session from its card",
+        "feat(tuning): gather the live window and word-over-silence knobs into one catalog",
+        "feat(replay): replay a recorded take through the overlay emitter",
+        "revert: drop the duplicate witness span alias",
+        "feat(cli): codescribe replay <session|wav> with a parity receipt",
+        "fix(presentation): post-terminal direct revisions carry ended-state action availability",
+        "feat(replay): keep each run's evidence in replays/<session>/",
+        "fix(overlay): await retranscription receipt on the canvas",
+        "chore: bump source version to 0.17.1",
+        "fix(overlay): explicit Format stays available on an owned terminal document under error phase",
+        "feat(replay): name data-dir files read at replay time",
+        "fix(overlay): complete direct edits through document receipts",
+        "perf(islands): bound the island accounting cost by binary search and range minima",
+        "ledger: dedupe boundary pins and coarse polarity",
+        "fix(bus): keep the speech cache stamp on Python 3.10 and close the test lock",
+        "docs(env): the two transcription tokens default to off",
+        "fix(overlay): keep the chooser focus in view and the Lab verdict current",
+        "fix(light-plus): tilde fences protect code from brand spelling",
+        "test(overlay): pin action continuity and retranscription settlement",
+        "feat(bus): a generic agent MCP connector for the Transcript BUS",
+        "fix(overlay): release actions only after capture ends",
+        "fix(bus): scope validation and --check-scope never write",
+        "docs(agents): commit every completed cut before handoff",
+        "fix(bus): create the agent state directory with mkdir's mode alone",
+        "docs(bus): keep --check-scope output on the machine",
+        "fix(stt): a deliberately suppressed direct final no longer fails Stop",
+        "fix(replay): keep unset settings unset through the replay card",
+        "fix(bus): harden the agent connector after QC",
+        "test(overlay): exercise the committed projection before success",
+        "feat(replay): --ledger and --device scenario switches",
+        "docs(release): describe restored overlay document actions",
+        "fix(replay): keep scenario session ids within the trail limit",
+        "fix(bus): keep canonical bus location and helper speech credential in the child environment",
+        "fix(live): drop unpinned loop copies in the direct lane",
+        "chore(bus): connector review nits without behaviour change",
+        "docs(bus): native Codex wakeup reaches only threads in the local Codex store"
+      ]
+    },
+    {
+      "sha": "69f85115bd59efdbc4eb1e0168f6bc671d300160",
+      "date": "2026-10-18",
+      "subject": "fix(plugin): re-arm the bus waiter after every tool call; a live until-event task wakes alone",
+      "squash_headings": []
+    },
+    {
+      "sha": "dfedbaa5fc94133fc49663f05a52e993c70050d7",
+      "date": "2026-10-18",
+      "subject": "docs(plugin): describe the per-tool-call re-arm and the until-event precedence",
+      "squash_headings": []
+    },
+    {
+      "sha": "7e705549249d14e09d41f514117d9c6891107a6a",
+      "date": "2026-10-18",
+      "subject": "chore(plugin): version 1.4.0 for the per-tool-call waiter",
+      "squash_headings": []
+    },
+    {
+      "sha": "a8ec2d748430ccb286596c54706d02f98bf52d99",
+      "date": "2026-10-18",
+      "subject": "docs(skill): the one Codex reader form that works",
+      "squash_headings": []
+    },
+    {
+      "sha": "ecec442b84c48b6ea4eb31a82ee75a5e64371f4e",
+      "date": "2026-10-18",
+      "subject": "docs(skill): keep codex-queue beside the Codex cell, per the observed test",
+      "squash_headings": []
+    },
+    {
+      "sha": "3d279a32b3d49c0084d766d769af257518d8285e",
+      "date": "2026-10-18",
+      "subject": "docs(skill): only the native queue wakes an idle Codex",
+      "squash_headings": []
+    },
+    {
+      "sha": "6fa8d2f5bac8fa4a1aa57550cb35b5cccbb0684e",
+      "date": "2026-10-18",
+      "subject": "docs(skill): a mid-turn queue wait lasts as long as the turn",
+      "squash_headings": []
+    },
+    {
+      "sha": "0904b0c37e96a0b17e1e84a5cf88a9f717494321",
+      "date": "2026-10-18",
+      "subject": "docs(skill): name the agents-screen background session and what it measured",
+      "squash_headings": []
+    },
+    {
+      "sha": "ff751b326851819c368abe19b127aa14ff6bc91b",
+      "date": "2026-10-18",
+      "subject": "docs(skill): the agent refreshes an expired voice login",
+      "squash_headings": []
+    },
+    {
+      "sha": "1f4f92e85110226254563a09ddda51327780ebd8",
+      "date": "2026-10-18",
+      "subject": "docs(skill): one agent refreshes the voice login at a time",
+      "squash_headings": []
+    },
+    {
+      "sha": "85a7c9b59c2204c0e4a5fd0cb8cf9a00c1d087d6",
+      "date": "2026-10-18",
+      "subject": "fix(bus): a repeated --ack acknowledges every listed delivery",
+      "squash_headings": []
+    },
+    {
+      "sha": "10879bcbf32b18ef40d6c854965f1bbd6672540c",
+      "date": "2026-10-18",
+      "subject": "docs(skill): agents speak replies to the Founder unless asked for quiet",
+      "squash_headings": []
+    },
+    {
+      "sha": "f04b53d5462902eda0a7c23d27f17f1df3d75c09",
+      "date": "2026-10-18",
+      "subject": "docs(skill): wake recipes per provider; the mute switch decides voice",
+      "squash_headings": []
+    },
+    {
+      "sha": "03d0ef090146439a988ccbd1ced55a09b2fa15be",
+      "date": "2026-10-18",
+      "subject": "fix(bus): a peer broadcast reads as channel 0 and names its whole audience",
+      "squash_headings": []
+    },
+    {
+      "sha": "2998800bf0f2489489aaaa82cb8961a1dadcda0d",
+      "date": "2026-10-18",
+      "subject": "fix(plugin): remind once of a delivery whose wake notice was lost",
+      "squash_headings": []
+    },
+    {
+      "sha": "d6c25ccf0908f0cbb827c1a6113b7826c3ce5047",
+      "date": "2026-10-18",
+      "subject": "feat(bus): --status reports a live --watch --until-event task",
+      "squash_headings": []
+    },
+    {
+      "sha": "797ebf10b33f592dd939d080071cc865be4abde2",
+      "date": "2026-10-18",
+      "subject": "fix(overlay): keep broadcast replies out of private conversations",
+      "squash_headings": []
+    },
+    {
+      "sha": "8ac3979f42856ec32e27b73b5b18ff027b71dba6",
+      "date": "2026-10-18",
+      "subject": "test(bus): prevent broadcast speech from echoing to its author",
+      "squash_headings": []
+    },
+    {
+      "sha": "95ae6919299411ef2b311175e46780aff776237f",
+      "date": "2026-10-18",
+      "subject": "feat(bus): add channel 10 founder mailbox and bidirectional peer DM visibility",
+      "squash_headings": []
+    },
+    {
+      "sha": "e052360456484f41300d1b0fd1be729337e07888",
+      "date": "2026-10-18",
+      "subject": "fix(overlay): mark the middle-click chooser focus with the system accent",
+      "squash_headings": []
+    },
+    {
+      "sha": "f6846ea9391f0708e0a0be8497d9746a30fdc948",
+      "date": "2026-10-18",
+      "subject": "docs(bus): check voice login after long pauses",
+      "squash_headings": []
+    },
+    {
+      "sha": "2c94317c2e00121442fb53ac732c1a5de7735bbb",
+      "date": "2026-10-18",
+      "subject": "feat(overlay): double the channel-0 microphone",
+      "squash_headings": []
+    },
+    {
+      "sha": "e0f09df6578dd344403054dfb3bcc77810540c67",
+      "date": "2026-10-18",
+      "subject": "perf(overlay): stop reparsing receipts a bus already read",
+      "squash_headings": []
+    },
+    {
+      "sha": "4b8650387e8daeb963af5fe227473338ca19bff5",
+      "date": "2026-10-18",
+      "subject": "fix(channel): leave unticked owners out of a channel-0 take",
+      "squash_headings": []
+    },
+    {
+      "sha": "0a0c314eb8ee6b12b2e3940e26ec2fe558426495",
+      "date": "2026-10-18",
+      "subject": "feat(overlay): focus agent panel in vc-frame from overlay roster",
+      "squash_headings": []
+    },
+    {
+      "sha": "a56ab4616c91d7b50180ee07f7dbd44d9233e149",
+      "date": "2026-10-18",
+      "subject": "fix(overlay): line the big channel-0 microphone up with the agent microphones",
+      "squash_headings": []
+    },
+    {
+      "sha": "5b785cd4d5b40a52f9b9a7f6bff014f8acd37034",
+      "date": "2026-10-18",
+      "subject": "Merge commit '0a0c314eb' into integrate/klaudiusz-div0-overlay-20261018",
+      "squash_headings": []
+    },
+    {
+      "sha": "1c2aa7e55e5db652b36033b7d22f966058f344ca",
+      "date": "2026-10-18",
+      "subject": "Merge remote-tracking branch 'origin/cut/explorek-mic-align-20261018' into integrate/klaudiusz-div0-overlay-20261018",
+      "squash_headings": []
+    },
+    {
+      "sha": "79f57ce30e1b14dffebf403a641573f4fbfffbee",
+      "date": "2026-10-18",
+      "subject": "feat(overlay): let the agents column take the whole window",
+      "squash_headings": []
+    },
+    {
+      "sha": "298dd5a17da920759bfb00683e3e45b542ce15ec",
+      "date": "2026-10-19",
+      "subject": "perf(live-lexicon): build each lexicon regex once",
+      "squash_headings": []
+    },
+    {
+      "sha": "177fed90fa006fbef3ea28b2bd2bc5ca14d54ff5",
+      "date": "2026-10-19",
+      "subject": "Merge commit '298dd5a17' into integrate/klaudiusz-div0-overlay-20261018",
+      "squash_headings": []
+    },
+    {
+      "sha": "4a74a1b5f2b481ce34099bc3df7578d3c7d0ef09",
+      "date": "2026-10-19",
+      "subject": "feat(build): darker dark mode on nightly builds",
+      "squash_headings": []
+    },
+    {
+      "sha": "70e882084debad2a648397a69bc632ef5bf2d1dc",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): tint the chosen auto-fold interval instead of a checkmark",
+      "squash_headings": []
+    },
+    {
+      "sha": "fee50c4c1165369d8ddf386854cf2458a94ff0e8",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): drop the accent wash behind the shared channel row",
+      "squash_headings": []
+    },
+    {
+      "sha": "c8cb5d9e55664f80288d123ecf4af714fe631ef8",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): keep the chooser's accent mark on the settled agent",
+      "squash_headings": []
+    },
+    {
+      "sha": "9480137e46d52931ca02a494d8491de5dbcefcaa",
+      "date": "2026-10-19",
+      "subject": "style(overlay): close the row hover modifier on its own line",
+      "squash_headings": []
+    },
+    {
+      "sha": "89a9eeac05b19a53001a08eab6f4ff150d6ec022",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): give the settled agent its own mark, apart from the chooser ring",
+      "squash_headings": []
+    },
+    {
+      "sha": "1ea5afd1a89e004a343c51c0cd6c8cc8ffd26149",
+      "date": "2026-10-19",
+      "subject": "perf(agent-ack): reuse parsed marker bodies across scan passes",
+      "squash_headings": []
+    },
+    {
+      "sha": "c641b1e6f55e76d528b27dc9e19a934a66579e1b",
+      "date": "2026-10-19",
+      "subject": "perf(overlay): stop polling receipts that settle on another read bus",
+      "squash_headings": []
+    },
+    {
+      "sha": "52cc4c6cd6647d4191ada106f2fe0cbef4264b9d",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): dock the agents column from 720 points per text step, not 820",
+      "squash_headings": []
+    },
+    {
+      "sha": "3f983ca9c96828df3dd341121cd941c22e37df68",
+      "date": "2026-10-19",
+      "subject": "test(overlay): compile the panel-focus tests and pin the drawer handle's drag",
+      "squash_headings": []
+    },
+    {
+      "sha": "1753efa736d4a732b0ad5b3d549fa76d05e614bc",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): keep the roster keyboard focus on the selected row",
+      "squash_headings": []
+    },
+    {
+      "sha": "dfa35af17b6a7b835dfe010f1a762ed563b4ba54",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): an agent take no longer leaves the header finishing a dictation",
+      "squash_headings": []
+    },
+    {
+      "sha": "46ab6f63bc0cdb18fc6a2a7fe6d9f349fec19ede",
+      "date": "2026-10-19",
+      "subject": "perf(overlay): verify a bus generations manifest once per version",
+      "squash_headings": []
+    },
+    {
+      "sha": "5bc8ca069de3b4d3fc2f0567347947feaa17415b",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): hold the counter on one line, raise the width floor and retire legacy scrollers",
+      "squash_headings": []
+    },
+    {
+      "sha": "2636952d4c28cd6513248cd5922b5ca0dacc7718",
+      "date": "2026-10-19",
+      "subject": "test(overlay): follow the 360 pt width floor on the nightly line",
+      "squash_headings": []
+    },
+    {
+      "sha": "822f2d501b0f30527936be101d184c8245e61e9c",
+      "date": "2026-10-19",
+      "subject": "feat(bus): a click on an agent row focuses that agent's own vc-frame pane",
+      "squash_headings": []
+    },
+    {
+      "sha": "84ae4b80fcbdd390f6c79d70f93b948eaf784ac1",
+      "date": "2026-10-19",
+      "subject": "overlay: use header tooltip chrome for panel focus and prefer bundled bus publisher",
+      "squash_headings": []
+    },
+    {
+      "sha": "7c51ca6291864e8bbb35982bbcf9bf958c804072",
+      "date": "2026-10-19",
+      "subject": "cli: validate speech recognition permission in replay and codesign installed binaries",
+      "squash_headings": []
+    },
+    {
+      "sha": "b89c6039d5d4711b2a1d2c1a1fa1490291dfebf3",
+      "date": "2026-10-19",
+      "subject": "overlay: log and surface stderr in publishAgentPanelFocus and seed lease in reader test",
+      "squash_headings": []
+    },
+    {
+      "sha": "970e618d6e276cd139068ca119cdb8a83b45e761",
+      "date": "2026-10-19",
+      "subject": "merge: bring Monika's PR #178 line (aea10c35d) into the nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "c44d2f3ba2ca7af7ecb166149b7ddebe0dae05da",
+      "date": "2026-10-19",
+      "subject": "fix(bus): resolve vc-frame on PATH at each click, not from a pinned generation",
+      "squash_headings": []
+    },
+    {
+      "sha": "9e96ce248b40b1a6a8e0ec66d404a716b6f0418e",
+      "date": "2026-10-19",
+      "subject": "feat(bus): cs-bus --history prints the channel conversation as Markdown",
+      "squash_headings": []
+    },
+    {
+      "sha": "aa047c4775b173dfb14212cbc8c90083665edd58",
+      "date": "2026-10-19",
+      "subject": "docs(skill): read bus history with cs-bus --history when the UI is out of reach",
+      "squash_headings": []
+    },
+    {
+      "sha": "a62bb49901f280e11b0082598bef13fd95827d1e",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): the docked agents roster grows with the overlay text scale",
+      "squash_headings": []
+    },
+    {
+      "sha": "a6522b0bb8ef6c5fa3f37be32d3041f52f0b4bbc",
+      "date": "2026-10-19",
+      "subject": "test(overlay): read the roster focus wiring where the column is built",
+      "squash_headings": []
+    },
+    {
+      "sha": "21e8a060ca0c189abe42e306be15ab389dbce160",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): ⌘C copies a bubble selection after the transcript held focus",
+      "squash_headings": []
+    },
+    {
+      "sha": "956191e2b168ed7326c971dc6e7f7ff509c6f579",
+      "date": "2026-10-19",
+      "subject": "fix(ui): keep the nightly's glass window header over the detail columns",
+      "squash_headings": []
+    },
+    {
+      "sha": "583fe49a1c1f7aa3bf38eec5718f21a7a3913e8f",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): a switched-to long thread opens on its newest bubbles",
+      "squash_headings": []
+    },
+    {
+      "sha": "65e74273453f30a443233cfaf7307c6e98592867",
+      "date": "2026-10-19",
+      "subject": "style(overlay): wrap two lines the strict swift-format gate rejects",
+      "squash_headings": []
+    },
+    {
+      "sha": "afa11dc19a3427e0cbc63158a3e18d2819840d3a",
+      "date": "2026-10-19",
+      "subject": "merge: Stasiu's overlay thread fixes into the nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "d61aefaf9e1737eec573c051a45725c8bb55264c",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): a thread whose history loads after the switch opens at its end",
+      "squash_headings": []
+    },
+    {
+      "sha": "48689891160df961bbf9a34b0be2a1c5f701427f",
+      "date": "2026-10-19",
+      "subject": "test(overlay): measure the roster's height instead of finding its heading",
+      "squash_headings": []
+    },
+    {
+      "sha": "e61789b9b160149f94e69019a2c3e25171fb4d5c",
+      "date": "2026-10-19",
+      "subject": "merge: Stasiu's follow-up for the switched thread and the roster scale",
+      "squash_headings": []
+    },
+    {
+      "sha": "0ae770e1e8adc65bb5eafa3bf5b0b8d2bf632426",
+      "date": "2026-10-19",
+      "subject": "test(overlay): read the roster's height from its own geometry",
+      "squash_headings": []
+    },
+    {
+      "sha": "349e29bf9dcd5d99fc67fb8e792e78626084e660",
+      "date": "2026-10-19",
+      "subject": "style(overlay): wrap the roster height recorder line for swift-format",
+      "squash_headings": []
+    },
+    {
+      "sha": "9aa248f72704ed709904e908ab2aa2f235e09d13",
+      "date": "2026-10-19",
+      "subject": "merge: Stasiu's roster height measurement",
+      "squash_headings": []
+    },
+    {
+      "sha": "48b653d7f013e945ea7c3fc1dfac81e9ae7751a0",
+      "date": "2026-10-19",
+      "subject": "test(overlay): end the pill-stack section where the list now changes conversation",
+      "squash_headings": []
+    },
+    {
+      "sha": "cfc94dda89d4df77395ffdedfdba13595f788a33",
+      "date": "2026-10-19",
+      "subject": "fix(bus): take the vc-frame contract Leo accepted in place of the rejected PATH filter",
+      "squash_headings": []
+    },
+    {
+      "sha": "ecca7948af3f98faed2a9c4fa63c9c6019742ec8",
+      "date": "2026-10-19",
+      "subject": "feat(config): ledger sensitivity setting for the Lab slider",
+      "squash_headings": []
+    },
+    {
+      "sha": "c05164a334a448ece8d9f694553993994a969377",
+      "date": "2026-10-19",
+      "subject": "feat(engine): the ledger slider moves Whisper word admission per take",
+      "squash_headings": []
+    },
+    {
+      "sha": "9ea02936f9b938cac4b9a2f950d652dbb706ff75",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): gate Focus in Frame button on compatible vc-frame CLI",
+      "squash_headings": []
+    },
+    {
+      "sha": "e9514369ce9f96756ee9e0ce24d91a169ece8c18",
+      "date": "2026-10-19",
+      "subject": "feat(lab): ledger sensitivity slider in Voice Lab",
+      "squash_headings": []
+    },
+    {
+      "sha": "141a72f46cb215ebe065040ced4151201da1039a",
+      "date": "2026-10-19",
+      "subject": "test(overlay): find the roster row builder after it became internal",
+      "squash_headings": []
+    },
+    {
+      "sha": "b1d6991d0fe0954a359377edb45519d9b34311ff",
+      "date": "2026-10-19",
+      "subject": "merge: Explorek's ledger sensitivity slider for the nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "5cc00c1228e2c03e26ec6983233fc0c5fa029b4d",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): render a measured window of the newest messages instead of the eager tail",
+      "squash_headings": []
+    },
+    {
+      "sha": "0f9949fa9226125b8816d8e481a361c4fcb4f3fa",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): copy a bubble selection when Cmd+C arrives as a plain keyDown",
+      "squash_headings": []
+    },
+    {
+      "sha": "2c80bd6450bfb762e77eff2b5cd304fe74c706c1",
+      "date": "2026-10-19",
+      "subject": "merge: Stasiu's measured message window and panel-level Cmd+C",
+      "squash_headings": []
+    },
+    {
+      "sha": "932b913ff14df519d34145418cfc2790d356535d",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): keep the message window at the top when channel 0 trims its pinned row",
+      "squash_headings": []
+    },
+    {
+      "sha": "78aad89ee12c218cc93ddfcda3c6a6d075251292",
+      "date": "2026-10-19",
+      "subject": "merge: keep the reader's window when the channel-0 cap trims its first row",
+      "squash_headings": []
+    },
+    {
+      "sha": "d224941944d85094b04756bcbe1deac325bea2c6",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): align vc-frame capability detection with follower PATH and wrapper repair",
+      "squash_headings": []
+    },
+    {
+      "sha": "44853a5d7bbf7812584a25ea4ee00754218e0045",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): include mode, ctime, and executability in VcFrameFileStat",
+      "squash_headings": []
+    },
+    {
+      "sha": "5119c762beb748d3ecc9480f46e0a8ab8cdecee8",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): give agent recording its own violet microphone on the Agents button",
+      "squash_headings": []
+    },
+    {
+      "sha": "eb8a8cdf0b2c7bf97de75202063733add08f49cb",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): carry three buttons in mini while an agent records and shorten the wordmark to cs",
+      "squash_headings": []
+    },
+    {
+      "sha": "d00a73f0ea72eb691493711596a724b6d78a35a4",
+      "date": "2026-10-19",
+      "subject": "test(overlay): isolate the mini wordmark probes to the main actor",
+      "squash_headings": []
+    },
+    {
+      "sha": "075a454f919f819d99b4763921ac803d9ba69513",
+      "date": "2026-10-19",
+      "subject": "test(overlay): probe the mini agent microphone through AppKit and follow the Agents chrome title",
+      "squash_headings": []
+    },
+    {
+      "sha": "013997ab3fa2c19746b674c69883873a7e5191de",
+      "date": "2026-10-19",
+      "subject": "test(overlay): measure resting header controls against role colours as the raster paints them",
+      "squash_headings": []
+    },
+    {
+      "sha": "c98be6af24eb8d64a1f8b1d181ddc462236b98e9",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): draw the recording agent's control as a megaphone",
+      "squash_headings": []
+    },
+    {
+      "sha": "cd7bc2389afac74745b65fd7c386a3f431c107fe",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): narrow mini to its controls while an agent records",
+      "squash_headings": []
+    },
+    {
+      "sha": "ec771aae91a38aedf559a10ae4743976b78ec339",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): a screenshot chord no longer brings back a hidden overlay",
+      "squash_headings": []
+    },
+    {
+      "sha": "f4ec496dcffc3d2539d6a84ff5bb9a9d14ea45bc",
+      "date": "2026-10-19",
+      "subject": "merge: Explorek's F7, a hidden overlay stops reacting to the screenshot chord",
+      "squash_headings": []
+    },
+    {
+      "sha": "80c7f3c9691e8f80b9cbffda85651909d28f7b7f",
+      "date": "2026-10-19",
+      "subject": "fix(ledger): a Stop stub cannot veto a decode by a distant negation",
+      "squash_headings": []
+    },
+    {
+      "sha": "a50c290c6efff640b8f4c8ca0f66d3913e83ad15",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): drop ledger diagnostics from the bar, Voice Lab owns them",
+      "squash_headings": []
+    },
+    {
+      "sha": "f23bafe79b455f4912359b5878df7939be436d9f",
+      "date": "2026-10-19",
+      "subject": "fix(voice-lab): a held :8765 moves the Lab, never refuses it",
+      "squash_headings": []
+    },
+    {
+      "sha": "ae62d0ead0822d36400168afb2d2ec435c3aa676",
+      "date": "2026-10-19",
+      "subject": "merge: Voice Lab port fallback into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "611942e87cad3c0bf2b2563e4c8c1165cdd8836c",
+      "date": "2026-10-19",
+      "subject": "fix(voice-lab): pass the port probe as a one-argument closure",
+      "squash_headings": []
+    },
+    {
+      "sha": "39697c7f9ef7ee7eeecf74e0ee5b0f625efe20cb",
+      "date": "2026-10-19",
+      "subject": "merge: Voice Lab port probe fix into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "337b0d3aef9b3cb9d7740fd14eeb701c830a6090",
+      "date": "2026-10-19",
+      "subject": "refactor(overlay): drop evidence and refusal-detail state with no reader",
+      "squash_headings": []
+    },
+    {
+      "sha": "baa90e8d9ae37cfe49f0d616aae3ec5bfe10aae0",
+      "date": "2026-10-19",
+      "subject": "merge: drop dead evidence state into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "3bb6d3b8e562ff8b8aea6e7660d8b7619a7e8d2d",
+      "date": "2026-10-19",
+      "subject": "test(overlay): a role colour at rest needs the role's hue, and follow the bare tools bar",
+      "squash_headings": []
+    },
+    {
+      "sha": "2fa6ca445cd177a918066d1bfeb90bd25f5444f3",
+      "date": "2026-10-19",
+      "subject": "perf(live): settled owners stop costing every worker tick",
+      "squash_headings": []
+    },
+    {
+      "sha": "eecb35576c918ccb1b3b82f36d79f470d20feae9",
+      "date": "2026-10-19",
+      "subject": "merge: long-take heat cut (Explorek) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "3248014674e633a42a97e123db861f36c7213c01",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): below the docking threshold the agents roster is the docked list over the whole window",
+      "squash_headings": []
+    },
+    {
+      "sha": "16c0415e4ffb789a30bca8abbd33131521200879",
+      "date": "2026-10-19",
+      "subject": "test(live): name the per-tick work that stays linear",
+      "squash_headings": []
+    },
+    {
+      "sha": "2b3e948ce637423d98a85d12febe5ae2ed28b3b6",
+      "date": "2026-10-19",
+      "subject": "merge: narrow-window agent list (Stasiu) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "86dc238c0628a529d3c78df4558b2a13b579decb",
+      "date": "2026-10-19",
+      "subject": "style(settings): give the central pane one scale, one header rung and one chip",
+      "squash_headings": []
+    },
+    {
+      "sha": "b8cd238d7d7381723eaf7d05d5c9ab21cc1fd610",
+      "date": "2026-10-19",
+      "subject": "style(settings): panels adopt the shared header, page frame and type rungs",
+      "squash_headings": []
+    },
+    {
+      "sha": "d2b7a3ede68cdfb35f53342d68e9c24ccd73776c",
+      "date": "2026-10-19",
+      "subject": "docs(settings): record the central pane's scale and its two rules",
+      "squash_headings": []
+    },
+    {
+      "sha": "875ff6b3a1ba371f84993e2006a18f3e41a01255",
+      "date": "2026-10-19",
+      "subject": "test(settings): pin the shared Settings scale and one header owner",
+      "squash_headings": []
+    },
+    {
+      "sha": "b0cf2d0220e2290ab7c9cbae75dfd29fbbd5593f",
+      "date": "2026-10-19",
+      "subject": "feat(settings): answer the question Creator's statuses raised",
+      "squash_headings": []
+    },
+    {
+      "sha": "9c06026b21947752818d7f128ae5c017e55e1766",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): put Shortcuts back on the shared scale",
+      "squash_headings": []
+    },
+    {
+      "sha": "934071ca2086a07a02c1915247d76314b0cfc7b8",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): unnest Audio's readiness card and name its actions",
+      "squash_headings": []
+    },
+    {
+      "sha": "10fbec1473a85509a5432872cbc308165215b2c6",
+      "date": "2026-10-19",
+      "subject": "docs(settings): describe the three panels as they now read",
+      "squash_headings": []
+    },
+    {
+      "sha": "3ba846250b43601c8d8cb8e5302baa46d681fb6a",
+      "date": "2026-10-19",
+      "subject": "fix(settings): keep the Max waiting line out of plural debt",
+      "squash_headings": []
+    },
+    {
+      "sha": "0dc458ad6f4bcb616f94d18773ba8af9c606c425",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): put the Providers page on the shared scale",
+      "squash_headings": []
+    },
+    {
+      "sha": "a342992e82bd72c795290af298fe34f17d14bfbc",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): name each AI-models timer and fix the \"below\"",
+      "squash_headings": []
+    },
+    {
+      "sha": "3266c1bb80eb3babdcc0b6a71f9d7fa94ad80b29",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): shorten the workspace intro and use the one chip",
+      "squash_headings": []
+    },
+    {
+      "sha": "c18f2007967f9ec16fcfeed4e600d3bcdd25523b",
+      "date": "2026-10-19",
+      "subject": "fix(settings): make the Diagnostics summary say what it knows",
+      "squash_headings": []
+    },
+    {
+      "sha": "b93c8331662e553d379333e58639a43d05a31e79",
+      "date": "2026-10-19",
+      "subject": "docs(settings): record the Providers, AI-models and Diagnostics round",
+      "squash_headings": []
+    },
+    {
+      "sha": "ed722c547bf358c39e0e7b8a6efbf6cc8f2656fd",
+      "date": "2026-10-19",
+      "subject": "style(settings): compact the tool permission cards and pair search with source",
+      "squash_headings": []
+    },
+    {
+      "sha": "989a656c4fab96a88232f83794692fab1e71149b",
+      "date": "2026-10-19",
+      "subject": "style(settings): give MCP a section title, one chip family and a shorter empty state",
+      "squash_headings": []
+    },
+    {
+      "sha": "4b1e060d978cd5878a914ba3a0424652d3ee2506",
+      "date": "2026-10-19",
+      "subject": "docs(settings): record round 16 of the Tools and MCP panels",
+      "squash_headings": []
+    },
+    {
+      "sha": "973ae1d85dd971013749d4c024dd09cd6189bb67",
+      "date": "2026-10-19",
+      "subject": "refactor(settings): retire the header rung no section uses",
+      "squash_headings": []
+    },
+    {
+      "sha": "23f900717ae966a4685cef86dd9c7dd8aefbdade",
+      "date": "2026-10-19",
+      "subject": "style(settings): put the tool identity on the scale's meta rung",
+      "squash_headings": []
+    },
+    {
+      "sha": "3eb3fc55b760d39a80f90430de4ece78b4107504",
+      "date": "2026-10-19",
+      "subject": "style(settings): give text fields and Save the control rung",
+      "squash_headings": []
+    },
+    {
+      "sha": "4feae03faa76ba88a380b38bff6f8e56d37dc168",
+      "date": "2026-10-19",
+      "subject": "l10n(settings): carry the c14–c16 copy into the catalog",
+      "squash_headings": []
+    },
+    {
+      "sha": "10a3e7d82cbea413e8f6d830fd2e3504d961d444",
+      "date": "2026-10-19",
+      "subject": "test(settings): pin the c14–c16 statuses, timers and copy",
+      "squash_headings": []
+    },
+    {
+      "sha": "a5d3027cee14bef696b24b333dbe890e0c40fe23",
+      "date": "2026-10-19",
+      "subject": "docs(changelog): record the lower fields and join the round's list",
+      "squash_headings": []
+    },
+    {
+      "sha": "0a119b1ab74e9d958a2d7137f70caceed66a0a55",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): ⌘C copies a bubble selection after the transcript held focus",
+      "squash_headings": []
+    },
+    {
+      "sha": "1cd9863463323b387f3cac95a810410624361e44",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): copy a bubble selection when Cmd+C arrives as a plain keyDown",
+      "squash_headings": []
+    },
+    {
+      "sha": "97d03d9b70fdf363581190dc78da9414e3e2d46c",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): the docked agents roster grows with the overlay text scale",
+      "squash_headings": []
+    },
+    {
+      "sha": "163f63f1b798f75a76ef3fc66e7a3c1fdfbc9845",
+      "date": "2026-10-19",
+      "subject": "test(overlay): measure the roster's height instead of finding its heading",
+      "squash_headings": []
+    },
+    {
+      "sha": "c369dd74dfe603fe7df3dd059bda6f215e4392a5",
+      "date": "2026-10-19",
+      "subject": "test(overlay): read the roster's height from its own geometry",
+      "squash_headings": []
+    },
+    {
+      "sha": "79c66037a9cb3a4841c0970ed2d281f7b4a63868",
+      "date": "2026-10-19",
+      "subject": "test(overlay): read the roster focus wiring where the column is built",
+      "squash_headings": []
+    },
+    {
+      "sha": "c523a60ab638e31b4a049ca8fa6256615fe9495e",
+      "date": "2026-10-19",
+      "subject": "test(overlay): end the pill-stack section where the list now changes conversation",
+      "squash_headings": []
+    },
+    {
+      "sha": "be065498cd7da7b0314cdb110525ecd764a66cca",
+      "date": "2026-10-19",
+      "subject": "test(overlay): let new messages leave a history reader where they are",
+      "squash_headings": []
+    },
+    {
+      "sha": "0ade5d4a16304f81dc6332d55a816807fcce7aa9",
+      "date": "2026-10-19",
+      "subject": "fix(ui): keep Maciej's glass window header over the detail columns",
+      "squash_headings": []
+    },
+    {
+      "sha": "fa6196cd092a5d98efebc0e3aa310991361f236f",
+      "date": "2026-10-19",
+      "subject": "docs(ui): the window header keeps its glass; record the overlay copy and roster fixes",
+      "squash_headings": []
+    },
+    {
+      "sha": "3e46f7469fc0b4c4c71534d8be0c8c4a77f52a5f",
+      "date": "2026-10-19",
+      "subject": "test(replay): expected-red acceptance for no speech on a silent take",
+      "squash_headings": []
+    },
+    {
+      "sha": "18ac4da61b736fb1eee22555a622370cfe52288b",
+      "date": "2026-10-19",
+      "subject": "style(skill): format the Codex wake recipe the way the check expects",
+      "squash_headings": []
+    },
+    {
+      "sha": "fe06bdbf5e62084bbff5b6e8e5836c530dc1dfc5",
+      "date": "2026-10-19",
+      "subject": "fix(stop): a take both speech passes measured silent ends as no speech",
+      "squash_headings": []
+    },
+    {
+      "sha": "98d4216d2558be70a512b7342abec64824958c94",
+      "date": "2026-10-19",
+      "subject": "refactor(overlay): drop dockedRosterColumnShown, test the rendered column",
+      "squash_headings": []
+    },
+    {
+      "sha": "d4d8476064945f57617fc12ac8a55cfc0bef1fde",
+      "date": "2026-10-19",
+      "subject": "fix(settings): read the Whisper model status off the main thread",
+      "squash_headings": []
+    },
+    {
+      "sha": "5c52a34cc5b70aac0f47e5bf5aa2933399b04f35",
+      "date": "2026-10-19",
+      "subject": "merge: no-speech observed silence and heat follow-up (Explorek) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "a94ac1f9dfb7a7506ba5850045d3a64488e6386b",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): the agents list takes the keyboard from the hidden composer",
+      "squash_headings": []
+    },
+    {
+      "sha": "a7da40420f664072568b0047cb02275b37abc98c",
+      "date": "2026-10-19",
+      "subject": "merge: roster focus and dead flag cut (Stasiu) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "55159e4ee8f5dfef3126b278bd5d769d9648155e",
+      "date": "2026-10-19",
+      "subject": "perf(settings): page changes stop validating the Whisper bundle on the main thread",
+      "squash_headings": []
+    },
+    {
+      "sha": "a561655c2d63a27d353adf96639dd052a8b02cb8",
+      "date": "2026-10-19",
+      "subject": "overlay: grey Frame focus without a pane, failures as a glyph",
+      "squash_headings": []
+    },
+    {
+      "sha": "506b3a8bea52f08552c0d74947bd4ba3788f915a",
+      "date": "2026-10-19",
+      "subject": "merge: greyed Frame focus and quiet focus failures into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "22dde3f4d7f50d4c315b484676b1d4c1a7ab9d0f",
+      "date": "2026-10-19",
+      "subject": "l10n: Polish for the Frame focus strings",
+      "squash_headings": []
+    },
+    {
+      "sha": "9a205cea1b776934bc5c29312fc11db7932d818a",
+      "date": "2026-10-19",
+      "subject": "merge: Polish Frame focus strings into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "2df81d19777d89eccdd832b67d36ca21922f9885",
+      "date": "2026-10-19",
+      "subject": "feat(overlay): sidebar corner buttons choose the agents layout, folded list keeps pills",
+      "squash_headings": []
+    },
+    {
+      "sha": "4b4b2154dce127458e46a933320745d37845c9a0",
+      "date": "2026-10-19",
+      "subject": "merge: agents layout sidebar toggles (Stasiu) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "2abec4cc923da0bbf8249f4f06d2b6a3c11acf8e",
+      "date": "2026-10-19",
+      "subject": "fix(bus): resolve vc-frame pane for claude daemon and claude agents sessions",
+      "squash_headings": []
+    },
+    {
+      "sha": "216e1a862216e01d390650961bd2e64f83588b08",
+      "date": "2026-10-19",
+      "subject": "test(overlay): re-pin the roster install and the rail's non-interactive chrome",
+      "squash_headings": []
+    },
+    {
+      "sha": "bbbdc9c5886b480b48d4fbdf6b9279454ddf1259",
+      "date": "2026-10-19",
+      "subject": "test(overlay): pin conversation acceptance to the shipped routing",
+      "squash_headings": []
+    },
+    {
+      "sha": "65e6bc67c9d81b8da6aab21da646ff83df934db2",
+      "date": "2026-10-19",
+      "subject": "merge: agents layout test pins (Stasiu) into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "c497465cb52e8b48d7d01d8eb5c3f6ee7da87923",
+      "date": "2026-10-19",
+      "subject": "merge: conversation acceptance pins into nightly",
+      "squash_headings": []
+    },
+    {
+      "sha": "5a9d6510c3e5f2ede8ff553d8ac24efc2036dd0c",
+      "date": "2026-10-19",
+      "subject": "merge: dragon 0.17.1 release line (Lena, Andrzej) into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "4bab6457022a5fa81965e83b9b994426e00d9004",
+      "date": "2026-10-19",
+      "subject": "merge: cut/stasiu-agents-sidebar-toggles-20261019 into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "144e10785155e8aa33538eb711c087d91c5a2f02",
+      "date": "2026-10-19",
+      "subject": "merge: cut/explorek-settings-whisper-status-20261019 into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "f3a5eb43795d3911df39d24efaafd5008f66d967",
+      "date": "2026-10-19",
+      "subject": "merge: origin/fix/miksa-native-event-key into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "45a378b2f62f7ee30036a225296a7511f1711c47",
+      "date": "2026-10-19",
+      "subject": "docs(release): record the verified overlay source checkpoint",
+      "squash_headings": []
+    },
+    {
+      "sha": "a296b08febb70995407cace01992d466422b8511",
+      "date": "2026-10-19",
+      "subject": "merge: nightly c497465cb into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "47d8627b7ef47ae83b93dec2743f7de1021ed259",
+      "date": "2026-10-19",
+      "subject": "style(test): wrap the live activity marker context under the line limit",
+      "squash_headings": []
+    },
+    {
+      "sha": "1220cfa559ff129093fb07b18806befdc0d73106",
+      "date": "2026-10-19",
+      "subject": "fix(bus): resolve vc-frame pane for claude daemon and claude agents sessions",
+      "squash_headings": []
+    },
+    {
+      "sha": "300b13f2f0095a3c1567be930b9a75282d5e11e5",
+      "date": "2026-10-19",
+      "subject": "merge: Andrzej frame pane resolution for Claude background sessions into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "5ea26f1fc7ce87cb88aa24424e82066aebe19933",
+      "date": "2026-10-19",
+      "subject": "merge: dragon release/0.17.2 into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "6237380dc4404d887eaf7869df379dd9686375d8",
+      "date": "2026-10-19",
+      "subject": "Merge branch 'release/0.17.2' into integrate/astra-experimental-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "bb4f2c1d04be764a1df635a5cfc57707fb6b39cb",
+      "date": "2026-10-19",
+      "subject": "feat(integrate): admit unmerged bus, settings, and MCP event-key cuts",
+      "squash_headings": []
+    },
+    {
+      "sha": "f0d46c64de026c2d08011d39a18f1b1f9d5ea181",
+      "date": "2026-10-19",
+      "subject": "merge: installed nightly 1220cfa55 into the gather branch",
+      "squash_headings": []
+    },
+    {
+      "sha": "97bb9609b1e5fee98d8cf4b68a251c4ecbdd2643",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): unroll into the expanded view without laying the panel out per step",
+      "squash_headings": []
+    },
+    {
+      "sha": "d00f75215e094fbd0304291f04eeb6bc2ba64c47",
+      "date": "2026-10-19",
+      "subject": "fix(formatting): await in-flight occurrence projections and preserve short spans",
+      "squash_headings": []
+    },
+    {
+      "sha": "aaa661c242a2b77bc7b945b5d84c8049c74e5c47",
+      "date": "2026-10-19",
+      "subject": "feat(settings): surface on-device formatting toggle and permissive guardrails",
+      "squash_headings": []
+    },
+    {
+      "sha": "23c51cc5dead4b7c22210e18ee935d3d32fd4507",
+      "date": "2026-10-19",
+      "subject": "fix(prune): strip dead-code silencers, un-ignore E2E suites, and recover stale Responses chains",
+      "squash_headings": []
+    },
+    {
+      "sha": "40e7fe69aa6a3a9999b798c23cb5536c5f86bc5c",
+      "date": "2026-10-19",
+      "subject": "Merge branch 'integrate/stasiu-gather-20261019' into nightly/0.17.2",
+      "squash_headings": []
+    },
+    {
+      "sha": "6cc12ee04de87aa20e5d1841004a7686fbcb3e95",
+      "date": "2026-10-19",
+      "subject": "fix(release): keep preparation notes tied to reviewed source",
+      "squash_headings": []
+    },
+    {
+      "sha": "aa37c1ce62dce2add908d8ded5dc29feae20252e",
+      "date": "2026-10-19",
+      "subject": "fix(overlay): keep the widget through pointer and menu interaction",
+      "squash_headings": []
+    },
+    {
+      "sha": "3f8eafad12889e0490bfd42caa7f26802f377e53",
+      "date": "2026-10-19",
+      "subject": "docs(release): record the verified overlay source checkpoint",
+      "squash_headings": []
+    },
+    {
+      "sha": "87535881abbe14e673c336cdca2980f097265f72",
+      "date": "2026-10-19",
+      "subject": "Merge branch 'release/0.17.2' into integrate/astra-experimental-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "1b11ae564fed48ad94b654154d29c9a247c12c4e",
+      "date": "2026-10-19",
+      "subject": "Merge remote-tracking branch 'dragon/integrate/astra-experimental-20261019' into nightly/0.17.2",
+      "squash_headings": []
+    },
+    {
+      "sha": "2bebbe668b7f1568f806d7b62e482b93e090f412",
+      "date": "2026-10-19",
+      "subject": "feat(settings): confirm before installing the coding-agent skill",
+      "squash_headings": []
+    },
+    {
+      "sha": "759c4451a96f914c32e8bf3693c118528fc783d6",
+      "date": "2026-10-19",
+      "subject": "docs(settings): describe the skill install confirmation",
+      "squash_headings": []
+    },
+    {
+      "sha": "f737b6fe1fcd49b962698d5029ed25a6ff37c577",
+      "date": "2026-10-19",
+      "subject": "feat(settings): move transcript markers to Dictation",
+      "squash_headings": []
+    },
+    {
+      "sha": "daf62a90123b76cef660ee69b5f6ea16dcf2e546",
+      "date": "2026-10-19",
+      "subject": "feat(settings): fold About and License into one User tab",
+      "squash_headings": []
+    },
+    {
+      "sha": "395095a74798c5e78ab646bc289fd31da4ebf36d",
+      "date": "2026-10-19",
+      "subject": "docs(settings): describe the User tab and markers under Dictation",
+      "squash_headings": []
+    },
+    {
+      "sha": "7ff09ba82667050fe059d0700a3f23e3f586c862",
+      "date": "2026-10-19",
+      "subject": "Merge branch 'polish/user-tab-tray-skill-20261019-c19' into polish/user-tab-tray-skill-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "eb41d9176d06b7716bfc477acd60ab3f03d2a9ea",
+      "date": "2026-10-20",
+      "subject": "feat(tray): drop the Setup Wizard and Check for Updates rows",
+      "squash_headings": []
+    },
+    {
+      "sha": "c2c56a858b28b08d1aa871163afda8bee367630c",
+      "date": "2026-10-20",
+      "subject": "feat(app): add Check for Updates to the application menu",
+      "squash_headings": []
+    },
+    {
+      "sha": "93183ebdce1139caf3f6da750ff57b42d1aba78c",
+      "date": "2026-10-20",
+      "subject": "test(settings): follow the User tab, the markers move and the skill confirmation",
+      "squash_headings": []
+    },
+    {
+      "sha": "670786c67a374beb8fd4f5014a142aaf5a04c232",
+      "date": "2026-10-20",
+      "subject": "Merge branch 'polish/user-tab-tray-skill-20261019-c18' into polish/user-tab-tray-skill-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "81df353fbe25d089989d513d15f7ff45e4aea1d4",
+      "date": "2026-10-20",
+      "subject": "refactor(tray): drop the orphaned setup-wizard hook and record the tray change",
+      "squash_headings": []
+    },
+    {
+      "sha": "d775b6294a47da493ad7c0479d03d4ff068bd990",
+      "date": "2026-10-20",
+      "subject": "l10n(settings): carry the User tab, the menu item and the skill confirmation into the catalog",
+      "squash_headings": []
+    },
+    {
+      "sha": "988aad95aeee87d4d2bb77db7d9fe98482a7fee3",
+      "date": "2026-10-20",
+      "subject": "fix(settings): a no-op skill request keeps the notice; eight visible sections",
+      "squash_headings": []
+    },
+    {
+      "sha": "711369281c05dc20e4a8de5edfbd1eb5e28f40ff",
+      "date": "2026-10-20",
+      "subject": "fix(release): advance a committed untagged version on bump",
+      "squash_headings": []
+    },
+    {
+      "sha": "36d5ccd47db7bd269e231b489722a209b82376e2",
+      "date": "2026-10-20",
+      "subject": "fix(release): refuse an explicit retarget over a pending bump",
+      "squash_headings": []
+    },
+    {
+      "sha": "c316c4054f2dab5a2f2378782e8a69ab74e1c832",
+      "date": "2026-10-20",
+      "subject": "fix(verify): align replay_completed_windows structural contract, catalog layout, and sandbox-HOME E2E paths",
+      "squash_headings": []
+    },
+    {
+      "sha": "d49268af5db1b809660c530c6430ccded2ba8ef9",
+      "date": "2026-10-20",
+      "subject": "test(release): pin local bump and pending target transactions",
+      "squash_headings": []
+    },
+    {
+      "sha": "f18a05a2e3e40ef223a9a15813af9b32abf3917b",
+      "date": "2026-10-20",
+      "subject": "Merge branch 'release/0.17.2' into integrate/astra-experimental-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "e587766a305aff7d7ea1b9f990679131209a6602",
+      "date": "2026-10-20",
+      "subject": "fix(ledger): only floor-clearing hops count toward an occurrence's existence",
+      "squash_headings": []
+    },
+    {
+      "sha": "07b7adbfe641fd7a3ad900d8d50a60302a50d541",
+      "date": "2026-10-20",
+      "subject": "test(ledger): cover calibrated occurrence energy admission",
+      "squash_headings": []
+    },
+    {
+      "sha": "c2ab83be87a7c3978852fdc5c879fd1b33151130",
+      "date": "2026-10-20",
+      "subject": "fix(ledger): an unowned Whisper pin over sub-existence PCM is refused, not painted",
+      "squash_headings": []
+    },
+    {
+      "sha": "40ee8286e02886527ba59ee9e41a26119205b805",
+      "date": "2026-10-20",
+      "subject": "test(ledger): reject sub-existence side-pin paint",
+      "squash_headings": []
+    },
+    {
+      "sha": "543298dc45ddbf0a375e1b2efd0119d094eb10bb",
+      "date": "2026-10-20",
+      "subject": "Merge branch 'release/0.17.2' into integrate/astra-experimental-20261019",
+      "squash_headings": []
+    },
+    {
+      "sha": "a0cda8dcc22de65ef45c3d82987cc6fc8767cfc7",
+      "date": "2026-10-20",
+      "subject": "fix(verify): align qualify_owned_occurrence structural contract and WhisperDownloadStore refresh",
+      "squash_headings": []
+    },
+    {
+      "sha": "a471e63635791eb56c53b9c4e0c54a0c1835de7e",
+      "date": "2026-10-20",
+      "subject": "feat(settings): reopen the setup wizard from the Creator",
+      "squash_headings": []
+    },
+    {
+      "sha": "04cb59959ff38f553753d89bae39498cb552778f",
+      "date": "2026-10-20",
+      "subject": "fix(settings): the Dictionary reopens on its last word-pin snapshot instead of flashing the empty state",
+      "squash_headings": []
+    },
+    {
+      "sha": "3ff2d253f7d070bb4e5c7abd3142097c0aae7bd5",
+      "date": "2026-10-20",
+      "subject": "feat(settings): the marker template is one box with an Edit | Preview segment",
+      "squash_headings": []
+    },
+    {
+      "sha": "aa1f7ffd3ae3a826306d9a4826208b8c038a30d6",
+      "date": "2026-10-20",
+      "subject": "feat(settings): one small switch shape, one slider width, the Lab desk as a column",
+      "squash_headings": []
+    },
+    {
+      "sha": "bc7cf15fabe10f39fb290e67782c8da9e96210e4",
+      "date": "2026-10-20",
+      "subject": "fix(overlay): restore the plain auto-fold submenu",
+      "squash_headings": []
+    },
+    {
+      "sha": "d5bd051b2199413c905960f5ac715690deb7254c",
+      "date": "2026-10-20",
+      "subject": "feat(overlay): mini pill reads cs with a left-facing megaphone",
+      "squash_headings": []
+    },
+    {
+      "sha": "a10f577fc46894ff05b3b1b0d432eb34b8cdcce9",
+      "date": "2026-10-20",
+      "subject": "feat(overlay): the broadcast row speaks through a megaphone",
+      "squash_headings": []
+    },
+    {
+      "sha": "f66656870eb1af352c95ee3c0649671ea7cead8e",
+      "date": "2026-10-20",
+      "subject": "feat(settings): appearance choice and sheet-shade candidates under Creator",
+      "squash_headings": []
+    },
+    {
+      "sha": "5260c3e083eca154b6f46af1b48fbd01d4efe099",
+      "date": "2026-10-20",
+      "subject": "docs(changelog): fold the appearance entry into the one Added list",
+      "squash_headings": []
+    },
+    {
+      "sha": "cd73fa8513c65647ef87f16208d8c101ef56df17",
+      "date": "2026-10-20",
+      "subject": "l10n(pl): Polish for the appearance, sheet-shade, wizard and Dictionary strings",
+      "squash_headings": []
+    },
+    {
+      "sha": "584b207b4830da1832c6bbf5235c088361837764",
+      "date": "2026-10-20",
+      "subject": "test(settings): follow the Lab rows and the catalog's existing \"Today\"",
+      "squash_headings": []
+    },
+    {
+      "sha": "b1683226f990ccf3bdd806c705009dc19b478bf0",
+      "date": "2026-10-20",
+      "subject": "test(overlay): accept the jump pill's self-removal AX status",
+      "squash_headings": []
+    },
+    {
+      "sha": "96b602fa02ae8c923c6cf7cf117df5014225f1a2",
+      "date": "2026-10-20",
+      "subject": "word-gate: require speech inside each Whisper word",
+      "squash_headings": []
+    },
+    {
+      "sha": "8c127defea90a76b3676c193c81033385f6faacb",
+      "date": "2026-10-20",
+      "subject": "decode-gate: skip measured speechless Whisper windows",
+      "squash_headings": []
+    },
+    {
+      "sha": "ada99ba3e03916b2610b2f5888a0885574e57dcd",
+      "date": "2026-10-20",
+      "subject": "lab-pins: show whole-take acoustic evidence in Lab",
+      "squash_headings": []
+    },
+    {
+      "sha": "20b7634d6778b17a2ffab28fecfc1fcabdcfbdd8",
+      "date": "2026-10-20",
+      "subject": "speech-witness: adjudicate independent labels on owned ranges",
+      "squash_headings": []
+    },
+    {
+      "sha": "03beb77a396f999a3f6909f69a492d0d105d56b1",
+      "date": "2026-10-20",
+      "subject": "absence-proof: preserve words without acoustic retirement evidence",
+      "squash_headings": []
+    },
+    {
+      "sha": "ff3fcc4a60a95a8ae6a37c5ef760ba729f12cea2",
+      "date": "2026-10-20",
+      "subject": "acoustic-replays: reconcile overlapping witnessed word copies live",
+      "squash_headings": []
+    },
+    {
+      "sha": "1abc6ede05ff2ad97be6bedbdab6dd641f47b25e",
+      "date": "2026-10-20",
+      "subject": "channel-gate: refuse unwitnessed sub-floor speech publication",
+      "squash_headings": []
+    },
+    {
+      "sha": "530e5b34434be89479d13826531704b4c274d34f",
+      "date": "2026-10-20",
+      "subject": "witness-handoff: close retry ownership and refusal receiver seams",
+      "squash_headings": []
+    },
+    {
+      "sha": "f12dd6b22c8f17423ca5d7635fed4bc4fca169b3",
+      "date": "2026-10-20",
+      "subject": "feat(overlay): show the agent rail before the first conversation",
+      "squash_headings": []
+    },
+    {
+      "sha": "49bc4a0c3c2435cd1a6693b18ea6c624adb3a811",
+      "date": "2026-10-20",
+      "subject": "fix(speech): renew the shared Grok grant under its file lock",
+      "squash_headings": []
+    },
+    {
+      "sha": "574c9315776d2674ade44f92a12127a1c2ab1d45",
+      "date": "2026-10-20",
+      "subject": "fix(speech): retain account selection while saving rotated grants",
+      "squash_headings": []
+    },
+    {
+      "sha": "52c1924ac8a50c4e3c97a7b02149299e482a2b8c",
+      "date": "2026-10-20",
+      "subject": "docs(speech): explain retained grants and automatic renewal",
+      "squash_headings": []
+    },
+    {
+      "sha": "51b40d31e8a72e8379544c22cf9bc4b7c245a92a",
+      "date": "2026-10-20",
+      "subject": "docs(skill): rename the vc-frame tab to name, repo and harness on connect",
+      "squash_headings": []
+    },
+    {
+      "sha": "a4836ced83076b39821a4e9c032cdf6a20a9314e",
+      "date": "2026-10-20",
+      "subject": "style: cargo-fmt the speech-truth integration set",
+      "squash_headings": []
+    },
+    {
+      "sha": "b5d0e757211c375b1e92ea6501239e64467a6925",
+      "date": "2026-10-20",
+      "subject": "merge: polish user-tab/tray/skill into the speech-truth integration",
+      "squash_headings": []
+    },
+    {
+      "sha": "24840b11d5b586140d46d3ed589bbb6bbddaeca2",
+      "date": "2026-10-20",
+      "subject": "fix(overlay): give agent identities the full roster row",
+      "squash_headings": []
+    },
+    {
+      "sha": "3a1405560f1ea52d3333a756b407f490b4ff8504",
+      "date": "2026-10-20",
+      "subject": "refactor(overlay): separate roster visuals from channel commands",
+      "squash_headings": []
+    },
+    {
+      "sha": "0e02dc806de5e5630228cd4a653b89c7818e1fbc",
+      "date": "2026-10-20",
+      "subject": "test(overlay): verify rail startup and available Frame destinations",
+      "squash_headings": []
+    },
+    {
+      "sha": "813032ccd9b91a6f24cc9951f35091be01a0dd34",
+      "date": "2026-10-20",
+      "subject": "test(overlay): isolate startup layout from physical rail hover",
+      "squash_headings": []
+    },
+    {
+      "sha": "11c3b4a4199aba6d6a9329b105c49d6176de5356",
+      "date": "2026-10-20",
+      "subject": "fix(overlay): shrink megaphone glyph within its existing button",
+      "squash_headings": []
+    },
+    {
+      "sha": "47936f9c1ad97c2ed540ef7406b32a6148c4532b",
+      "date": "2026-10-20",
+      "subject": "Merge branch 'integrate/lena-ledger-speech-truth-261020' into release/0.18.0-cohort",
+      "squash_headings": []
+    },
+    {
+      "sha": "8a6d1966c1713745b6f251d917fffc1f73ec102a",
+      "date": "2026-10-20",
+      "subject": "Merge branch 'cut/astra-agent-roster-layout-261020' into release/0.18.0-cohort",
+      "squash_headings": []
+    },
+    {
+      "sha": "e32c7f66a0ccd110a09fc433a65f921141e7e9d0",
+      "date": "2026-10-20",
+      "subject": "fix(test-host): keep roster fixtures behind the workspace",
+      "squash_headings": []
+    },
+    {
+      "sha": "c4652c78a94815130086e21ae8bc206c0414e143",
+      "date": "2026-10-20",
+      "subject": "test(overlay): verify native name-pill roles without activating the host",
+      "squash_headings": []
+    },
+    {
+      "sha": "642648c048c9a14816cadf1f3154507f8a0545e9",
+      "date": "2026-10-20",
+      "subject": "merge(overlay): admit background UI test presentation",
+      "squash_headings": []
+    },
+    {
+      "sha": "6aede4c05da926a940a1f0151b736d9742fd7817",
+      "date": "2026-10-20",
+      "subject": "feat(overlay): remember canvas sizes around the fold control",
+      "squash_headings": []
+    }
+  ]
+}
