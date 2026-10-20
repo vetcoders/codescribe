@@ -224,13 +224,9 @@ pub enum ObservationProducer {
     Apple,
     /// Live websocket finals, committed at Silero closes.
     CloudLive,
-    /// Terminal DictationTranscriber witness over recorder-owned, already
-    /// closed PCM: one bounded final decode with measured segment ranges,
-    /// requested only for unresolved recovery debt or material uncovered
-    /// speech gaps. It sits below Whisper: it inserts into ranges no complete
-    /// source holds and never overrides a held Whisper word. Apple's omission
-    /// of a word is not acoustic evidence of absence, so it carries no
-    /// deletion authority either.
+    /// Independent DictationTranscriber witness over recorder-owned PCM.
+    /// Its measured ranges may contest an existing label through word
+    /// adjudication; its omission of a label grants no deletion authority.
     AppleDictation,
     /// Whisper tail retranscription.
     Whisper,
@@ -569,11 +565,21 @@ impl MutationReceipt {
     }
 }
 
-/// Speech witness attached to a word slot. Verdicts are a separate cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Independent lexical evidence on an already resolved acoustic range.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SlotWitness {
     /// No witness verdict has been issued; absence never authorizes deletion.
     Unwitnessed,
+    /// An independent decode agrees on this physical range.
+    Confirmed,
+    /// A timed independent decode contests the original label. The corrected
+    /// slot retains the dispute and its measured scope for inspection.
+    Contested {
+        witness_label: String,
+        range: OccurrenceIdentity,
+    },
+    /// The witness decoded this range without a label. This never deletes it.
+    Absent { range: OccurrenceIdentity },
 }
 
 /// Ordered lexical evidence inside one physically owned occurrence.
@@ -1351,6 +1357,10 @@ impl AcousticLedger {
         let anchors = measured_anchors.clone().unwrap_or_default();
         let original_words = words;
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
+        if observation.producer == ObservationProducer::AppleDictation && words.is_empty()
+            && let Some(receipt) = self.record_witness_absence(observation) {
+            return trace.finish(receipt, self);
+        }
         let owner = &observation.occurrence;
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
@@ -1929,6 +1939,10 @@ impl AcousticLedger {
             } else {
                 None
             };
+            if local_choice == Some(true) {
+                let sources = conflicts.iter().map(|&index| prior[index].clone()).collect::<Vec<_>>();
+                self.stamp_word_witness(observation, &sources, std::slice::from_mut(&mut word));
+            }
             if local_choice == Some(false) {
                 self.retain_slot_alternative(
                     observation,
