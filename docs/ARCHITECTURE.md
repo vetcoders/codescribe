@@ -396,7 +396,12 @@ A panel reads the role, never a bare number.
   the chip's own shape. Text fields (`settingsInputChrome`) and the accent
   `SettingsSaveButton` sit on the same 10 / 5 insets, so a field and the
   actions beside it are one height — in Settings and in onboarding, which
-  shares that field chrome.
+  shares that field chrome. Every switch takes its shape from
+  `settingsSwitch()` (`SettingsView.swift`): a small macOS switch, tinted,
+  with its label carried by the `SettingsControlRow` that holds it, so the
+  switches of a page line up in one trailing column. A slider track stops at
+  `SettingsScale.sliderWidth` and its value reads at the track's end, not at
+  the far edge of the pane.
 
 ### Agent window header
 

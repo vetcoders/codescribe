@@ -1431,6 +1431,35 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// One switch, one track width (Founder, 2026-10-20): every switch in
+  /// Settings takes its shape from `settingsSwitch()`, the Lab desk holds its
+  /// switches in one column of rows, and every slider track stops at
+  /// `SettingsScale.sliderWidth` with its value at the end.
+  func testSettingsSwitchesAndSlidersShareOneShape() throws {
+    let sources = try settingsSources()
+    let view = try XCTUnwrap(sources["SettingsView.swift"])
+    XCTAssertTrue(
+      view.contains(
+        "func settingsSwitch() -> some View {\n    self\n      .toggleStyle(.switch)\n      .controlSize(.small)\n      .labelsHidden()\n      .tint(CSColor.chromeAccent)"
+      ))
+    for (name, source) in sources where name != "SettingsView.swift" {
+      XCTAssertFalse(source.contains(".toggleStyle(.switch)"), "\(name) styles its own switch")
+    }
+    XCTAssertGreaterThanOrEqual(
+      sources.values.filter { $0.contains(".settingsSwitch()") }.count, 7)
+    let lab = try XCTUnwrap(sources["LabPanel.swift"])
+    XCTAssertEqual(
+      lab.components(separatedBy: "SettingsControlRow(").count - 1, 5,
+      "five Lab switches, one column of rows")
+    XCTAssertFalse(lab.contains(".font(.body)"))
+    let scale = try XCTUnwrap(sources["SettingsScale.swift"])
+    XCTAssertTrue(scale.contains("static let sliderWidth: CGFloat = 360"))
+    for name in ["KeyRows.swift", "PreviewTimingSlider.swift"] {
+      let source = try XCTUnwrap(sources[name])
+      XCTAssertTrue(source.contains(".frame(maxWidth: SettingsScale.sliderWidth)"), name)
+    }
+  }
+
   private func settingsSources() throws -> [String: String] {
     let root = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()

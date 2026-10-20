@@ -30,9 +30,7 @@ struct TranscriptMarkersSection: View {
           comment: "Dictation panel: switch subtitle; the template decides the marker")
       ) {
         Toggle("", isOn: taggingBinding)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
+          .settingsSwitch()
           .accessibilityLabel("Add markers to text")
           .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
       }

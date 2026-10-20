@@ -416,6 +416,17 @@ struct SettingsMenuLabel: View {
 }
 
 extension View {
+  /// The one switch of Settings: a small macOS switch, tinted, its label
+  /// carried by the row that holds it. The regular size reads as an iPad
+  /// control on the desktop (Founder, 2026-10-20), so no switch sets its own.
+  func settingsSwitch() -> some View {
+    self
+      .toggleStyle(.switch)
+      .controlSize(.small)
+      .labelsHidden()
+      .tint(CSColor.chromeAccent)
+  }
+
   /// The one card of the central pane: a grouped inset that follows the
   /// system appearance. Setting names live inside it; the section title that
   /// introduces it sits above it.

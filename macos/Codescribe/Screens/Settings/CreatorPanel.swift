@@ -94,9 +94,8 @@ struct CreatorPanel: View {
       VStack(spacing: 8) {
         SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(CSColor.chromeAccent)
+            .settingsSwitch()
+            .accessibilityLabel("AI formatting")
         }
         SettingsControlRow(title: String(localized: "Formatting level")) {
           Picker("", selection: formattingLevelBinding) {
