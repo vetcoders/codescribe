@@ -2,6 +2,12 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
+/// The two canvases share a panel and fold control, but remember their own size.
+enum OverlayContentSurface: String, CaseIterable, Hashable, Sendable {
+  case transcription
+  case agents
+}
+
 // Borderless floating window host for the dictation overlay.
 //
 // This is a FACTORY ONLY. Summon/dismiss wiring (hotkey, placement, focus handoff,
@@ -39,7 +45,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var pendingResizePoint: NSPoint?
   private var resizePaintTask: Task<Void, Never>?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
-  private var expandedSize: NSSize?
+  private var expandedSizes: [OverlayContentSurface: NSSize] = [:]
+  fileprivate(set) var contentSurface: OverlayContentSurface = .transcription
+  var contentSizeDefaults: UserDefaults = .standard
+  private var expandedSize: NSSize? {
+    get { expandedSizes[contentSurface] }
+    set { expandedSizes[contentSurface] = newValue }
+  }
   private var miniFrame: NSRect?
   /// An agent records: mini hugs its three controls instead of the resting strip.
   private(set) var miniHugsAgentControls = false
@@ -58,7 +70,36 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
   var isUserDragging: Bool { dragStart != nil }
-  var sizeForPersistence: NSSize { expandedSize ?? frame.size }
+  var sizeForPersistence: NSSize {
+    expandedSize
+      ?? (presentationMode == .expanded
+        ? frame.size
+        : DictationOverlayWindow.restoredContentSize(
+          surface: contentSurface, defaults: contentSizeDefaults))
+  }
+
+  func persistContentSize() {
+    DictationOverlayWindow.persist(
+      size: sizeForPersistence, surface: contentSurface, defaults: contentSizeDefaults)
+  }
+
+  /// Busy gestures and morphs finish first. The controller's existing completion
+  /// callbacks retry the latest projected surface, without a second pending owner.
+  @discardableResult
+  func setContentSurface(_ surface: OverlayContentSurface, animated: Bool = false) -> Bool {
+    guard surface != contentSurface, !isUserResizing, !isFrameTransitioning else { return false }
+    expandedSize = sizeForPersistence
+    persistContentSize()
+    contentSurface = surface
+    if presentationMode == .expanded {
+      if expandedSize == nil {
+        expandedSize = DictationOverlayWindow.restoredContentSize(
+          surface: surface, defaults: contentSizeDefaults)
+      }
+      setPresentationMode(.expanded, animated: animated, settleResize: true)
+    }
+    return true
+  }
   /// MIDI borrows width around the parked mini; its temporary left edge is
   /// never the saved position. A real drag moves that mini by the same edges.
   var originForPersistence: NSPoint {
@@ -189,7 +230,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Remembered or default expanded size, raised to the qualified content
   /// height when the controller still owns automatic sizing.
   private func expandedPresentationSize() -> NSSize {
-    let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
+    let expanded =
+      expandedSize
+      ?? DictationOverlayWindow.restoredContentSize(
+        surface: contentSurface, defaults: contentSizeDefaults)
     // Both axes meet the floor: a size remembered before the floor was raised
     // would otherwise unfold narrower than the header's ideal width.
     let restingWidth = max(expanded.width, DictationOverlayWindow.minSize.width)
@@ -981,8 +1025,8 @@ enum DictationOverlayWindow {
   /// transcript lines), never a portrait column. Resizing persists, so users
   /// who prefer a tall panel drag it once and keep it.
   static let defaultSize = NSSize(width: 470, height: 280)
-  /// Bumped v5 → v6: slim evidence chrome lowers the resting landscape height.
-  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v6"
+  /// Independent transcription/agents sizes replace the shared v6 frame.
+  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v7"
 
   /// Build the floating overlay panel around an injected `OverlayState`.
   /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the
@@ -992,7 +1036,8 @@ enum DictationOverlayWindow {
     state: OverlayState,
     textScale: TextScaleController,
     reduceTransparencyOverride: Bool? = nil,
-    contrastOverride: ColorSchemeContrast? = nil
+    contrastOverride: ColorSchemeContrast? = nil,
+    sizeDefaults: UserDefaults = .standard
   ) -> NSPanel {
     // Wrap in TextScaleRoot so ⌘+/-/0 on this panel scale the overlay text
     // (transcript + status) via `\.csTextScale`, independently of the chat.
@@ -1027,14 +1072,19 @@ enum DictationOverlayWindow {
     hosting.autoresizingMask = []
 
     let panel = FloatingOverlayPanel(
-      contentRect: NSRect(origin: .zero, size: restoredContentSize()),
+      contentRect: NSRect(
+        origin: .zero,
+        size: restoredContentSize(surface: state.windowContentSurface, defaults: sizeDefaults)),
       styleMask: [.borderless, .nonactivatingPanel, .resizable],
       backing: .buffered,
       defer: false
     )
+    panel.contentSurface = state.windowContentSurface
+    panel.contentSizeDefaults = sizeDefaults
     panel.delegate = panel
     state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
+      if let state { panel.setContentSurface(state.windowContentSurface) }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
@@ -1141,18 +1191,29 @@ enum DictationOverlayWindow {
   /// Restore the user's last content size (clamped), or the default on first launch.
   static func restoredContentSize(
     for screen: NSScreen? = NSScreen.main,
+    surface: OverlayContentSurface = .transcription,
     defaults: UserDefaults = .standard
   ) -> NSSize {
-    let width = defaults.double(forKey: sizeDefaultsKey + ".w")
-    let height = defaults.double(forKey: sizeDefaultsKey + ".h")
+    var key = sizeDefaultsKey + "." + surface.rawValue
+    // The old shared frame could be a full-screen agent bus. Keep that useful
+    // agents size; a first transcription starts compact instead of inheriting it.
+    if surface == .agents, defaults.object(forKey: key + ".w") == nil {
+      key = "DictationOverlayPanel.contentSize.v6"
+    }
+    let width = defaults.double(forKey: key + ".w")
+    let height = defaults.double(forKey: key + ".h")
     let raw = (width > 0 && height > 0) ? NSSize(width: width, height: height) : defaultSize
     return clamp(raw, to: screen)
   }
 
   /// Persist the current content size so it survives relaunch. Called on hide().
-  static func persist(size: NSSize, defaults: UserDefaults = .standard) {
-    defaults.set(Double(size.width), forKey: sizeDefaultsKey + ".w")
-    defaults.set(Double(size.height), forKey: sizeDefaultsKey + ".h")
+  static func persist(
+    size: NSSize, surface: OverlayContentSurface = .transcription,
+    defaults: UserDefaults = .standard
+  ) {
+    let key = sizeDefaultsKey + "." + surface.rawValue
+    defaults.set(Double(size.width), forKey: key + ".w")
+    defaults.set(Double(size.height), forKey: key + ".h")
   }
 }
 

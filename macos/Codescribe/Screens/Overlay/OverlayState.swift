@@ -730,6 +730,9 @@ final class OverlayState {
     // Any later presentation write supersedes a fold that could be undone.
     automaticFoldInFlight = nil
     if expanding {
+      if windowContentSurface == .agents, selectedConversationID == nil {
+        showsAgentMonitor = true
+      }
       autoCollapse.noteExpansion(from: presentationMode)
     } else {
       autoCollapse.forget()
@@ -1180,6 +1183,8 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
+  /// Folding hides the roster but retains which canvas will unfold.
+  private(set) var windowContentSurface: OverlayContentSurface = .transcription
   /// Wide windows pin the roster as a docked column; below the threshold the
   /// same list covers the window while asked for. Reported by the layout pass.
   private(set) var agentDrawerDocked = false
@@ -1807,6 +1812,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    windowContentSurface = id == nil ? .transcription : .agents
     if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
@@ -1835,6 +1841,7 @@ final class OverlayState {
   }
 
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
+    windowContentSurface = .agents
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
     if agentListPinned {
@@ -1845,7 +1852,11 @@ final class OverlayState {
     } else {
       showsAgentMonitor = true
     }
-    if let expansion { expandAgentSurface(cause: expansion) }
+    if let expansion {
+      expandAgentSurface(cause: expansion)
+    } else {
+      onChannelPresentationChanged?()
+    }
   }
 
   /// The Agents button. Founder, 2026-10-15: reaching an agent took mini →
@@ -1928,6 +1939,7 @@ final class OverlayState {
   func hideAgentSidebar() {
     endAgentChoosing()
     showsAgentMonitor = false
+    windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
     onChannelPresentationChanged?()
   }
@@ -2110,6 +2122,7 @@ final class OverlayState {
 
   private func resolveChannelConversation() {
     guard let row = pendingChannelConversation else { return }
+    windowContentSurface = .agents
     let matches = conversations.filter { conversation in
       guard conversation.channel == row.channel else { return false }
       if row.channel == "0" { return conversation.owner == nil }
@@ -2221,6 +2234,7 @@ final class OverlayState {
       !conversations.contains(where: { $0.id == selectedConversationID })
     {
       self.selectedConversationID = nil
+      if !showsAgentMonitor { windowContentSurface = .transcription }
     }
     resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
@@ -3828,6 +3842,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
+      selectDictationSurfaceIfNeeded()
       applyPreferredExpansion(forTake: true)
     }
     recording = true
@@ -3850,6 +3865,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
+      selectDictationSurfaceIfNeeded()
       applyPreferredExpansion(forTake: true)
     }
     if captureStartedAtUptime == nil {
@@ -5381,10 +5397,14 @@ final class OverlayState {
 
   /// A new ordinary capture shows its own canvas. The controller's roster
   /// resolves a channel snapshot that still describes the preceding capture.
-  private func followDictationCapturePresentation() {
-    if !hasOpenChannel, indicatorMode != .assistive, !showsMyDictation {
+  private func selectDictationSurfaceIfNeeded() {
+    if !hasOpenChannel, indicatorMode != .assistive, windowContentSurface != .transcription {
       selectConversation(nil)
     }
+  }
+
+  private func followDictationCapturePresentation() {
+    selectDictationSurfaceIfNeeded()
     guard let engine else { return }
     let generation = captureGeneration
     let focusRevision = conversationFocusRevision
@@ -5394,7 +5414,8 @@ final class OverlayState {
         conversationFocusRevision == focusRevision, recording, !finalized
       else { return }
       applyChannelRoster(roster)
-      guard !roster.contains(where: \.open), indicatorMode != .assistive, !showsMyDictation
+      guard !roster.contains(where: \.open), indicatorMode != .assistive,
+        windowContentSurface != .transcription
       else { return }
       selectConversation(nil)
     }

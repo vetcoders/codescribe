@@ -298,6 +298,9 @@ struct OverlayAgentRailFramePreferenceKey: PreferenceKey {
 enum OverlayHeaderDensity: Equatable {
   case mini, midi, expanded
 
+  /// One row height keeps the fold control at the same offset in every form.
+  static let rowHeight: CGFloat = 26
+
   /// Room around the row that the clip must not cut: the close dot's hover
   /// growth (10/7 of 9 pt) and the 1 pt focus outlines.
   static let clipInset: CGFloat = 4
@@ -593,7 +596,8 @@ struct DictationOverlayView: View {
         .onContinuousHover { phase in
           switch phase {
           case .active(let point):
-            let inside = point.x >= geometry.size.width - railWidth
+            let inside =
+              point.x >= geometry.size.width - railWidth
               && point.y >= headerHeight + 8
             let entered = inside && !pointerInsideAgentRail
             pointerInsideAgentRail = inside
@@ -1156,7 +1160,7 @@ struct DictationOverlayView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier(mini ? "" : "overlay-header-trailing")
     }
-    .frame(height: mini ? 26 : nil)
+    .frame(height: OverlayHeaderDensity.rowHeight)
     .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
   }
 
