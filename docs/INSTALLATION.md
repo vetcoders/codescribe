@@ -363,10 +363,13 @@ Codescribe.app/
 
 ## External Agent Bridge
 
-The existing 13-step Setup Wizard exposes the bridge on the **Agent** step. It
+The nine-step Setup Wizard exposes the bridge on the **Agent** step (shown on
+the **Dictation + AI agent** path). It
 does not write to the home directory merely because the step is shown,
-refreshed, skipped, or left with Back. The user selects Codex,
-Claude Code, or both; Continue installs or updates the selected managed skills
+refreshed, skipped, or left with Back. The user selects any of Codex, Claude
+Code and Other agents; each card reads **Install the Codescribe skill**, or
+**Codescribe skill installed** when that client's managed skill is healthy.
+Selecting a card connects nothing: Continue installs or updates the selected managed skills
 when that selection differs from the installer receipt or a selected client's
 managed receipt/folder/file evidence needs repair. A healthy unchanged selection
 does not write. Repair reuses the ownership checks and refuses an unowned
