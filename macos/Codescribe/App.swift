@@ -227,9 +227,7 @@ struct CodescribeApp: App {
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
       if QualityCaptureHost.isRunningTests {
-        // AppDelegate already keeps the XCTest host passive. Its scene must
-        // also avoid opening real model caches before the test runner starts.
-        EmptyView()
+        TestHostScenePlaceholder()
       } else {
         SettingsView(model: settingsModel())
       }
@@ -246,6 +244,26 @@ struct CodescribeApp: App {
           .keyboardShortcut(",", modifiers: .command)
       }
     }
+  }
+}
+
+/// SwiftUI still creates its Window for empty XCTest content. Configure that
+/// exact host window before it is ordered, without touching the live app or
+/// changing the production Settings scene. AppKit keeps macOS 14 support.
+private struct TestHostScenePlaceholder: NSViewRepresentable {
+  func makeNSView(context: Context) -> TestHostSceneView { TestHostSceneView() }
+  func updateNSView(_ nsView: TestHostSceneView, context: Context) {}
+}
+
+private final class TestHostSceneView: NSView {
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard let window else { return }
+    window.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
+    window.isRestorable = false
+    window.isExcludedFromWindowsMenu = true
+    window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+    window.orderOut(nil)
   }
 }
 
