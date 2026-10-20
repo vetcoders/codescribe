@@ -71,6 +71,9 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 #: The bridge reads them only as flush boundaries for the coverage-refused
 #: safety net below; it never turns them into transcript envelopes.
 CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Capture-owned publication refusal. It retires a channel document before
+#: lifecycle boundaries can invoke the coverage-refused delivery net.
+PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
 #: a channel closed by a second digit / Fn press is not reopened, so no
 #: later channel-session row would ever release its refused take.
@@ -1013,6 +1016,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        PUBLICATION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
         # Replies enter the follower stream only for the peer text lane;
         # admission drops every reply that does not name a peer recipient.
@@ -1030,6 +1034,23 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         ):
             return None
     return event
+
+
+def channel_publication_refusal_session(event: dict[str, Any]) -> str | None:
+    """Recognize an explicit capture refusal, never infer it from empty text."""
+    session = event.get("session_id")
+    if (event.get("schema") != PUBLICATION_SCHEMA
+            or event.get("status") != "channel_publication_refused"
+            or event.get("reason") != "sound_without_speech"
+            or event.get("entirely_unwitnessed") is not True
+            or not isinstance(session, str)
+            or channel_of_session(session) is None
+            or type(event.get("capture_epoch")) is not int
+            or event["capture_epoch"] <= 0
+            or (event.get("channel") is not None
+                and str(event["channel"]) != channel_of_session(session))):
+        return None
+    return session
 
 
 def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -1104,6 +1125,13 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if row.get("schema") == PUBLICATION_SCHEMA:
+            # A provider lease may retire only its frozen channel ownership.
+            if lease and not lease.admits_channel_event(row):
+                continue
+            if lease:
+                if lease.retire_channel_publication(row):
+                    lease.persist(active=True)
         if lease and lease.revise_held_voice(row):
             continue
         event = normalizer.normalize(row)
@@ -1214,6 +1242,7 @@ class EvidenceNormalizer:
         self._session_docs: dict[str, dict[str, Any]] = {}
         self._channel_open_times: dict[str, tuple[str, float]] = {}
         self._flushes: list[dict[str, Any]] = []
+        self._publication_refusals: dict[str, dict[str, Any]] = {}
 
     def pop_flushes(self) -> list[dict[str, Any]]:
         """Final channel envelopes triggered by the last normalized row."""
@@ -1233,11 +1262,35 @@ class EvidenceNormalizer:
             elif session not in self._settled_sessions:
                 self._remember_channel_document(document, dict(document))
 
+    def restore_publication_refusals(self, receipts: list[dict[str, Any]]) -> None:
+        for receipt in receipts:
+            self._consume_publication_refusal(receipt)
+
+    def publication_refusals(self) -> dict[str, dict[str, Any]]:
+        return {session: dict(receipt) for session, receipt in self._publication_refusals.items()}
+
+    def _consume_publication_refusal(self, receipt: dict[str, Any]) -> None:
+        session = channel_publication_refusal_session(receipt)
+        if session is None:
+            return
+        document = self._session_docs.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != receipt["capture_epoch"]):
+            return
+        self._session_docs.pop(session, None)
+        self._channel_open_times.pop(session, None)
+        self._settled_sessions.add(session)
+        self._flushes = [event for event in self._flushes if event.get("session_id") != session]
+        self._publication_refusals[session] = dict(receipt)
+
     def channel_documents(self) -> dict[str, dict[str, Any]]:
         return {session: dict(document) for session, document in self._session_docs.items()}
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
+            return None
+        if event.get("schema") == PUBLICATION_SCHEMA:
+            self._consume_publication_refusal(event)
             return None
         if event.get("schema") == CHANNEL_SESSION_SCHEMA:
             self._consume_channel_row(event)
@@ -2963,6 +3016,7 @@ class SessionLease:
             self.held: dict[str, dict[str, Any]] = {}
             self.withdrawn_held: dict[str, dict[str, Any]] = {}
             self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
+            self.channel_publication_refusals: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -2997,6 +3051,7 @@ class SessionLease:
                     # journal invalidates the recovered cursor and documents.
                     self.cursor = 0
                     previous["unclosed_channel_messages"] = {}
+                    previous["channel_publication_refusals"] = {}
                 self.last_sequence = previous.get("last_sequence")
                 # The follower's requested name outranks the recovered lease
                 # name: a channel rename (detach + attach under a new name)
@@ -3060,6 +3115,14 @@ class SessionLease:
                             for session, document in documents.items())):
                     raise ValueError("invalid unclosed channel messages; recovery state preserved")
                 self.unclosed_channel_messages = documents
+                refusals = previous.get("channel_publication_refusals", {})
+                if (not isinstance(refusals, dict) or any(
+                        not isinstance(receipt, dict)
+                        or channel_publication_refusal_session(receipt) != session
+                        or not self.admits_channel_event(receipt)
+                        for session, receipt in refusals.items())):
+                    raise ValueError("invalid publication refusals; recovery state preserved")
+                self.channel_publication_refusals = refusals
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -3081,6 +3144,8 @@ class SessionLease:
                 else {key: previous[key] for key in ("workspace", "repository_name", "repository_root")
                       if previous and isinstance(previous.get(key), str)}
             )
+            for receipt in list(self.channel_publication_refusals.values()):
+                self.retire_channel_publication(receipt)
             self.persist(active=True)
             for receipt in self.withdrawn_held.values():
                 self._record_hold_withdrawal(receipt)
@@ -3144,6 +3209,7 @@ class SessionLease:
                 "held": self.held,
                 "withdrawn_held": self.withdrawn_held,
                 "unclosed_channel_messages": self.unclosed_channel_messages,
+                "channel_publication_refusals": self.channel_publication_refusals,
                 "active": active,
                 "pid": os.getpid(),
                 "process_identity": self.process_identity,
@@ -3215,6 +3281,9 @@ class SessionLease:
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
+        if (payload.get("session_id") in self.channel_publication_refusals
+                and payload.get("producer_schema") == EVIDENCE_SCHEMA):
+            return False
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
         if delivery_id in self.pending or delivery_id in self.withdrawn_held:
@@ -3342,6 +3411,31 @@ class SessionLease:
         payload.setdefault("hold_controls", []).append(control_id)
         self.persist(active=True)
         return [dict(payload)]
+
+    def retire_channel_publication(self, event: dict[str, Any]) -> bool:
+        """Retire only this owner's evidence envelopes of the refused capture.
+
+        A refusal is not an acknowledgment and never pretends previously
+        submitted provider content was unread or successfully withdrawn.
+        """
+        session = channel_publication_refusal_session(event)
+        if session is None or not self.admits_channel_event(event):
+            return False
+        document = self.unclosed_channel_messages.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != event["capture_epoch"]):
+            return False
+        self.channel_publication_refusals[session] = dict(event)
+        self.unclosed_channel_messages.pop(session, None)
+        for inventory in (self.pending, self.held):
+            for delivery_id, payload in list(inventory.items()):
+                if (payload.get("session_id") == session
+                        and payload.get("producer_schema") == EVIDENCE_SCHEMA
+                        and payload.get("message_id") == channel_message_identity(session)
+                        and (payload.get("capture_epoch") is None
+                             or payload["capture_epoch"] == event["capture_epoch"])):
+                    del inventory[delivery_id]
+        return True
 
     def revise_held_voice(self, event: dict[str, Any]) -> bool:
         if (event.get("schema") != EVIDENCE_SCHEMA
@@ -4489,6 +4583,7 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
+        normalizer.restore_publication_refusals(list(lease.channel_publication_refusals.values()))
         # Prune first: a draft left over from a message that was sealed and
         # acknowledged in an earlier run must not be restored as an unclosed
         # document for a session that is already settled.
@@ -7207,6 +7302,7 @@ def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bo
         for event in normalized_revision_events(raw, normalizer):
             if event.get("status") == SEALED:
                 remaining.discard(event.get("session_id"))
+        remaining.difference_update(normalizer.publication_refusals())
         if not remaining:
             return True
     return not remaining

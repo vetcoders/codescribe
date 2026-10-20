@@ -8640,10 +8640,9 @@ fn terminal_witness_windows(
         .collect()
 }
 
-/// Per-utterance witness trigger: after a seal commits, re-ask outstanding
-/// recovery debt on closed PCM in the background. One request in flight; a
-/// target range is asked at most twice per session; the worker admits the
-/// return through the ordinary guarded corridor.
+/// Reserve independent lexical work before producer return can seal an owner.
+/// One live request is in flight; each owner gets one protected live question.
+/// Terminal reconciliation owns retry work and its common time budget.
 fn maybe_spawn_utterance_witness(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -8660,6 +8659,22 @@ fn maybe_spawn_utterance_witness(
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    // A live lexical job must acquire an open frontier exactly once. Retried
+    // or oversized questions belong to serialized terminal reconciliation;
+    // a returned producer cannot protect another live job from sealing.
+    let pending_owners = {
+        let ledger = state.acoustic_ledger.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending_owners.into_iter().filter(|owner| {
+            owner.sample_end.saturating_sub(owner.sample_start)
+                <= u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS)
+                && ledger.frontier_of(owner).is_some_and(|frontier| !frontier.is_closed())
+                && !state.dictation_witness_attempts.iter().any(|(range, attempts)| {
+                    *range == (owner.sample_start, owner.sample_end) && *attempts > 0
+                })
+        }).collect::<Vec<_>>()
+    };
+
     // Only closed PCM may be asked about: the decoder never reads past the
     // seal that just landed.
     let mut targets: Vec<(u64, u64)> = pending_owners
@@ -8911,11 +8926,13 @@ fn run_terminal_dictation_witness(
     if !state.dictation_witness_armed {
         return;
     }
+    let budget_start = Instant::now();
     // Live witness answers that already returned land first; the terminal
     // target picture below then sees the debt they resolved.
     drain_dictation_witness_returns(state, ev_tx, witness_done);
     if state.dictation_witness_inflight {
-        match witness_done.recv_timeout(DICTATION_WITNESS_REQUEST_TIMEOUT) {
+        let remaining = DICTATION_WITNESS_TOTAL_BUDGET.saturating_sub(budget_start.elapsed());
+        match witness_done.recv_timeout(DICTATION_WITNESS_REQUEST_TIMEOUT.min(remaining)) {
             Ok(returned) => handle_dictation_witness_return(state, ev_tx, returned),
             Err(_) => {
                 state.dictation_witness_inflight = false;
@@ -8963,7 +8980,6 @@ fn run_terminal_dictation_witness(
     let max_window = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
     let windows = terminal_witness_windows(&targets, capture_samples, context, max_window);
 
-    let budget_start = Instant::now();
     let mut requests_issued = 0usize;
     for (ordinal, (window_start, window_end)) in windows.iter().copied().enumerate() {
         // The total budget binds every request, including the one in flight:
