@@ -1483,23 +1483,39 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  /// Maciej, 2026-10-20: the channel-0 row speaks through a megaphone sized
-  /// between an agent's microphone and the old doubled one; agent rows keep
-  /// the microphone, open or not.
+  /// The All pair is an outline megaphone and a speaker of one optical size.
+  /// Agent rows keep the microphone. Recording uses the speaker's violet.
   func testBroadcastRowDrawsAMegaphoneAndAgentRowsKeepTheMicrophone() throws {
     func controls(open: Bool, broadcast: Bool) -> OverlayAgentAudioControls {
       OverlayAgentAudioControls(
         open: open, muted: false, microphoneEnabled: true, playbackEnabled: true,
         palette: .dark, onMicrophone: {}, onPlayback: {}, broadcast: broadcast)
     }
-    XCTAssertEqual(controls(open: false, broadcast: true).microphoneSymbol, "megaphone.fill")
-    XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone.fill")
+    XCTAssertEqual(controls(open: false, broadcast: true).microphoneSymbol, "megaphone")
+    XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone")
     XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "mic")
     XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "mic.fill")
-    XCTAssertGreaterThan(OverlayAgentAudioControls.broadcastMicrophoneScale, 1)
-    XCTAssertLessThan(OverlayAgentAudioControls.broadcastMicrophoneScale, 2)
+    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneScale, 1)
+    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneFontSize, 12)
+    XCTAssertEqual(OverlayAgentAudioControls.speakerFontSize, 12)
+    XCTAssertEqual(OverlayAgentAudioControls.controlFrame, 16)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains(".overlayMirrored(broadcast)"), "one mirror drawing, shared")
+    XCTAssertTrue(
+      roster.contains("open ? recordingAccent"),
+      "an open microphone takes the active-speaker accent")
+    XCTAssertFalse(roster.contains("open ? Color.red"), "recording is no longer a separate red")
+    let all = try section(
+      of: roster, from: "private func scaledMonitorBody(", to: "var currentConversations")
+    XCTAssertTrue(all.contains(".lineLimit(3)"), "three preview lines belong to All")
+    XCTAssertTrue(all.contains("overlay-all-preview"))
+    XCTAssertTrue(
+      roster.contains("includePreview: false"), "the title button does not repeat the preview")
+    let agentLabel = try source(at: "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift")
+    XCTAssertTrue(agentLabel.contains(".lineLimit(2)"), "agent rows keep a two-line preview")
+    let agentBudget = try section(
+      of: roster, from: "private func rosterRowLabel(", to: "func rowStateText(")
+    XCTAssertFalse(agentBudget.contains(".lineLimit(3)"), "three lines do not enter an agent row")
   }
 
   /// Maciej, 2026-10-20: the megaphone faces left, and only the megaphone.
