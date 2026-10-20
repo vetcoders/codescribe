@@ -1483,6 +1483,25 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-10-20: the channel-0 row speaks through a megaphone sized
+  /// between an agent's microphone and the old doubled one; agent rows keep
+  /// the microphone, open or not.
+  func testBroadcastRowDrawsAMegaphoneAndAgentRowsKeepTheMicrophone() throws {
+    func controls(open: Bool, broadcast: Bool) -> OverlayAgentAudioControls {
+      OverlayAgentAudioControls(
+        open: open, muted: false, microphoneEnabled: true, playbackEnabled: true,
+        palette: .dark, onMicrophone: {}, onPlayback: {}, broadcast: broadcast)
+    }
+    XCTAssertEqual(controls(open: false, broadcast: true).microphoneSymbol, "megaphone.fill")
+    XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone.fill")
+    XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "mic")
+    XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "mic.fill")
+    XCTAssertGreaterThan(OverlayAgentAudioControls.broadcastMicrophoneScale, 1)
+    XCTAssertLessThan(OverlayAgentAudioControls.broadcastMicrophoneScale, 2)
+    let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
+    XCTAssertTrue(roster.contains(".overlayMirrored(broadcast)"), "one mirror drawing, shared")
+  }
+
   /// Maciej, 2026-10-20: the megaphone faces left, and only the megaphone.
   func testAgentMegaphoneIsMirroredAndTheWordmarkIsNot() throws {
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
