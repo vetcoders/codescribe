@@ -5,6 +5,7 @@ import Foundation
 // Separate-process AX client for the isolated XCTest host. No input events,
 // screenshots, real app lookup or global accessibility configuration.
 struct Element: Codable {
+  let role: String?
   let label: String
   let value: String
   let x: Double
@@ -75,6 +76,7 @@ func query(_ request: Request) throws -> Reception {
       _ = AXValueGetValue(value as! AXValue, .cgSize, &size)
     }
     return Element(
+      role: attribute(element, kAXRoleAttribute) as? String,
       label: attribute(element, kAXTitleAttribute) as? String
         ?? attribute(element, kAXDescriptionAttribute) as? String ?? "",
       value: attribute(element, kAXValueAttribute) as? String ?? "",
