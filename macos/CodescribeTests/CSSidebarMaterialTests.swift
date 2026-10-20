@@ -215,9 +215,15 @@ final class CSSidebarMaterialTests: XCTestCase {
       host.view.layoutSubtreeIfNeeded()
     }
     let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
+    // Views review 1–10 (Founder, 2026-10-20): the bar carries the wordmark
+    // alone; no second title names the pane. The brand item still sets the
+    // header rhythm shared with the Agent window.
     XCTAssertGreaterThanOrEqual(
-      controls.filter { $0.frame.height >= 51 }.count, 2,
-      "Settings brand and pane title use the same header rhythm as Agent")
+      controls.filter { $0.frame.height >= 51 }.count, 1,
+      "the Settings brand item keeps the shared header rhythm")
+    XCTAssertEqual(
+      controls.filter { $0.frame.height >= 51 }.count, 1,
+      "only the brand item: the pane title left the window bar")
     for view in controls {
       let rect = view.convert(view.bounds, to: nil)
       XCTAssertLessThanOrEqual(rect.maxY, window.frame.height)
