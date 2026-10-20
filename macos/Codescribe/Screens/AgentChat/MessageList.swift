@@ -267,7 +267,14 @@ struct MessageList: View {
               // the composer below is the only other point of gravity. The
               // height accounts for everything else inside the document, so
               // the empty thread fills the viewport without scrolling it.
+              // Horizontally it shares the turns' geometry: the same list
+              // padding, centered in the conversation column (beside an open
+              // context panel too), wrapping on the Agent turns' measure.
               AgentEmptyThread()
+                .frame(
+                  maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                    containerWidth: containerWidth, mode: widthMode)
+                )
                 .frame(
                   maxWidth: .infinity,
                   minHeight: ChatLayoutPolicy.emptyStateHeight(
@@ -474,10 +481,11 @@ private let agentEmptyThreadDetail = String(
   localized: "Write or dictate a message to start the conversation.")
 
 /// Quiet first screen for a thread that has no turns yet: one calm voice
-/// glyph, one question, one line about typing or dictating. The chrome
-/// already names the thread, so the headline does not repeat the title
+/// glyph, one question, one line about typing or dictating. The conversation
+/// header already names the thread, so the headline does not repeat the title
 /// (Founder brief 2026-10-10). No starter prompts — Codescribe is not an
-/// assistant for everything.
+/// assistant for everything (Founder review, round 4: no starter buttons, no
+/// "Summarize conversation", no memory or tool promises).
 private struct AgentEmptyThread: View {
   var body: some View {
     VStack(spacing: 10) {
@@ -494,7 +502,6 @@ private struct AgentEmptyThread: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .multilineTextAlignment(.center)
-    .frame(maxWidth: 420)
     .accessibilityElement(children: .combine)
   }
 }

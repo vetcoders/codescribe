@@ -411,6 +411,24 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(AgentConversationHeader.identityLine(model: "  "), "Agent")
   }
 
+  /// Round 4 (UI-58): the "· streaming · attach file / image" strip under the
+  /// field repeated what the controls already say; their tooltips and
+  /// accessibility labels carry it now.
+  func testComposerCarriesNoStaticHintStrip() throws {
+    let composer = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/AgentChat/Composer.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(composer.contains("Composer hint"))
+    XCTAssertFalse(composer.contains("ForEach(affordances"))
+    XCTAssertTrue(composer.contains(".help(\"Attach an image (PNG, JPEG, GIF, WebP)\")"))
+    XCTAssertTrue(
+      composer.contains(".accessibilityLabel(Text(\"Attach an image (PNG, JPEG, GIF, WebP)\"))"))
+    XCTAssertTrue(composer.contains(".help(micState.accessibilityLabel)"))
+    XCTAssertTrue(composer.contains(".help(primaryAction.accessibilityLabel)"))
+  }
+
   private func mount(
     contentWidth: CGFloat, store: AgentChatStore? = nil, renameTo title: String? = "Probe"
   )
