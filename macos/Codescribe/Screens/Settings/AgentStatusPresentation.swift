@@ -279,6 +279,40 @@ extension CsCapabilityRow {
   }
 }
 
+/// Short human name of a canonical capability op (`core/agent/capabilities.rs`
+/// `CapabilityOp::as_str`) for the readiness card. An op this build does not
+/// know keeps its raw id, so a new core op is never dropped from the line.
+func capabilityDisplayName(_ op: String) -> String {
+  switch op {
+  case "fs.list": String(localized: "list folders", comment: "Capability name: fs.list")
+  case "fs.read": String(localized: "read files", comment: "Capability name: fs.read")
+  case "fs.search": String(localized: "search files", comment: "Capability name: fs.search")
+  case "fs.write": String(localized: "write files", comment: "Capability name: fs.write")
+  case "fs.patch": String(localized: "edit files", comment: "Capability name: fs.patch")
+  case "fs.move": String(localized: "move files", comment: "Capability name: fs.move")
+  case "repo.status": String(localized: "Git status", comment: "Capability name: repo.status")
+  case "repo.diff": String(localized: "Git diff", comment: "Capability name: repo.diff")
+  case "repo.log": String(localized: "Git history", comment: "Capability name: repo.log")
+  case "repo.commit": String(localized: "Git commit", comment: "Capability name: repo.commit")
+  case "process.run":
+    String(localized: "run processes", comment: "Capability name: process.run")
+  case "process.observe":
+    String(localized: "check processes", comment: "Capability name: process.observe")
+  case "process.stop":
+    String(localized: "stop processes", comment: "Capability name: process.stop")
+  case "project.build":
+    String(localized: "project build", comment: "Capability name: project.build")
+  case "project.test":
+    String(localized: "project tests", comment: "Capability name: project.test")
+  case "project.diagnostics":
+    String(localized: "project diagnostics", comment: "Capability name: project.diagnostics")
+  case "code.symbols":
+    String(localized: "code symbols", comment: "Capability name: code.symbols")
+  case "code.calls": String(localized: "code calls", comment: "Capability name: code.calls")
+  default: op
+  }
+}
+
 /// Counts per tier for the capability summary line.
 struct CapabilitySummary: Equatable {
   var native = 0
@@ -504,15 +538,17 @@ struct AgentStatusSummary: Equatable {
             comment: "Plural: optional integrations configured but not yet discovered")))
     }
     if unavailable > 0 {
-      // The op ids are data, joined outside the sentence.
-      let ops = capabilitySummary.unavailableOps.joined(separator: " · ")
+      // Short names on the card; the raw op ids stay on the capability rows
+      // under Agent tools. The list is joined outside the sentence.
+      let ops = capabilitySummary.unavailableOps.map(capabilityDisplayName).joined(
+        separator: " · ")
       warnings.append(
         Note(
           tone: .warn,
           text: String(
             localized: "No provider for \(ops)",
             comment:
-              "Diagnostics note; placeholder is a list of capability operation ids such as fs.list"
+              "Diagnostics note; placeholder is a list of short capability names such as list folders"
           )))
     }
     if let configRow, configRow.state == .note {
