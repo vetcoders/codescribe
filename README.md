@@ -221,7 +221,7 @@ No toolchain needed. Download the newest published build from
 4. Dictation works without a license key. The built-in Agent chat needs one:
    get a free open-beta key at
    [codescribe.vetcoders.io/license](https://codescribe.vetcoders.io/license/)
-   and paste it into **Settings → License**. Nothing is sold today.
+   and paste it into **Settings → User**. Nothing is sold today.
 
 Installed copies update in-app through Sparkle from
 `https://codescribe.vetcoders.io/appcast.xml`.

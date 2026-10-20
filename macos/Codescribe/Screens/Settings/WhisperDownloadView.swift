@@ -19,13 +19,13 @@ struct WhisperDownloadView: View {
             localized: LocalizedStringResource(
               "Whisper model", locale: locale, comment: "Shared Whisper download control heading"))
         )
-        .font(.body.weight(.semibold))
+        .font(SettingsScale.settingName)
         Text(installLabel)
           .font(.caption.weight(.medium))
           .foregroundStyle(store.status.available ? CSColor.oliveLight : Color.secondary)
         Spacer(minLength: 0)
       }
-      Text(store.status.modelId).font(.callout)
+      Text(store.status.modelId).font(SettingsScale.helper)
       Text(
         String(
           localized: LocalizedStringResource(
@@ -34,7 +34,7 @@ struct WhisperDownloadView: View {
               "Download source: first placeholder is a repository id, second is approximate disk size"
           ))
       )
-      .font(.callout)
+      .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       if let path = store.status.path {
@@ -67,7 +67,7 @@ struct WhisperDownloadView: View {
                 "Downloading…", locale: locale,
                 comment: "Whisper download progress with no file detail yet"))
         )
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         Button(cancelDownloadTitle, action: store.cancel)
@@ -75,7 +75,7 @@ struct WhisperDownloadView: View {
           .disabled(store.cancelling)
       } else if !store.status.available {
         if let error = store.error {
-          Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
+          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
         } else if store.interruption == .cancelled {
           Text(
@@ -84,7 +84,7 @@ struct WhisperDownloadView: View {
                 "Download stopped. The model is not installed.", locale: locale,
                 comment: "The user cancelled the Whisper download; the partial file is removed"))
           )
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("whisper-download-stopped")

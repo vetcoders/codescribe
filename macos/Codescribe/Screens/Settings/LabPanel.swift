@@ -19,16 +19,22 @@ struct LabPanel: View {
             localized: "Open the loopback Voice Lab. Production builds never show this panel.")
       )
 
-      Toggle("Lab mode", isOn: $labMode)
-        .toggleStyle(.switch)
-        .font(.body)
+      // One column: every switch sits on the trailing edge of its row, so
+      // the desk reads as a list and not as a staircase (Founder, 2026-10-20).
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        SettingsControlRow(title: String(localized: "Lab mode")) {
+          Toggle("", isOn: $labMode)
+            .settingsSwitch()
+            .accessibilityLabel("Lab mode")
+        }
 
-      sealLaneRow
+        sealLaneRow
 
-      transcriptionTracks
+        transcriptionTracks
 
-      dictationWitnessRow
-        .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
+        dictationWitnessRow
+          .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
+      }
 
       Picker(
         "Whisper buffering",
@@ -74,7 +80,7 @@ struct LabPanel: View {
 
       DictionaryWordPins(configDir: model.configDir)
     }
-    .padding(CSSpace.xl)
+    .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
     .task { await model.refreshAdmission() }
   }
@@ -86,23 +92,27 @@ struct LabPanel: View {
   @ViewBuilder
   private var sealLaneRow: some View {
     let sealLane = sealLaneControlState(model.admission)
-    Toggle("Committing transcript fragments", isOn: sealLaneBinding)
-      .toggleStyle(.switch)
-      .font(.body)
-      .tint(CSColor.chromeAccent)
-      .disabled(!sealLane.isEnabled)
-      .accessibilityValue(sealLaneAccessibilityValue(sealLane))
-      .accessibilityIdentifier("lab-committing-transcript-fragments")
+    SettingsControlRow(
+      title: String(localized: "Committing transcript fragments")
+    ) {
+      Toggle("", isOn: sealLaneBinding)
+        .settingsSwitch()
+        .disabled(!sealLane.isEnabled)
+        .accessibilityLabel("Committing transcript fragments")
+        .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+        .accessibilityIdentifier("lab-committing-transcript-fragments")
+    }
     Text(sealLane.detail)
-      .font(.caption)
+      .font(SettingsScale.helper)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
   }
 
+  @ViewBuilder
   private var transcriptionTracks: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    SettingsControlRow(title: String(localized: "Seal-ledger admission")) {
       Toggle(
-        "Seal-ledger admission",
+        "",
         isOn: Binding(
           get: { model.settings.sealLedgerEnabled },
           set: { enabled in
@@ -111,10 +121,20 @@ struct LabPanel: View {
           }
         )
       )
+      .settingsSwitch()
+      .accessibilityLabel("Seal-ledger admission")
       .accessibilityIdentifier("lab-seal-ledger-enabled")
+    }
 
+    SettingsControlRow(
+      title: String(localized: "Apple live speech"),
+      subtitle: String(
+        localized:
+          "Applies to the next recording. Turn both off to keep Whisper output without Apple revisions or seal-ledger admission."
+      )
+    ) {
       Toggle(
-        "Apple live speech",
+        "",
         isOn: Binding(
           get: { model.settings.appleLiveEnabled },
           set: { enabled in
@@ -123,46 +143,35 @@ struct LabPanel: View {
           }
         )
       )
+      .settingsSwitch()
+      .accessibilityLabel("Apple live speech")
       .accessibilityIdentifier("lab-apple-live-enabled")
-
-      Text(
-        "Applies to the next recording. Turn both off to keep Whisper output without Apple revisions or seal-ledger admission."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
     }
-    .toggleStyle(.switch)
-    .font(.body)
-    .tint(CSColor.chromeAccent)
   }
 
   /// Voice Lab experiment: the DictationTranscriber witness re-checks
   /// unresolved recovery debt after each sealed utterance, in the background.
   /// The effective value comes from the settings snapshot; an exported
   /// process env still overrides the switch.
-  @ViewBuilder
   private var dictationWitnessRow: some View {
-    Toggle(
-      String(localized: "DictationTranscriber witness (experimental)"),
-      isOn: Binding(
-        get: { model.settings.dictationWitnessArmed },
-        set: { model.setDictationWitnessArmed($0) }
-      )
-    )
-    .toggleStyle(.switch)
-    .font(.body)
-    .tint(CSColor.chromeAccent)
-    .accessibilityIdentifier("lab-dictation-witness")
-    Text(
-      String(
+    SettingsControlRow(
+      title: String(localized: "DictationTranscriber witness (experimental)"),
+      subtitle: String(
         localized:
           "Re-checks words a take left unresolved, in the background after each sealed utterance. A process env value overrides this toggle."
       )
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-    .fixedSize(horizontal: false, vertical: true)
+    ) {
+      Toggle(
+        "",
+        isOn: Binding(
+          get: { model.settings.dictationWitnessArmed },
+          set: { model.setDictationWitnessArmed($0) }
+        )
+      )
+      .settingsSwitch()
+      .accessibilityLabel("DictationTranscriber witness (experimental)")
+      .accessibilityIdentifier("lab-dictation-witness")
+    }
   }
 
   private var sealLaneBinding: Binding<Bool> {

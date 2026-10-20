@@ -248,7 +248,7 @@ struct Composer: View {
           .foregroundStyle(Color.primary)
         Spacer(minLength: 8)
         Button("Enter license") {
-          SettingsDeepLink.shared.pendingSection = .license
+          SettingsDeepLink.shared.present(.user, anchor: .license)
           openWindow.presentSettings()
         }
         .csFocusRing()
