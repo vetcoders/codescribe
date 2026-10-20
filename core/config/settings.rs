@@ -2489,8 +2489,7 @@ impl UserSettings {
                                             }
                                         }
                                     }
-                                } else if retired_formatting_switch.is_some()
-                                    && persist_migrations
+                                } else if retired_formatting_switch.is_some() && persist_migrations
                                 {
                                     // One-shot: the saved V2 shape carries only
                                     // `formatting.level`, so the next load finds nothing.

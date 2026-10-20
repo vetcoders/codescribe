@@ -1309,14 +1309,10 @@ pub(crate) async fn apple_stream_transcription_session(
     // a bounded queue permit first. Apple on-device counts as an engine on its
     // own: it needs no cloud key, endpoint or account.
     let formatter_on = seal_ledger_enabled
-        && live_formatter_lane_is_armed(
-            capture_turn,
-            runtime_settings.formatting_policy(),
-            || {
-                crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
-                    .is_none()
-            },
-        );
+        && live_formatter_lane_is_armed(capture_turn, runtime_settings.formatting_policy(), || {
+            crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
+                .is_none()
+        });
     if !capture_turn.schedules_live_formatting() {
         info!(
             "Capture intent: the live formatter lane stays unarmed for this take, so no \
@@ -12128,16 +12124,20 @@ mod c13a_lifecycle_tests {
     #[test]
     fn formatter_configuration_without_transport_ownership_never_opens_a_frontier() {
         assert!(!formatter_lane_is_armed(FormattingPolicy::Off, true));
-        assert!(!formatter_lane_is_armed(FormattingPolicy::Correction, false));
+        assert!(!formatter_lane_is_armed(
+            FormattingPolicy::Correction,
+            false
+        ));
         assert!(formatter_lane_is_armed(FormattingPolicy::Correction, true));
 
         // Keep a healthy receiver alive: Max must refuse this lane because of
         // its policy, not because the transport happens to be unavailable.
         let (max_tx, mut max_rx) = mpsc::channel(1);
-        let max_armed =
-            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, FormattingPolicy::Max, || {
-                true
-            });
+        let max_armed = live_formatter_lane_is_armed(
+            CaptureTurnIntent::HandsFree,
+            FormattingPolicy::Max,
+            || true,
+        );
         let max_formatter = max_armed.then_some(max_tx);
         for (session, formatter) in {
             let (closed_tx, closed_rx) = mpsc::channel(1);
@@ -22248,7 +22248,10 @@ mod composer_turn_formatter_arming_tests {
     #[test]
     fn unarmed_live_formatting_never_resolves_credentials() {
         for (intent, policy) in [
-            (CaptureTurnIntent::AgentChannel, FormattingPolicy::Correction),
+            (
+                CaptureTurnIntent::AgentChannel,
+                FormattingPolicy::Correction,
+            ),
             (CaptureTurnIntent::AgentChannel, FormattingPolicy::Smart),
             (CaptureTurnIntent::AgentChannel, FormattingPolicy::Max),
             (CaptureTurnIntent::SingleTurn, FormattingPolicy::Correction),
@@ -23295,7 +23298,11 @@ mod live_refinement_admission_tests {
             forensic_live_transport_capture(&mut state);
             state.capture_turn = CaptureTurnIntent::HandsFree;
             let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            assert!(live_formatter_lane_is_armed(state.capture_turn, policy, || true));
+            assert!(live_formatter_lane_is_armed(
+                state.capture_turn,
+                policy,
+                || true
+            ));
             state.formatter = Some(formatter);
             let lexicon = tempfile::tempdir().unwrap();
             state.lexicon_custom_path = lexicon.path().join("empty.jsonl");

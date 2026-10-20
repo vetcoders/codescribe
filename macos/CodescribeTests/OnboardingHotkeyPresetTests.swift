@@ -55,7 +55,6 @@ final class OnboardingHotkeyPresetTests: XCTestCase {
     case .dictation: row.binding = .holdCtrl
     case .formatting: row.binding = .disabled
     case .assistive: row.binding = .doubleCtrl
-    default: break
     }
     return row
   }
