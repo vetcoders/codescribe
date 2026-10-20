@@ -402,6 +402,12 @@ A panel reads the role, never a bare number.
   switches of a page line up in one trailing column. A slider track stops at
   `SettingsScale.sliderWidth` and its value reads at the track's end, not at
   the far edge of the pane.
+- **Sheet.** `CSPalette.sheet` is the one colour behind every content area
+  and the overlay canvas. Its two hexes are read once at launch from
+  `SheetShadePreference` (Settings › Creator › Appearance), which only holds
+  the click-through candidates; the shipped values stay in `SheetShade`.
+  Light, dark or system is `AppearancePreference`, handed to `NSApp` at launch
+  and on change.
 
 ### Agent window header
 

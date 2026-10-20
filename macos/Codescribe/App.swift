@@ -219,6 +219,13 @@ struct CodescribeApp: App {
       try await delegate.restartForInterfaceLanguage(
         relaunch: .plain, beforeTermination: beforeTermination)
     }
+    // Appearance applies at once through AppKit; a sheet shade is read at
+    // launch, so it rides the same idle-guarded restart as the language.
+    model.onApplyAppearance = { AppearancePreference().apply() }
+    model.onApplySheetShade = { beforeTermination in
+      try await delegate.restartForInterfaceLanguage(
+        relaunch: .plain, beforeTermination: beforeTermination)
+    }
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
@@ -529,6 +536,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+    // Light, dark or system, before the first window resolves a colour.
+    AppearancePreference().apply()
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
