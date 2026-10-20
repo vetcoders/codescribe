@@ -903,6 +903,13 @@ learned, and where the active rules come from.
   variant → canonical pair the engine applies). A vocabulary correction is not
   a learned rule; nothing here implies otherwise. They are stated once for the
   page — no section heading repeats them.
+- **Recent takes** — the page leads with the last takes recorded on this Mac,
+  newest first, in human terms: time, destination (dictation or an agent
+  channel), length, word count and the words the ledger admitted. **Copy text**
+  puts the take on the pasteboard; **Open in Lab** jumps to the acoustic view
+  of the same takes (word pins, PCM slots, Silero ranges), which stays in Lab.
+  A take whose words the ledger refused says how many. The list is read from
+  the take sidecars under `sessions/`; it runs no recognizer and never writes.
 - **Recent corrections** is a filtered list, not a list of every recording.
   A saved take is eligible when normalized delivered or edited text differs
   from raw STT, or it has confidence telemetry (average log probability, speech
