@@ -2017,6 +2017,17 @@
         }
       }
     },
+    "AI provider" : {
+      "comment" : "Setup step eyebrow",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dostawca AI"
+          }
+        }
+      }
+    },
     "AICX MCP" : {
       "comment" : "Diagnostics row label",
       "localizations" : {
@@ -2190,6 +2201,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj"
+          }
+        }
+      }
+    },
+    "Add an API key for this provider. You can also do this later." : {
+      "comment" : "Setup step description for a provider whose only access path is an API key",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj klucz API tego dostawcy. Możesz to zrobić także później."
           }
         }
       }
@@ -2817,6 +2839,7 @@
       }
     },
     "Agents" : {
+      "comment" : "Setup step eyebrow: coding-agent clients",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4438,17 +4461,6 @@
         }
       }
     },
-    "Choose how you want to use Codescribe." : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybierz, jak chcesz używać Codescribe."
-          }
-        }
-      }
-    },
     "Choose the Agent and formatting models. Accounts and keys live under Providers." : {
       "localizations" : {
         "pl" : {
@@ -4470,7 +4482,7 @@
       }
     },
     "Choose the agents you want to work with by voice." : {
-      "comment" : "Setup chapter subtitle",
+      "comment" : "Setup step heading for the coding-agent skill choice",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4498,23 +4510,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wybierz funkcje, na które wyrażasz zgodę"
-          }
-        }
-      }
-    },
-    "Choose your language" : {
-      "comment" : "First setup chapter heading",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Choose your language"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz język"
           }
         }
       }
@@ -4937,6 +4932,17 @@
         }
       }
     },
+    "Codescribe skill installed" : {
+      "comment" : "Detail under a coding-agent card: the Codescribe skill is in this client's skills folder",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skill Codescribe zainstalowany"
+          }
+        }
+      }
+    },
     "Codescribe will add the codescribe skill bundled in this app to %@. Nothing is replaced: if that folder already exists and Codescribe did not install it, installation stops without changing it." : {
       "comment" : "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
       "localizations" : {
@@ -5280,17 +5286,6 @@
         }
       }
     },
-    "Connect Codescribe to an agent" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz Codescribe z agentem"
-          }
-        }
-      }
-    },
     "Connect a microphone and refresh Audio settings." : {
       "localizations" : {
         "pl" : {
@@ -5319,17 +5314,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Połącz dostawcę AI"
-          }
-        }
-      }
-    },
-    "Connect to the active session" : {
-      "comment" : "Detail under a coding-assistant checkbox",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połącz z aktywną sesją"
           }
         }
       }
@@ -6564,7 +6548,7 @@
       }
     },
     "Details" : {
-      "comment" : "About panel: disclosure with raw diagnostic values",
+      "comment" : "Setup summary: disclosure with the Whisper model's source, size and path",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6640,13 +6624,13 @@
         }
       }
     },
-    "Dictate, or work by voice with an AI agent." : {
+    "Dictate, or talk to an AI agent." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz dyktować albo pracować głosem razem z agentem AI."
+            "value" : "Możesz dyktować albo rozmawiać z agentem AI."
           }
         }
       }
@@ -6690,6 +6674,28 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Sterowanie dyktowaniem"
+          }
+        }
+      }
+    },
+    "Dictation is ready." : {
+      "comment" : "Setup final heading: dictation passed its checks, the Agent lane is not ready yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dyktowanie jest gotowe."
+          }
+        }
+      }
+    },
+    "Dictation language" : {
+      "comment" : "Setup step eyebrow: the language you dictate in, not the app language",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język dyktowania"
           }
         }
       }
@@ -6833,6 +6839,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuć"
+          }
+        }
+      }
+    },
+    "Do you want to transcribe on your Mac?" : {
+      "comment" : "Setup step heading for the optional local Whisper model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chcesz transkrybować na swoim Macu?"
           }
         }
       }
@@ -8458,6 +8475,17 @@
         }
       }
     },
+    "Install the Codescribe skill" : {
+      "comment" : "Detail under a coding-agent card: Continue installs the Codescribe skill for this client",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj skill Codescribe"
+          }
+        }
+      }
+    },
     "Install the Codescribe skill for %@?" : {
       "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
       "localizations" : {
@@ -8719,7 +8747,7 @@
       "shouldTranslate" : false
     },
     "Language" : {
-      "comment" : "Engine tab row: the language setting handed to Apple, local Whisper and the cloud engine\nSetup step eyebrow",
+      "comment" : "Engine tab row: the language setting handed to Apple, local Whisper and the cloud engine",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9368,6 +9396,17 @@
         }
       }
     },
+    "Local transcription" : {
+      "comment" : "Setup step eyebrow: transcription that runs on this computer",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkrypcja lokalna"
+          }
+        }
+      }
+    },
     "Loctree MCP" : {
       "comment" : "Diagnostics row label",
       "localizations" : {
@@ -9418,17 +9457,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serwery MCP"
-          }
-        }
-      }
-    },
-    "Make the connection" : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nadaj potrzebne uprawnienia"
           }
         }
       }
@@ -12237,7 +12265,7 @@
       }
     },
     "Permissions" : {
-      "comment" : "Settings tab: macOS permission matrix",
+      "comment" : "Setup step eyebrow",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14351,17 +14379,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż w Finderze"
-          }
-        }
-      }
-    },
-    "Review your setup." : {
-      "comment" : "Review setup choices without claiming recording readiness",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Sprawdź konfigurację."
           }
         }
       }
@@ -17760,6 +17777,17 @@
         }
       }
     },
+    "This provider doesn’t require an API key. Add one if your server expects it." : {
+      "comment" : "Setup step description for a key-optional provider such as a local server",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten dostawca nie wymaga klucza API. Dodaj go, jeśli Twój serwer go oczekuje."
+          }
+        }
+      }
+    },
     "This removes “%@” and its saved conversation. There is no undo." : {
       "comment" : "The placeholder is the thread title",
       "localizations" : {
@@ -18214,17 +18242,6 @@
         }
       }
     },
-    "Transcription on your device" : {
-      "comment" : "Setup chapter heading for fully local transcription",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Transkrypcja na Twoim urządzeniu"
-          }
-        }
-      }
-    },
     "Transcription unavailable" : {
       "comment" : "Settings health footer, sentence case",
       "localizations" : {
@@ -18577,17 +18594,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktualizowanie dostępu…"
-          }
-        }
-      }
-    },
-    "Use both methods." : {
-      "comment" : "Hotkey preset detail: hold and toggle methods are both enabled",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Korzystaj z obu metod."
           }
         }
       }
@@ -19201,17 +19207,6 @@
         }
       }
     },
-    "When you speak more than one language." : {
-      "comment" : "Detail under the Auto-detect dictation language choice",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gdy mówisz w różnych językach."
-          }
-        }
-      }
-    },
     "While holding Fn, press the chosen key to attach the selection." : {
       "localizations" : {
         "pl" : {
@@ -19253,17 +19248,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Model Whisper"
-          }
-        }
-      }
-    },
-    "Whisper model for local dictation" : {
-      "comment" : "Heading for the model that enables fully local transcription",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Model Whisper do lokalnego dyktowania"
           }
         }
       }
@@ -19556,17 +19540,6 @@
         }
       }
     },
-    "You can change these permissions later in System Settings." : {
-      "comment" : "Setup permissions footnote; System Settings is the macOS application",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Te uprawnienia zmienisz później w Ustawieniach systemowych."
-          }
-        }
-      }
-    },
     "You can close this window. Setup resumes here the next time Codescribe starts." : {
       "comment" : "Setup Done chapter while not ready: closing keeps setup unfinished",
       "localizations" : {
@@ -19578,13 +19551,13 @@
         }
       }
     },
-    "You can continue without granting these permissions." : {
-      "comment" : "Permissions never block Continue",
+    "You can do this later in Settings." : {
+      "comment" : "Setup permissions step: grants can be given later in the app's Settings",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz kontynuować bez nadania tych uprawnień."
+            "value" : "Możesz to zrobić później w Ustawieniach."
           }
         }
       }
@@ -19698,17 +19671,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoje klucze są przechowywane w Pęku kluczy macOS, a transkrypcja na żywo przez Libraxis korzysta z krótkotrwałego tokenu sesji."
-          }
-        }
-      }
-    },
-    "Your language. Your shortcuts. Your way of working." : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Twój język. Twoje skróty. Twój sposób pracy."
           }
         }
       }
