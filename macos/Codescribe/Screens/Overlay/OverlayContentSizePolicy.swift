@@ -6,7 +6,7 @@ enum OverlayTranscriptActionsLayout {
   static let columnWidthAtUnitScale: CGFloat = 52
 
   static func columnWidth(textScale: CGFloat) -> CGFloat {
-    columnWidthAtUnitScale * textScale
+    columnWidthAtUnitScale * textScale + OverlayResizeHit.band
   }
 }
 

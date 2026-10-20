@@ -1827,12 +1827,14 @@ struct OverlayChannelStatusView: View {
   static func messageRoute(of message: OverlayConversationMessage) -> MessageRoute {
     let named = recipientNames(of: message)
     if message.kind == .user {
-      if message.sourceChannel == "0" { return MessageRoute(speaker: "You", audience: "All") }
-      if let named { return MessageRoute(speaker: "You", audience: named) }
-      if let channel = message.sourceChannel {
-        return MessageRoute(speaker: "You", audience: channel)
+      if message.sourceChannel == "0" {
+        return MessageRoute(speaker: String(localized: "You"), audience: String(localized: "All"))
       }
-      return MessageRoute(speaker: "You", audience: nil)
+      if let named { return MessageRoute(speaker: String(localized: "You"), audience: named) }
+      if let channel = message.sourceChannel {
+        return MessageRoute(speaker: String(localized: "You"), audience: channel)
+      }
+      return MessageRoute(speaker: String(localized: "You"), audience: nil)
     }
     guard let sender = message.owner?.name, !sender.isEmpty else {
       return MessageRoute(speaker: "", audience: nil)
@@ -1840,9 +1842,11 @@ struct OverlayChannelStatusView: View {
     // A reply without a destination, or one addressed on channel 10, answered
     // the Founder. Channel 0 is the broadcast, whatever the current row is.
     guard let destination = message.sourceChannel, destination != "10" else {
-      return MessageRoute(speaker: sender, audience: "You")
+      return MessageRoute(speaker: sender, audience: String(localized: "You"))
     }
-    if destination == "0" { return MessageRoute(speaker: sender, audience: "All") }
+    if destination == "0" {
+      return MessageRoute(speaker: sender, audience: String(localized: "All"))
+    }
     return MessageRoute(speaker: sender, audience: named ?? destination)
   }
 
