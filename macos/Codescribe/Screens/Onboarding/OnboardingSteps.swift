@@ -276,6 +276,15 @@ struct HotkeyModeStepView: View {
       }
       .padding(.top, 4)
 
+      if model.hotkeyBindingsAreCustom {
+        OnboardingStepNote(
+          text: String(
+            localized: LocalizedStringResource(
+              "Your custom shortcuts stay as they are unless you pick a preset.",
+              locale: model.interfaceLocale,
+              comment: "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized")))
+      }
+
       OnboardingStepNote(
         text: String(
           localized: LocalizedStringResource(

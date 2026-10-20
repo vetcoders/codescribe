@@ -158,6 +158,10 @@ final class OnboardingViewModel: ObservableObject {
 
   // Hotkey-mode step state.
   @Published private(set) var hotkeyMode: HotkeyModeChoice
+  // Whether the user picked a preset in THIS wizard run. Only then does
+  // leaving the step overwrite the live mode bindings — otherwise a rerun
+  // would silently clobber custom shortcuts the user never touched here.
+  private var hotkeyModePicked = false
 
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
@@ -724,7 +728,7 @@ final class OnboardingViewModel: ObservableObject {
     case .interfaceLanguage: selectInterfaceLanguage(interfaceLanguage)
     case .mode: persistMode()
     case .language: persistLanguage()
-    case .hotkeyMode: persistHotkeyMode()
+    case .hotkeyMode: if hotkeyModePicked { persistHotkeyMode() }
     default: break
     }
   }
@@ -849,6 +853,7 @@ final class OnboardingViewModel: ObservableObject {
   /// HotkeysEngine — the same seam and live-reload the Shortcuts panel uses.
   func selectHotkeyMode(_ mode: HotkeyModeChoice) {
     hotkeyMode = mode
+    hotkeyModePicked = true
     persistHotkeyMode()
   }
 
@@ -860,6 +865,24 @@ final class OnboardingViewModel: ObservableObject {
       try hotkeys.setModeBinding(mode: .assistive, binding: assistive)
     } catch {
       lastError = error.userFacingMessage
+    }
+  }
+
+  /// Whether the live mode bindings do not exactly match any preset's triple —
+  /// i.e. the user is running custom shortcuts the wizard will leave alone
+  /// unless they pick a preset. Mirrors the three-core-mode comparison in
+  /// `HotkeyModeChoice.derive`.
+  var hotkeyBindingsAreCustom: Bool {
+    let live = hotkeys.modeBindings()
+    func binding(_ mode: CsWorkMode) -> CsShortcutBinding? {
+      live.first { $0.mode == mode }?.binding
+    }
+    let dictation = binding(.dictation)
+    let formatting = binding(.formatting)
+    let assistive = binding(.assistive)
+    return !HotkeyModeChoice.allCases.contains { preset in
+      let p = preset.bindings
+      return dictation == p.0 && formatting == p.1 && assistive == p.2
     }
   }
 
