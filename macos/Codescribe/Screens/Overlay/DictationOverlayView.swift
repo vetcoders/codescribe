@@ -341,13 +341,10 @@ struct DictationOverlayView: View {
   @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
   @State private var pointerInsideAgentRail = false
   @State private var closeDotHovered = false
-  @Namespace private var bottomChromeNamespace
-  @State private var actions = OverlayActionsPresentation()
-  @FocusState private var actionsFocused: Bool
   @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
   @State private var headerHeight: CGFloat = 48
-  @State private var footerHeight: CGFloat = 64
+  @State private var footerHeight: CGFloat = 0
   @State private var footerDetail: String?
   @Bindable var state: OverlayState
 
@@ -397,10 +394,7 @@ struct DictationOverlayView: View {
           onSelectVersion: { state.selectDocumentVersion($0) },
           onIntent: state.relayIntent,
           onRetranscribe: { state.retranscribe(pass: $0) },
-          onFormatOnce: { state.formatTranscript(at: $0) },
-          onDismiss: { actions.dismiss() },
-          onInteraction: { actions.interact() },
-          onPresentationChange: { actions.panelChanged($0) }
+          onFormatOnce: { state.formatTranscript(at: $0) }
         )
       )
     }
@@ -440,27 +434,20 @@ struct DictationOverlayView: View {
     }
   }
 
-  @ViewBuilder
-  private func bottomChromeContainer<IntentRail: View>(
-    _ intentRail: IntentRail
-  ) -> some View {
-    if #available(macOS 26.0, *) {
-      GlassEffectContainer(spacing: 0) { intentRail }
-    } else {
-      intentRail
-    }
-  }
-
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
     ZStack {
       GeometryReader { geometry in
         let docked = OverlayAgentDrawerLayout.isDocked(
           windowWidth: geometry.size.width, textScale: textScale)
-        // Beside a conversation the list stays as its corner buttons left it
-        // (Maciej, 2026-10-19); the transcription keeps its full width until
-        // the Agents button asks for the roster.
+        let agentsSurface = state.windowContentSurface == .agents
+        let transcriptionSurface = state.windowContentSurface == .transcription
+        // The roster is the Agents surface. A pinned list, a remembered
+        // drawer width, or no selected conversation does not mount it on
+        // transcription. Beside a conversation the list stays as its corner
+        // buttons left it (Maciej, 2026-10-19).
         let listOnScreen =
-          !state.isCollapsed
+          agentsSurface
+          && !state.isCollapsed
           && (state.showsAgentMonitor
             || OverlayAgentDrawerLayout.listPinned(
               layout: state.agentsLayout, docked: docked,
@@ -470,10 +457,14 @@ struct DictationOverlayView: View {
         // of the conversation or the transcription, which keep their layout
         // underneath: choosing a row brings the conversation back.
         let listShown = !docked && listOnScreen
-        // The compact roster is present from the first reveal, including on
-        // the transcription before any agent conversation has been selected.
-        let railShown = !state.isCollapsed && !listOnScreen
+        // The compact roster belongs to Agents. Transcription never mounts it,
+        // including when no conversation is selected.
+        let railShown = agentsSurface && !state.isCollapsed && !listOnScreen
         let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: textScale)
+        let transcriptActionsShown = transcriptionSurface && !state.isCollapsed
+        let transcriptActionsWidth =
+          transcriptActionsShown
+          ? OverlayTranscriptActionsLayout.columnWidth(textScale: textScale) : 0
         // The agents view covers the window; a drag on its edge draws a split.
         let drawerWidth =
           state.agentsLayout == .agents && agentDrawerResize == nil
@@ -485,7 +476,8 @@ struct DictationOverlayView: View {
         let canvasWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0))
+            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
+            - transcriptActionsWidth)
         // The agents view, or a roster dragged across the whole window.
         let canvasHidden = canvasWidth < 1 || listShown
         HStack(alignment: .top, spacing: 0) {
@@ -495,12 +487,13 @@ struct DictationOverlayView: View {
             // 2026-10-15). A `nil` height has nothing to animate from: the body
             // snapped to zero on the first frame while the glass kept shrinking
             // (presentation ledger, 2026-10-14).
+            let transcriptVisible = transcriptionSurface && !state.isCollapsed
             bodySection
               .frame(height: state.isCollapsed ? 0 : geometry.size.height)
-              .opacity(state.isCollapsed || !state.showsMyDictation ? 0 : 1)
-              .allowsHitTesting(!state.isCollapsed && state.showsMyDictation)
-              .accessibilityHidden(state.isCollapsed || !state.showsMyDictation)
-            if let conversation = state.selectedConversation {
+              .opacity(transcriptVisible ? 1 : 0)
+              .allowsHitTesting(transcriptVisible)
+              .accessibilityHidden(!transcriptVisible)
+            if agentsSurface, let conversation = state.selectedConversation {
               OverlayConversationView(
                 conversation: conversation, palette: palette,
                 topInset: headerHeight + 8, bottomInset: 20,
@@ -583,6 +576,12 @@ struct DictationOverlayView: View {
             agentRail(maximumHeight: geometry.size.height, width: railWidth)
               .transition(.move(edge: .trailing).combined(with: .opacity))
           }
+          if transcriptActionsShown {
+            transcriptActionsColumn(
+              maximumHeight: geometry.size.height, width: transcriptActionsWidth, rail: intentRail
+            )
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+          }
         }
         // Animate the column's arrival, never the bare docked flag: that flag
         // flips on the first geometry pass and would animate the transcript
@@ -590,6 +589,7 @@ struct DictationOverlayView: View {
         // A corner button's choice slides the panes the same way.
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: columnShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: railShown)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: transcriptActionsShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.agentsLayout)
         // Track the stable canvas instead of the disappearing rail. Choosing
         // a row while still over its edge must not immediately reopen it.
@@ -640,86 +640,8 @@ struct DictationOverlayView: View {
       }
       .frame(maxHeight: .infinity, alignment: .top)
       VStack(spacing: 0) {
-        if !state.isCollapsed && state.showsMyDictation && !state.showsAgentMonitor {
+        if !state.isCollapsed && state.windowContentSurface == .transcription {
           VStack(spacing: CSSpace.sm) {
-            bottomChromeContainer(
-              HStack(spacing: 2) {
-                Button {
-                  actions.toggle()
-                } label: {
-                  HStack(spacing: 4) {
-                    Image(systemName: actions.controlSymbol)
-                      .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-
-                  }
-                  .font(.system(size: 11, weight: .medium))
-                  .foregroundStyle(palette.primaryText.color)
-                  .padding(.horizontal, actions.phase == .open ? 0 : 10)
-                  .frame(
-                    minWidth: actions.phase == .open
-                      ? nil : OverlayResizeChrome.actionsWidth(narrow: true)
-                  )
-                  .frame(height: OverlayResizeChrome.actionsHeight)
-                  .fixedSize(horizontal: true, vertical: true)
-                  .contentShape(Capsule())
-                  .overlay(alignment: .topTrailing) {
-                    if state.hasRecoverableSupersededWork && actions.phase != .open {
-                      Circle()
-                        .fill(palette.processingStatus.color)
-                        .frame(width: 5, height: 5)
-                        .accessibilityHidden(true)
-                        .accessibilityIdentifier("overlay-retained-work-badge")
-                    }
-                  }
-                }
-                .buttonStyle(.plain)
-                .focusable()
-                .focused($actionsFocused)
-                .accessibilityLabel(actions.controlTitle)
-                .accessibilityValue(actions.phase == .open ? "Expanded" : "Collapsed")
-                .accessibilityHint(
-                  state.hasRecoverableSupersededWork
-                    ? "Previous take available. Open actions to copy or discard it."
-                    : "Show or hide transcript tools"
-                )
-                .accessibilityIdentifier("overlay-tools-handle")
-                .modifier(OverlayMiniTooltip(title: actions.controlTitle, palette: palette))
-                if actions.phase == .open {
-                  intentRail
-                }
-              }
-              .padding(.vertical, actions.phase == .open ? 2 : 0)
-              .padding(.horizontal, actions.phase == .open ? 10 : 0)
-              .fixedSize(horizontal: false, vertical: true)
-              .modifier(
-                OverlayActionsSurface(palette: palette, glassNamespace: bottomChromeNamespace)
-              )
-              .contentShape(Capsule())
-              .onHover { actions.pointerChanged($0) }
-              .onChange(of: actionsFocused) { _, focused in
-                actions.focusChanged(focused)
-              }
-              .onExitCommand { actions.dismiss() }
-              .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actions.phase)
-              .transaction { transaction in
-                if reduceMotion {
-                  transaction.animation = nil
-                  transaction.disablesAnimations = true
-                }
-              }
-              .task(id: actions.hideDeadline) {
-                guard let deadline = actions.hideDeadline else { return }
-                do {
-                  try await ContinuousClock().sleep(until: deadline)
-                } catch { return }
-                guard !Task.isCancelled else { return }
-                actions.expire()
-              }
-            )
-            // Glass is confined to each capsule, before the bar's clear margins.
-            // The AppKit edge intercept and existing header/body drag regions stay in place.
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.horizontal, OverlayResizeChrome.actionsSideInset)
             if state.completedMaxConsultationID != nil {
               Button("Continue in chat", systemImage: "bubble.left") {
                 state.continueMaxConsultationInChat()
@@ -803,13 +725,37 @@ struct DictationOverlayView: View {
         .accessibilityHidden(true)
       }
     }
-    .onChange(of: actions.phase) { _, phase in
-      if phase == .open { state.refreshRetranscriptionAvailability() }
+    .onChange(of: state.captureGeneration) { _, _ in
+      if state.windowContentSurface == .transcription {
+        state.refreshRetranscriptionAvailability()
+      }
     }
-    .onChange(of: state.isCollapsed) { _, collapsed in
-      if collapsed { actions.reset() }
-    }
-    .onChange(of: state.captureGeneration) { _, _ in actions.reset() }
+  }
+
+  /// Trailing transcript actions. This is the only mount of the rail, so each
+  /// command has one control. The column uses the shared sidebar material and
+  /// stays out of the keyboard chain.
+  private func transcriptActionsColumn<Rail: View>(
+    maximumHeight: CGFloat, width: CGFloat, rail: Rail
+  ) -> some View {
+    rail
+      .padding(.top, headerHeight + 8)
+      .padding(.bottom, 12)
+      .frame(width: width, height: max(0, maximumHeight - headerHeight - 8))
+      .frame(maxHeight: .infinity, alignment: .top)
+      .focusable(false)
+      .background { CSSidebarMaterial() }
+      .overlay(alignment: .leading) {
+        Rectangle()
+          .fill(palette.border.color)
+          .frame(width: 1 / max(displayScale, 1))
+          .padding(.top, headerHeight)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-transcript-actions")
+      .onAppear { state.refreshRetranscriptionAvailability() }
   }
 
   /// The roster list. Docked (wide windows): full height under the header,
@@ -865,7 +811,7 @@ struct DictationOverlayView: View {
       && !OverlayAgentDrawerLayout.fillsWindow(drawerWidth: width, windowWidth: windowWidth)
     return OverlayAgentsSidebarControls(
       canvasShown: canvasShown,
-      canvasIsTranscription: state.selectedConversation == nil,
+      canvasIsTranscription: state.windowContentSurface == .transcription,
       onToggleCanvas: {
         if canvasShown {
           state.hideAgentsCanvas()
@@ -1166,8 +1112,7 @@ struct DictationOverlayView: View {
 
   private var transcriptionPreviewButton: some View {
     let transcriptionSelected =
-      !state.isCollapsed && !state.showsAgentMonitor
-      && state.selectedConversationID == nil
+      !state.isCollapsed && state.windowContentSurface == .transcription
     return Button(action: state.showTranscription) {
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.transcription,
@@ -1222,8 +1167,7 @@ struct DictationOverlayView: View {
     )
     view.mutedChannels = state.channelPlaybackMuted
     view.headerSelected =
-      !state.isCollapsed
-      && (state.showsAgentMonitor || state.selectedConversationID != nil)
+      !state.isCollapsed && state.windowContentSurface == .agents
     view.agentMicrophoneStops = state.agentsButtonStopsRecording
     view.pendingMuteChannels = state.pendingPlaybackChannels
     view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }

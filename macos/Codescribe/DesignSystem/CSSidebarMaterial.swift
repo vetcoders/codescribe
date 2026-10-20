@@ -8,8 +8,8 @@ import SwiftUI
 /// lost that effect; its tint and the seam beside the content are separate
 /// questions from whether the glass is there (Monika, 2026-10-18).
 ///
-/// `CSSidebarColumn` is the only consumer: a window never reaches for this
-/// material on its own.
+/// `CSSidebarColumn` and the transcript actions column share this material.
+/// A window never reaches for it on its own.
 ///
 /// Follows the native navigation material model:
 /// - In standard mode: an `NSVisualEffectView` with `.sidebar` material,

@@ -1,5 +1,15 @@
 import AppKit
 
+/// Trailing transcript-action column. Transcription owns this width. It is not
+/// the agents drawer preference, and a collapsed mini/midi hides the column.
+enum OverlayTranscriptActionsLayout {
+  static let columnWidthAtUnitScale: CGFloat = 52
+
+  static func columnWidth(textScale: CGFloat) -> CGFloat {
+    columnWidthAtUnitScale * textScale
+  }
+}
+
 /// Content-to-window sizing policy. It measures projected text independently
 /// of `NSHostingView.fittingSize`, preserving the window-owned sizing contract.
 enum OverlayContentSizePolicy {
@@ -26,9 +36,16 @@ enum OverlayContentSizePolicy {
     let font = NSFont.systemFont(ofSize: 15 * textScale, weight: .medium)
     let paragraph = NSMutableParagraphStyle()
     paragraph.lineSpacing = 5
+    // Callers pass the window width. The actions column is inside that width
+    // on the expanded transcription surface, so the measured lines are the
+    // text column that remains.
+    let textWidth = max(
+      1,
+      width - bodyHorizontalInsets
+        - OverlayTranscriptActionsLayout.columnWidth(textScale: textScale))
     let measured = (text() as NSString).boundingRect(
       with: NSSize(
-        width: max(1, width - bodyHorizontalInsets),
+        width: textWidth,
         height: .greatestFiniteMagnitude
       ),
       options: [.usesLineFragmentOrigin, .usesFontLeading],
