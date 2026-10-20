@@ -1955,6 +1955,17 @@
         }
       }
     },
+    "A license unlocks Agent mode." : {
+      "comment" : "User panel, License section: what a license unlocks",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Licencja odblokowuje tryb agentowy."
+          }
+        }
+      }
+    },
     "A longer gap in speech may be treated as a sentence boundary during automatic text formatting." : {
       "localizations" : {
         "pl" : {
@@ -1991,16 +2002,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wersja transkrypcji nie może być pusta"
-          }
-        }
-      }
-    },
-    "AI formatting" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Formatowanie przez AI"
           }
         }
       }
@@ -2175,59 +2176,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły aktywnej konfiguracji"
-          }
-        }
-      }
-    },
-    "Active · %lld days left" : {
-      "comment" : "License status; the count is days left in the local activation period, not days without internet",
-      "localizations" : {
-        "en" : {
-          "variations" : {
-            "plural" : {
-              "one" : {
-                "stringUnit" : {
-                  "state" : "new",
-                  "value" : "Active · %lld day left"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "new",
-                  "value" : "Active · %lld days left"
-                }
-              }
-            }
-          }
-        },
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Aktywna · pozostały %lld dni"
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Aktywna · pozostało %lld dni"
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Aktywna · pozostał %lld dzień"
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Aktywna · pozostało %lld dnia"
-                }
-              }
-            }
           }
         }
       }
@@ -2448,16 +2396,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wskazany odbiorca"
-          }
-        }
-      }
-    },
-    "Adjust how quickly text appears in the preview window while recording." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dostosuj tempo pojawiania się tekstu w oknie podglądu podczas nagrywania."
           }
         }
       }
@@ -3152,12 +3090,13 @@
         }
       }
     },
-    "Apple paints immediately; the validated local FP16 model repairs the same audio spans during the take." : {
+    "Apple recognizes speech and Whisper corrects the text during the recording." : {
+      "comment" : "Live Whisper refinement card: Local power is ready",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Apple wyświetla tekst od razu, a sprawdzony lokalny model FP16 poprawia te same fragmenty dźwięku jeszcze w trakcie nagrania."
+            "value" : "Apple rozpoznaje mowę, a Whisper poprawia tekst w trakcie nagrania."
           }
         }
       }
@@ -3578,13 +3517,13 @@
         }
       }
     },
-    "Basic mode stays free. A license unlocks Agent mode." : {
-      "comment" : "User panel, License section: what is available without a key and what a license unlocks",
+    "Basic mode" : {
+      "comment" : "License card: product name when no license allows Agent mode",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tryb podstawowy pozostaje bezpłatny. Licencja odblokowuje tryb agentowy."
+            "value" : "Tryb podstawowy"
           }
         }
       }
@@ -3650,16 +3589,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uszkodzony"
-          }
-        }
-      }
-    },
-    "Browse corrections and dictionary rules." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przeglądaj poprawki i reguły słownika."
           }
         }
       }
@@ -3905,6 +3834,7 @@
       }
     },
     "Cancel" : {
+      "comment" : "License card: closes the new-key field, the saved key stays",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4166,6 +4096,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmień silnik w Ustawieniach…"
+          }
+        }
+      }
+    },
+    "Change key" : {
+      "comment" : "License card: opens the field for a new key",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmień klucz"
           }
         }
       }
@@ -4788,17 +4729,6 @@
     "Cloud provider" : {
       "shouldTranslate" : false
     },
-    "Cloud status" : {
-      "comment" : "Privacy section: current cloud lane and stored consent",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stan chmury"
-          }
-        }
-      }
-    },
     "Cloud transcription" : {
       "comment" : "Providers section: cloud STT lanes",
       "localizations" : {
@@ -5111,7 +5041,7 @@
       }
     },
     "Collapsed" : {
-      "comment" : "Accessibility value: a disclosure row is closed",
+      "comment" : "Accessibility value: a disclosure row is closed\nLicense card: key management is closed",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5293,17 +5223,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Źródło konfiguracji:"
-          }
-        }
-      }
-    },
-    "Configure cloud services" : {
-      "comment" : "Privacy action: opens Providers > Cloud transcription",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Skonfiguruj usługi chmurowe"
           }
         }
       }
@@ -6483,6 +6402,17 @@
         }
       }
     },
+    "Data processing" : {
+      "comment" : "Privacy section: the selected recognition mode and the stored consent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przetwarzanie danych"
+          }
+        }
+      }
+    },
     "Default location: %@" : {
       "comment" : "Default model storage folder; the placeholder is a directory path",
       "localizations" : {
@@ -6893,17 +6823,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wykrywanie narzędzi z serwerów MCP…"
-          }
-        }
-      }
-    },
-    "Disk space" : {
-      "comment" : "Whisper tab section: installed model directories and what they take",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Miejsce na dysku"
           }
         }
       }
@@ -7391,7 +7310,7 @@
       }
     },
     "Expanded" : {
-      "comment" : "Accessibility value: a disclosure row is open",
+      "comment" : "Accessibility value: a disclosure row is open\nLicense card: key management is open",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8425,7 +8344,7 @@
       }
     },
     "Inactive" : {
-      "comment" : "License status: a time limit has elapsed",
+      "comment" : "License status: no key, or a time limit has elapsed",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8597,7 +8516,7 @@
       }
     },
     "Installed" : {
-      "comment" : "Whisper weights are available locally",
+      "comment" : "Whisper tab status: on disk, not in memory yet\nWhisper weights are available locally",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8732,6 +8651,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz działa"
+          }
+        }
+      }
+    },
+    "Key management" : {
+      "comment" : "License card: heading of the expanded key management",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zarządzanie kluczem"
+          }
+        }
+      }
+    },
+    "Key stored in the macOS Keychain" : {
+      "comment" : "License card, key row: where the saved key lives",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz zapisany w Pęku kluczy macOS"
           }
         }
       }
@@ -9080,6 +9021,28 @@
         }
       }
     },
+    "License key" : {
+      "comment" : "License card, empty state: label above the activation field",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencyjny"
+          }
+        }
+      }
+    },
+    "License status" : {
+      "comment" : "License card: accessibility label of the status",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan licencji"
+          }
+        }
+      }
+    },
     "License verification unavailable" : {
       "comment" : "Settings health footer, sentence case",
       "localizations" : {
@@ -9119,17 +9082,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Słucha"
-          }
-        }
-      }
-    },
-    "Live Apple recognition, refined by the local Whisper model." : {
-      "comment" : "ASR mode description: Local power",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozpoznawanie Apple na żywo z lokalnym doprecyzowaniem Whispera."
           }
         }
       }
@@ -9192,6 +9144,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozpoznawanie na żywo przez Apple."
+          }
+        }
+      }
+    },
+    "Live speech recognition and correction in the background, without sending recordings." : {
+      "comment" : "ASR mode description: Local power",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozpoznawanie mowy na żywo i korekta w tle, bez wysyłania nagrań."
           }
         }
       }
@@ -9481,6 +9444,17 @@
         }
       }
     },
+    "Manage key" : {
+      "comment" : "License card: opens key management inside the card",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zarządzaj kluczem"
+          }
+        }
+      }
+    },
     "Managed skill" : {
       "comment" : "Diagnostics row label for the agent-bridge skill installation",
       "localizations" : {
@@ -9493,7 +9467,7 @@
       }
     },
     "Mark text delivered to other apps" : {
-      "comment" : "Dictation panel: switch subtitle; the template decides the marker",
+      "comment" : "Dictation panel: switch label; the template decides the marker",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9900,17 +9874,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "W szablonie brakuje {text}. Transkrypcja zostanie dodana na jego końcu."
-          }
-        }
-      }
-    },
-    "Mode" : {
-      "comment" : "License section: operating mode",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Tryb"
           }
         }
       }
@@ -10420,6 +10383,17 @@
         }
       }
     },
+    "New license key" : {
+      "comment" : "License card, Change key: label above the replacement-key field",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowy klucz licencyjny"
+          }
+        }
+      }
+    },
     "New recordings open with the transcript. Turn off to show only the recording bar." : {
       "localizations" : {
         "pl" : {
@@ -10541,6 +10515,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie musisz nic robić. Zobacz, co się zmieniło"
+          }
+        }
+      }
+    },
+    "No active license" : {
+      "comment" : "License card: no key, or the key is inactive",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez aktywnej licencji"
           }
         }
       }
@@ -11031,13 +11016,13 @@
         }
       }
     },
-    "No transcription in this app session" : {
+    "No transcription in this session" : {
       "comment" : "Last transcription engine row before the first transcription of this launch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak transkrypcji w tej sesji aplikacji"
+            "value" : "Brak transkrypcji w tej sesji"
           }
         }
       }
@@ -11139,23 +11124,12 @@
       }
     },
     "Not installed" : {
-      "comment" : "Whisper weights are not yet available locally",
+      "comment" : "Whisper tab status: no usable model on disk\nWhisper weights are not yet available locally",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niezainstalowany"
-          }
-        }
-      }
-    },
-    "Not loaded yet · loads on the next recording" : {
-      "comment" : "Whisper tab: no resident weights",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jeszcze nie załadowany · załaduje się przy następnym nagraniu"
           }
         }
       }
@@ -11558,6 +11532,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API. Możesz to zrobić także później."
+          }
+        }
+      }
+    },
+    "One-time purchase" : {
+      "comment" : "License card: purchase kind of the lifetime license",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakup jednorazowy"
           }
         }
       }
@@ -15239,6 +15224,17 @@
         }
       }
     },
+    "Set up the cloud in Providers" : {
+      "comment" : "Privacy action: opens Providers > Cloud transcription; Providers is the Settings section name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skonfiguruj chmurę w Dostawcach"
+          }
+        }
+      }
+    },
     "Settings" : {
       "localizations" : {
         "pl" : {
@@ -16446,17 +16442,6 @@
         }
       }
     },
-    "Status" : {
-      "comment" : "License section: current license status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Status"
-          }
-        }
-      }
-    },
     "Status unavailable" : {
       "localizations" : {
         "pl" : {
@@ -16468,7 +16453,7 @@
       }
     },
     "Status: %@" : {
-      "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict",
+      "comment" : "Tray detail row; %@ is a status phrase such as Error or Hotkey conflict\nWhisper tab row: the selected model's state. Placeholder: a state such as Installed or Loaded in memory",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17454,23 +17439,13 @@
         }
       }
     },
-    "The key is stored in the macOS Keychain." : {
-      "comment" : "User panel, License section footnote: where the key lives",
+    "The local Whisper model files are missing or invalid. Local power is not ready until they are valid." : {
+      "comment" : "Live Whisper refinement card: the model files failed the check",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Klucz przechowywany w Pęku kluczy macOS."
-          }
-        }
-      }
-    },
-    "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brakuje lokalnych plików modelu FP16 lub są one nieprawidłowe. Tryb lokalny będzie niedostępny, dopóki weryfikacja nie zakończy się pomyślnie."
+            "value" : "Brakuje plików lokalnego modelu Whisper albo są nieprawidłowe. Tryb lokalny nie jest gotowy, dopóki nie będą poprawne."
           }
         }
       }
@@ -17760,6 +17735,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szkic nie został zapisany. Możesz kontynuować i wrócić do tego kroku później."
+          }
+        }
+      }
+    },
+    "This license does not include Agent mode" : {
+      "comment" : "License card: the key works, but its SKU does not unlock Agent mode",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta licencja nie obejmuje trybu agentowego"
           }
         }
       }
@@ -19465,6 +19451,41 @@
         }
       }
     },
+    "Works offline for %lld more days" : {
+      "comment" : "License card, key row: days left of offline grace since the last successful validation; not license expiry",
+      "localizations" : {
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Działa offline jeszcze %lld dni"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Działa offline jeszcze %lld dni"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Działa offline jeszcze %lld dzień"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Działa offline jeszcze %lld dnia"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Workspace" : {
       "comment" : "Settings tab: agent workspace roots",
       "localizations" : {
@@ -19656,6 +19677,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja poprawka (tekst przekazany → poprawiony)"
+          }
+        }
+      }
+    },
+    "Your custom shortcuts stay as they are unless you pick a preset." : {
+      "comment" : "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod."
           }
         }
       }
@@ -20462,17 +20494,6 @@
         }
       }
     },
-    "disabled · AI formatting off" : {
-      "comment" : "Formatting status: the AI formatting master switch is off",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "wyłączone · formatowanie AI wyłączone"
-          }
-        }
-      }
-    },
     "discovering models…" : {
       "comment" : "In-progress status",
       "localizations" : {
@@ -21088,7 +21109,7 @@
       }
     },
     "identical tokenizer: %@" : {
-      "comment" : "Whisper tab disk-space row. Placeholder: name of the twin model",
+      "comment" : "Whisper tab On disk line. Placeholder: name of the twin model",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -21165,60 +21186,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zachowano do odzyskania w edytorze."
-          }
-        }
-      }
-    },
-    "license.mode.agent" : {
-      "comment" : "License section, Mode row value: agent operating mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Agent"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agentowy"
-          }
-        }
-      }
-    },
-    "license.mode.basic" : {
-      "comment" : "License section, Mode row value: basic operating mode",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Basic"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podstawowy"
-          }
-        }
-      }
-    },
-    "license.offer.agentLifetime" : {
-      "comment" : "License section, License row value: name of the purchased offer",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Agent · one-time purchase"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Agent · zakup jednorazowy"
           }
         }
       }
