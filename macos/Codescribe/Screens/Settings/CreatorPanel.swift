@@ -2,7 +2,7 @@ import SwiftUI
 
 // Creator setup panel: interface language (the per-app macOS preference the
 // setup wizard also writes), live permission checklist, editable voice/formatting
-// controls (language, AI formatting, formatting level) written through the core
+// controls (language, formatting level) written through the core
 // router, plus quick-start cards and launchpad chips.
 // Permission rows reflect LIVE AVAuthorization / AX / IOHID / CG status.
 
@@ -85,11 +85,6 @@ struct CreatorPanel: View {
       .padding(.top, SettingsScale.headerGap)
 
       VStack(spacing: 8) {
-        SettingsControlRow(title: String(localized: "AI formatting")) {
-          Toggle("", isOn: formattingEnabledBinding)
-            .settingsSwitch()
-            .accessibilityLabel("AI formatting")
-        }
         SettingsControlRow(title: String(localized: "Formatting level")) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
@@ -99,7 +94,6 @@ struct CreatorPanel: View {
           .pickerStyle(.segmented)
           .labelsHidden()
           .fixedSize()
-          .disabled(!model.settings.aiFormattingEnabled)
         }
         if model.maxAgentUnavailable {
           Text(
@@ -394,12 +388,6 @@ struct CreatorPanel: View {
     Binding(
       get: { model.settings.whisperLanguage },
       set: { model.setLanguage($0) })
-  }
-
-  private var formattingEnabledBinding: Binding<Bool> {
-    Binding(
-      get: { model.settings.aiFormattingEnabled },
-      set: { model.setFormattingEnabled($0) })
   }
 
   private var formattingLevelBinding: Binding<String> {

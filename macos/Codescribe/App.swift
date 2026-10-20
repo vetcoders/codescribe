@@ -1419,7 +1419,6 @@ func codescribeDebugInfo(
       "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
       "configured ASR mode: \(settings.asrMode ?? "not specified")",
       "configured input device: \(settings.audioInputDevice ?? "system default")",
-      "formatting enabled: \(settings.aiFormattingEnabled)",
       "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
       "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
       "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",

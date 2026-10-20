@@ -313,7 +313,7 @@ final class ProvidersPanelTests: XCTestCase {
     XCTAssertEqual(assistiveHits, 1)
     XCTAssertEqual(formattingHits, 1)
 
-    model.setFormattingEnabled(true)
+    model.setFormattingLevel("smart")
     for _ in 0..<10 {
       for lane in LLMLane.allCases {
         _ = model.llmLane(lane)
