@@ -128,7 +128,6 @@ pub struct CsSettings {
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
-    pub ai_formatting_enabled: bool,
     /// Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
     pub paste_mode: CsPasteMode,
     /// `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
@@ -252,7 +251,6 @@ impl CsSettings {
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
             whisper_language: CsLanguage::from(config.whisper_language),
-            ai_formatting_enabled: config.ai_formatting_enabled,
             paste_mode: config.paste_mode.into(),
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
             transcript_tagging_enabled: config.transcript_tagging_enabled,

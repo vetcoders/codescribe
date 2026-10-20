@@ -1211,8 +1211,8 @@ impl Config {
         // Language
         env_parse!("WHISPER_LANGUAGE", self.whisper_language);
 
-        // AI Formatting
-        env_flag_enabled!("AI_FORMATTING_ENABLED", self.ai_formatting_enabled);
+        // AI Formatting. FORMATTING_LEVEL is the only on/off switch; a stale
+        // AI_FORMATTING_ENABLED line in `.env` has no reader.
         env_flag!("CODESCRIBE_FORMAT_ON_DEVICE", self.format_on_device);
         env_parse!("PASTE_MODE", self.paste_mode);
         env_parse!("TRANSCRIPT_SEND_MODE", self.transcript_send_mode);
@@ -1470,11 +1470,6 @@ impl Config {
             settings.middle_mouse_agent_gesture
         );
         // AI
-        apply_copy!(
-            "AI_FORMATTING_ENABLED",
-            self.ai_formatting_enabled,
-            settings.ai_formatting_enabled
-        );
         apply_copy!(
             "CODESCRIBE_FORMAT_ON_DEVICE",
             self.format_on_device,
@@ -4182,28 +4177,28 @@ mod tests {
     #[serial]
     fn test_load_prefers_settings_json_over_promoted_env_file_values() {
         let _tmp = setup_isolated_data_dir();
-        let previous = std::env::var("AI_FORMATTING_ENABLED").ok();
-        remove_env_for_test("AI_FORMATTING_ENABLED");
+        let previous = std::env::var("HOLD_EXCLUSIVE").ok();
+        remove_env_for_test("HOLD_EXCLUSIVE");
 
         let mut settings = UserSettings::load();
-        settings.ai_formatting_enabled = Some(false);
+        settings.hold_exclusive = Some(false);
         settings.save().expect("save settings");
 
         let env_path = Config::env_path();
         fs::create_dir_all(env_path.parent().expect("env dir")).expect("create env dir");
-        fs::write(&env_path, "AI_FORMATTING_ENABLED=1\n").expect("write .env");
+        fs::write(&env_path, "HOLD_EXCLUSIVE=1\n").expect("write .env");
 
         let config = Config::load();
         assert!(
-            !config.ai_formatting_enabled,
+            !config.hold_exclusive,
             ".env should not override promoted settings.json keys"
         );
         assert!(
-            std::env::var("AI_FORMATTING_ENABLED").is_err(),
+            std::env::var("HOLD_EXCLUSIVE").is_err(),
             "promoted .env key must not be injected into process env"
         );
 
-        restore_env_for_test("AI_FORMATTING_ENABLED", previous);
+        restore_env_for_test("HOLD_EXCLUSIVE", previous);
     }
 
     /// Non-promoted env-managed keys (e.g. STT_FILE_API_KEY) still load from optional .env.
@@ -4233,21 +4228,21 @@ mod tests {
             fs::remove_file(&env_path).expect("scrub stale .env");
         }
 
-        set_env_for_test("AI_FORMATTING_ENABLED", "1");
+        set_env_for_test("HOLD_EXCLUSIVE", "1");
 
         let config = Config::load();
-        assert!(config.ai_formatting_enabled);
+        assert!(config.hold_exclusive);
         assert!(
             !UserSettings::settings_path().exists(),
             "explicit runtime env should not synthesize settings.json"
         );
         let reloaded = UserSettings::load();
         assert_eq!(
-            reloaded.ai_formatting_enabled, None,
+            reloaded.hold_exclusive, None,
             "runtime env must not be persisted into settings.json on subsequent load"
         );
 
-        remove_env_for_test("AI_FORMATTING_ENABLED");
+        remove_env_for_test("HOLD_EXCLUSIVE");
     }
 }
 

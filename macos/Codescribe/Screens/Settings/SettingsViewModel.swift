@@ -2426,7 +2426,7 @@ final class SettingsViewModel: ObservableObject {
   /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
   /// Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
-    guard settings.aiFormattingEnabled, !settings.formatOnDevice else { return false }
+    guard !settings.formatOnDevice else { return false }
     switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
     case .correction, .smart: return true
     case .off, .max, nil: return false
@@ -2442,9 +2442,7 @@ final class SettingsViewModel: ObservableObject {
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
-    if !settings.aiFormattingEnabled
-      || FormattingPolicyOption(storedValue: settings.formattingLevel) == .off
-    {
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
     if settings.formatOnDevice {
@@ -2508,20 +2506,14 @@ final class SettingsViewModel: ObservableObject {
   }
 
   var formattingDescription: String {
-    guard settings.aiFormattingEnabled else {
-      return String(
-        localized: "disabled · AI formatting off",
-        comment: "Formatting status: the AI formatting master switch is off")
-    }
-    return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+    FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
       ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }
 
   // MARK: - Creator mutations (write through the core router)
 
   var maxConsultationEnabled: Bool {
-    settings.aiFormattingEnabled
-      && FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
+    FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
   }
 
   func refreshMaxToolApprovals() async {
@@ -2706,11 +2698,6 @@ final class SettingsViewModel: ObservableObject {
   func setLanguage(_ lang: CsLanguage) {
     settings.whisperLanguage = lang
     persist("WHISPER_LANGUAGE", lang.shortCode)
-  }
-
-  func setFormattingEnabled(_ on: Bool) {
-    settings.aiFormattingEnabled = on
-    persist("AI_FORMATTING_ENABLED", on ? "1" : "0")
   }
 
   func setAgentAutoSend(_ on: Bool) {

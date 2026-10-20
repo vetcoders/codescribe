@@ -63,15 +63,15 @@ Grant in: System Settings > Privacy & Security
 | Hold **Fn+Shift** (default arm) | Record → agent voice chat                 | ALWAYS Assistive      |
 | Hold **Fn+Cmd** (arm alt)       | Same arm when Cmd is selected in Settings | ALWAYS Assistive      |
 | Armed hold **with selection**   | Selection transform lane                  | Assistive (selection) |
-| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects AI toggle    |
+| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects level        |
 | Double-tap **Right Option**     | Hands‑free toggle (assistive)             | Assistive             |
 
 ### Mode Behavior
 
 - **RAW mode (Fn)**: Fast dictation. RAW mode preserves decoded text, including intentional repetition, for occurrence-aware downstream adjudication.
-  Ignores AI_FORMATTING_ENABLED setting.
-- **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
-  for formatting. If disabled, pastes raw.
+  Ignores the FORMATTING_LEVEL setting.
+- **Toggle mode (Double Option)**: Respects the Formatting level. Any level other than Off
+  sends to AI for formatting; Off pastes raw.
 - **Assistive arm (default Fn+Shift; optional Cmd in Settings)**: Sends voice to the agent.
   Without a selection this is voice-chat (spoken text, agent persona). With a selection it
   is act-on-selection (assistive skeleton + `assistive.txt`).
@@ -142,8 +142,8 @@ USE_LOCAL_STT=1
 # Whisper
 WHISPER_LANGUAGE=auto
 
-# AI formatting (optional) - OpenAI Responses by default
-AI_FORMATTING_ENABLED=1
+# AI formatting (optional) - OpenAI Responses by default; off = raw transcript
+FORMATTING_LEVEL=correction
 
 # Each lane picks a provider and a model. The endpoint is the provider's own;
 # keys live in Settings › Providers (Keychain), env is only a fallback

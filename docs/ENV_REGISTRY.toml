@@ -16,7 +16,7 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-09-29"
+updated = "2026-10-20"
 
 [vars.CODESCRIBE_BIN]
 default = ""
@@ -889,13 +889,6 @@ description = "Unload idle embedder weights after this many seconds (default 270
 # LLM / AI Formatting
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.AI_FORMATTING_ENABLED]
-default = "1"
-type = "bool"
-reload = "restart"
-category = "llm"
-description = "Compatibility gate for AI formatting; FORMATTING_LEVEL=off still bypasses the formatting provider even when this is enabled"
-
 [vars.CODESCRIBE_TRANSCRIPT_TAGGING]
 default = "0"
 type = "bool"
@@ -929,7 +922,7 @@ default = "correction"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
+description = "Normalized formatting policy and the only formatting on/off switch: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max. Replaces the retired AI_FORMATTING_ENABLED bool (false -> off, migrated once from settings.json and the first .env import)"
 
 [vars.CODESCRIBE_FORMAT_ON_DEVICE]
 default = "0"
