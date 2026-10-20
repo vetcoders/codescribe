@@ -1375,6 +1375,10 @@ class EvidenceNormalizer:
             if not older_snapshot or key not in inventory:
                 inventory[key] = item
         clean["occurrences"] = list(inventory.values())
+        source_rows = event.get("occurrences") or [event]
+        clean["capture_source_sequence"] = event.get("capture_source_sequence")
+        if clean["capture_source_sequence"] is None:
+            clean["capture_source_sequence"] = source_rows[-1].get("sequence")
         if previous:
             for key in ("attachments", "capture_attachment_stages"):
                 if previous.get(key):
@@ -1387,6 +1391,7 @@ class EvidenceNormalizer:
         ) == (incoming_revision, event.get("reducer_action"))
         if same_phase:
             previous["occurrences"] = clean["occurrences"]
+            previous["capture_source_sequence"] = clean["capture_source_sequence"]
             if event.get("status") == SEALED:
                 for key in ("hold_until", "utterance_id"):
                     if key in event:
@@ -1434,7 +1439,9 @@ class EvidenceNormalizer:
     def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
         session = str(receipt.get("session_id") or "")
         document = self._session_docs.get(session)
-        source_sequence = ((document or {}).get("occurrences") or [document or {}])[-1].get("sequence")
+        source_sequence = (document or {}).get("capture_source_sequence")
+        if source_sequence is None:
+            source_sequence = ((document or {}).get("occurrences") or [document or {}])[-1].get("sequence")
         if (receipt.get("kind") != "capture_attachment" or document is None
                 or session in self._settled_sessions
                 or receipt.get("capture_epoch") != document.get("capture_epoch")
@@ -6599,24 +6606,43 @@ def note_skipped_broadcast_channel(
 
 
 def capture_attachment_is_committed(stage: dict[str, Any]) -> bool:
-    """Pending fanout pointers have no effect without the primary commit receipt."""
+    """Require an exact decoded primary commit inside the verified 64 MiB tail."""
     try:
         with GenerationFile(Path(stage["commit_bus"])) as handle:
-            start = max(0, generation_metadata(Path(stage["commit_bus"])).st_size - (64 << 20))
+            end = handle.size
+            start = max(0, end - (64 << 20))
             handle.seek(start)
             if start:
-                handle.readline()
-            while True:
-                raw = handle.readline()
+                discarded = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
+                if not discarded.endswith(b"\n"):
+                    raise ValueError("capture commit tail begins outside a complete storage record")
+            decoder = ChunkDecoder()
+            while handle.tell() < end:
+                raw = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
                 if not raw or not raw.endswith(b"\n"):
-                    return False
-                row = json.loads(raw)
-                if (isinstance(row, dict) and row.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
-                        and row.get("kind") == "capture_attachment_commit"
-                        and all(row.get(key) == stage.get(key) for key in
-                                ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
-                    return True
-    except (OSError, ValueError, KeyError):
+                    raise ValueError("capture commit tail has an incomplete storage record")
+                parsed = parse_line(raw.decode("utf-8", errors="strict"))
+                if parsed is None:
+                    if decoder.pending or b"persistence_encoding" in raw or b"codescribe.bus-chunk" in raw:
+                        raise ValueError("capture commit tail interrupted a verified storage record")
+                    continue
+                decoded = decoder.feed(parsed)
+                if decoded is None:
+                    continue
+                rows = evidence_revision_rows(decoded)
+                if rows is None:
+                    raise ValueError("capture commit tail has unknown revision encoding")
+                for row in rows:
+                    if (row.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
+                            and row.get("kind") == "capture_attachment_commit"
+                            and all(row.get(key) == stage.get(key) for key in
+                                    ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
+                        return True
+            if decoder.pending:
+                raise ValueError("capture commit tail ends inside a storage record")
+            raise ValueError("capture attachment has no verified primary commit within 64 MiB")
+    except (OSError, ValueError, KeyError) as error:
+        sys.stderr.write(f"bus-demux: capture attachment commit refused: {error}\n")
         return False
 
 
