@@ -4849,8 +4849,172 @@ def run(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
+class SpeechCredentialError(Exception):
+    """Only a bounded reason leaves the credential resolver, never provider data."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _xai_oauth_account(path: Path) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_size > 1 << 20:
+                raise SpeechCredentialError("credential_storage")
+            data = json.loads(handle.read((1 << 20) + 1))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise SpeechCredentialError("credential_storage") from None
+    if not isinstance(data, dict):
+        raise SpeechCredentialError("credential_storage")
+    for endpoint, value in data.items():
+        if (
+            str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
+            and isinstance(value, dict) and value.get("auth_mode") == "oidc"
+            and isinstance(value.get("key"), str) and value["key"]
+        ):
+            return data, endpoint, value
+    return None
+
+
+def _xai_oauth_needs_refresh(account: dict[str, Any]) -> bool:
+    expiry = account.get("expires_at")
+    if expiry is None:
+        # A store with no declared lifetime has no proactive refresh deadline.
+        return False
+    try:
+        if isinstance(expiry, str):
+            instant = datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                return True
+            expires = instant.timestamp()
+        else:
+            expires = float(expiry)
+        return not expires > time.time() + 120
+    except (ValueError, TypeError, OverflowError):
+        return True
+
+
+def _refresh_xai_speech_account(account: dict[str, Any]) -> dict[str, Any]:
+    """Refresh one grant at the fixed issuer, without redirects or body diagnostics."""
+    import http.client
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    refresh = account.get("refresh_token")
+    client = account.get("oidc_client_id") or "b1a00492-073a-47ea-816f-4c329264a828"
+    if not isinstance(refresh, str) or not refresh or not isinstance(client, str):
+        raise SpeechCredentialError("credential_rejected")
+    request = urllib.request.Request(
+        "https://auth.x.ai/oauth2/token",
+        data=urllib.parse.urlencode({
+            "grant_type": "refresh_token", "client_id": client, "refresh_token": refresh,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    try:
+        with opener.open(request, timeout=30) as response:
+            if not 200 <= response.status < 300:
+                reason = "credential_rejected" if response.status in (400, 401, 403) else "network"
+                raise SpeechCredentialError(reason)
+            raw = response.read(65537)
+        if len(raw) > 65536:
+            raise SpeechCredentialError("credential_refresh_invalid")
+        body = json.loads(raw)
+        key = body.get("access_token")
+        rotated = body.get("refresh_token", refresh)
+        lifetime = body.get("expires_in")
+        if (
+            not isinstance(key, str) or not key or not isinstance(rotated, str) or not rotated
+            or isinstance(lifetime, bool) or not isinstance(lifetime, (int, float))
+            or not 120 < lifetime < 366 * 86400
+        ):
+            raise SpeechCredentialError("credential_refresh_invalid")
+        updated = dict(account)
+        updated.update(key=key, refresh_token=rotated, expires_at=(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=lifetime)
+        ).isoformat().replace("+00:00", "Z"))
+        return updated
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        raise SpeechCredentialError("network") from None
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        raise SpeechCredentialError("credential_refresh_invalid") from None
+
+
+def _xai_oidc_speech_key() -> str | None:
+    """One Grok store, one cross-process lock, re-read before rotating its grant."""
+    path = Path.home() / ".grok" / "auth.json"
+    found = _xai_oauth_account(path)
+    if found is None:
+        return None
+    if not _xai_oauth_needs_refresh(found[2]):
+        return found[2]["key"]
+    lock_path = path.with_name("auth.json.lock")
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as lock:
+            metadata = os.fstat(lock.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise SpeechCredentialError("credential_storage")
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        found = _xai_oauth_account(path)
+                        if found is not None and not _xai_oauth_needs_refresh(found[2]):
+                            return found[2]["key"]
+                        raise SpeechCredentialError("credential_busy")
+                    time.sleep(0.05)
+            # Grok uses this same lock file. Never unlink a held lock or steal
+            # it on age: the kernel releases it after a crashed process exits.
+            identity = (metadata.st_dev, metadata.st_ino)
+            def owns_lock() -> bool:
+                current = lock_path.stat(follow_symlinks=False)
+                return (current.st_dev, current.st_ino) == identity
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            found = _xai_oauth_account(path)
+            if found is None:
+                return None
+            data, endpoint, account = found
+            if not _xai_oauth_needs_refresh(account):
+                return account["key"]
+            lock.seek(0)
+            lock.write(f"{os.getpid()}:{int(time.time())}".encode("ascii"))
+            lock.truncate()
+            lock.flush()
+            updated = _refresh_xai_speech_account(account)
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            latest = _xai_oauth_account(path)
+            if latest is None:
+                raise SpeechCredentialError("credential_storage")
+            # Preserve other accounts and a concurrent explicit login/logout.
+            if latest[1] != endpoint or latest[2] != account:
+                if not _xai_oauth_needs_refresh(latest[2]):
+                    return latest[2]["key"]
+                raise SpeechCredentialError("credential_busy")
+            data = latest[0]
+            data[endpoint] = updated
+            atomic_json(path, data)
+            return updated["key"]
+    except OSError:
+        raise SpeechCredentialError("credential_storage") from None
+
+
 def _xai_speech_key() -> str | None:
-    """Explicit Keychain key first, then the Grok CLI's xAI OIDC session."""
+    """Explicit Keychain key first, then the automatically renewed Grok grant."""
     import subprocess
 
     probe = subprocess.run(
@@ -4861,20 +5025,7 @@ def _xai_speech_key() -> str | None:
     key = probe.stdout.strip() if probe.returncode == 0 else ""
     if key:
         return key
-    try:
-        data = json.loads((Path.home() / ".grok" / "auth.json").read_text())
-        for endpoint, value in data.items():
-            if (
-                str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
-                and
-                isinstance(value, dict)
-                and value.get("auth_mode") == "oidc"
-                and value.get("key")
-            ):
-                return str(value["key"])
-    except (OSError, ValueError):
-        pass
-    return None
+    return _xai_oidc_speech_key()
 
 
 def _openai_speech_key() -> str | None:
@@ -5261,7 +5412,10 @@ def _speak_xai(
     import urllib.request
 
     def synthesize() -> tuple[bytes | None, str | None, str | None]:
-        key = _xai_speech_key()
+        try:
+            key = _xai_speech_key()
+        except SpeechCredentialError as error:
+            return None, f"xAI credential unavailable ({error.reason})", error.reason
         if not key:
             return (
                 None,
