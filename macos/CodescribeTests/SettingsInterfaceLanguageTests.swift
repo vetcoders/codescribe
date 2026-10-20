@@ -35,6 +35,46 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
     XCTAssertFalse(settings.applyingInterfaceLanguage)
   }
 
+  /// Appearance applies at once through the host; a sheet shade is saved per
+  /// appearance and waits for the same restart as the language.
+  func testAppearanceAppliesAtOnceAndSheetShadeWaitsForRestart() async throws {
+    try await withPreferences { preferences, _ in
+      let settings = model(preferences: preferences)
+      XCTAssertEqual(settings.appearanceChoice, .system)
+      var applied = 0
+      settings.onApplyAppearance = { applied += 1 }
+      settings.selectAppearance(.dark)
+      XCTAssertEqual(applied, 1)
+      XCTAssertEqual(preferences.string(forKey: AppearancePreference.key), "dark")
+      settings.selectAppearance(.system)
+      XCTAssertNil(preferences.object(forKey: AppearancePreference.key), "system is the absence of a choice")
+
+      XCTAssertEqual(settings.sheetShadeDark, .todayDark)
+      XCTAssertEqual(settings.sheetShadeLight, .todayLight)
+      XCTAssertFalse(settings.sheetShadeNeedsRestart)
+      settings.selectSheetShade(.warmCarbon)
+      XCTAssertEqual(settings.sheetShadeDark, .warmCarbon)
+      XCTAssertEqual(settings.sheetShadeLight, .todayLight, "a dark shade leaves the light one alone")
+      XCTAssertEqual(preferences.string(forKey: SheetShadePreference.darkKey), "201F1E")
+      XCTAssertTrue(settings.sheetShadeNeedsRestart, "the process still paints the launch shade")
+
+      var restarts = 0
+      settings.onApplySheetShade = { _ in restarts += 1 }
+      settings.applySheetShade()
+      for _ in 0..<50 where settings.applyingSheetShade { await Task.yield() }
+      XCTAssertEqual(restarts, 1)
+      XCTAssertNil(settings.sheetShadeNotice)
+
+      settings.selectSheetShade(.todayDark)
+      XCTAssertNil(preferences.object(forKey: SheetShadePreference.darkKey))
+      XCTAssertFalse(settings.sheetShadeNeedsRestart)
+      // A light raw value stored under the dark key is ignored, never painted.
+      preferences.set(SheetShade.limestone.rawValue, forKey: SheetShadePreference.darkKey)
+      XCTAssertEqual(SheetShadePreference(defaults: preferences).current(dark: true), .todayDark)
+      XCTAssertEqual(SheetShadePreference(defaults: preferences).current(dark: false), .todayLight)
+    }
+  }
+
   func testPickerReadsTheSavedChoiceAndSavesWithoutTouchingDictation() async throws {
     try await withPreferences { preferences, suite in
       preferences.set(["en-GB"], forKey: InterfaceLanguagePreference.key)

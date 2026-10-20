@@ -1,14 +1,20 @@
 import AppKit
 import SwiftUI
 
-struct LicensePanel: View {
+/// Settings › User › License. The License tab folded into User (Founder
+/// decision, 2026-10-19): one card on its own page read as the only section on
+/// a huge empty plate. Here it is one section among the others — a header,
+/// one sentence on what a key unlocks, then one card that holds the whole
+/// license truth and the key field together, with the two other actions and
+/// any error under it.
+struct LicenseSection: View {
   @ObservedObject var model: SettingsViewModel
   /// Sample key shape, not copy: identical in every language.
   private static let keyPlaceholder = "CSK1.…"
   /// The key is one control on the activation row, not a full-width well
   /// (Founder brief, round 16, 2026-10-10).
   private static let keyFieldWidth: CGFloat = 260
-  /// Label column of the status card; the longest Polish label ("Licencja")
+  /// Label column of the status rows; the longest Polish label ("Licencja")
   /// sets it once for every row.
   private static let statusLabelWidth: CGFloat = 96
 
@@ -17,28 +23,43 @@ struct LicensePanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      SettingsPageHeader(
-        String(localized: "License"),
-        blurb: String(
+      SettingsSectionHeaderRow(String(localized: "License"))
+
+      Text(
+        String(
           localized: "Basic mode stays free. A license unlocks Agent mode.",
-          comment: "License panel: what is available without a key and what a license unlocks")
+          comment:
+            "User panel, License section: what is available without a key and what a license unlocks"
+        )
       )
+      .font(SettingsScale.helper)
+      .foregroundStyle(Color.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, CSSpace.xxs)
 
-      statusCard
-        .padding(.top, CSSpace.section)
-
-      ProvidersSectionHeader(String(localized: "License key"))
-        .padding(.top, CSSpace.section)
-
-      activationRow
-        .padding(.top, CSSpace.control)
+      VStack(alignment: .leading, spacing: 0) {
+        statusRows
+        divider.padding(.vertical, CSSpace.md)
+        activationRow
+        Text(
+          String(
+            localized: "The key is stored in the macOS Keychain.",
+            comment: "User panel, License section footnote: where the key lives")
+        )
+        .font(SettingsScale.helper)
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, CSSpace.sm)
+      }
+      .settingsGroupedInset()
+      .padding(.top, SettingsScale.headerGap)
 
       secondaryActions
         .padding(.top, CSSpace.md)
 
       if let error = model.licenseError {
         Text(error)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.danger)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.md)
@@ -54,38 +75,24 @@ struct LicensePanel: View {
             .font(CSFont.mono(10.5, .medium))
             .textSelection(.enabled)
         }
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .padding(.top, CSSpace.md)
       }
-
-      Text(
-        String(
-          localized: "The key is stored in the macOS Keychain.",
-          comment: "License panel footnote: where the key lives")
-      )
-      .font(CSFont.ui(11.5))
-      .foregroundStyle(Color.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, CSSpace.lg)
     }
-    .frame(maxWidth: 560, alignment: .leading)
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
-    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   // MARK: - Status
 
-  /// One card for the whole license truth: the state — carrying the remaining
-  /// period while the key runs on offline grace — then the operating mode and,
-  /// for the one-time offer, what was purchased. Rows appear under the same
-  /// conditions as before, so no state gains or loses a fact here.
-  private var statusCard: some View {
+  /// The whole license truth: the state — carrying the remaining period while
+  /// the key runs on offline grace — then the operating mode and, for the
+  /// one-time offer, what was purchased. Rows appear under the same conditions
+  /// as on the former License page, so no state gains or loses a fact here.
+  private var statusRows: some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       HStack(alignment: .center, spacing: CSSpace.md) {
         Text(stateRowLabel)
-          .font(.subheadline)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .frame(width: Self.statusLabelWidth, alignment: .leading)
         HStack(alignment: .center, spacing: CSSpace.sm) {
@@ -94,7 +101,7 @@ struct LicensePanel: View {
             .frame(width: 7, height: 7)
             .accessibilityHidden(true)
           Text(stateLabel)
-            .font(.body.weight(.semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -107,24 +114,23 @@ struct LicensePanel: View {
 
       if showsModeRow {
         statusRow(
-          String(localized: "Mode", comment: "License panel: operating mode"),
+          String(localized: "Mode", comment: "License section: operating mode"),
           modeLabel(agentMode: model.licenseAllowsAgentMode))
       }
       if showsLicenseOfferRow {
         statusRow(String(localized: "License"), licenseOfferLabel)
       }
     }
-    .settingsGroupedInset()
   }
 
   private func statusRow(_ label: String, _ value: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
       Text(label)
-        .font(.subheadline)
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .frame(width: Self.statusLabelWidth, alignment: .leading)
       Text(value)
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
@@ -170,12 +176,12 @@ struct LicensePanel: View {
     }
   }
 
-  /// The two actions that are not activation keep their own row below it.
+  /// The two actions that are not activation keep their own row under the card.
   private var secondaryActions: some View {
     HStack(spacing: CSSpace.md) {
       // Self-service issuance: codescribe.vetcoders.io/license/ mints a
       // signed key for an email on the spot (open beta). Without this
-      // button the panel demanded a key and never said where one comes
+      // button the section demanded a key and never said where one comes
       // from (operator, 2026-08-09).
       Button("Get license key") {
         if let url = URL(string: "https://codescribe.vetcoders.io/license/") {
@@ -199,6 +205,10 @@ struct LicensePanel: View {
     }
   }
 
+  private var divider: some View {
+    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+  }
+
   // MARK: - Derived labels
 
   /// Effective operating mode, derived from whether the current license
@@ -207,10 +217,10 @@ struct LicensePanel: View {
     agentMode
       ? String(
         localized: "license.mode.agent", defaultValue: "Agent",
-        comment: "License panel, Mode row value: agent operating mode")
+        comment: "License section, Mode row value: agent operating mode")
       : String(
         localized: "license.mode.basic", defaultValue: "Basic",
-        comment: "License panel, Mode row value: basic operating mode")
+        comment: "License section, Mode row value: basic operating mode")
   }
 
   /// Name of the purchased offer; shown only for the lifetime agent SKU, so
@@ -218,7 +228,7 @@ struct LicensePanel: View {
   private var licenseOfferLabel: String {
     String(
       localized: "license.offer.agentLifetime", defaultValue: "Agent · one-time purchase",
-      comment: "License panel, License row value: name of the purchased offer")
+      comment: "License section, License row value: name of the purchased offer")
   }
 
   /// No key yet, but the license state is readable: the Status row is
@@ -240,9 +250,9 @@ struct LicensePanel: View {
 
   private var stateRowLabel: String {
     if isCombinedModeRow {
-      return String(localized: "Mode", comment: "License panel: operating mode")
+      return String(localized: "Mode", comment: "License section: operating mode")
     }
-    return String(localized: "Status", comment: "License panel: current license status")
+    return String(localized: "Status", comment: "License section: current license status")
   }
 
   private var stateLabel: String {
@@ -268,10 +278,3 @@ struct LicensePanel: View {
     }
   }
 }
-
-#if DEBUG
-  #Preview("License panel") {
-    ScrollView { LicensePanel(model: .preview(.license)) }
-      .frame(width: 720, height: 760)
-  }
-#endif

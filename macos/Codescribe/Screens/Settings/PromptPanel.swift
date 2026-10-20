@@ -172,7 +172,7 @@ private struct PromptEditor: View {
 
       if snapshot?.source == "read_error" {
         Text("The custom prompt file could not be read, so the built-in prompt is in use.")
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.danger)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.xxs)
@@ -215,7 +215,7 @@ private struct PromptEditor: View {
           .font(CSFont.ui(14, .semibold))
           .foregroundStyle(Color.primary)
         Text(file.editorSubtitle)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -285,7 +285,7 @@ private struct PromptEditor: View {
       }
     }) {
       Text(editing ? "Save" : "Edit")
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(editing ? Color.white : CSColor.chromeAccent)
         .padding(.horizontal, 16)
         .padding(.vertical, 7)

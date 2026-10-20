@@ -112,6 +112,9 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | --------------------- | ------------------------------------------------------ |
 | `credential_missing`  | No credential found; the agent refreshes the login     |
 | `credential_rejected` | Token or key refused; the agent refreshes the login    |
+| `credential_busy`     | Another process holds the grant; retry after it finishes |
+| `credential_storage`  | The credential store cannot be safely read or saved   |
+| `credential_refresh_invalid` | Refresh returned an invalid or incomplete grant |
 | `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
 | `http_<code>`         | Other refusal; report the code                         |
 | `network`             | The request did not complete; one retry is reasonable  |
@@ -130,12 +133,22 @@ Keeping the voice login fresh is the agent's job (Maciej, 2026-10-18). On
 `credential_missing` or `credential_rejected`, refresh the login of the vendor
 this lease last spoke with, normally xAI:
 
-After an overnight or other long pause, check the existing login before
-promising voice delivery and refresh it when needed. The Founder observed
-about six hours of xAI login validity; this is an operational reminder, not a
-guaranteed token lifetime. Use the current credential's expiry when the
-provider exposes it. A successful login still needs a real `spoken: true`
-playback receipt before reporting that voice works.
+The xAI access token expires; the retained refresh grant maintains the login.
+The speech helper renews the existing Grok OIDC account within two minutes of
+its stored `expires_at`, using the same `~/.grok/auth.json` and
+`auth.json.lock`. It rereads after acquiring the lock, adopts a peer's fresh
+token and saves the rotated access/refresh pair atomically. Keep this one
+store; do not copy its token into another cache or schedule competing logins.
+An explicit Keychain API key still takes precedence.
+
+Access-token expiry alone does not require the Founder to sign in again.
+`credential_busy` means a refresh is in progress, while `credential_storage`
+and `credential_refresh_invalid` need diagnosis of that failure. None is a
+reason to start another login. A revoked/missing refresh grant or a rejected
+credential may require the device-code flow below. Check the installed
+helper generation before assuming it has automatic renewal. A successful
+refresh still needs a real `spoken: true` playback receipt before reporting
+that voice works; provider-side revocation can end a retained login.
 
 ```bash
 cs-say auth --provider xai --login-type device-code

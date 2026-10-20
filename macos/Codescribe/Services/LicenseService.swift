@@ -164,11 +164,11 @@ final class LicenseService: ObservableObject {
     if persisted == nil, readState != .available {
       return readState == .loading
         ? String(localized: "Checking license…")
-        : String(localized: "Couldn't read the saved license. Try again in Settings → License.")
+        : String(localized: "Couldn't read the saved license. Try again in Settings → User.")
     }
     return status.state == .expiredUpdates
-      ? String(localized: "License access ended. Check Settings → License.")
-      : String(localized: "Agent mode requires a license. Open Settings → License.")
+      ? String(localized: "License access ended. Check Settings → User.")
+      : String(localized: "Agent mode requires a license. Open Settings → User.")
   }
 
   private let keychain: (any LicenseKeychainStoring)?

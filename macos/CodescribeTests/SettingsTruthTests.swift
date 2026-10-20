@@ -256,7 +256,7 @@ final class SettingsTruthTests: XCTestCase {
   /// which group a section sits in, its symbol, and what the search matches.
   func testEverySectionDeclaresItsGroupAndASymbolForTheNativeSidebar() {
     let visible = SettingsSection.allCases.filter { $0.availability != .hidden }
-    XCTAssertEqual(visible.count, DeveloperSurface.isEnabled() ? 10 : 9)
+    XCTAssertEqual(visible.count, DeveloperSurface.isEnabled() ? 9 : 8)
 
     for section in visible {
       XCTAssertFalse(section.symbol.isEmpty, "\(section.rawValue) needs an SF Symbol")
@@ -286,7 +286,7 @@ final class SettingsTruthTests: XCTestCase {
 
     // Title match, case-insensitive.
     XCTAssertEqual(SettingsSection.matching(query: "hotkeys"), [.shortcuts])
-    XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.license])
+    XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.user])
 
     // Keyword match: the user searches for the job, not the tab name.
     XCTAssertTrue(SettingsSection.matching(query: "api key").contains(.keys))
@@ -353,10 +353,10 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.currentTab, .dictationEngine)
 
     // Sidebar selection round-trips through the rail's binding; nil is dropped.
-    model.sidebarSelection = .license
-    XCTAssertEqual(model.section, .license)
+    model.sidebarSelection = .user
+    XCTAssertEqual(model.section, .user)
     model.sidebarSelection = nil
-    XCTAssertEqual(model.section, .license)
+    XCTAssertEqual(model.section, .user)
   }
 
   func testSettingsSearchReachesInsideTabs() {
@@ -458,7 +458,7 @@ final class SettingsTruthTests: XCTestCase {
   func testSectionAvailabilityKeepsPromisesHonest() {
     for section in [
       SettingsSection.creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab,
-      .license, .user,
+      .user,
     ] {
       XCTAssertEqual(section.availability, .available)
       XCTAssertTrue(section.isInteractive)
@@ -480,8 +480,7 @@ final class SettingsTruthTests: XCTestCase {
       (.audio, "audio", "Audio", .audio),
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
       (.lab, "lab", "Lab", .lab),
-      (.license, "license", "License", .license),
-      (.user, "user", "About", .user),
+      (.user, "user", "User", .user),
     ]
 
     XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
@@ -1394,7 +1393,7 @@ final class SettingsTruthTests: XCTestCase {
       licenseReadState: .unavailable)
     XCTAssertEqual(health.level, .degraded)
     XCTAssertEqual(health.message, "License verification unavailable")
-    XCTAssertEqual(health.targetSection, .license)
+    XCTAssertEqual(health.targetSection, .user)
   }
 
   func testPendingLicenseCheckDoesNotClaimReadiness() {
@@ -1403,7 +1402,7 @@ final class SettingsTruthTests: XCTestCase {
       licenseReadState: .loading)
     XCTAssertEqual(health.level, .unknown)
     XCTAssertEqual(health.message, "Checking license…")
-    XCTAssertEqual(health.targetSection, .license)
+    XCTAssertEqual(health.targetSection, .user)
   }
 
   func testAvailableLicenseReadDoesNotRequirePaidEntitlementForBasicReadiness() {
@@ -1761,6 +1760,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(summary.native, 1)
     XCTAssertEqual(summary.enhanced, 1)
     XCTAssertEqual(summary.unavailable, 1)
+    XCTAssertEqual(summary.unavailableOps, ["code.symbols"])
     XCTAssertEqual(summary.line, "Capabilities: 1 native · 1 enhanced · 1 unavailable")
 
     let rows = CsCapabilityRow.sampleMatrix
@@ -1775,6 +1775,29 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertNil(
       CsCapabilityRow(op: "x", tier: "unavailable", provider: "", nativeTool: "", reason: "")
         .localizedDetail)
+  }
+
+  /// The notes under a passing verdict say they do not block the Agent, an
+  /// operation without a provider is named rather than counted, and the key
+  /// fact names the provider (round 15, 2026-10-18).
+  func testDiagnosticsSummaryNamesMissingProvidersAndCaptionsItsNotes() {
+    let warned = AgentStatusSummary(
+      readiness: .sample, capabilities: CsCapabilityRow.sampleMatrix, servers: [],
+      mcpStatus: .sample, accessResolved: true, accessError: nil)
+    XCTAssertEqual(warned.headline, "Configuration ready")
+    XCTAssertTrue(warned.notes.allSatisfy { $0.tone == .warn }, "\(warned.notes)")
+    XCTAssertTrue(warned.notes.map(\.text).contains("No provider for code.symbols"))
+    XCTAssertEqual(warned.notesCaption, "Does not block the Agent")
+    XCTAssertTrue(warned.facts.contains("Provider: OpenAI (Responses)"), warned.facts)
+
+    let quiet = CsAgenticReadiness(
+      configPathDisplay: CsAgenticReadiness.sample.configPathDisplay, ready: true,
+      rows: CsAgenticReadiness.sample.rows.filter { $0.facet != .aicxMcp })
+    let clean = AgentStatusSummary(
+      readiness: quiet, capabilities: Array(CsCapabilityRow.sampleMatrix.prefix(2)),
+      servers: [], mcpStatus: .sample, accessResolved: true, accessError: nil)
+    XCTAssertTrue(clean.notes.isEmpty, "\(clean.notes)")
+    XCTAssertEqual(clean.notesCaption, "", "no notes, no caption")
   }
 
   /// One MCP table line per configured server: the probe row joins by name

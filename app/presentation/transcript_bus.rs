@@ -928,6 +928,8 @@ struct TranscriptBusWriter {
     /// The joined controller tail published the final channel wire snapshot.
     /// A reducer seal alone cannot authorize a lifecycle delivery flush.
     channel_seal_published: bool,
+    /// Frozen by the joined channel owner, never inferred from display text.
+    channel_publication_evidence: Option<ChannelPublicationEvidence>,
     /// Reducer-minted terminal of a ledger-free take: truthful document
     /// completion without an acoustic seal. `sealed` stays ledger-owned; the
     /// channel close reads this marker instead when the take opted out.
@@ -936,6 +938,11 @@ struct TranscriptBusWriter {
     /// contract (Founder seal cc6c8248): between that start row and the
     /// terminal seal, channel revisions stay in-process.
     announced_documents: HashSet<u64>,
+}
+
+struct ChannelPublicationEvidence {
+    coverage: ProjectedSealCoverageReceipt,
+    entirely_unwitnessed: bool,
 }
 
 /// All in-process Bus sessions for a path append through this one descriptor.
@@ -1910,6 +1917,81 @@ impl TranscriptBus {
         bus
     }
 
+    /// Freeze the channel's acoustic observer only after its producer joined.
+    /// Missing or foreign evidence stays unknown and never becomes silence.
+    pub(crate) fn observe_channel_publication_evidence(&self, ledger: &AcousticLedger) {
+        use codescribe_core::pipeline::acoustic_ledger::SlotWitness;
+
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.session.mode != TranscriptMode::Agent
+            || self.session.audience.is_none()
+            || writer.channel_seal_published
+            || writer.ended
+        {
+            return;
+        }
+        writer.channel_publication_evidence = None;
+        let Some(coverage) = ledger.latest_seal_coverage() else {
+            return;
+        };
+        if coverage.session_id != self.session.session_id
+            || Some(coverage.capture_epoch) != writer.capture_epoch
+            || coverage.status.unavailable_reason().is_some()
+            || coverage.availability != "observed"
+            || coverage.speech_producer != "silero_boundaries"
+            || !coverage.observed_samples.is_some_and(|samples| samples > 0)
+            || !coverage.sample_rate_hz.is_some_and(|rate| rate > 0)
+        {
+            return;
+        }
+        let mut has_slots = false;
+        let mut entirely_unwitnessed = true;
+        for occurrence in ledger.occurrences() {
+            if occurrence.session != self.session.session_id
+                || Some(occurrence.capture_epoch) != writer.capture_epoch
+            {
+                return;
+            }
+            let Some(slots) = ledger.slots_of(occurrence) else {
+                return;
+            };
+            if slots.is_empty() {
+                // A measured deletion leaves a known-empty owner. It is not
+                // missing witness evidence for the remaining epoch text.
+                if ledger
+                    .text_of(occurrence)
+                    .is_some_and(|text| text.trim().is_empty())
+                {
+                    continue;
+                }
+                return;
+            }
+            for slot in slots.iter().filter(|slot| !slot.text.trim().is_empty()) {
+                has_slots = true;
+                entirely_unwitnessed &= matches!(
+                    &slot.witness,
+                    SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
+                );
+            }
+        }
+        // Visibility-only receipts are explicitly unwitnessed text too. They
+        // must not bypass publication merely because they own no word slot.
+        let has_unanchored_label = ledger.layer_trail().iter().any(|entry| {
+            entry.observation.occurrence.session == self.session.session_id
+                && Some(entry.observation.occurrence.capture_epoch) == writer.capture_epoch
+                && matches!(&entry.decision,
+                    codescribe_core::pipeline::acoustic_ledger::MutationReceipt::KeepVisibleUnanchored { label, .. }
+                    if !label.trim().is_empty())
+        });
+        writer.channel_publication_evidence = Some(ChannelPublicationEvidence {
+            coverage: ProjectedSealCoverageReceipt::from(coverage),
+            entirely_unwitnessed: (has_slots || has_unanchored_label) && entirely_unwitnessed,
+        });
+    }
+
     /// Publish the joined channel's final snapshot before its non-open receipt.
     /// The producer has stopped, so no ledger seal can follow. A sealed
     /// document keeps its authority unchanged. A ledger-free document whose
@@ -1932,6 +2014,74 @@ impl TranscriptBus {
             .unwrap_or_else(|error| error.into_inner());
         if !writer.started || writer.channel_seal_published {
             return Ok(());
+        }
+        // A small measured sound cannot publish an entirely unwitnessed label.
+        // Compare sample counts without rounding the 400 ms boundary; missing
+        // measurements and witnessed short words never enter this refusal.
+        let refusal_coverage = writer
+            .channel_publication_evidence
+            .as_ref()
+            .and_then(|evidence| {
+                let sample_rate_hz = evidence.coverage.sample_rate_hz?;
+                (evidence.entirely_unwitnessed
+                    && u128::from(evidence.coverage.speech_samples) * 1_000
+                        < u128::from(sample_rate_hz) * 400)
+                    .then(|| evidence.coverage.clone())
+            });
+        if let Some(coverage) = refusal_coverage {
+            // Consume the terminal boundary before persistence: an uncertain
+            // append must not turn a refused capture into a retried delivery.
+            writer.channel_seal_published = true;
+            writer.ended = true;
+            writer.end_reason = Some(TranscriptSessionEndReason::Completed);
+            writer.sequence = writer.sequence.saturating_add(1);
+            let receipt = serde_json::json!({
+                "schema": "codescribe.transcript-publication.v1",
+                "status": "channel_publication_refused",
+                "session_id": self.session.session_id,
+                "capture_epoch": writer.capture_epoch,
+                "sequence": writer.sequence,
+                "emitted_at": Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+                "reason": "sound_without_speech",
+                "entirely_unwitnessed": true,
+                "speech_floor_ms": 400,
+                "seal_coverage": coverage,
+            });
+            Self::append_projection_locked(&mut writer, &receipt)?;
+            let capture_epoch = writer.capture_epoch;
+            return self.write_event_locked(
+                &mut writer,
+                CleanTranscriptEvent {
+                    schema: "codescribe.transcript.v1".to_string(),
+                    sequence: 0,
+                    session_id: String::new(),
+                    mode: self.session.mode,
+                    utterance_id: None,
+                    emitted_at: String::new(),
+                    status: "session_ended".to_string(),
+                    sample_rate_hz: coverage.sample_rate_hz,
+                    capture_epoch,
+                    sample_start: None,
+                    sample_end: None,
+                    audio_start_seconds: None,
+                    audio_end_seconds: None,
+                    text: String::new(),
+                    phase: TranscriptProjectionPhase::NoSpeech,
+                    can_paste: false,
+                    can_insert: false,
+                    can_copy: false,
+                    can_retranscribe: false,
+                    can_format: false,
+                    can_send_to_agent: false,
+                    terminal: true,
+                    segments: Vec::new(),
+                    words: Vec::new(),
+                    coverage: None,
+                    pipeline_session_id: None,
+                    end_reason: Some(TranscriptSessionEndReason::Completed),
+                    source: None,
+                },
+            );
         }
         let certified = writer.sealed;
         let Some(mut projection) = writer.last_projection.clone() else {
@@ -2019,6 +2169,7 @@ impl TranscriptBus {
                 capture_comparison: None,
                 last_projection: None,
                 channel_seal_published: false,
+                channel_publication_evidence: None,
                 direct_terminal: None,
                 announced_documents: HashSet::new(),
             }),

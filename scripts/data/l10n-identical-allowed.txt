@@ -25,6 +25,7 @@
 
 # Product, vendor and tool names.
 Codescribe - %@
+Codescribe Bus
 AICX MCP
 Loctree MCP
 
@@ -49,7 +50,9 @@ hotkeys.mode.agent
 Commit
 Commit: %@
 Model
-Model: %@
 Plan
 Status
 OK
+
+# Appearance choice that follows macOS: "System" is the same word in Polish.
+System

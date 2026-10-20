@@ -9,6 +9,11 @@ import SwiftUI
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var manualSkillClient: AgentBridgeClient?
+  /// The install or update waiting for the user's confirmation. Nothing is
+  /// written until its Install/Update button is pressed (Founder decision,
+  /// 2026-10-18: skill installs never overwrite files unannounced).
+  @State private var pendingSkillInstall: CreatorAgentBridgeInstallPlan?
+  @State private var showingSkillLocations = false
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
@@ -18,15 +23,51 @@ struct CreatorPanel: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
 
+      // The wizard's only entry after first run: the tray row that used to
+      // open it is gone (Founder, 2026-10-20), so the Creator offers it here.
+      HStack(alignment: .center, spacing: CSSpace.md) {
+        Text(
+          String(
+            localized:
+              "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay.",
+            comment: "Creator: what reopening the setup wizard does")
+        )
+        .font(SettingsScale.helper)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(
+          String(
+            localized: "Open Setup Wizard…",
+            comment: "Creator: reopens the first-run setup wizard window")
+        ) {
+          model.onOpenSetupWizard()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityIdentifier("settings-creator-open-wizard")
+      }
+      .padding(.top, SettingsScale.headerGap)
+
       SettingsSectionLabel(
         String(localized: "Languages", comment: "Settings group: app language and speech language")
       )
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         InterfaceLanguageRow(model: model)
         RecognitionLanguageRow(selection: languageBinding)
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
+
+      SettingsSectionLabel(
+        String(localized: "Appearance", comment: "Settings group: light or dark, and the sheet shade")
+      )
+      .padding(.top, SettingsScale.sectionGap)
+      VStack(spacing: 8) {
+        AppearanceRow(model: model)
+        SheetShadeRows(model: model)
+      }
+      .padding(.top, SettingsScale.headerGap)
 
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
@@ -38,7 +79,7 @@ struct CreatorPanel: View {
         ) { PermissionKind.openPrivacySettings() }
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 0) {
         ForEach(Self.permissionKinds) { kind in
           PermissionChecklistRow(
@@ -50,21 +91,21 @@ struct CreatorPanel: View {
             onStateChanged: { model.refreshDictationReadiness() }
           )
           if kind != Self.permissionKinds.last {
-            Divider().padding(.leading, 47)
+            // Aligned with the row text: inset + badge + the row's own spacing.
+            Divider().padding(.leading, 2 * SettingsScale.rowInsetH + 20)
           }
         }
       }
       .settingsGroupedInset(padding: 0)
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Voice & formatting"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .tint(CSColor.chromeAccent)
+            .settingsSwitch()
+            .accessibilityLabel("AI formatting")
         }
         SettingsControlRow(title: String(localized: "Formatting level")) {
           Picker("", selection: formattingLevelBinding) {
@@ -94,13 +135,13 @@ struct CreatorPanel: View {
             .id(SettingsAnchor.maxConsultation)
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       agentBridgeSection
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       SettingsSectionLabel(String(localized: "Quick start"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       HStack(spacing: 10) {
         QuickStartCard(
           icon: .mic,
@@ -118,10 +159,9 @@ struct CreatorPanel: View {
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
     .onAppear { model.refreshCreatorAgentBridge() }
     .confirmationDialog(
       "Replace a manually installed Codescribe skill?",
@@ -145,7 +185,7 @@ struct CreatorPanel: View {
   }
 
   private var agentBridgeSection: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       SettingsSectionHeaderRow(String(localized: "Connect your coding agent")) {
         SettingsRefreshButton(
           axLabel: "Refresh coding agent skill status",
@@ -153,63 +193,216 @@ struct CreatorPanel: View {
         )
         .accessibilityIdentifier("settings-agent-bridge-refresh")
       }
-      // One shared card: the heading, statuses and buttons already say what
-      // this section does, so the old caption sentence is gone (Founder brief,
-      // round 4, 2026-10-10).
+      // One shared card. It opens with what the skill is and what the agent
+      // can do with it — the section owns that sentence, not each row
+      // (Founder decision, 2026-10-18) — then one row per client.
       VStack(spacing: 0) {
+        skillDescription
+        Divider().padding(.leading, SettingsScale.rowInsetH)
         ForEach(AgentBridgeClient.allCases) { client in
-          let installed = model.creatorAgentBridgeStatus.installedClients.contains(client)
-          HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-              Text(client.displayName)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.primary)
-              if installed {
-                Text(
-                  String(
-                    localized: "creator.agentBridge.clientInstalled", defaultValue: "Installed",
-                    comment: "Status on an agent client row: the Codescribe skill is installed")
-                )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-              }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button(installed ? "Update skill" : "Install skill") {
-              model.installCreatorAgentBridge(for: client)
-            }
-            .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-            .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
-            if model.creatorAgentBridgeError != nil {
-              Button("Replace manual copy…") { manualSkillClient = client }
-                .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
-                .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
-            }
-          }
-          .padding(.horizontal, 15)
-          .padding(.vertical, 8)
-          if client != AgentBridgeClient.allCases.last {
-            Divider().padding(.leading, 15)
-          }
+          agentBridgeRow(client)
+          Divider().padding(.leading, SettingsScale.rowInsetH)
         }
+        skillLocations
       }
       .settingsGroupedInset(padding: 0)
       if !model.creatorAgentBridgeStatus.payloadAvailable {
         Text(model.creatorAgentBridgeStatus.detail)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let notice = model.creatorAgentBridgeNotice {
-        Text(notice).font(.callout).foregroundStyle(Color.primary).textSelection(.enabled)
+        Text(notice).font(SettingsScale.helper).foregroundStyle(Color.primary).textSelection(.enabled)
       }
       if let error = model.creatorAgentBridgeError {
         Text(error)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.terracotta)
           .textSelection(.enabled)
       }
     }
+    .confirmationDialog(
+      pendingSkillInstall.map(installConfirmationTitle) ?? "",
+      isPresented: Binding(
+        get: { pendingSkillInstall != nil },
+        set: { if !$0 { pendingSkillInstall = nil } }
+      ),
+      presenting: pendingSkillInstall
+    ) { plan in
+      Button(
+        plan.action == .update
+          ? String(
+            localized: "creator.agentBridge.confirmUpdate", defaultValue: "Update",
+            comment: "Confirms updating the Codescribe skill for one coding-agent client")
+          : String(
+            localized: "creator.agentBridge.confirmInstall", defaultValue: "Install",
+            comment: "Confirms installing the Codescribe skill for one coding-agent client")
+      ) {
+        model.installCreatorAgentBridge(for: plan.client)
+        pendingSkillInstall = nil
+      }
+      .accessibilityIdentifier("settings-agent-bridge-confirm-\(plan.client.rawValue)")
+      Button("Cancel", role: .cancel) { pendingSkillInstall = nil }
+    } message: { plan in
+      Text(installConfirmationMessage(plan))
+    }
+  }
+
+  /// What the skill is and what installing it gives the agent, readable
+  /// without opening anything. Facts from the bundled skill's SKILL.md.
+  private var skillDescription: some View {
+    Text(
+      String(
+        localized:
+          "The Codescribe skill lets your coding agent work with Codescribe. Once it is installed, the agent can join the Codescribe Bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it.",
+        comment:
+          "Description at the top of the coding-agent card in Settings › Creator. Codescribe Bus is a product name; /codescribe is a command the user types — keep both verbatim"
+      )
+    )
+    .font(SettingsScale.helper)
+    .foregroundStyle(.secondary)
+    .fixedSize(horizontal: false, vertical: true)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+    .accessibilityIdentifier("settings-agent-bridge-description")
+  }
+
+  private func installConfirmationTitle(_ plan: CreatorAgentBridgeInstallPlan) -> String {
+    plan.action == .update
+      ? String(
+        localized: "Update the Codescribe skill for \(plan.client.displayName)?",
+        comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
+      : String(
+        localized: "Install the Codescribe skill for \(plan.client.displayName)?",
+        comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
+  }
+
+  /// Which skill, into which folder, and whether it replaces anything — said
+  /// before the first file is written.
+  private func installConfirmationMessage(_ plan: CreatorAgentBridgeInstallPlan) -> String {
+    var parts: [String] = []
+    if plan.action == .update {
+      parts.append(
+        String(
+          localized:
+            "Codescribe will replace the skill folder it installed at \(plan.skillPath) with the codescribe skill bundled in this app. Changes made inside that folder are not kept.",
+          comment:
+            "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
+        ))
+    } else {
+      parts.append(
+        String(
+          localized:
+            "Codescribe will add the codescribe skill bundled in this app to \(plan.skillPath). Nothing is replaced: if that folder already exists and Codescribe did not install it, installation stops without changing it.",
+          comment:
+            "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
+        ))
+    }
+    if let version = plan.bundleVersion {
+      parts.append(
+        String(
+          localized: "Skill version: \(version).",
+          comment: "Install confirmation; the placeholder is a version number such as 0.13.2"))
+    }
+    if !plan.alsoUpdated.isEmpty {
+      let names = plan.alsoUpdated.map(\.displayName).formatted(.list(type: .and))
+      parts.append(
+        String(
+          localized: "The outdated copy for \(names) is updated at the same time.",
+          comment:
+            "Install confirmation; the placeholder lists coding-agent clients such as Claude Code"
+        ))
+    }
+    parts.append(
+      String(
+        localized:
+          "Codescribe also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started.",
+        comment: "Install confirmation; ~/.local/bin is a folder path — keep it verbatim"
+      ))
+    return parts.joined(separator: " ")
+  }
+
+  /// One client: its name, whether the installed skill is the one this app
+  /// carries, and the action. "Installed" alone never answered the question
+  /// the Update button raises (Founder review, 2026-10-18), so the row states
+  /// the generation instead.
+  private func agentBridgeRow(_ client: AgentBridgeClient) -> some View {
+    let status = model.creatorAgentBridgeStatus
+    let installed = status.installedClients.contains(client)
+    return HStack(spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(client.displayName)
+          .font(SettingsScale.settingName)
+          .foregroundStyle(.primary)
+        if installed {
+          Text(
+            status.clientsWithCurrentSkill.contains(client)
+              ? String(
+                localized: "creator.agentBridge.clientCurrent", defaultValue: "Up to date",
+                comment: "Status on an agent client row: the installed skill is this app's")
+              : String(
+                localized: "creator.agentBridge.clientOutdated",
+                defaultValue: "Update available",
+                comment: "Status on an agent client row: this app carries a newer skill")
+          )
+          .font(SettingsScale.helper)
+          .foregroundStyle(.secondary)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      // Install/Update only opens the confirmation; an up-to-date client has
+      // nothing to do, so its button stays disabled (Founder, 2026-10-18).
+      Button(
+        installed
+          ? String(
+            localized: "Update skill…",
+            comment: "Coding-agent row action: opens the confirmation to update the skill")
+          : String(
+            localized: "Install skill…",
+            comment: "Coding-agent row action: opens the confirmation to install the skill")
+      ) {
+        pendingSkillInstall = model.creatorAgentBridgeInstallPlan(for: client)
+      }
+      .disabled(model.creatorAgentBridgeInstallPlan(for: client) == nil)
+      .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+      if model.creatorAgentBridgeError != nil {
+        Button("Replace manual copy…") { manualSkillClient = client }
+          .disabled(!status.payloadAvailable)
+          .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+      }
+    }
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+  }
+
+  /// The folders the three clients read. A path is detail: the rows above name
+  /// the client, this says where its skill lands (Founder review, 2026-10-18).
+  private var skillLocations: some View {
+    DisclosureGroup(isExpanded: $showingSkillLocations) {
+      VStack(alignment: .leading, spacing: CSSpace.xxs) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          Text(verbatim: "\(client.displayName): \(client.skillPathLabel)")
+            .font(SettingsScale.metaKey)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .padding(.top, CSSpace.xxs)
+    } label: {
+      Text(
+        String(
+          localized: "Skill locations",
+          comment: "Disclosure on the coding-agent card: the folders each client reads")
+      )
+      .font(SettingsScale.settingName)
+      .foregroundStyle(.primary)
+    }
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.controlInsetV)
+    .accessibilityIdentifier("settings-agent-bridge-locations")
   }
 
   // MARK: - Bindings (read VM state, write through the router)
@@ -243,15 +436,15 @@ private struct MaxConsultationCard: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if model.maxConsultationEnabled {
         HStack(spacing: 12) {
           VStack(alignment: .leading, spacing: 2) {
             Text("Max consultation")
-              .font(.body.weight(.semibold))
+              .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
             Text("Continue the consultation or start a new one. History stays.")
-              .font(.subheadline)
+              .font(SettingsScale.helper)
               .foregroundStyle(.secondary)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -263,7 +456,7 @@ private struct MaxConsultationCard: View {
         }
         if let notice = model.maxConsultationNotice {
           Text(notice)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -283,17 +476,21 @@ struct MaxApprovalCards: View {
   var embedded: Bool = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.control) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if embedded {
-        HStack(spacing: 12) {
-          Text("Max permissions")
-            .font(.body.weight(.semibold))
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HStack(spacing: SettingsScale.rowInsetH) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Max permissions")
+              .font(SettingsScale.settingName)
+              .foregroundStyle(.primary)
+            pendingLine
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
           refreshButton
         }
       } else {
         SettingsSectionLabel(String(localized: "Max permissions"))
+        pendingLine
         refreshButton
       }
       ForEach(model.maxToolApprovals) { request in
@@ -314,6 +511,31 @@ struct MaxApprovalCards: View {
       if let error = model.maxApprovalError {
         Text(error).foregroundStyle(CSColor.amber)
       }
+    }
+  }
+
+  /// Whether anything is waiting, next to the heading. The cards below appear
+  /// only when a request exists, so without this line an empty section could
+  /// not be told apart from one that was never checked (Founder review,
+  /// 2026-10-18). A running check is on the button and an unreadable one on
+  /// `maxApprovalError`, so neither state repeats itself here. The line is a
+  /// yes or no and carries no count: the requests themselves are listed
+  /// directly below it, and a counted phrase would owe plural variations in
+  /// both catalogs for information already on screen.
+  @ViewBuilder private var pendingLine: some View {
+    if model.maxApprovalError == nil, !model.maxApprovalBusy {
+      Text(
+        model.maxToolApprovals.isEmpty
+          ? String(
+            localized: "max.approvals.none", defaultValue: "No requests waiting",
+            comment: "Line under the Max permissions heading: nothing needs a decision")
+          : String(
+            localized: "max.approvals.waiting", defaultValue: "Requests waiting",
+            comment: "Line under the Max permissions heading: the cards below need a decision")
+      )
+      .font(SettingsScale.helper)
+      .foregroundStyle(.secondary)
+      .accessibilityIdentifier("settings-max-approvals-pending")
     }
   }
 
@@ -387,18 +609,18 @@ struct SettingsControlRow<Control: View>: View {
   /// Omitted when the title already carries the whole meaning of the row.
   var subtitle: String? = nil
   /// Card inset; dense hosts (the AI-model lane editors) pass a tighter one.
-  var inset: CGFloat = CSSpace.card
+  var inset: CGFloat = SettingsScale.cardPadding
   @ViewBuilder var control: () -> Control
 
   var body: some View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         if let subtitle {
           Text(subtitle)
-            .font(.subheadline)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
         }
       }
@@ -440,7 +662,7 @@ private struct InterfaceLanguageRow: View {
       if model.interfaceLanguageNeedsRestart {
         HStack(spacing: 12) {
           Text(model.interfaceLanguageRestartExplanation)
-            .font(.callout)
+            .font(SettingsScale.helper)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -451,7 +673,7 @@ private struct InterfaceLanguageRow: View {
       }
       if let notice = model.interfaceLanguageNotice {
         Text(notice)
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-interface-language-notice")
@@ -464,6 +686,104 @@ private struct InterfaceLanguageRow: View {
       get: { model.interfaceLanguage },
       set: { model.selectInterfaceLanguage($0) }
     )
+  }
+}
+
+// MARK: - Appearance row
+
+/// Light, dark or system. Applies at once: AppKit repaints every window.
+private struct AppearanceRow: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    SettingsControlRow(
+      title: String(localized: "Appearance", comment: "Settings row: light, dark or system"),
+      subtitle: String(
+        localized: "Follow macOS, or keep Codescribe light or dark on its own.",
+        comment: "Appearance row explanation")
+    ) {
+      Picker("", selection: selection) {
+        ForEach(AppAppearanceChoice.allCases) { choice in
+          Text(choice.title).tag(choice)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityIdentifier("settings-appearance")
+    }
+  }
+
+  private var selection: Binding<AppAppearanceChoice> {
+    Binding(get: { model.appearanceChoice }, set: { model.selectAppearance($0) })
+  }
+}
+
+// MARK: - Sheet shade rows
+
+/// Click-through candidates for the content sheet, one row per appearance
+/// (Founder and Maciej, 2026-10-20). A shade is read at launch, so the rows
+/// end with the same restart line the language uses.
+private struct SheetShadeRows: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    SettingsControlRow(
+      title: String(localized: "Panel shade, dark", comment: "Settings row: sheet shade for dark")
+    ) {
+      shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
+    }
+    SettingsControlRow(
+      title: String(localized: "Panel shade, light", comment: "Settings row: sheet shade for light")
+    ) {
+      shadePicker(SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
+    }
+    if model.sheetShadeNeedsRestart {
+      HStack(spacing: 12) {
+        Text(
+          "Codescribe will restart with the new shade. Your recording must finish first.",
+          comment: "Sheet shade restart explanation"
+        )
+        .font(SettingsScale.helper)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(model.sheetShadeRestartTitle) { model.applySheetShade() }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(model.applyingSheetShade)
+          .accessibilityIdentifier("settings-sheet-shade-restart")
+      }
+    }
+    if let notice = model.sheetShadeNotice {
+      Text(notice)
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.terracotta)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("settings-sheet-shade-notice")
+    }
+  }
+
+  private func shadePicker(_ choices: [SheetShade], selection: Binding<SheetShade>, id: String)
+    -> some View
+  {
+    Picker("", selection: selection) {
+      ForEach(choices) { shade in
+        Text(verbatim: "\(shade.title) · #\(shade.rawValue)").tag(shade)
+      }
+    }
+    .pickerStyle(.menu)
+    .labelsHidden()
+    .fixedSize()
+    .accessibilityIdentifier(id)
+  }
+
+  private var darkSelection: Binding<SheetShade> {
+    Binding(get: { model.sheetShadeDark }, set: { model.selectSheetShade($0) })
+  }
+
+  private var lightSelection: Binding<SheetShade> {
+    Binding(get: { model.sheetShadeLight }, set: { model.selectSheetShade($0) })
   }
 }
 
@@ -486,7 +806,7 @@ private struct PermissionChecklistRow: View {
   private var granted: Bool { state.isGranted }
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: SettingsScale.rowInsetH) {
       statusBadge
       // A granted row says it with the badge; the status stays for VoiceOver.
       VStack(alignment: .leading, spacing: 2) {
@@ -532,7 +852,7 @@ private struct PermissionChecklistRow: View {
         }
       }
     }
-    .padding(.horizontal, 15)
+    .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, 7)
   }
 
