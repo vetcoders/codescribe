@@ -89,6 +89,16 @@ final class AgentWindowChromeTests: XCTestCase {
           controls.filter { frame($0).height >= 51 }.count, 2,
           "brand and actions share the three-line native header rhythm")
         let bounds = NSRect(origin: .zero, size: window.frame.size)
+        // Brand leads, actions trail: with no principal item the unified bar
+        // packed pin and menu next to the wordmark on the installed build
+        // (2026-10-21); the flexible space keeps them on the trailing edge.
+        let clusterEdges = controls.map { frame($0) }
+        XCTAssertGreaterThanOrEqual(
+          try XCTUnwrap(clusterEdges.map(\.maxX).max()), window.frame.width - 40,
+          "pin and menu sit on the trailing edge, width \(width)")
+        XCTAssertLessThanOrEqual(
+          try XCTUnwrap(clusterEdges.map(\.minX).min()), window.frame.width / 2,
+          "the wordmark stays on the leading side, width \(width)")
         for control in controls {
           let rect = frame(control)
           XCTAssertGreaterThan(rect.width, 1)
