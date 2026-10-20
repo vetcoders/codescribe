@@ -383,13 +383,15 @@ it.
 
 One segmented picker (**Correction**, **Smart**, **Agent**) opens one
 base prompt at a time; the headers read **Correction prompt**, **Smart prompt**,
-and **Agent prompt**. Each has a single plain sentence under it.
+and **Agent prompt**. The pane has no introduction of its own; Smart and Agent
+carry one plain sentence under the name, Correction none.
 The Agent prompt is the base of the system prompt for Agent turns that act on a
 dictated request and for Max consultations; voice chat carries its own persona.
 Codescribe may append further instructions at runtime, so the editor shows the
 base text, not the full prompt a provider receives.
 
-A quiet tag on the header line names the prompt in use: **Custom** when your
+A quiet capsule on the header line names the prompt in use (a state, not a
+button; it shares Edit's type, height and baseline): **Custom** when your
 file is read, **Built-in** when no custom file exists or the file is empty. An
 unreadable file also reads **Built-in**, with a red sentence under the header
 saying so; screen readers get the full sentence (**Source: Custom prompt**,
@@ -418,11 +420,15 @@ recoverable. A failed save is reported with the same current-source check.
 ### Agent → Workspace
 
 **Folders available to the Agent** lists the roots Codescribe uses to validate
-file paths, terminal working directories and path-shaped command arguments.
-It also validates paths handed to MCP tools it knows how to check, including
-Desktop Commander's file and process tools. This is path validation, not a
-filesystem sandbox around the child process: a process or MCP server can access
-other paths under its own permissions. The same list is where the Agent
+the paths of its own file and Git tools, terminal working directories and
+path-shaped command arguments; `read_file` may also read Codescribe's own
+storage folder. It also validates paths handed to MCP tools it knows how to
+check, today Desktop Commander's file and process tools; other MCP servers are
+not checked. An empty or unresolvable list denies every path. This is path
+validation, not a filesystem sandbox around the child process: a process or
+MCP server can access other paths under its own permissions, which is all the
+tab's one-line introduction says (**Processes and MCP servers have their own
+permissions.**). The same list is where the Agent
 looks for projects and Git repositories (subfolders included, hidden folders
 and build directories skipped), so entries such as `~/.codescribe` or `/tmp`
 sit next to checkouts like `~/Git` — it is one access list, not a list of
@@ -532,7 +538,7 @@ Palette labels and grant actions follow the macOS interface language through
 the app's String Catalog. Model IDs, provider IDs and tool grant keys remain
 unchanged.
 
-Open **Settings → Agent → Diagnostics** (headline "Agent environment status")
+Open **Settings → Agent → Diagnostics** (headline "Agent environment configuration", no introduction)
 for the agent status screen: one summary card with the verdict, the key facts
 and whatever needs attention, then Integrations, Tools and servers, Detected
 installations, and a collapsed "Technical details" group. A single Refresh
@@ -611,8 +617,9 @@ still reachable, at worst one disclosure away.
   folders — the readiness probe reports a provider, not a model; the resolved
   model per lane is on **AI models**), and one line per thing needing attention
   (integrations awaiting their first run, failed integrations, failed MCP
-  checks, an unreadable `mcp.json`, and capabilities with no provider — named,
-  e.g. **No provider for fs.list · repo.status**). A caption above that list
+  checks, an unreadable `mcp.json`, and capabilities with no provider — by
+  short name, e.g. **No provider for project diagnostics · code symbols**; the
+  raw op ids stay on the capability rows under "Agent tools"). A caption above that list
   says how to read it: **Needs attention** when one of the lines is an error,
   **Does not block the Agent** when they are warnings only, so a warning under
   "Configuration ready" is not taken for a contradiction. The verdict follows
@@ -626,7 +633,9 @@ still reachable, at worst one disclosure away.
   concrete failure. Each row's tooltip names the single `mcp.json` entry its
   diagnostic reads, so an optional integration is never confused with another
   configured server of a similar name.
-- **Tools and servers** — two independently collapsible summaries.
+- **Tools and servers** — two independently collapsible summaries, each a
+  two-line row: the chevron on the title line, the status icon on the
+  description line.
   "Agent tools" counts capability _operations_ per tier (Capabilities: N native
   · N enhanced · N unavailable) and expands the capability matrix with its tier
   badges, the tool id and source per row, and the core's raw reason as the row
@@ -664,9 +673,8 @@ capability operations `CapabilityOp::all()` declares, each resolved to one tier.
 ### Agent → MCP
 
 The MCP tab is the editing surface for `~/.codescribe/mcp.json`; Diagnostics
-only reports it. The headline says what the tab is for (add servers, manage
-the tools the Agent may use) and the list reads as servers, not as a config
-dump.
+only reports it. The headline **MCP servers** stands without an introduction
+and the list reads as servers, not as a config dump.
 
 - **Server card** — the name, the configured state as a flag button (Enabled /
   Disabled flips `enabled` in `mcp.json`; it never connects or disconnects
