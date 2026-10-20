@@ -215,9 +215,11 @@ Sentence pause belongs to Light+ text shaping, not to hands-free dictation.
 **Settings → Dictation → Privacy** shows two short sections, with the rest
 on demand:
 
-- **Cloud status** — the selected recognition mode and the stored cloud
+- **Data processing** — the selected recognition mode and the stored cloud
   consent as two separate rows. A granted record is not evidence that audio
-  is leaving now.
+  is leaving now. The cloud itself is configured in Providers: the one
+  **Set up the cloud in Providers** action under this card opens
+  **Providers** and scrolls to its **Cloud transcription** section.
 - **What can leave this computer?** — two scannable rows. **Audio**: in Cloud
   mode, and when you start a cloud re-transcription of a recording yourself.
   **Text**: during AI requests to the providers you configured.
@@ -229,8 +231,7 @@ on demand:
   token), **Consent** (without your consent Codescribe does not use the cloud
   and keeps dictating with Apple on-device, with no local model loaded in its
   place) and **Local modes** (choosing a local mode downloads nothing; the
-  model is installed separately on the Whisper tab). The **Configure cloud
-  services** action below jumps to **Providers → Cloud transcription**.
+  model is installed separately on the Whisper tab).
 
 Selecting **Cloud** on the Engine tab opens a confirmation dialog that names
 the effect; only confirming it writes `CODESCRIBE_CLOUD_CONSENT=granted`
