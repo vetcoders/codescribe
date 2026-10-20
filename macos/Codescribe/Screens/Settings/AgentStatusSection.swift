@@ -175,8 +175,10 @@ struct AgentStatusSection: View {
         } label: {
           summaryLabel(
             title: String(localized: "Agent tools", comment: "Diagnostics collapsible section"),
-            detail: capabilities.line, tone: capabilities.unavailable > 0 ? .warn : .good)
+            detail: capabilities.line, tone: capabilities.unavailable > 0 ? .warn : .good,
+            expanded: showingCapabilityRows)
         }
+        .disclosureGroupStyle(DiagnosticsSummaryDisclosureStyle())
         .padding(.horizontal, SettingsScale.rowInsetH)
         .padding(.vertical, SettingsScale.cardPadding)
         .accessibilityIdentifier("settings-diagnostics-capabilities")
@@ -200,8 +202,10 @@ struct AgentStatusSection: View {
           summaryLabel(
             title: String(localized: "MCP servers"),
             detail: model.mcpServers.isEmpty ? mcpConfigStateText : servers.line,
-            tone: model.mcpServers.isEmpty ? mcpConfigStateTone : servers.tone)
+            tone: model.mcpServers.isEmpty ? mcpConfigStateTone : servers.tone,
+            expanded: showingServerRows)
         }
+        .disclosureGroupStyle(DiagnosticsSummaryDisclosureStyle())
         .padding(.horizontal, SettingsScale.rowInsetH)
         .padding(.vertical, SettingsScale.cardPadding)
         .accessibilityIdentifier("settings-diagnostics-mcp-servers")
@@ -210,15 +214,28 @@ struct AgentStatusSection: View {
     }
   }
 
-  /// Title + one quiet count line, the label of a collapsible summary.
-  private func summaryLabel(title: String, detail: String, tone: CsMcpRowTone) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(title)
-        .font(SettingsScale.settingName)
-        .foregroundStyle(Color.primary)
-      HStack(spacing: CSSpace.xs) {
+  /// Title + one quiet count line, the label of a collapsible summary. Two
+  /// explicit lines in one grid: the chevron sits on the title's baseline and
+  /// the status icon on the first baseline of the description, in the same
+  /// leading column, so neither floats between the lines when the description
+  /// wraps or the group opens.
+  private func summaryLabel(
+    title: String, detail: String, tone: CsMcpRowTone, expanded: Bool
+  ) -> some View {
+    let disclosure = expanded ? String(localized: "Expanded") : String(localized: "Collapsed")
+    return Grid(alignment: .leading, horizontalSpacing: CSSpace.xs, verticalSpacing: 2) {
+      GridRow(alignment: .firstTextBaseline) {
+        CSIconView(
+          icon: expanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold,
+          color: Color.secondary
+        )
+        .gridColumnAlignment(.center)
+        Text(title)
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+      }
+      GridRow(alignment: .firstTextBaseline) {
         CSIconView(icon: tone.statusIcon, size: 10, weight: .semibold, color: tone.dotColor)
-          .accessibilityHidden(true)
         Text(detail)
           .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
@@ -228,7 +245,7 @@ struct AgentStatusSection: View {
     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(Text(verbatim: title))
-    .accessibilityValue(Text(verbatim: "\(tone.label), \(detail)"))
+    .accessibilityValue(Text(verbatim: "\(tone.label), \(detail), \(disclosure)"))
   }
 
   /// The `mcp.json` state itself, shown as the MCP summary when no server is
@@ -576,6 +593,27 @@ extension CsMcpRowTone {
     case .warn: return .warning
     case .bad: return .error
     case .neutral: return .circleEmpty
+    }
+  }
+}
+
+/// The two Diagnostics summaries draw their own chevron inside the label's
+/// grid (`summaryLabel`), so the whole label is the toggle and the system
+/// chevron, centred on the label as a whole, is not drawn.
+private struct DiagnosticsSummaryDisclosureStyle: DisclosureGroupStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        configuration.isExpanded.toggle()
+      } label: {
+        configuration.label
+          .contentShape(Rectangle())
+      }
+      .csFocusRing()
+
+      if configuration.isExpanded {
+        configuration.content
+      }
     }
   }
 }

@@ -65,7 +65,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case .agentWorkspace:
       String(localized: "Folders available to the Agent", comment: "Settings tab: Agent folders")
     case .agentStatus:
-      String(localized: "Agent environment status", comment: "Settings tab: Diagnostics headline")
+      String(
+        localized: "Agent environment configuration", comment: "Settings tab: Diagnostics headline")
     case .agentTools: String(localized: "Tool permissions")
     case .agentMcp: String(localized: "MCP servers")
     case .dictationEngine:
@@ -80,28 +81,26 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
   }
 
-  var blurb: String {
+  /// `nil` where the headline and the pane say enough on their own (Founder
+  /// brief, 2026-10-20: minimum text).
+  var blurb: String? {
     switch self {
     case .agentLanes:
       String(
         localized: "Choose the Agent and formatting models. Accounts and keys live under Providers."
       )
     case .agentPrompts:
-      // One sentence only: each subtab names its own prompt's purpose, and the
-      // runtime-appended instructions are explained in the guide, not here
-      // (Founder brief, round 9, 2026-10-10).
-      String(localized: "Browse and edit the base prompts.")
+      // Each subtab names its own prompt; the runtime-appended instructions
+      // are explained in the guide, not here.
+      nil
     case .agentWorkspace:
-      // "it can check" is load-bearing, not filler: only the MCP calls
-      // Codescribe validates (today, Desktop Commander's path arguments) are
-      // bounded by this list; an unvalidated MCP server is not (Founder
-      // brief, round 10, 2026-10-10).
-      String(
-        localized:
-          "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions."
-      )
+      // Only the limit stays on screen: the list validates Codescribe's own
+      // file and terminal tools and the MCP calls it knows how to check
+      // (Desktop Commander), not a sandbox around the child process. What is
+      // checked is in docs/guide/settings.md, Agent → Workspace.
+      String(localized: "Processes and MCP servers have their own permissions.")
     case .agentStatus:
-      String(localized: "Configuration state of the Agent, its available tools and integrations.")
+      nil
     case .agentTools:
       // One sentence: the three levels name themselves on the segmented
       // controls below, and the resolution order has its own note next to the
@@ -111,7 +110,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         comment: "Settings tab blurb: Agent › Tools"
       )
     case .agentMcp:
-      String(localized: "Add MCP servers and manage the tools the Agent may use.")
+      nil
     case .dictationEngine:
       // "Choose how speech becomes text" repeated the headline and the one row
       // under it; what is left is the part the pane cannot show (Founder

@@ -214,15 +214,21 @@ private struct PromptEditor: View {
         Text(title)
           .font(CSFont.ui(14, .semibold))
           .foregroundStyle(Color.primary)
-        Text(file.editorSubtitle)
-          .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        if let subtitle = file.editorSubtitle {
+          Text(subtitle)
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       Spacer(minLength: CSSpace.sm)
       // Hugs its own width so a long prompt name or translation wraps on the
       // left instead of squeezing the tag and the buttons.
-      HStack(spacing: CSSpace.sm) {
+      // One baseline for the tag, the unsaved note and the buttons: the tag
+      // and Edit share the control rung's type and vertical inset, so they
+      // read as one row while the capsule stays a state and the rounded chip
+      // stays the action.
+      HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
         sourceTag
         if hasUnsavedChanges {
           Text("Unsaved changes")
@@ -245,11 +251,11 @@ private struct PromptEditor: View {
   private var sourceTag: some View {
     if let tag = promptSourceTag(snapshot?.source) {
       Text(tag)
-        .font(CSFont.ui(10.5, .semibold))
+        .font(SettingsScale.controlLabel)
         .lineLimit(1)
         .foregroundStyle(Color.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(Capsule().fill(Color.primary.opacity(0.08)))
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
         .accessibilityElement()
@@ -285,20 +291,20 @@ private struct PromptEditor: View {
       }
     }) {
       Text(editing ? "Save" : "Edit")
-        .font(SettingsScale.settingName)
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(editing ? Color.white : CSColor.chromeAccent)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .fill(CSColor.chromeAccent.opacity(editing ? 1 : 0.14))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .strokeBorder(CSColor.chromeAccent.opacity(editing ? 0 : 0.28), lineWidth: 1)
         )
     }
-    .csFocusRing()
+    .csFocusRing(cornerRadius: SettingsScale.controlRadius)
     .help(editing ? "Save the prompt" : "Edit the raw markdown")
   }
 
