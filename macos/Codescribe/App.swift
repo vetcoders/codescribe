@@ -228,6 +228,7 @@ struct CodescribeApp: App {
       model.onCheckForUpdates = { [weak updater] in updater?.checkForUpdates() }
       updater.$canCheckForUpdates.assign(to: &model.$canCheckForUpdates)
     }
+    model.onOpenSetupWizard = { [weak delegate] in delegate?.presentSetupWizard() }
     return model
   }
 
@@ -409,7 +410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private let terminationCoordinator = AppTerminationCoordinator()
   private var idleRestartCoordinator: IdleRestartCoordinator?
   // First-run onboarding wizard host. Presented at launch when the core gate
-  // (`shouldShowOnboarding`) reports setup is due.
+  // (`shouldShowOnboarding`) reports setup is due, and on demand from
+  // Settings › Creator through `presentSetupWizard()`.
   private lazy var onboarding = OnboardingWindowController(
     engine: RealOnboardingEngine(),
     applyInterfaceLanguage: { [weak self] beforeTermination in
@@ -422,6 +424,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
+  /// Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
+  /// gate), `present()` always fronts the window — resume when onboarding is
+  /// still due, or re-run from Welcome after completion.
+  func presentSetupWizard() {
+    onboarding.present()
+  }
+
   // scheduled updater alongside the live app. Published so the app menu's
   // "Check for Updates…" command (CodescribeApp.settingsWindow) rebuilds once
   // launch populates it; Settings › User reads it for its own button. The

@@ -23,6 +23,32 @@ struct CreatorPanel: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsPageHeader(String(localized: "Get set up."))
 
+      // The wizard's only entry after first run: the tray row that used to
+      // open it is gone (Founder, 2026-10-20), so the Creator offers it here.
+      HStack(alignment: .center, spacing: CSSpace.md) {
+        Text(
+          String(
+            localized:
+              "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay.",
+            comment: "Creator: what reopening the setup wizard does")
+        )
+        .font(SettingsScale.helper)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        Button(
+          String(
+            localized: "Open Setup Wizard…",
+            comment: "Creator: reopens the first-run setup wizard window")
+        ) {
+          model.onOpenSetupWizard()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityIdentifier("settings-creator-open-wizard")
+      }
+      .padding(.top, SettingsScale.headerGap)
+
       SettingsSectionLabel(
         String(localized: "Languages", comment: "Settings group: app language and speech language")
       )

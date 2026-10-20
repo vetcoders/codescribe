@@ -1216,6 +1216,11 @@ final class SettingsViewModel: ObservableObject {
   /// Mirrors `UpdaterService.canCheckForUpdates`: false while a check is in
   /// flight or no updater runs, so the button cannot start a second check.
   @Published var canCheckForUpdates = false
+  /// Re-open the first-run setup wizard from Settings › Creator. Bound by
+  /// App.swift to the onboarding window controller; `present()` always
+  /// fronts the window, mid-onboarding or after completion (Founder,
+  /// 2026-10-20: the tray row went away, the action lives in the Creator).
+  var onOpenSetupWizard: () -> Void = {}
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?

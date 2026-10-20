@@ -23,6 +23,11 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 
 ## Creator
 
+Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
+(language, mode, permissions, the Whisper model and your provider); your
+current settings stay until you change them there. This is the wizard's only
+entry after first run — the tray menu no longer carries it.
+
 The first desk groups what a new install needs: the two language rows, the
 only permission checklist in Settings — with a **System Settings…** link in
 its header (the Privacy & Security pane, so a granted scope can be reviewed
