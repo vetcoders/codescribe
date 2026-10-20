@@ -811,7 +811,7 @@ mod tests {
             drop(listener);
             let provider = CustomProvider::new("p0-replay-refusal", WireFamily::OpenAiResponses, &endpoint).unwrap();
             let settings = UserSettings {
-                asr_mode: Some("local_power".into()), ai_formatting_enabled: Some(true),
+                asr_mode: Some("local_power".into()),
                 formatting_level: Some("smart".into()),
                 llm_formatting_provider: Some(format!("custom:{}", provider.id)),
                 llm_formatting_model: Some("replay-refusal".into()),
@@ -825,7 +825,6 @@ mod tests {
             let snapshot = Arc::new(codescribe_core::config::Config::load_runtime_snapshot_without_keychain().unwrap());
             assert_eq!(snapshot.llm_lanes().formatting().endpoint(), endpoint);
             assert!(snapshot.llm_lanes().formatting().request_available());
-            assert!(snapshot.values().ai_formatting_enabled);
             assert_eq!(snapshot.formatting_policy(), codescribe_core::config::FormattingPolicy::Smart);
             let calibration = snapshot.energy_calibration_for_capture("MacBook Pro Microphone", rate).unwrap();
             assert_eq!(calibration.version, "cal2-macbook-pro-microphone-1791099372411@48000hz");

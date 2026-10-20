@@ -654,10 +654,6 @@ pub struct Config {
     pub whisper_language: Language,
 
     // ===== AI Formatting =====
-    /// Whether AI formatting is enabled for transcriptions
-    #[serde(default)]
-    pub ai_formatting_enabled: bool,
-
     /// User-owned automatic paste policy for non-assistive dictation
     /// (`PASTE_MODE`). Assistive, empty/no-speech, Notes save-only, and safety
     /// branches remain controller-owned vetoes in every mode.
@@ -860,7 +856,6 @@ impl std::fmt::Debug for Config {
                 &self.middle_mouse_agent_gesture,
             )
             .field("whisper_language", &self.whisper_language)
-            .field("ai_formatting_enabled", &self.ai_formatting_enabled)
             .field("paste_mode", &self.paste_mode)
             .field("transcript_send_mode", &self.transcript_send_mode)
             .field(
@@ -937,7 +932,6 @@ impl Default for Config {
             middle_mouse_acts_as_fn: false,
             middle_mouse_agent_gesture: false,
             whisper_language: Language::default(),
-            ai_formatting_enabled: false,
             paste_mode: PasteMode::default(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,

@@ -1857,7 +1857,7 @@ pub struct RecordingController {
     hold_mode: Arc<RwLock<HoldMode>>,
 
     /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
-    /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
+    /// Toggle mode (Double Option) keeps this false and respects the FORMATTING_LEVEL setting.
     force_raw_mode: Arc<RwLock<bool>>,
     /// Whether to force AI formatting for the current session (e.g., left double Option)
     force_ai_mode: Arc<RwLock<bool>>,
@@ -5194,7 +5194,7 @@ impl RecordingController {
     /// appropriate handlers based on current state and event type.
     ///
     /// ## Mode Determination (NEW architecture):
-    /// - **Hold + assistive=false**: force RAW mode (ignores AI_FORMATTING_ENABLED)
+    /// - **Hold + assistive=false**: force RAW mode (ignores FORMATTING_LEVEL)
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
@@ -6022,7 +6022,7 @@ impl RecordingController {
 
         let live_formatting_agent = if !assistive
             && !*self.force_raw_mode.read().await
-            && config.ai_formatting_enabled
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
         {
             match self
                 .selected_max_consultation(runtime_settings.as_ref())
@@ -6593,7 +6593,7 @@ impl RecordingController {
         let live_formatting_agent = if !is_assistive
             && capture_turn.schedules_live_formatting()
             && !*self.force_raw_mode.read().await
-            && config.ai_formatting_enabled
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
         {
             match self
                 .selected_max_consultation(runtime_settings.as_ref())
@@ -7408,12 +7408,7 @@ impl RecordingController {
         if presentation.literal_delivery() {
             return raw;
         }
-        if runtime_settings.values().ai_formatting_enabled
-            && matches!(
-                policy,
-                FormattingPolicy::Correction | FormattingPolicy::Smart
-            )
-        {
+        if matches!(policy, FormattingPolicy::Correction | FormattingPolicy::Smart) {
             presentation
                 .wait_for_occurrence_projections(
                     policy,
@@ -7506,7 +7501,7 @@ impl RecordingController {
     /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
     /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
     /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
-    /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
+    /// - Neither: Toggle mode - respects the FORMATTING_LEVEL setting
     async fn process_recording(
         &self,
         session_id: Option<String>,

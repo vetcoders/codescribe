@@ -14,7 +14,7 @@ Codescribe exposes **three work modes**. Each mode has **one shortcut binding** 
 
 Notes:
 
-- **Dictation** runs with or without AI depending on **Settings → Quality → AI Formatting**.
+- **Dictation** runs with or without AI depending on **Settings → Creator → Formatting level** (Off keeps the raw transcript).
 - **Formatting** and **Assistive** always require AI provider config (see **Settings → AI & Prompts**).
 
 ---
@@ -33,7 +33,7 @@ Notes:
 ### Behavior
 
 - Auto‑paste: **ON**
-- AI: **optional** (controlled by the AI Formatting toggle)
+- AI: **optional** (controlled by the Formatting level; Off means no AI)
 - Preview: transcription overlay shows live text while you speak
 
 ---

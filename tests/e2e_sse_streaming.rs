@@ -68,7 +68,6 @@ fn runtime_settings_with_local_buddy() -> (
     )
     .expect("local buddy custom provider");
     let settings = codescribe_core::config::UserSettings {
-        ai_formatting_enabled: Some(true),
         formatting_level: Some("smart".into()),
         llm_formatting_provider: Some(format!("custom:{}", provider.id)),
         llm_formatting_model: Some("buddy".into()),

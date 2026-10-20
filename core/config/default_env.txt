@@ -63,7 +63,6 @@ CODESCRIBE_STREAM_NOVELTY=0.20
 # - Use `CODESCRIBE_LOCAL_STT_FINAL_PASS=1` only for explicit diagnostics/final-pass comparison.
 
 # === LLM / Assistive & Formatting ===
-AI_FORMATTING_ENABLED=1
 TRANSCRIPT_SEND_MODE=streaming
 ASSISTIVE_CONTEXT_MAX_CHARS=20000
 #
