@@ -647,9 +647,11 @@ pub fn append_durable(
     shared: &Arc<Mutex<File>>,
     bytes: &[u8],
 ) -> io::Result<BusAppendReceipt> {
-    let receipts = append_durable_many_with(&[(path.to_path_buf(), Arc::clone(shared))], || {
-        Ok(vec![Some(bytes.to_vec())])
-    }, None)?;
+    let receipts = append_durable_many_with(
+        &[(path.to_path_buf(), Arc::clone(shared))],
+        || Ok(vec![Some(bytes.to_vec())]),
+        None,
+    )?;
     receipts.into_iter().next().flatten().ok_or_else(invalid)
 }
 
@@ -667,10 +669,13 @@ where
     if destinations.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(invalid());
     }
-    let mut files = destinations.iter().map(|(_, shared)| {
-        shared.lock().unwrap_or_else(|error| error.into_inner())
-    }).collect::<Vec<_>>();
-    let leases = destinations.iter().map(|(path, _)| Lease::acquire(path))
+    let mut files = destinations
+        .iter()
+        .map(|(_, shared)| shared.lock().unwrap_or_else(|error| error.into_inner()))
+        .collect::<Vec<_>>();
+    let leases = destinations
+        .iter()
+        .map(|(path, _)| Lease::acquire(path))
         .collect::<io::Result<Vec<_>>>()?;
     let mut closed = Vec::new();
     for ((path, _), file) in destinations.iter().zip(files.iter_mut()) {
@@ -682,28 +687,45 @@ where
     }
     let mut receipts = Vec::new();
     for (((path, _), file), batch) in destinations.iter().zip(files.iter_mut()).zip(batches) {
-        let Some(bytes) = batch else { receipts.push(None); continue };
+        let Some(bytes) = batch else {
+            receipts.push(None);
+            continue;
+        };
         let manifest = view(path)?.ok_or_else(invalid)?;
-        let offset = manifest.active.start.checked_add(file.metadata()?.len()).ok_or_else(invalid)?;
+        let offset = manifest
+            .active
+            .start
+            .checked_add(file.metadata()?.len())
+            .ok_or_else(invalid)?;
         file.write_all(&bytes)?;
         file.flush()?;
         file.sync_all()?;
         receipts.push(Some(BusAppendReceipt {
-            stream_id: manifest.stream_id, stream_dev: manifest.stream_dev,
-            stream_inode: manifest.stream_inode, offset, length: bytes.len() as u64,
+            stream_id: manifest.stream_id,
+            stream_dev: manifest.stream_dev,
+            stream_inode: manifest.stream_inode,
+            offset,
+            length: bytes.len() as u64,
         }));
     }
     if let Some((index, bytes)) = commit {
         let (path, _) = destinations.get(index).ok_or_else(invalid)?;
         let file = files.get_mut(index).ok_or_else(invalid)?;
         let manifest = view(path)?.ok_or_else(invalid)?;
-        let offset = manifest.active.start.checked_add(file.metadata()?.len()).ok_or_else(invalid)?;
+        let offset = manifest
+            .active
+            .start
+            .checked_add(file.metadata()?.len())
+            .ok_or_else(invalid)?;
         file.write_all(&bytes)?;
         file.flush()?;
         file.sync_all()?;
         receipts.push(Some(BusAppendReceipt {
-            stream_id: manifest.stream_id, stream_dev: manifest.stream_dev,
-            stream_inode: manifest.stream_inode, offset, length: bytes.len() as u64,
+            stream_id: manifest.stream_id,
+            stream_dev: manifest.stream_dev,
+            stream_inode: manifest.stream_inode,
+            offset,
+            length: bytes.len() as u64,
         }));
     }
     drop(leases);
