@@ -81,7 +81,7 @@ struct AgentConversationHeader: View {
 
   var body: some View {
     HStack(alignment: .center, spacing: 10) {
-      VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 8) {
           Text(verbatim: title)
             .font(CSFont.ui(14, .semibold))

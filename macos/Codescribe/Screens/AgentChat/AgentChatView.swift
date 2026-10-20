@@ -109,8 +109,11 @@ enum AgentWindowMetrics {
   /// Points an open panel adds to the detail column.
   static let contextPanelFootprint: CGFloat = contextPanelWidth + contextPanelDividerWidth
   /// The conversation header row and the panel header share one height, so
-  /// "Agent context" sits on the same line as the conversation title.
-  static let conversationHeaderHeight: CGFloat = 48
+  /// "Agent context" sits on the same line as the conversation title. 36 pt
+  /// holds the two-line identity (14 pt title over the 10 pt mono line) and
+  /// the 22 pt Context toggle; 48 read as a second toolbar (Founder,
+  /// 2026-10-21).
+  static let conversationHeaderHeight: CGFloat = 36
 
   /// Window floor: the closed-panel floor plus the panel footprint when open.
   static func windowFloorWidth(contextPanelOpen: Bool) -> CGFloat {
