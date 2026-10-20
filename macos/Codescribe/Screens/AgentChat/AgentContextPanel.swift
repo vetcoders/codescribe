@@ -71,45 +71,38 @@ enum AgentContextPanelCopy {
 
 // MARK: - Conversation header
 
-/// The conversation's one identity row, at the top of the conversation column
-/// under the toolbar: the thread title, "Agent · model", the live status, the
-/// Voice Lab mark when it applies, and the Context entry. The toolbar does not
-/// repeat any of it.
+/// The conversation's identity, in the window bar beside the wordmark: the
+/// thread title with the live status, and "Agent · model" under it. It lived
+/// in a row of its own under the bar for one build; the founders asked for one
+/// bar of the same height as the Settings window (2026-10-21), so the row
+/// folded into the bar and its controls (Voice Lab mark, width, Context) sit
+/// in the bar's trailing cluster. Nothing else repeats it.
 struct AgentConversationHeader: View {
   @ObservedObject var store: AgentChatStore
-  @Binding var isContextOpen: Bool
+
+  /// Long titles truncate here instead of pushing the trailing cluster.
+  static let maxWidth: CGFloat = 360
 
   var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: 8) {
-          Text(verbatim: title)
-            .font(CSFont.ui(14, .semibold))
-            .foregroundStyle(Color.primary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(1)
-          AgentLiveStatusPill(activity: store.selectedHeaderActivity)
-            .layoutPriority(2)
-        }
-        Text(verbatim: Self.identityLine(model: store.currentThread?.model))
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
+    VStack(alignment: .leading, spacing: 2) {
+      HStack(spacing: 8) {
+        Text(verbatim: title)
+          .font(CSFont.ui(14, .semibold))
+          .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.tail)
+          .layoutPriority(1)
+        AgentLiveStatusPill(activity: store.selectedHeaderActivity)
+          .layoutPriority(2)
       }
-      .layoutPriority(1)
-
-      Spacer(minLength: 8)
-
-      DeveloperPowerMark()
-        .fixedSize()
-      AgentWidthModeButton()
-      AgentContextToggle(isOpen: $isContextOpen)
+      Text(verbatim: Self.identityLine(model: store.currentThread?.model))
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(Color.secondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
     }
-    .padding(.horizontal, ChatLayoutPolicy.listPadding)
-    .frame(maxWidth: .infinity)
-    .frame(height: AgentWindowMetrics.conversationHeaderHeight)
+    .frame(maxWidth: Self.maxWidth, alignment: .leading)
+    .accessibilityElement(children: .combine)
   }
 
   private var title: String {
@@ -290,7 +283,7 @@ struct AgentContextPanel: View {
       .accessibilityLabel(AgentContextPanelCopy.closeHelp)
     }
     .padding(.horizontal, 14)
-    .frame(height: AgentWindowMetrics.conversationHeaderHeight)
+    .frame(height: AgentWindowMetrics.panelHeaderHeight)
   }
 
   private func section<Content: View>(

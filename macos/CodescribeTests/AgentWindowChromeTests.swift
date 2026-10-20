@@ -80,8 +80,8 @@ final class AgentWindowChromeTests: XCTestCase {
         // SwiftUI toolbar children are not projected through AppKit AX in
         // XCTest. Measure the public NSToolbarItem views instead of treating
         // absent AX children as absent production controls.
-        // Round 4 (UI-59): the conversation title moved to the header row of
-        // the conversation column, so the bar holds brand and actions only.
+        // One bar: brand and the conversation identity lead, the actions
+        // (Voice Lab mark, width, Context, pin, menu) trail (2026-10-21).
         let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
         XCTAssertGreaterThanOrEqual(
           controls.count, 2, "brand and actions stay native toolbar clusters")
@@ -400,9 +400,11 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(panelWidths[0], panelWidths[1], accuracy: 1, "a long title never widens it")
   }
 
-  /// One identity plane: the toolbar holds no principal item, the header row
-  /// in the conversation column carries title, "Agent · model" and Context,
-  /// and the Voice Lab mark lives in that row instead of a corner overlay.
+  /// One identity plane and one bar: the toolbar holds no principal item, the
+  /// leading group carries the wordmark with title and "Agent · model", the
+  /// trailing cluster the Voice Lab mark, width, Context, pin and menu, and no
+  /// header row sits under the bar (founders, 2026-10-21: one bar, the same
+  /// height as Settings).
   func testConversationIdentityHasOneHome() throws {
     let codescribe = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
@@ -413,12 +415,18 @@ final class AgentWindowChromeTests: XCTestCase {
     let agent = try source("Screens/AgentChat/AgentChatView.swift")
     XCTAssertFalse(agent.contains("placement: .principal"))
     XCTAssertFalse(agent.contains("developerPowerCorner"))
+    XCTAssertFalse(agent.contains("safeAreaInset(edge: .top"), "no header row under the bar")
+    XCTAssertEqual(agent.components(separatedBy: "AgentConversationHeader(store: store)").count, 2)
+    let cluster = try XCTUnwrap(
+      agent.range(of: "private var trailingCluster").map { String(agent[$0.lowerBound...]) })
+    XCTAssertTrue(cluster.contains("DeveloperPowerMark()"))
+    XCTAssertTrue(cluster.contains("AgentWidthModeButton()"))
+    XCTAssertTrue(cluster.contains("AgentContextToggle(isOpen: $isContextOpen)"))
     let header = try source("Screens/AgentChat/AgentContextPanel.swift")
     let row = try XCTUnwrap(
       header.range(of: "struct AgentConversationHeader").map { String(header[$0.lowerBound...]) })
-    XCTAssertTrue(row.contains("DeveloperPowerMark()"))
-    XCTAssertTrue(row.contains("AgentContextToggle(isOpen: $isContextOpen)"))
     XCTAssertTrue(row.contains("AgentLiveStatusPill(activity: store.selectedHeaderActivity)"))
+    XCTAssertEqual(AgentConversationHeader.maxWidth, 360)
     XCTAssertEqual(AgentConversationHeader.identityLine(model: " grok-4.5 "), "Agent · grok-4.5")
     XCTAssertEqual(AgentConversationHeader.identityLine(model: nil), "Agent")
     XCTAssertEqual(AgentConversationHeader.identityLine(model: "  "), "Agent")
