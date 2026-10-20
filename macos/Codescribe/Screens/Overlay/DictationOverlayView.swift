@@ -742,10 +742,13 @@ struct DictationOverlayView: View {
     rail
       .padding(.top, headerHeight + 8)
       .padding(.bottom, 12)
+      // Keep the complete action buttons outside the native resize band.
+      .padding(.trailing, OverlayResizeHit.band)
       .frame(width: width, height: max(0, maximumHeight - headerHeight - 8))
       .frame(maxHeight: .infinity, alignment: .top)
       .focusable(false)
       .background { CSSidebarMaterial() }
+      .background { OverlayMenuCursorRegion() }
       .overlay(alignment: .leading) {
         Rectangle()
           .fill(palette.border.color)

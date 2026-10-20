@@ -2234,7 +2234,9 @@ final class OverlayState {
       !conversations.contains(where: { $0.id == selectedConversationID })
     {
       self.selectedConversationID = nil
-      if !showsAgentMonitor { windowContentSurface = .transcription }
+      // Inventory can retire an owner, but cannot choose a different canvas.
+      // Keep Agents open as its roster until the user picks another owner.
+      if windowContentSurface == .agents { showsAgentMonitor = true }
     }
     resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
