@@ -982,26 +982,25 @@ struct OverlayChannelStatusView: View {
           onSelectConversation != nil
         {
           rowGlassContainer(
-            HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
               broadcastRow(broadcast, rowFocus: rowFocus)
-              OverlayAgentAudioControls(
-                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
-                microphoneEnabled: !unavailable && hudStates["0"] != nil
-                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
-                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
-                palette: palette, onMicrophone: { onToggleChannel?(0) },
-                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                speaking: broadcast.replySpeaking
-              )
-              .fixedSize()
-              .accessibilityIdentifier("overlay-channel-toggle-0")
-              // Maciej, 2026-10-18: the big microphone "powinien być w linii z
-              // resztą mikrofonów". Agent rows end with the archive cross and a
-              // 6 pt inset; keeping that empty slot puts the broadcast speaker
-              // in the agents' speaker column and its microphone beside it.
-              if onArchiveAgent != nil, !archiveCandidates.isEmpty { archiveSlot }
+              HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                OverlayAgentAudioControls(
+                  open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                  microphoneEnabled: !unavailable && hudStates["0"] != nil
+                    && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                  playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                  palette: palette, onMicrophone: { onToggleChannel?(0) },
+                  onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                  speaking: broadcast.replySpeaking
+                )
+                .fixedSize()
+                .accessibilityIdentifier("overlay-channel-toggle-0")
+              }
+              .padding(.trailing, 6)
             }
-            .padding(.trailing, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
           )
           // The shared channel is a roster row: the same padding, the same
           // selection mark and the same hover as the agents under it.
@@ -1102,19 +1101,6 @@ struct OverlayChannelStatusView: View {
     overlayGlassGroup(content)
   }
 
-  /// The archive cross's footprint, laid out but never drawn or focused.
-  private var archiveSlot: some View {
-    Button {
-    } label: {
-      Image(systemName: "xmark")
-        .font(.system(size: 12, weight: .semibold))
-        .frame(width: 16, height: 16)
-    }
-    .modifier(OverlayAgentControlStyle())
-    .disabled(true)
-    .hidden()
-    .accessibilityHidden(true)
-  }
   func channelRow(
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {
@@ -1134,10 +1120,9 @@ struct OverlayChannelStatusView: View {
     let tooltip = tooltipParts.joined(separator: ". ")
     let label = rosterRowLabel(
       title: "\(channel.channel) · \(conversation?.name ?? channel.agent)",
-      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel),
-      receiptText: receiptText)
+      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
     return rowGlassContainer(
-      HStack(spacing: 6) {
+      VStack(alignment: .leading, spacing: 4) {
         Group {
           if let conversation, onSelectConversation != nil {
             Button {
@@ -1173,81 +1158,93 @@ struct OverlayChannelStatusView: View {
         .accessibilityValue(Text(verbatim: tooltip))
         .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
-        OverlayAgentAudioControls(
-          open: open, muted: mutedChannels[channel.channel],
-          microphoneEnabled: !unavailable && onToggleChannel != nil
-            && !pendingToggleChannels.contains(channel.channel)
-            && Self.toggleDigit(for: channel.channel) != nil
-            && !hasDeadFollower(channel),
-          playbackEnabled: onTogglePlayback != nil
-            && !pendingMuteChannels.contains(channel.channel),
-          palette: palette, onMicrophone: { toggle(channel) },
-          onPlayback: { onTogglePlayback?(channel.channel) },
-          speaking: conversation?.replySpeaking == true
-        )
-        .fixedSize()
-        .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
-        if showsPanelFocusButton(for: channel),
-          let owner = archiveCandidates[channel.channel],
-          let onFocusAgentPanel
-        {
-          let focusState = panelFocusStates[channel.channel]
-          let focusHelp = panelFocusHelp(for: channel, state: focusState)
-          Button {
-            onFocusAgentPanel(owner)
-          } label: {
-            Group {
-              if focusState?.isRequesting == true {
-                ProgressView()
-                  .controlSize(.mini)
-              } else {
-                Image(systemName: panelFocusSymbol(focusState))
-                  .font(.system(size: 11, weight: .semibold))
-                  .foregroundStyle(
-                    focusState?.isSucceeded == true
-                      ? palette.successStatus.color
-                      : focusState?.isFailed == true
-                        ? palette.errorStatus.color
-                        : hasNoFramePane(channel)
-                          ? palette.mutedText.color : palette.primaryText.color
-                  )
+        // The controls occupy only the footer. Identity, time and preview
+        // above use the entire row instead of a narrow column beside them.
+        HStack(spacing: 8) {
+          rosterRowState(channel, receiptText: receiptText)
+          Spacer(minLength: 0)
+          HStack(spacing: 6) {
+            OverlayAgentAudioControls(
+              open: open, muted: mutedChannels[channel.channel],
+              microphoneEnabled: !unavailable && onToggleChannel != nil
+                && !pendingToggleChannels.contains(channel.channel)
+                && Self.toggleDigit(for: channel.channel) != nil
+                && !hasDeadFollower(channel),
+              playbackEnabled: onTogglePlayback != nil
+                && !pendingMuteChannels.contains(channel.channel),
+              palette: palette, onMicrophone: { toggle(channel) },
+              onPlayback: { onTogglePlayback?(channel.channel) },
+              speaking: conversation?.replySpeaking == true
+            )
+            .fixedSize()
+            .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
+            if showsPanelFocusButton(for: channel),
+              let owner = archiveCandidates[channel.channel],
+              let onFocusAgentPanel
+            {
+              let focusState = panelFocusStates[channel.channel]
+              let focusHelp = panelFocusHelp(for: channel, state: focusState)
+              Button {
+                onFocusAgentPanel(owner)
+              } label: {
+                Group {
+                  if focusState?.isRequesting == true {
+                    ProgressView()
+                      .controlSize(.mini)
+                  } else {
+                    Image(systemName: panelFocusSymbol(focusState))
+                      .font(.system(size: 11, weight: .semibold))
+                      .foregroundStyle(
+                        focusState?.isSucceeded == true
+                          ? palette.successStatus.color
+                          : focusState?.isFailed == true
+                            ? palette.errorStatus.color
+                            : hasNoFramePane(channel)
+                              ? palette.mutedText.color : palette.primaryText.color
+                      )
+                  }
+                }
+                .frame(width: 16, height: 16)
               }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .disabled(
+                focusState?.isRequesting == true || hasDeadFollower(channel)
+                  || hasNoFramePane(channel)
+              )
+              .modifier(
+                OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
+              )
+              .accessibilityLabel(Text(verbatim: focusHelp))
+              .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
             }
-            .frame(width: 16, height: 16)
+            // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
+            // tam zawsze"); only an open microphone or an archive in flight
+            // disables it, and the help says which.
+            if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
+              let archiveHelp = archiveHelp(for: channel)
+              Button {
+                onArchiveAgent?(owner)
+              } label: {
+                Image(systemName: "xmark")
+                  .font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(palette.primaryText.color)
+                  .frame(width: 16, height: 16)
+              }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .disabled(pendingArchives.contains(owner) || open)
+              .help(archiveHelp)
+              .accessibilityLabel(Text(verbatim: archiveHelp))
+              .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
+            }
           }
-          .modifier(OverlayAgentControlStyle())
-          .csFocusOutline()
-          .disabled(
-            focusState?.isRequesting == true || hasDeadFollower(channel)
-              || hasNoFramePane(channel)
-          )
-          .modifier(
-            OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
-          )
-          .accessibilityLabel(Text(verbatim: focusHelp))
-          .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
+          .fixedSize(horizontal: true, vertical: false)
+          .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")
         }
-        // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
-        // tam zawsze"); only an open microphone or an archive in flight
-        // disables it, and the help says which.
-        if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
-          let archiveHelp = archiveHelp(for: channel)
-          Button {
-            onArchiveAgent?(owner)
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(palette.primaryText.color)
-              .frame(width: 16, height: 16)
-          }
-          .modifier(OverlayAgentControlStyle())
-          .csFocusOutline()
-          .disabled(pendingArchives.contains(owner) || open)
-          .help(archiveHelp)
-          .accessibilityLabel(Text(verbatim: archiveHelp))
-          .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
-        }
+        .padding(.trailing, 6)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     )
     .padding(.vertical, 3)
     .padding(.horizontal, 5)
@@ -1283,7 +1280,8 @@ struct OverlayChannelStatusView: View {
   /// One roster row in at most five lines (Maciej, 2026-10-17: "ustalmy budżet
   /// 5 wierszy"): identity with the channel-0 mark, the unread badge and the
   /// time; the provider descriptor; a two-line preview that names who
-  /// addressed whom; one state line. The badge counts replies the Founder has
+  /// addressed whom. The state and controls share the footer below this label.
+  /// The badge counts replies the Founder has
   /// not opened, the state line carries the agent's receipts, so the two
   /// never mix. The five lines are a budget, not a shape: they sit on one
   /// leading, so the card stays dense beside the conversation it steals
@@ -1291,8 +1289,7 @@ struct OverlayChannelStatusView: View {
   @ViewBuilder
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
-    conversation: OverlayConversation?, dot: OverlayAgentDotKind,
-    receiptText: String? = nil
+    conversation: OverlayConversation?, dot: OverlayAgentDotKind
   ) -> some View {
     HStack(alignment: .top, spacing: 6) {
       OverlayAgentStatusDot(kind: dot, palette: palette)
@@ -1309,13 +1306,11 @@ struct OverlayChannelStatusView: View {
         )
       VStack(alignment: .leading, spacing: 1) {
         HStack(spacing: 6) {
-          // Maciej 2026-10-17: names were cut to "6…r" in the sidebar because
-          // the fixed-size time won the squeeze. The name is offered room
-          // first and the time is compact.
+          // The identity gets the full row; the clock stays at its far edge.
           Text(verbatim: title)
             .font(.system(size: 13.5 * textScale, weight: .semibold))
             .lineLimit(1)
-            .truncationMode(.middle)
+            .truncationMode(.tail)
             .layoutPriority(1)
           if let statusChannel {
             broadcastPolicyMark(statusChannel.broadcastPolicy)
@@ -1332,8 +1327,10 @@ struct OverlayChannelStatusView: View {
             MessageTimestampLabel(date: date, compact: true)
               .font(.system(size: 11 * textScale))
               .foregroundStyle(palette.mutedText.color)
+              .fixedSize(horizontal: true, vertical: false)
           }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         if let statusChannel, let descriptor = agentDescriptor(for: statusChannel) {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale))
@@ -1353,24 +1350,29 @@ struct OverlayChannelStatusView: View {
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
         }
-        if let statusChannel {
-          HStack(spacing: 5) {
-            if panelFocusStates[statusChannel.channel]?.isRequesting == true {
-              ProgressView()
-                .controlSize(.mini)
-                .accessibilityIdentifier("overlay-agent-focus-spinner-\(statusChannel.channel)")
-            }
-            Text(verbatim: rowStateText(for: statusChannel, receiptText: receiptText))
-              .font(.system(size: 11 * textScale, weight: .medium))
-              .foregroundStyle(rowStateColor(for: statusChannel))
-              .lineLimit(1)
-              .truncationMode(.tail)
-              .accessibilityIdentifier("overlay-agent-state-\(statusChannel.channel)")
-          }
-        }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
+  }
+
+  private func rosterRowState(
+    _ channel: OverlayChannelDelivery, receiptText: String?
+  ) -> some View {
+    HStack(spacing: 5) {
+      if panelFocusStates[channel.channel]?.isRequesting == true {
+        ProgressView()
+          .controlSize(.mini)
+          .accessibilityIdentifier("overlay-agent-focus-spinner-\(channel.channel)")
+      }
+      Text(verbatim: rowStateText(for: channel, receiptText: receiptText))
+        .font(.system(size: 11 * textScale, weight: .medium))
+        .foregroundStyle(rowStateColor(for: channel))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .accessibilityIdentifier("overlay-agent-state-\(channel.channel)")
+    }
   }
 
   /// The receipt of the newest delivery, then the reader's state when there is
