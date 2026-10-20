@@ -1966,6 +1966,7 @@
       }
     },
     "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools stay blocked, and a path that may hold secrets always asks." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -1986,6 +1987,7 @@
       }
     },
     "A server gives the Agent extra tools, such as code or web search." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2267,6 +2269,7 @@
       }
     },
     "Add MCP servers and manage the tools the Agent may use." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2340,6 +2343,7 @@
       }
     },
     "Add this provider's API key under Providers to list its models, or enter a model ID below." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -2730,8 +2734,20 @@
         }
       }
     },
+    "Agent environment configuration" : {
+      "comment" : "Settings tab: Diagnostics headline",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja środowiska agenta"
+          }
+        }
+      }
+    },
     "Agent environment status" : {
       "comment" : "Settings tab: Diagnostics headline",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3009,6 +3025,7 @@
       }
     },
     "Also heard, not committed: %@, %lld total" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3153,7 +3170,7 @@
       }
     },
     "Appearance" : {
-      "comment" : "Settings group: light or dark, and the sheet shade\nSettings row: light, dark or system",
+      "comment" : "Settings row: light, dark or system",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3338,6 +3355,16 @@
         }
       }
     },
+    "Attach extra context" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Załączanie dodatkowego kontekstu"
+          }
+        }
+      }
+    },
     "Attach images to send to the Agent" : {
       "localizations" : {
         "pl" : {
@@ -3502,6 +3529,7 @@
     },
     "Auto fold after…" : {
       "comment" : "Overlay header menu: how long an expanded overlay stays open",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -3712,6 +3740,7 @@
       }
     },
     "Browse and edit the base prompts." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4565,6 +4594,7 @@
       }
     },
     "Choose how to start Codescribe's modes and how to control recording." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -4932,6 +4962,7 @@
       }
     },
     "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5385,6 +5416,7 @@
       }
     },
     "Configuration state of the Agent, its available tools and integrations." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5888,6 +5920,17 @@
         }
       }
     },
+    "Corrections and Smart. Max uses the Agent model." : {
+      "comment" : "Formatting lane: the levels it serves; Max runs on the Agent lane",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Korekta i Smart. Max używa modelu Agenta."
+          }
+        }
+      }
+    },
     "Could not complete restoring %@. Check the current source shown above." : {
       "localizations" : {
         "pl" : {
@@ -6002,6 +6045,9 @@
           }
         }
       }
+    },
+    "Could not request panel focus in Frame." : {
+
     },
     "Could not save note" : {
       "comment" : "Tray banner: writing the daily note failed",
@@ -7189,6 +7235,7 @@
       }
     },
     "During dictation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7677,6 +7724,7 @@
       }
     },
     "Finish setup above" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7924,6 +7972,7 @@
       }
     },
     "Formatting limited to corrections." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8098,6 +8147,50 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pierwsze kroki"
+          }
+        }
+      }
+    },
+    "Git commit" : {
+      "comment" : "Capability name: repo.commit",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "commit Git"
+          }
+        }
+      }
+    },
+    "Git diff" : {
+      "comment" : "Capability name: repo.diff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "diff Git"
+          }
+        }
+      }
+    },
+    "Git history" : {
+      "comment" : "Capability name: repo.log",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "historia Git"
+          }
+        }
+      }
+    },
+    "Git status" : {
+      "comment" : "Capability name: repo.status",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "status Git"
           }
         }
       }
@@ -8519,6 +8612,7 @@
       }
     },
     "Individual tools" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -8631,6 +8725,9 @@
           }
         }
       }
+    },
+    "Install the agent bridge to focus agent panels in Frame." : {
+
     },
     "Install the agent bridge to play replies." : {
       "localizations" : {
@@ -8852,6 +8949,7 @@
     },
     "Languages" : {
       "comment" : "Settings group: app language and speech language",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9630,6 +9728,7 @@
     },
     "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only." : {
       "comment" : "Formatting lane usage while the Max level is selected",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10033,6 +10132,7 @@
     },
     "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers." : {
       "comment" : "Model discovery failed while the provider account stays signed in",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10322,7 +10422,7 @@
       }
     },
     "Multilingual detects the language automatically." : {
-      "comment" : "Speech recognition language row explanation",
+      "comment" : "Transcription language row explanation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10574,6 +10674,7 @@
       }
     },
     "No MCP servers yet — this is optional." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10962,7 +11063,7 @@
       }
     },
     "No provider for %@" : {
-      "comment" : "Diagnostics note; placeholder is a list of capability operation ids such as fs.list",
+      "comment" : "Diagnostics note; placeholder is a list of short capability names such as list folders",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11156,6 +11257,9 @@
           }
         }
       }
+    },
+    "Not calibrated" : {
+
     },
     "Not checked yet" : {
       "comment" : "Diagnostics summary headline before the first probe has run",
@@ -12412,6 +12516,23 @@
         }
       }
     },
+    "Pins in this take: %lld" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Pins in this take: %lld"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znaczniki w tym nagraniu: %lld"
+          }
+        }
+      }
+    },
     "Plan" : {
       "comment" : "License status row: the purchased plan",
       "extractionState" : "manual",
@@ -12648,6 +12769,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Procesy"
+          }
+        }
+      }
+    },
+    "Processes and MCP servers have their own permissions." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Procesy i serwery MCP mają własne uprawnienia."
           }
         }
       }
@@ -13532,6 +13663,16 @@
         }
       }
     },
+    "Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagrania wysyłamy do chmury tylko, gdy wybierzesz tryb chmurowy lub retranskrypcję w chmurze."
+          }
+        }
+      }
+    },
     "Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged." : {
       "localizations" : {
         "pl" : {
@@ -14068,6 +14209,7 @@
       }
     },
     "Required before a recording can start." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14078,6 +14220,7 @@
       }
     },
     "Required before a recording can start. The switch is on the Lab desk." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15581,6 +15724,7 @@
       }
     },
     "Shows the agents list" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16260,6 +16404,7 @@
     },
     "Speech recognition language" : {
       "comment" : "Settings row: dictation language",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17304,6 +17449,17 @@
         }
       }
     },
+    "The API key was rejected, so there is no model list. The account still works." : {
+      "comment" : "Model discovery failed while the provider account stays signed in",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa."
+          }
+        }
+      }
+    },
     "The Agent and voice assistant model" : {
       "localizations" : {
         "pl" : {
@@ -17472,6 +17628,7 @@
       }
     },
     "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17590,6 +17747,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wiadomość jest za długa (limit 64 KB)."
+          }
+        }
+      }
+    },
+    "The model list needs an API key. You can enter a model ID by hand." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie."
           }
         }
       }
@@ -17728,6 +17895,7 @@
       }
     },
     "The transcript cleanup model" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17779,6 +17947,7 @@
       }
     },
     "These three shortcuts need saving. Everything else saves automatically." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -18076,6 +18245,16 @@
         }
       }
     },
+    "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody."
+          }
+        }
+      }
+    },
     "Tools" : {
       "comment" : "Settings tab: tool permissions",
       "localizations" : {
@@ -18311,6 +18490,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Transkrypcja przerwana"
+          }
+        }
+      }
+    },
+    "Transcription language" : {
+      "comment" : "Settings row: the language the speech is transcribed in",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Język transkrypcji"
           }
         }
       }
@@ -18932,6 +19122,7 @@
       }
     },
     "Voice & formatting" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19065,6 +19256,7 @@
     },
     "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay." : {
       "comment" : "Creator: what reopening the setup wizard does",
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19086,6 +19278,7 @@
       }
     },
     "We send recordings only in Cloud mode or during a manual cloud re-transcription." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19410,23 +19603,6 @@
         }
       }
     },
-    "Pins in this take: %lld" : {
-      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Pins in this take: %lld"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Znaczniki w tym nagraniu: %lld"
-          }
-        }
-      }
-    },
     "Wide" : {
       "comment" : "Conversation width",
       "localizations" : {
@@ -19715,6 +19891,7 @@
       }
     },
     "You choose the mode under Dictation." : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -20323,6 +20500,17 @@
         }
       }
     },
+    "check processes" : {
+      "comment" : "Capability name: process.observe",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "podgląd procesów"
+          }
+        }
+      }
+    },
     "closed" : {
       "comment" : "Dictionary: quality record action",
       "localizations" : {
@@ -20352,6 +20540,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "chmura"
+          }
+        }
+      }
+    },
+    "code calls" : {
+      "comment" : "Capability name: code.calls",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wywołania w kodzie"
+          }
+        }
+      }
+    },
+    "code symbols" : {
+      "comment" : "Capability name: code.symbols",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "symbole kodu"
           }
         }
       }
@@ -20634,6 +20844,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "np. prview"
+          }
+        }
+      }
+    },
+    "edit files" : {
+      "comment" : "Capability name: fs.patch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "edycja plików"
           }
         }
       }
@@ -21144,7 +21365,7 @@
     },
     "hotkeys.mode.dictation.blurb" : {
       "comment" : "Work mode description on the Shortcuts screen",
-      "extractionState" : "extracted_with_value",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21342,6 +21563,17 @@
         }
       }
     },
+    "list folders" : {
+      "comment" : "Capability name: fs.list",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "listowanie folderów"
+          }
+        }
+      }
+    },
     "listening" : {
       "localizations" : {
         "pl" : {
@@ -21512,6 +21744,7 @@
       }
     },
     "measured profile" : {
+      "extractionState" : "stale",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -21538,6 +21771,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "folder modeli"
+          }
+        }
+      }
+    },
+    "move files" : {
+      "comment" : "Capability name: fs.move",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "przenoszenie plików"
           }
         }
       }
@@ -22308,6 +22552,39 @@
         }
       }
     },
+    "project build" : {
+      "comment" : "Capability name: project.build",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "budowanie projektu"
+          }
+        }
+      }
+    },
+    "project diagnostics" : {
+      "comment" : "Capability name: project.diagnostics",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "diagnostyka projektu"
+          }
+        }
+      }
+    },
+    "project tests" : {
+      "comment" : "Capability name: project.test",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "testy projektu"
+          }
+        }
+      }
+    },
     "queued · waiting for receipt" : {
       "localizations" : {
         "pl" : {
@@ -22336,6 +22613,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "surowy"
+          }
+        }
+      }
+    },
+    "read files" : {
+      "comment" : "Capability name: fs.read",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "odczyt plików"
           }
         }
       }
@@ -22475,6 +22763,17 @@
         }
       }
     },
+    "run processes" : {
+      "comment" : "Capability name: process.run",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "uruchamianie procesów"
+          }
+        }
+      }
+    },
     "running" : {
       "comment" : "Tool call status",
       "localizations" : {
@@ -22493,6 +22792,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "zapisana poprawka"
+          }
+        }
+      }
+    },
+    "search files" : {
+      "comment" : "Capability name: fs.search",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "wyszukiwanie w plikach"
           }
         }
       }
@@ -23288,6 +23598,17 @@
         }
       }
     },
+    "stop processes" : {
+      "comment" : "Capability name: process.stop",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zatrzymywanie procesów"
+          }
+        }
+      }
+    },
     "stopped" : {
       "comment" : "Tool activity row: stopped by the user",
       "localizations" : {
@@ -24075,6 +24396,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "pracował · %@ s"
+          }
+        }
+      }
+    },
+    "write files" : {
+      "comment" : "Capability name: fs.write",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "zapis plików"
           }
         }
       }
