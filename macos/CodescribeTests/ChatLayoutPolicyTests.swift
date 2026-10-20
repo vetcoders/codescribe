@@ -103,6 +103,18 @@ final class ChatLayoutPolicyTests: XCTestCase {
   @MainActor
   func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
     final class LayoutEngine: ChatEngineFixture {}
+    // The window floor below is the closed-panel floor; an open context panel
+    // raises it (AgentWindowChromeTests covers that path).
+    let panelKey = AgentContextPanelPreference.defaultsKey
+    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
+    UserDefaults.standard.set(false, forKey: panelKey)
+    defer {
+      if let previousPanel {
+        UserDefaults.standard.set(previousPanel, forKey: panelKey)
+      } else {
+        UserDefaults.standard.removeObject(forKey: panelKey)
+      }
+    }
     let store = AgentChatStore(
       engine: LayoutEngine(),
       threads: [
@@ -121,8 +133,8 @@ final class ChatLayoutPolicyTests: XCTestCase {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
       return view.subviews.lazy.compactMap { find($0) }.first
     }
-    // The title string stays "Agent" and is hidden. The model reads beside
-    // the thread title in the integrated toolbar.
+    // The title string stays "Agent" and is hidden. The model reads under
+    // the thread title in the conversation header row.
     pumpUntil(ceiling: 1.0) {
       find(host.view) != nil && window.title == "Agent"
     }
