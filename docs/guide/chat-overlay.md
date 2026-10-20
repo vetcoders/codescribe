@@ -116,15 +116,15 @@ at the top of the sidebar. The sidebar looks and behaves like the one in Setting
 left of the toolbar, or `Control+Command+S`, hides and shows it. Summoning the
 window does not start recording or send a request.
 
-The toolbar carries the wordmark, **Always on top** and the conversation menu
-(rename, favorites, Markdown export, conversation width, settings, delete).
-The conversation header also carries a one-click width button beside
-**Context**: each click moves Standard → Wide → Full width, the same
-preference the menu names.
-The conversation's own header sits at the top of the conversation column: its
-title, a line with **Agent** and the conversation's model when it has one, the
-live status while the Agent works, and **Context**. On a developer build with
-Voice Lab enabled, the header also shows a small **Voice Lab power mode** mark.
+The window has one bar, the same height as the Settings window's. It leads
+with the wordmark and the conversation's identity: its title, the live status
+while the Agent works, and a line with **Agent** and the conversation's model
+when it has one. On the trailing side sit a one-click width button (each click
+moves Standard → Wide → Full width, the same preference the menu names),
+**Context**, **Always on top** and the conversation menu (rename, favorites,
+Markdown export, conversation width, settings, delete). On a developer build
+with Voice Lab enabled, the bar also shows a small **Voice Lab power mode**
+mark before those controls.
 
 **Context** opens the **Agent context** panel on the right of the
 conversation; its close button or **Context** again hides it. The panel is

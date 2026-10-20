@@ -270,11 +270,16 @@ final class ChatLayoutPolicyTests: XCTestCase {
     let header = try? String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Codescribe/Screens/AgentChat/AgentContextPanel.swift"),
+        .appendingPathComponent("Codescribe/Screens/AgentChat/AgentChatView.swift"),
       encoding: .utf8)
     XCTAssertTrue(header?.contains("AgentWidthModeButton()\n      AgentContextToggle(") == true,
-      "the width button sits beside Context in the conversation header")
-    XCTAssertTrue(header?.contains("@AppStorage(ChatLayoutPolicy.defaultsKey)") == true,
+      "the width button sits beside Context in the window bar's trailing cluster")
+    let panel = try? String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/AgentChat/AgentContextPanel.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(panel?.contains("@AppStorage(ChatLayoutPolicy.defaultsKey)") == true,
       "the button writes the same preference the menu does")
   }
 }

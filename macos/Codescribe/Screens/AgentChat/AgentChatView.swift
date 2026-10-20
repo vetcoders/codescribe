@@ -35,7 +35,8 @@ struct AgentChatView: View {
       .frame(minWidth: AgentWindowMetrics.detailFloorWidth(contextPanelOpen: contextPanelOpen))
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
-    .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
+    .modifier(
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -108,12 +109,10 @@ enum AgentWindowMetrics {
   static let contextPanelDividerWidth: CGFloat = 1
   /// Points an open panel adds to the detail column.
   static let contextPanelFootprint: CGFloat = contextPanelWidth + contextPanelDividerWidth
-  /// The conversation header row and the panel header share one height, so
-  /// "Agent context" sits on the same line as the conversation title. 36 pt
-  /// holds the two-line identity (14 pt title over the 10 pt mono line) and
-  /// the 22 pt Context toggle; 48 read as a second toolbar (Founder,
-  /// 2026-10-21).
-  static let conversationHeaderHeight: CGFloat = 36
+  /// The context panel's header row ("Agent context" and its close button).
+  /// The conversation's own identity lives in the window bar, so the window
+  /// has one bar of the same height as Settings (founders, 2026-10-21).
+  static let panelHeaderHeight: CGFloat = 36
 
   /// Window floor: the closed-panel floor plus the panel footprint when open.
   static func windowFloorWidth(contextPanelOpen: Bool) -> CGFloat {
@@ -232,16 +231,16 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
 // MARK: - Integrated titlebar
 
-/// The window's native bar. The split view supplies the sidebar toggle; the
-/// wordmark and pin/menu share the toolbar. The conversation's identity
-/// (title, "Agent · model", live status, Context) lives in one place, the
-/// header row at the top of the conversation column
-/// (`AgentConversationHeader`), so the toolbar carries no principal item.
-/// Rename, delete, and export alerts stay on this modifier: alerts attached to
-/// a toolbar item do not present.
+/// The window's native bar, the only bar the window has. The split view
+/// supplies the sidebar toggle; the leading group holds the wordmark and the
+/// conversation's identity (`AgentConversationHeader`: title, live status,
+/// "Agent · model"), the trailing cluster the Voice Lab mark, width, Context,
+/// pin and menu. No principal item. Rename, delete, and export alerts stay on
+/// this modifier: alerts attached to a toolbar item do not present.
 private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
+  @Binding var isContextOpen: Bool
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
@@ -295,15 +294,21 @@ private struct AgentIntegratedChrome: ViewModifier {
     // after the wordmark (seen on the installed build, 2026-10-21); the
     // flexible space in the group keeps pin and menu on the trailing edge.
     if #available(macOS 26.0, *) {
-      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
-        .sharedBackgroundVisibility(.hidden)
+      ToolbarItemGroup(placement: .navigation) {
+        CSWindowHeaderItem { wordmark }
+        identity
+      }
+      .sharedBackgroundVisibility(.hidden)
       ToolbarItemGroup(placement: .primaryAction) {
         Spacer()
         CSWindowHeaderItem { trailingCluster }
       }
       .sharedBackgroundVisibility(.hidden)
     } else {
-      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
+      ToolbarItemGroup(placement: .navigation) {
+        CSWindowHeaderItem { wordmark }
+        identity
+      }
       ToolbarItemGroup(placement: .primaryAction) {
         Spacer()
         CSWindowHeaderItem { trailingCluster }
@@ -316,8 +321,21 @@ private struct AgentIntegratedChrome: ViewModifier {
       .fixedSize(horizontal: true, vertical: false)
   }
 
+  /// Title and "Agent · model" beside the wordmark; absent without a thread.
+  @ViewBuilder
+  private var identity: some View {
+    if store.currentThread != nil {
+      AgentConversationHeader(store: store)
+        .padding(.leading, 6)
+    }
+  }
+
   private var trailingCluster: some View {
     HStack(spacing: 12) {
+      DeveloperPowerMark()
+        .fixedSize()
+      AgentWidthModeButton()
+      AgentContextToggle(isOpen: $isContextOpen)
       pinToggle
       threadMenu
     }
@@ -454,10 +472,10 @@ private struct AgentIntegratedChrome: ViewModifier {
 
 // MARK: - Detail (messages under the composer dock)
 
-/// The conversation fills its column. Its header row (title, "Agent ·
-/// model", Context) sits under the toolbar; queued turns, approvals and the
-/// composer float above the turns in one bottom bar, so turns scroll beneath
-/// the header glass and the composer glass instead of stopping at a strip.
+/// The conversation fills its column under the window bar; queued turns,
+/// approvals and the composer float above the turns in one bottom bar, so
+/// turns scroll beneath the bar's glass and the composer glass instead of
+/// stopping at a strip.
 ///
 /// The optional context panel is a fixed trailing column beside the
 /// conversation, inside the detail column, never over the composer. Opening
@@ -503,17 +521,11 @@ private struct ThreadDetail: View {
     }
   }
 
-  /// The header glass is measured on the turns, inside the header row's
-  /// inset, so one plane covers the toolbar and the header row above the
-  /// conversation, and the turns scroll beneath both.
+  /// The header glass is measured on the turns, so one plane covers the
+  /// window bar above the conversation and the turns scroll beneath it.
   private var conversationColumn: some View {
     conversation
       .modifier(CSDetailHeaderGlass())
-      .safeAreaInset(edge: .top, spacing: 0) {
-        if store.currentThread != nil {
-          AgentConversationHeader(store: store, isContextOpen: $isContextOpen)
-        }
-      }
       .modifier(AgentScrollBottomBar { composerDock })
       .frame(
         minWidth: AgentWindowMetrics.detailMinWidth,
