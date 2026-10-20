@@ -149,6 +149,22 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
+/// The one horizontal flip the overlay's megaphones share: the header's agent
+/// button and the broadcast row both face left (Maciej, 2026-10-20).
+struct OverlayHorizontalMirror: ViewModifier {
+  let mirrored: Bool
+
+  func body(content: Content) -> some View {
+    content.scaleEffect(x: mirrored ? -1 : 1, y: 1)
+  }
+}
+
+extension View {
+  func overlayMirrored(_ mirrored: Bool = true) -> some View {
+    modifier(OverlayHorizontalMirror(mirrored: mirrored))
+  }
+}
+
 /// Compact circular glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
@@ -197,7 +213,7 @@ struct OverlayMicrophoneGlyph: View {
     case .symbol(let symbol):
       Image(systemName: symbol)
         .font(.system(size: 9, weight: .semibold))
-        .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+        .overlayMirrored(mirrored)
     case .character(let character, let pointSize):
       Text(verbatim: character)
         .font(.system(size: pointSize))
@@ -406,9 +422,20 @@ struct OverlayAgentAudioControls: View {
 
   private var speakingNow: Bool { speaking && muted == false }
 
-  /// Maciej, 2026-10-18: the channel-0 microphone "dwa razy większa w
-  /// średnicy". Only the broadcast microphone grows; its speaker stays.
-  private var microphoneScale: CGFloat { broadcast ? 2 : 1 }
+  /// Maciej, 2026-10-18 asked the channel-0 control for twice the diameter;
+  /// Maciej, 2026-10-20 found that too large and made it a megaphone. 1.5
+  /// sits halfway between an agent's 22 pt microphone and the old 2x, large
+  /// enough to read as speaking to everyone beside the speaker, small enough
+  /// not to dwarf the agent rows. Only the broadcast control grows.
+  static let broadcastMicrophoneScale: CGFloat = 1.5
+  private var microphoneScale: CGFloat { broadcast ? Self.broadcastMicrophoneScale : 1 }
+
+  /// The broadcast row speaks through a left-facing megaphone; agent rows keep
+  /// the microphone. Open state keeps its colour and pulse on both.
+  var microphoneSymbol: String {
+    if broadcast { return "megaphone.fill" }
+    return open ? "mic.fill" : "mic"
+  }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -454,7 +481,8 @@ struct OverlayAgentAudioControls: View {
   var body: some View {
     HStack(spacing: 6) {
       Button(action: onMicrophone) {
-        Image(systemName: open ? "mic.fill" : "mic")
+        Image(systemName: microphoneSymbol)
+          .overlayMirrored(broadcast)
           .font(.system(size: 12 * microphoneScale, weight: .semibold))
           .foregroundStyle(open ? Color.red : palette.primaryText.color)
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
