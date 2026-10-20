@@ -96,6 +96,7 @@ private final class MinimiseHider: NSObject {
   private let key: ObjectIdentifier
   private let center = NotificationCenter.default
   private var tokens: [any NSObjectProtocol] = []
+  private var undoingMiniaturise = false
 
   init(window: NSWindow) {
     self.window = window
@@ -109,6 +110,13 @@ private final class MinimiseHider: NSObject {
         queue: .main
       ) { [weak self] _ in
         MainActor.assumeIsolated { self?.undoMiniaturise() }
+      },
+      center.addObserver(
+        forName: NSWindow.didDeminiaturizeNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated { self?.finishUndoingMiniaturise() }
       },
       center.addObserver(
         forName: NSWindow.willCloseNotification,
@@ -136,11 +144,19 @@ private final class MinimiseHider: NSObject {
     window?.orderOut(nil)
   }
 
-  /// A path that reached AppKit's own miniaturise still ends hidden.
+  /// A path that reached AppKit's own miniaturise still ends hidden. The
+  /// restore animates, so the window is ordered out once AppKit reports it
+  /// back (`didDeminiaturize`), not while it is still on its way.
   private func undoMiniaturise() {
     guard let window else { return }
+    undoingMiniaturise = true
     window.deminiaturize(nil)
-    window.orderOut(nil)
+  }
+
+  private func finishUndoingMiniaturise() {
+    guard undoingMiniaturise else { return }
+    undoingMiniaturise = false
+    window?.orderOut(nil)
   }
 
   func invalidate() {

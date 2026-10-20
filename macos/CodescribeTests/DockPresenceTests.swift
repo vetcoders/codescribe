@@ -71,8 +71,13 @@ final class DockPresenceTests: XCTestCase {
 
     window.miniaturize(nil)
 
+    // The restore animates; AppKit reports the window back before it is hidden.
+    let deadline = Date(timeIntervalSinceNow: 3)
+    while (window.isMiniaturized || window.isVisible) && Date() < deadline {
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
     XCTAssertFalse(window.isMiniaturized, "no path leaves an Exposé tile")
-    XCTAssertFalse(window.isVisible)
+    XCTAssertFalse(window.isVisible, "a miniaturise that reached AppKit still ends hidden")
     window.orderOut(nil)
   }
 
