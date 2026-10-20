@@ -323,7 +323,9 @@ names the account, e.g. **Connected as name@example.com**), **Sign in with …**
 otherwise. **Sign out** is a neutral chip like the other row actions, not a
 red one. A key that is present reads **Set** in green; a key that is absent is
 neutral grey, and reads **Optional** when nothing is waiting for it — a
-key-optional host, or a vendor whose account is already connected. A missing
+key-optional host, or a Responses vendor (OpenAI, xAI) whose connected account
+serves requests. A connected Messages account does not serve requests, so that
+key stays required. A missing
 key is never a red warning: red is reserved for a real failure, such as a key
 the provider rejected. Vendor endpoints are factory-defined and sit under each card's
 **Advanced** disclosure together with the Keychain account name and the OAuth
@@ -337,9 +339,10 @@ address visible beside the key-presence summary and Change / Add; at narrow
 widths these groups stack instead of overlapping. Names and addresses wrap.
 Advanced remains available below the configuration, and a stored key still
 describes presence rather than a successful connection.
-**Cloud transcription** holds the File and Live lanes. Two short lines
-introduce them: **You choose the mode under Dictation.** and **We send
-recordings only in Cloud mode or during a manual cloud re-transcription.** Each
+**Cloud transcription** holds the File and Live lanes. One line introduces
+them: **Recordings go to the cloud only when you choose Cloud mode or a cloud
+re-transcription.** Those are the two paths that upload audio: the live Cloud
+mode session and an explicit cloud re-transcription of a recording. Each
 lane card shows its key at the first level; the lane endpoint, the Live lane's
 optional gateway session URL and the lane's settings keys sit under the card's
 **Advanced** disclosure — an address is not an everyday choice. A rejected
@@ -348,8 +351,10 @@ ws:// or wss://.** Secrets are stored separately from account sign-in.
 
 Open **Settings → Agent → AI models** to select a provider and model separately
 for **Assistive** (the model behind the Agent and the voice assistant) and
-**Formatting** (Correction and Smart cleanup when using the cloud). Max uses the
-Agent provider, endpoint, model, account and prompt exactly. Each card shows the provider, the model
+**Formatting** (Correction and Smart cleanup when using the cloud). The
+Formatting card says so in one line: **Corrections and Smart. Max uses the Agent
+model.** Max runs on the Agent lane's provider, endpoint, model, account and
+prompt; the Formatting lane never serves it. Each card shows the provider, the model
 field and one line about the lane's access: **Connected account**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
 works: a stored key can still be rejected, and a connected account does not open
@@ -481,7 +486,7 @@ Setup, its completion summary and the provider cards distinguish these states:
 An account and an API key are alternatives: one of them is enough, and setup
 says so. In setup, whichever is missing reads a neutral grey **Optional** once
 the other is configured. On the provider card the key reads **Optional** once
-the account is connected, and the account line reads **Not connected** in the
+an account that serves requests is connected (Responses vendors), and the account line reads **Not connected** in the
 same grey when only the key is set. A missing credential stays neutral even when
 neither is set: the provider step is skippable and a key can be added later.
 
@@ -503,6 +508,11 @@ Account sign-in alone does not supply that key. With account-only model
 access, `/model` shows the currently resolved model and explains the missing
 catalog access. Keep that model, or enter a supported model ID in **Agent →
 AI models**. Adding an API key is optional for supported account requests.
+Without a key, the Agent and Formatting cards read **The model list needs an API
+key. You can enter a model ID by hand.** — the same line with or without a
+connected account, because it is about the list, not about requests. A rejected
+key next to a signed-in account reads **The API key was rejected, so there is no
+model list. The account still works.**
 
 Fresh and cached catalogs offer selectable models. A provider returning no
 models or a discovery failure gives one plain sentence and the next action:

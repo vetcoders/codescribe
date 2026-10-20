@@ -850,7 +850,9 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
   var subtitle: String {
     self == .assistive
       ? String(localized: "The Agent and voice assistant model")
-      : String(localized: "The transcript cleanup model")
+      : String(
+        localized: "Corrections and Smart. Max uses the Agent model.",
+        comment: "Formatting lane: the levels it serves; Max runs on the Agent lane")
   }
 
   var providerKey: String {
@@ -957,16 +959,12 @@ struct LLMLaneModel {
       }
       return String(localized: "using cached models", comment: "Model discovery status")
     case "no_key":
-      if runtime.accountAuth {
-        return String(
-          localized:
-            "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
-        )
-      }
+      // Discovery authenticates with the stored API key only, never with an
+      // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
+      // so one sentence holds with or without a connected account. It names
+      // the list, not requests: an account still serves those.
       return String(
-        localized:
-          "Add this provider's API key under Providers to list its models, or enter a model ID below."
-      )
+        localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
@@ -975,8 +973,7 @@ struct LLMLaneModel {
       // list and the account are independent states (Founder brief, round 8).
       if runtime.accountAuth {
         return String(
-          localized:
-            "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.",
+          localized: "The API key was rejected, so there is no model list. The account still works.",
           comment: "Model discovery failed while the provider account stays signed in"
         )
       }
@@ -2449,12 +2446,6 @@ final class SettingsViewModel: ObservableObject {
       || FormattingPolicyOption(storedValue: settings.formattingLevel) == .off
     {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
-    }
-    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
-      return String(
-        localized:
-          "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only.",
-        comment: "Formatting lane usage while the Max level is selected")
     }
     if settings.formatOnDevice {
       return String(
