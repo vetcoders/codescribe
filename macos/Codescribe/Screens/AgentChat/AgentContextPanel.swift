@@ -161,6 +161,7 @@ struct AgentLiveStatusPill: View {
 /// preference the menu writes; the menu stays as the place that names them.
 struct AgentWidthModeButton: View {
   @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode
+    .rawValue
 
   private var mode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
 
