@@ -160,7 +160,6 @@ final class SettingsTruthTests: XCTestCase {
 
   func testNewMaxConsultationWaitsForBackendAndRefusesDuplicateRequests() async {
     var settings = CsSettings.sample
-    settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
     var calls = 0
     var recoveries = 0
@@ -203,7 +202,6 @@ final class SettingsTruthTests: XCTestCase {
 
   func testNewMaxConsultationReportsBackendRefusalWithoutSuccess() async {
     var settings = CsSettings.sample
-    settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
     var recoveries = 0
     let model = SettingsViewModel(
@@ -229,10 +227,9 @@ final class SettingsTruthTests: XCTestCase {
   }
 
   func testNewMaxConsultationIsUnavailableOutsideEnabledMax() async {
-    for policy in ["off", "correction", "smart", "max"] {
+    for policy in ["off", "correction", "smart"] {
       var settings = CsSettings.sample
       settings.formattingLevel = policy
-      settings.aiFormattingEnabled = policy != "max"
       var calls = 0
       let model = SettingsViewModel(
         engine: MockSettingsEngine(
@@ -758,7 +755,6 @@ final class SettingsTruthTests: XCTestCase {
   func testMaxRepairDeepLinkTargetsTheConsultationWithoutStartingOne() throws {
     let links = SettingsDeepLink()
     var settings = CsSettings.sample
-    settings.aiFormattingEnabled = true
     settings.formattingLevel = "max"
     var resets = 0
     let model = SettingsViewModel(

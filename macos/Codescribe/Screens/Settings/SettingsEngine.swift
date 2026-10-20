@@ -10,7 +10,6 @@ import Foundation
 //
 // Config-write contract (router env keys, sourced from core/config/loader.rs):
 //   WHISPER_LANGUAGE      "pl" | "en"
-//   AI_FORMATTING_ENABLED "1" | "0"
 //   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
 //   PASTE_MODE            "safe" | "comfort" | "off"
 //   USE_LOCAL_STT         "1" | "0"
@@ -999,7 +998,6 @@ extension CsSettings {
     middleMouseActsAsFn: false,
     middleMouseAgentGesture: false,
     whisperLanguage: .polish,
-    aiFormattingEnabled: true,
     pasteMode: .safe,
     transcriptSendMode: "end_of_utterance",
     transcriptTaggingEnabled: false,

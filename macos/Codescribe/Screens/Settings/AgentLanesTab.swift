@@ -90,7 +90,7 @@ struct AgentLanesTab: View {
       DisclosureGroup(isExpanded: $detailsExpanded) {
         VStack(spacing: 0) {
           RuntimeRow(
-            key: String(localized: "AI formatting"),
+            key: String(localized: "Formatting level"),
             value: model.formattingDescription,
             tint: true,
             trailing: .none,
