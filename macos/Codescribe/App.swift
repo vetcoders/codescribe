@@ -215,16 +215,18 @@ struct CodescribeApp: App {
       configurationInvalidation: AppModel.shared.configurationInvalidation
     )
     let delegate = appDelegate
-    model.onApplyInterfaceLanguage = { beforeTermination in
+    model.onApplyInterfaceLanguage = { [weak model] beforeTermination in
+      let section = await model?.section ?? .creator
       try await delegate.restartForInterfaceLanguage(
-        relaunch: .plain, beforeTermination: beforeTermination)
+        relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
     // Appearance applies at once through AppKit; a sheet shade is read at
     // launch, so it rides the same idle-guarded restart as the language.
     model.onApplyAppearance = { AppearancePreference().apply() }
-    model.onApplySheetShade = { beforeTermination in
+    model.onApplySheetShade = { [weak model] beforeTermination in
+      let section = await model?.section ?? .creator
       try await delegate.restartForInterfaceLanguage(
-        relaunch: .plain, beforeTermination: beforeTermination)
+        relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
@@ -335,19 +337,35 @@ private final class TestHostSceneView: NSView {
   }
 }
 
-/// What the relaunched process opens after an interface-language restart. The
-/// wizard resumes setup where it stopped; Settings relaunches plainly, the same
-/// way its "clear defaults" actions do, and the tray returns in the new language.
+/// What the relaunched process opens after an idle-guarded restart. The wizard
+/// resumes setup where it stopped; a restart pressed in Settings (interface
+/// language, sheet shade) reopens Settings on the section the user was in and
+/// brings it to the front, so the restart reads as "the app comes back here"
+/// rather than as the app vanishing under the previous window (Founder,
+/// 2026-10-21). The "clear defaults" actions still relaunch plainly.
 enum InterfaceLanguageRelaunch: Equatable {
   case resumeSetup
+  case reopenSettings(SettingsSection)
   case plain
+
+  static let openSettingsFlag = "--open-settings"
 
   /// Extra process arguments for `open --args`; empty means a plain launch.
   var launchArguments: [String] {
     switch self {
     case .resumeSetup: ["--resume-onboarding"]
+    case .reopenSettings(let section): [Self.openSettingsFlag, section.rawValue]
     case .plain: []
     }
+  }
+
+  /// The section a relaunched process should open Settings on, if the
+  /// arguments carry one. An unknown section name opens nothing.
+  static func settingsSection(arguments: [String]) -> SettingsSection? {
+    guard let flag = arguments.firstIndex(of: openSettingsFlag),
+      arguments.indices.contains(flag + 1)
+    else { return nil }
+    return SettingsSection(rawValue: arguments[flag + 1])
   }
 }
 
@@ -546,7 +564,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   /// cannot reach. The ⌘, command in the main menu performs exactly that
   /// action, so the Dock entry performs the command item instead of growing a
   /// second opening path.
-  private func presentSettingsFromDock() {
+  @discardableResult
+  private func presentSettingsFromDock() -> Bool {
     let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
     guard
       let item = items.first(where: {
@@ -555,9 +574,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       let menu = item.menu
     else {
       appLogger.error("dock_settings: the ⌘, Settings command is not in the main menu")
-      return
+      return false
     }
     menu.performActionForItem(at: menu.index(of: item))
+    return true
+  }
+
+  /// After a restart pressed in Settings, reopen Settings on the same section.
+  /// The ⌘, command item appears once SwiftUI has built the main menu, which
+  /// can be a tick after launch, so the open retries briefly instead of
+  /// assuming the menu is ready.
+  private func reopenSettingsAfterRelaunch(_ section: SettingsSection, attempt: Int = 0) {
+    SettingsDeepLink.shared.present(section)
+    guard !presentSettingsFromDock() else { return }
+    guard attempt < 10 else {
+      appLogger.error("relaunch_settings: gave up reopening Settings › \(section.rawValue, privacy: .public)")
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      self?.reopenSettingsAfterRelaunch(section, attempt: attempt + 1)
+    }
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -670,6 +706,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       // Completed installs retain their launch permission repair. First-run
       // permission prompts belong to the wizard's explained chapter.
       ensureSpeechRecognitionAtLaunch()
+      if let section = InterfaceLanguageRelaunch.settingsSection(arguments: CommandLine.arguments) {
+        DispatchQueue.main.async { [weak self] in self?.reopenSettingsAfterRelaunch(section) }
+      }
     }
   }
 

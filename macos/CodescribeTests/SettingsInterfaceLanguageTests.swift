@@ -201,6 +201,25 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
   func testRelaunchIntentOnlyResumesSetupFromTheWizard() {
     XCTAssertEqual(InterfaceLanguageRelaunch.resumeSetup.launchArguments, ["--resume-onboarding"])
     XCTAssertEqual(InterfaceLanguageRelaunch.plain.launchArguments, [])
+    // A restart pressed in Settings comes back to the same section, in front.
+    XCTAssertEqual(
+      InterfaceLanguageRelaunch.reopenSettings(.agent).launchArguments,
+      ["--open-settings", "agent"])
+    XCTAssertEqual(
+      InterfaceLanguageRelaunch.settingsSection(arguments: ["Codescribe", "--open-settings", "creator"]),
+      .creator)
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings"]))
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings", "nope"]))
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--resume-onboarding"]))
+    let source = try? String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/App.swift"),
+      encoding: .utf8)
+    // Both Settings restarts (language, sheet shade) carry the section; the
+    // wizard keeps its own intent.
+    XCTAssertEqual(source?.components(separatedBy: "relaunch: .reopenSettings(section)").count, 3)
+    XCTAssertEqual(source?.components(separatedBy: "relaunch: .plain").count, 1)
     // The relaunch script passes `--args` only when the intent carries any.
     XCTAssertTrue(AppDelegate.languageRelaunchScript.contains("if [ \"$#\" -gt 0 ]"))
     XCTAssertTrue(AppDelegate.languageRelaunchScript.contains("--args \"$@\""))

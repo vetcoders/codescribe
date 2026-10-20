@@ -92,7 +92,8 @@ language preference (the same one System Settings › General › Language & Reg
 language. The running app keeps its language until you press **Restart now**
 (the restart note and button already appear in the language you just chose):
 Codescribe waits for an idle moment (no recording, no agent turn) and relaunches
-in the chosen language. If a take or an agent turn is in progress, the row keeps
+in the chosen language, with Settings open again on the section you were in and
+in front. If a take or an agent turn is in progress, the row keeps
 your choice and asks you to try again. The setup wizard's first screen offers
 the same switch.
 
@@ -118,7 +119,7 @@ _Today_ plus two candidates per appearance; the menu names the shade and the
 hex of the current one reads under the row title. The app
 reads the shade once at launch, so after a change the rows show the same
 restart line as the interface language: **Restart now** waits for an idle
-moment. The candidate the team settles on becomes the token's value, and these
+moment and brings Settings back on the same section. The candidate the team settles on becomes the token's value, and these
 two rows go away.
 
 ## Transcription
