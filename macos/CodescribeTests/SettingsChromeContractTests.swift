@@ -1509,8 +1509,10 @@ final class SettingsChromeContractTests: XCTestCase {
     for (name, source) in sources where name != "SettingsView.swift" {
       XCTAssertFalse(source.contains(".toggleStyle(.switch)"), "\(name) styles its own switch")
     }
+    // Six files since the Creator lost its AI-formatting switch (round 2,
+    // 2026-10-20, UI-04): the Formatting level is the only switch there.
     XCTAssertGreaterThanOrEqual(
-      sources.values.filter { $0.contains(".settingsSwitch()") }.count, 7)
+      sources.values.filter { $0.contains(".settingsSwitch()") }.count, 6)
     let lab = try XCTUnwrap(sources["LabPanel.swift"])
     XCTAssertEqual(
       lab.components(separatedBy: "SettingsControlRow(").count - 1, 5,
@@ -1602,6 +1604,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Basic mode": "Tryb podstawowy",
       "Your custom shortcuts stay as they are unless you pick a preset.":
         "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod.",
+      // Kept on purpose: the markers switch's accessibility label (UI-33).
+      "Add markers to text": "Dodawaj znaczniki do tekstu",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
@@ -1609,7 +1613,7 @@ final class SettingsChromeContractTests: XCTestCase {
     for retired in [
       "Cloud status", "Configure cloud services", "Disk space", "AI formatting",
       "Basic mode stays free. A license unlocks Agent mode.", "No transcription in this app session",
-      "Browse corrections and dictionary rules.", "Add markers to text",
+      "Browse corrections and dictionary rules.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
