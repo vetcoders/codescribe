@@ -377,7 +377,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       busPath: String, now: Date = Date(),
       verifiedCaptureAttachmentCommits: [String: String] = [:]
     ) -> [OverlayConversation] {
-      var verifiedCommits: [String: String] = [:]
+      var verifiedCommits = (captureAttachmentCommits ?? [:]).reduce(into: [String: String]()) {
+        result, entry in
+        if entry.value.commitBus == busPath {
+          result[entry.key] = entry.value.commitBus
+        }
+      }
       for (stageID, commitBus) in verifiedCaptureAttachmentCommits {
         guard !commitBus.isEmpty else { continue }
         verifiedCommits[stageID] = commitBus
@@ -1052,14 +1057,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         guard let stage = stages[stageID], stage.stageID == stageID,
           stage.commitBus == commitBus, stage.captureSessionID == session,
           stage.recipientBusPaths.contains(commitBus),
-          let segment = segments.first(where: { $0.occurrenceID == stage.occurrenceID }),
-          segment.captureEpoch == stage.captureEpoch,
-          segment.sourceSequence == stage.sourceSequence,
+          let segment = segments.first(where: {
+            $0.occurrenceID == stage.occurrenceID
+              && $0.captureEpoch == stage.captureEpoch
+              && $0.sourceSequence == stage.sourceSequence
+              && $0.reducerRevision == stage.reducerRevision
+          }),
           segment.occurrenceSessionID == stage.occurrenceSessionID,
           segment.sampleStart == stage.sampleStart, segment.sampleEnd == stage.sampleEnd,
           let segmentDocumentIndex = UInt64(segment.documentIndex),
           segmentDocumentIndex == stage.documentIndex,
-          segment.reducerRevision == stage.reducerRevision,
           segment.audience == stage.audience,
           segment.recipientIDs == stage.recipientIDs
         else { continue }
