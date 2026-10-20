@@ -423,6 +423,12 @@ struct VoiceLabPanel: View {
         .overlay(Color.primary.opacity(0.12))
         .padding(.top, SettingsScale.sectionGap)
 
+      // The page leads with what happened on this Mac today, in human terms
+      // (Maciej, 2026-10-21: the Dictionary must not sit on a three-week-old
+      // correction). Acoustic forensics of the same takes live in Lab.
+      DictionaryRecentTakes(configDir: model.configDir) { model.select(.lab) }
+        .padding(.top, CSSpace.section)
+
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
         SettingsSectionHeaderRow(
           String(localized: "Suggested rules · \(model.ruleCandidates.count)")

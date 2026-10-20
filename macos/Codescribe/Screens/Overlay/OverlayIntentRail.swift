@@ -76,33 +76,6 @@ struct OverlayActionsPresentation {
   }
 }
 
-/// One capsule for the cap and tools. An opaque palette token replaces material
-/// when transparency is reduced; no glass reaches the resize band's hit region.
-struct OverlayActionsSurface: ViewModifier {
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  let palette: OverlayAppearancePalette
-  let glassNamespace: Namespace.ID
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if reduceTransparency {
-      content
-        .background { Capsule().fill(palette.desktopBackground.color) }
-        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
-    } else if #available(macOS 26.0, *) {
-      content
-        .glassEffect(.regular.interactive(), in: Capsule())
-        .glassEffectID("overlay-actions", in: glassNamespace)
-        .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
-    } else {
-      content
-        .background { Capsule().fill(.regularMaterial) }
-        .overlay { Capsule().strokeBorder(palette.border.color, lineWidth: 1) }
-    }
-  }
-}
-
 /// Symbols shared by the rendered controls and their collision census.
 enum OverlayControlSymbols {
   static let history = "clock.arrow.circlepath"
@@ -125,7 +98,8 @@ enum OverlayDockVisuals {
   }
 }
 
-/// Fixed icon row. Hover content lives above its anchor, outside row layout.
+/// Permanent transcript-action column. Hover content lives above its anchor.
+/// The same control is the only render of each command.
 @MainActor
 struct OverlayIntentRail: View {
   @State private var presented: String?
@@ -158,132 +132,65 @@ struct OverlayIntentRail: View {
   var onInteraction: () -> Void = {}
   var onPresentationChange: (Bool) -> Void = { _ in }
 
+  private static let documentCommands: [OverlayIntent] = [
+    .finish, .commitRevision, .discardRevision, .insertPaste, .copy,
+  ]
+  private static let engineCommands: [OverlayIntent] = [.retranscribe, .format]
+  private static let deliveryCommands: [OverlayIntent] = [.sendToAgent]
+
   var body: some View {
-    HStack(spacing: 2) {
-      OverlayHoverControl(
-        id: "overlay-history-menu", title: String(localized: "Transcription history"),
-        palette: palette,
-        presented: $presented
-      ) {
-        Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
-      } detail: { close in
-        OverlayTranscriptHistory(
-          openRefusal: historyOpenRefusal,
-          admitOpen: admitHistoryOpen,
-          onOpen: { archived, admission in
-            onInteraction()
-            return onOpenArchive(archived, admission)
-          },
-          onDismiss: onHistoryDismiss,
-          onOpened: close)
+    let visible =
+      OverlayDockLayout(projectedIntents: intents).visibleIntents.filter {
+        $0 != .recoverSuperseded && $0 != .discardSuperseded
       }
-      if versions.isVisible {
-        OverlayHoverControl(
-          id: Self.versionsControlID, title: Self.versionsTitle(versions),
-          palette: palette,
-          presented: $presented
-        ) {
-          Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
-        } detail: { close in
-          OverlayTranscriptVersionsMenu(
-            versions: versions,
-            onSelect: { step in
-              onInteraction()
-              onSelectVersion(step)
-            },
-            close: close)
+    let document = visible.filter { Self.documentCommands.contains($0) }
+    let engine = visible.filter { Self.engineCommands.contains($0) }
+    let delivery = visible.filter { Self.deliveryCommands.contains($0) }
+    let claimed = Set(Self.documentCommands + Self.engineCommands + Self.deliveryCommands)
+    let remainder = visible.filter { !claimed.contains($0) }
+    ScrollView(.vertical) {
+      VStack(spacing: 8) {
+        VStack(spacing: 2) {
+          historyControl
+          if versions.isVisible {
+            versionsControl
+            undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
+            undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
+          }
         }
-        .accessibilityValue(versions.current?.title ?? "")
-        undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
-        undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
-      }
-      if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
-        OverlayHoverControl(
-          id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
-          palette: palette,
-          presented: $presented
-        ) {
-          Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
-        } detail: { close in
-          VStack(alignment: .leading, spacing: 8) {
-            if intents.contains(.recoverSuperseded) {
-              Button(recoverSupersededLabel) {
-                close()
-                dispatch(.recoverSuperseded)
-              }
-              .accessibilityIdentifier("overlay-intent-recover-superseded")
-            }
-            if intents.contains(.discardSuperseded) {
-              Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
-                close()
-                dispatch(.discardSuperseded)
-              }
-              .accessibilityIdentifier("overlay-intent-discard-superseded")
-            }
+        if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
+          groupSeparator
+          previousTakeControl
+        }
+        if !document.isEmpty {
+          groupSeparator
+          VStack(spacing: 2) {
+            ForEach(document, id: \.self) { intentControl($0) }
+          }
+        }
+        if !engine.isEmpty {
+          groupSeparator
+          VStack(spacing: 2) {
+            ForEach(engine, id: \.self) { intentControl($0) }
+          }
+        }
+        if !delivery.isEmpty {
+          groupSeparator
+          VStack(spacing: 2) {
+            ForEach(delivery, id: \.self) { intentControl($0) }
+          }
+        }
+        if !remainder.isEmpty {
+          groupSeparator
+          VStack(spacing: 2) {
+            ForEach(remainder, id: \.self) { intentControl($0) }
           }
         }
       }
-      ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \.self) { intent in
-        if intent != .recoverSuperseded && intent != .discardSuperseded {
-          OverlayHoverControl(
-            id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
-            palette: palette, presented: $presented,
-            action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) }
-          ) {
-            Image(systemName: intent.systemImage).frame(width: 24, height: 24)
-          } detail: { close in
-            if intent == .format {
-              HStack(spacing: 10) {
-                ForEach([FormattingPolicyOption.correction, .smart, .max], id: \.rawValue) {
-                  level in
-                  Button(level.visibleName) {
-                    close()
-                    formatOnce(level)
-                  }
-                  .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
-                }
-              }
-              .buttonStyle(.borderless)
-              .controlSize(.small)
-              .font(CSFont.ui(11, .medium))
-            } else if intent == .retranscribe {
-              VStack(alignment: .leading, spacing: 8) {
-                Text(String(localized: "Transcribe this take again"))
-                Text(
-                  retranscribeUnavailableReason
-                    ?? String(localized: "Uses audio from the take currently shown in the overlay.")
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("overlay-retranscribe-source")
-                if retranscribeUnavailableReason == nil {
-                  HStack(spacing: 10) {
-                    Button(OverlayRetranscribeCopy.local) {
-                      close()
-                      retranscribe(.fullHq)
-                    }
-                    .accessibilityIdentifier("overlay-retranscribe-hq")
-                    if cloudRetranscribeConfigured {
-                      Button(OverlayRetranscribeCopy.cloud) {
-                        close()
-                        retranscribe(.cloud)
-                      }
-                      .accessibilityIdentifier("overlay-retranscribe-cloud")
-                    }
-                  }
-                }
-              }
-              .buttonStyle(.borderless)
-              .controlSize(.small)
-              .font(CSFont.ui(11, .medium))
-            } else {
-              Text(intent.accessibilityLabel)
-            }
-          }
-          .accessibilityHint(intent.accessibilityHint)
-        }
-      }
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 4)
     }
-    .fixedSize(horizontal: true, vertical: true)
+    .focusable(false)
     .onChange(of: presented) { _, value in
       onPresentationChange(value != nil)
       if value != nil { onInteraction() }
@@ -298,6 +205,141 @@ struct OverlayIntentRail: View {
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
+  }
+
+  private var groupSeparator: some View {
+    Rectangle()
+      .fill(palette.border.color.opacity(0.7))
+      .frame(width: 18, height: 1)
+      .accessibilityHidden(true)
+  }
+
+  private var historyControl: some View {
+    OverlayHoverControl(
+      id: "overlay-history-menu", title: String(localized: "Transcription history"),
+      palette: palette,
+      presented: $presented,
+      popoverArrow: .trailing
+    ) {
+      Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
+    } detail: { close in
+      OverlayTranscriptHistory(
+        openRefusal: historyOpenRefusal,
+        admitOpen: admitHistoryOpen,
+        onOpen: { archived, admission in
+          onInteraction()
+          return onOpenArchive(archived, admission)
+        },
+        onDismiss: onHistoryDismiss,
+        onOpened: close)
+    }
+  }
+
+  private var versionsControl: some View {
+    OverlayHoverControl(
+      id: Self.versionsControlID, title: Self.versionsTitle(versions),
+      palette: palette,
+      presented: $presented,
+      popoverArrow: .trailing
+    ) {
+      Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
+    } detail: { close in
+      OverlayTranscriptVersionsMenu(
+        versions: versions,
+        onSelect: { step in
+          onInteraction()
+          onSelectVersion(step)
+        },
+        close: close)
+    }
+    .accessibilityValue(versions.current?.title ?? "")
+  }
+
+  private var previousTakeControl: some View {
+    OverlayHoverControl(
+      id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
+      palette: palette,
+      presented: $presented,
+      popoverArrow: .trailing
+    ) {
+      Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
+    } detail: { close in
+      VStack(alignment: .leading, spacing: 8) {
+        if intents.contains(.recoverSuperseded) {
+          Button(recoverSupersededLabel) {
+            close()
+            dispatch(.recoverSuperseded)
+          }
+          .accessibilityIdentifier("overlay-intent-recover-superseded")
+        }
+        if intents.contains(.discardSuperseded) {
+          Button(OverlayIntent.discardSuperseded.accessibilityLabel, role: .destructive) {
+            close()
+            dispatch(.discardSuperseded)
+          }
+          .accessibilityIdentifier("overlay-intent-discard-superseded")
+        }
+      }
+    }
+  }
+
+  private func intentControl(_ intent: OverlayIntent) -> some View {
+    OverlayHoverControl(
+      id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
+      palette: palette, presented: $presented,
+      action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) },
+      popoverArrow: .trailing
+    ) {
+      Image(systemName: intent.systemImage).frame(width: 24, height: 24)
+    } detail: { close in
+      if intent == .format {
+        HStack(spacing: 10) {
+          ForEach([FormattingPolicyOption.correction, .smart, .max], id: \.rawValue) {
+            level in
+            Button(level.visibleName) {
+              close()
+              formatOnce(level)
+            }
+            .accessibilityIdentifier("overlay-format-level-\(level.rawValue)")
+          }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .font(CSFont.ui(11, .medium))
+      } else if intent == .retranscribe {
+        VStack(alignment: .leading, spacing: 8) {
+          Text(String(localized: "Transcribe this take again"))
+          Text(
+            retranscribeUnavailableReason
+              ?? String(localized: "Uses audio from the take currently shown in the overlay.")
+          )
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("overlay-retranscribe-source")
+          if retranscribeUnavailableReason == nil {
+            HStack(spacing: 10) {
+              Button(OverlayRetranscribeCopy.local) {
+                close()
+                retranscribe(.fullHq)
+              }
+              .accessibilityIdentifier("overlay-retranscribe-hq")
+              if cloudRetranscribeConfigured {
+                Button(OverlayRetranscribeCopy.cloud) {
+                  close()
+                  retranscribe(.cloud)
+                }
+                .accessibilityIdentifier("overlay-retranscribe-cloud")
+              }
+            }
+          }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .font(CSFont.ui(11, .medium))
+      } else {
+        Text(intent.accessibilityLabel)
+      }
+    }
+    .accessibilityHint(intent.accessibilityHint)
   }
 
   static func projectedIntents(for state: OverlayState) -> [OverlayIntent] {
@@ -414,7 +456,7 @@ struct OverlayIntentRail: View {
   {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: title, palette: palette,
-      presented: $presented, action: { dispatch(intent) }
+      presented: $presented, action: { dispatch(intent) }, popoverArrow: .trailing
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
         .opacity(enabled ? 1 : 0.35)

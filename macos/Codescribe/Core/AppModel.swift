@@ -340,6 +340,10 @@ final class OverlayController: ObservableObject {
   /// bubble ten seconds later (Maciej, 2026-10-14). Only a take the composer
   /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
+    if state.draftCapture.hasRequest {
+      show(preserveVisiblePosition: true)
+      return
+    }
     refreshAssistiveLatch()
     if sessionWasAssistive {
       if composerOwnsCapture() {

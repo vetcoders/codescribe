@@ -1,0 +1,121 @@
+import XCTest
+
+@testable import Codescribe
+
+final class DictionaryRecentTakesTests: XCTestCase {
+  private func makeRoot() throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("recent-takes-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+    return root
+  }
+
+  private func writeSidecar(
+    _ root: URL, session: String, generatedAt: String?, words: [(String, Int, Int)],
+    refusals: Int = 0, speech: Double? = nil
+  ) throws {
+    var object: [String: Any] = [
+      "schema_version": 2,
+      "session_id": session,
+      "words": words.map { ["word": $0.0, "sample_start": $0.1, "sample_end": $0.2, "pin": "whisper"] },
+      "ledger": ["refusals": Array(repeating: ["reason": "no_speech"], count: refusals)],
+    ]
+    if let generatedAt { object["generated_at"] = generatedAt }
+    if let speech { object["vad_speech_pct"] = speech }
+    let data = try JSONSerialization.data(withJSONObject: object)
+    try data.write(
+      to: root.appendingPathComponent("sessions/\(session).wav.truth.json"))
+  }
+
+  func testReadsTakesNewestFirstWithWordsDestinationAndRefusals() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try writeSidecar(
+      root, session: "agent-channel-3-aaaa", generatedAt: "2026-10-20T22:59:20.104496+00:00",
+      words: [("Wiesz,", 90_240, 107_520), ("tak", 110_000, 1_495_680)], refusals: 2, speech: 67.3)
+    try writeSidecar(
+      root, session: "b1c63d87-dictation", generatedAt: "2026-10-21T00:05:00+00:00",
+      words: [("Dobra.", 0, 48_000)])
+    try writeSidecar(root, session: "agent-channel-1-empty", generatedAt: nil, words: [])
+
+    let takes = try RecentTakesReader.read(root: root.path)
+    XCTAssertEqual(takes.count, 3)
+
+    // Explicit timestamps order the rows; the sidecar without one falls back
+    // to its file date, which is "now" and therefore newest.
+    XCTAssertEqual(takes[0].id, "agent-channel-1-empty")
+    XCTAssertEqual(takes[0].wordCount, 0)
+    XCTAssertEqual(takes[0].text, "")
+    XCTAssertEqual(takes[0].destination, "Agent · channel 1")
+
+    XCTAssertEqual(takes[1].id, "b1c63d87-dictation")
+    XCTAssertEqual(takes[1].destination, "Dictation")
+    XCTAssertEqual(takes[1].durationSeconds, 1, accuracy: 0.001)
+
+    let agent = takes[2]
+    XCTAssertEqual(agent.id, "agent-channel-3-aaaa")
+    XCTAssertEqual(agent.text, "Wiesz, tak")
+    XCTAssertEqual(agent.wordCount, 2)
+    XCTAssertEqual(agent.refusedWords, 2)
+    XCTAssertEqual(agent.speechPercent ?? 0, 67.3, accuracy: 0.001)
+    // No WAV beside the sidecar: the duration comes from the last sample at 48 kHz.
+    XCTAssertEqual(agent.durationSeconds, 1_495_680.0 / 48_000.0, accuracy: 0.001)
+    XCTAssertEqual(
+      agent.recordedAt, RecentTakesReader.parseDate("2026-10-20T22:59:20.104496+00:00"))
+  }
+
+  func testWavHeaderDurationBeatsSampleFallbackAndZeroedHeaderIsIgnored() throws {
+    let root = try makeRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try writeSidecar(
+      root, session: "take-a", generatedAt: "2026-10-21T00:00:00+00:00",
+      words: [("a", 0, 48_000)])
+    try writeSidecar(
+      root, session: "take-b", generatedAt: "2026-10-21T00:00:01+00:00",
+      words: [("b", 0, 96_000)])
+    // 16 kHz mono 16-bit, 32,000 bytes of data: one second, not two.
+    try header(rate: 16_000, blockAlign: 2, dataBytes: 32_000)
+      .write(to: root.appendingPathComponent("sessions/take-a.wav"))
+    // A crash leaves the data length zeroed: fall back to the sidecar's samples.
+    try header(rate: 48_000, blockAlign: 2, dataBytes: 0)
+      .write(to: root.appendingPathComponent("sessions/take-b.wav"))
+
+    let takes = try RecentTakesReader.read(root: root.path)
+    let a = try XCTUnwrap(takes.first { $0.id == "take-a" })
+    let b = try XCTUnwrap(takes.first { $0.id == "take-b" })
+    XCTAssertEqual(a.durationSeconds, 1, accuracy: 0.001)
+    XCTAssertEqual(b.durationSeconds, 2, accuracy: 0.001)
+  }
+
+  func testMissingSessionsDirectoryReadsAsNoTakes() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("recent-takes-none-\(UUID().uuidString)", isDirectory: true)
+    XCTAssertEqual(try RecentTakesReader.read(root: root.path), [])
+  }
+
+  func testDurationLabelUsesMinutesPastSixty() {
+    XCTAssertEqual(DictionaryRecentTakes.durationLabel(38.4), "38 s")
+    XCTAssertEqual(DictionaryRecentTakes.durationLabel(128.9), "2:09")
+  }
+
+  private func header(rate: UInt32, blockAlign: UInt16, dataBytes: UInt32) -> Data {
+    var data = Data()
+    func put(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    func put16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    data.append(contentsOf: Array("RIFF".utf8))
+    put(36 + dataBytes)
+    data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8))
+    put(16)
+    put16(1)
+    put16(1)
+    put(rate)
+    put(rate * UInt32(blockAlign))
+    put16(blockAlign)
+    put16(16)
+    data.append(contentsOf: Array("data".utf8))
+    put(dataBytes)
+    return data
+  }
+}

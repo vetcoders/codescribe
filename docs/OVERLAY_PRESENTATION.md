@@ -32,12 +32,35 @@ surface. Keep the policy symbol/help from `AgentBroadcastPolicy`; its meaning
 does not belong to the visual style. `OverlayAgentUnreadBadge` is shared by
 current and saved conversations.
 
-The row's primary action and its microphone, speaker, Frame and archive actions
-are siblings. The identity/clock, descriptor and preview receive the full row
-width; the footer owns only its own compact action group. Moving controls must
-not turn the whole row into one button or nest buttons inside another button.
-The current budget is five text lines: identity, descriptor, up to two preview
-lines, and footer state. Preserve it when changing spacing or typography.
+An agent row's primary action and its microphone, speaker, Frame and archive
+actions are siblings. Identity, the clock, the descriptor and the preview take
+the full row width; the footer owns only its compact action group. That budget
+is five text lines: identity, descriptor, up to two preview lines, and footer
+state. Preserve it for agent rows.
+
+`0 · All` is the exception. Its title button keeps the identity line and the
+clock. The outline megaphone and the speaker sit beside a three-line preview
+of the last message, with one mark size, one frame and one hit target. Those
+controls are not in the Agents header, and they are not nested inside the
+title button. Three preview lines belong only to All. An open microphone uses
+the same violet as a speaker that is playing a reply (`agentAccent`). The
+existing pulse and Reduce Motion stay. Broadcast, read-mute and Channel 0
+membership remain different controls.
+
+A bubble names the sender and the audience with
+`OverlayChannelStatusView.messageRoute`. The names come from that message's
+source channel and frozen recipients, so a later selection does not rewrite
+them. Channel 0 reads `All`. A private delivery names the frozen recipients
+(`You → lena, astra`). A reply with no destination, and a channel 10 reply,
+read `sender → You`. Attachment-only messages use the same route. The receipt
+menu lists the frozen recipient set of a broadcast. A speaker who is not the
+open conversation stays a button that opens their conversation; the arrow and
+the audience are text.
+
+Moving controls must not turn a whole row into one button or nest buttons
+inside another button. A folded rail pill already selects that conversation,
+including `0` for All, and leaves the list folded. It does not open a
+microphone and it does not retarget a capture that is already running.
 
 ## Reuse the projections and commands
 
@@ -72,10 +95,18 @@ does not need changes to these owners.
 
 ## Requirements that survive a new skin
 
-- In the expanded overlay, the compact agent rail and its reveal button are
+- On the Agents surface, the compact agent rail and its reveal button are
   available from the first reveal, before any conversation has been selected.
-  A visible full list replaces the rail. Hover over the folded rail reveals
-  that same list. Do not mount either only after opening an agent conversation.
+  A visible full list replaces the rail. Hover over its disclosure control
+  reveals that same list; hovering numbered pills keeps their click targets
+  in place. Do not mount either only after opening an agent conversation.
+  The transcription surface does not mount that rail, its pills, or the agent
+  list. Its trailing column is the transcript actions sidebar
+  (`overlay-intent-dock` inside `overlay-transcript-actions`). That column
+  does not read the agents drawer width. Both trailing columns reserve the
+  native window's unscaled resize band outside their controls. A nil
+  conversation on Agents stays on Agents, including after inventory retires
+  the selected owner.
 - The conversation's agent pill focuses an available, detected Frame pane.
   When that target is unavailable, the label stays passive; a new shell must
   not display an unsupported navigation option.

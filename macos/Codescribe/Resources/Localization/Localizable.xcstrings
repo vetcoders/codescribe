@@ -397,28 +397,6 @@
         }
       }
     },
-    "%@ → All: %@" : {
-      "comment" : "Drawer preview of an agent's message to channel 0: the agent, then the text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ → Wszyscy: %2$@"
-          }
-        }
-      }
-    },
-    "%@ → You: %@" : {
-      "comment" : "Drawer preview of an agent's reply to the user: the agent, then the text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ → Ty: %2$@"
-          }
-        }
-      }
-    },
     "%@, overridden" : {
       "comment" : "VoiceOver value: a toggle state frozen by an override",
       "localizations" : {
@@ -1815,6 +1793,40 @@
         }
       }
     },
+    "%lld words were refused by the ledger. Open Lab to see which." : {
+      "localizations" : {
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słowa odrzucone przez ledger. Otwórz Lab, żeby zobaczyć które."
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słów odrzuconych przez ledger. Otwórz Lab, żeby zobaczyć które."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słowo odrzucone przez ledger. Otwórz Lab, żeby zobaczyć które."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld słów odrzuconych przez ledger. Otwórz Lab, żeby zobaczyć które."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%llu occurrences" : {
       "localizations" : {
         "en" : {
@@ -2849,6 +2861,17 @@
         }
       }
     },
+    "Agent · channel %lld" : {
+      "comment" : "Recent take destination",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent · kanał %lld"
+          }
+        }
+      }
+    },
     "Agentic" : {
       "comment" : "Operating lane: dictation plus an AI agent",
       "localizations" : {
@@ -2867,6 +2890,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Agenci"
+          }
+        }
+      }
+    },
+    "All" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wszyscy"
           }
         }
       }
@@ -3303,6 +3336,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dołącz zaznaczony tekst"
+          }
+        }
+      }
+    },
+    "Attachments for active recording" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Załączniki do bieżącego nagrania"
           }
         }
       }
@@ -4567,6 +4610,16 @@
         }
       }
     },
+    "Clear reply" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Usuń powiązanie odpowiedzi"
+          }
+        }
+      }
+    },
     "Clear search" : {
       "comment" : "Accessibility label for the button that clears the saved conversations search query",
       "localizations" : {
@@ -5673,6 +5726,16 @@
         }
       }
     },
+    "Copy text" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kopiuj tekst"
+          }
+        }
+      }
+    },
     "Copy the %@ path" : {
       "comment" : "User panel: copy button",
       "localizations" : {
@@ -6687,6 +6750,16 @@
         }
       }
     },
+    "Dictate message" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Podyktuj wiadomość"
+          }
+        }
+      }
+    },
     "Dictate, or talk to an AI agent." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
@@ -6699,7 +6772,7 @@
       }
     },
     "Dictation" : {
-      "comment" : "Settings section",
+      "comment" : "Recent take destination\nSettings section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7553,6 +7626,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucz do transkrypcji plików"
+          }
+        }
+      }
+    },
+    "Files could not be attached to this live capture. Keep them in your draft and try again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się dołączyć plików do tego nagrania na żywo. Zostaw je w szkicu i spróbuj ponownie."
           }
         }
       }
@@ -8571,6 +8654,16 @@
         }
       }
     },
+    "Install the agent bridge to attach files." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj mostek agentów, żeby dołączać pliki."
+          }
+        }
+      }
+    },
     "Install the agent bridge to control agent preferences." : {
       "localizations" : {
         "pl" : {
@@ -8861,6 +8954,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnia poprawka na tym Macu: brak zapisanych"
+          }
+        }
+      }
+    },
+    "Last take on this Mac: %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnie nagranie na tym Macu: %@"
           }
         }
       }
@@ -11078,6 +11181,16 @@
         }
       }
     },
+    "No take has been recorded on this Mac yet." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na tym Macu nie ma jeszcze żadnego nagrania."
+          }
+        }
+      }
+    },
     "No text change — kept for its confidence telemetry." : {
       "localizations" : {
         "pl" : {
@@ -11157,6 +11270,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze żadnych transkrypcji"
+          }
+        }
+      }
+    },
+    "No words were admitted for this take." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Do tego nagrania nie dopuszczono żadnych słów."
           }
         }
       }
@@ -11802,6 +11925,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz folder z historią transkrypcji"
+          }
+        }
+      }
+    },
+    "Open in Lab" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz w Lab"
           }
         }
       }
@@ -12640,16 +12773,6 @@
         }
       }
     },
-    "Previous take available. Open actions to copy or discard it." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poprzednie nagranie jest dostępne. Otwórz działania, aby je skopiować lub odrzucić."
-          }
-        }
-      }
-    },
     "Privacy" : {
       "comment" : "Settings tab: cloud and privacy",
       "localizations" : {
@@ -13118,6 +13241,16 @@
         }
       }
     },
+    "Reading takes…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Czytam nagrania…"
+          }
+        }
+      }
+    },
     "Reading the controller's calibration and seal-lane verdict." : {
       "localizations" : {
         "pl" : {
@@ -13336,6 +13469,16 @@
         }
       }
     },
+    "Recent takes" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnie nagrania"
+          }
+        }
+      }
+    },
     "Recheck" : {
       "comment" : "Recheck local Whisper availability without downloading",
       "localizations" : {
@@ -13476,6 +13619,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Wskaźnik nagrywania"
+          }
+        }
+      }
+    },
+    "Recording is busy. Try stopping again." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nagrywanie jest zajęte. Spróbuj ponownie je zatrzymać."
           }
         }
       }
@@ -14061,6 +14214,16 @@
         }
       }
     },
+    "Reply" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odpowiedz"
+          }
+        }
+      }
+    },
     "Reply playback could not complete. The reply text is retained." : {
       "localizations" : {
         "en" : {
@@ -14476,6 +14639,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ponowna transkrypcja wymaga silnika nagrywania"
+          }
+        }
+      }
+    },
+    "Retry attachments" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ponów dołączenie załączników"
           }
         }
       }
@@ -15540,16 +15713,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż ikonę"
-          }
-        }
-      }
-    },
-    "Show or hide transcript tools" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż lub ukryj narzędzia transkrypcji"
           }
         }
       }
@@ -16625,6 +16788,16 @@
         }
       }
     },
+    "Stop dictation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zatrzymaj dyktowanie"
+          }
+        }
+      }
+    },
     "Stop playing the original recording" : {
       "localizations" : {
         "pl" : {
@@ -17559,6 +17732,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Plik istnieje, ale jest pusty, dlatego używany jest wbudowany prompt."
+          }
+        }
+      }
+    },
+    "The files cannot be attached to this live capture." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tych plików nie da się dołączyć do tego nagrania na żywo."
           }
         }
       }
@@ -19033,6 +19216,16 @@
         }
       }
     },
+    "Wait for the spoken message, then retry these attachments." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poczekaj na tekst wypowiedzi, a następnie ponów dołączenie załączników."
+          }
+        }
+      }
+    },
     "Wait for this response to finish." : {
       "localizations" : {
         "pl" : {
@@ -19105,6 +19298,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przygotowywanie nagrywania…"
+          }
+        }
+      }
+    },
+    "Waiting for this recording to finish." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oczekiwanie na zakończenie tego nagrania."
           }
         }
       }
@@ -19742,39 +19945,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mówisz, a Codescribe zamienia Twoją wypowiedź w tekst."
-          }
-        }
-      }
-    },
-    "You → %@: %@" : {
-      "comment" : "Drawer preview of the user's direct message: the agent names, then the text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ty → %1$@: %2$@"
-          }
-        }
-      }
-    },
-    "You → All: %@" : {
-      "comment" : "Drawer preview of the user's channel-0 broadcast; the placeholder is the text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ty → Wszyscy: %@"
-          }
-        }
-      }
-    },
-    "You: %@" : {
-      "comment" : "Drawer preview of the user's own message; the placeholder is the text",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ty: %@"
           }
         }
       }

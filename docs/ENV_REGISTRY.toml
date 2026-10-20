@@ -39,6 +39,13 @@ reload = "restart"
 category = "test"
 description = "Private local archived WAV for explicitly ignored acoustic and live-producer recovery benches; never a production capture source or an upload."
 
+[vars.CARGO_HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Cargo home; replay and bridge test fixtures derive the user's home from its parent when HOME carries no ~/.codescribe/data_assets (sandboxed-HOME E2E)"
+
 [vars.CODESCRIBE_STREAM_TEST_WAV]
 default = ""
 type = "string"

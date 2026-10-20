@@ -981,9 +981,250 @@ pub(crate) fn open_bus_append_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Read an exact recent capture through the canonical generation/chunk decoder.
+/// Missing old history is a refusal; an append target is never guessed.
+fn capture_attachment_source(
+    path: &Path,
+    session: &str,
+    request: &serde_json::Value,
+) -> io::Result<(Option<serde_json::Value>, bool)> {
+    use super::transcript_bus_maintenance::generation;
+    use std::io::{BufRead, BufReader};
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "capture attachment target unavailable",
+        )
+    };
+    generation::view(path)?;
+    let mut reader = generation::Reader::open(path)?;
+    // Bound lock-held history work. Current live captures must fit this window.
+    let start = reader.len().saturating_sub(64 << 20);
+    reader.seek(SeekFrom::Start(start))?;
+    let mut reader = BufReader::new(reader);
+    if start != 0 {
+        let mut discarded = String::new();
+        reader.read_line(&mut discarded)?;
+    }
+    let mut decoder = generation::Decoder::default();
+    let mut latest = None;
+    let mut open = false;
+    let mut seen_stage = false;
+    let mut ended = false;
+    let mut line = String::new();
+    while reader.read_line(&mut line)? != 0 {
+        if !line.ends_with('\n') {
+            return Err(invalid());
+        }
+        let raw: serde_json::Value = serde_json::from_str(&line).map_err(|_| invalid())?;
+        line.clear();
+        for packed in decoder.push(raw)? {
+            for row in generation::rows(packed)? {
+                if row["session_id"] != session {
+                    continue;
+                }
+                if row["schema"] == "codescribe.capture-attachment.v1"
+                    && row["stage_id"] == request["stage_id"]
+                {
+                    if ["attachments", "capture_epoch", "source_sequence"]
+                        .iter()
+                        .any(|key| row[*key] != request[*key])
+                    {
+                        return Err(invalid());
+                    }
+                    seen_stage = true;
+                }
+                if row["schema"] == "codescribe.channel-session.v1" {
+                    if row["state"] == "open" && !ended {
+                        open = true;
+                    } else {
+                        open = false;
+                        ended = true;
+                    }
+                }
+                if row["status"] == "session_ended"
+                    || row["reducer_action"] == "session_ended"
+                    || row["schema"] == "codescribe.transcript-publication.v1"
+                {
+                    ended = true;
+                    open = false;
+                }
+                if row["schema"] == "codescribe.transcript-evidence.v1" {
+                    latest = Some(row);
+                }
+            }
+        }
+    }
+    if decoder.incomplete() {
+        return Err(invalid());
+    }
+    if !open || ended {
+        return Ok((None, seen_stage));
+    }
+    Ok((latest, seen_stage))
+}
+
+/// Attachment staging consumes the capture's frozen address; it cannot create
+/// transcript text, a recorder, an occurrence or a new routing decision.
+fn append_capture_attachment(
+    path: &Path,
+    request: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    use super::transcript_bus_maintenance::generation;
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "capture attachment refused; target closed or changed",
+        )
+    };
+    if path.canonicalize()?.as_path() != path {
+        return Err(invalid());
+    }
+    let session = request["session_id"]
+        .as_str()
+        .filter(|s| s.starts_with("agent-channel-"))
+        .ok_or_else(invalid)?;
+    let stage_id = request["stage_id"]
+        .as_str()
+        .filter(|s| {
+            s.len() == 24
+                && s.bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+        .ok_or_else(invalid)?;
+    let epoch = request["capture_epoch"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .ok_or_else(invalid)?;
+    let sequence = request["source_sequence"].as_u64().ok_or_else(invalid)?;
+    if request["kind"] != "capture_attachment"
+        || !path.is_absolute()
+        || request["attachments"]
+            .as_array()
+            .is_none_or(|items| items.is_empty() || items.len() > 64)
+        || chrono::DateTime::parse_from_rfc3339(request["emitted_at"].as_str().ok_or_else(invalid)?)
+            .is_err()
+    {
+        return Err(invalid());
+    }
+    for item in request["attachments"].as_array().ok_or_else(invalid)? {
+        let file = item["path"].as_str().map(Path::new).ok_or_else(invalid)?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(invalid)?;
+        let canonical = file.canonicalize()?;
+        if !file.is_absolute()
+            || !canonical.starts_with(home.canonicalize()?)
+            || !canonical.is_file()
+            || item["name"].as_str().is_none_or(str::is_empty)
+            || item["media_type"].as_str().is_none_or(str::is_empty)
+            || item["bytes"]
+                .as_u64()
+                .is_none_or(|n| n == 0 || n > 50 * 1024 * 1024)
+            || item["bytes"].as_u64() != Some(canonical.metadata()?.len())
+            || item["sha256"]
+                .as_str()
+                .is_none_or(|s| s.len() != 64 || !s.bytes().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(invalid());
+        }
+    }
+    let (initial, _) = capture_attachment_source(path, session, request)?;
+    let initial = initial.ok_or_else(invalid)?;
+    let recipients = initial["recipients"]
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or_else(invalid)?;
+    let mut paths = vec![path.to_path_buf()];
+    for recipient in recipients {
+        let bus = PathBuf::from(recipient["bus"].as_str().ok_or_else(invalid)?);
+        if !bus.is_absolute() || bus.canonicalize()? != bus {
+            return Err(invalid());
+        }
+        paths.push(bus);
+    }
+    paths.sort();
+    paths.dedup();
+    let destinations = paths
+        .iter()
+        .map(|path| Ok((path.clone(), shared_bus_file(path)?)))
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut staged = serde_json::json!({
+        "schema":"codescribe.capture-attachment.v1", "kind":"capture_attachment",
+        "stage_id":stage_id, "session_id":session, "capture_epoch":epoch,
+        "source_sequence":sequence, "emitted_at":request["emitted_at"],
+        "attachments":request["attachments"], "commit_bus":path,
+    });
+    let commit = serde_json::json!({
+        "schema":"codescribe.capture-attachment-commit.v1", "kind":"capture_attachment_commit",
+        "stage_id":stage_id, "session_id":session, "capture_epoch":epoch,
+        "source_sequence":sequence, "commit_bus":path, "emitted_at":request["emitted_at"],
+    });
+    let primary = paths
+        .iter()
+        .position(|candidate| candidate == path)
+        .ok_or_else(invalid)?;
+    let receipts = generation::append_durable_many_with(
+        &destinations,
+        || {
+            let mut known = Vec::new();
+            for bus in &paths {
+                let (source, exists) = capture_attachment_source(bus, session, request)?;
+                let source = source.ok_or_else(invalid)?;
+                if source["capture_epoch"].as_u64() != Some(epoch)
+                    || source["sequence"].as_u64() != Some(sequence)
+                    || source["recipients"] != initial["recipients"]
+                    || source["audience"] != initial["audience"]
+                    || source["reducer_revision"] != initial["reducer_revision"]
+                    || source["occurrence_session_id"] != initial["occurrence_session_id"]
+                    || source["sample_start"] != initial["sample_start"]
+                    || source["sample_end"] != initial["sample_end"]
+                    || source["document_index"] != initial["document_index"]
+                    || matches!(
+                        source["reducer_action"].as_str(),
+                        Some(
+                            "record_ledger_terminal_seal"
+                                | "apply_direct_transcript_terminal"
+                                | "session_ended"
+                        )
+                    )
+                {
+                    return Err(invalid());
+                }
+                known.push(exists);
+            }
+            for key in [
+                "channel",
+                "audience",
+                "recipients",
+                "occurrence_session_id",
+                "sample_start",
+                "sample_end",
+                "document_index",
+                "reducer_revision",
+            ] {
+                staged[key] = initial[key].clone();
+            }
+            let bytes = generation::encode(&staged)?;
+            Ok(known
+                .into_iter()
+                .map(|exists| if exists { None } else { Some(bytes.clone()) })
+                .collect())
+        },
+        Some((primary, generation::encode(&commit)?)),
+    )?;
+    Ok(
+        serde_json::json!({"stage_id":stage_id, "session_id":session, "capture_epoch":epoch,
+        "source_sequence":sequence, "sources":receipts, "buses":paths}),
+    )
+}
+
 /// External agent messages and delivery controls use the same private journal.
 /// PCM transcript authority remains reducer-only.
 pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<serde_json::Value> {
+    if event["schema"] == "codescribe.capture-attachment.v1" {
+        return append_capture_attachment(path, event);
+    }
     let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid agent event");
     if !path.is_absolute() || !event.is_object() {
         return Err(invalid());
@@ -2682,6 +2923,110 @@ fn expand_tilde(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    fn capture_attachment_fixture() -> (
+        tempfile::TempDir,
+        Vec<std::path::PathBuf>,
+        serde_json::Value,
+    ) {
+        let home = std::env::var_os("HOME").unwrap();
+        let temp = tempfile::tempdir_in(home).unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let buses = vec![root.join("channel-1.jsonl"), root.join("channel-2.jsonl")];
+        let recipients = serde_json::json!([
+            {"provider":"codex", "provider_session_id":"one", "lease_id":"a", "channel":"1", "audience":"one", "bus":buses[0]},
+            {"provider":"codex", "provider_session_id":"two", "lease_id":"b", "channel":"2", "audience":"two", "bus":buses[1]}
+        ]);
+        let source = serde_json::json!({"schema":"codescribe.transcript-evidence.v1", "session_id":"agent-channel-0-fixture",
+            "sequence":0, "capture_epoch":7, "reducer_revision":1, "reducer_action":"record_ledger_projection",
+            "occurrence_session_id":"occurrence-fixture", "sample_start":10, "sample_end":50, "document_index":0,
+            "channel":"0", "audience":"all", "recipients":recipients, "rendered_text":"Voice words"});
+        let opened = serde_json::json!({"schema":"codescribe.channel-session.v1", "session_id":"agent-channel-0-fixture", "state":"open"});
+        for bus in &buses {
+            std::fs::write(bus, format!("{opened}\n{source}\n")).unwrap();
+        }
+        let file = root.join("image.png");
+        std::fs::write(&file, b"image fixture").unwrap();
+        let request = serde_json::json!({"schema":"codescribe.capture-attachment.v1", "kind":"capture_attachment",
+            "stage_id":"111111111111111111111111", "session_id":"agent-channel-0-fixture", "capture_epoch":7,
+            "source_sequence":0, "emitted_at":"2026-10-20T22:00:00Z", "attachments":[{"name":"image.png", "path":file,
+            "media_type":"image/png", "bytes":13, "sha256":"a".repeat(64)}]});
+        (temp, buses, request)
+    }
+
+    #[test]
+    fn capture_attachment_freezes_broadcast_and_commits_all_buses_without_typed_message() {
+        let (_temp, buses, request) = capture_attachment_fixture();
+        let receipt = super::append_agent_event(&buses[0], &request).unwrap();
+        assert_eq!(receipt["buses"].as_array().unwrap().len(), 2);
+        for (index, bus) in buses.iter().enumerate() {
+            let text = std::fs::read_to_string(bus).unwrap();
+            let rows = text
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let stages = rows
+                .iter()
+                .filter(|row| row["schema"] == "codescribe.capture-attachment.v1")
+                .collect::<Vec<_>>();
+            assert_eq!(stages.len(), 1);
+            assert_eq!(stages[0]["recipients"].as_array().unwrap().len(), 2);
+            assert_eq!(stages[0]["source_sequence"], 0);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row["schema"] == "codescribe.agent-user-message.v1")
+            );
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["schema"] == "codescribe.capture-attachment-commit.v1")
+                    .count(),
+                usize::from(index == 0)
+            );
+        }
+        super::append_agent_event(&buses[0], &request).unwrap();
+        for bus in &buses {
+            let text = std::fs::read_to_string(bus).unwrap();
+            assert_eq!(
+                text.lines()
+                    .filter(|line| line.contains("\"kind\":\"capture_attachment\""))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn capture_attachment_refuses_stale_epoch_sequence_or_any_closed_broadcast_recipient() {
+        use std::io::Write;
+        let (_temp, buses, request) = capture_attachment_fixture();
+        for (field, wrong) in [("capture_epoch", 8), ("source_sequence", 1)] {
+            let mut invalid = request.clone();
+            invalid[field] = wrong.into();
+            assert!(super::append_agent_event(&buses[0], &invalid).is_err());
+            assert!(
+                !std::fs::read_to_string(&buses[0])
+                    .unwrap()
+                    .contains("capture_attachment")
+            );
+        }
+        let close = serde_json::json!({"schema":"codescribe.channel-session.v1", "session_id":"agent-channel-0-fixture", "state":"closed"});
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&buses[1])
+                .unwrap(),
+            "{close}"
+        )
+        .unwrap();
+        assert!(super::append_agent_event(&buses[0], &request).is_err());
+        for bus in &buses {
+            assert!(
+                !std::fs::read_to_string(bus)
+                    .unwrap()
+                    .contains("capture_attachment")
+            );
+        }
+    }
     #[test]
     fn typed_publication_uses_private_journal_and_refuses_audio_claims() {
         use sha2::{Digest, Sha256};
