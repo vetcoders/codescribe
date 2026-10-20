@@ -213,6 +213,11 @@ struct ProviderCard: View {
   private var hasAccount: Bool {
     !isCustom && (provider.accountLoginEnabled || provider.accountSignedIn)
   }
+  /// A signed-in account stands in for the key only on the Responses wire:
+  /// the loader seals `account_auth` for that wire alone.
+  private var accountServesRequests: Bool {
+    !isCustom && provider.accountSignedIn && provider.wire == "responses"
+  }
   /// "Responses" / "Messages" — the one thing every provider declares.
   private var wireLabel: String {
     ["responses": "Responses", "messages": "Messages"][provider.wire] ?? provider.wire
@@ -240,12 +245,14 @@ struct ProviderCard: View {
       } else {
         vendorProviderHeader
       }
-      // Key-optional hosts, and vendors whose account is already connected,
-      // read "Optional": nothing is waiting for that key.
+      // Key-optional hosts, and vendors whose connected account serves
+      // requests, read "Optional": one credential is enough. Only a Responses
+      // vendor's account serves requests (`core/config/loader.rs`); a
+      // signed-in Messages account does not, so its key stays required.
       KeyRow(
         model: model, account: provider.apiKeyAccount, label: String(localized: "API key"),
         isSet: provider.apiKeySet,
-        optional: !provider.keyRequired || provider.accountSignedIn, embedded: true,
+        optional: !provider.keyRequired || accountServesRequests, embedded: true,
         presentation: isCustom ? .customProvider(endpoint: provider.endpoint) : .standard)
       if let error = model.providerAccountErrors[provider.id] {
         Text("Account access unavailable")
@@ -594,20 +601,16 @@ struct SpeechToTextSection: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionHeaderRow(
         String(localized: "Cloud transcription", comment: "Providers section: cloud STT lanes"))
-      // Two short sentences, approved verbatim in Polish (Founder review,
-      // 2026-10-18): where the mode is chosen, and when audio actually leaves.
-      Text("You choose the mode under Dictation.")
-        .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
-        .padding(.top, SettingsScale.headerGap)
-      // Conditional on purpose: a configured endpoint and key do not mean audio
-      // is being sent — the real egress paths are Cloud mode and an explicit
-      // re-transcription (same truth as Dictation › Cloud & privacy).
-      Text("We send recordings only in Cloud mode or during a manual cloud re-transcription.")
+      // One sentence (Founder review, 2026-10-20). Conditional on purpose: a
+      // configured endpoint and key do not mean audio is being sent. The two
+      // recording egresses are the live Cloud mode session and an explicit
+      // cloud re-transcription (`cloud:` pass in `bridge/src/recording.rs`),
+      // the same truth as Dictation › Cloud & privacy.
+      Text("Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.")
         .font(SettingsScale.helper)
         .foregroundStyle(CSColor.amber)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.top, 2)
+        .padding(.top, SettingsScale.headerGap)
       VStack(spacing: CSSpace.sm) {
         ForEach(model.sttLanes, id: \.id) { lane in
           SttLaneCard(model: model, lane: lane)

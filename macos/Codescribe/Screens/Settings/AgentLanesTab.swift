@@ -28,7 +28,10 @@ struct AgentLanesTab: View {
         String(localized: "Codescribe Bus", comment: "AI models section: the two bus timers"))
         .padding(.top, SettingsScale.sectionGap)
 
-      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      // The slider card is the width pattern (Founder, 2026-10-20): the hold
+      // and auto-send cards share its edges instead of stretching to the pane
+      // like the lane editors above.
+      PatternWidthStack {
         SettingsSecondsSlider(
           title: String(localized: "Pause before sending to Codescribe Bus"),
           detail: String(
@@ -56,30 +59,31 @@ struct AgentLanesTab: View {
           }
           .accessibilityIdentifier("agent-send-hold-seconds")
         }
+        .padding(.top, SettingsScale.rowGap)
+
+        // Mirrors `OverlayState`: armed in Agent mode only, fires after
+        // `autoHideDelaySeconds`, cancelled the moment the transcript is edited.
+        // One label, not a section heading repeating the switch name (Founder
+        // brief, round 8, 2026-10-10). The title names the built-in Agent so this
+        // fixed 5 s delay is not read as a bus setting.
+        SettingsControlRow(
+          title: String(localized: "Auto-send to the built-in Agent"),
+          subtitle: String(
+            localized: "Sends the transcript after 5 seconds unless you start editing it."
+          )
+        ) {
+          Toggle(
+            "",
+            isOn: Binding(
+              get: { model.settings.agentAutoSend },
+              set: { model.setAgentAutoSend($0) }
+            )
+          )
+          .settingsSwitch()
+        }
+        .padding(.top, SettingsScale.sectionGap)
       }
       .padding(.top, SettingsScale.headerGap)
-
-      // Mirrors `OverlayState`: armed in Agent mode only, fires after
-      // `autoHideDelaySeconds`, cancelled the moment the transcript is edited.
-      // One label, not a section heading repeating the switch name (Founder
-      // brief, round 8, 2026-10-10). The title names the built-in Agent so this
-      // fixed 5 s delay is not read as a bus setting.
-      SettingsControlRow(
-        title: String(localized: "Auto-send to the built-in Agent"),
-        subtitle: String(
-          localized: "Sends the transcript after 5 seconds unless you start editing it."
-        )
-      ) {
-        Toggle(
-          "",
-          isOn: Binding(
-            get: { model.settings.agentAutoSend },
-            set: { model.setAgentAutoSend($0) }
-          )
-        )
-        .settingsSwitch()
-      }
-      .padding(.top, SettingsScale.sectionGap)
 
       // Collapsed by default: the editors above answer the everyday question;
       // this is where the endpoints and the settings keys live.
@@ -150,5 +154,38 @@ struct AgentLanesTab: View {
 
   private var divider: some View {
     Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+  }
+}
+
+/// Stacks cards at the width the first one takes for the offered width; every
+/// later card is offered exactly that width. A plain `VStack` cannot do this:
+/// `SettingsControlRow` fills whatever it is offered, so the stack would grow
+/// to the pane instead of following the slider card.
+private struct PatternWidthStack: Layout {
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let width = columnWidth(offered: proposal.width, subviews: subviews)
+    let height = subviews.reduce(0) {
+      $0 + $1.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+    }
+    return CGSize(width: width, height: height)
+  }
+
+  func placeSubviews(
+    in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+  ) {
+    let width = columnWidth(offered: bounds.width, subviews: subviews)
+    var y = bounds.minY
+    for subview in subviews {
+      let height = subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+      subview.place(
+        at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
+        proposal: ProposedViewSize(width: width, height: height))
+      y += height
+    }
+  }
+
+  private func columnWidth(offered: CGFloat?, subviews: Subviews) -> CGFloat {
+    guard let pattern = subviews.first else { return 0 }
+    return pattern.sizeThatFits(ProposedViewSize(width: offered, height: nil)).width
   }
 }
