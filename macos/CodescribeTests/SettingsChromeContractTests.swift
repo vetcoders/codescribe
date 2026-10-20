@@ -362,7 +362,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : Color.secondary"))
     XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
-    XCTAssertTrue(panel.contains("optional: !provider.keyRequired || provider.accountSignedIn"))
+    XCTAssertTrue(panel.contains("optional: !provider.keyRequired || accountServesRequests"))
 
     let polish = try polishCatalog()
     for key in [
@@ -371,8 +371,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Refresh status",
       "Add provider",
       "Cloud transcription",
-      "You choose the mode under Dictation.",
-      "We send recordings only in Cloud mode or during a manual cloud re-transcription.",
+      "Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription.",
       "File transcription",
       "Live transcription",
       "Endpoint",
@@ -397,11 +396,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(polish["File transcription"], "Transkrypcja plików")
     XCTAssertEqual(polish["Live transcription"], "Transkrypcja na żywo")
     XCTAssertEqual(polish["Connected as %@"], "Połączono jako %@")
-    // Approved verbatim by the Founder (round 15, 2026-10-18).
-    XCTAssertEqual(polish["You choose the mode under Dictation."], "Tryb wybierzesz w Dyktowaniu.")
+    // Views review 1–10 (Founder, 2026-10-20): one sentence that names both
+    // upload paths; "You choose the mode under Dictation." is gone.
     XCTAssertEqual(
-      polish["We send recordings only in Cloud mode or during a manual cloud re-transcription."],
-      "Nagrania wysyłamy tylko w trybie chmurowym lub przy ręcznej retranskrypcji w chmurze.")
+      polish["Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription."],
+      "Nagrania wysyłamy do chmury tylko, gdy wybierzesz tryb chmurowy lub retranskrypcję w chmurze.")
+    XCTAssertNil(polish["You choose the mode under Dictation."])
+    XCTAssertNil(polish["We send recordings only in Cloud mode or during a manual cloud re-transcription."])
     // A lane card keeps its key on the first level; the endpoint and the
     // gateway session URL sit under Advanced (Founder decision, 2026-10-18).
     let laneCard = try XCTUnwrap(panel.range(of: "struct SttLaneCard: View {"))
@@ -491,7 +492,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Assistive": "Agent",
       "Formatting": "Formatowanie",
       "The Agent and voice assistant model": "Model Agenta i asystenta głosowego",
-      "The transcript cleanup model": "Model poprawiania transkrypcji",
+      "Corrections and Smart. Max uses the Agent model.": "Korekta i Smart. Max używa modelu Agenta.",
+      "The model list needs an API key. You can enter a model ID by hand.": "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie.",
       "Connected account": "Połączone konto",
       "Stored API key": "Zapisany klucz API",
       "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
@@ -506,13 +508,18 @@ final class SettingsChromeContractTests: XCTestCase {
       "Hold before sending to Codescribe Bus": "Przytrzymanie przed wysłaniem do Codescribe Bus",
       "Sends the transcript after 5 seconds unless you start editing it.":
         "Wyślij transkrypcję po 5 sekundach, jeśli nie rozpoczniesz edycji.",
-      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.":
-        "Lista modeli niedostępna: zapisany klucz API został odrzucony. Połączone konto nadal obsługuje żądania. Sprawdź klucz w sekcji Dostawcy.",
+      "The API key was rejected, so there is no model list. The account still works.":
+        "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa.",
     ]
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
     for retired in [
+      "The transcript cleanup model",
+      "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only.",
+      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.",
+      "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below.",
+      "Add this provider's API key under Providers to list its models, or enter a model ID below.",
       "LLM lanes", "Request lanes.", "Transcript delivery", "Resolved runtime truth", "Reset",
       "account", "no key required",
       "Model discovery failed. Check Settings › Providers, then refresh models in Settings › Agent › LLM lanes.",
@@ -539,10 +546,10 @@ final class SettingsChromeContractTests: XCTestCase {
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
     XCTAssertTrue(tab.contains("String(localized: \"Folders available to the Agent\""))
     XCTAssertFalse(tab.contains("\"Workspace roots.\""))
-    XCTAssertTrue(
-      tab.contains(
-        "\"Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions.\""
-      ))
+    XCTAssertTrue(tab.contains("\"Processes and MCP servers have their own permissions.\""))
+    XCTAssertFalse(
+      tab.contains("checks file paths and terminal working directories"),
+      "the path-checking detail lives in the guide, not on the pane (views review, 2026-10-20)")
     XCTAssertFalse(
       tab.contains("It has no access outside them."),
       "the description must not claim a boundary around every MCP process")
@@ -566,8 +573,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Folders available to the Agent": "Foldery dostępne dla Agenta",
-      "Codescribe checks file paths and terminal working directories and path arguments against these folders. Processes and MCP servers can access other paths under their own permissions.":
-        "Codescribe sprawdza względem tych folderów ścieżki plików oraz katalogi robocze i argumenty ścieżkowe poleceń terminala. Procesy i serwery MCP mogą korzystać z innych ścieżek zgodnie z własnymi uprawnieniami.",
+      "Processes and MCP servers have their own permissions.": "Procesy i serwery MCP mają własne uprawnienia.",
       "Allowed folders": "Dozwolone foldery",
       "The Agent looks for projects here, skipping hidden and build folders.":
         "Agent szuka tu projektów, pomijając ukryte foldery i katalogi build.",
@@ -642,7 +648,6 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Prompts": "Prompty",
-      "Browse and edit the base prompts.": "Przeglądaj i edytuj prompty bazowe.",
       "Correction": "Korekta",
       "Correction prompt": "Prompt korekty",
       "Smart prompt": "Prompt Smart",
@@ -670,7 +675,8 @@ final class SettingsChromeContractTests: XCTestCase {
       XCTAssertEqual(polish[key], value, key)
     }
     for retired in [
-      "Prompts.", "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
+      "Prompts.", "Browse and edit the base prompts.", "Formatting limited to corrections.",
+      "Assistive prompt", "Custom file", "Built-in fallback", "Restore…",
       "Restore default…",
       "No custom prompt file yet. Saving creates one at this path.",
       "Browse and edit the base prompts. Codescribe may add further instructions to them while it runs.",
@@ -703,12 +709,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("defaultRow(title: \"Read data\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Changes, processes and network\""))
     XCTAssertTrue(section.contains("defaultRow(title: \"Unclassified\""))
-    XCTAssertTrue(
-      section.contains("SettingsSectionHeaderRow(String(localized: \"Individual tools\"))"))
+    XCTAssertFalse(
+      section.contains("SettingsSectionHeaderRow(String(localized: \"Individual tools\"))"),
+      "the list needs no title above its search field (views review, 2026-10-20)")
     XCTAssertTrue(section.contains("SettingsSectionHeaderRow(String(localized: \"Defaults\"))"))
     XCTAssertFalse(section.contains("Text(\"Defaults\")"), "Defaults is not a setting name")
     XCTAssertFalse(section.contains("Tool overrides"))
-    XCTAssertTrue(section.contains("A rule for one tool outranks its server's rule"))
+    XCTAssertTrue(section.contains("Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."))
+    XCTAssertFalse(section.contains("A rule for one tool outranks"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
     XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
     XCTAssertTrue(
@@ -750,7 +758,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let expected: [String: String] = [
       "Tool permissions": "Uprawnienia narzędzi",
       "Choose when the Agent may use tools.": "Wybierz, kiedy Agent może korzystać z narzędzi.",
-      "Individual tools": "Poszczególne narzędzia",
+      "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent.": "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody.",
       "Source": "Źródło",
       "Search tools…": "Szukaj narzędzia…",
       "Deny": "Blokuj",
@@ -780,7 +788,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Set when the Agent may use tools without asking, when it needs your approval, and when it must refuse.",
       "Tool overrides · %lld", "Read-only", "Side effects", "Global / unknown", "%lld servers",
       "Inherited from the category default", "Inherited from the server rule",
-      "Restore inheritance",
+      "Restore inheritance", "Individual tools",
+      "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools stay blocked, and a path that may hold secrets always asks.",
       "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
@@ -793,11 +802,12 @@ final class SettingsChromeContractTests: XCTestCase {
   func testDiagnosticsTabReadsAsAStatusScreen() throws {
     let sources = try settingsSources()
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
-    XCTAssertTrue(tab.contains("String(localized: \"Agent environment status\""))
+    XCTAssertTrue(tab.contains("String(localized: \"Agent environment configuration\""))
+    XCTAssertFalse(tab.contains("\"Agent environment status\""))
     XCTAssertFalse(tab.contains("\"Connection details.\""))
-    XCTAssertTrue(
-      tab.contains(
-        "\"Configuration state of the Agent, its available tools and integrations.\""))
+    XCTAssertFalse(
+      tab.contains("\"Configuration state of the Agent, its available tools and integrations.\""),
+      "the headline stands alone (views review, 2026-10-20)")
 
     let section = try XCTUnwrap(sources["AgentStatusSection.swift"])
     // Round 11: summary card first, then Integrations, Tools and servers,
@@ -846,9 +856,7 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let polish = try polishCatalog()
     let expected: [String: String] = [
-      "Agent environment status": "Stan środowiska Agenta",
-      "Configuration state of the Agent, its available tools and integrations.":
-        "Stan konfiguracji Agenta, dostępnych narzędzi i integracji.",
+      "Agent environment configuration": "Konfiguracja środowiska agenta",
       "Overall status": "Stan ogólny",
       "Model provider": "Dostawca modelu",
       "Native tools": "Narzędzia natywne",
@@ -912,8 +920,9 @@ final class SettingsChromeContractTests: XCTestCase {
     let tab = try XCTUnwrap(sources["SettingsTab.swift"])
     XCTAssertTrue(tab.contains("case .agentMcp: String(localized: \"MCP servers\")"))
     XCTAssertFalse(tab.contains("\"MCP servers.\""))
-    XCTAssertTrue(
-      tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""))
+    XCTAssertFalse(
+      tab.contains("\"Add MCP servers and manage the tools the Agent may use.\""),
+      "the MCP pane opens on the form (views review, 2026-10-20)")
 
     let view = try XCTUnwrap(sources["SettingsView.swift"])
     XCTAssertTrue(view.contains("window.title = String(localized: \"Settings\")"))
@@ -1009,8 +1018,6 @@ final class SettingsChromeContractTests: XCTestCase {
         "Serwer o tej nazwie już istnieje. Wybierz inną nazwę.",
       "Enter the command that starts the server.": "Wpisz polecenie, które uruchamia serwer.",
       "MCP servers": "Serwery MCP",
-      "Add MCP servers and manage the tools the Agent may use.":
-        "Dodawaj serwery MCP i zarządzaj narzędziami, z których może korzystać Agent.",
       "Connection not tested": "Nie sprawdzono połączenia",
       "Checking the connection…": "Sprawdzanie połączenia…",
       "Last test: failed": "Ostatni test: nieudany",
@@ -1028,8 +1035,6 @@ final class SettingsChromeContractTests: XCTestCase {
       "Move MCP configuration to Trash…": "Przenieś konfigurację MCP do Kosza…",
       "Move MCP configuration to Trash?": "Przenieść konfigurację MCP do Kosza?",
       "Add server": "Dodaj serwer",
-      "A server gives the Agent extra tools, such as code or web search.":
-        "Serwer daje Agentowi dodatkowe narzędzia, np. wyszukiwanie w kodzie albo w sieci.",
       "Test": "Sprawdź",
       "Settings": "Ustawienia",
     ]
@@ -1042,6 +1047,9 @@ final class SettingsChromeContractTests: XCTestCase {
       "remote · no authentication · policy: ask", "remote · token in Keychain · policy: ask",
       "Clear MCP configuration…", "name (e.g. prview)", "endpoint (https://…/mcp)",
       "Remove this server from mcp.json",
+      "Add MCP servers and manage the tools the Agent may use.",
+      "No MCP servers yet — this is optional.",
+      "A server gives the Agent extra tools, such as code or web search.",
       "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")

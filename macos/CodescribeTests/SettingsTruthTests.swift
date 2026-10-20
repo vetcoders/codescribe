@@ -320,7 +320,7 @@ final class SettingsTruthTests: XCTestCase {
     for tab in SettingsTab.allCases {
       XCTAssertFalse(tab.title.isEmpty)
       XCTAssertFalse(tab.headline.isEmpty)
-      XCTAssertFalse(tab.blurb.isEmpty)
+      if let blurb = tab.blurb { XCTAssertFalse(blurb.isEmpty, "\(tab)") }
       XCTAssertFalse(tab.searchKeywords.isEmpty)
       XCTAssertTrue(SettingsTab.tabs(in: tab.section).contains(tab))
     }
@@ -411,10 +411,11 @@ final class SettingsTruthTests: XCTestCase {
     )
     for file in PromptFile.allCases {
       XCTAssertFalse(
-        file.editorSubtitle.contains(".txt"), "file names belong under File details: \(file)")
+        file.editorSubtitle?.contains(".txt") ?? false,
+        "file names belong under File details: \(file)")
     }
     XCTAssertTrue(
-      PromptFile.assistive.editorSubtitle.contains("Voice chat uses its own instructions"),
+      PromptFile.assistive.editorSubtitle?.contains("Voice chat uses its own instructions") == true,
       "assistive.txt feeds only the act-on-request lane (compose_agent_system_prompt)")
   }
 
@@ -1786,7 +1787,7 @@ final class SettingsTruthTests: XCTestCase {
       mcpStatus: .sample, accessResolved: true, accessError: nil)
     XCTAssertEqual(warned.headline, "Configuration ready")
     XCTAssertTrue(warned.notes.allSatisfy { $0.tone == .warn }, "\(warned.notes)")
-    XCTAssertTrue(warned.notes.map(\.text).contains("No provider for code.symbols"))
+    XCTAssertTrue(warned.notes.map(\.text).contains("No provider for code symbols"))
     XCTAssertEqual(warned.notesCaption, "Does not block the Agent")
     XCTAssertTrue(warned.facts.contains("Provider: OpenAI (Responses)"), warned.facts)
 

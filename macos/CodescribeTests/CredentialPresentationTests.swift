@@ -135,8 +135,9 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertEqual(lane.availabilityTint, CSColor.oliveLight)
     XCTAssertEqual(
       SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.oliveLight)
-    XCTAssertTrue(lane.discoveryDescription.contains("connected account covers model requests"))
-    XCTAssertTrue(lane.discoveryDescription.contains("model list needs"))
+    XCTAssertEqual(
+      lane.discoveryDescription,
+      "The model list needs an API key. You can enter a model ID by hand.")
     XCTAssertFalse(lane.discoveryDescription.contains("Formatting needs"))
     XCTAssertFalse(lane.usesDiscoveredPicker)
     provider.accountSignedIn = false
@@ -187,7 +188,7 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Connected account")
     XCTAssertEqual(
       rejectedWithAccount.discoveryDescription,
-      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers."
+      "The API key was rejected, so there is no model list. The account still works."
     )
 
     // Any other failure is a plain fetch error: the key is never blamed on a guess.
