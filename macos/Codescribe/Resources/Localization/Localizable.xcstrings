@@ -9945,6 +9945,16 @@
         }
       }
     },
+    "Minimize" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minimalizuj"
+          }
+        }
+      }
+    },
     "Minor changes (+%lld)" : {
       "comment" : "Dictionary: collapsed casing and punctuation adjustments",
       "localizations" : {
