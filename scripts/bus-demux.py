@@ -5007,7 +5007,9 @@ def _xai_oidc_speech_key() -> str | None:
                 raise SpeechCredentialError("credential_busy")
             data = latest[0]
             data[endpoint] = updated
-            atomic_json(path, data)
+            # Account order selects the same grant on the next call. The bus
+            # JSON writer sorts keys; this external store must retain its order.
+            atomic_bytes(path, (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8"))
             return updated["key"]
     except OSError:
         raise SpeechCredentialError("credential_storage") from None
