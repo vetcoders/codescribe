@@ -1421,15 +1421,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons, the
-  /// agent's beside the ordinary microphone and the expand arrow, and the
-  /// wordmark shortens to a lowercase "cs" to make the room (07:10Z). An AX
-  /// walk of the test panel does not surface the SwiftUI header, so the probe
-  /// reads AppKit truth: one mounted hover region per header control and the
-  /// drag region that backs the wordmark.
-  func testMiniAddsTheRecordingAgentsMicrophoneAndShortensTheWordmark() throws {
+  /// Maciej, 2026-10-20: mini always reads "cs" and always carries the agents
+  /// button beside the ordinary microphone and the expand arrow, whether or
+  /// not an agent records. An AX walk of the test panel does not surface the
+  /// SwiftUI header, so the probe reads AppKit truth: one mounted hover region
+  /// per header control and the drag region that backs the wordmark.
+  func testMiniAlwaysReadsCsAndCarriesTheAgentsButton() throws {
     let state = OverlayState()
     state.setPresentationMode(.mini)
+    XCTAssertFalse(state.channelAudioCaptureActive)
     try withPanel(state: state) { panel, root in
       @MainActor func headerControls() -> Int {
         panel.menuCursorRegions.allObjects.filter { view in
@@ -1449,7 +1449,6 @@ final class OverlayChromeFounderCutTests: XCTestCase {
           }, "mini: no brand drag region")
         return region.bounds.width
       }
-      // The wordmark's text change animates for 0.2 s after the frame settles.
       @MainActor func settleWordmark() {
         self.settle(root)
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
@@ -1457,7 +1456,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       }
       let restingControls = headerControls()
       let restingBrand = try brandWidth()
-      XCTAssertGreaterThanOrEqual(restingControls, 2, "mini: microphone and expand arrow")
+      XCTAssertGreaterThanOrEqual(
+        restingControls, 3, "mini with no agent capture: agents, microphone and expand arrow")
+      XCTAssertLessThan(restingBrand, 40, "mini with no agent capture already reads cs")
       state.applyChannelRoster([
         .init(
           channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
@@ -1466,20 +1467,32 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       ])
       state.setPresentationMode(.mini)
       settleWordmark()
-      XCTAssertEqual(headerControls(), restingControls + 1, "the agent's microphone joins mini")
-      XCTAssertLessThan(try brandWidth(), restingBrand * 0.6, "the wordmark shortens to cs")
-      // 09:36: no gap beside "cs"; mini hugs the controls, trailing edge fixed.
+      XCTAssertEqual(headerControls(), restingControls, "capture adds no control to mini")
+      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "the wordmark stays cs")
+      // 09:36 (2026-10-19): no gap beside "cs"; mini hugs the controls while an agent records.
       let trailing = panel.frame.maxX
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.agentMiniSize.width, accuracy: 0.5)
       state.applyChannelRoster([])
       settleWordmark()
-      XCTAssertEqual(headerControls(), restingControls, "the agent's microphone leaves")
-      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "codescribe returns")
+      XCTAssertEqual(headerControls(), restingControls, "the agents button stays")
+      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "cs stays after capture")
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
     }
+  }
+
+  /// Maciej, 2026-10-20: the megaphone faces left, and only the megaphone.
+  func testAgentMegaphoneIsMirroredAndTheWordmarkIsNot() throws {
+    let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
+    XCTAssertTrue(
+      roster.contains(
+        "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
+    XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
+    let header = try headerSource(try overlaySource())
+    XCTAssertTrue(header.contains("short: mini"))
+    XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }
 
   private func withPanel(

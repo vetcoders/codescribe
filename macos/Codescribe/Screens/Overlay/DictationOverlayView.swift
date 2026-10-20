@@ -1075,13 +1075,11 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
-    // Mini while an agent records: its microphone joins, the word shortens.
-    let miniAgentMicrophone = mini && state.channelAudioCaptureActive
     return HStack(spacing: mini ? 6 : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       Wordmark(
         size: density.brandSize, spacing: mini ? 6 : 5,
-        textIdentifier: mini ? "overlay-mini-brand" : "", short: miniAgentMicrophone
+        textIdentifier: mini ? "overlay-mini-brand" : "", short: mini
       ) {
         closeButton
       }
@@ -1135,10 +1133,13 @@ struct DictationOverlayView: View {
           }
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
-        } else if miniAgentMicrophone {
-          // Maciej, 2026-10-19 09:09: in agent mode mini carries three buttons,
-          // the agent's beside the ordinary microphone, and the wordmark
-          // shortens to "cs" to make the room; the panel then hugs them (09:36).
+        } else {
+          // Maciej, 2026-10-20: mini always reads "cs" and always carries the
+          // agents button beside the ordinary microphone, whether or not an
+          // agent records; this replaces the 2026-10-19 09:09 rule that gave
+          // it to agent capture alone. The megaphone it shows while a channel
+          // records faces left, toward the wordmark. While any channel records,
+          // a press here is that capture's stop, never channel 0 or the monitor.
           channelStatusView
         }
         recordingControls(compact: false)
