@@ -147,10 +147,12 @@ The Dictation pane is one tab per concern:
    take are two different facts and may disagree.
    At the foot of the tab, **Transcript markers** — one switch, _Add markers to
    text_, which marks the text delivered to other apps. **Edit template and
-   preview** is closed by default and holds the editor, the field chips
+   preview** is closed by default and holds one box with an **Edit | Preview**
+   segment above it: _Edit_ shows the raw template, _Preview_ shows the same
+   box rendered with the current take. Under the box sit the field chips
    (`{mode}`, `{lang}`, `{text}`, `{conf}`, `{flags}` — each chip appends its
-   field to the template), the warning when `{text}` is missing, **Restore
-   default template** and the rendered **Template preview**. The markers moved
+   field to the template and brings the editor back), the warning when
+   `{text}` is missing and **Restore default template**. The markers moved
    here from the former About page; saved templates and the marking mechanics
    did not change.
 2. **Whisper** — one card of two rows: **Model** (the picker; the name is not
