@@ -1777,7 +1777,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // The column installs the same status view, with its corner buttons.
     XCTAssertTrue(
       view.contains("var roster = channelStatusView") && view.contains("roster.monitorBody("))
-    XCTAssertTrue(status.contains("overlay-channel-delivery-"))
+    let rosterLabel = try String(
+      contentsOf: root.appendingPathComponent(
+        "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift"), encoding: .utf8)
+    XCTAssertTrue(rosterLabel.contains("overlay-channel-delivery-"))
     XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.

@@ -681,7 +681,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let (panel, settle) = try recordedPanel(state: state, width: 700, drawer: drawer, rail: rail)
     defer { panel.orderOut(nil) }
     XCTAssertFalse(state.agentDrawerDocked)
-    XCTAssertEqual(rail.frame, .zero, "split below the threshold: no rail, the list when asked")
+    XCTAssertEqual(
+      rail.frame.width, 44, accuracy: 1, "the rail is available before opening the list")
 
     state.showAgentMonitor()
     settle()
@@ -774,14 +775,15 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let row = try section(
       of: source, from: "func channelRow(", to: "private func conversationRow(")
-    XCTAssertTrue(row.contains("lineLimit(2)"), "rows carry a two-line message preview")
+    let visual = try overlaySource("OverlayAgentRosterLabel.swift")
+    XCTAssertTrue(visual.contains("lineLimit(2)"), "rows carry a two-line message preview")
     XCTAssertTrue(row.contains("drawerPreview("), "rows render the last message preview")
     XCTAssertTrue(
-      row.contains("overlay-agent-descriptor-"),
+      visual.contains("overlay-agent-descriptor-"),
       "wide rows must show the same provider/model identity as narrow pills")
     XCTAssertTrue(row.contains(".help("), "descriptor and status live in the row tooltip")
     XCTAssertTrue(
-      row.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
+      visual.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
@@ -934,11 +936,13 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
       of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
-    let limits = label.components(separatedBy: ".lineLimit(").dropFirst().compactMap {
+    let visual = try overlaySource("OverlayAgentRosterLabel.swift")
+    let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
     XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
-    XCTAssertTrue(label.contains("unreadBadge(count)"), "unread rides the title line as a badge")
+    XCTAssertTrue(
+      visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
     XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
   }

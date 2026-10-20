@@ -31,9 +31,14 @@ struct Request: Codable {
   let press: Bool
 }
 func query(_ request: Request) throws -> Reception {
-  let admittedIdentifier = request.identifier.hasPrefix("overlay-conversation-")
+  let admittedIdentifier =
+    request.identifier.hasPrefix("overlay-conversation-")
     || request.identifier.hasPrefix("overlay-view-conversation-")
     || request.identifier.hasPrefix("overlay-message-")
+    || (!request.press
+      && (request.identifier.hasPrefix("overlay-agent-title-")
+        || request.identifier.hasPrefix("overlay-agent-timestamp-")
+        || request.identifier.hasPrefix("overlay-agent-row-controls-")))
   guard request.pid > 0, admittedIdentifier,
     let bundle = NSRunningApplication(processIdentifier: request.pid)?.bundleURL?.path,
     bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/Codescribe.app")
