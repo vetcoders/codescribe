@@ -754,8 +754,12 @@ and there is no undo after it.
 The Settings window carries the title "Settings" for Mission Control, App
 Exposé and the Window menu while the toolbar shows the wordmark instead.
 
-Setup keeps the Agent step to one decision: which clients to connect. It shows
-only a short ready state or an inline setup action and error. The preceding
+Setup keeps the Agent step to one decision: which clients get the Codescribe
+skill. Each card reads **Install the Codescribe skill**, or **Codescribe skill
+installed** when the managed skill is healthy in that client's folder; Continue
+(or **Set up**) installs it, and a conversation connects only later, when it
+invokes the skill. The step shows only a short ready state or an inline setup
+action and error. The preceding
 provider step presents account and API-key presence from the provider credential
 snapshot; diagnostic readiness describes usable provider access and must not be
 read as proof that an API key exists.

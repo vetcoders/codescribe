@@ -231,10 +231,7 @@ struct AgenticReadinessStepView: View {
           VStack(alignment: .leading, spacing: 6) {
             OnboardingChoiceCard(
               title: client.displayName,
-              subtitle: String(
-                localized: LocalizedStringResource(
-                  "Connect to the active session", locale: model.interfaceLocale,
-                  comment: "Detail under a coding-assistant checkbox")),
+              subtitle: skillCaption(for: client),
               isSelected: model.selectedAgentClients.contains(client)
             ) { model.toggleAgentClient(client) }
 
@@ -329,6 +326,25 @@ struct AgenticReadinessStepView: View {
 
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// What a card stands for: the Codescribe skill for that client, written to
+  /// its skills folder on Continue (or Set up). Selecting a card never joins a
+  /// running agent session; a conversation connects later, when it invokes
+  /// the skill. So the caption names the installation, never a connection.
+  private func skillCaption(for client: AgentBridgeClient) -> String {
+    if model.agentClientIsInstalled(client) {
+      return String(
+        localized: LocalizedStringResource(
+          "Codescribe skill installed", locale: model.interfaceLocale,
+          comment:
+            "Detail under a coding-agent card: the Codescribe skill is in this client's skills folder"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Install the Codescribe skill", locale: model.interfaceLocale,
+        comment:
+          "Detail under a coding-agent card: Continue installs the Codescribe skill for this client"))
   }
 }
 
