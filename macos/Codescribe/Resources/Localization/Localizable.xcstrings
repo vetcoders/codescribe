@@ -3095,6 +3095,17 @@
         }
       }
     },
+    "Appearance" : {
+      "comment" : "Settings group: light or dark, and the sheet shade\nSettings row: light, dark or system",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wygląd"
+          }
+        }
+      }
+    },
     "Apple dictation needs Speech Recognition access — grant it in Settings › Dictation or System Settings › Privacy & Security › Speech Recognition" : {
       "localizations" : {
         "pl" : {
@@ -5094,6 +5105,17 @@
         }
       }
     },
+    "Codescribe will restart with the new shade. Your recording must finish first." : {
+      "comment" : "Sheet shade restart explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć."
+          }
+        }
+      }
+    },
     "Collapse" : {
       "comment" : "Fold the message back to its head",
       "localizations" : {
@@ -6449,6 +6471,17 @@
         }
       }
     },
+    "Dark" : {
+      "comment" : "Appearance choice",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ciemny"
+          }
+        }
+      }
+    },
     "Default location: %@" : {
       "comment" : "Default model storage folder; the placeholder is a directory path",
       "localizations" : {
@@ -7089,6 +7122,7 @@
       }
     },
     "Edit" : {
+      "comment" : "Dictation panel: template segment, the raw template",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7649,6 +7683,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Foldery dostępne dla Agenta"
+          }
+        }
+      }
+    },
+    "Follow macOS, or keep Codescribe light or dark on its own." : {
+      "comment" : "Appearance row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podążaj za macOS albo trzymaj Codescribe na stałe w jasnym lub ciemnym."
           }
         }
       }
@@ -8910,6 +8955,28 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie można potwierdzić licencji"
+          }
+        }
+      }
+    },
+    "Light" : {
+      "comment" : "Appearance choice",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Jasny"
+          }
+        }
+      }
+    },
+    "Limestone" : {
+      "comment" : "Sheet shade, light",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wapień"
           }
         }
       }
@@ -11378,6 +11445,17 @@
         }
       }
     },
+    "Open Setup Wizard…" : {
+      "comment" : "Creator: reopens the first-run setup wizard window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz kreatora…"
+          }
+        }
+      }
+    },
     "Open System Settings" : {
       "comment" : "Open this permission's native macOS privacy pane",
       "localizations" : {
@@ -11745,6 +11823,28 @@
         }
       }
     },
+    "Panel shade, dark" : {
+      "comment" : "Settings row: sheet shade for dark",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odcień panelu, ciemny"
+          }
+        }
+      }
+    },
+    "Panel shade, light" : {
+      "comment" : "Settings row: sheet shade for light",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odcień panelu, jasny"
+          }
+        }
+      }
+    },
     "Partial results" : {
       "comment" : "Status warning when search results are incomplete or some archives could not be read",
       "localizations" : {
@@ -12097,7 +12197,7 @@
       }
     },
     "Preview" : {
-      "comment" : "Settings tab: live transcript preview timing",
+      "comment" : "Dictation panel: template segment, the rendered template\nSettings tab: live transcript preview timing",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -12661,6 +12761,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
+          }
+        }
+      }
+    },
+    "Reading the recorded slots…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odczytuję zapisane sloty…"
           }
         }
       }
@@ -13812,7 +13922,7 @@
       }
     },
     "Restart now" : {
-      "comment" : "Apply the interface language",
+      "comment" : "Apply the interface language\nApply the sheet shade",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13823,7 +13933,7 @@
       }
     },
     "Restarting…" : {
-      "comment" : "Interface language restart in flight",
+      "comment" : "Interface language restart in flight\nSheet shade restart in flight",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15305,6 +15415,17 @@
         }
       }
     },
+    "Soft graphite" : {
+      "comment" : "Sheet shade, dark",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Miękki grafit"
+          }
+        }
+      }
+    },
     "Some agents may have received this message. Check read receipts before sending again." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16482,6 +16603,17 @@
         }
       }
     },
+    "System" : {
+      "comment" : "Appearance choice: follow macOS",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "System"
+          }
+        }
+      }
+    },
     "System Settings" : {
       "comment" : "Button: open the System Settings pane",
       "localizations" : {
@@ -16611,13 +16743,12 @@
         }
       }
     },
-    "Template preview" : {
-      "comment" : "Dictation panel: label over the rendered template",
+    "Template view" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Podgląd szablonu"
+            "value" : "Widok szablonu"
           }
         }
       }
@@ -17451,7 +17582,7 @@
       }
     },
     "Today" : {
-      "comment" : "Thread rail section",
+      "comment" : "Sheet shade: the value shipped today\nThread rail section",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17810,6 +17941,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sposób połączenia"
+          }
+        }
+      }
+    },
+    "Travertine" : {
+      "comment" : "Sheet shade, light",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trawertyn"
           }
         }
       }
@@ -18505,6 +18647,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Budź agenta"
+          }
+        }
+      }
+    },
+    "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay." : {
+      "comment" : "Creator: what reopening the setup wizard does",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przejdź jeszcze raz przez pierwsze kroki: język, tryb, uprawnienia, model Whisper i dostawcę. Twoje obecne ustawienia zostają."
+          }
+        }
+      }
+    },
+    "Warm carbon" : {
+      "comment" : "Sheet shade, dark",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ciepły węgiel"
           }
         }
       }
