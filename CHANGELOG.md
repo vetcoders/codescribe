@@ -11,8 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
 
-### Added
-
 - Settings › Creator › Appearance: **Appearance** (System, Light, Dark) applies at once to every window, the tray and the overlay. **Panel shade, dark / light** offer the content-sheet candidates under review (Today, Soft graphite, Warm carbon; Today, Limestone, Travertine); a shade is read at launch, so the row ends with the same **Restart now** as the interface language.
 
 ### Changed
