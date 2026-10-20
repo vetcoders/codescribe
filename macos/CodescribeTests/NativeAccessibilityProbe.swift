@@ -8,6 +8,7 @@ import XCTest
 @MainActor
 enum NativeAccessibilityProbe {
   struct Element: Decodable {
+    let role: String?
     let label: String
     let value: String
     let x: Double

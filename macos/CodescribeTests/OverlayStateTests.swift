@@ -6424,7 +6424,7 @@ final class OverlayStateTests: XCTestCase {
       assistiveStatusProvider: { assistive },
       panelFactory: { _, _ in panel },
       orderPanelFront: { panel in
-        panel.orderFrontRegardless()
+        BackgroundTestWindow.present(panel)
         frontCount()
       },
       orderPanelOut: { panel in
@@ -6847,7 +6847,7 @@ final class OverlayStateTests: XCTestCase {
       state: state, engine: nil,
       overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
       panelFactory: { _, _ in panel },
-      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { shown in
         shown.orderOut(nil)
         outs += 1
