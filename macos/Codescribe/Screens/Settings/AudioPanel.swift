@@ -813,7 +813,7 @@ struct AudioPanel: View {
         Text("Input device")
           .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
-        Spacer(minLength: 12)
+        Spacer(minLength: 0)
         Picker("Input device", selection: inputDeviceBinding) {
           Text(
             String(
@@ -831,9 +831,13 @@ struct AudioPanel: View {
             }
           }
         }
+        .pickerStyle(.menu)
         .labelsHidden()
-        // Content-sized up to a cap: a long device name truncates in the
-        // button and stays whole in the menu; the narrow window never clips.
+        // Content-sized up to a cap, same as the retention picker's own
+        // content sizing: a long device name truncates in the button and
+        // stays whole in the menu, and the control still ends flush with the
+        // retention picker's right edge below instead of stretching past it.
+        .fixedSize()
         .frame(maxWidth: 300)
         .accessibilityLabel("Audio input device")
         .accessibilityValue(inputDeviceAccessibilityValue)
@@ -993,14 +997,13 @@ struct AudioPanel: View {
     _ summary: AudioReadinessSummary,
     recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
   ) -> some View {
-    HStack(alignment: .top, spacing: 10) {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
       CSIconView(
         icon: summary.tone == .healthy ? .checkCircleFill : .warning,
         size: 13,
         weight: .semibold,
         color: statusColor(summary.tone)
       )
-      .padding(.top, 2)
       .accessibilityHidden(true)
 
       VStack(alignment: .leading, spacing: 2) {

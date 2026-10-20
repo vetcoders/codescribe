@@ -45,16 +45,10 @@ struct ShortcutsPanel: View {
 
   // MARK: Header
 
-  /// The header states the screen's purpose; the two save contracts are
-  /// explained next to the buttons they govern, not up here.
+  /// The header states the screen's purpose by its title alone; the two save
+  /// contracts are explained next to the buttons they govern, not up here.
   private var header: some View {
-    SettingsPageHeader(
-      String(localized: "Shortcuts & control"),
-      blurb: String(
-        localized:
-          "Choose how to start Codescribe's modes and how to control recording."
-      )
-    )
+    SettingsPageHeader(String(localized: "Shortcuts & control"))
   }
 
   // MARK: Per-mode gestures, their conflicts and their save
@@ -87,10 +81,12 @@ struct ShortcutsPanel: View {
         Text(row.mode.visibleName)
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
-        Text(row.mode.blurb)
-          .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        if let blurb = row.mode.blurb {
+          Text(blurb)
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -180,11 +176,6 @@ struct ShortcutsPanel: View {
         Spacer(minLength: 0)
       }
 
-      Text("These three shortcuts need saving. Everything else saves automatically.")
-        .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
       saveStatus
     }
   }
@@ -239,14 +230,14 @@ struct ShortcutsPanel: View {
     }
   }
 
-  // MARK: During dictation (attach selection)
+  // MARK: Attach extra context (attach selection during dictation)
 
   /// Quiet neutral card, not an Agent-coloured feature: attaching a selection
   /// belongs to the running dictation hold. Placement and name carry that
   /// meaning, so the copy no longer has to deny switching to the Agent.
   private var dictationContextSection: some View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
-      SettingsSectionLabel(String(localized: "During dictation"))
+      SettingsSectionLabel(String(localized: "Attach extra context"))
       VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
         VStack(alignment: .leading, spacing: 2) {
           Text("Attach selection")
