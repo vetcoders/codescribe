@@ -104,6 +104,7 @@ struct AgentConversationHeader: View {
 
       DeveloperPowerMark()
         .fixedSize()
+      AgentWidthModeButton()
       AgentContextToggle(isOpen: $isContextOpen)
     }
     .padding(.horizontal, ChatLayoutPolicy.listPadding)
@@ -154,6 +155,39 @@ struct AgentLiveStatusPill: View {
 
 /// "Context": opens and closes the panel. It writes only the persisted flag,
 /// in the pin toggle's style (accent fill and stroke while on).
+/// One-click conversation width, beside Context: the founders use the width
+/// often enough that the submenu under "More actions" was too far away
+/// (2026-10-21). Cycles Standard → Wide → Full width over the same persisted
+/// preference the menu writes; the menu stays as the place that names them.
+struct AgentWidthModeButton: View {
+  @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode
+
+  private var mode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
+
+  var body: some View {
+    Button {
+      widthModeRaw = mode.next.rawValue
+    } label: {
+      CSIconView(icon: .conversationWidth, size: 12, weight: .medium)
+        .foregroundStyle(Color.secondary)
+        .frame(width: 26, height: 22)
+        .overlay(
+          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.borderless)
+    .csFocusRing(cornerRadius: CSRadius.pill)
+    .fixedSize()
+    .help(mode.label)
+    .accessibilityLabel(
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
+    .accessibilityValue(mode.label)
+    .accessibilityIdentifier("agent-width-mode")
+  }
+}
+
 struct AgentContextToggle: View {
   @Binding var isOpen: Bool
 

@@ -260,4 +260,21 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(att.url, url)
     XCTAssertEqual(att.type, "image/png")
   }
+
+  /// The header's quick width button cycles the three modes over the menu's
+  /// preference and comes back around.
+  func testWidthModeQuickToggleCyclesAllModes() {
+    XCTAssertEqual(ChatWidthMode.comfortable.next, .wide)
+    XCTAssertEqual(ChatWidthMode.wide.next, .full)
+    XCTAssertEqual(ChatWidthMode.full.next, .comfortable)
+    let header = try? String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/AgentChat/AgentContextPanel.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(header?.contains("AgentWidthModeButton()\n      AgentContextToggle(") == true,
+      "the width button sits beside Context in the conversation header")
+    XCTAssertTrue(header?.contains("@AppStorage(ChatLayoutPolicy.defaultsKey)") == true,
+      "the button writes the same preference the menu does")
+  }
 }

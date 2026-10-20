@@ -52,6 +52,13 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
   static func resolve(_ raw: String) -> ChatWidthMode {
     ChatWidthMode(rawValue: raw) ?? .wide
   }
+
+  /// The mode a quick toggle moves to: Standard → Wide → Full width → Standard.
+  var next: ChatWidthMode {
+    let all = Self.allCases
+    let index = all.firstIndex(of: self) ?? 0
+    return all[(index + 1) % all.count]
+  }
 }
 
 /// Container-relative bubble widths for AgentChat.

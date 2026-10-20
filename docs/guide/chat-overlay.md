@@ -118,6 +118,9 @@ window does not start recording or send a request.
 
 The toolbar carries the wordmark, **Always on top** and the conversation menu
 (rename, favorites, Markdown export, conversation width, settings, delete).
+The conversation header also carries a one-click width button beside
+**Context**: each click moves Standard → Wide → Full width, the same
+preference the menu names.
 The conversation's own header sits at the top of the conversation column: its
 title, a line with **Agent** and the conversation's model when it has one, the
 live status while the Agent works, and **Context**. On a developer build with
