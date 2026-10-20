@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings layout: the Audio input-device menu ends on the retention menu's edge and the readiness icon sits on the title's baseline; the Codescribe Bus hold and auto-send cards take the slider card's width; the prompt source chip and Edit button share one size and baseline; the Diagnostics tool and server rows put the chevron on the title line and the status icon on the description line; per-tool Allow/Ask/Block segments are right-aligned like the defaults.
 - Privacy: the status card is headed "Data processing"; one action, "Set up the cloud in Providers", sits under it and lands on Providers › Cloud transcription.
 - User › License is one card: product name and purchase kind, a green status, the offline countdown with the Keychain note, and "Manage key" that opens Change key / Get license key / Remove key inside the card; without a key the activation field is open at once. The sentence above reads "A license unlocks Agent mode."
+- The Formatting level is the only formatting switch: Off replaces the separate AI formatting toggle in Creator, and `AI_FORMATTING_ENABLED` is no longer read from `settings.json` or `.env`. A toggle that was switched off migrates once to level Off and the old key leaves `settings.json` on that save.
 
 ### Fixed
 
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
-- The Formatting level is the only formatting switch: Off replaces the separate AI formatting toggle in Creator, and `AI_FORMATTING_ENABLED` is no longer read from `settings.json` or `.env`. A toggle that was switched off migrates once to level Off and the old key leaves `settings.json` on that save.
 
 ## [0.17.2] - Unreleased
 
