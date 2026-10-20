@@ -169,14 +169,14 @@ The Dictation pane is one tab per concern:
    never shows as Cloud at all: the mode reads Apple only until it is granted,
    and leaving Cloud for either on-device mode revokes a standing grant. Below it,
    _Last transcription_ is one compact card — **Engine** (runtime truth from the
-   serving verdict, “No transcription in this app session” before the first
+   serving verdict, “No transcription in this session” before the first
    take, no readiness dot), the local Whisper model row only in Local power (the
    saved selection; Cloud shows no model row), and **Language** as “Polish (pl)”.
    The language applies to Apple live recognition, local Whisper and the cloud
    tail alike. The selected mode and the engine that actually served the last
    take are two different facts and may disagree.
-   At the foot of the tab, **Transcript markers** — one switch, _Add markers to
-   text_, which marks the text delivered to other apps. **Edit template and
+   At the foot of the tab, **Transcript markers** — one switch, with no row
+   title of its own, which marks the text delivered to other apps. **Edit template and
    preview** is closed by default and holds one box with an **Edit | Preview**
    segment above it: _Edit_ shows the raw template, _Preview_ shows the same
    box rendered with the current take. Under the box sit the field chips

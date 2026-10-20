@@ -77,7 +77,7 @@ private struct LastTranscriptionRow: View {
         .lineLimit(1)
         .truncationMode(.middle)
     } else {
-      // "No transcription in this app session" is a legitimate value and runs
+      // "No transcription in this session" is a legitimate value and runs
       // long in Polish: it wraps rather than truncating.
       Text(verbatim: value)
         .font(SettingsScale.settingName)

@@ -123,9 +123,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         localized: "Pick a model, check its availability and manage the space it takes.",
         comment: "Settings tab blurb: Dictation › Whisper")
     case .dictationPreview:
-      String(
-        localized: "Adjust how quickly text appears in the preview window while recording."
-      )
+      // The headline names the setting; the preset picker and its selected
+      // preset's own line say the rest (Founder round-2 copy trim, 2026-10-20).
+      nil
     case .dictationPrivacy:
       String(localized: "See when Codescribe uses online services.")
     }

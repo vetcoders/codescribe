@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
+- Settings says less, round 2: the Engine empty state reads "No transcription in this session", the markers switch loses its row title, Preview keeps only its header and the selected preset's line, Dictionary loses its intro sentence.
 
 ## [0.17.2] - Unreleased
 
