@@ -285,8 +285,11 @@ final class AgentWindowChromeTests: XCTestCase {
     let before = snapshot()
 
     UserDefaults.standard.set(true, forKey: panelKey)
+    // The panel slides in over 0.18 s: wait for the width to settle on its
+    // target, not for the first frame that is merely narrower.
+    let target = closedWidth - AgentWindowMetrics.contextPanelFootprint
     pump(window) {
-      (self.conversationScroll(in: root)?.frame.width ?? closedWidth) < closedWidth - 100
+      abs((self.conversationScroll(in: root)?.frame.width ?? closedWidth) - target) <= 2
     }
     let openWidth = try XCTUnwrap(conversationScroll(in: root)).frame.width
     XCTAssertEqual(

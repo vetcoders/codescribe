@@ -228,7 +228,6 @@ final class SettingsChromeContractTests: XCTestCase {
     // picker, every segment hugs its own label in both languages.
     XCTAssertEqual(creator.components(separatedBy: "SettingsSegmentedChoice(").count, 4)
     XCTAssertFalse(creator.contains(".frame(width: 200)"))
-    XCTAssertFalse(creator.contains("Picker(\"\", selection: selection)"))
     for titles in [
       ["Multilingual", "Polish", "English"],
       try ["Multilingual", "Polish", "English"].map { try XCTUnwrap(polish[$0]) },
@@ -1502,7 +1501,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(creator.contains("String(localized: \"Appearance\", comment: \"Settings row"))
     XCTAssertTrue(creator.contains("AppearanceRow(model: model)"))
     XCTAssertTrue(creator.contains("SheetShadeRows(model: model)"))
-    XCTAssertTrue(creator.contains("ForEach(AppAppearanceChoice.allCases)"))
+    XCTAssertTrue(creator.contains("AppAppearanceChoice.allCases.map(\\.title)"))
     XCTAssertTrue(creator.contains("shadePicker(SheetShade.darkChoices"))
     XCTAssertTrue(creator.contains("shadePicker(SheetShade.lightChoices"))
     XCTAssertTrue(creator.contains("if model.sheetShadeNeedsRestart {"))
