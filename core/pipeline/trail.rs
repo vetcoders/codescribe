@@ -637,6 +637,11 @@ pub enum TrailEvent {
     CoverageDiagnostics {
         diagnostics: super::acoustic_ledger::CoverageDiagnostics,
     },
+    /// A measured silent window was accounted without invoking a decoder.
+    DecodeSkippedNoSpeech {
+        decode: OccurrenceIdentity,
+        speech: TrailSpeechEvidence,
+    },
     DecodeWork {
         observation: ObservationIdentity,
         decode: OccurrenceIdentity,
@@ -851,6 +856,19 @@ pub(super) fn is_enabled(occurrence: &OccurrenceIdentity) -> bool {
 }
 
 /// The only enqueue corridor; JSON encoding and filesystem access live in the worker.
+pub(super) fn record_decode_skipped_no_speech(
+    decode: &OccurrenceIdentity,
+    speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+) {
+    record(
+        decode,
+        TrailEvent::DecodeSkippedNoSpeech {
+            decode: decode.clone(),
+            speech: TrailSpeechEvidence::from_evidence(speech),
+        },
+    );
+}
+
 pub(super) fn record_decode_work(
     ledger: &AcousticLedger,
     observation: &ObservationIdentity,
@@ -1231,6 +1249,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
             TrailEvent::DecodeWork { observation, .. } => Some(&observation.occurrence),
+            TrailEvent::DecodeSkippedNoSpeech { decode, .. } => Some(decode),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
             TrailEvent::SlotStart { operation } => Some(&operation.observation.occurrence),
             TrailEvent::SlotEnd { operation } => Some(&operation.observation.occurrence),
@@ -1506,6 +1525,36 @@ fn replay_validated(
         match &row.event {
             // Observer snapshots cannot mutate replay or interrupt a slot batch.
             TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
+            TrailEvent::DecodeSkippedNoSpeech { decode, speech } => {
+                let evidence = speech.evidence()?;
+                if !evidence
+                    .identity()
+                    .matches(&decode.session, decode.capture_epoch)
+                    || evidence.producer()
+                        != super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    || decode.sample_start >= decode.sample_end
+                    || evidence
+                        .availability()
+                        .observed_samples()
+                        .is_none_or(|end| end < decode.sample_end)
+                    || evidence.ranges().iter().any(|range| {
+                        range.session != decode.session
+                            || range.capture_epoch != decode.capture_epoch
+                            || range.sample_start >= range.sample_end
+                            || speech
+                                .observed_samples
+                                .is_none_or(|end| range.sample_end > end)
+                            || (range.sample_start < decode.sample_end
+                                && decode.sample_start < range.sample_end)
+                    })
+                {
+                    return Err(io::Error::other(
+                        "speechless decode skip lacks measured silence",
+                    ));
+                }
+                // Planning diagnostics do not manufacture a decoder return,
+                // lexical vote or ledger mutation during replay.
+            }
             TrailEvent::DecodeWork {
                 observation,
                 decode,

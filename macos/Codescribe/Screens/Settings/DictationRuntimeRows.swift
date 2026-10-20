@@ -64,7 +64,7 @@ private struct LastTranscriptionRow: View {
         .multilineTextAlignment(.trailing)
         .textSelection(.enabled)
     }
-    .padding(.horizontal, CSSpace.card)
+    .padding(.horizontal, SettingsScale.cardPadding)
     .padding(.vertical, 11)
     .accessibilityElement(children: .combine)
   }
@@ -80,7 +80,7 @@ private struct LastTranscriptionRow: View {
       // "No transcription in this app session" is a legitimate value and runs
       // long in Polish: it wraps rather than truncating.
       Text(verbatim: value)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .fixedSize(horizontal: false, vertical: true)
     }
   }

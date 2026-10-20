@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 /// has no decoder-fence completeness receipt.
 /// v30: owner projection cannot hide a new Whisper word's clipped onset or
 /// trailing fence; unprojected incomplete onsets retain visible evidence.
-pub const WORD_POLICY: &str = "word-adjudication/v31-acoustic-anchors";
+pub const WORD_POLICY: &str = "word-adjudication/v34-voiced-replay";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,8 +197,17 @@ struct DeferredAnchorWord {
 }
 
 fn acoustic_pair(a: ObservationProducer, b: ObservationProducer) -> bool {
-    matches!(a, ObservationProducer::Apple | ObservationProducer::Whisper)
-        && matches!(b, ObservationProducer::Apple | ObservationProducer::Whisper)
+    matches!(
+        a,
+        ObservationProducer::Apple
+            | ObservationProducer::AppleDictation
+            | ObservationProducer::Whisper
+    ) && matches!(
+        b,
+        ObservationProducer::Apple
+            | ObservationProducer::AppleDictation
+            | ObservationProducer::Whisper
+    )
 }
 
 fn trial_digest(trial: &WordTrial) -> [u8; 32] {
@@ -211,6 +220,143 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
 }
 
 impl AcousticLedger {
+    /// Resolve rolling-window replays on capture-owned voiced bursts first.
+    /// Anchor starts are stable when a live burst extends. Shared bursts do
+    /// not alone identify a word: its capture-clipped spans must also share
+    /// the addressed word. Labels only corroborate that physical match.
+    pub(super) fn acoustic_replay_source(
+        &self,
+        word: &WordSlot,
+        sources: &[WordSlot],
+    ) -> Option<WordSlot> {
+        if word.producer != ObservationProducer::Whisper {
+            return None;
+        }
+        let identity = self.word_anchor_identity(word)?;
+        if identity.anchors.is_empty() {
+            return None;
+        }
+        let decode_of = |slot: &WordSlot| {
+            self.word_anchor_source(slot)
+                .and_then(|(pin, _)| pin.decode_sample_start.zip(pin.decode_sample_end))
+                .or_else(|| self.decoded_word_windows.get(&slot.observation).copied())
+        };
+        let decode = decode_of(word)?;
+        sources.iter().filter(|source| {
+            source.producer == word.producer
+                && self.complete_word_slot(source)
+                && source.observation.occurrence.same_capture(&word.observation.occurrence)
+                && !self.unresolved_word_target_groups(&source.observation.occurrence).iter().any(|group| {
+                    group.contains(&SlotTarget::from(*source))
+                })
+        }).find(|source| {
+            let Some(prior_decode) = decode_of(source) else { return false; };
+            if decode == prior_decode || decode.0 >= prior_decode.1 || prior_decode.0 >= decode.1 {
+                return false;
+            }
+            let Some(prior) = self.word_anchor_identity(source) else { return false; };
+            let same_voice = identity.anchors.len() == prior.anchors.len()
+                && identity.anchors.iter().zip(&prior.anchors).all(|(left, right)| {
+                    left.same_capture(right) && left.sample_start == right.sample_start
+                });
+            // A separate valley gives each real repeat a different burst.
+            // Neither missing anchors nor nearby speech proves a replay.
+            same_voice && identity.shares_word(prior)
+                && self.speech_evidence.as_ref().is_some_and(|speech| {
+                speech.is_observed()
+                    && speech.identity().matches(&word.observation.occurrence.session,
+                        word.observation.occurrence.capture_epoch)
+                    && speech.producer() == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    && speech.ranges().iter().any(|range| {
+                    range.sample_start < source.sample_end && source.sample_start < range.sample_end
+                        && range.sample_start < word.sample_end && word.sample_start < range.sample_end
+                })
+            }) && label_equal(&source.text, &word.text)
+        }).cloned()
+    }
+
+    /// A lexical verdict is attached only after physical target resolution.
+    /// Every geometric operation uses this same state, including group cuts.
+    pub(super) fn stamp_word_witness(
+        &self,
+        observation: &ObservationIdentity,
+        sources: &[WordSlot],
+        outputs: &mut [WordSlot],
+    ) {
+        let independent = sources.iter().any(|source| {
+            matches!(
+                source.producer,
+                ObservationProducer::Apple | ObservationProducer::AppleDictation
+            ) != matches!(
+                observation.producer,
+                ObservationProducer::Apple | ObservationProducer::AppleDictation
+            )
+        });
+        if !independent {
+            return;
+        }
+        let agrees = label_equal(&compose_label(sources), &compose_label(outputs));
+        for output in outputs {
+            output.witness = if agrees {
+                SlotWitness::Confirmed
+            } else {
+                SlotWitness::Contested {
+                    witness_label: output.text.clone(),
+                    range: OccurrenceIdentity::new(
+                        &observation.occurrence.session,
+                        observation.occurrence.capture_epoch,
+                        output.sample_start,
+                        output.sample_end,
+                    ),
+                }
+            };
+        }
+    }
+
+    /// An empty independent return records omission on its decoded range;
+    /// its absence cannot retire even one committed source.
+    pub(super) fn record_witness_absence(
+        &mut self,
+        observation: &ObservationIdentity,
+    ) -> Option<MutationReceipt> {
+        let decode = self
+            .word_evidence_input(observation)?
+            .producer_request
+            .as_ref()?
+            .range
+            .clone();
+        if !decode.session.eq(&observation.occurrence.session)
+            || decode.capture_epoch != observation.occurrence.capture_epoch
+            || self.is_sealed(&observation.occurrence)
+        {
+            return None;
+        }
+        let held = self.slots_of(&observation.occurrence)?.to_vec();
+        let mut outputs = held.clone();
+        let mut operations = Vec::new();
+        for (source, output) in held.iter().zip(&mut outputs) {
+            if source.sample_start < decode.sample_start
+                || source.sample_end > decode.sample_end
+                || !matches!(&source.witness, SlotWitness::Unwitnessed)
+            {
+                continue;
+            }
+            output.witness = SlotWitness::Absent {
+                range: OccurrenceIdentity::from(&decode),
+            };
+            operations.push(SlotOperationReceipt {
+                observation: observation.clone(),
+                kind: SlotOperationKind::Correct,
+                sources: vec![source.clone()],
+                outputs: vec![output.clone()],
+                source_ranges: self.slot_source_ranges(source),
+                rule_id: "witness_absence_preserves_speech/v1".into(),
+            });
+        }
+        let label = compose_label(&outputs);
+        Some(self.admit_slot_batch(observation, &label, Some(outputs), true, &operations))
+    }
+
     /// A cross-family Whisper correction needs measured decode context. Missing
     /// bounds are no evidence, and an edge decode cannot spend Whisper's higher
     /// authority rank to replace a CloudLive label.
@@ -356,10 +502,11 @@ pub fn context_quality(start: u64, end: u64, decode: (u64, u64)) -> u32 {
 
 impl WordHypothesis {
     fn family(&self) -> ObservationProducer {
-        if self
-            .backend
-            .as_ref()
-            .is_some_and(|backend| backend.ends_with(":apple_speech"))
+        if self.observation.producer == ObservationProducer::AppleDictation
+            || self
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.ends_with(":apple_speech"))
         {
             ObservationProducer::Apple
         } else {
@@ -397,7 +544,8 @@ impl WordAdjudication {
         match hypothesis.family() {
             ObservationProducer::Apple => {
                 if self.apple.last().is_some_and(|prior| {
-                    prior.observation.generation > hypothesis.observation.generation
+                    (prior.observation.producer == hypothesis.observation.producer
+                        && prior.observation.generation > hypothesis.observation.generation)
                         || (prior.original_text == hypothesis.original_text
                             && prior.pins == hypothesis.pins)
                 }) {
@@ -526,8 +674,10 @@ impl AcousticLedger {
             .provider
             .as_ref()
             .filter(|(request, _, _, _)| {
-                observation.producer == ObservationProducer::Whisper
-                    && request.range.session == observation.occurrence.session
+                matches!(
+                    observation.producer,
+                    ObservationProducer::Whisper | ObservationProducer::AppleDictation
+                ) && request.range.session == observation.occurrence.session
                     && request.range.capture_epoch == observation.occurrence.capture_epoch
                     && original.iter().all(|pin| {
                         pin.decode_sample_start == Some(request.range.sample_start)
@@ -1543,13 +1693,46 @@ impl AcousticLedger {
         let all_coarse = sources.iter().all(|source| self.coarse_word_source(source));
         let held_label = compose_label(sources);
         let candidate_label = compose_label(outputs);
+        let coarse_witness = observation.producer == ObservationProducer::AppleDictation
+            && sources.len() == 1
+            && outputs.len() == 1
+            && all_coarse
+            && sources[0].producer == ObservationProducer::Whisper
+            && matches!(
+                &sources[0].witness,
+                SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
+            )
+            && sources[0].sample_start == outputs[0].sample_start
+            && sources[0].sample_end == outputs[0].sample_end
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                input.words.len() == 1
+                    && input.words[0].decode.is_some_and(|(start, end)| {
+                        start < input.words[0].sample_start
+                            && input.words[0].sample_end < end
+                            && start <= sources[0].sample_start
+                            && sources[0].sample_end <= end
+                    })
+            })
+            && self.speech_evidence.as_ref().is_some_and(|speech| {
+                speech.is_observed()
+                    && speech.identity().matches(
+                        &observation.occurrence.session,
+                        observation.occurrence.capture_epoch,
+                    )
+                    && speech.producer()
+                        == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    && speech.ranges().iter().any(|range| {
+                        range.sample_start < outputs[0].sample_end
+                            && outputs[0].sample_start < range.sample_end
+                    })
+            });
         let negation_disagrees = if all_coarse {
             coarse_polarity_disagrees(&held_label, &candidate_label)
         } else {
             negation_contexts(&held_label) != negation_contexts(&candidate_label)
         };
         if sources.is_empty()
-            || (all_coarse && !negation_disagrees)
+            || (all_coarse && !negation_disagrees && !coarse_witness)
             || !sources
                 .iter()
                 .all(|source| acoustic_pair(source.producer, observation.producer))
@@ -1580,7 +1763,30 @@ impl AcousticLedger {
         }
         let provisional_apple = self.provisional_apple_revision(observation, sources);
         let candidate = self.hypothesis(observation, sources, outputs);
-        let complete = self.asr_source_scope_complete(observation, sources) && candidate.complete;
+        let complete = self.asr_source_scope_complete(observation, sources)
+            && (candidate.complete || coarse_witness);
+        // The independent witness contests a resolved physical partition,
+        // not a spelling-nearest token or a provider rank. Its full original
+        // decode and measured speech anchors must cover every target.
+        let independent_witness = coarse_witness || (observation.producer == ObservationProducer::AppleDictation
+            && complete
+            && candidate.acoustic_boundaries_complete
+            && sources.len() == outputs.len()
+            && sources.iter().zip(outputs).all(|(source, output)| {
+                source.producer == ObservationProducer::Whisper
+                    && matches!(&source.witness, SlotWitness::Unwitnessed | SlotWitness::Absent { .. })
+                    && self.word_anchor_identity(source).is_some()
+                    && self.word_anchor_identity(output).is_some()
+                    && self.same_anchored_word(source, output)
+                    && self.speech_evidence.as_ref().is_some_and(|speech| {
+                        speech.is_observed()
+                            && speech.producer() == super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                            && speech.ranges().iter().any(|range| {
+                                range.sample_start < source.sample_end && source.sample_start < range.sample_end
+                                    && range.sample_start < output.sample_end && output.sample_start < range.sample_end
+                            })
+                    })
+            }));
         let existing = self
             .word_adjudication
             .components
@@ -1604,7 +1810,8 @@ impl AcousticLedger {
         // label or reopen a conflict against fresher retained evidence.
         if candidate.family() == ObservationProducer::Apple
             && component.apple.last().is_some_and(|prior| {
-                prior.observation.generation >= candidate.observation.generation
+                prior.observation.producer == candidate.observation.producer
+                    && prior.observation.generation >= candidate.observation.generation
             })
         {
             self.word_adjudication.components.push(component);
@@ -1736,7 +1943,8 @@ impl AcousticLedger {
                     )
                 })
             });
-        let lexical_resolved = complete_fence_authority
+        let lexical_resolved = independent_witness
+            || complete_fence_authority
             || provisional_apple
             || confirmed_trial
             || (trial.is_none()
@@ -1758,6 +1966,8 @@ impl AcousticLedger {
             (true, "apple_provisional_revision")
         } else if !complete {
             (false, "incomplete_source_scope")
+        } else if independent_witness {
+            (true, "independent_same_speech_range")
         } else if complete_fence_authority {
             (true, "live_complete_fences")
         } else if !geometry_preserves_complete_source {

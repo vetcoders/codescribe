@@ -193,7 +193,7 @@ Codescribe/
 │   ├── Screens/
 │   │   ├── Overlay/              # OverlayState.swift — projection display/delivery boundary
 │   │   ├── AgentChat/            # Assistive chat surface
-│   │   ├── Settings/             # Settings window + SettingsViewModel
+│   │   ├── Settings/             # Settings window, SettingsViewModel, SettingsScale
 │   │   ├── Onboarding/           # First-run flow
 │   │   └── Tray/                 # Menu bar UI
 │   ├── Services/                 # UpdaterService (Sparkle), platform services
@@ -358,6 +358,57 @@ the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
 column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
 column.
 
+### The Settings scale
+
+The Settings central pane has one scale and one owner for it:
+`Screens/Settings/SettingsScale.swift`. The sidebar is not part of it — the
+navigation column stays with `CSSidebarColumn` (see "The sidebar" above).
+
+`CSSpace`, `CSRadius` and `CSFont` are shared with the overlay, the tray, the
+Agent window and onboarding, so the pane cannot be resized by editing them:
+that would resize those surfaces too. `SettingsScale` is the pane's own rung
+of the same scale. It names each role once — page frame, section rhythm,
+card, control, type — and resolves to a shared token wherever a shared token
+already carries the value, so it is a role map rather than a second rhythm.
+A panel reads the role, never a bare number.
+
+- **Page frame.** `settingsPage()` is the one frame every panel wears, tabbed
+  or not: a 24 pt gutter and a 20 pt top and bottom inset. A tabbed pane adds
+  only the strip's own 8 pt band above the page.
+- **Header pattern.** Titles of peer sections sit _above_ the cards, setting
+  names sit _inside_ them, and a header is never smaller or lighter than what
+  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (13.5 semibold) ≥
+  `settingName` (12.5 semibold) > `helper` (11.5), all at primary strength
+  except the helper rung. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
+  in `SettingsView.swift` are the only header owners, and they have no rung
+  above `sectionTitle`: the sections of a page are peers, so none outranks
+  another. Sections are 20 pt apart and a title sits
+  6 pt above its card, so a title visibly belongs to what follows it.
+- **Card.** 12 pt padding inside a `CSRadius.card` corner, 8 pt between two
+  stacked settings. The radius stays shared on purpose: it is the product's
+  shape language, not a density knob. `settingsGroupedInset(padding:)` in
+  `SettingsView.swift` draws the card, and a dense list — the per-tool
+  permission rows — passes a tighter inset to that same owner instead of
+  drawing a box of its own.
+- **Control family.** Every flat Settings action is a `SettingsChipButton`
+  (`KeyRows.swift`): one label rung, 10 / 5 insets and `CSRadius.chip` for
+  both the chip and the focus ring it wears, so the keyboard outline follows
+  the chip's own shape. Text fields (`settingsInputChrome`) and the accent
+  `SettingsSaveButton` sit on the same 10 / 5 insets, so a field and the
+  actions beside it are one height — in Settings and in onboarding, which
+  shares that field chrome. Every switch takes its shape from
+  `settingsSwitch()` (`SettingsView.swift`): a small macOS switch, tinted,
+  with its label carried by the `SettingsControlRow` that holds it, so the
+  switches of a page line up in one trailing column. A slider track stops at
+  `SettingsScale.sliderWidth` and its value reads at the track's end, not at
+  the far edge of the pane.
+- **Sheet.** `CSPalette.sheet` is the one colour behind every content area
+  and the overlay canvas. Its two hexes are read once at launch from
+  `SheetShadePreference` (Settings › Creator › Appearance), which only holds
+  the click-through candidates; the shipped values stay in `SheetShade`.
+  Light, dark or system is `AppearancePreference`, handed to `NSApp` at launch
+  and on change.
+
 ### Agent window header
 
 The detail chrome (`AgentChatView.swift`) carries one title — the current
@@ -411,7 +462,7 @@ share three contracts:
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
   conversation and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
-  destination (the Transcripts folder from Settings › About › Local data) in a
+  destination (the Transcripts folder from Settings › User › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
   "Export failed" alert naming the conversation and the folder to check. Finder is

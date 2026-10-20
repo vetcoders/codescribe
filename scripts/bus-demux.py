@@ -71,6 +71,9 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 #: The bridge reads them only as flush boundaries for the coverage-refused
 #: safety net below; it never turns them into transcript envelopes.
 CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Capture-owned publication refusal. It retires a channel document before
+#: lifecycle boundaries can invoke the coverage-refused delivery net.
+PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
 #: a channel closed by a second digit / Fn press is not reopened, so no
 #: later channel-session row would ever release its refused take.
@@ -1013,6 +1016,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        PUBLICATION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
         # Replies enter the follower stream only for the peer text lane;
         # admission drops every reply that does not name a peer recipient.
@@ -1030,6 +1034,23 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         ):
             return None
     return event
+
+
+def channel_publication_refusal_session(event: dict[str, Any]) -> str | None:
+    """Recognize an explicit capture refusal, never infer it from empty text."""
+    session = event.get("session_id")
+    if (event.get("schema") != PUBLICATION_SCHEMA
+            or event.get("status") != "channel_publication_refused"
+            or event.get("reason") != "sound_without_speech"
+            or event.get("entirely_unwitnessed") is not True
+            or not isinstance(session, str)
+            or channel_of_session(session) is None
+            or type(event.get("capture_epoch")) is not int
+            or event["capture_epoch"] <= 0
+            or (event.get("channel") is not None
+                and str(event["channel"]) != channel_of_session(session))):
+        return None
+    return session
 
 
 def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -1104,6 +1125,13 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if row.get("schema") == PUBLICATION_SCHEMA:
+            # A provider lease may retire only its frozen channel ownership.
+            if lease and not lease.admits_channel_event(row):
+                continue
+            if lease:
+                if lease.retire_channel_publication(row):
+                    lease.persist(active=True)
         if lease and lease.revise_held_voice(row):
             continue
         event = normalizer.normalize(row)
@@ -1214,6 +1242,7 @@ class EvidenceNormalizer:
         self._session_docs: dict[str, dict[str, Any]] = {}
         self._channel_open_times: dict[str, tuple[str, float]] = {}
         self._flushes: list[dict[str, Any]] = []
+        self._publication_refusals: dict[str, dict[str, Any]] = {}
 
     def pop_flushes(self) -> list[dict[str, Any]]:
         """Final channel envelopes triggered by the last normalized row."""
@@ -1233,11 +1262,35 @@ class EvidenceNormalizer:
             elif session not in self._settled_sessions:
                 self._remember_channel_document(document, dict(document))
 
+    def restore_publication_refusals(self, receipts: list[dict[str, Any]]) -> None:
+        for receipt in receipts:
+            self._consume_publication_refusal(receipt)
+
+    def publication_refusals(self) -> dict[str, dict[str, Any]]:
+        return {session: dict(receipt) for session, receipt in self._publication_refusals.items()}
+
+    def _consume_publication_refusal(self, receipt: dict[str, Any]) -> None:
+        session = channel_publication_refusal_session(receipt)
+        if session is None:
+            return
+        document = self._session_docs.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != receipt["capture_epoch"]):
+            return
+        self._session_docs.pop(session, None)
+        self._channel_open_times.pop(session, None)
+        self._settled_sessions.add(session)
+        self._flushes = [event for event in self._flushes if event.get("session_id") != session]
+        self._publication_refusals[session] = dict(receipt)
+
     def channel_documents(self) -> dict[str, dict[str, Any]]:
         return {session: dict(document) for session, document in self._session_docs.items()}
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
+            return None
+        if event.get("schema") == PUBLICATION_SCHEMA:
+            self._consume_publication_refusal(event)
             return None
         if event.get("schema") == CHANNEL_SESSION_SCHEMA:
             self._consume_channel_row(event)
@@ -2963,6 +3016,7 @@ class SessionLease:
             self.held: dict[str, dict[str, Any]] = {}
             self.withdrawn_held: dict[str, dict[str, Any]] = {}
             self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
+            self.channel_publication_refusals: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -2997,6 +3051,7 @@ class SessionLease:
                     # journal invalidates the recovered cursor and documents.
                     self.cursor = 0
                     previous["unclosed_channel_messages"] = {}
+                    previous["channel_publication_refusals"] = {}
                 self.last_sequence = previous.get("last_sequence")
                 # The follower's requested name outranks the recovered lease
                 # name: a channel rename (detach + attach under a new name)
@@ -3060,6 +3115,14 @@ class SessionLease:
                             for session, document in documents.items())):
                     raise ValueError("invalid unclosed channel messages; recovery state preserved")
                 self.unclosed_channel_messages = documents
+                refusals = previous.get("channel_publication_refusals", {})
+                if (not isinstance(refusals, dict) or any(
+                        not isinstance(receipt, dict)
+                        or channel_publication_refusal_session(receipt) != session
+                        or not self.admits_channel_event(receipt)
+                        for session, receipt in refusals.items())):
+                    raise ValueError("invalid publication refusals; recovery state preserved")
+                self.channel_publication_refusals = refusals
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -3081,6 +3144,8 @@ class SessionLease:
                 else {key: previous[key] for key in ("workspace", "repository_name", "repository_root")
                       if previous and isinstance(previous.get(key), str)}
             )
+            for receipt in list(self.channel_publication_refusals.values()):
+                self.retire_channel_publication(receipt)
             self.persist(active=True)
             for receipt in self.withdrawn_held.values():
                 self._record_hold_withdrawal(receipt)
@@ -3144,6 +3209,7 @@ class SessionLease:
                 "held": self.held,
                 "withdrawn_held": self.withdrawn_held,
                 "unclosed_channel_messages": self.unclosed_channel_messages,
+                "channel_publication_refusals": self.channel_publication_refusals,
                 "active": active,
                 "pid": os.getpid(),
                 "process_identity": self.process_identity,
@@ -3215,6 +3281,9 @@ class SessionLease:
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
+        if (payload.get("session_id") in self.channel_publication_refusals
+                and payload.get("producer_schema") == EVIDENCE_SCHEMA):
+            return False
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
         if delivery_id in self.pending or delivery_id in self.withdrawn_held:
@@ -3342,6 +3411,31 @@ class SessionLease:
         payload.setdefault("hold_controls", []).append(control_id)
         self.persist(active=True)
         return [dict(payload)]
+
+    def retire_channel_publication(self, event: dict[str, Any]) -> bool:
+        """Retire only this owner's evidence envelopes of the refused capture.
+
+        A refusal is not an acknowledgment and never pretends previously
+        submitted provider content was unread or successfully withdrawn.
+        """
+        session = channel_publication_refusal_session(event)
+        if session is None or not self.admits_channel_event(event):
+            return False
+        document = self.unclosed_channel_messages.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != event["capture_epoch"]):
+            return False
+        self.channel_publication_refusals[session] = dict(event)
+        self.unclosed_channel_messages.pop(session, None)
+        for inventory in (self.pending, self.held):
+            for delivery_id, payload in list(inventory.items()):
+                if (payload.get("session_id") == session
+                        and payload.get("producer_schema") == EVIDENCE_SCHEMA
+                        and payload.get("message_id") == channel_message_identity(session)
+                        and (payload.get("capture_epoch") is None
+                             or payload["capture_epoch"] == event["capture_epoch"])):
+                    del inventory[delivery_id]
+        return True
 
     def revise_held_voice(self, event: dict[str, Any]) -> bool:
         if (event.get("schema") != EVIDENCE_SCHEMA
@@ -4489,6 +4583,7 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
+        normalizer.restore_publication_refusals(list(lease.channel_publication_refusals.values()))
         # Prune first: a draft left over from a message that was sealed and
         # acknowledged in an earlier run must not be restored as an unclosed
         # document for a session that is already settled.
@@ -4754,8 +4849,174 @@ def run(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
+class SpeechCredentialError(Exception):
+    """Only a bounded reason leaves the credential resolver, never provider data."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _xai_oauth_account(path: Path) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_size > 1 << 20:
+                raise SpeechCredentialError("credential_storage")
+            data = json.loads(handle.read((1 << 20) + 1))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise SpeechCredentialError("credential_storage") from None
+    if not isinstance(data, dict):
+        raise SpeechCredentialError("credential_storage")
+    for endpoint, value in data.items():
+        if (
+            str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
+            and isinstance(value, dict) and value.get("auth_mode") == "oidc"
+            and isinstance(value.get("key"), str) and value["key"]
+        ):
+            return data, endpoint, value
+    return None
+
+
+def _xai_oauth_needs_refresh(account: dict[str, Any]) -> bool:
+    expiry = account.get("expires_at")
+    if expiry is None:
+        # A store with no declared lifetime has no proactive refresh deadline.
+        return False
+    try:
+        if isinstance(expiry, str):
+            instant = datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                return True
+            expires = instant.timestamp()
+        else:
+            expires = float(expiry)
+        return not expires > time.time() + 120
+    except (ValueError, TypeError, OverflowError):
+        return True
+
+
+def _refresh_xai_speech_account(account: dict[str, Any]) -> dict[str, Any]:
+    """Refresh one grant at the fixed issuer, without redirects or body diagnostics."""
+    import http.client
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    refresh = account.get("refresh_token")
+    client = account.get("oidc_client_id") or "b1a00492-073a-47ea-816f-4c329264a828"
+    if not isinstance(refresh, str) or not refresh or not isinstance(client, str):
+        raise SpeechCredentialError("credential_rejected")
+    request = urllib.request.Request(
+        "https://auth.x.ai/oauth2/token",
+        data=urllib.parse.urlencode({
+            "grant_type": "refresh_token", "client_id": client, "refresh_token": refresh,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    try:
+        with opener.open(request, timeout=30) as response:
+            if not 200 <= response.status < 300:
+                reason = "credential_rejected" if response.status in (400, 401, 403) else "network"
+                raise SpeechCredentialError(reason)
+            raw = response.read(65537)
+        if len(raw) > 65536:
+            raise SpeechCredentialError("credential_refresh_invalid")
+        body = json.loads(raw)
+        key = body.get("access_token")
+        rotated = body.get("refresh_token", refresh)
+        lifetime = body.get("expires_in")
+        if (
+            not isinstance(key, str) or not key or not isinstance(rotated, str) or not rotated
+            or isinstance(lifetime, bool) or not isinstance(lifetime, (int, float))
+            or not 120 < lifetime < 366 * 86400
+        ):
+            raise SpeechCredentialError("credential_refresh_invalid")
+        updated = dict(account)
+        updated.update(key=key, refresh_token=rotated, expires_at=(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=lifetime)
+        ).isoformat().replace("+00:00", "Z"))
+        return updated
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        raise SpeechCredentialError("network") from None
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        raise SpeechCredentialError("credential_refresh_invalid") from None
+
+
+def _xai_oidc_speech_key() -> str | None:
+    """One Grok store, one cross-process lock, re-read before rotating its grant."""
+    path = Path.home() / ".grok" / "auth.json"
+    found = _xai_oauth_account(path)
+    if found is None:
+        return None
+    if not _xai_oauth_needs_refresh(found[2]):
+        return found[2]["key"]
+    lock_path = path.with_name("auth.json.lock")
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as lock:
+            metadata = os.fstat(lock.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise SpeechCredentialError("credential_storage")
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        found = _xai_oauth_account(path)
+                        if found is not None and not _xai_oauth_needs_refresh(found[2]):
+                            return found[2]["key"]
+                        raise SpeechCredentialError("credential_busy")
+                    time.sleep(0.05)
+            # Grok uses this same lock file. Never unlink a held lock or steal
+            # it on age: the kernel releases it after a crashed process exits.
+            identity = (metadata.st_dev, metadata.st_ino)
+            def owns_lock() -> bool:
+                current = lock_path.stat(follow_symlinks=False)
+                return (current.st_dev, current.st_ino) == identity
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            found = _xai_oauth_account(path)
+            if found is None:
+                return None
+            data, endpoint, account = found
+            if not _xai_oauth_needs_refresh(account):
+                return account["key"]
+            lock.seek(0)
+            lock.write(f"{os.getpid()}:{int(time.time())}".encode("ascii"))
+            lock.truncate()
+            lock.flush()
+            updated = _refresh_xai_speech_account(account)
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            latest = _xai_oauth_account(path)
+            if latest is None:
+                raise SpeechCredentialError("credential_storage")
+            # Preserve other accounts and a concurrent explicit login/logout.
+            if latest[1] != endpoint or latest[2] != account:
+                if not _xai_oauth_needs_refresh(latest[2]):
+                    return latest[2]["key"]
+                raise SpeechCredentialError("credential_busy")
+            data = latest[0]
+            data[endpoint] = updated
+            # Account order selects the same grant on the next call. The bus
+            # JSON writer sorts keys; this external store must retain its order.
+            atomic_bytes(path, (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8"))
+            return updated["key"]
+    except OSError:
+        raise SpeechCredentialError("credential_storage") from None
+
+
 def _xai_speech_key() -> str | None:
-    """Explicit Keychain key first, then the Grok CLI's xAI OIDC session."""
+    """Explicit Keychain key first, then the automatically renewed Grok grant."""
     import subprocess
 
     probe = subprocess.run(
@@ -4766,20 +5027,7 @@ def _xai_speech_key() -> str | None:
     key = probe.stdout.strip() if probe.returncode == 0 else ""
     if key:
         return key
-    try:
-        data = json.loads((Path.home() / ".grok" / "auth.json").read_text())
-        for endpoint, value in data.items():
-            if (
-                str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
-                and
-                isinstance(value, dict)
-                and value.get("auth_mode") == "oidc"
-                and value.get("key")
-            ):
-                return str(value["key"])
-    except (OSError, ValueError):
-        pass
-    return None
+    return _xai_oidc_speech_key()
 
 
 def _openai_speech_key() -> str | None:
@@ -5166,7 +5414,10 @@ def _speak_xai(
     import urllib.request
 
     def synthesize() -> tuple[bytes | None, str | None, str | None]:
-        key = _xai_speech_key()
+        try:
+            key = _xai_speech_key()
+        except SpeechCredentialError as error:
+            return None, f"xAI credential unavailable ({error.reason})", error.reason
         if not key:
             return (
                 None,
@@ -7207,6 +7458,7 @@ def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bo
         for event in normalized_revision_events(raw, normalizer):
             if event.get("status") == SEALED:
                 remaining.discard(event.get("session_id"))
+        remaining.difference_update(normalizer.publication_refusals())
         if not remaining:
             return True
     return not remaining

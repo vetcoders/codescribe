@@ -14,7 +14,7 @@ struct DictationCloudPrivacyTab: View {
   @State private var showingPrivacyDetails = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.lg) {
+    VStack(alignment: .leading, spacing: SettingsScale.sectionGap) {
       cloudStatus
       egress
       privacyDetails
@@ -26,7 +26,8 @@ struct DictationCloudPrivacyTab: View {
   /// that audio is leaving right now.
   private var cloudStatus: some View {
     VStack(alignment: .leading, spacing: 8) {
-      sectionHeader(CloudPrivacyCopy.statusHeading)
+      SettingsSectionLabel(CloudPrivacyCopy.statusHeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
       VStack(spacing: 0) {
         RuntimeRow(
           key: CloudPrivacyCopy.currentModeLabel, value: model.asrModeLabel,
@@ -50,7 +51,8 @@ struct DictationCloudPrivacyTab: View {
   /// condition line, built to be scanned rather than read.
   private var egress: some View {
     VStack(alignment: .leading, spacing: 8) {
-      sectionHeader(CloudPrivacyCopy.egressHeading)
+      SettingsSectionLabel(CloudPrivacyCopy.egressHeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
       VStack(spacing: 0) {
         egressRow(
           icon: .mic,
@@ -80,7 +82,7 @@ struct DictationCloudPrivacyTab: View {
           .font(CSFont.ui(12.5, .medium))
           .foregroundStyle(Color.primary)
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -114,7 +116,7 @@ struct DictationCloudPrivacyTab: View {
         .padding(.top, 8)
       } label: {
         Text(CloudPrivacyCopy.detailsHeading)
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
       }
       Button(CloudPrivacyCopy.configureCloudServices) {
@@ -126,19 +128,6 @@ struct DictationCloudPrivacyTab: View {
       .font(CSFont.ui(11.5, .medium))
       .padding(.top, 2)
     }
-  }
-
-  /// Section heading for this page. Both of its sections put a card or a
-  /// condition line directly under the heading, so the heading reads one step
-  /// stronger than the shared `SettingsSectionLabel` — same local treatment
-  /// `ProvidersSectionHeader` uses on Providers, not a global header restyle
-  /// (Founder brief, round 14, 2026-10-10).
-  private func sectionHeader(_ text: String) -> some View {
-    Text(text)
-      .font(CSFont.ui(13, .semibold))
-      .foregroundStyle(Color.primary)
-      .accessibilityAddTraits(.isHeader)
-      .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var rowDivider: some View {
@@ -153,7 +142,7 @@ struct DictationCloudPrivacyTab: View {
 
   private func prose(_ line: String) -> some View {
     Text(line)
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .frame(maxWidth: .infinity, alignment: .leading)
       .fixedSize(horizontal: false, vertical: true)

@@ -613,12 +613,25 @@ impl InProcessTailProvider {
         // VAD gates empty speech, as in file transcription. Decode the original
         // bounded PCM window: compaction can discard quiet onsets and joins
         // physically separated speech before the model and word alignment.
-        let (speech, _) = crate::vad::extract_speech(pcm, request.sample_rate);
-        execution.record_vad_selection(speech.len());
-        let vad_selected_samples = speech.len() as u64;
+        let (speech, vad) = crate::vad::extract_speech(pcm, request.sample_rate);
+        let vad_measured = vad.total_windows > 0;
+        if vad_measured {
+            execution.record_vad_selection(speech.len());
+        }
+        let vad_selected_samples = vad_measured.then_some(speech.len() as u64);
+        let no_speech =
+            speech.is_empty() && vad.no_speech_reason.as_deref() == Some("vad_no_speech_detected");
         let execution_control = execution.execution_control(control);
         control.check()?;
-        let (raw, word_segments) = if speech.is_empty() {
+        let (raw, word_segments) = if no_speech {
+            tracing::info!(
+                session_id = %request.identity.range.session,
+                capture_epoch = request.identity.range.capture_epoch,
+                request_id = request.identity.request_id,
+                sample_start = request.identity.range.sample_start,
+                sample_end = request.identity.range.sample_end,
+                "decode_skipped_no_speech"
+            );
             (RawTranscript::default(), None)
         } else {
             super::candle_transcribe_tail_window(
@@ -708,7 +721,7 @@ impl InProcessTailProvider {
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
                 segment_grain,
-                vad_selected_samples: Some(vad_selected_samples),
+                vad_selected_samples,
             },
         };
         payload.validate()?;

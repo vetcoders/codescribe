@@ -336,6 +336,7 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
+  @State private var pointerInsideAgentRail = false
   @State private var closeDotHovered = false
   @Namespace private var bottomChromeNamespace
   @State private var actions = OverlayActionsPresentation()
@@ -466,10 +467,9 @@ struct DictationOverlayView: View {
         // of the conversation or the transcription, which keep their layout
         // underneath: choosing a row brings the conversation back.
         let listShown = !docked && listOnScreen
-        // Folded, the list leaves its agents beside the conversation as pills.
-        let railShown =
-          !state.isCollapsed && !listOnScreen && state.agentsLayout == .rail
-          && state.selectedConversation != nil
+        // The compact roster is present from the first reveal, including on
+        // the transcription before any agent conversation has been selected.
+        let railShown = !state.isCollapsed && !listOnScreen
         let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: textScale)
         // The agents view covers the window; a drag on its edge draws a split.
         let drawerWidth =
@@ -526,14 +526,8 @@ struct DictationOverlayView: View {
                 onPlayback: { Task { await state.toggleConversationPlayback(conversation) } },
                 playbackError: state.playbackPreferenceError,
                 agentDescriptor: state.conversationAgentDescriptor(conversation),
-                // The name pill toggles the agents list: with the clickable
-                // scrim gone, a second click is the pointer's way back out.
-                onShowAgents: {
-                  if state.showsAgentMonitor {
-                    state.hideAgentSidebar()
-                  } else {
-                    state.showAgentMonitor()
-                  }
+                onFocusAgentPanel: conversation.owner.flatMap { owner in
+                  state.canFocusAgentPanel(owner) ? { state.focusAgentPanel(owner) } : nil
                 },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 hidesNavigation: columnShown,
@@ -594,6 +588,20 @@ struct DictationOverlayView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: columnShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: railShown)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: state.agentsLayout)
+        // Track the stable canvas instead of the disappearing rail. Choosing
+        // a row while still over its edge must not immediately reopen it.
+        .onContinuousHover { phase in
+          switch phase {
+          case .active(let point):
+            let inside = point.x >= geometry.size.width - railWidth
+              && point.y >= headerHeight + 8
+            let entered = inside && !pointerInsideAgentRail
+            pointerInsideAgentRail = inside
+            if entered && railShown { state.unfoldAgentList() }
+          case .ended:
+            pointerInsideAgentRail = false
+          }
+        }
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)

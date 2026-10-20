@@ -190,7 +190,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       settingsSearchTerms(
         fixed: ["asr", "stt", "apple", "whisper"],
         localized: String(
-          localized: "settings.search.tab.dictationEngine", defaultValue: "engine, runtime",
+          localized: "settings.search.tab.dictationEngine",
+          defaultValue: "engine, runtime, markers, tag, template",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))

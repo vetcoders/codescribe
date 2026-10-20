@@ -1079,6 +1079,8 @@ struct OverlayChannelStatusView: View {
 
   func showsPanelFocusButton(for channel: OverlayChannelDelivery) -> Bool {
     panelFocusAvailable && archiveCandidates[channel.channel] != nil && onFocusAgentPanel != nil
+      && hudStates[channel.channel]?.frameDetected == true
+      && hudStates[channel.channel]?.followerAlive == true
   }
 
   func viewConversation(_ channel: OverlayChannelDelivery) {
