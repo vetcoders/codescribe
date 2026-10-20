@@ -288,13 +288,65 @@ actor OverlayChannelDeliveryReader {
       paths.removeAll { $0 == archive.bus }
       paths.insert(archive.bus, at: 0)
     }
-    let usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
+    var usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
     for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
       if FileManager.default.fileExists(atPath: bus.path) {
         try refresh(bus)
       } else if buses[bus] == nil, var restored = persistedCursor(for: bus) {
         adopt(&restored)
         buses[bus] = restored
+      }
+    }
+    // A staged receipt is copied to every frozen recipient bus, but its
+    // commit marker exists only on the selected primary bus. Pull that exact
+    // primary through this reader's generation-verified stream so archived
+    // secondary conversations can resolve the same durable stage after reopen.
+    let selectedArchivePath = selectedOwner.flatMap { selected in
+      archives.first(where: {
+        $0.owner.id == selected.id && $0.owner.channel == selected.channel
+      }).map { URL(fileURLWithPath: $0.bus).standardizedFileURL.path }
+    }
+    let boundBusPaths = Set(bindings.values.compactMap { binding in
+      leases.first(where: {
+        $0["provider"] as? String == binding["provider"] as? String
+          && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+      })?["bus"] as? String
+    })
+    var protectedBusPaths = boundBusPaths
+    protectedBusPaths.insert(URL(fileURLWithPath: founderBus).standardizedFileURL.path)
+    if let sharedBus { protectedBusPaths.insert(sharedBus.standardizedFileURL.path) }
+    if let selectedArchivePath { protectedBusPaths.insert(selectedArchivePath) }
+    var referencedCommitBuses: [String] = []
+    if let selectedArchivePath {
+      let selectedArchiveURL = URL(fileURLWithPath: selectedArchivePath).standardizedFileURL
+      if let selectedProjection = buses[selectedArchiveURL]?.projection {
+        referencedCommitBuses.append(contentsOf:
+          selectedProjection.referencedCaptureAttachmentCommitBuses.sorted())
+      }
+    }
+    let allReferencedCommitBuses = usedBuses.reduce(into: Set<String>()) { result, bus in
+      result.formUnion(buses[bus]?.projection.referencedCaptureAttachmentCommitBuses ?? [])
+    }
+    let selectedCommitBuses = Set(referencedCommitBuses)
+    referencedCommitBuses.append(contentsOf:
+      allReferencedCommitBuses.sorted().filter { !selectedCommitBuses.contains($0) })
+    for commitPath in referencedCommitBuses {
+      guard let commitBus = captureCommitBusURL(commitPath), !usedBuses.contains(commitBus) else {
+        continue
+      }
+      if usedBuses.count >= 16 {
+        guard let evicted = usedBuses.filter({ !protectedBusPaths.contains($0.path) })
+          .sorted(by: { $0.path > $1.path }).first
+        else { continue }
+        usedBuses.remove(evicted)
+      }
+      usedBuses.insert(commitBus)
+      protectedBusPaths.insert(commitBus.path)
+      if FileManager.default.fileExists(atPath: commitBus.path) {
+        try refresh(commitBus)
+      } else if buses[commitBus] == nil, var restored = persistedCursor(for: commitBus) {
+        adopt(&restored)
+        buses[commitBus] = restored
       }
     }
     var deliveries: [OverlayChannelDelivery] = []
@@ -433,12 +485,29 @@ actor OverlayChannelDeliveryReader {
     openedArchiveBus: URL?
   ) -> BuiltConversations {
     conversationBuilds &+= 1
+    var verifiedCaptureAttachmentCommits: [String: String] = [:]
+    var conflictingCaptureAttachmentCommits: Set<String> = []
+    for (bus, cursor) in buses {
+      for (stageID, commitBus) in cursor.projection.verifiedCaptureAttachmentCommitPaths
+      where commitBus == bus.path && captureCommitBusURL(commitBus) != nil {
+        guard !conflictingCaptureAttachmentCommits.contains(stageID) else { continue }
+        if let previous = verifiedCaptureAttachmentCommits[stageID], previous != commitBus {
+          verifiedCaptureAttachmentCommits.removeValue(forKey: stageID)
+          conflictingCaptureAttachmentCommits.insert(stageID)
+        } else {
+          verifiedCaptureAttachmentCommits[stageID] = commitBus
+        }
+      }
+    }
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
     var historyReplyIDs: Set<String> = []
     for bus in buses.keys.sorted(by: { $0.path < $1.path }) {
       guard let cursor = buses[bus] else { continue }
-      for conversation in cursor.projection.conversations(busPath: bus.path) {
+      for conversation in cursor.projection.conversations(
+        busPath: bus.path,
+        verifiedCaptureAttachmentCommits: verifiedCaptureAttachmentCommits)
+      {
         if bus == openedArchiveBus { historyReplyIDs.formUnion(conversation.replyIDs) }
         if conversation.id == "0" {
           for message in conversation.messages {
@@ -491,6 +560,24 @@ actor OverlayChannelDeliveryReader {
     guard cursor.lineage == 0 else { return }
     nextLineage &+= 1
     cursor.lineage = nextLineage
+  }
+
+  /// Stage receipts can name only a canonical bus under this bridge's buses
+  /// directory. The returned URL is then read by `refresh`, which verifies its
+  /// generation manifest and stream identity before consuming any rows.
+  private func captureCommitBusURL(_ rawPath: String) -> URL? {
+    guard rawPath.hasPrefix("/"), rawPath.utf8.count <= 4096 else { return nil }
+    let candidate = URL(fileURLWithPath: rawPath).standardizedFileURL
+    guard candidate.path == rawPath else { return nil }
+    let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+    let resolvedBuses = resolvedRoot.appendingPathComponent("buses", isDirectory: true)
+      .resolvingSymlinksInPath().standardizedFileURL
+    let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+    guard resolvedCandidate.pathExtension == "jsonl",
+      resolvedCandidate.path == rawPath,
+      resolvedCandidate.path.hasPrefix(resolvedBuses.path + "/")
+    else { return nil }
+    return resolvedCandidate
   }
 
   private static func merge(
