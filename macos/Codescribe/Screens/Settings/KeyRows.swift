@@ -763,36 +763,36 @@ struct SettingsSecondsSlider: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
-      HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(SettingsScale.settingName)
-            .foregroundStyle(Color.primary)
-          Text(detail)
-            .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+      Text(title)
+        .font(SettingsScale.settingName)
+        .foregroundStyle(Color.primary)
+      Text(detail)
+        .font(SettingsScale.helper)
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      // The track stops at `sliderWidth`; the value reads at its end.
+      HStack(spacing: CSSpace.md) {
+        Slider(
+          value: Binding(
+            get: { gate.displayed(persisted: value) },
+            set: { newValue in
+              if let direct = gate.valueChanged(newValue) { value = direct }
+            }
+          ),
+          in: range, step: step,
+          onEditingChanged: { editing in
+            if let committed = gate.editingChanged(editing) { value = committed }
+          }
+        )
+        .tint(CSColor.chromeAccent)
+        .frame(maxWidth: SettingsScale.sliderWidth)
+        .accessibilityLabel(title)
+        .accessibilityValue(valueLabel)
         Text(valueLabel)
           .font(SettingsScale.monoValue)
           .foregroundStyle(Color.primary)
       }
-      Slider(
-        value: Binding(
-          get: { gate.displayed(persisted: value) },
-          set: { newValue in
-            if let direct = gate.valueChanged(newValue) { value = direct }
-          }
-        ),
-        in: range, step: step,
-        onEditingChanged: { editing in
-          if let committed = gate.editingChanged(editing) { value = committed }
-        }
-      )
-      .tint(CSColor.chromeAccent)
-      .accessibilityLabel(title)
-      .accessibilityValue(valueLabel)
+      .padding(.top, CSSpace.xs)
     }
   }
 

@@ -64,6 +64,10 @@ enum SettingsScale {
   static let controlRadius: CGFloat = CSRadius.chip
   static let controlInsetH: CGFloat = 10
   static let controlInsetV: CGFloat = 5
+  /// The longest a slider track grows. A track that spans the whole pane
+  /// turns every pixel of width into precision nobody asked for (Founder,
+  /// 2026-10-20); the value sits at the track's end instead of the far edge.
+  static let sliderWidth: CGFloat = 360
 
   // MARK: - Type
 

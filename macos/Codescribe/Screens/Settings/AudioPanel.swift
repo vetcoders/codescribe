@@ -1201,9 +1201,7 @@ struct AudioPanel: View {
           .foregroundStyle(.primary)
         Spacer(minLength: 0)
         Toggle("", isOn: soundFeedbackBinding)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
+          .settingsSwitch()
           .accessibilityLabel("Recording start sound")
           .accessibilityValue(model.settings.beepOnStart ? "On" : "Off")
       }

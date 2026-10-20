@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings: every switch is the small macOS switch, tinted the same, with its label carried by the row; the Lab desk's switches sit in one trailing column instead of a staircase; slider tracks stop at one shared width with the value at the track's end.
 - Settings › Dictation › Engine › Transcript markers: the template editor and its preview are one box with an **Edit | Preview** segment above it instead of two stacked boxes.
 
 - The tray menu no longer carries **Setup Wizard** or **Check for Updates**: the wizard is reopened from Settings → Creator (**Open Setup Wizard…** under the heading), and updates are checked from the **Codescribe** application menu (**Check for Updates…**, right under About, as in other Mac apps) or from Settings → User.

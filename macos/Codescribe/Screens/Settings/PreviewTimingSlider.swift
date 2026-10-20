@@ -14,19 +14,20 @@ struct PreviewTimingSlider: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack {
-        Text(title)
-          .font(CSFont.ui(12, .medium))
-          .foregroundStyle(Color.secondary)
-        Spacer(minLength: 0)
+      Text(title)
+        .font(CSFont.ui(12, .medium))
+        .foregroundStyle(Color.secondary)
+      // The track stops at `sliderWidth`; the value reads at its end.
+      HStack(spacing: CSSpace.md) {
+        Slider(value: $value, in: range, step: step)
+          .tint(CSColor.chromeAccent)
+          .frame(maxWidth: SettingsScale.sliderWidth)
+          .accessibilityLabel(title)
+          .accessibilityValue(valueLabel)
         Text(valueLabel)
           .font(CSFont.mono(10.5, .semibold))
           .foregroundStyle(Color.primary)
       }
-      Slider(value: $value, in: range, step: step)
-        .tint(CSColor.chromeAccent)
-        .accessibilityLabel(title)
-        .accessibilityValue(valueLabel)
     }
   }
 }

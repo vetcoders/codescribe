@@ -287,9 +287,7 @@ struct UserPanel: View {
           comment: "User panel: opt-in switch subtitle")
       ) {
         Toggle("", isOn: $activationPingOptIn)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
+          .settingsSwitch()
           .accessibilityLabel("Send a confirmation after the first successful dictation")
           .accessibilityValue(activationPingOptIn ? "On" : "Off")
       }

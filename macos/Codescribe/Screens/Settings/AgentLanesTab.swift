@@ -77,9 +77,7 @@ struct AgentLanesTab: View {
             set: { model.setAgentAutoSend($0) }
           )
         )
-        .toggleStyle(.switch)
-        .labelsHidden()
-        .tint(CSColor.chromeAccent)
+        .settingsSwitch()
       }
       .padding(.top, SettingsScale.sectionGap)
 

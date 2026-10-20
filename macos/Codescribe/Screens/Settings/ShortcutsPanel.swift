@@ -343,8 +343,7 @@ struct ShortcutsPanel: View {
           detail: "Tap to start or stop. Hold to record while held."
         ) {
           Toggle("Tap Fn to dictate", isOn: fnTapBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
         divider
         inputSurfaceRow(
@@ -352,8 +351,7 @@ struct ShortcutsPanel: View {
           detail: "Works like Fn. Custom mouse-button mappings can block it."
         ) {
           Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
         divider
         inputSurfaceRow(
@@ -362,8 +360,7 @@ struct ShortcutsPanel: View {
             "Middle click opens the list, scroll chooses, left click opens the conversation, middle click starts and ends talking."
         ) {
           Toggle("Middle click picks an agent", isOn: middleGestureBinding)
-            .labelsHidden()
-            .toggleStyle(.switch)
+            .settingsSwitch()
         }
       }
       .settingsGroupedInset(padding: 0)
