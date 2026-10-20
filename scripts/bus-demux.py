@@ -914,7 +914,7 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
-    for key in ("message_id", "occurrences", "hold_until"):
+    for key in ("message_id", "occurrences", "hold_until", "user_reply_to"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1579,6 +1579,11 @@ def consider(
                 or not re.fullmatch(r"[0-9a-f]{24}", event["message_id"])
                 or event.get("source_event_id") != event["message_id"]):
             return None
+        if "user_reply_to" in event:
+            try:
+                validate_user_reply_reference(event["user_reply_to"])
+            except ValueError:
+                return None
         audience = event.get("audience")
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
@@ -3998,7 +4003,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
         "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
-        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
     )
     return {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}
@@ -6543,8 +6548,23 @@ def note_skipped_broadcast_channel(
     return entry
 
 
+def validate_user_reply_reference(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {"message_id", "author", "text"}:
+        raise ValueError("invalid user reply reference")
+    identity, author, text = value["message_id"], value["author"], value["text"]
+    if (not isinstance(identity, str) or not identity or len(identity.encode("utf-8")) > 512
+            or any(ord(c) < 32 or ord(c) == 127 for c in identity)
+            or not isinstance(author, str) or not author.strip() or len(author) > 128
+            or any(ord(c) < 32 or ord(c) == 127 for c in author)
+            or not isinstance(text, str) or len(text) > 512):
+        raise ValueError("invalid user reply reference")
+    return {"message_id": identity, "author": author, "text": text}
+
+
 def send_text_command(args: argparse.Namespace) -> int:
     """Publish user text to every reachable owner of channel zero, or one exact owner."""
+    raw_reply = getattr(args, "user_reply_to", None)
+    user_reply = validate_user_reply_reference(json.loads(raw_reply)) if raw_reply is not None else None
     attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
     root = args.bridge_home
     broadcast = str(args.channel) == "0"
@@ -6602,6 +6622,8 @@ def send_text_command(args: argparse.Namespace) -> int:
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
                      "recipients": [owner]}
+            if user_reply is not None:
+                event["user_reply_to"] = user_reply
             if attachments:
                 event["attachments"] = attachments
             if broadcast:
@@ -8101,7 +8123,7 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     # acoustic envelope or every recipient's copy of the same coordinates.
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
                 "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
-                "routing_candidates", "instructions", "attachments"):
+                "routing_candidates", "instructions", "attachments", "user_reply_to"):
         if key in payload:
             line[key] = payload[key]
     return line
@@ -8630,11 +8652,14 @@ def main() -> int:
         help="TTS speed; defaults to the name's profile in voices.json, "
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
+    parser.add_argument("--user-reply-to", metavar="JSON", help="with --send-text: selected parent message_id, author and bounded text")
     parser.add_argument("--attach-file", metavar="PATH", action="append",
                         help="with --send-text: pointer to a pasted file the app already stored "
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.user_reply_to is not None and not args.send_text:
+        parser.error("--user-reply-to requires --send-text")
     if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
         parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):

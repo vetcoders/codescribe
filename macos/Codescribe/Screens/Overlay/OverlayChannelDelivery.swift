@@ -561,6 +561,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
         message.sourceChannel = (row["origin_channel"] as? String) ?? (row["channel"] as? String)
         message.attachments = OverlayMessageAttachment.pointers(row["attachments"])
+        message.userReplyTo = (row["user_reply_to"] as? [String: Any]).flatMap(OverlayUserReplyReference.init(row:))
         message.controlIdentity = identity
         message.deliverySealed = true
         message.holdUntil = (row["hold_until"] as? String).flatMap(Self.openingDate)
@@ -1186,6 +1187,37 @@ struct OverlayReplyPlayback: Codable, Equatable, Sendable {
   let emittedAt: String
 }
 
+/// User-selected parent, separate from the agent-to-user `reply_to` delivery link.
+struct OverlayUserReplyReference: Codable, Equatable, Sendable {
+  let messageID: String
+  let author: String
+  let text: String
+
+  enum CodingKeys: String, CodingKey {
+    case messageID = "message_id", author, text
+  }
+
+  init(message: OverlayConversationMessage) {
+    messageID = message.id
+    author = String((message.kind == .user ? "You" : message.owner?.name ?? "Agent").prefix(128))
+    let body = message.bodyText
+    let context = body.isEmpty
+      ? (message.attachments ?? []).map(\.name).joined(separator: ", ") : body
+    text = String(context.prefix(512))
+  }
+
+  init?(row: [String: Any]) {
+    guard let id = row["message_id"] as? String, !id.isEmpty, id.utf8.count <= 512,
+      !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+      let author = row["author"] as? String, !author.isEmpty, author.count <= 128,
+      let text = row["text"] as? String, text.count <= 512
+    else { return nil }
+    self.messageID = id
+    self.author = author
+    self.text = text
+  }
+}
+
 struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   enum Kind: String, Codable, Sendable { case user, reply }
   enum CaptureState: String, Codable, Sendable { case receiving, finished }
@@ -1207,6 +1239,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var sourceRevision: UInt64? = nil
   /// File pointers the typed message carried; the bus never carries the bytes.
   var attachments: [OverlayMessageAttachment]? = nil
+  var userReplyTo: OverlayUserReplyReference? = nil
   /// Capture lifecycle comes from bus terminals, independently of recipient ACKs.
   var captureState: CaptureState? = nil
   var showsDeliveryReceipts: Bool { captureState != .receiving }

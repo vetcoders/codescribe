@@ -81,6 +81,17 @@ struct OverlayConversationView: View {
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
+  var replySelection: OverlayUserReplyReference? = nil
+  var onClearReply: () -> Void = {}
+  var draftMicrophoneRecording = false
+  var draftMicrophoneBusy = false
+  var onToggleDraftMicrophone: (() -> Void)? = nil
+  var onStageCaptureAttachments: (([String]) -> Bool)? = nil
+  var pendingCaptureAttachments: [String] = []
+  var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var onReply: ((OverlayConversationMessage) -> Void)? = nil
+  @State private var replyNavigationID: String?
+
   @State private var scrollFollow = StreamScrollFollowState()
   /// Conversation and presentation the focus handler last observed. Written
   /// after this turn's handlers, so a mini morph is not read as a re-select.
@@ -132,6 +143,11 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: geometry.size.width, textScale: textScale)
         )
+        .onChange(of: replyNavigationID) { _, id in
+          guard let id else { return }
+          proxy.scrollTo(id, anchor: .center)
+          replyNavigationID = nil
+        }
         // One ScrollView per conversation. `.initialOffset` then starts at the
         // bottom instead of reusing the previous list's offset through the morph.
         // It places a list once, so the list is recreated when the history
@@ -281,7 +297,14 @@ struct OverlayConversationView: View {
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
           focusRevision: revisionFocus, isCovered: isCovered || !isPresented,
-          placeholder: composerPlaceholder)
+          placeholder: composerPlaceholder,
+          replySelection: replySelection, onClearReply: onClearReply,
+          draftMicrophoneRecording: draftMicrophoneRecording, draftMicrophoneBusy: draftMicrophoneBusy,
+          onToggleDraftMicrophone: onToggleDraftMicrophone,
+          onStageCaptureAttachments: onStageCaptureAttachments,
+          pendingCaptureAttachments: pendingCaptureAttachments,
+          onRemoveCaptureAttachment: onRemoveCaptureAttachment,
+          onNavigateReply: { navigateToReply(replySelection?.messageID) })
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -447,6 +470,12 @@ struct OverlayConversationView: View {
     let id = orderedMessages[start].id
     if windowStartID != id { windowStartID = id }
     if windowConversationID != conversation.id { windowConversationID = conversation.id }
+  }
+
+  private func navigateToReply(_ id: String?) {
+    guard let id, let index = orderedMessages.firstIndex(where: { $0.id == id }) else { return }
+    pinMessageWindow(at: index)
+    replyNavigationID = id
   }
 
   @ViewBuilder
@@ -682,6 +711,18 @@ struct OverlayConversationView: View {
       .foregroundStyle(palette.mutedText.color)
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-message-route-\(message.id)")
+      if let parent = message.userReplyTo {
+        Button { navigateToReply(parent.messageID) } label: {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: parent.author).fontWeight(.semibold)
+            Text(verbatim: parent.text).lineLimit(2)
+          }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityIdentifier("overlay-message-parent-\(message.id)")
+      }
       if let question = addressedQuestion(for: message) {
         Text("In reply to: \(String(question.text.prefix(100)))")
           .font(.system(size: 10 * textScale))
@@ -720,7 +761,20 @@ struct OverlayConversationView: View {
       if let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       }
-      messageFooter(message)
+      HStack {
+        messageFooter(message)
+        if let onReply, message.captureState != .receiving, message.withdrawn != true {
+          Spacer(minLength: 8)
+          Button("Reply", systemImage: "arrowshape.turn.up.left") {
+            onReply(message)
+            revisionFocus &+= 1
+          }
+          .buttonStyle(.plain)
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.mutedText.color)
+          .accessibilityIdentifier("overlay-message-reply-\(message.id)")
+        }
+      }
     }
     .padding(12)
     .background(
