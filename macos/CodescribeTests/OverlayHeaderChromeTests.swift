@@ -234,14 +234,18 @@ final class OverlayHeaderChromeTests: XCTestCase {
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-      _ = try NativeAccessibilityProbe.waitForElements("overlay-conversation-name")
-      let reception = try NativeAccessibilityProbe.query("overlay-conversation-name", press: true)
+      let label = try XCTUnwrap(
+        NativeAccessibilityProbe.waitForElements("overlay-conversation-name").elements.first)
+      _ = try NativeAccessibilityProbe.query("overlay-conversation-name", press: true)
       if available {
+        XCTAssertEqual(label.role, "AXButton")
         XCTAssertEqual(focused, 1, "the press reaches the supplied Frame action")
       } else {
-        XCTAssertNotEqual(reception.pressStatus, 0, "a passive name offers no AX press action")
+        XCTAssertNotEqual(label.role, "AXButton", "a passive name offers no button")
         XCTAssertEqual(focused, 0)
       }
+      XCTAssertFalse(window.isKeyWindow)
+      XCTAssertFalse(NSApp.isActive, "the synthetic AX press must not activate the host")
     }
   }
 
