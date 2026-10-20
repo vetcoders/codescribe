@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Dictation › Cloud & privacy. Two short informational sections plus the
-/// rest on demand: the cloud status (the selected mode and the stored consent
-/// record as two separate rows), two scannable egress rows (Audio, Text), and
-/// the full privacy details behind a collapsed disclosure — kept, not cut.
+/// rest on demand: Data processing (the selected mode and the stored consent
+/// record as two separate rows, then the one action that opens Providers ›
+/// Cloud transcription), two scannable egress rows (Audio, Text), and the full
+/// privacy details behind a collapsed disclosure — kept, not cut.
 /// Copy is pinned by `CloudPrivacyCopyTests`; selecting Cloud on the Engine
 /// tab opens a `confirmationDialog` naming the effect, and only confirming it
 /// grants consent (`SettingsViewModel.confirmCloudConsent`). Cloud never
@@ -44,6 +45,14 @@ struct DictationCloudPrivacyTab: View {
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       }
       prose(CloudPrivacyCopy.consentIsNotLiveEgress)
+      // The only entry point from Privacy to the cloud configuration, which
+      // lives in Providers. `.keys` is the Providers section (its panel
+      // destination is `.providers`); the anchor scrolls to Cloud transcription.
+      Button(CloudPrivacyCopy.configureCloudServices) {
+        SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
+      }
+      .buttonStyle(.link)
+      .font(CSFont.ui(11.5, .medium))
     }
   }
 
@@ -119,14 +128,6 @@ struct DictationCloudPrivacyTab: View {
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
       }
-      Button(CloudPrivacyCopy.configureCloudServices) {
-        // `.keys` is the Providers section (its panel destination is
-        // `.providers`); the anchor scrolls to Cloud transcription.
-        SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
-      }
-      .buttonStyle(.link)
-      .font(CSFont.ui(11.5, .medium))
-      .padding(.top, 2)
     }
   }
 
