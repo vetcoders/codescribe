@@ -3377,6 +3377,45 @@ impl AppleSealState {
         );
     }
 
+    /// Only a complete Silero measurement can skip an encoder window. An
+    /// unavailable or lagging observer is unknown, never measured silence.
+    fn skip_speechless_decode_window(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        range: &TailSampleRange,
+    ) -> bool {
+        let Some(speech) = observed_silero(self) else {
+            return false;
+        };
+        if range.session != self.session_id
+            || range.capture_epoch != self.capture_epoch
+            || span_inside_observed(&speech, range.sample_end).is_none()
+            || ranges_overlap_span(&speech, range.sample_start, range.sample_end)
+        {
+            return false;
+        }
+        let decode = OccurrenceIdentity::from(range);
+        crate::pipeline::trail::record_decode_skipped_no_speech(&decode, &speech);
+        self.window_plan_receipt(range, "decode_skipped_no_speech");
+        *self
+            .windows_refused_before_inference
+            .entry("decode_skipped_no_speech".to_string())
+            .or_default() += 1;
+        self.window_plan.account(range);
+        let owners = self.unsealed_word_owners();
+        for (id, owner) in owners {
+            if range_overlaps_occurrence(range, &owner)
+                && span_inside_observed(&speech, owner.sample_end).is_some()
+                && !ranges_overlap_span(&speech, owner.sample_start, owner.sample_end)
+            {
+                self.refinement_receipt(&owner, "decode_skipped_no_speech");
+                self.return_whisper_without_label(ev_tx, id, &owner);
+                self.emit_pending_seal(ev_tx, id);
+            }
+        }
+        true
+    }
+
     fn planned_work_pending(&self) -> bool {
         self.capture_stopping
             && !self.window_plan.is_finished()
@@ -3397,6 +3436,9 @@ impl AppleSealState {
             else {
                 break;
             };
+            if self.skip_speechless_decode_window(ev_tx, &range) {
+                continue;
+            }
             if self.refinement_lane_lost {
                 self.window_plan_receipt(&range, "lane_unavailable");
                 self.window_plan.account(&range);
@@ -3936,6 +3978,15 @@ impl AppleSealState {
             {
                 self.window_plan_receipt(&range, "unoffered_request");
                 self.note_window_refused_before_inference(RefinementFailure::InvalidIdentity);
+                continue;
+            }
+            if self.skip_speechless_decode_window(ev_tx, &range) {
+                if let Some(trial) = self
+                    .word_trial_requests
+                    .remove(&request.provider_request.identity.request_id)
+                {
+                    self.close_word_trial(&trial, "decode_skipped_no_speech");
+                }
                 continue;
             }
             let Some(sender) = self.tail_patch.as_ref() else {
