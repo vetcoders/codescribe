@@ -1,7 +1,8 @@
 import SwiftUI
 
-// Root of the first-run wizard: a fixed chrome (progress header + scrollable step
-// body + navigation footer) that dispatches on the current step. The window host
+// Root of the first-run wizard: a fixed chrome (wordmark, step counter and
+// progress header + navigation footer) around one scrollable reading column that
+// holds every step's heading, category label and body. The window host
 // lives in OnboardingWindow.swift; individual step bodies live in
 // OnboardingSteps.swift.
 
@@ -45,113 +46,174 @@ struct OnboardingView: View {
       }
   }
 
+  /// One reading column for every step: the heading, its category label, the
+  /// step's content and its footnotes share this width and one leading edge.
+  /// 560 pt keeps the widest real row — a permission with its longest Polish
+  /// name, the Optional badge and the "Open System Settings" button — on one
+  /// line, and stays under the 624 pt the minimum window width leaves, so no
+  /// step is squeezed. The window chrome (wordmark, counter, progress, footer)
+  /// keeps the full width.
+  static let columnMaxWidth: CGFloat = 560
+
   private var content: some View {
     VStack(spacing: 0) {
       header
       ScrollView {
-        stepBody
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(28)
-          .id(model.stepIndex)
-          .csAutohidingScrollers()
+        VStack(alignment: .leading, spacing: 20) {
+          stepHeading
+          stepBody
+        }
+        .frame(maxWidth: Self.columnMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(28)
+        .id(model.stepIndex)
+        .csAutohidingScrollers()
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.stepIndex)
       footer
     }
   }
 
-  private var chapter: (title: String, symbol: String, purpose: String?) {
+  /// Each step's single task message (a question or an instruction), its icon
+  /// and its short category label. The step bodies never repeat it.
+  private var heading: (symbol: String, title: String, label: String) {
+    let locale = model.interfaceLocale
     switch model.step {
     case .interfaceLanguage:
       return (
+        "globe",
         String(
           localized: LocalizedStringResource(
-            "Choose your language", locale: model.interfaceLocale,
-            comment: "First setup chapter heading")),
-        "globe",
-        nil
+            "What language should Codescribe use?", locale: locale,
+            comment: "First setup step heading")),
+        String(
+          localized: LocalizedStringResource(
+            "Interface language", locale: locale, comment: "First setup step eyebrow"))
       )
     case .mode:
       return (
+        "waveform",
         String(
           localized: LocalizedStringResource(
-            "Choose how you want to use Codescribe.", locale: model.interfaceLocale,
-            comment: "Setup chapter heading")),
-        "waveform",
-        nil
+            "How do you want to work?", locale: locale, comment: "Setup step heading")),
+        String(
+          localized: LocalizedStringResource(
+            "Operating lane", locale: locale, comment: "Setup step eyebrow"))
       )
     case .permissions:
       return (
+        "hand.raised",
         String(
           localized: LocalizedStringResource(
-            "Make the connection", locale: model.interfaceLocale, comment: "Setup chapter heading")),
-        "hand.raised",
-        nil
+            "Choose which features to allow", locale: locale,
+            comment: "Heading above the unified onboarding permission checklist")),
+        String(
+          localized: LocalizedStringResource(
+            "Permissions", locale: locale, comment: "Setup step eyebrow"))
+      )
+    case .language:
+      return (
+        "character.bubble",
+        String(
+          localized: LocalizedStringResource(
+            "Pick your dictation language.", locale: locale, comment: "Setup step heading")),
+        String(
+          localized: LocalizedStringResource(
+            "Dictation language", locale: locale,
+            comment: "Setup step eyebrow: the language you dictate in, not the app language"))
       )
     case .localModel:
       return (
-        String(
-          localized: LocalizedStringResource(
-            "Transcription on your device", locale: model.interfaceLocale,
-            comment: "Setup chapter heading for fully local transcription")),
         "arrow.down.circle",
-        nil
-      )
-    case .language, .apiKey, .hotkeyMode:
-      return (
         String(
           localized: LocalizedStringResource(
-            "Your language. Your shortcuts. Your way of working.",
-            locale: model.interfaceLocale, comment: "Setup chapter heading")),
-        "slider.horizontal.3",
-        nil
+            "Do you want to transcribe on your Mac?", locale: locale,
+            comment: "Setup step heading for the optional local Whisper model")),
+        String(
+          localized: LocalizedStringResource(
+            "Local transcription", locale: locale,
+            comment: "Setup step eyebrow: transcription that runs on this computer"))
+      )
+    case .apiKey:
+      return (
+        "key",
+        String(
+          localized: LocalizedStringResource(
+            "Connect an AI provider", locale: locale, comment: "Setup step heading")),
+        String(
+          localized: LocalizedStringResource(
+            "AI provider", locale: locale, comment: "Setup step eyebrow"))
+      )
+    case .hotkeyMode:
+      return (
+        "keyboard",
+        String(
+          localized: LocalizedStringResource(
+            "How do you trigger recording?", locale: locale, comment: "Setup step heading")),
+        String(
+          localized: LocalizedStringResource(
+            "Hotkeys", locale: locale, comment: "Setup step eyebrow"))
       )
     case .agenticReadiness:
       return (
-        String(
-          localized: LocalizedStringResource(
-            "Connect Codescribe to an agent", locale: model.interfaceLocale,
-            comment: "Setup chapter heading"
-          )),
         "sparkles",
         String(
           localized: LocalizedStringResource(
-            "Choose the agents you want to work with by voice.", locale: model.interfaceLocale,
-            comment: "Setup chapter subtitle"))
+            "Choose the agents you want to work with by voice.", locale: locale,
+            comment: "Setup step heading for the coding-agent skill choice")),
+        String(
+          localized: LocalizedStringResource(
+            "Agents", locale: locale, comment: "Setup step eyebrow: coding-agent clients"))
       )
     case .done:
+      let summary = String(
+        localized: LocalizedStringResource("Summary", locale: locale, comment: "Setup step eyebrow"))
       // The heading states the verdict; it never celebrates ahead of it.
       if model.dictationReadiness.isReady {
+        // Finish waits for dictation only. In the Agent lane the whole app is
+        // ready only once the Agent step's own verdict is too.
+        if model.onboardingMode == .agentic, !model.agentBridgeReadyToGo {
+          return (
+            "checkmark",
+            String(
+              localized: LocalizedStringResource(
+                "Dictation is ready.", locale: locale,
+                comment:
+                  "Setup final heading: dictation passed its checks, the Agent lane is not ready yet")),
+            summary
+          )
+        }
         return (
+          "checkmark",
           String(
             localized: LocalizedStringResource(
-              "Codescribe is ready.", locale: model.interfaceLocale,
-              comment: "Setup chapter heading")),
-          "checkmark",
-          nil
+              "Codescribe is ready.", locale: locale, comment: "Setup chapter heading")),
+          summary
         )
       }
       if model.dictationReadinessChecking {
         return (
+          "hourglass",
           String(
             localized: LocalizedStringResource(
-              "Checking your setup…", locale: model.interfaceLocale,
+              "Checking your setup…", locale: locale,
               comment: "Setup chapter heading while the recording readiness verdict loads")),
-          "hourglass",
-          nil
+          summary
         )
       }
       return (
+        "exclamationmark.circle",
         String(
           localized: LocalizedStringResource(
-            "Codescribe is not ready yet.", locale: model.interfaceLocale,
+            "Codescribe is not ready yet.", locale: locale,
             comment: "Setup chapter heading when something required for transcription is missing")),
-        "exclamationmark.circle",
-        nil
+        summary
       )
     }
   }
 
+  /// Fixed window chrome: wordmark, step counter and progress. It stays put on
+  /// every step and owns window dragging.
   private var header: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
@@ -161,19 +223,6 @@ struct OnboardingView: View {
           .font(CSFont.ui(12, .regular))
           .foregroundStyle(CSColor.textMuted)
       }
-      HStack(spacing: 12) {
-        Image(systemName: chapter.symbol)
-          .font(.system(size: 17, weight: .medium))
-          .frame(width: 34, height: 34)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 5) {
-          Text(chapter.title).font(CSFont.ui(13, .bold)).foregroundStyle(CSColor.textHigh)
-          if let purpose = chapter.purpose {
-            Text(purpose).font(CSFont.ui(11, .regular)).foregroundStyle(CSColor.textMuted)
-          }
-        }
-        Spacer(minLength: 0)
-      }
       ProgressView(value: model.progressFraction)
         .controlSize(.small)
         .accessibilityLabel("Setup progress")
@@ -182,6 +231,27 @@ struct OnboardingView: View {
     .padding(.top, 24)
     .padding(.bottom, 12)
     .background(OnboardingDragRegion())
+  }
+
+  /// Top of the reading column: the step icon with its one task message, then
+  /// the quieter category label.
+  private var stepHeading: some View {
+    let current = heading
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        Image(systemName: current.symbol)
+          .font(.title2.weight(.regular))
+          .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
+        Text(current.title)
+          .font(.title2.weight(.semibold))
+          .foregroundStyle(.primary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityAddTraits(.isHeader)
+          .accessibilityIdentifier("onboarding-step-heading")
+      }
+      EyebrowLabel(text: current.label)
+    }
   }
 
   // MARK: - Step dispatch
