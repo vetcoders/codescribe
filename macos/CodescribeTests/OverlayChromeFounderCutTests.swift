@@ -1255,8 +1255,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   /// The title names the current interval (Lena, release 0.17.2); the chosen
-  /// row inside keeps the palette tint, not a suffix or a checkmark (Maciej,
-  /// 2026-10-19), so the rows are not pinned here.
+  /// row inside carries a checkmark in the plain submenu (decyzja Macieja,
+  /// 2026-10-20), so the rows are not pinned here.
   func testAutoFoldMenuNamesTheCurrentInterval() throws {
     let choices: [UInt32] = [5, 10, 30, 60, 0]
     for seconds in choices {
