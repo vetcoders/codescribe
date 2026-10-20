@@ -12,16 +12,18 @@ private let attachLog = Logger(
 
 /// Bottom composer: the 📎 attach button (image picker), staged-attachment chips,
 /// the message field, the ripple mic (shares the dictation core later), and the
-/// system-idiom send button. Below: the affordance row mirroring the mock's
-/// capability hints. Images stage through three converging paths — picker,
-/// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
+/// system-idiom send button. The controls explain themselves through their
+/// tooltips and accessibility labels; no static hint strip repeats them under
+/// the field (Founder review, round 4). Images stage through three converging
+/// paths — picker, drag & drop, and ⌘V paste — all landing in
+/// `store.addAttachments`.
 struct Composer: View {
   @ObservedObject var store: AgentChatStore
   let overlay: OverlayState
   @State private var fieldFocused = false
   /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
-  /// composer input tracks the message bodies. Chrome (chips, affordance hints,
-  /// icons) keeps its intrinsic size.
+  /// composer input tracks the message bodies. Chrome (chips, icons) keeps its
+  /// intrinsic size.
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openWindow) private var openWindow
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(
@@ -79,6 +81,7 @@ struct Composer: View {
         }
         .csFocusRing()
         .help("Attach an image (PNG, JPEG, GIF, WebP)")
+        .accessibilityLabel(Text("Attach an image (PNG, JPEG, GIF, WebP)"))
 
         ComposerTextView(
           text: $store.draft,
@@ -145,15 +148,6 @@ struct Composer: View {
       }
       dictationFeedback
       recoveryDocuments
-
-      // Affordance row
-      HStack(spacing: 16) {
-        ForEach(affordances, id: \.self) { item in
-          Text(verbatim: "· \(item)")
-            .font(CSFont.ui(10, .medium))
-            .foregroundStyle(CSColor.textTertiary)
-        }
-      }
     }
     // No strip of its own: the Agent window floats this stack in a bottom
     // bar over the conversation, and the turns scroll beneath the field's
@@ -764,11 +758,6 @@ struct Composer: View {
       if hostWindow !== window { hostWindow = window }
     }
   }
-
-  private let affordances = [
-    String(localized: "streaming", comment: "Composer hint: the reply streams in live"),
-    String(localized: "attach file / image", comment: "Composer hint: what can be attached"),
-  ]
 }
 
 enum ComposerControlMetrics {

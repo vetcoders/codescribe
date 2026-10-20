@@ -116,6 +116,33 @@ at the top of the sidebar. The sidebar looks and behaves like the one in Setting
 left of the toolbar, or `Control+Command+S`, hides and shows it. Summoning the
 window does not start recording or send a request.
 
+The toolbar carries the wordmark, **Always on top** and the conversation menu
+(rename, favorites, Markdown export, conversation width, settings, delete).
+The conversation's own header sits at the top of the conversation column: its
+title, a line with **Agent** and the conversation's model when it has one, the
+live status while the Agent works, and **Context**. On a developer build with
+Voice Lab enabled, the header also shows a small **Voice Lab power mode** mark.
+
+**Context** opens the **Agent context** panel on the right of the
+conversation; its close button or **Context** again hides it. The panel is
+closed by default and the app remembers your choice. It shows what the
+conversation already stores (title, model, number of messages, last update)
+and a **Tool settings** row that opens **Settings → Agent → Tools**, where
+tool permissions are configured. Opening or closing the panel does not change
+the conversation, the draft, the model or a recording. The panel has a fixed
+width; when the window is too narrow for the panel and a readable
+conversation, the window widens as the panel opens.
+
+Each message shows its author and a short time: the clock for today, the word
+for yesterday, the date for older messages. Hover the time for the full date
+and time; where the conversation crosses midnight, a separator names the new
+day. Actions sit in a quiet row under the message: **copy** on every message;
+**Speak** (read the reply aloud) and **raw**/**rich** on Agent replies.
+**raw** shows that one reply as the exact text that streamed in, **rich**
+renders it as Markdown again; it is a view of the message, not a reply style.
+The composer controls (attach, microphone, send) name themselves in their
+tooltips.
+
 The built-in Agent composer microphone records one turn until explicit Stop.
 It shares Codescribe's recording controller and transcription engine. Hands-free
 Agent gestures use their configured silence boundaries; the composer microphone
