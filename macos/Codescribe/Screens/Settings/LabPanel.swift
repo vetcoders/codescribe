@@ -19,6 +19,10 @@ struct LabPanel: View {
             localized: "Open the loopback Voice Lab. Production builds never show this panel.")
       )
 
+      // The take's word pins lead the desk, open on arrival (Maciej, 2026-10-20:
+      // "jest, ale na spodzie zamiast na górze"); the switches follow.
+      DictionaryWordPins(configDir: model.configDir)
+
       // One column: every switch sits on the trailing edge of its row, so
       // the desk reads as a list and not as a staircase (Founder, 2026-10-20).
       VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
@@ -77,8 +81,6 @@ struct LabPanel: View {
       recognitionParameters
 
       ledgerSensitivity
-
-      DictionaryWordPins(configDir: model.configDir)
     }
     .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -209,7 +211,7 @@ struct LabPanel: View {
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .firstTextBaseline) {
           Text("Ledger sensitivity")
-            .font(.body)
+            .font(SettingsScale.settingName)
           Spacer()
           Text(verbatim: ledgerSensitivityLabel)
             .font(CSFont.ui(11, .semibold))
