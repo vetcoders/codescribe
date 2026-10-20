@@ -84,8 +84,11 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
           .onPreferenceChange(OverlayAgentRailFramePreferenceKey.self) { recorder.frame = $0 }
           .frame(width: width, height: 500))
       host.sizingOptions = []
-      let window = show(host, width: width)
+      // This case measures first-layout preferences, not AX. Keep it away
+      // from the physical pointer, whose legitimate rail hover opens the list.
+      let window = show(host, width: width, origin: NSPoint(x: -10000, y: -10000))
       defer { window.close() }
+      XCTAssertFalse(state.showsAgentMonitor)
       XCTAssertEqual(recorder.frame.width, 44, accuracy: 1)
       XCTAssertEqual(recorder.frame.maxX, width, accuracy: 1)
       state.unfoldAgentList()
@@ -98,9 +101,11 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
-  private func show<Content: View>(_ host: NSHostingView<Content>, width: CGFloat) -> NSWindow {
+  private func show<Content: View>(
+    _ host: NSHostingView<Content>, width: CGFloat, origin: NSPoint = NSPoint(x: 150, y: 150)
+  ) -> NSWindow {
     let window = NSWindow(
-      contentRect: NSRect(x: 150, y: 150, width: width, height: 500),
+      contentRect: NSRect(origin: origin, size: NSSize(width: width, height: 500)),
       styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
