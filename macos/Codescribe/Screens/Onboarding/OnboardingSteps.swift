@@ -90,6 +90,29 @@ struct OnboardingChoiceCard: View {
   }
 }
 
+/// A static content card with the choice cards' surface and padding, for a
+/// block that belongs together but is not a choice (the Whisper model).
+private struct OnboardingCard<Content: View>: View {
+  @Environment(\.displayScale) private var displayScale
+  private let content: Content
+
+  init(@ViewBuilder content: () -> Content) {
+    self.content = content()
+  }
+
+  var body: some View {
+    content
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 20)
+      .padding(.vertical, 14)
+      .background(Color.accentColor.opacity(0.035), in: .rect(cornerRadius: CSRadius.chip))
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip)
+          .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 1 / max(displayScale, 1))
+      }
+  }
+}
+
 /// A shared note line ("full editing lives in Settings") under a choice step.
 private struct OnboardingStepNote: View {
   let text: String
@@ -493,9 +516,12 @@ struct LocalModelStepView: View {
       .font(.body)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      // The model block is the content under the heading, not another line of it.
-      WhisperDownloadView(store: downloads)
-        .padding(.top, 10)
+      // One card holds the model: name and install state, source and size,
+      // location, and the download control in whatever state it is in.
+      OnboardingCard {
+        WhisperDownloadView(store: downloads)
+      }
+      .padding(.top, 4)
       if model.dictationLane.requiresLocalModel, downloads.readiness != .installed {
         Text(
           String(
@@ -921,11 +947,12 @@ struct DoneStepView: View {
     .accessibilityIdentifier("onboarding-done-required")
   }
 
-  /// Local power only: the shared download control, plus the deliberate way
-  /// out — changing the lane in Settings. Setup never switches it itself.
+  /// Local power only: the shared download control in its summary form (name
+  /// and state up front, source and path under Details), plus the deliberate
+  /// way out — changing the lane in Settings. Setup never switches it itself.
   private var localModelRow: some View {
     VStack(alignment: .leading, spacing: 8) {
-      WhisperDownloadView(store: downloads)
+      WhisperDownloadView(store: downloads, presentation: .summary)
       if downloads.readiness != .installed {
         HStack(spacing: 10) {
           Text(
