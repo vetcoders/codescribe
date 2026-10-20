@@ -28,9 +28,11 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
 from its first screen, with no explanation beside the button. Each step opens
 on your current value and writes it when you press Continue; the shortcuts step
-writes the preset it shows (Hold, Toggle or Both) to all three mode bindings,
-so custom shortcuts are replaced if you continue past it. This is the wizard's
-only entry after first run — the tray menu no longer carries it.
+writes a preset (Hold, Toggle or Hybrid) to the three mode bindings only when
+you pick one, so custom shortcuts stay as they are if you continue past it.
+This is the wizard's only entry after first run — the tray menu no longer
+carries it. The wizard's steps and their layout are described in
+[Installation › First Launch](installation.md#first-launch).
 
 The first desk groups what a new install needs, separated by spacing rather
 than section headers (only Permissions, the coding-agent card and Quick start
@@ -752,8 +754,12 @@ and there is no undo after it.
 The Settings window carries the title "Settings" for Mission Control, App
 Exposé and the Window menu while the toolbar shows the wordmark instead.
 
-Setup keeps the Agent step to one decision: which clients to connect. It shows
-only a short ready state or an inline setup action and error. The preceding
+Setup keeps the Agent step to one decision: which clients get the Codescribe
+skill. Each card reads **Install the Codescribe skill**, or **Codescribe skill
+installed** when the managed skill is healthy in that client's folder; Continue
+(or **Set up**) installs it, and a conversation connects only later, when it
+invokes the skill. The step shows only a short ready state or an inline setup
+action and error. The preceding
 provider step presents account and API-key presence from the provider credential
 snapshot; diagnostic readiness describes usable provider access and must not be
 read as proof that an API key exists.
