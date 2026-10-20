@@ -130,6 +130,15 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       reopened.conversations.first(where: { $0.owner?.id == owner.id })?.messages.first)
     XCTAssertEqual(message.attachments?.map(\.path), ["/fixture/image.png"])
     XCTAssertEqual(message.text, "Spoken words")
+    let shared = fixture.root.appendingPathComponent("transcript-events.jsonl")
+    try encoded([source]).write(to: shared)
+    let mirrored = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot(selectedOwner: owner)
+    let all = try XCTUnwrap(mirrored.conversations.first(where: { $0.id == "0" }))
+    XCTAssertEqual(all.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
+    let privateCopy = try XCTUnwrap(
+      mirrored.conversations.first(where: { $0.owner?.id == owner.id }))
+    XCTAssertEqual(privateCopy.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
   }
 
   private func captureAttachmentRows(fixture: Fixture, primary: URL) -> (

@@ -14,6 +14,7 @@ final class OverlayDraftCapture {
   @ObservationIgnored private var controller: (any ComposerCaptureControlling)?
   @ObservationIgnored private var destinations: [String: String] = [:]
   @ObservationIgnored private var earlyTerminals: Set<String> = []
+  @ObservationIgnored private var errorCaptureID: String?
 
   init(controller: (any ComposerCaptureControlling)? = nil) {
     self.controller = controller
@@ -29,6 +30,15 @@ final class OverlayDraftCapture {
     guard handle?.captureId == sessionID else { return }
     conversationID = nil
     handle = nil
+  }
+
+  func completed(sessionID: String) {
+    if errorCaptureID == sessionID {
+      error = nil
+      errorConversationID = nil
+      errorCaptureID = nil
+    }
+    ended(sessionID: sessionID)
   }
 
   func toggle(conversationID destination: String, busy: Bool) async {
@@ -54,6 +64,7 @@ final class OverlayDraftCapture {
         self.error = error.userFacingMessage
       }
       errorConversationID = error == nil ? nil : destination
+      errorCaptureID = error == nil ? nil : owned.captureId
       return
     }
     guard !busy else { return }
@@ -65,6 +76,7 @@ final class OverlayDraftCapture {
     conversationID = destination
     error = nil
     errorConversationID = nil
+    errorCaptureID = nil
     do {
       let admitted = try await captureController.startComposerTurnRecording()
       handle = admitted
@@ -91,10 +103,12 @@ final class OverlayDraftCapture {
     guard handle?.captureId == sessionID, let destination = conversationID else { return }
     error = message
     errorConversationID = destination
+    errorCaptureID = sessionID
     await toggle(conversationID: destination, busy: false)
     if handle?.captureId == sessionID, error == nil {
       error = message
       errorConversationID = destination
+      errorCaptureID = sessionID
     }
   }
 

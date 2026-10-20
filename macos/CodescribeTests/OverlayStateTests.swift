@@ -525,6 +525,8 @@ final class OverlayStateTests: XCTestCase {
       "Late retained text", to: state, terminal: true, delivery: .composerPending,
       sessionId: "draft-capture", reducerAction: "session_ended")
     XCTAssertEqual(state.conversationDrafts[origin.id], "Late retained text")
+    XCTAssertNil(state.draftCapture.error)
+    XCTAssertNil(state.draftCapture.errorConversationID)
     XCTAssertEqual(surface.stops, ["draft-capture"])
   }
 
