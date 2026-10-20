@@ -49,26 +49,27 @@ Never invent a session or borrow another chat's identity. Reuse an established
 name. Ask for a name/channel only when the request and session do not supply them.
 Validate the channel as one digit 1–9. Quote arguments as data.
 
-Check `cs-bus --version` and `cs-say --version` when starting or diagnosing a
-connection. If they are absent from PATH, use `~/.local/bin/cs-bus` and
-`~/.local/bin/cs-say`. Missing helpers do not authorize installation or an app restart.
+Check `cs-bus --version` and `cs-say --version` at connect or when diagnosing;
+if absent from PATH, use `~/.local/bin/cs-bus` and `~/.local/bin/cs-say`.
+Missing helpers authorize no installation or app restart.
 
 ```bash
 cs-bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
 cs-bus --status --provider PROVIDER --session SESSION
 ```
 
-Replace the uppercase placeholders with this chat's values. Add `--voice VOICE`
-only when requested; otherwise keep the stored profile. Retain the attach
-receipt, especially `lease_id`, `follower_pid`, `follower_events` and `wakeup`.
-The engine creates or reuses **one follower**. Do not also start `--follow`.
+Placeholders are this chat's values. Add `--voice VOICE` only when requested;
+otherwise keep the stored profile. Keep the attach receipt, especially
+`lease_id`, `follower_pid`, `follower_events` and `wakeup`. The engine creates or
+reuses **one follower**. Do not also start `--follow`. In a vc-frame workspace,
+rename your own tab `Name · repo · harness`: [Tab identity](references/vc-frame-tab.md).
 
 For an established agent name, restoring the relevant conversation context is
 part of connecting. Follow [Conversation history](references/history.md) after
 attachment: match the provider/session/lease, open the matching current or saved
 conversation and read the relevant messages. Channel reuse does not transfer
 another agent's history, and opening a chat does not load it into model context.
-Report what was actually read; never claim a full import from an attach receipt.
+Report what was read; an attach receipt is not an import.
 
 An occupied slot belongs to its reported owner. Do not choose another slot,
 edit bindings or kill its reader. For an ended session of **the same name**, use
@@ -215,4 +216,4 @@ Use the same `--bus` and `--bridge-home` overrides on every operation when this
 session has them. Never print credentials or unfiltered environment/config dumps.
 Detailed references: [Attach](references/attach.md),
 [Monitor](references/monitor.md), [CLI](references/cli.md),
-[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) shows the message path.
+[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) draws the message path.

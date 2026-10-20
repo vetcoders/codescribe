@@ -21,7 +21,10 @@ For `/codescribe NAME CHANNEL [VOICE]`, call `codescribe_connect` with that
 provider, session_id, name and single-digit channel (1–9). Set voice/vendor only
 when explicitly requested. An occupied channel is not yours to take over. Keep
 the existing voice and credentials. Attachment is `attached_unverified`, not
-proof of voice reception.
+proof of voice reception. Inside a vc-frame workspace, rename your own tab
+`Name · repo · harness` by stable tab id; the safe recipe is the foundation
+skill's `references/vc-frame-tab.md` (normally
+`~/.codescribe/agent-bridge/runtime/skills/codescribe/references/vc-frame-tab.md`).
 
 ## Restore the conversation context
 
