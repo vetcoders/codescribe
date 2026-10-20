@@ -3,7 +3,9 @@
 Codescribe has one native Settings window. Choose a section in its sidebar;
 the Dictation section has separate tabs for its concerns. The button at the
 left of the toolbar, or `Control+Command+S`, hides and shows the sidebar, and
-the window remembers the choice. The sections below
+the window remembers the choice. The window bar carries only the wordmark and
+version: the selected sidebar row and the pane's own heading name the pane.
+The sections below
 describe the current controls and their runtime contracts.
 
 Configuration still lives in three layers:
@@ -24,12 +26,16 @@ For the product semantics behind preview, verdict, fallback, and AI categories, 
 ## Creator
 
 Right under the heading, **Open Setup Wizard…** reopens the first-run wizard
-(language, mode, permissions, the Whisper model and your provider); your
-current settings stay until you change them there. This is the wizard's only
-entry after first run — the tray menu no longer carries it.
+from its first screen, with no explanation beside the button. Each step opens
+on your current value and writes it when you press Continue; the shortcuts step
+writes the preset it shows (Hold, Toggle or Both) to all three mode bindings,
+so custom shortcuts are replaced if you continue past it. This is the wizard's
+only entry after first run — the tray menu no longer carries it.
 
-The first desk groups what a new install needs: the two language rows, the
-only permission checklist in Settings — with a **System Settings…** link in
+The first desk groups what a new install needs, separated by spacing rather
+than section headers (only Permissions, the coding-agent card and Quick start
+keep a header): the two language rows, appearance, the only permission
+checklist in Settings — with a **System Settings…** link in
 its header (the Privacy & Security pane, so a granted scope can be reviewed
 or revoked; a missing scope still carries its own request or deep link on the
 row) — voice and formatting, one **Max consultation** card that also holds
@@ -82,10 +88,14 @@ in the chosen language. If a take or an agent turn is in progress, the row keeps
 your choice and asks you to try again. The setup wizard's first screen offers
 the same switch.
 
-**Speech recognition language** sits directly below it with the same segmented
+**Transcription language** sits directly below it with the same segmented
 control: Multilingual (automatic detection per recording), Polish or English
-(fine-tuned models). It writes the dictation language in `settings.json` and
-has nothing to do with the interface language above it.
+(fine-tuned models). It writes `speech.language` in `settings.json` and has
+nothing to do with the interface language above it. A fixed language is handed
+to the recognition engines as the spoken language (Whisper's language token,
+the Apple speech locale, the cloud tail request); speech in another language is
+then not transcribed as spoken, so choose Multilingual when you switch
+languages.
 
 ### Appearance
 

@@ -49,10 +49,8 @@ struct SettingsView: View {
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
-        sectionToolbar.sharedBackgroundVisibility(.hidden)
       } else {
         brandToolbar
-        sectionToolbar
       }
     }
     .modifier(CSWindowHeaderChrome())
@@ -130,6 +128,8 @@ struct SettingsView: View {
     DockPresence.adopt(window)
   }
 
+  /// The bar carries only the wordmark: the selected sidebar row and the
+  /// pane's own headline already name the pane, so the bar does not repeat it.
   private var brandToolbar: some ToolbarContent {
     ToolbarItem(placement: .navigation) {
       CSWindowHeaderItem {
@@ -140,17 +140,6 @@ struct SettingsView: View {
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(Color.secondary)
         }
-      }
-    }
-  }
-
-  private var sectionToolbar: some ToolbarContent {
-    ToolbarItem(placement: .principal) {
-      CSWindowHeaderItem {
-        Text(model.currentTab?.title ?? model.section.title)
-          .font(CSFont.ui(14, .semibold))
-          .lineLimit(1)
-          .truncationMode(.tail)
       }
     }
   }
