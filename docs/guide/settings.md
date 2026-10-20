@@ -251,7 +251,8 @@ the Agent). None of the three promises a paste: where the
 transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
 nowhere. The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver
 reads the spelled-out form, so the left and right Option gestures stay
-distinguishable.
+distinguishable. Rerunning the first-run setup wizard keeps these gestures as
+they are unless you pick a preset on its hotkey step there.
 
 **Save shortcuts** / **Restore defaults** sit directly under
 the three rows. The screen reports a blocking conflict that refuses the save,
