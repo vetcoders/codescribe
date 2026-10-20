@@ -647,29 +647,71 @@ pub fn append_durable(
     shared: &Arc<Mutex<File>>,
     bytes: &[u8],
 ) -> io::Result<BusAppendReceipt> {
-    let mut file = shared.lock().unwrap_or_else(|error| error.into_inner());
-    let lease = Lease::acquire(path)?;
-    let closed = prepare_append(path, &mut file)?;
-    let manifest = view(path)?.ok_or_else(invalid)?;
-    let offset = manifest
-        .active
-        .start
-        .checked_add(file.metadata()?.len())
-        .ok_or_else(invalid)?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-    let receipt = BusAppendReceipt {
-        stream_id: manifest.stream_id,
-        stream_dev: manifest.stream_dev,
-        stream_inode: manifest.stream_inode,
-        offset,
-        length: bytes.len() as u64,
-    };
-    drop(lease);
-    drop(file);
-    schedule_archives(path, closed);
-    Ok(receipt)
+    let receipts = append_durable_many_with(&[(path.to_path_buf(), Arc::clone(shared))], || {
+        Ok(vec![Some(bytes.to_vec())])
+    }, None)?;
+    receipts.into_iter().next().flatten().ok_or_else(invalid)
+}
+
+/// Validate a frozen fanout under all of the ordinary append leases, then
+/// append without permitting a close/rebind between validation and persistence.
+/// A None batch is an already persisted idempotent receipt.
+pub fn append_durable_many_with<F>(
+    destinations: &[(PathBuf, Arc<Mutex<File>>)],
+    prepare: F,
+    commit: Option<(usize, Vec<u8>)>,
+) -> io::Result<Vec<Option<BusAppendReceipt>>>
+where
+    F: FnOnce() -> io::Result<Vec<Option<Vec<u8>>>>,
+{
+    if destinations.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(invalid());
+    }
+    let mut files = destinations.iter().map(|(_, shared)| {
+        shared.lock().unwrap_or_else(|error| error.into_inner())
+    }).collect::<Vec<_>>();
+    let leases = destinations.iter().map(|(path, _)| Lease::acquire(path))
+        .collect::<io::Result<Vec<_>>>()?;
+    let mut closed = Vec::new();
+    for ((path, _), file) in destinations.iter().zip(files.iter_mut()) {
+        closed.push(prepare_append(path, file)?);
+    }
+    let batches = prepare()?;
+    if batches.len() != destinations.len() {
+        return Err(invalid());
+    }
+    let mut receipts = Vec::new();
+    for (((path, _), file), batch) in destinations.iter().zip(files.iter_mut()).zip(batches) {
+        let Some(bytes) = batch else { receipts.push(None); continue };
+        let manifest = view(path)?.ok_or_else(invalid)?;
+        let offset = manifest.active.start.checked_add(file.metadata()?.len()).ok_or_else(invalid)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        receipts.push(Some(BusAppendReceipt {
+            stream_id: manifest.stream_id, stream_dev: manifest.stream_dev,
+            stream_inode: manifest.stream_inode, offset, length: bytes.len() as u64,
+        }));
+    }
+    if let Some((index, bytes)) = commit {
+        let (path, _) = destinations.get(index).ok_or_else(invalid)?;
+        let file = files.get_mut(index).ok_or_else(invalid)?;
+        let manifest = view(path)?.ok_or_else(invalid)?;
+        let offset = manifest.active.start.checked_add(file.metadata()?.len()).ok_or_else(invalid)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        receipts.push(Some(BusAppendReceipt {
+            stream_id: manifest.stream_id, stream_dev: manifest.stream_dev,
+            stream_inode: manifest.stream_inode, offset, length: bytes.len() as u64,
+        }));
+    }
+    drop(leases);
+    drop(files);
+    for ((path, _), archived) in destinations.iter().zip(closed) {
+        schedule_archives(path, archived);
+    }
+    Ok(receipts)
 }
 
 #[derive(Default)]
