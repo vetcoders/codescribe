@@ -155,6 +155,9 @@ struct OverlayMicrophoneGlyph: View {
   private let mark: Mark
   let tint: Color
   var plateOpacity: Double = 0.12
+  /// Flips a symbol horizontally; only the agent megaphone, which faces left
+  /// toward the wordmark (Maciej, 2026-10-20).
+  var mirrored = false
   static let diameter: CGFloat = 22
 
   private enum Mark {
@@ -163,10 +166,11 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color, plateOpacity: Double = 0.12) {
+  init(symbol: String, tint: Color, plateOpacity: Double = 0.12, mirrored: Bool = false) {
     mark = .symbol(symbol)
     self.tint = tint
     self.plateOpacity = plateOpacity
+    self.mirrored = mirrored
   }
 
   init(character: String, tint: Color, plateOpacity: Double = 0.12) {
@@ -193,6 +197,7 @@ struct OverlayMicrophoneGlyph: View {
     case .symbol(let symbol):
       Image(systemName: symbol)
         .font(.system(size: 9, weight: .semibold))
+        .scaleEffect(x: mirrored ? -1 : 1, y: 1)
     case .character(let character, let pointSize):
       Text(verbatim: character)
         .font(.system(size: pointSize))
@@ -748,8 +753,10 @@ struct OverlayChannelStatusView: View {
   @ViewBuilder
   private var headerGlyph: some View {
     if agentCaptureOpen {
-      OverlayMicrophoneGlyph(symbol: "megaphone.fill", tint: OverlayRecordingLight.agent.color)
-        .symbolEffect(.pulse, isActive: animates && !reduceMotion)
+      OverlayMicrophoneGlyph(
+        symbol: "megaphone.fill", tint: OverlayRecordingLight.agent.color, mirrored: true
+      )
+      .symbolEffect(.pulse, isActive: animates && !reduceMotion)
     } else {
       // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(

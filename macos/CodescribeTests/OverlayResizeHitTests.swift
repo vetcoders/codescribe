@@ -329,7 +329,10 @@ final class OverlayResizeHitTests: XCTestCase {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     root.layoutSubtreeIfNeeded()
     let brand = try XCTUnwrap(descendant(identifier: "overlay-mini-brand-drag-region", in: root))
-    let point = brand.convert(NSPoint(x: brand.bounds.midX, y: brand.bounds.midY), to: nil)
+    // Mini always reads "cs" (Maciej, 2026-10-20): the region's middle is the
+    // close dot's edge, so the probe sits on the word, the region's trailing end.
+    let point = brand.convert(
+      NSPoint(x: brand.bounds.maxX - 4, y: brand.bounds.midY), to: nil)
     XCTAssertTrue(panel.isWindowDragHit(at: point))
     let recording = state.recording
     let start = panel.frame

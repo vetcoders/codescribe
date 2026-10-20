@@ -1131,6 +1131,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.channelAudioCaptureActive)
     XCTAssertNil(state.recordingLight, "the header microphone stays ready for dictation")
     XCTAssertEqual(state.recordingAgentConversationID, lena.id)
+    // Maciej, 2026-10-20: in mini the press is the stop, not the opening.
+    XCTAssertTrue(state.agentsButtonStopsRecording)
+    state.setPresentationMode(.midi)
     XCTAssertFalse(state.agentsButtonStopsRecording)
 
     state.toggleAgentSidebar()
@@ -1151,6 +1154,31 @@ final class OverlayStateTests: XCTestCase {
 
     state.toggleAgentSidebar()
     XCTAssertTrue(state.showsAgentMonitor, "with nothing recording the press changes agents")
+  }
+
+  /// Maciej, 2026-10-20: a press on the mini megaphone while he talks to
+  /// channel 1 stops that capture; it never opens channel 0 or the monitor.
+  func testMiniMegaphonePressDuringCaptureStopsThatChannelNotZero() async throws {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    let bruno = try navigationConversation(channel: "1", session: "bruno", lease: "c")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [bruno]))
+    state.applyChannelRoster([
+      navigationRoster(channel: "1", session: "bruno", open: true)
+    ])
+    engine.rosterSnapshot = [navigationRoster(channel: "1", session: "bruno", open: false)]
+    state.setPresentationMode(.mini)
+    XCTAssertTrue(state.agentsButtonStopsRecording)
+
+    state.toggleAgentSidebar()
+    for _ in 0..<200 where state.channelAudioCaptureActive {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(engine.toggledDigits, [1], "the press stops the channel that listens")
+    XCTAssertFalse(engine.toggledDigits.contains(0), "channel 0 is never opened")
+    XCTAssertFalse(state.showsAgentMonitor, "the press does not open the monitor instead")
+    XCTAssertTrue(state.isCollapsed, "mini stays mini")
   }
 
   func testHeaderReceiptOpensFullMonitorWithoutChangingCaptureOrReceipt() {

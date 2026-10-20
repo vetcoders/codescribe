@@ -1884,9 +1884,13 @@ final class OverlayState {
     return recording.min { $0.channel < $1.channel }?.id
   }
 
-  /// The recording agent is on screen, so the Agents press is its stop.
+  /// The recording agent is on screen, so the Agents press is its stop. In
+  /// mini the press is always the stop, whichever channel records (Maciej,
+  /// 2026-10-20: "intuicyjnie to jest zatrzymanie nadawania do tego, co
+  /// aktualnie jest w nasłuchu"); it never opens another channel or the monitor.
   var agentsButtonStopsRecording: Bool {
     guard let recording = recordingAgentConversationID else { return false }
+    if presentationMode == .mini { return true }
     return !isCollapsed && !showsAgentMonitor && selectedConversationID == recording
   }
 
