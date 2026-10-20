@@ -418,6 +418,9 @@ content never repeats a window-level header. The minimise button and ⌘M are
 enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
 miniaturising it, so App Exposé never shows an empty tile; the tray's
 "Open chat", the summon shortcut and the passive voice reveal bring it back.
+The Settings window follows the same rule through `DockPresence`: its window
+class belongs to SwiftUI, so the yellow button is retargeted to hide, ⌘M is
+the app's Minimize command, and any other miniaturise is undone into a hide.
 
 - **Left:** the sidebar toggle, then the wordmark, then the conversation title
   followed by the turn count, the conversation's model and the live turn status.

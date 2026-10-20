@@ -750,11 +750,11 @@ menu — neither lives in this pane.
 The Settings and Agent windows never minimise, with or without the Dock icon:
 with the Dock's default “Minimize windows into application icon”, a minimised
 Codescribe window leaves the screen and shows up only as an empty tile in App
-Exposé and Mission Control. On the **Agent** window the yellow button and ⌘M
-stay usable and **hide** it instead; bring it back with **Open chat** in the
-menu bar menu or the summon shortcut. The **Settings** window, a SwiftUI scene
-whose window class the app does not own, keeps no minimise control; close it
-and reopen it with **Open Settings** (or ⌘,).
+Exposé and Mission Control. Both windows keep the yellow button and ⌘M, and
+both **hide** the window instead, so Exposé never shows an empty tile. Bring
+the **Settings** window back with **Open Settings** in the menu bar menu (or
+⌘,), and the **Agent** window with **Open chat**, the summon shortcut or a
+voice reply.
 
 **Microphone** — **Refresh** sits on the section header; below it one compact
 card: the **Input device** picker and the microphone actually recording.
