@@ -48,7 +48,7 @@ fn setup_test_env() -> TestEnv {
         "CODESCRIBE_ENV_PATH",
         "HOME",
         "WHISPER_LANGUAGE",
-        "AI_FORMATTING_ENABLED",
+        "FORMATTING_LEVEL",
         "HOLD_EXCLUSIVE",
         "CODESCRIBE_TYPING_CPS",
         "USE_LOCAL_STT",
@@ -63,7 +63,7 @@ fn setup_test_env() -> TestEnv {
     unsafe {
         std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
         std::env::remove_var("WHISPER_LANGUAGE");
-        std::env::remove_var("AI_FORMATTING_ENABLED");
+        std::env::remove_var("FORMATTING_LEVEL");
         std::env::remove_var("HOLD_EXCLUSIVE");
         std::env::remove_var("CODESCRIBE_TYPING_CPS");
         std::env::remove_var("USE_LOCAL_STT");
@@ -353,21 +353,27 @@ fn test_settings_language_persistence() {
 
 #[test]
 #[serial]
-fn test_settings_formatting_toggle() {
+fn test_settings_formatting_level_toggle() {
     let _tmp = setup_test_env();
 
     let config = Config::load();
     config
-        .save_to_env("AI_FORMATTING_ENABLED", "1")
+        .save_to_env("FORMATTING_LEVEL", "correction")
         .expect("save on");
-    let reloaded = Config::load();
-    assert!(reloaded.ai_formatting_enabled, "formatting should be on");
+    assert_eq!(
+        UserSettings::load().formatting_level.as_deref(),
+        Some("correction"),
+        "formatting should be on"
+    );
 
     config
-        .save_to_env("AI_FORMATTING_ENABLED", "0")
+        .save_to_env("FORMATTING_LEVEL", "off")
         .expect("save off");
-    let reloaded2 = Config::load();
-    assert!(!reloaded2.ai_formatting_enabled, "formatting should be off");
+    assert_eq!(
+        UserSettings::load().formatting_level.as_deref(),
+        Some("off"),
+        "formatting should be off"
+    );
 }
 
 #[test]
@@ -434,9 +440,7 @@ fn test_settings_full_round_trip() {
     config.save_to_env("HOLD_EXCLUSIVE", "0").expect("save");
 
     config.save_to_env("WHISPER_LANGUAGE", "en").expect("save");
-    config
-        .save_to_env("AI_FORMATTING_ENABLED", "0")
-        .expect("save");
+    config.save_to_env("FORMATTING_LEVEL", "off").expect("save");
     config
         .save_to_env("CODESCRIBE_TYPING_CPS", "90")
         .expect("save");
@@ -457,7 +461,7 @@ fn test_settings_full_round_trip() {
     );
     assert!(!r.hold_exclusive);
     assert_eq!(r.whisper_language.as_str(), "en");
-    assert!(!r.ai_formatting_enabled);
+    assert_eq!(settings.formatting_level.as_deref(), Some("off"));
     assert_eq!(
         settings.typing_cps,
         Some(90.0),

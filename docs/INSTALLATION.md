@@ -331,8 +331,8 @@ HOLD_EXCLUSIVE=1
 DOUBLE_TAP_INTERVAL_MS=200       # 100–450
 TOGGLE_SILENCE_SEC=5.0
 
-# AI Formatting
-AI_FORMATTING_ENABLED=1
+# AI Formatting (off = raw transcript)
+FORMATTING_LEVEL=correction
 
 # LLM lanes: a provider and a model per lane. The endpoint is the provider's
 # own; keys live in Settings › Providers (Keychain), env is only a fallback

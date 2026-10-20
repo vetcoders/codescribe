@@ -343,7 +343,7 @@ DOUBLE_TAP_INTERVAL_MS=200           # Toggle gesture timing
 TOGGLE_SILENCE_SEC=5.0               # Apple epoch rest after this much silence (next recording)
 
 # AI Formatting
-AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
+FORMATTING_LEVEL=correction          # off=raw transcript, correction | smart | max
 
 # LLM lanes: a provider and a model per lane. The endpoint is the provider's
 # own; keys live in Settings › Providers (Keychain), env is only a fallback

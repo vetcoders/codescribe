@@ -1025,12 +1025,8 @@ fn deliver_event(
     event_sink.on_event(event);
 }
 
-const fn formatter_lane_is_armed(
-    ai_formatting_enabled: bool,
-    policy: FormattingPolicy,
-    lane_available: bool,
-) -> bool {
-    ai_formatting_enabled && !matches!(policy, FormattingPolicy::Off) && lane_available
+const fn formatter_lane_is_armed(policy: FormattingPolicy, lane_available: bool) -> bool {
+    !matches!(policy, FormattingPolicy::Off) && lane_available
 }
 
 /// Whether *this take* may open a paid formatter slot while it is still live.
@@ -1050,13 +1046,12 @@ const fn formatter_lane_is_armed(
 /// this sender.
 fn live_formatter_lane_is_armed(
     capture_turn: CaptureTurnIntent,
-    ai_formatting_enabled: bool,
     policy: FormattingPolicy,
     lane_available: impl FnOnce() -> bool,
 ) -> bool {
     capture_turn.schedules_live_formatting()
         && !matches!(policy, FormattingPolicy::Max)
-        && formatter_lane_is_armed(ai_formatting_enabled, policy, true)
+        && formatter_lane_is_armed(policy, true)
         && lane_available()
 }
 
@@ -1316,7 +1311,6 @@ pub(crate) async fn apple_stream_transcription_session(
     let formatter_on = seal_ledger_enabled
         && live_formatter_lane_is_armed(
             capture_turn,
-            runtime_settings.values().ai_formatting_enabled,
             runtime_settings.formatting_policy(),
             || {
                 crate::llm::ai_formatting::text_formatting_unavailable_reason(&runtime_settings)
@@ -1363,7 +1357,6 @@ pub(crate) async fn apple_stream_transcription_session(
     let live_formatting_agent = live_formatting_agent.filter(|_| {
         seal_ledger_enabled
             && capture_turn.schedules_live_formatting()
-            && runtime_settings.values().ai_formatting_enabled
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
     });
@@ -12134,33 +12127,18 @@ mod c13a_lifecycle_tests {
 
     #[test]
     fn formatter_configuration_without_transport_ownership_never_opens_a_frontier() {
-        assert!(!formatter_lane_is_armed(
-            false,
-            FormattingPolicy::Correction,
-            true,
-        ));
-        assert!(!formatter_lane_is_armed(true, FormattingPolicy::Off, true,));
-        assert!(!formatter_lane_is_armed(
-            true,
-            FormattingPolicy::Correction,
-            false,
-        ));
-        assert!(formatter_lane_is_armed(
-            true,
-            FormattingPolicy::Correction,
-            true,
-        ));
+        assert!(!formatter_lane_is_armed(FormattingPolicy::Off, true));
+        assert!(!formatter_lane_is_armed(FormattingPolicy::Correction, false));
+        assert!(formatter_lane_is_armed(FormattingPolicy::Correction, true));
 
         // Keep a healthy receiver alive: Max must refuse this lane because of
         // its policy, not because the transport happens to be unavailable.
         let (max_tx, mut max_rx) = mpsc::channel(1);
-        let max_formatter = live_formatter_lane_is_armed(
-            CaptureTurnIntent::HandsFree,
-            true,
-            FormattingPolicy::Max,
-            || true,
-        )
-        .then_some(max_tx);
+        let max_armed =
+            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, FormattingPolicy::Max, || {
+                true
+            });
+        let max_formatter = max_armed.then_some(max_tx);
         for (session, formatter) in {
             let (closed_tx, closed_rx) = mpsc::channel(1);
             drop(closed_rx);
@@ -22265,64 +22243,40 @@ mod composer_turn_formatter_arming_tests {
     use super::{CaptureTurnIntent, FormattingPolicy, live_formatter_lane_is_armed};
 
     /// Every configuration that would arm the live lane for a hands-free take.
-    const FULLY_ARMED: (bool, FormattingPolicy, bool) = (true, FormattingPolicy::Correction, true);
+    const FULLY_ARMED: (FormattingPolicy, bool) = (FormattingPolicy::Correction, true);
 
     #[test]
     fn unarmed_live_formatting_never_resolves_credentials() {
-        for (intent, enabled, policy) in [
-            (
-                CaptureTurnIntent::AgentChannel,
-                true,
-                FormattingPolicy::Correction,
-            ),
-            (
-                CaptureTurnIntent::AgentChannel,
-                true,
-                FormattingPolicy::Smart,
-            ),
-            (CaptureTurnIntent::AgentChannel, true, FormattingPolicy::Max),
-            (
-                CaptureTurnIntent::SingleTurn,
-                true,
-                FormattingPolicy::Correction,
-            ),
-            (
-                CaptureTurnIntent::HandsFree,
-                false,
-                FormattingPolicy::Correction,
-            ),
-            (CaptureTurnIntent::HandsFree, true, FormattingPolicy::Off),
-            (CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max),
-            (CaptureTurnIntent::SingleTurn, true, FormattingPolicy::Max),
+        for (intent, policy) in [
+            (CaptureTurnIntent::AgentChannel, FormattingPolicy::Correction),
+            (CaptureTurnIntent::AgentChannel, FormattingPolicy::Smart),
+            (CaptureTurnIntent::AgentChannel, FormattingPolicy::Max),
+            (CaptureTurnIntent::SingleTurn, FormattingPolicy::Correction),
+            (CaptureTurnIntent::HandsFree, FormattingPolicy::Off),
+            (CaptureTurnIntent::HandsFree, FormattingPolicy::Max),
+            (CaptureTurnIntent::SingleTurn, FormattingPolicy::Max),
         ] {
-            assert!(!live_formatter_lane_is_armed(
-                intent,
-                enabled,
-                policy,
-                || { panic!("an unarmed live lane must not enter the credential-use boundary") }
-            ));
+            assert!(!live_formatter_lane_is_armed(intent, policy, || {
+                panic!("an unarmed live lane must not enter the credential-use boundary")
+            }));
         }
     }
 
     #[test]
     fn a_one_turn_take_never_arms_the_live_formatter_lane() {
-        let (enabled, policy, available) = FULLY_ARMED;
+        let (policy, available) = FULLY_ARMED;
         assert!(
-            !live_formatter_lane_is_armed(CaptureTurnIntent::SingleTurn, enabled, policy, || {
-                available
-            }),
+            !live_formatter_lane_is_armed(CaptureTurnIntent::SingleTurn, policy, || available),
             "a composer turn must not open paid provider slots per sealed fragment, \
-             even with formatting fully enabled, a non-Off policy and a live lane"
+             even with a non-Off formatting level and a live lane"
         );
     }
 
     #[test]
     fn a_hands_free_take_keeps_its_existing_live_lane() {
-        let (enabled, policy, available) = FULLY_ARMED;
+        let (policy, available) = FULLY_ARMED;
         assert!(
-            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, enabled, policy, || {
-                available
-            }),
+            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, policy, || available),
             "hotkey, tray and overlay takes keep the per-occurrence formatter they had"
         );
     }
@@ -22331,18 +22285,12 @@ mod composer_turn_formatter_arming_tests {
     /// configuration itself refuses.
     #[test]
     fn hands_free_cannot_arm_a_lane_the_configuration_refuses() {
-        for (enabled, policy, available) in [
-            (false, FormattingPolicy::Correction, true),
-            (true, FormattingPolicy::Off, true),
-            (true, FormattingPolicy::Correction, false),
+        for (policy, available) in [
+            (FormattingPolicy::Off, true),
+            (FormattingPolicy::Correction, false),
         ] {
             assert!(
-                !live_formatter_lane_is_armed(
-                    CaptureTurnIntent::HandsFree,
-                    enabled,
-                    policy,
-                    || available
-                ),
+                !live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, policy, || available),
                 "capture intent must not override formatter configuration or transport ownership"
             );
         }
@@ -22948,7 +22896,7 @@ mod live_refinement_admission_tests {
     #[test]
     fn dictation_expected_whisper_blocks_formatter_before_delayed_enqueue() {
         for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
-            assert!(formatter_lane_is_armed(true, policy, true));
+            assert!(formatter_lane_is_armed(policy, true));
             for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
                 let (mut state, events, _receiver, _requests) = fixture(1);
                 state.capture_turn = intent;
@@ -23347,12 +23295,7 @@ mod live_refinement_admission_tests {
             forensic_live_transport_capture(&mut state);
             state.capture_turn = CaptureTurnIntent::HandsFree;
             let (formatter, mut formatted) = mpsc::channel(FORMATTER_QUEUE_CAP);
-            assert!(live_formatter_lane_is_armed(
-                state.capture_turn,
-                true,
-                policy,
-                || true
-            ));
+            assert!(live_formatter_lane_is_armed(state.capture_turn, policy, || true));
             state.formatter = Some(formatter);
             let lexicon = tempfile::tempdir().unwrap();
             state.lexicon_custom_path = lexicon.path().join("empty.jsonl");

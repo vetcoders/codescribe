@@ -42,6 +42,12 @@ row) — voice and formatting, one **Max consultation** card that also holds
 the pending approval requests, the coding-agent skill rows with **Refresh
 status** on the section header, and the quick-start cards.
 
+**Formatting level** (Off, Correction, Smart, Max) is the only formatting
+switch: Off sends nothing to a formatting model and keeps the raw transcript;
+Correction is the default. There is no separate AI formatting toggle any more —
+a toggle that was switched off in an older version becomes level Off on the
+first launch.
+
 **Max permissions** says under its heading whether anything is waiting for you —
 _No requests waiting_ or _Requests waiting_ — so an empty section cannot be
 mistaken for one that was never read; the requests themselves are the cards
@@ -136,7 +142,6 @@ This tab owns the transcript pipeline itself:
     are detected back from the stored values within a small tolerance
 - **Final Transcript**
   - `Local file-based final pass`
-  - `AI Formatting`
   - `Formatting level`
 - **Quality Automation**
   - app-launch quality daemon toggle
@@ -916,7 +921,7 @@ Common overrides:
 
 - `USE_LOCAL_STT`
 - `STT_ENDPOINT`
-- `AI_FORMATTING_ENABLED`
+- `FORMATTING_LEVEL`
 - `CODESCRIBE_BUFFER_DELAY_MS`
 - `CODESCRIBE_TYPING_CPS`
 - `CODESCRIBE_EMIT_WORDS_MAX`
