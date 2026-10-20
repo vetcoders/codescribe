@@ -14,12 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Privacy: the status card is headed "Data processing"; one action, "Set up the cloud in Providers", sits under it and lands on Providers › Cloud transcription.
 - User › License is one card: product name and purchase kind, a green status, the offline countdown with the Keychain note, and "Manage key" that opens Change key / Get license key / Remove key inside the card; without a key the activation field is open at once. The sentence above reads "A license unlocks Agent mode."
 - The Formatting level is the only formatting switch: Off replaces the separate AI formatting toggle in Creator, and `AI_FORMATTING_ENABLED` is no longer read from `settings.json` or `.env`. A toggle that was switched off migrates once to level Off and the old key leaves `settings.json` on that save.
+- Settings says less, round 2: the Engine empty state reads "No transcription in this session", the markers switch loses its row title, Preview keeps only its header and the selected preset's line, Dictionary loses its intro sentence.
+- Dictation: the Local power caption reads "Live speech recognition and correction in the background, without sending recordings"; the Live Whisper refinement card moves to the Whisper tab under the model card and its caption reads "Apple recognizes speech and Whisper corrects the text during the recording"; the model card shows one Status line (Loaded in memory / Installed / Not installed) beside Check model; the Disk space section is gone.
 
 ### Fixed
 
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
-- Settings says less, round 2: the Engine empty state reads "No transcription in this session", the markers switch loses its row title, Preview keeps only its header and the selected preset's line, Dictionary loses its intro sentence.
-- Dictation: the Local power caption reads "Live speech recognition and correction in the background, without sending recordings"; the Live Whisper refinement card moves to the Whisper tab under the model card and its caption reads "Apple recognizes speech and Whisper corrects the text during the recording"; the model card shows one Status line (Loaded in memory / Installed / Not installed) beside Check model; the Disk space section is gone.
 
 ## [0.17.2] - Unreleased
 
