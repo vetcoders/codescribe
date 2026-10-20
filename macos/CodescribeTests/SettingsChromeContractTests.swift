@@ -1241,7 +1241,14 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(markers.contains("model.insertTranscriptTagPlaceholder(placeholder)"))
     XCTAssertTrue(markers.contains("Button(String(localized: \"Restore default template\""))
     XCTAssertTrue(markers.contains("model.transcriptTagTemplateWarning"))
-    XCTAssertTrue(markers.contains("Text(model.transcriptTagPreview)"))
+    // One box, two faces: the segment flips the same inset between the raw
+    // template and its rendering; no second "Template preview" box below.
+    XCTAssertTrue(markers.contains("@State private var templateView: TemplateView = .edit"))
+    XCTAssertTrue(markers.contains("Picker(\"Template view\", selection: $templateView)"))
+    XCTAssertTrue(markers.contains(".pickerStyle(.segmented)"))
+    XCTAssertTrue(markers.contains("case .preview:\n          Text(model.transcriptTagPreview)"))
+    XCTAssertFalse(markers.contains("\"Template preview\""))
+    XCTAssertEqual(markers.components(separatedBy: ".settingsGroupedInset()").count, 2)
     let dictation = try XCTUnwrap(sources["DictationEngineTab.swift"])
     XCTAssertTrue(dictation.contains("TranscriptMarkersSection(model: model)"))
     XCTAssertTrue(panel.contains("String(localized: \"Information and documentation\""))
@@ -1290,7 +1297,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Add markers to text": "Dodawaj znaczniki do tekstu",
       "Mark text delivered to other apps": "Oznacz tekst przekazywany do innych aplikacji",
       "Edit template and preview": "Edytuj szablon i podgląd",
-      "Template preview": "Podgląd szablonu",
+      "Edit": "Edytuj",
+      "Preview": "Podgląd",
       "Restore default template": "Przywróć domyślny szablon",
       "Information and documentation": "Informacje i dokumentacja",
       "Privacy Policy": "Polityka prywatności",

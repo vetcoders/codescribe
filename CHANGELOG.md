@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings › Dictation › Engine › Transcript markers: the template editor and its preview are one box with an **Edit | Preview** segment above it instead of two stacked boxes.
+
 - The tray menu no longer carries **Setup Wizard** or **Check for Updates**: the wizard is reopened from Settings → Creator (**Open Setup Wizard…** under the heading), and updates are checked from the **Codescribe** application menu (**Check for Updates…**, right under About, as in other Mac apps) or from Settings → User.
 - Settings has one **User** tab in place of About and License. It opens with the license — its state, the key field and **Activate** in one card, with **Get license key** and **Remove key** under it — followed by the version with a new **Check for Updates…** button, local data, the first-dictation confirmation, the documents and the resets. **Transcript markers** moved to Settings → Dictation → Engine. The Agent window's **Enter license** and the license messages point to Settings → User.
 - Agents now speak their replies to the Founder as well as writing them, unless playback is muted or someone asks for quiet; a muted speaker means text only, and agents never unmute it. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.

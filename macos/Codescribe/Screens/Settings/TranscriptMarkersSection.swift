@@ -8,6 +8,15 @@ import SwiftUI
 struct TranscriptMarkersSection: View {
   @ObservedObject var model: SettingsViewModel
   @State private var showingTemplate = false
+  @State private var templateView: TemplateView = .edit
+
+  /// One block shows either the raw template or its rendering; the segment
+  /// above it flips between them (Founder, 2026-10-20: one line, not two
+  /// stacked boxes).
+  enum TemplateView: Hashable {
+    case edit
+    case preview
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -46,17 +55,46 @@ struct TranscriptMarkersSection: View {
 
   private var templateEditor: some View {
     VStack(alignment: .leading, spacing: 0) {
+      HStack {
+        Spacer(minLength: 0)
+        Picker("Template view", selection: $templateView) {
+          Text("Edit", comment: "Dictation panel: template segment, the raw template")
+            .tag(TemplateView.edit)
+          Text("Preview", comment: "Dictation panel: template segment, the rendered template")
+            .tag(TemplateView.preview)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityIdentifier("dictation-template-view")
+      }
+      .padding(.top, SettingsScale.headerGap)
+
       // The disclosure above already names this editor, so the field carries
       // no second label of its own (Founder brief, round 16, 2026-10-10).
-      TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
-        .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(Color.primary)
-        .textFieldStyle(.plain)
-        .lineLimit(3...8)
-        .settingsGroupedInset()
-        .padding(.top, SettingsScale.headerGap)
-        .accessibilityLabel("Transcript tag template editor")
-        .accessibilityValue(model.settings.transcriptTagTemplate)
+      // The same box shows the rendering when the segment says Preview.
+      Group {
+        switch templateView {
+        case .edit:
+          TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
+            .font(CSFont.mono(11.5, .regular))
+            .foregroundStyle(Color.primary)
+            .textFieldStyle(.plain)
+            .lineLimit(3...8)
+            .accessibilityLabel("Transcript tag template editor")
+            .accessibilityValue(model.settings.transcriptTagTemplate)
+        case .preview:
+          Text(model.transcriptTagPreview)
+            .font(CSFont.mono(11.5, .regular))
+            .foregroundStyle(Color.primary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Transcript tag template preview")
+            .accessibilityValue(model.transcriptTagPreview)
+        }
+      }
+      .settingsGroupedInset()
+      .padding(.top, CSSpace.xs)
 
       if let warning = model.transcriptTagTemplateWarning {
         Text(warning)
@@ -74,6 +112,7 @@ struct TranscriptMarkersSection: View {
         ForEach(transcriptTagTemplatePlaceholders, id: \.self) { placeholder in
           Button {
             model.insertTranscriptTagPlaceholder(placeholder)
+            templateView = .edit
           } label: {
             Text(placeholder)
               .font(CSFont.mono(10, .semibold))
@@ -106,20 +145,6 @@ struct TranscriptMarkersSection: View {
         .accessibilityLabel("Restore default transcript tag template")
       }
       .padding(.top, CSSpace.sm)
-
-      Text("Template preview", comment: "Dictation panel: label over the rendered template")
-        .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
-        .padding(.top, CSSpace.md)
-      Text(model.transcriptTagPreview)
-        .font(CSFont.mono(11.5, .regular))
-        .foregroundStyle(Color.primary)
-        .textSelection(.enabled)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .settingsGroupedInset()
-        .padding(.top, CSSpace.xs)
-        .accessibilityLabel("Transcript tag template preview")
-        .accessibilityValue(model.transcriptTagPreview)
     }
   }
 
