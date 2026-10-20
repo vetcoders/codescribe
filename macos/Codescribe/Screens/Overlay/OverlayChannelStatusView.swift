@@ -428,6 +428,9 @@ struct OverlayAgentAudioControls: View {
   /// enough to read as speaking to everyone beside the speaker, small enough
   /// not to dwarf the agent rows. Only the broadcast control grows.
   static let broadcastMicrophoneScale: CGFloat = 1.5
+  // Shrink the megaphone mark, retaining its 24-point frame and hit area.
+  // It stays larger than the 12-point speaker (Founder, 2026-10-20).
+  static let broadcastMicrophoneFontSize: CGFloat = 14
   private var microphoneScale: CGFloat { broadcast ? Self.broadcastMicrophoneScale : 1 }
 
   /// The broadcast row speaks through a left-facing megaphone; agent rows keep
@@ -483,7 +486,9 @@ struct OverlayAgentAudioControls: View {
       Button(action: onMicrophone) {
         Image(systemName: microphoneSymbol)
           .overlayMirrored(broadcast)
-          .font(.system(size: 12 * microphoneScale, weight: .semibold))
+          .font(
+            .system(size: broadcast ? Self.broadcastMicrophoneFontSize : 12, weight: .semibold)
+          )
           .foregroundStyle(open ? Color.red : palette.primaryText.color)
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(width: 16 * microphoneScale, height: 16 * microphoneScale)
