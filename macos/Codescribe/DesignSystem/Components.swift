@@ -50,7 +50,8 @@ struct CSWindowHeaderChrome: ViewModifier {
 /// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
 /// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
 /// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
-/// tall as the column's top safe-area inset, which is the toolbar, and lifted
+/// tall as the column's top safe-area inset, which is the toolbar (in Agent,
+/// the toolbar plus the conversation header row inset below it), and lifted
 /// into it. Toolbar items stay in the titlebar above it and keep their clicks.
 struct CSDetailHeaderGlass: ViewModifier {
   @State private var height: CGFloat = 0

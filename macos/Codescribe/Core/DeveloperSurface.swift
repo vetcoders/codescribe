@@ -3,11 +3,11 @@ import OSLog
 
 /// Lab extras baked only by keyed `make install-app`.
 enum DeveloperSurface {
-  /// Corner caption only while Voice Lab is enabled on a developer build.
+  /// Agent header mark, only while Voice Lab is enabled on a developer build.
   static var powerModeCaption: String {
     String(
-      localized: "You use dev power mode",
-      comment: "Corner mark on a developer build while Voice Lab power mode is on"
+      localized: "Voice Lab power mode",
+      comment: "Agent header mark on a developer build while Voice Lab power mode is on"
     )
   }
 

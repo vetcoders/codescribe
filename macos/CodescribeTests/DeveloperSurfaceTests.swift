@@ -16,7 +16,7 @@ final class DeveloperSurfaceTests: XCTestCase {
   }
 
   func testPowerModeCaptionDescribesActiveLabMode() {
-    XCTAssertEqual(DeveloperSurface.powerModeCaption, "You use dev power mode")
+    XCTAssertEqual(DeveloperSurface.powerModeCaption, "Voice Lab power mode")
   }
 
   func testPowerModeRequiresBothDeveloperBuildAndEnabledVoiceLab() {
