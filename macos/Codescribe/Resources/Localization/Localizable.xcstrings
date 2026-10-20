@@ -2174,6 +2174,23 @@
         }
       }
     },
+    "Acoustic evidence" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Acoustic evidence"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dowód akustyczny"
+          }
+        }
+      }
+    },
     "Activate" : {
       "localizations" : {
         "pl" : {
@@ -3605,23 +3622,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyważona redakcja transkrypcji."
-          }
-        }
-      }
-    },
-    "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Bars show each pin inside its occurrence. Slot timing does not certify delivery. Missing Silero or CTC evidence is not reconstructed."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Paski pokazują pozycję pinu w jego wystąpieniu. Czas slotu nie potwierdza dostarczenia. Brakujące dane Silero lub CTC nie są rekonstruowane."
           }
         }
       }
@@ -8802,6 +8802,40 @@
         }
       }
     },
+    "Last correction on this Mac: %@" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Last correction on this Mac: %@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia poprawka na tym Macu: %@"
+          }
+        }
+      }
+    },
+    "Last correction on this Mac: none saved" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Last correction on this Mac: none saved"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ostatnia poprawka na tym Macu: brak zapisanych"
+          }
+        }
+      }
+    },
     "Last test: failed" : {
       "localizations" : {
         "pl" : {
@@ -8875,19 +8909,19 @@
         }
       }
     },
-    "Latest recorded slots" : {
-      "extractionState" : "manual",
+    "Latest recorded take" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Latest recorded slots"
+            "state" : "new",
+            "value" : "Latest recorded take"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Najnowsze zapisane sloty"
+            "value" : "Najnowsze nagranie"
           }
         }
       }
@@ -10479,6 +10513,40 @@
         }
       }
     },
+    "No VAD recorded" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No VAD recorded"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak danych VAD"
+          }
+        }
+      }
+    },
+    "No VAD recorded for this capture epoch." : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No VAD recorded for this capture epoch."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie zapisano danych VAD dla tego przechwycenia."
+          }
+        }
+      }
+    },
     "No action is required. To clear this notice, delete or correct the line, then restart Codescribe." : {
       "comment" : "About panel: what to do about an unread .env key",
       "localizations" : {
@@ -10785,6 +10853,23 @@
         }
       }
     },
+    "No newer correction has been saved on this Mac." : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No newer correction has been saved on this Mac."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na tym Macu nie zapisano nowszej poprawki."
+          }
+        }
+      }
+    },
     "No preview window appears while recording." : {
       "localizations" : {
         "pl" : {
@@ -10865,6 +10950,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie wykryto mowy"
+          }
+        }
+      }
+    },
+    "No speech on range" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "No speech on range"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak mowy w zakresie"
           }
         }
       }
@@ -15423,6 +15525,23 @@
         }
       }
     },
+    "Silero speech · whole take" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Silero speech · whole take"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mowa według Silero · całe nagranie"
+          }
+        }
+      }
+    },
     "Size of the indicator next to the cursor" : {
       "localizations" : {
         "pl" : {
@@ -15706,6 +15825,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtwarzanie"
+          }
+        }
+      }
+    },
+    "Speech" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Speech"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mowa"
           }
         }
       }
@@ -16522,6 +16658,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wysoki poziom"
+          }
+        }
+      }
+    },
+    "Sub-floor energy" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Sub-floor energy"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Energia poniżej progu"
           }
         }
       }
@@ -18975,6 +19128,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Whisper nie rozpoznał tego słowa z wystarczającą pewnością"
+          }
+        }
+      }
+    },
+    "Pins in this take: %lld" : {
+      "comment" : "Lab recorded acoustic evidence and Dictionary correction freshness.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Pins in this take: %lld"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Znaczniki w tym nagraniu: %lld"
           }
         }
       }

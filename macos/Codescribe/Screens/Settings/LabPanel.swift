@@ -71,6 +71,8 @@ struct LabPanel: View {
       recognitionParameters
 
       ledgerSensitivity
+
+      DictionaryWordPins(configDir: model.configDir)
     }
     .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
