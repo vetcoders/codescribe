@@ -1961,15 +1961,20 @@ impl TranscriptBus {
             if slots.is_empty() {
                 // A measured deletion leaves a known-empty owner. It is not
                 // missing witness evidence for the remaining epoch text.
-                if ledger.text_of(occurrence).is_some_and(|text| text.trim().is_empty()) {
+                if ledger
+                    .text_of(occurrence)
+                    .is_some_and(|text| text.trim().is_empty())
+                {
                     continue;
                 }
                 return;
             }
             for slot in slots.iter().filter(|slot| !slot.text.trim().is_empty()) {
                 has_slots = true;
-                entirely_unwitnessed &= matches!(&slot.witness,
-                    SlotWitness::Unwitnessed | SlotWitness::Absent { .. });
+                entirely_unwitnessed &= matches!(
+                    &slot.witness,
+                    SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
+                );
             }
         }
         // Visibility-only receipts are explicitly unwitnessed text too. They

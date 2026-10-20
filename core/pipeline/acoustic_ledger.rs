@@ -1357,8 +1357,10 @@ impl AcousticLedger {
         let anchors = measured_anchors.clone().unwrap_or_default();
         let original_words = words;
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
-        if observation.producer == ObservationProducer::AppleDictation && words.is_empty()
-            && let Some(receipt) = self.record_witness_absence(observation) {
+        if observation.producer == ObservationProducer::AppleDictation
+            && words.is_empty()
+            && let Some(receipt) = self.record_witness_absence(observation)
+        {
             return trace.finish(receipt, self);
         }
         let owner = &observation.occurrence;
@@ -1651,7 +1653,10 @@ impl AcousticLedger {
         // Reconcile while live, before resegmentation can treat a drifted
         // copy as a new word. The same rule applies to every word of a
         // re-emitted clause, not merely adjacent equal strings.
-        let known = self.committed.values().flat_map(|held| held.slots.iter().cloned())
+        let known = self
+            .committed
+            .values()
+            .flat_map(|held| held.slots.iter().cloned())
             .collect::<Vec<_>>();
         let mut voice_replays = Vec::new();
         incoming.retain(|(word, _)| {
@@ -1665,24 +1670,40 @@ impl AcousticLedger {
         for (word, source) in &voice_replays {
             // The predecessor is a committed source from a different
             // overlapping decode, never a provisional within-batch token.
-            if self.slots_of(&source.observation.occurrence).is_some_and(|slots| slots.contains(source)) {
+            if self
+                .slots_of(&source.observation.occurrence)
+                .is_some_and(|slots| slots.contains(source))
+            {
                 self.record_slot_operation(SlotOperationReceipt {
-                    observation: observation.clone(), kind: SlotOperationKind::Correct,
-                    sources: vec![source.clone()], outputs: vec![source.clone()],
+                    observation: observation.clone(),
+                    kind: SlotOperationKind::Correct,
+                    sources: vec![source.clone()],
+                    outputs: vec![source.clone()],
                     source_ranges: self.slot_source_ranges(source),
                     rule_id: "overlapping_decode_same_voiced_burst/v1".into(),
                 });
             }
             if !incoming.is_empty() {
-                let pin = OccurrenceIdentity::new(&owner.session, owner.capture_epoch,
-                    word.sample_start, word.sample_end);
-                let mut replay = self.next_word_observation(observation.producer, observation.request, &pin);
-                if replay == *observation { replay.generation = replay.generation.saturating_add(1); }
+                let pin = OccurrenceIdentity::new(
+                    &owner.session,
+                    owner.capture_epoch,
+                    word.sample_start,
+                    word.sample_end,
+                );
+                let mut replay =
+                    self.next_word_observation(observation.producer, observation.request, &pin);
+                if replay == *observation {
+                    replay.generation = replay.generation.saturating_add(1);
+                }
                 self.refuse_replayed_range(&replay, &word.text);
             }
         }
         if !voice_replays.is_empty() && incoming.is_empty() {
-            let candidate = original_words.iter().map(|pin| pin.text.as_str()).collect::<Vec<_>>().join(" ");
+            let candidate = original_words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             return trace.finish(self.refuse_replayed_range(observation, &candidate), self);
         }
         let mut no_speech_refused = Vec::new();
@@ -1977,7 +1998,10 @@ impl AcousticLedger {
                 None
             };
             if local_choice == Some(true) {
-                let sources = conflicts.iter().map(|&index| prior[index].clone()).collect::<Vec<_>>();
+                let sources = conflicts
+                    .iter()
+                    .map(|&index| prior[index].clone())
+                    .collect::<Vec<_>>();
                 self.stamp_word_witness(observation, &sources, std::slice::from_mut(&mut word));
             }
             if local_choice == Some(false) {
@@ -2842,26 +2866,47 @@ impl AcousticLedger {
         let blocked_sources = if observation.producer == ObservationProducer::ManualHuman {
             Vec::new()
         } else {
-            self.slots_of(&observation.occurrence).unwrap_or(&[]).iter().filter(|source| {
-                let operation_outputs = operations.iter().find(|operation| operation.sources.contains(source))
-                    .map(|operation| operation.outputs.as_slice());
-                let individual_outputs = slots.as_ref().filter(|proposed| proposed.iter().any(|output| {
-                    output != *source && self.same_anchored_word(source, output)
-                })).map(Vec::as_slice);
-                operation_outputs.or(individual_outputs).is_some_and(|outputs| {
-                    !self.slot_retirement_has_acoustic_coverage(source, outputs)
+            self.slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|source| {
+                    let operation_outputs = operations
+                        .iter()
+                        .find(|operation| operation.sources.contains(source))
+                        .map(|operation| operation.outputs.as_slice());
+                    let individual_outputs = slots
+                        .as_ref()
+                        .filter(|proposed| {
+                            proposed.iter().any(|output| {
+                                output != *source && self.same_anchored_word(source, output)
+                            })
+                        })
+                        .map(Vec::as_slice);
+                    operation_outputs
+                        .or(individual_outputs)
+                        .is_some_and(|outputs| {
+                            !self.slot_retirement_has_acoustic_coverage(source, outputs)
+                        })
                 })
-            }).cloned().collect::<Vec<_>>()
+                .cloned()
+                .collect::<Vec<_>>()
         };
         if !blocked_sources.is_empty() {
-            let held_by = self.committed.get(&observation.occurrence)
+            let held_by = self
+                .committed
+                .get(&observation.occurrence)
                 .map_or(observation.producer, |held| held.producer);
             self.offered_observations += 1;
             self.note_answered(observation);
-            self.retain_slot_alternative(observation, text, blocked_sources,
-                "absence_requires_acoustic_evidence");
+            self.retain_slot_alternative(
+                observation,
+                text,
+                blocked_sources,
+                "absence_requires_acoustic_evidence",
+            );
             let decision = MutationReceipt::Preserve {
-                occurrence: observation.occurrence.clone(), held_by,
+                occurrence: observation.occurrence.clone(),
+                held_by,
             };
             self.record_layer_decision(observation, text, &decision, None);
             return decision;
@@ -3011,10 +3056,14 @@ impl AcousticLedger {
             // before inserting outputs: an identical output is still held.
             held.slots.retain(|source| {
                 !individual_sources.contains(source)
-                    && !operations.iter().any(|group| group.sources.contains(source))
+                    && !operations
+                        .iter()
+                        .any(|group| group.sources.contains(source))
             });
             for slot in slots {
-                if !held.slots.contains(&slot) { held.slots.push(slot); }
+                if !held.slots.contains(&slot) {
+                    held.slots.push(slot);
+                }
             }
             held.slots
                 .sort_by_key(|word| (word.sample_start, word.sample_end));
@@ -3239,7 +3288,8 @@ impl AcousticLedger {
         if text.trim().is_empty() && observation.producer != ObservationProducer::ManualHuman {
             if let Some(held) = self.committed.get(&observation.occurrence) {
                 return MutationReceipt::Preserve {
-                    occurrence: observation.occurrence.clone(), held_by: held.producer,
+                    occurrence: observation.occurrence.clone(),
+                    held_by: held.producer,
                 };
             }
             return MutationReceipt::Refuse {
@@ -3743,13 +3793,21 @@ impl AcousticLedger {
         self.offered_observations += 1;
         self.note_answered(observation);
         let decision = if text.trim().is_empty()
-            && matches!(reason, RefuseReason::EmptyLabel | RefuseReason::SlotAdmissionRejected)
-            && let Some(held) = self.committed.get(&observation.occurrence) {
+            && matches!(
+                reason,
+                RefuseReason::EmptyLabel | RefuseReason::SlotAdmissionRejected
+            )
+            && let Some(held) = self.committed.get(&observation.occurrence)
+        {
             MutationReceipt::Preserve {
-                occurrence: observation.occurrence.clone(), held_by: held.producer,
+                occurrence: observation.occurrence.clone(),
+                held_by: held.producer,
             }
         } else {
-            MutationReceipt::Refuse { occurrence: observation.occurrence.clone(), reason }
+            MutationReceipt::Refuse {
+                occurrence: observation.occurrence.clone(),
+                reason,
+            }
         };
         self.record_layer_decision(observation, text, &decision, None);
         decision

@@ -1527,7 +1527,9 @@ fn replay_validated(
             TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
             TrailEvent::DecodeSkippedNoSpeech { decode, speech } => {
                 let evidence = speech.evidence()?;
-                if !evidence.identity().matches(&decode.session, decode.capture_epoch)
+                if !evidence
+                    .identity()
+                    .matches(&decode.session, decode.capture_epoch)
                     || evidence.producer()
                         != super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
                     || decode.sample_start >= decode.sample_end
@@ -1539,7 +1541,9 @@ fn replay_validated(
                         range.session != decode.session
                             || range.capture_epoch != decode.capture_epoch
                             || range.sample_start >= range.sample_end
-                            || speech.observed_samples.is_none_or(|end| range.sample_end > end)
+                            || speech
+                                .observed_samples
+                                .is_none_or(|end| range.sample_end > end)
                             || (range.sample_start < decode.sample_end
                                 && decode.sample_start < range.sample_end)
                     })
