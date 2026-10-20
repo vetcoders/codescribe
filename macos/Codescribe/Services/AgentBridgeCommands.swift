@@ -603,7 +603,8 @@ extension RealAgentBridgeInstaller {
     let message = ConversationAttachmentPointer.extract(from: text)
     let hold = holdSeconds ?? CodescribeConfig().loadSettings().agentSendHoldSec
     try await Task.detached(priority: .userInitiated) {
-      var arguments = try busTextArguments(holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo)
+      var arguments = try busTextArguments(
+        holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo)
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
@@ -695,7 +696,8 @@ extension RealAgentBridgeInstaller {
       let diagnosticData = diagnostics.fileHandleForReading.readDataToEndOfFile()
       process.waitUntilExit()
       guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-        let refusal = String(data: diagnosticData.suffix(4096), encoding: .utf8)?
+        let refusal =
+          String(data: diagnosticData.suffix(4096), encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
           .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
@@ -719,7 +721,8 @@ extension RealAgentBridgeInstaller {
   ) throws -> [String] {
     // The owner block stays right behind --send-text; the hold is a trailing
     // option, so existing publisher receipts keep their argument prefix.
-    var arguments = ["--send-text"] + (try busOwnerArguments(owner: owner, root: root))
+    var arguments =
+      ["--send-text"] + (try busOwnerArguments(owner: owner, root: root))
       + ["--hold-seconds", String(holdSeconds)]
     if let userReplyTo {
       let encoded = try JSONEncoder().encode(userReplyTo)

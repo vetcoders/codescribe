@@ -509,7 +509,9 @@ struct DictationOverlayView: View {
                   get: { state.conversationDrafts[conversation.id] ?? "" },
                   set: { state.conversationDrafts[conversation.id] = $0 }),
                 sending: state.pendingTextMessages.contains(conversation.id),
-                sendError: state.textMessageErrors[conversation.id],
+                sendError: state.textMessageErrors[conversation.id]
+                  ?? (state.draftCapture.errorConversationID == conversation.id
+                    ? state.draftCapture.error : nil),
                 onSend: { Task { await state.sendConversationText(conversation) } },
                 microphoneOpen: state.conversationMicrophoneOpen(conversation),
                 microphoneEnabled: state.canToggleConversationMicrophone(conversation)
@@ -528,7 +530,30 @@ struct DictationOverlayView: View {
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 hidesNavigation: columnShown,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
-                onComposerTypingActivity: { state.noteComposerTypingActivity() }
+                onComposerTypingActivity: { state.noteComposerTypingActivity() },
+                replySelection: state.conversationReplies[conversation.id],
+                onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
+                draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
+                draftMicrophoneBusy: state.draftMicrophoneBusy(in: conversation),
+                onToggleDraftMicrophone: {
+                  Task { await state.toggleDraftMicrophone(in: conversation) }
+                },
+                onStageCaptureAttachments: {
+                  state.stageConversationAttachments($0, in: conversation)
+                },
+                pendingCaptureAttachments: state.captureAttachmentDrafts[conversation.id]?.paths
+                  ?? [],
+                onRemoveCaptureAttachment: {
+                  state.removeCaptureAttachment($0, in: conversation.id)
+                },
+                captureAttachmentError: state.captureAttachmentErrors[conversation.id],
+                onRetryCaptureAttachments: {
+                  Task { await state.retryCaptureAttachments(in: conversation.id) }
+                },
+                onReply: { message in
+                  state.conversationReplies[conversation.id] = OverlayUserReplyReference(
+                    message: message)
+                }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
