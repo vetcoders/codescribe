@@ -473,8 +473,7 @@ struct VoiceLabPanel: View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       VStack(alignment: .leading, spacing: 0) {
         SettingsPageHeader(
-          String(localized: "Dictionary and corrections"),
-          blurb: String(localized: "Browse corrections and dictionary rules.")
+          String(localized: "Dictionary and corrections")
         )
         countersRow
           .padding(.top, CSSpace.sm)
