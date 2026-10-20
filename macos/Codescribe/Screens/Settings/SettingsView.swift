@@ -104,9 +104,9 @@ struct SettingsView: View {
   }
 
   /// The wordmark toolbar is the visible title. The window keeps its name for
-  /// Mission Control, App Exposé and the Window menu, and never minimises
-  /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
-  /// keeps no minimise control rather than one that could leave an Exposé tile.
+  /// Mission Control, App Exposé and the Window menu, and never miniaturises:
+  /// its minimise control and ⌘M hide it (`DockPresence`), so no empty Exposé
+  /// tile is left behind; Open Settings and ⌘, bring it back.
   ///
   /// The window titlebar and backing are configured to allow native sidebar
   /// translucency (`.sidebar` material with `.behindWindow` blending) while

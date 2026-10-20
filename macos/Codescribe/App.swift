@@ -266,6 +266,14 @@ struct CodescribeApp: App {
         Divider()
         CheckForUpdatesCommand(appDelegate: appDelegate)
       }
+      // ⌘M hides an adopted window straight away instead of letting AppKit
+      // miniaturise it first (`DockPresence`); other windows keep the native
+      // Minimize.
+      CommandGroup(replacing: .windowSize) {
+        Button("Minimize") { DockPresence.minimiseKeyWindow() }
+          .keyboardShortcut("m", modifiers: .command)
+        Button("Zoom") { NSApp.keyWindow?.performZoom(nil) }
+      }
     }
   }
 }
