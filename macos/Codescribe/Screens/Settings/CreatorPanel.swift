@@ -25,49 +25,34 @@ struct CreatorPanel: View {
 
       // The wizard's only entry after first run: the tray row that used to
       // open it is gone (Founder, 2026-10-20), so the Creator offers it here.
-      HStack(alignment: .center, spacing: CSSpace.md) {
-        Text(
-          String(
-            localized:
-              "Walk through the first-run steps again: language, mode, permissions, the Whisper model and your provider. Your current settings stay.",
-            comment: "Creator: what reopening the setup wizard does")
-        )
-        .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        Button(
-          String(
-            localized: "Open Setup Wizard…",
-            comment: "Creator: reopens the first-run setup wizard window")
-        ) {
-          model.onOpenSetupWizard()
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .accessibilityIdentifier("settings-creator-open-wizard")
+      // No explanation beside it: each step opens on the current value, but
+      // Continue on the shortcuts step writes that step's preset, so "your
+      // settings stay" would not be true.
+      Button(
+        String(
+          localized: "Open Setup Wizard…",
+          comment: "Creator: reopens the first-run setup wizard window")
+      ) {
+        model.onOpenSetupWizard()
       }
+      .buttonStyle(.bordered)
+      .controlSize(.small)
+      .accessibilityIdentifier("settings-creator-open-wizard")
       .padding(.top, SettingsScale.headerGap)
 
-      SettingsSectionLabel(
-        String(localized: "Languages", comment: "Settings group: app language and speech language")
-      )
-      .padding(.top, SettingsScale.sectionGap)
+      // Groups whose cards already name themselves carry no section header;
+      // the section gap alone separates them.
       VStack(spacing: 8) {
         InterfaceLanguageRow(model: model)
         RecognitionLanguageRow(selection: languageBinding)
       }
-      .padding(.top, SettingsScale.headerGap)
-
-      SettingsSectionLabel(
-        String(localized: "Appearance", comment: "Settings group: light or dark, and the sheet shade")
-      )
       .padding(.top, SettingsScale.sectionGap)
+
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
       }
-      .padding(.top, SettingsScale.headerGap)
+      .padding(.top, SettingsScale.sectionGap)
 
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
@@ -99,8 +84,6 @@ struct CreatorPanel: View {
       .settingsGroupedInset(padding: 0)
       .padding(.top, SettingsScale.headerGap)
 
-      SettingsSectionLabel(String(localized: "Voice & formatting"))
-        .padding(.top, SettingsScale.sectionGap)
       VStack(spacing: 8) {
         SettingsControlRow(title: String(localized: "AI formatting")) {
           Toggle("", isOn: formattingEnabledBinding)
@@ -135,7 +118,7 @@ struct CreatorPanel: View {
             .id(SettingsAnchor.maxConsultation)
         }
       }
-      .padding(.top, SettingsScale.headerGap)
+      .padding(.top, SettingsScale.sectionGap)
 
       agentBridgeSection
         .padding(.top, SettingsScale.sectionGap)
@@ -563,7 +546,7 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   /// round 4, 2026-10-10).
   static let supportingCopy = String(
     localized: "Multilingual detects the language automatically.",
-    comment: "Speech recognition language row explanation"
+    comment: "Transcription language row explanation"
   )
 
   static let choices: [LanguageIdentityPresentation] = [
@@ -581,8 +564,8 @@ private struct RecognitionLanguageRow: View {
   var body: some View {
     SettingsControlRow(
       title: String(
-        localized: "Speech recognition language",
-        comment: "Settings row: dictation language"),
+        localized: "Transcription language",
+        comment: "Settings row: the language the speech is transcribed in"),
       subtitle: LanguageIdentityPresentation.supportingCopy
     ) {
       Picker("", selection: $selection) {
@@ -595,7 +578,8 @@ private struct RecognitionLanguageRow: View {
       .fixedSize()
       .accessibilityLabel(
         String(
-          localized: "Speech recognition language", comment: "Settings row: dictation language")
+          localized: "Transcription language",
+          comment: "Settings row: the language the speech is transcribed in")
       )
       .accessibilityIdentifier("settings-recognition-language")
     }
