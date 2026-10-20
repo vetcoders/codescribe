@@ -102,7 +102,7 @@ struct SettingsTabSegments: NSViewRepresentable {
 
   /// Writes labels only where they differ, so a redraw does not reset segments
   /// that already read correctly.
-  private static func apply(titles: [String], to control: NSSegmentedControl) {
+  static func apply(titles: [String], to control: NSSegmentedControl) {
     if control.segmentCount != titles.count {
       control.segmentCount = titles.count
     }
