@@ -126,7 +126,7 @@ final class OverlayController: ObservableObject {
   static let pinReleaseFadeSeconds: TimeInterval = 0.6
   /// A direct edge resize is the user's size decision for the current session.
   /// The next recording may breathe again from that persisted starting point.
-  private var automaticContentSizingEnabled = true
+  private var automaticTranscriptionSizingEnabled = true
   /// Latched across the session (preparing → started → stopped) because the
   /// Rust controller clears its assistive flag right after the stop pipeline —
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
@@ -200,7 +200,7 @@ final class OverlayController: ObservableObject {
     // identity-less lifecycle paint cannot revoke an admitted composer request.
     state.onRecordingPreparing = { [weak self] in
       guard let self else { return }
-      self.automaticContentSizingEnabled = true
+      self.automaticTranscriptionSizingEnabled = true
       self.sessionWasAssistive = false
       self.refreshAssistiveLatch()
       self.showForRecording()
@@ -346,7 +346,7 @@ final class OverlayController: ObservableObject {
         hide()
       } else {
         readOverlayPreference()
-        show()
+        show(preserveVisiblePosition: true)
       }
       return
     }
@@ -355,7 +355,7 @@ final class OverlayController: ObservableObject {
       if panel != nil { hide() }
       return
     }
-    show()
+    show(preserveVisiblePosition: true)
   }
 
   /// The "Transcription Overlay" preference was written (tray toggle, Settings
@@ -385,7 +385,7 @@ final class OverlayController: ObservableObject {
     return enabled
   }
 
-  func show() {
+  func show(preserveVisiblePosition: Bool = false) {
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
     if let floating = panel as? FloatingOverlayPanel {
@@ -400,12 +400,16 @@ final class OverlayController: ObservableObject {
       }
       floating.onUserResize = { [weak self] in
         guard let self, !Self.isApplyingFrame else { return }
-        self.automaticContentSizingEnabled = false
+        let surface =
+          (self.panel as? FloatingOverlayPanel)?.contentSurface
+          ?? self.state.windowContentSurface
+        if surface == .transcription { self.automaticTranscriptionSizingEnabled = false }
         self.state.userResizedOverlay()
       }
       floating.onUserResizeEnded = { [weak self] in
         guard let self else { return }
         self.state.noteAutoCollapseActivity()
+        (self.panel as? FloatingOverlayPanel)?.persistContentSize()
         if self.state.freeMotion, let floating = self.panel as? FloatingOverlayPanel {
           OverlayPlacement.persistOrigin(floating.originForPersistence)
         }
@@ -431,11 +435,12 @@ final class OverlayController: ObservableObject {
         // can still grow the settled panel; an equal height writes nothing.
         self.resizeForProjectedContent()
       }
+      floating.setContentSurface(state.windowContentSurface)
       floating.setPresentationMode(state.presentationMode)
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
-    applyPlacement()
+    if !preserveVisiblePosition || !panel.isVisible { applyPlacement() }
     panelPresented = true
     orderPanelFront(panel)
     resizeForProjectedContent()
@@ -532,7 +537,9 @@ final class OverlayController: ObservableObject {
   /// Grow-only expanded height for `width`. Nil keeps the remembered frame
   /// when the user owns the size or the transcript editor is open.
   private func qualifiedExpandedContentHeight(for width: CGFloat) -> CGFloat? {
-    guard automaticContentSizingEnabled, !state.isEditingTranscript,
+    guard state.windowContentSurface == .transcription,
+      (panel as? FloatingOverlayPanel)?.contentSurface != .agents,
+      automaticTranscriptionSizingEnabled, !state.isEditingTranscript,
       !state.isRevisionDraftDirty
     else { return nil }
     let screen = panel?.screen ?? NSScreen.main
@@ -550,12 +557,19 @@ final class OverlayController: ObservableObject {
   }
 
   private func resizeForProjectedContent() {
+    guard let panel else { return }
     if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
       contentSizeAfterUserResize = true
       return
     }
-    guard !state.isCollapsed, let panel else { return }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
+    if let floating = panel as? FloatingOverlayPanel {
+      floating.setContentSurface(
+        state.windowContentSurface,
+        animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      guard !floating.isFrameTransitioning else { return }
+    }
+    guard !state.isCollapsed else { return }
     guard let targetHeight = qualifiedExpandedContentHeight(for: panel.frame.width) else { return }
     guard targetHeight > panel.frame.height + 0.5 else { return }
     let screen = panel.screen ?? NSScreen.main
@@ -563,17 +577,11 @@ final class OverlayController: ObservableObject {
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
     let size = NSSize(width: panel.frame.width, height: targetHeight)
-    let origin: NSPoint
-    if state.freeMotion, let visible = screen?.visibleFrame {
-      origin = OverlayPlacement.clampOrigin(
-        NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight),
-        size: size,
-        in: visible
-      )
-    } else {
-      origin =
-        OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
-        ?? NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight)
+    // Placement chooses where a panel first appears. Subsequent growth shares
+    // the morph's upper-right anchor, where the fold control is parked.
+    var origin = NSPoint(x: panel.frame.maxX - size.width, y: panel.frame.maxY - size.height)
+    if let visible = screen?.visibleFrame {
+      origin = OverlayPlacement.clampOrigin(origin, size: size, in: visible)
     }
     let grown = NSRect(origin: origin, size: size)
     OverlayPresentationTrace.shared.record(
@@ -655,8 +663,11 @@ final class OverlayController: ObservableObject {
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
     if let panel {
-      DictationOverlayWindow.persist(
-        size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
+      if let floating = panel as? FloatingOverlayPanel {
+        floating.persistContentSize()
+      } else {
+        DictationOverlayWindow.persist(size: panel.frame.size, surface: state.windowContentSurface)
+      }
       if state.freeMotion {
         OverlayPlacement.persistOrigin(
           (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
@@ -690,8 +701,11 @@ final class OverlayController: ObservableObject {
   ) {
     guard !state.hasOpenChannel else { return }
     guard let panel, panel.isVisible else { return }
-    DictationOverlayWindow.persist(
-      size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
+    if let floating = panel as? FloatingOverlayPanel {
+      floating.persistContentSize()
+    } else {
+      DictationOverlayWindow.persist(size: panel.frame.size, surface: state.windowContentSurface)
+    }
     if state.freeMotion {
       OverlayPlacement.persistOrigin(
         (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)

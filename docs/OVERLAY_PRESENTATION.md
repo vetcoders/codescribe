@@ -90,6 +90,30 @@ does not need changes to these owners.
   If a design needs a different native window size, update the existing window
   owner and its geometry checks together; SwiftUI layout alone cannot prove it.
 
+## Independent canvas sizes
+
+The transcription and agents canvases use the same native panel, with a last
+expanded size for each `OverlayContentSurface`. `OverlayState.windowContentSurface`
+retains the intended canvas while mini/midi hide its body. Selection and capture
+routing update that projection; they do not create another transcript or recorder.
+`FloatingOverlayPanel` owns both size caches, their transition and persistence.
+The controller retries the latest projection after an active drag or morph ends.
+Mini/midi dimensions never overwrite an expanded profile.
+
+Preferences live at `DictationOverlayPanel.contentSize.v7.transcription` and
+`.agents`, each with `.w`/`.h`. The previous shared v6 frame migrates to agents
+only: it may be a full-screen bus. Transcription starts at 470 × 280 until sized
+independently, then restores its own last size. Manual resizing of agents does
+not disable transcript growth. A new ordinary capture selects transcription
+before it unfolds; an agent take retains its channel surface.
+
+The fold button has the same top/trailing inset and header row height in every
+form. Native morphs, canvas switches and transcript growth preserve that screen
+point, subject to keeping the window on screen. Initial placement and an explicit
+placement command still use the selected anchor. Direct edge dragging keeps its
+normal opposite-edge behavior. Use the existing header-frame preference for
+geometry evidence; do not add a second anchor store.
+
 ## Integration and visual acceptance
 
 This document is not proof of a running design. On 2026-10-20 the Founder
