@@ -49,6 +49,10 @@ struct SessionLease {
     /// in the helper), or null when its process held no pane coordinates.
     #[serde(default)]
     frame: Option<serde_json::Value>,
+    /// The iTerm2 or Terminal.app tab hosting the session (`terminal_context`
+    /// in the helper), or null when neither terminal was identified.
+    #[serde(default)]
+    terminal: Option<serde_json::Value>,
 }
 
 impl SessionLease {
@@ -62,6 +66,26 @@ impl SessionLease {
                     .is_some_and(|session| !session.trim().is_empty())
         })
     }
+
+    /// A terminal tab the follower can focus: a non-empty `host_bundle_id`.
+    fn has_terminal_host(&self) -> bool {
+        self.terminal.as_ref().is_some_and(|terminal| {
+            terminal
+                .get("host_bundle_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|bundle| !bundle.trim().is_empty())
+        })
+    }
+}
+
+/// Where a live follower can bring its agent to the front. Both facts come
+/// from the same lease; neither changes whether the follower is alive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FollowerHosts {
+    /// The lease names a vc-frame pane.
+    pub frame_pane: bool,
+    /// The lease names an iTerm2 or Terminal.app tab.
+    pub terminal_tab: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,19 +196,20 @@ pub fn live_follower_sessions_at(
     now: f64,
     ttl_seconds: f64,
 ) -> HashSet<(String, String)> {
-    live_follower_frames_at(root, now, ttl_seconds)
+    live_follower_hosts_at(root, now, ttl_seconds)
         .into_keys()
         .collect()
 }
 
 /// Every live follower session (same convention as
 /// [`live_follower_sessions_at`]) mapped to whether its lease names a vc-frame
-/// pane. One scan serves both the liveness and the pane facts the roster shows.
-pub fn live_follower_frames_at(
+/// pane and a terminal tab. One scan serves the liveness and the host facts
+/// the roster shows.
+pub fn live_follower_hosts_at(
     root: &Path,
     now: f64,
     ttl_seconds: f64,
-) -> HashMap<(String, String), bool> {
+) -> HashMap<(String, String), FollowerHosts> {
     let mut sessions = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
@@ -193,10 +218,11 @@ pub fn live_follower_frames_at(
         ) && !provider.is_empty()
             && !session.is_empty()
         {
-            let framed = sessions
+            let hosts = sessions
                 .entry((provider.to_lowercase(), session.to_string()))
-                .or_insert(false);
-            *framed |= lease.has_frame_pane();
+                .or_default();
+            hosts.frame_pane |= lease.has_frame_pane();
+            hosts.terminal_tab |= lease.has_terminal_host();
         }
     });
     sessions
@@ -460,7 +486,11 @@ mod tests {
         // Pre-frame helpers never wrote the field at all.
         write_session_lease(temp.path(), "old.json", "claude-code", "old", true, 990.0);
 
-        let frames = live_follower_frames_at(temp.path(), 1_000.0, 120.0);
+        let hosts = live_follower_hosts_at(temp.path(), 1_000.0, 120.0);
+        let frames: HashMap<_, _> = hosts
+            .iter()
+            .map(|(key, hosts)| (key.clone(), hosts.frame_pane))
+            .collect();
         let key = |session: &str| ("claude-code".to_string(), session.to_string());
         assert_eq!(frames.get(&key("in-pane")), Some(&true));
         assert_eq!(frames.get(&key("daemon")), Some(&false));
@@ -470,6 +500,89 @@ mod tests {
             live_follower_sessions_at(temp.path(), 1_000.0, 120.0).len(),
             4,
             "the pane fact never changes who is alive"
+        );
+    }
+
+    fn write_terminal_lease(root: &Path, file: &str, session: &str, terminal: serde_json::Value) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "codex",
+                "provider_session_id": session,
+                "frame": null,
+                "terminal": terminal,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_lease_naming_a_terminal_host_reports_terminal_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        write_terminal_lease(
+            temp.path(),
+            "iterm.json",
+            "in-iterm",
+            serde_json::json!({
+                "host": "iterm2",
+                "host_bundle_id": "com.googlecode.iterm2",
+                "tty": "/dev/ttys005",
+                "session_id": "6F3C1A2B-0000-4000-8000-000000000005",
+            }),
+        );
+        write_terminal_lease(
+            temp.path(),
+            "terminal.json",
+            "in-terminal",
+            serde_json::json!({
+                "host": "apple-terminal",
+                "host_bundle_id": "com.apple.Terminal",
+                "tty": "/dev/ttys002",
+                "session_id": null,
+            }),
+        );
+        // Neither iTerm2 nor Terminal.app hosts this session.
+        write_terminal_lease(
+            temp.path(),
+            "elsewhere.json",
+            "elsewhere",
+            serde_json::Value::Null,
+        );
+        write_terminal_lease(
+            temp.path(),
+            "blank.json",
+            "blank",
+            serde_json::json!({"host": "iterm2", "host_bundle_id": " "}),
+        );
+        // Pre-terminal helpers never wrote the field at all.
+        write_session_lease(temp.path(), "old.json", "codex", "old", true, 990.0);
+
+        let hosts = live_follower_hosts_at(temp.path(), 1_000.0, 120.0);
+        let terminal = |session: &str| {
+            hosts
+                .get(&("codex".to_string(), session.to_string()))
+                .map(|hosts| hosts.terminal_tab)
+        };
+        assert_eq!(terminal("in-iterm"), Some(true));
+        assert_eq!(terminal("in-terminal"), Some(true));
+        assert_eq!(terminal("elsewhere"), Some(false));
+        assert_eq!(terminal("blank"), Some(false));
+        assert_eq!(terminal("old"), Some(false));
+        assert!(
+            hosts.values().all(|hosts| !hosts.frame_pane),
+            "a terminal tab is not a vc-frame pane"
+        );
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0).len(),
+            5,
+            "the terminal fact never changes who is alive"
         );
     }
 
