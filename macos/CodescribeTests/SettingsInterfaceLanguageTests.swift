@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import XCTest
 
@@ -35,9 +36,8 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
     XCTAssertFalse(settings.applyingInterfaceLanguage)
   }
 
-  /// Appearance applies at once through the host; a sheet shade is saved per
-  /// appearance and waits for the same restart as the language.
-  func testAppearanceAppliesAtOnceAndSheetShadeWaitsForRestart() async throws {
+  /// Both appearance choices repaint immediately; only language restarts.
+  func testAppearanceAndSheetShadeApplyAtOnce() async throws {
     try await withPreferences { preferences, _ in
       let settings = model(preferences: preferences)
       XCTAssertEqual(settings.appearanceChoice, .system)
@@ -47,27 +47,26 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
       XCTAssertEqual(applied, 1)
       XCTAssertEqual(preferences.string(forKey: AppearancePreference.key), "dark")
       settings.selectAppearance(.system)
-      XCTAssertNil(preferences.object(forKey: AppearancePreference.key), "system is the absence of a choice")
+      XCTAssertNil(
+        preferences.object(forKey: AppearancePreference.key), "system is the absence of a choice")
 
       XCTAssertEqual(settings.sheetShadeDark, .todayDark)
       XCTAssertEqual(settings.sheetShadeLight, .todayLight)
-      XCTAssertFalse(settings.sheetShadeNeedsRestart)
+      let changed = expectation(description: "The open shade picker observes its preference")
+      withObservationTracking {
+        _ = settings.sheetShadeDark
+      } onChange: {
+        changed.fulfill()
+      }
       settings.selectSheetShade(.warmCarbon)
       XCTAssertEqual(settings.sheetShadeDark, .warmCarbon)
-      XCTAssertEqual(settings.sheetShadeLight, .todayLight, "a dark shade leaves the light one alone")
+      XCTAssertEqual(
+        settings.sheetShadeLight, .todayLight, "a dark shade leaves the light one alone")
       XCTAssertEqual(preferences.string(forKey: SheetShadePreference.darkKey), "201F1E")
-      XCTAssertTrue(settings.sheetShadeNeedsRestart, "the process still paints the launch shade")
-
-      var restarts = 0
-      settings.onApplySheetShade = { _ in restarts += 1 }
-      settings.applySheetShade()
-      for _ in 0..<50 where settings.applyingSheetShade { await Task.yield() }
-      XCTAssertEqual(restarts, 1)
-      XCTAssertNil(settings.sheetShadeNotice)
+      await fulfillment(of: [changed], timeout: 1)
 
       settings.selectSheetShade(.todayDark)
       XCTAssertNil(preferences.object(forKey: SheetShadePreference.darkKey))
-      XCTAssertFalse(settings.sheetShadeNeedsRestart)
       // A light raw value stored under the dark key is ignored, never painted.
       preferences.set(SheetShade.limestone.rawValue, forKey: SheetShadePreference.darkKey)
       XCTAssertEqual(SheetShadePreference(defaults: preferences).current(dark: true), .todayDark)
@@ -206,7 +205,9 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
       InterfaceLanguageRelaunch.reopenSettings(.agent).launchArguments,
       ["--open-settings", "agent"])
     XCTAssertEqual(
-      InterfaceLanguageRelaunch.settingsSection(arguments: ["Codescribe", "--open-settings", "creator"]),
+      InterfaceLanguageRelaunch.settingsSection(arguments: [
+        "Codescribe", "--open-settings", "creator",
+      ]),
       .creator)
     XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings"]))
     XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings", "nope"]))
@@ -216,9 +217,8 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Codescribe/App.swift"),
       encoding: .utf8)
-    // Both Settings restarts (language, sheet shade) carry the section; the
-    // wizard keeps its own intent.
-    XCTAssertEqual(source?.components(separatedBy: "relaunch: .reopenSettings(section)").count, 3)
+    // The Settings language restart carries the section; the wizard keeps its intent.
+    XCTAssertEqual(source?.components(separatedBy: "relaunch: .reopenSettings(section)").count, 2)
     XCTAssertEqual(source?.components(separatedBy: "relaunch: .plain").count, 1)
     // The relaunch script passes `--args` only when the intent carries any.
     XCTAssertTrue(AppDelegate.languageRelaunchScript.contains("if [ \"$#\" -gt 0 ]"))

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 
 /// Light, dark or follow macOS. The choice is handed to AppKit as the
 /// application's appearance, so every window, panel and menu follows it at
@@ -63,9 +64,8 @@ struct AppearancePreference {
 
 /// Candidates for the content sheet (`CSPalette.sheet`), one set per
 /// appearance, for the Founder's and Maciej's click-through (2026-10-20). The
-/// chosen one becomes the token's value and this picker goes away; until then
-/// the hex is read once at launch, so a change takes the same idle-guarded
-/// restart as the interface language.
+/// chosen one becomes the token's value immediately, including in windows
+/// that are already open.
 enum SheetShade: String, CaseIterable, Identifiable {
   case todayDark = "16161C"
   case softGraphite = "1B1B1D"
@@ -101,17 +101,36 @@ enum SheetShade: String, CaseIterable, Identifiable {
 }
 
 /// Persisted sheet choice, one key per appearance, in the application domain.
-struct SheetShadePreference {
+@Observable
+final class SheetShadePreference: @unchecked Sendable {
+  // UserDefaults and Observation's registrar are thread-safe. The only state
+  // lives in UserDefaults; the computed properties register reads of that state
+  // even when reached through a palette token or an NSColor provider.
+  static let shared = SheetShadePreference()
   static let darkKey = "codescribe.sheet_shade.dark"
   static let lightKey = "codescribe.sheet_shade.light"
 
-  private let defaults: UserDefaults
+  @ObservationIgnored private let defaults: UserDefaults
 
   init(defaults: UserDefaults = .standard) {
     self.defaults = defaults
   }
 
+  var darkShade: SheetShade {
+    access(keyPath: \.darkShade)
+    return stored(dark: true)
+  }
+
+  var lightShade: SheetShade {
+    access(keyPath: \.lightShade)
+    return stored(dark: false)
+  }
+
   func current(dark: Bool) -> SheetShade {
+    dark ? darkShade : lightShade
+  }
+
+  private func stored(dark: Bool) -> SheetShade {
     let stored = defaults.string(forKey: dark ? Self.darkKey : Self.lightKey)
       .flatMap(SheetShade.init(rawValue:))
     if let stored, stored.isDark == dark { return stored }
@@ -119,6 +138,11 @@ struct SheetShadePreference {
   }
 
   func select(_ shade: SheetShade) {
+    let keyPath = shade.isDark ? \SheetShadePreference.darkShade : \.lightShade
+    withMutation(keyPath: keyPath) { persist(shade) }
+  }
+
+  private func persist(_ shade: SheetShade) {
     let key = shade.isDark ? Self.darkKey : Self.lightKey
     if shade == .todayDark || shade == .todayLight {
       defaults.removeObject(forKey: key)
@@ -127,13 +151,4 @@ struct SheetShadePreference {
     }
   }
 
-  func flush() throws {
-    guard defaults.synchronize() else { throw InterfaceLanguageRestartError.unavailable }
-  }
-
-  /// The hex the palette paints with for this process: read once by
-  /// `CSPalette` when the token is first resolved.
-  static func launchHex(dark: Bool, defaults: UserDefaults = .standard) -> UInt32 {
-    SheetShadePreference(defaults: defaults).current(dark: dark).hex
-  }
 }

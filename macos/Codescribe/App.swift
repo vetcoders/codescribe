@@ -220,14 +220,9 @@ struct CodescribeApp: App {
       try await delegate.restartForInterfaceLanguage(
         relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
-    // Appearance applies at once through AppKit; a sheet shade is read at
-    // launch, so it rides the same idle-guarded restart as the language.
+    // Appearance applies at once through AppKit. Sheet colours observe their
+    // preference directly and do not use the language-restart path.
     model.onApplyAppearance = { AppearancePreference().apply() }
-    model.onApplySheetShade = { [weak model] beforeTermination in
-      let section = model?.section ?? .creator
-      try await delegate.restartForInterfaceLanguage(
-        relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
-    }
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
@@ -339,7 +334,7 @@ private final class TestHostSceneView: NSView {
 
 /// What the relaunched process opens after an idle-guarded restart. The wizard
 /// resumes setup where it stopped; a restart pressed in Settings (interface
-/// language, sheet shade) reopens Settings on the section the user was in and
+/// language) reopens Settings on the section the user was in and
 /// brings it to the front, so the restart reads as "the app comes back here"
 /// rather than as the app vanishing under the previous window (Founder,
 /// 2026-10-21). The "clear defaults" actions still relaunch plainly.
@@ -588,7 +583,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     SettingsDeepLink.shared.present(section)
     guard !presentSettingsFromDock() else { return }
     guard attempt < 10 else {
-      appLogger.error("relaunch_settings: gave up reopening Settings › \(section.rawValue, privacy: .public)")
+      appLogger.error(
+        "relaunch_settings: gave up reopening Settings › \(section.rawValue, privacy: .public)")
       return
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in

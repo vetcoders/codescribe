@@ -30,8 +30,8 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
-  static let light = OverlayAppearancePalette(.light)
-  static let dark = OverlayAppearancePalette(.dark)
+  static var light: OverlayAppearancePalette { OverlayAppearancePalette(.light) }
+  static var dark: OverlayAppearancePalette { OverlayAppearancePalette(.dark) }
 
   private init(_ appearance: OverlayAppearance) {
     self.appearance = appearance
