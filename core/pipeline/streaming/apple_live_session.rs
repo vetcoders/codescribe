@@ -34114,6 +34114,34 @@ mod forensic_word_conservation_fixture {
         }
     }
 
+    /// Silero hears the capture up to `speech_end` as one speech range: its
+    /// merge gap joins the pauses between the words. Whisper words enter only
+    /// over measured speech; unmeasured words stay visible evidence without
+    /// insertion (96b602fa).
+    fn record_silero(lane: &mut Lane, observed_end: u64, speech_end: u64) {
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+
+        let mut fusion = SileroIngress::new(RATE, lane.state.session_id.clone(), 1);
+        assert!(
+            fusion.vad_available(),
+            "the fixture needs a measuring Silero"
+        );
+        fusion.note_observed_pcm(observed_end, observed_end);
+        fusion.observe_boundaries(&[
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: 0,
+                speech_probability: 0.9,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: speech_end,
+                speech_probability: 0.1,
+            },
+        ]);
+        lane.state.fusion = Some(fusion);
+    }
+
     pub fn capture_trace(
         fragmented_ingress: bool,
         contracted: bool,
@@ -34127,8 +34155,29 @@ mod forensic_word_conservation_fixture {
             (false, true) => "B45-pinned-windows",
             (true, true) => "B45-pinned-fragmented",
         };
+        // Five physical "Iwo" after the second grid window's start (3 s), so
+        // both decoder windows contain them: 206 ms each, which meets the
+        // two-syllable repeat floor, with sub-floor PCM between them so every
+        // repeat has its own voiced segment (96b602fa).
+        const SECOND_WINDOW_START: u64 = 48_000;
+        const WORDS: [(u64, u64); 5] = [
+            (4_000, 7_300),
+            (9_400, 12_700),
+            (14_800, 18_100),
+            (20_200, 23_500),
+            (25_600, 28_900),
+        ];
         let mut lane = open(session);
-        let pcm = vec![0.2_f32; 200_000];
+        let mut pcm = vec![0.2_f32; 200_000];
+        for pair in WORDS.windows(2) {
+            let start = (SECOND_WINDOW_START + pair[0].1) as usize;
+            let end = (SECOND_WINDOW_START + pair[1].0) as usize;
+            pcm[start..end].fill(0.001);
+        }
+        // The burst ends with the last word, inside both windows: speech that
+        // runs on past a window end leaves its words to the next window.
+        let speech_end = SECOND_WINDOW_START + WORDS[4].1;
+        pcm[speech_end as usize..].fill(0.001);
         if fragmented_ingress {
             for block in pcm.chunks(320) {
                 lane.state.audio.push(block);
@@ -34206,13 +34255,13 @@ mod forensic_word_conservation_fixture {
             shared_end >= base + 29_000,
             "both actual decoder windows must contain all five physical Words"
         );
-        let first = vec![
-            word_pin(session, "Iwo", base + 4_000, base + 8_000),
-            word_pin(session, "Iwo", base + 10_000, base + 14_000),
-            word_pin(session, "Iwo", base + 16_000, base + 20_000),
-            word_pin(session, "Iwo", base + 22_000, base + 25_000),
-            word_pin(session, "Iwo", base + 26_000, base + 29_000),
-        ];
+        assert_eq!(base, SECOND_WINDOW_START, "the 9 s grid steps by 3 s");
+        record_silero(&mut lane, pcm.len() as u64, speech_end);
+        lane.state.existence_floor_rms = Some(0.01);
+        let first = WORDS
+            .iter()
+            .map(|&(start, end)| word_pin(session, "Iwo", base + start, base + end))
+            .collect::<Vec<_>>();
         lane.state
             .complete_whisper_window(&lane.tx, completion(&requests[0], first.clone()), 12.5);
         assert_eq!(
