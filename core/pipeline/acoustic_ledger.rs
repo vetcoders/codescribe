@@ -916,6 +916,9 @@ pub struct AcousticLedger {
     complete_decoded_words: std::collections::HashMap<ObservationIdentity, Vec<(u64, u64)>>,
     /// Actual decoder fences, distinct from owner clipping and word geometry.
     decoded_word_windows: std::collections::HashMap<ObservationIdentity, (u64, u64)>,
+    /// Returned Whisper and cloud fences merged per capture, so asking whether
+    /// complete decode covered an owner is one lookup, not a scan per tick.
+    complete_decode_spans: BTreeMap<String, BTreeMap<u64, Vec<(u64, u64)>>>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: std::collections::HashSet<ObservationIdentity>,
@@ -2417,7 +2420,10 @@ impl AcousticLedger {
                         && slot.producer.authority_rank() < observation.producer.authority_rank()
                 })
             });
-        if recovery_unresolved && (recovery_pending || self.text_recovery_pending(owner)) {
+        if recovery_unresolved
+            && (recovery_pending || self.text_recovery_pending(owner))
+            && !self.complete_decode_covers(owner)
+        {
             self.pending_text_recovery.insert(owner.clone());
         }
         trace.finish(receipt, self)
@@ -2570,8 +2576,12 @@ impl AcousticLedger {
     /// Mark an acoustically qualified occurrence whose provisional label does
     /// not account for its speech. The label stays visible, but cannot certify
     /// coverage or finality until an authorized recovery observation lands.
+    /// A range that complete decode windows already heard owes nothing.
     pub fn require_text_recovery(&mut self, occurrence: &OccurrenceIdentity) -> bool {
-        if !self.evidence.contains_key(occurrence) || self.seals.contains_key(occurrence) {
+        if !self.evidence.contains_key(occurrence)
+            || self.seals.contains_key(occurrence)
+            || self.complete_decode_covers(occurrence)
+        {
             return false;
         }
         let newly_pending = self.pending_text_recovery.insert(occurrence.clone());
@@ -2586,8 +2596,9 @@ impl AcousticLedger {
         true
     }
 
+    /// Debt is open until complete decode windows cover its whole range.
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.pending_text_recovery.contains(occurrence)
+        self.pending_text_recovery.contains(occurrence) && !self.complete_decode_covers(occurrence)
     }
 
     pub fn pending_text_recoveries(
@@ -2598,7 +2609,9 @@ impl AcousticLedger {
         self.pending_text_recovery
             .iter()
             .filter(|occurrence| {
-                occurrence.session == session && occurrence.capture_epoch == capture_epoch
+                occurrence.session == session
+                    && occurrence.capture_epoch == capture_epoch
+                    && !self.complete_decode_covers(occurrence)
             })
             .cloned()
             .collect()

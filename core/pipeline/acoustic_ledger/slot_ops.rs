@@ -828,6 +828,57 @@ impl AcousticLedger {
         })
     }
 
+    /// Complete decode pays text debt: Whisper or cloud windows returned on
+    /// this capture cover every sample of the owner. The window's own words
+    /// may be refused or deferred; its return answered the range. No producer
+    /// rank and no silent fence is asked, and an owner does not need its own
+    /// observation for a neighbour's window to cover it.
+    pub(super) fn complete_decode_covers(&self, owner: &OccurrenceIdentity) -> bool {
+        if owner.sample_start >= owner.sample_end {
+            return false;
+        }
+        let Some(spans) = self
+            .complete_decode_spans
+            .get(owner.session.as_str())
+            .and_then(|epochs| epochs.get(&owner.capture_epoch))
+        else {
+            return false;
+        };
+        let index = spans.partition_point(|(start, _)| *start <= owner.sample_start);
+        index > 0 && spans[index - 1].1 >= owner.sample_end
+    }
+
+    /// Join a returned Whisper or cloud span to the capture's merged
+    /// complete-decode spans. The caller has already cut away edge stubs.
+    pub(super) fn record_complete_decode_span(
+        &mut self,
+        observation: &ObservationIdentity,
+        (start, end): (u64, u64),
+    ) {
+        if start >= end
+            || !matches!(
+                observation.producer,
+                ObservationProducer::Whisper | ObservationProducer::CloudLive
+            )
+        {
+            return;
+        }
+        let spans = self
+            .complete_decode_spans
+            .entry(observation.occurrence.session.clone())
+            .or_default()
+            .entry(observation.occurrence.capture_epoch)
+            .or_default();
+        let first = spans.partition_point(|(_, span_end)| *span_end < start);
+        let last = spans.partition_point(|(span_start, _)| *span_start <= end);
+        let merged = spans[first..last]
+            .iter()
+            .fold((start, end), |(lo, hi), (span_start, span_end)| {
+                (lo.min(*span_start), hi.max(*span_end))
+            });
+        spans.splice(first..last, [merged]);
+    }
+
     /// Account decoder work over a source using accepted window receipts.
     /// A frontier return may be a timeout; it is never a successful decode.
     fn decoded_source_scope_accounted(
@@ -3672,7 +3723,9 @@ mod slot_ops_tests {
             .map(|s| ledger.slot_source_ranges(s))
             .collect::<Vec<_>>();
         ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
-        assert!(ledger.require_text_recovery(&owner));
+        // A complete decode window that covered the owner already paid its text
+        // debt (decision of Maciej, 2026-10-21): nothing is owed and Stop can seal.
+        assert!(!ledger.require_text_recovery(&owner));
         let next = ObservationIdentity::new(ObservationProducer::Whisper, 1002, 1, owner.clone());
         let decision = ledger.admit_word_slots(
             &next,
@@ -3693,9 +3746,9 @@ mod slot_ops_tests {
                 .collect::<Vec<_>>(),
             lineage
         );
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
-        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        assert!(ledger.seal(&owner).is_ok());
         assert!(ledger.word_deletions().is_empty());
         ledger.assert_slot_labels();
         assert_eq!(ledger.conservation().residue(), 0);
@@ -3826,7 +3879,12 @@ mod slot_ops_tests {
             .collect::<Vec<_>>();
         let operations_before = ledger.slot_operations().len();
         ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
-        assert!(ledger.require_text_recovery(&owner));
+        // A complete decode window that covered the owner already paid its text
+        // debt (decision of Maciej, 2026-10-21). The parent tail reaches past
+        // the split's returned words, so only that variant still owes text.
+        let covered = ledger.complete_decode_covers(&owner);
+        assert_eq!(covered, !parent_has_tail);
+        assert_eq!(ledger.require_text_recovery(&owner), !covered);
         let next = ledger.next_word_observation(ObservationProducer::Whisper, 1102, &owner);
         let decision = ledger.admit_word_slots(
             &next,
@@ -3852,9 +3910,13 @@ mod slot_ops_tests {
             lineage
         );
         assert_eq!(ledger.slot_operations().len(), operations_before);
-        assert!(ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.text_recovery_pending(&owner), !covered);
         assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
-        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        if covered {
+            assert!(ledger.seal(&owner).is_ok());
+        } else {
+            assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        }
         assert!(ledger.word_deletions().is_empty());
         assert_eq!(
             ledger.len(),
@@ -3936,9 +3998,12 @@ mod slot_ops_tests {
                 .collect::<Vec<_>>(),
             lineage
         );
-        assert!(ledger.text_recovery_pending(&owner));
+        // The refused offer still came from a complete window over the owner,
+        // and a complete decode pays the text debt (decision of Maciej,
+        // 2026-10-21). The words stay; only the debt is settled.
+        assert!(!ledger.text_recovery_pending(&owner));
         assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
-        assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+        assert!(ledger.seal(&owner).is_ok());
         assert!(ledger.word_deletions().is_empty());
         ledger.assert_slot_labels();
         assert_eq!(ledger.conservation().residue(), 0);
@@ -3967,9 +4032,12 @@ mod slot_ops_tests {
                         && alternative.candidate == "naprawdę"
                         && alternative.sources == sources)
             );
-            assert!(ledger.text_recovery_pending(&owner));
+            // The refused offer still came from a complete window over the owner,
+            // and a complete decode pays the text debt (decision of Maciej,
+            // 2026-10-21). The words stay; only the debt is settled.
+            assert!(!ledger.text_recovery_pending(&owner));
             assert!(ledger.note_frontier_return(&owner, producer));
-            assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
+            assert!(ledger.seal(&owner).is_ok());
             assert!(ledger.word_deletions().is_empty());
             ledger.assert_slot_labels();
             assert_eq!(ledger.conservation().residue(), 0);
@@ -6314,7 +6382,9 @@ mod slot_ops_tests {
             let source = ledger.slots_of(&owner).unwrap().to_vec();
             assert!(ledger.complete_word_slot(&source[0]));
             assert!(ledger.returned_word_scope_accounted(&first));
-            assert!(ledger.require_text_recovery(&owner));
+            // The complete window already covered the owner, so no debt opens
+            // (decision of Maciej, 2026-10-21: complete decode pays the debt).
+            assert!(!ledger.require_text_recovery(&owner));
             let late = ledger.next_word_observation(producer, 996, &owner);
             let receipt = ledger.admit_word_slots(
                 &late,

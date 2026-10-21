@@ -15114,12 +15114,15 @@ mod rc_w2_acoustic_tests {
             );
             let whisper =
                 ledger.next_word_observation(LedgerObservationProducer::Whisper, index + 1, owner);
+            // A complete window over the owner would pay its text debt
+            // (decision of Maciej, 2026-10-21). Stuck owners are owners no
+            // returned window heard whole: this one misses the first 100 ms.
             ledger.admit_word_slots(
                 &whisper,
                 &pins(index)
                     .map(|(start, end, _, heard)| {
                         WordPin::new(start, end, heard)
-                            .with_decode_window(owner.sample_start, owner.sample_end)
+                            .with_decode_window(owner.sample_start + at(0.1), owner.sample_end)
                     })
                     .collect::<Vec<_>>(),
             );
