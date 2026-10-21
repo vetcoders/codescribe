@@ -11,6 +11,8 @@ alternative arrangements; this document does not select one as the final UI.
 | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Agent name, clock, descriptor and message preview                    | `OverlayAgentRosterLabel.swift`                                                         |
 | Row footer, action grouping, broadcast row and compact channel pills | `OverlayChannelStatusView.swift`                                                        |
+| Numbered channel pill: rail pills, compact map chips and counter     | `OverlayChannelPill.swift`                                                              |
+| Compact channel map: chips, collapse to a counter, `MIC →`           | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
 | Header, waveform placement, embedded list/rail and hover region      | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions               | `OverlayAgentDrawerLayout.swift`                                                        |
 | Native mini/midi/expanded window size, position and morph            | `DictationOverlayWindow.swift`                                                          |
@@ -56,6 +58,17 @@ read `sender → You`. Attachment-only messages use the same route. The receipt
 menu lists the frozen recipient set of a broadcast. A speaker who is not the
 open conversation stays a button that opens their conversation; the arrow and
 the audience are text.
+
+The compact strip's channel map is another surface of the same projections.
+`OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel` from
+the roster's rows, `hudStates`, current conversations and unread counts; a chip
+calls `selectChannelConversation`, the rail pill's selection path, and the
+counter's single `onOpenMap` entry point opens the Agents list (W2 replaces it
+with the map popover). `OverlayChannelPill` is the single owner of the
+numbered pill visual: the rail pill, the map's chips and its counter render the
+digit through it, from immutable display values and one action. It receives no
+`OverlayState`, conversation or command. The map's collapse threshold is
+measured from the same text metrics the pill draws with.
 
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A folded rail pill already selects that conversation,

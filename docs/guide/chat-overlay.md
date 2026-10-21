@@ -88,6 +88,39 @@ again. Selecting a conversation does not replay old speech.
 It does not mean they completed the work, accepted the transcript's acoustic
 coverage or answered aloud.
 
+## Channel map in the compact overlay
+
+The compact form carries a map of the bus between the clock and the header
+buttons: one chip per channel bound to an agent, in digit order, with
+**0 · All** first. A chip shows the digit in a circle and the agent's name, for
+example `0 All · 2 Miksa · 3 Igor · 5 Kuba`. Only channels the roster binds
+appear; delivery history alone does not add one. A chip whose agent has
+disconnected is dimmed like its row in the **Agents** list; the digit stays,
+because the channel chord still reaches the channel. A dot marks unread replies.
+
+Pointing at a chip names the channel, the agent and the chord, for example
+`5 · Kuba · Ctrl+5`. The modifier is the one chosen in Settings › Shortcuts ›
+Extra shortcuts › **Agent channel** (Ctrl or Fn); the map reads it when it
+appears and when you point at it.
+
+Clicking a chip opens that agent's conversation on the **Agents** canvas, as its
+numbered pill in the folded **Agents** list does. It does not open or close the
+microphone and does not change the destination of a recording in progress; use
+the channel chord or a microphone control to speak.
+
+While the microphone feeds a channel, its chip reads `MIC → 5 Kuba` in the
+agent violet, in its usual place. Channel 0 shows the left-facing megaphone
+instead of the microphone. When the channel closes, the plain chip returns. The
+indicator says where your voice goes; it is not a receipt.
+
+When the strip is too narrow for every chip, the chips collapse into one
+counter: `4 ▾`, the number of mapped channels with channel 0 included, or
+`MIC → 5` while a channel records. Pointing at the counter lists the whole map;
+clicking it opens the **Agents** list. If even the counter does not fit, the map
+steps aside so the header buttons and the fold control keep their place; widen
+the compact strip to bring it back. The strip stays 46 points tall, and larger
+text grows the chips only as far as that height allows.
+
 ## Type a message and attach clipboard content
 
 Click the selected conversation's composer, type and press its Send control.
