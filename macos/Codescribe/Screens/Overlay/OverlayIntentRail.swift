@@ -138,22 +138,6 @@ struct OverlayIntentRail: View {
   private static let engineCommands: [OverlayIntent] = [.retranscribe, .format]
   private static let deliveryCommands: [OverlayIntent] = [.sendToAgent]
 
-  /// Visible commands in their sidebar groups, in the order the rail draws
-  /// them: document, engine, delivery, then anything none of them claims.
-  private var commandGroups: [[OverlayIntent]] {
-    let visible =
-      OverlayDockLayout(projectedIntents: intents).visibleIntents.filter {
-        $0 != .recoverSuperseded && $0 != .discardSuperseded
-      }
-    let claimed = Set(Self.documentCommands + Self.engineCommands + Self.deliveryCommands)
-    return [
-      visible.filter { Self.documentCommands.contains($0) },
-      visible.filter { Self.engineCommands.contains($0) },
-      visible.filter { Self.deliveryCommands.contains($0) },
-      visible.filter { !claimed.contains($0) },
-    ]
-  }
-
   var body: some View {
     ScrollView(.vertical) {
       VStack(spacing: 8) {
@@ -194,6 +178,22 @@ struct OverlayIntentRail: View {
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
+  }
+
+  /// Visible commands in their sidebar groups, in the order the rail draws
+  /// them: document, engine, delivery, then anything none of them claims.
+  private var commandGroups: [[OverlayIntent]] {
+    let visible =
+      OverlayDockLayout(projectedIntents: intents).visibleIntents.filter {
+        $0 != .recoverSuperseded && $0 != .discardSuperseded
+      }
+    let claimed = Set(Self.documentCommands + Self.engineCommands + Self.deliveryCommands)
+    return [
+      visible.filter { Self.documentCommands.contains($0) },
+      visible.filter { Self.engineCommands.contains($0) },
+      visible.filter { Self.deliveryCommands.contains($0) },
+      visible.filter { !claimed.contains($0) },
+    ]
   }
 
   private var groupSeparator: some View {
