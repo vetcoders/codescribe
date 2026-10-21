@@ -266,19 +266,23 @@ final class OverlayHeaderMorphTests: XCTestCase {
     }
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMiniToMidi() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMiniToMidi() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .mini, to: .midi, name: "mini->midi")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToExpanded() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToExpanded() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .midi, to: .expanded, name: "midi->expanded")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphExpandedToMidi() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphExpandedToMidi() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .expanded, to: .midi, name: "expanded->midi")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToMini() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToMini() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .midi, to: .mini, name: "midi->mini")
   }
 

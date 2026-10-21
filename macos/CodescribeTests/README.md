@@ -315,7 +315,7 @@ Settings placeholder is transparent and parked offscreen. The test-process
 check recognizes XCTest launch markers before the XCTest class is loaded.
 
 Native tests that exercise actual keyboard ownership, external AX, painted-frame
-occlusion or visible opacity transitions call
+occlusion, real AppKit morphs, native wheel delivery or visible opacity transitions call
 `BackgroundTestWindow.requireIsolatedGUI`. They report an explicit XCTest skip
 at the start of the test in the ordinary suite. Skips inside XCTest assertion
 autoclosures become unexpected failures, so the gate belongs before any
@@ -330,3 +330,13 @@ opt-in decision without starting an application or creating a window.
 `BackgroundTestWindowTests` checks the actual native fixture policy in the
 ordinary suite. Direct window-fronting calls belong only to the presentation
 owner; new fixtures must use it too.
+
+The animation and wheel cases retain their real AppKit assertions in the isolated
+GUI gate. A zero-opacity WindowServer fixture is not evidence for those behaviors;
+changing its level or yielding the actor did not make the focused probes pass.
+Local window geometry and layout cases still run without visible pixels.
+
+The standalone fold case also fails on the exact older `0adb8214` source (one
+test, five assertions), even though that version previously passed it in a
+full run. That aggregate pass is not independent native acceptance. The exact
+ordering or fixture dependency remains undiagnosed.

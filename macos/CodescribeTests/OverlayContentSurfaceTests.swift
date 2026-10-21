@@ -248,7 +248,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
       let agentsPoint = try foldPoint()
       XCTAssertEqual(agentsPoint.x, reference.x, accuracy: 0.5)
       XCTAssertEqual(agentsPoint.y, reference.y, accuracy: 0.5)
-      XCTAssertLessThan(panel.level.rawValue, NSWindow.Level.normal.rawValue)
+      XCTAssertEqual(panel.alphaValue, 0, "the fixture stays invisible without changing its level")
       XCTAssertFalse(panel.isKeyWindow)
       XCTAssertFalse(NSApp.isActive)
     }
@@ -272,7 +272,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
       let before = panel.frame
       controller.showForRecording()
       XCTAssertEqual(panel.frame, before)
-      XCTAssertLessThan(panel.level.rawValue, NSWindow.Level.normal.rawValue)
+      XCTAssertEqual(panel.alphaValue, 0, "the fixture stays invisible without changing its level")
       XCTAssertFalse(panel.isKeyWindow)
       XCTAssertFalse(NSApp.isActive)
     }

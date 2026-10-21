@@ -140,6 +140,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testBottomDraggedBarExpandsInsideItsRealScreen() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { panel, root in
       let visible = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
@@ -197,6 +198,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   /// Outside mini only the header band advances the presentation: a still
   /// click on the body drag region keeps its ordinary meaning.
   func testPresentationClickHitsHeaderButNotBodyOutsideMini() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { panel, root in
       for mode in [OverlayPresentationMode.midi, .expanded] {
@@ -460,6 +462,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     let generation = state.captureGeneration
@@ -498,6 +501,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testInterruptedMorphKeepsOriginalCanvasSizeAndTopEdge() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       let frame = panel.frame
@@ -517,6 +521,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testClampedHoverStripReturnsToItsOriginalMiniPosition() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       state.setPresentationMode(.mini)
@@ -536,6 +541,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testSettingsAndTrayOpenWidgetUseTheCachedPanelWithoutStartingCapture() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     let captureGeneration = state.captureGeneration
@@ -585,6 +591,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testOverlayCursorComesFromItsOwnNativeHitSurface() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       let canvas = try XCTUnwrap(findTranscript(in: root))
@@ -680,6 +687,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testCollapsePreservesTextSizeAndTopEdgeAcrossBarDrag() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     try withPanel(state: state, width: 700) { panel, root in
@@ -1027,6 +1035,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let canvas = try section(
       of: overlaySource(), from: "private func canvasStack", to: "private var header: some View")
     let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
@@ -1454,6 +1463,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   /// SwiftUI header, so the probe reads AppKit truth: one mounted hover region
   /// per header control and the drag region that backs the wordmark.
   func testMiniAlwaysReadsCsAndCarriesTheAgentsButton() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.channelAudioCaptureActive)

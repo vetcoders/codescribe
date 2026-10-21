@@ -483,6 +483,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testResizeBandWheelReachesMountedScrollViewWithoutChangingSelection() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
       styleMask: [.borderless, .nonactivatingPanel, .resizable],
@@ -536,6 +537,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testRealOverlayEdgeWheelScrollsExistingTranscript() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     project(
@@ -1319,6 +1321,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testProjectedTextCannotUnfoldTheRecordingBar() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     var builtPanel: FloatingOverlayPanel?
     let controller = OverlayController(
