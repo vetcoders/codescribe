@@ -66,6 +66,7 @@ elif name == 'xcodebuild':
     assert data.is_dir() and data.parent == Path(s['tmp'])
     assert os.environ['TEST_RUNNER_CODESCRIBE_DATA_DIR'] == str(data)
     assert os.environ['TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN'] == '1'
+    assert os.environ['TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI'] == ('1' if s['mode'] == 'gui-opt-in' else '0')
     bridge_home = Path(os.environ['TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME'])
     assert bridge_home == data / 'agent-bridge' and bridge_home.is_dir()
     assert os.environ['TEST_RUNNER_CODESCRIBE_AX_PROBE'] == str(data / 'ax-probe')
@@ -176,6 +177,8 @@ def run_case(base, profile, layout, mode='success'):
         bridge.unlink()
     env = dict(PATH=str(bin_dir), TMPDIR=str(case / 'tmp'), CARGO_HOME=str(case / 'cargo-home'),
                FIXTURE_SPEC=str(case / 'spec.json'), DEVELOPER_DIR='/fixture/xcode')
+    if mode == 'gui-opt-in':
+        env['CODESCRIBE_TEST_ISOLATED_GUI'] = '1'
     if configured:
         env['CARGO_TARGET_DIR'] = configured
     args = [make, '-C', str(repo), 'test-swift',
@@ -202,7 +205,7 @@ def run_case(base, profile, layout, mode='success'):
         assert len(helpers) == (0 if mode == 'prerequisite-error' else 1), helpers
         if mode == 'prerequisite-error':
             assert names.count('swiftc') == 1 and 'Error 44' in result.stdout, result.stdout
-        refusal = mode not in ('success', 'override-helper', 'budget', 'under') or profile == 'unsupported'
+        refusal = mode not in ('success', 'override-helper', 'budget', 'under', 'gui-opt-in') or profile == 'unsupported'
         if refusal:
             assert result.returncode != 0, 'refusal accepted'
             if mode in ('xcode-error', 'zero', 'slow', 'one-over', 'two-over', 'suite-over'):
@@ -254,7 +257,7 @@ with tempfile.TemporaryDirectory(prefix='test-swift-target-root-') as tmp:
     for mode in ('missing', 'malformed', 'relative-metadata', 'empty-metadata', 'null-metadata',
                  'control-metadata', 'metadata-error', 'missing-xcodegen', 'generation-error',
                  'xcode-error', 'zero', 'slow', 'budget', 'one-over', 'two-over',
-                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error', 'ax-error', 'ax-untrusted'):
+                 'under', 'suite-over', 'helper-error', 'override-helper', 'prerequisite-error', 'ax-error', 'ax-untrusted', 'gui-opt-in'):
         run_case(base, 'debug', 'spaces', mode)
     run_case(base, 'unsupported', 'spaces')
 print(f'test-swift-target-root: scenarios={passed + failed} passed={passed} failed={failed}')
