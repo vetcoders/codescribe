@@ -219,6 +219,20 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
     normalize_word_token(a) == normalize_word_token(b)
 }
 
+/// Two labels spell the same letters in the same order, however a decoder
+/// split them into tokens or punctuated them ("gabowa to." and "gabowato").
+/// It proves that no letter was added or lost, nothing about the boundary.
+pub(super) fn same_letters(a: &str, b: &str) -> bool {
+    let letters = |text: &str| {
+        text.chars()
+            .filter(|ch| ch.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    };
+    let a = letters(a);
+    !a.is_empty() && a == letters(b)
+}
+
 impl AcousticLedger {
     /// Resolve rolling-window replays on capture-owned voiced bursts first.
     /// Anchor starts are stable when a live burst extends. Shared bursts do

@@ -616,6 +616,35 @@ impl AcousticLedger {
         !matched && incomplete(word.sample_start, word.sample_end, bounds)
     }
 
+    /// Whether `observation`'s decode window held the whole stretch of
+    /// `sources` farther from its nearer fence than every window that decoded
+    /// those sources. Words near a fence are decoded without context on that
+    /// side. A source whose own window is unknown, or did not hold the whole
+    /// stretch, cannot be compared and keeps its boundary.
+    pub(super) fn retokenizing_decode_hears_wider(
+        &self,
+        observation: &ObservationIdentity,
+        sources: &[WordSlot],
+    ) -> bool {
+        let (Some(start), Some(end)) = (
+            sources.iter().map(|source| source.sample_start).min(),
+            sources.iter().map(|source| source.sample_end).max(),
+        ) else {
+            return false;
+        };
+        let margin = |decoder: &ObservationIdentity| {
+            self.decoded_word_windows
+                .get(decoder)
+                .filter(|&&(lo, hi)| lo <= start && end <= hi)
+                .map(|&(lo, hi)| (start - lo).min(hi - end))
+        };
+        margin(observation).is_some_and(|ours| {
+            sources
+                .iter()
+                .all(|source| margin(&source.observation).is_some_and(|theirs| ours > theirs))
+        })
+    }
+
     /// Whisper Word alignment uses 20 ms encoder frames (word_pins.rs),
     /// converted onto the capture clock with at most one sample of rounding.
     /// This uncertainty is geometry, never a wait or an extension of issued PCM.
@@ -1529,6 +1558,21 @@ impl AcousticLedger {
                                 ranges.contains(&(word.sample_start, word.sample_end))
                             })
                     });
+            // Overlapping windows can split one stretch of speech into
+            // different tokens. In take dcc26684 the window that held a word
+            // 0.18 s before its fence returned "gabowa to.", and a window that
+            // held it 3.18 s inside returned "gabowato". When the outputs
+            // spell exactly the sources' letters, the contraction loses no
+            // word; it moves a word boundary inside the same speech. The
+            // decode that heard the stretch farther from its own fences
+            // decides that boundary.
+            let retokenizes = collapses_word_pins
+                && window_refinement
+                && word_adjudication::same_letters(
+                    &compose_label(&sources),
+                    &compose_label(&outputs),
+                )
+                && self.retokenizing_decode_hears_wider(observation, &sources);
             // Source lineage may cross today's neighbour boundary. A complete
             // decode can pose the first group question without a prior trial
             // reservation when each complete held word's centre belongs to
@@ -1571,7 +1615,7 @@ impl AcousticLedger {
             // A completed word-grain window proves which PCM was observed.
             // It does not authorize a merge of already distinct word pins.
             // Pin or speech coverage alone cannot retire their word evidence.
-            let geometry = (!collapses_word_pins || preserves_group_words)
+            let geometry = (!collapses_word_pins || preserves_group_words || retokenizes)
                 && source_indices.last().unwrap() - source_indices.first().unwrap() + 1
                     == sources.len()
                 && outputs
@@ -1670,7 +1714,7 @@ impl AcousticLedger {
             // Scope proof stays available for a real partition. It cannot
             // clear ambiguity or speech debt for an unproved contraction.
             let window_partition =
-                window_refinement && (!collapses_word_pins || preserves_group_words);
+                window_refinement && (!collapses_word_pins || preserves_group_words || retokenizes);
             let ambiguous = self.repetition_target_ambiguous(&sources, &outputs)
                 && !(coverage.is_some()
                     || range_refinement
@@ -1688,7 +1732,18 @@ impl AcousticLedger {
             let lexical_refinement = !all_coarse
                 || polarity_disagrees
                 || observation.producer == ObservationProducer::AppleDictation;
-            let local_choice = if lexical_refinement && source_complete && geometry && !ambiguous {
+            // Identical letters leave nothing for lexical adjudication to
+            // weigh; the wider decode has already decided the boundary.
+            let local_choice = if retokenizes && source_complete && geometry && !ambiguous {
+                self.record_word_choice(
+                    observation,
+                    &sources,
+                    &outputs,
+                    "retokenized_by_wider_decode",
+                    true,
+                );
+                Some(true)
+            } else if lexical_refinement && source_complete && geometry && !ambiguous {
                 self.adjudicate_word_sources(observation, &sources, &outputs)
             } else {
                 None
@@ -3699,11 +3754,8 @@ mod slot_ops_tests {
         }
     }
 
-    // Root-owned merge controls: source relationships, not output word count.
-    fn forensic_merge_capture(
-        session: &str,
-        count: u64,
-    ) -> (AcousticLedger, OccurrenceIdentity, Vec<f32>) {
+    // One qualified owner over constant speech at 3_200..9_600, no slots yet.
+    fn forensic_merge_owner(session: &str) -> (AcousticLedger, OccurrenceIdentity, Vec<f32>) {
         use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
         let owner = OccurrenceIdentity::new(session, 37, 3_200, 9_600);
         let mut pcm = vec![0.0_f32; 16_000];
@@ -3756,6 +3808,15 @@ mod slot_ops_tests {
                 .is_qualified()
         );
         ledger.record_speech_evidence(&speech);
+        (ledger, owner, pcm)
+    }
+
+    // Root-owned merge controls: source relationships, not output word count.
+    fn forensic_merge_capture(
+        session: &str,
+        count: u64,
+    ) -> (AcousticLedger, OccurrenceIdentity, Vec<f32>) {
+        let (mut ledger, owner, pcm) = forensic_merge_owner(session);
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 701, 0, owner.clone());
         let width = 6_400 / count;
         assert_eq!(width * count, 6_400);
@@ -3778,6 +3839,78 @@ mod slot_ops_tests {
         assert_eq!(slots.len(), count as usize);
         assert!(slots.iter().all(|slot| ledger.complete_word_slot(slot)));
         (ledger, owner, pcm)
+    }
+
+    // Take dcc26684: a Whisper window whose fence fell 100 samples after one
+    // spoken word returned it as two tokens, "gabowa to.".
+    fn forensic_retokenize_capture(session: &str) -> (AcousticLedger, OccurrenceIdentity) {
+        let (mut ledger, owner, _) = forensic_merge_owner(session);
+        let near_fence =
+            ObservationIdentity::new(ObservationProducer::Whisper, 801, 0, owner.clone());
+        let pins = [
+            WordPin::new(3_200, 7_000, "gabowa").with_decode_window(0, 9_700),
+            WordPin::new(7_000, 9_600, "to.").with_decode_window(0, 9_700),
+        ];
+        assert!(
+            ledger
+                .admit_word_slots(&near_fence, &pins)
+                .grants_mutation()
+        );
+        assert_eq!(ledger.text_of(&owner), Some("gabowa to."));
+        (ledger, owner)
+    }
+
+    #[test]
+    fn forensic_retokenize_wider_decode_moves_a_word_boundary_inside_speech() {
+        let (mut ledger, owner) = forensic_retokenize_capture("retokenize-wider");
+        let wider = ledger.next_word_observation(ObservationProducer::Whisper, 802, &owner);
+        let decision = ledger.admit_word_slots(
+            &wider,
+            &[WordPin::new(3_200, 9_600, "gabowato").with_decode_window(0, 16_000)],
+        );
+        assert!(
+            decision.grants_mutation(),
+            "{decision:?}; choices={:?}",
+            ledger.word_choices()
+        );
+        assert_eq!(ledger.text_of(&owner), Some("gabowato"));
+        assert_eq!(
+            ledger.word_choices().last().unwrap().reason,
+            "retokenized_by_wider_decode"
+        );
+        assert!(ledger.word_deletions().is_empty());
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
+    }
+
+    #[test]
+    fn forensic_retokenize_closer_decode_keeps_the_held_boundary() {
+        let (mut ledger, owner) = forensic_retokenize_capture("retokenize-closer");
+        let held = ledger.slots_of(&owner).unwrap().to_vec();
+        let closer = ledger.next_word_observation(ObservationProducer::Whisper, 803, &owner);
+        let decision = ledger.admit_word_slots(
+            &closer,
+            &[WordPin::new(3_200, 9_600, "gabowato").with_decode_window(0, 9_650)],
+        );
+        assert!(!decision.grants_mutation(), "{decision:?}");
+        assert_eq!(ledger.slots_of(&owner).unwrap(), held);
+        assert_eq!(ledger.text_of(&owner), Some("gabowa to."));
+    }
+
+    #[test]
+    fn forensic_retokenize_other_letters_are_not_a_boundary_move() {
+        // Apple heard "gapowaty" over the same stretch: different letters,
+        // so a wider window alone cannot merge the held tokens into it.
+        let (mut ledger, owner) = forensic_retokenize_capture("retokenize-letters");
+        let held = ledger.slots_of(&owner).unwrap().to_vec();
+        let wider = ledger.next_word_observation(ObservationProducer::Whisper, 804, &owner);
+        let decision = ledger.admit_word_slots(
+            &wider,
+            &[WordPin::new(3_200, 9_600, "gapowaty").with_decode_window(0, 16_000)],
+        );
+        assert!(!decision.grants_mutation(), "{decision:?}");
+        assert_eq!(ledger.slots_of(&owner).unwrap(), held);
+        assert_eq!(ledger.text_of(&owner), Some("gabowa to."));
     }
 
     #[test]
