@@ -22,7 +22,7 @@ use codescribe_core::pipeline::contracts::{
 };
 use codescribe_core::pipeline::replay_card::{ReplayBuild, ReplayCard};
 use codescribe_core::pipeline::streaming::{
-    APPLE_FINAL_OVERLAP_WARNING_CODE, replay_buffered_engine_session,
+    APPLE_FINAL_OVERLAP_WARNING_CODE, replay_buffered_engine_session, retained_formatter_deadline,
 };
 
 use crate::presentation::emitter::{PresentationEmitter, TranscriptReducer};
@@ -471,12 +471,22 @@ async fn replay_recorded_take_on_worker(
     let started = std::time::Instant::now();
     let replayed = replay_buffered_engine_session(&samples, config, sink.clone()).await;
     let elapsed_seconds = started.elapsed().as_secs_f64();
-    let finished = match Arc::get_mut(&mut sink) {
-        Some(sink) => {
+    // Formatter jobs the take accepted outlive its acoustic session on their
+    // own owner, which holds the sink until they settle or its deadline drops
+    // them. The live emitter keeps receiving those results, so the document
+    // is finished only after that owner lets go.
+    let owner_deadline = std::time::Instant::now() + retained_formatter_deadline(&settings);
+    let finished = loop {
+        if let Some(sink) = Arc::get_mut(&mut sink) {
             sink.presentation.finish().await;
-            Ok(())
+            break Ok(());
         }
-        None => Err(anyhow!("replay sink still shared after the session joined")),
+        if std::time::Instant::now() >= owner_deadline {
+            break Err(anyhow!(
+                "replay sink still shared after the retained formatter deadline"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
     drop(bus);
     let rows = std::fs::read_to_string(&bus_path);

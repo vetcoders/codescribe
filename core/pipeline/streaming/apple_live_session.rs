@@ -748,6 +748,17 @@ fn deliver_formatter_completion(
 /// already in flight plus one full queue accepted behind it.
 const RETAINED_FORMATTER_WAVES: u32 = 2;
 
+/// How long a stopped take's retained formatter owner may live: its
+/// [`RETAINED_FORMATTER_WAVES`] of the generation's attempt timeout. Past it
+/// the owner drops its remaining jobs and, with them, the take's event sink.
+pub fn retained_formatter_deadline(runtime_settings: &RuntimeSettingsSnapshot) -> Duration {
+    runtime_settings
+        .ai_execution()
+        .request_timing()
+        .attempt_timeout()
+        .saturating_mul(RETAINED_FORMATTER_WAVES)
+}
+
 /// Text jobs a take accepted while it was live, carried past the end of its
 /// acoustic session.
 ///
@@ -784,12 +795,7 @@ impl RetainedFormatterJobs {
             return None;
         }
         self.event_sink.on_formatter_pending(true);
-        let deadline = self
-            .runtime_settings
-            .ai_execution()
-            .request_timing()
-            .attempt_timeout()
-            .saturating_mul(RETAINED_FORMATTER_WAVES);
+        let deadline = retained_formatter_deadline(&self.runtime_settings);
         info!(
             in_flight = self.jobs.len(),
             queued = self.requests.len(),
