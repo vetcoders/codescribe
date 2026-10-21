@@ -108,21 +108,21 @@ If a take starts during playback, the helper stops afplay and reports
 A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 `reason`; the command exits 5. The body of a refused request is never printed.
 
-| `reason`              | Meaning                                                |
-| --------------------- | ------------------------------------------------------ |
-| `credential_missing`  | No credential found; the agent refreshes the login     |
-| `credential_rejected` | Token or key refused; the agent refreshes the login    |
-| `credential_busy`     | Another process holds the grant; retry after it finishes |
-| `credential_storage`  | The credential store cannot be safely read or saved   |
-| `credential_refresh_invalid` | Refresh returned an invalid or incomplete grant |
-| `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
-| `http_<code>`         | Other refusal; report the code                         |
-| `network`             | The request did not complete; one retry is reasonable  |
-| `muted`               | Muted on purpose; the text landed, never unmute        |
-| `playback_busy`       | Another reply held playback beyond the 120-second wait |
-| `take_live`           | Take did not end within the 120-second wait            |
-| `take_started`        | Take started during playback; audio was stopped        |
-| `playback_failed`     | Audio arrived, `afplay` failed                         |
+| `reason`                     | Meaning                                                  |
+| ---------------------------- | -------------------------------------------------------- |
+| `credential_missing`         | No credential found; the agent refreshes the login       |
+| `credential_rejected`        | Token or key refused; the agent refreshes the login      |
+| `credential_busy`            | Another process holds the grant; retry after it finishes |
+| `credential_storage`         | The credential store cannot be safely read or saved      |
+| `credential_refresh_invalid` | Refresh returned an invalid or incomplete grant          |
+| `quota_exhausted`            | Spending limit or credits used up; the Founder decides   |
+| `http_<code>`                | Other refusal; report the code                           |
+| `network`                    | The request did not complete; one retry is reasonable    |
+| `muted`                      | Muted on purpose; the text landed, never unmute          |
+| `playback_busy`              | Another reply held playback beyond the 120-second wait   |
+| `take_live`                  | Take did not end within the 120-second wait              |
+| `take_started`               | Take started during playback; audio was stopped          |
+| `playback_failed`            | Audio arrived, `afplay` failed                           |
 
 Report a failed reply in chat with its `reason`; do not retry a
 `credential_*` or `quota_exhausted` refusal in a loop.
