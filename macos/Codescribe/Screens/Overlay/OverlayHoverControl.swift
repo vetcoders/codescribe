@@ -79,6 +79,10 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   @Binding var presented: String?
   var action: (() -> Void)? = nil
   var showsTooltip = true
+  /// An unavailable control stays on screen, greyed to the rail's disabled
+  /// opacity, and neither fires its action nor opens its detail. Its tooltip
+  /// still names it, so the reason it cannot run stays one hover away.
+  var isEnabled = true
   /// The transcript column sits on the trailing edge, so its menus open over
   /// the document. Other chrome keeps the menu below the control.
   var popoverArrow: Edge = .top
@@ -97,14 +101,17 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     } label: {
       label
         .foregroundStyle(palette.primaryText.color)
+        .opacity(isEnabled ? 1 : 0.35)
         .padding(2)
         .background {
           RoundedRectangle(cornerRadius: CSRadius.chip)
-            .fill(palette.primaryText.color.opacity(hovered ? 0.14 : 0))
+            .fill(
+              palette.primaryText.color.opacity(isEnabled && hovered ? 0.14 : 0))
         }
         .contentShape(Rectangle())
     }
     .csFocusRing()
+    .disabled(!isEnabled)
     .focusable(false)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)

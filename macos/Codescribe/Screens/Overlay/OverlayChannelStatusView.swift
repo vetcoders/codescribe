@@ -275,6 +275,7 @@ struct OverlaySidebarToggleButton: View {
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .csFocusOutline(cornerRadius: 6)
     .foregroundStyle(palette.mutedText.color)
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
     .help(title)
@@ -967,7 +968,9 @@ struct OverlayChannelStatusView: View {
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
+    .csFocusOutline(cornerRadius: 12 * textScale)
     .disabled(conversation == nil || onSelectConversation == nil)
+    .opacity(conversation == nil || onSelectConversation == nil ? 0.35 : 1)
     .modifier(OverlayDisconnectedRowDim(disconnected: channel.map { hasDeadFollower($0) } ?? false))
     .help(title)
     .accessibilityLabel(Text(verbatim: title))
