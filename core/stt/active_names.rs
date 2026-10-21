@@ -210,7 +210,7 @@ pub fn live_follower_hosts_at(
     now: f64,
     ttl_seconds: f64,
 ) -> HashMap<(String, String), FollowerHosts> {
-    let mut sessions = HashMap::new();
+    let mut sessions: HashMap<(String, String), FollowerHosts> = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
             lease.provider.as_deref().map(str::trim),
