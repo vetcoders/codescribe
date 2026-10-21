@@ -89,8 +89,9 @@ requests fresh commands.
 ## Agent panel focus
 
 A click on an agent row asks that agent's own follower to bring its vc-frame
-pane to the Founder's focus. The app never drives the terminal; the follower
-was spawned from the agent's pane and inherits its coordinates.
+pane, or its iTerm2 or Terminal.app tab, to the Founder's focus. The app never
+drives the terminal; the follower was spawned from the agent's pane or tab and
+inherits its coordinates.
 
 At start the follower records them in its lease as `frame`: `session`,
 `pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
@@ -99,6 +100,22 @@ for an agent outside vc-frame. A follower that predates this contract reports
 no `frame` until it is restarted. The address comes from the owner's own pane
 (`VC_FRAME_PANE_ID`, `VC_FRAME_SESSION_NAME`, `VC_FRAME_SOCKET_DIR`, with the
 `ZELLIJ_*` names as fallback), the exported Vibecrafted contract.
+
+Beside `frame` the lease records `terminal`, the iTerm2 or Terminal.app tab
+hosting the agent: `host` (`iterm2` or `apple-terminal`), `host_bundle_id`
+(`com.googlecode.iterm2` or `com.apple.Terminal`), `tty` (a `/dev/ttys…`
+path, or `null`) and `session_id` (the UUID after the colon of iTerm2's
+`ITERM_SESSION_ID` / `TERM_SESSION_ID`, which is AppleScript's `id of session`; `null` for Terminal.app). The host comes from `__CFBundleIdentifier`,
+then `TERM_PROGRAM` (`iTerm.app`, `Apple_Terminal`); any other host, vc-frame's
+own terminal or an editor's included, leaves `terminal` `null`. A non-Claude
+follower takes it from the environment it inherited at attach and the tty of
+the nearest process in its ancestry that has one. A Claude Code follower
+resolves it from the session's processes with the same discovery as the pane
+(session files, daemon roster, ancestors, attached clients, PTY coupling) and
+refreshes it with the pane; a daemon worker's own tree is skipped because it
+inherits whichever terminal started the daemon. The tty and the iTerm2
+session id are local identifiers: they are written to the lease only and
+never to a bus row.
 
 The program is not part of the address. Each click runs the public `vc-frame`
 resolved on PATH at that moment (contract of the Vibecrafted maintainer,
@@ -110,20 +127,38 @@ The request is a row on the agent's bus, schema
 `request_id` (24 lowercase hex), `emitted_at`, the exact `provider`,
 `provider_session_id`, `lease_id`, `bus` and `channel` of the agent, and
 `source` (`overlay_click`). It carries no text, status or capture coordinates.
-The owning follower runs `vc-frame action focus-pane-id terminal_<pane_id>`
-once per `request_id`; vc-frame switches to the pane's tab first. It neither
-wakes the model nor touches the mailbox. A request older than 15 seconds is a
-replayed backlog and is answered `stale` without focusing.
+The owning follower acts once per `request_id`, with a known pane first: it
+runs `vc-frame action focus-pane-id terminal_<pane_id>` (vc-frame switches to
+the pane's tab first). Without a pane and with a known `terminal` it runs one
+`/usr/bin/osascript` (5-second timeout, no stdin): in iTerm2 it selects the
+window, tab and session whose `id` is `session_id`, or whose `tty` is `tty`
+when there is no id, and activates iTerm2; in Terminal.app it selects the tab
+whose `tty` matches, makes its window frontmost and activates Terminal. The
+session id and tty are script arguments, never spliced into the script text.
+It neither wakes the model nor touches the mailbox. A request older than 15
+seconds is a replayed backlog and is answered `stale` without focusing.
+
+The script is an Apple event from the follower, whose responsible process is
+the agent's own terminal. A terminal controlling itself normally raises no
+Automation prompt; when macOS refuses (`-1743`, "not allowed to send Apple
+events") the receipt is `automation_denied` and the user allows it in System
+Settings › Privacy & Security › Automation.
 
 The follower answers on the same bus with
 `codescribe.agent-panel-focus-result.v1`, `kind` `agent_panel_focus_result`:
 the same `request_id`, its own `provider`/`provider_session_id`/`lease_id`,
 `emitted_at`, `status` (`focused`, `already_focused`, `pane_missing`,
-`no_frame`, `stale` or `error`), `exit_code` (integer or `null`),
-`elapsed_ms`, and `frame` (`session`, `pane_id`, `host_bundle_id`,
-`host_pid`, or `null`). Activating the terminal window stays with the app on
-`focused` / `already_focused`: the click is its user action. Both rows pass
-through `codescribe bus append-event`, which refuses any other shape.
+`terminal_missing`, `automation_denied`, `no_frame`, `stale` or `error`),
+`exit_code` (integer or `null`), `elapsed_ms`, `target` (`frame`, `iterm2`,
+`terminal`, or `null` when neither is known), `frame` (`session`, `pane_id`,
+`host_bundle_id`, `host_pid`, or `null`) and `terminal` (`host`,
+`host_bundle_id`, `tty`, or `null`; never the iTerm2 session id).
+`terminal_missing` means the script ran and no tab matched; `no_frame` means
+the follower knows neither a pane nor a tab (the name is kept for older
+readers). Activating the host stays with the app on `focused` /
+`already_focused`: the click is its user action. A Frame receipt activates the
+Frame host; a terminal receipt without `frame` activates
+`terminal.host_bundle_id`. Both rows pass through `codescribe bus append-event`, which refuses any other shape.
 
 ## Conversational read receipt
 
@@ -1606,10 +1641,19 @@ bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
 
-## Agent panel focus in Frame
+## Agent panel focus in Frame or a terminal tab
+
+Each agent row resolves one destination for its focus button
+(`overlay-focus-panel-CHANNEL`, unchanged): the Frame pane when the roster
+reports `frame_detected` and a compatible `vc-frame` is installed (below),
+otherwise the iTerm2 or Terminal.app tab when it reports `terminal_detected`
+(the lease's `terminal.host_bundle_id` is non-empty). The button shows only
+for a live follower with a destination; its help reads **Focus agent panel in
+Frame** or **Show the agent's terminal tab**, with the `terminal` symbol for a
+tab. `vc-frame` capability gates only the Frame destination.
 
 The overlay drawer starts fail-closed and renders **Focus agent panel in Frame**
-(`overlay-focus-panel-CHANNEL`) only after a public `vc-frame` command on `PATH`
+only after a public `vc-frame` command on `PATH`
 (or on the user's non-interactive `zsh` `PATH` when a `launchd`-spawned GUI
 process inherits only `/usr/bin:/bin:/usr/sbin:/sbin` and `$HOME/.zshenv` or
 `$HOME/.zprofile` is present) is verified to support
@@ -1621,6 +1665,7 @@ both accepted without version-string equality, focus changes, or session side
 effects, while negative results are never cached so repairing a missing wrapper
 dependency restores availability on the next poll without restarting Codescribe.
 Literal `~/.local/bin` fallbacks and `VIBECRAFTED_VC_FRAME_BIN` are never used.
-When a compatible `vc-frame` is absent or unsupported, the button is excluded
-from rendering; when a compatible `vc-frame` is installed and a channel's
-follower is disconnected, the button remains rendered and disabled.
+When a compatible `vc-frame` is absent or unsupported, the Frame destination is
+excluded and only a known terminal tab can still offer the button; when a
+destination exists and a channel's follower is disconnected, the button
+remains rendered and disabled.

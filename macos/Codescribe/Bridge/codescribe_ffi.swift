@@ -9761,6 +9761,12 @@ public struct CsChannelRosterState: Equatable, Hashable {
      */
     public var frameDetected: Bool?
     /**
+     * Whether the live follower's lease names an iTerm2 or Terminal.app tab;
+     * `None` = no live follower or no claim. Off means the terminal focus
+     * control is idle.
+     */
+    public var terminalDetected: Bool?
+    /**
      * Milliseconds since the Unix epoch of the live follower's oldest
      * unacknowledged delivery; `None` = no backlog or no follower. The
      * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9785,6 +9791,11 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * live follower or no claim. Off means the Frame focus control is idle.
          */frameDetected: Bool? = nil,
         /**
+         * Whether the live follower's lease names an iTerm2 or Terminal.app tab;
+         * `None` = no live follower or no claim. Off means the terminal focus
+         * control is idle.
+         */terminalDetected: Bool? = nil,
+        /**
          * Milliseconds since the Unix epoch of the live follower's oldest
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9799,6 +9810,7 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
         self.followerAlive = followerAlive
         self.frameDetected = frameDetected
+        self.terminalDetected = terminalDetected
         self.unreadSinceUnixMs = unreadSinceUnixMs
     }
 
@@ -9825,6 +9837,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
                 followerAlive: FfiConverterOptionBool.read(from: &buf),
                 frameDetected: FfiConverterOptionBool.read(from: &buf),
+                terminalDetected: FfiConverterOptionBool.read(from: &buf),
                 unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
@@ -9839,6 +9852,7 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
         FfiConverterOptionBool.write(value.followerAlive, into: &buf)
         FfiConverterOptionBool.write(value.frameDetected, into: &buf)
+        FfiConverterOptionBool.write(value.terminalDetected, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
     }
 }
