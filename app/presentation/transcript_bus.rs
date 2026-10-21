@@ -3246,7 +3246,11 @@ mod tests {
             (&result, "elapsed_ms", serde_json::json!(-1)),
             (&result, "frame", serde_json::json!("terminal_9")),
             (&terminal_result, "target", serde_json::json!("kitty")),
-            (&terminal_result, "terminal", serde_json::json!("/dev/ttys005")),
+            (
+                &terminal_result,
+                "terminal",
+                serde_json::json!("/dev/ttys005"),
+            ),
             (&terminal_result, "status", serde_json::json!("tab_missing")),
             (&result, "wav", serde_json::json!("/capture.wav")),
             (&result, "provider_session_id", serde_json::json!("foreign")),
