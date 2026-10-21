@@ -668,7 +668,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     try withPanel(state: state, width: 700) { panel, root in
-      panel.setFrame(NSRect(x: 140, y: 180, width: 700, height: 400), display: true)
+      panel.setFrame(
+        NSRect(
+          x: 140, y: 180, width: 700,
+          height: DictationOverlayWindow.minSize.height + 100),
+        display: true)
       let expanded = panel.frame
       let native = try XCTUnwrap(findTranscript(in: root))
       state.toggleCollapsed()
@@ -800,7 +804,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(intents.contains(.recoverSuperseded))
     XCTAssertTrue(intents.contains(.discardSuperseded))
     XCTAssertTrue(intents.contains(.finish))
-    XCTAssertTrue(rail.contains("OverlayDockLayout(projectedIntents: intents).visibleIntents"))
+    XCTAssertTrue(rail.contains("enabledSlots.contains(.intent(.sendToAgent))"))
     XCTAssertTrue(rail.contains("id: \"overlay-intent-\\(intent.rawValue)\""))
     actions.toggle()
     XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
@@ -810,6 +814,29 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(source.contains("accessibilityVoiceOverEnabled"))
     XCTAssertFalse(source.contains("@State private var actions = OverlayActionsPresentation()"))
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
+  }
+
+  /// One process stage is visible at a time: the footer message owns the
+  /// formatting/committing/draft line, and the revision row in the footer
+  /// detail only adds the full commit failure — never a second copy of the
+  /// stage the user already reads below the canvas.
+  func testProcessStageHasOneVisibleOwnerInTheFooter() throws {
+    let source = try overlaySource()
+    let footer = try section(
+      of: source, from: "private var footerMessage: String?",
+      to: "private var footerMessageRow")
+    XCTAssertTrue(footer.contains("\"Formatting revision…\""))
+    XCTAssertTrue(footer.contains("\"Committing revision…\""))
+    XCTAssertTrue(footer.contains("\"Draft · not committed\""))
+    let row = try section(
+      of: source, from: "private var revisionStatusRow",
+      to: "private var noSpeechBody")
+    XCTAssertFalse(row.contains("Formatting revision…"))
+    XCTAssertFalse(row.contains("Committing revision…"))
+    XCTAssertFalse(row.contains("Draft · not committed"))
+    XCTAssertTrue(
+      row.contains("overlay-revision-error"),
+      "the full commit failure stays discoverable in the detail")
   }
 
   func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
@@ -860,8 +887,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("OverlayHoverControl("))
     let all: [OverlayIntent] = [.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close]
     XCTAssertEqual(
-      OverlayDockLayout(projectedIntents: all).visibleIntents,
-      [.insertPaste, .copy, .retranscribe, .format, .sendToAgent])
+      OverlayIntentRail.actionAvailability(intents: all, versions: .empty)
+        .filter(\.isEnabled).map(\.slot),
+      [
+        .history, .intent(.insertPaste), .intent(.copy), .intent(.retranscribe),
+        .intent(.format), .intent(.sendToAgent),
+      ])
   }
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
@@ -1528,9 +1559,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.setContentSize(NSSize(width: width, height: 280))
+    panel.setContentSize(NSSize(width: width, height: DictationOverlayWindow.minSize.height))
     if let visible = NSScreen.main?.visibleFrame {
-      panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 40, y: visible.maxY - 320))
+      // Anchor by the top-right corner, 40 pt inside the visible frame, at
+      // whatever height the panel actually took.
+      panel.setFrameOrigin(
+        NSPoint(x: visible.maxX - width - 40, y: visible.maxY - panel.frame.height - 40))
     }
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
