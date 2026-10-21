@@ -19,6 +19,15 @@ readability floor. Moving the window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
 
+Compact carries the channel map (`docs/guide/chat-overlay.md`, "Channel map in
+the compact overlay") between the session timer and the header actions. The
+46 pt strip, its floors and the fold control's point are unchanged; a map that
+cannot fit even its counter claims no width. Its shortcut hints read the
+Agent channel modifier from settings (`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and
+never assume Ctrl. A chip click is passive selection, like a rail pill: it never
+opens or closes a channel's microphone or retargets a running capture. The map
+adds no hotkey of its own.
+
 The overlay's channel menu separates **My dictation**, **0 · All**, and exact
 named-agent conversations from the explicit **Capture channels** controls.
 Selecting a conversation is passive: it does not open or close the microphone,

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Compact overlay: a channel map between the clock and the header buttons shows **0 All** and each bound agent by digit (`0 All · 2 Miksa · 3 Igor · 5 Kuba`), so the channel chord's target is readable without unfolding the Agents canvas. A chip's hint names the chord with the modifier from Settings (`5 · Kuba · Ctrl+5`); a click opens that agent's conversation, as its rail pill does, and never touches the microphone. The channel the microphone feeds reads `MIC → 5 Kuba` in the agent violet. A narrow strip collapses the chips into one counter (`4 ▾`, or `MIC → 5`). The rail's numbered pills and the map share one pill view.
 - Agent list: the per-agent button also opens the agent's iTerm2 or Terminal tab, not only its Frame pane. A known Frame pane still wins; otherwise the agent's own reader selects its tab and Codescribe brings the terminal forward. The row says when the tab is not found, when macOS does not allow controlling the terminal (System Settings › Privacy & Security › Automation) or when no terminal is known for the agent.
 
 ### Changed
