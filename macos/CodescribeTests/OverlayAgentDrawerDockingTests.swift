@@ -574,7 +574,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
           textScale: 1.0, preferredWidth: widest, windowWidth: 780),
         windowWidth: 780),
       "the conversation slides out at its 320-point minimum")
-    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 68.8, accuracy: 0.001)
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 60.44, accuracy: 0.001)
   }
 
   func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {
@@ -650,7 +650,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     settle()
     XCTAssertEqual(state.agentsLayout, .rail)
     XCTAssertEqual(drawer.frame, .zero, "sidebar.right folds the column away")
-    XCTAssertEqual(rail.frame.width, 60, accuracy: 1, "into the rail of pills")
+    XCTAssertEqual(
+      rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
+      "into the rail of pills")
     XCTAssertEqual(rail.frame.maxX, 1200, accuracy: 1)
 
     state.showAgentMonitor()
@@ -661,7 +663,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     settle()
     XCTAssertEqual(state.agentsLayout, .rail, "a choice in the asked-for list keeps the fold")
     XCTAssertEqual(drawer.frame, .zero)
-    XCTAssertEqual(rail.frame.width, 60, accuracy: 1)
+    XCTAssertEqual(rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
 
     state.unfoldAgentList()
     settle()
@@ -682,7 +684,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     defer { panel.orderOut(nil) }
     XCTAssertFalse(state.agentDrawerDocked)
     XCTAssertEqual(
-      rail.frame.width, 60, accuracy: 1, "the rail is available before opening the list")
+      rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
+      "the rail is available before opening the list")
 
     state.showAgentMonitor()
     settle()
@@ -691,7 +694,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     settle()
     XCTAssertFalse(state.showsAgentMonitor)
     XCTAssertEqual(drawer.frame, .zero)
-    XCTAssertEqual(rail.frame.width, 60, accuracy: 1, "the fold fits a narrow window too")
+    XCTAssertEqual(
+      rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
+      "the fold fits a narrow window too")
     XCTAssertEqual(rail.frame.maxX, 700, accuracy: 1)
 
     state.unfoldAgentList()
@@ -702,7 +707,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.chooseConversation(astra.id)
     settle()
     XCTAssertEqual(drawer.frame, .zero)
-    XCTAssertEqual(rail.frame.width, 60, accuracy: 1, "and the choice returns to the rail")
+    XCTAssertEqual(
+      rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
+      "and the choice returns to the rail")
 
     // Chosen on a wide window, the agents view stays the view when it narrows.
     state.setAgentsLayout(.agents)
@@ -842,6 +849,113 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       }
       XCTAssertEqual(state.conversationDrafts[lena.id], "keep this draft")
       XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertFalse(panel.isKeyWindow)
+    }
+  }
+
+  /// The numbered pills must take real mouseDown/mouseUp through the panel —
+  /// an AXPress proves the action exists, not that a click reaches it past
+  /// the panel's own resize band and window-drag routing. Channel 0 leads:
+  /// it is the first pill under the disclosure control.
+  func testNumberedRailButtonsTakeNativeClicksWithoutResizeOrUnfolding() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    for scale: CGFloat in [0.8, 1, 1.6] {
+      let state = OverlayState.previewFormatted()
+      state.applyConversationSnapshot(
+        .init(
+          deliveries: [
+            OverlayChannelDelivery(
+              channel: "2", agent: "lena", deliveryID: "rail-lena", stage: .received, isOpen: false),
+            OverlayChannelDelivery(
+              channel: "3", agent: "astra", deliveryID: "rail-astra", stage: .received,
+              isOpen: false),
+          ], conversations: [broadcast, lena, astra]))
+      state.applyChannelRoster(
+        [broadcast, lena, astra].map {
+          CsChannelRosterState(
+            channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+            providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+            autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+        })
+      state.selectConversation(lena.id)
+      state.foldAgentList()
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+      host.sizingOptions = []
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 1200, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+        defer: false)
+      panel.contentView = OverlayContentContainer(hosting: host)
+      BackgroundTestWindow.present(panel)
+      defer { panel.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      let startFrame = panel.frame
+
+      func windowRect(of identifier: String) throws -> NSRect {
+        let element = try XCTUnwrap(
+          NativeAccessibilityProbe.waitForElements(identifier).elements.first)
+        let screenTop = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+        return panel.convertFromScreen(
+          NSRect(
+            x: element.x, y: screenTop - element.y - element.height,
+            width: element.width, height: element.height))
+      }
+      func send(_ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 0) throws {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: 1,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+            clickCount: clickCount, pressure: type == .leftMouseUp ? 0 : 1))
+        panel.sendEvent(event)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      }
+      func nativeClick(at point: NSPoint) throws {
+        try send(.leftMouseDown, at: point, clickCount: 1)
+        XCTAssertFalse(panel.isUserResizing, "a pill click must not become a resize")
+        try send(.leftMouseUp, at: point, clickCount: 1)
+      }
+
+      // Pointer travel from the disclosure control down to the first pill
+      // keeps the pill as the click target; the list stays folded.
+      let unfold = try windowRect(of: "overlay-agent-rail-unfold")
+      let zero = try windowRect(of: "overlay-agent-rail-0")
+      for step in 0...4 {
+        let point = NSPoint(
+          x: unfold.midX + (zero.midX - unfold.midX) * CGFloat(step) / 4,
+          y: unfold.midY + (zero.midY - unfold.midY) * CGFloat(step) / 4)
+        try send(.mouseMoved, at: point)
+        XCTAssertFalse(state.showsAgentMonitor)
+        XCTAssertEqual(state.agentsLayout, .rail)
+      }
+
+      // Unselected agent, then already-selected agent, then channel 0 twice:
+      // every native click lands on its own conversation and nothing else.
+      let three = try windowRect(of: "overlay-agent-rail-3")
+      try nativeClick(at: NSPoint(x: three.midX, y: three.midY))
+      XCTAssertEqual(state.selectedConversationID, astra.id)
+      try nativeClick(at: NSPoint(x: three.midX, y: three.midY))
+      XCTAssertEqual(state.selectedConversationID, astra.id)
+      try nativeClick(at: NSPoint(x: zero.midX, y: zero.midY))
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      try nativeClick(at: NSPoint(x: zero.midX, y: zero.midY))
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      XCTAssertEqual(state.agentsLayout, .rail)
+      XCTAssertFalse(state.showsAgentMonitor)
+      XCTAssertEqual(panel.frame, startFrame)
+
+      // The band itself still belongs to the native resize: a press there
+      // starts a resize and selects nothing.
+      let bandPoint = NSPoint(x: panel.frame.width - OverlayResizeHit.band / 2, y: zero.midY)
+      try send(.leftMouseDown, at: bandPoint, clickCount: 1)
+      XCTAssertTrue(panel.isUserResizing)
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      try send(.leftMouseUp, at: bandPoint, clickCount: 1)
+      XCTAssertFalse(panel.isUserResizing)
+      XCTAssertEqual(panel.frame, startFrame)
       XCTAssertFalse(panel.isKeyWindow)
     }
   }

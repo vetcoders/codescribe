@@ -256,16 +256,57 @@ final class OverlayPresentationTraceTests: XCTestCase {
     XCTAssertNil(root.pinnedContentSize)
     XCTAssertEqual(root.contentFrame, root.bounds, "the landed panel fills its window again")
     XCTAssertEqual(root.layer?.masksToBounds, false)
-
-    // A fold lays out at its own steps, as before.
-    panel.setPresentationMode(.mini, animated: true)
-    XCTAssertNil(root.pinnedContentSize)
     withExtendedLifetime(state) {}
   }
 
-  /// A fold that catches an unroll gives the content back to the window, so the
-  /// fold lays out at its own steps from wherever the unroll had got to.
-  func testFoldCatchingAnUnrollReleasesTheHeldLayout() throws {
+  /// The fold is the unroll's mirror: the departing layout keeps its size,
+  /// held at the top-right corner, while the shrinking window covers it. No
+  /// animator step lays the content out again, and releasing the hold lands
+  /// on the settled frame in the same pass — no end-of-transition jump.
+  func testFoldHoldsTheDepartingLayoutAtTheTopRightCorner() throws {
+    let (state, panel) = try makePanel("fold")
+    panel.setFrameOrigin(NSPoint(x: 400, y: 400))
+    panel.orderFrontRegardless()
+    defer { panel.orderOut(nil) }
+    panel.setPresentationMode(.expanded)
+    let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
+    let departing = panel.frame
+    XCTAssertEqual(root.contentFrame, root.bounds, "a resting panel fills its window")
+
+    let mark = trace.recorded
+    panel.setPresentationMode(.mini, animated: true)
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertEqual(began.note, "fold")
+    XCTAssertEqual(root.pinnedContentSize, departing.size)
+    XCTAssertEqual(root.contentFrame.size, departing.size)
+
+    RunLoop.main.run(until: Date().addingTimeInterval(panel.lastMorphDuration / 2))
+    XCTAssertLessThan(panel.frame.height, departing.height, "the fold is under way")
+    XCTAssertGreaterThan(
+      panel.frame.height, DictationOverlayWindow.collapsedHeight, "the fold has not landed yet")
+    XCTAssertEqual(root.contentFrame.size, departing.size, "a step does not lay the content out")
+    XCTAssertEqual(root.contentFrame.maxX, root.bounds.maxX, accuracy: 0.5)
+    XCTAssertEqual(root.contentFrame.maxY, root.bounds.maxY, accuracy: 0.5)
+
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
+    XCTAssertNil(root.pinnedContentSize)
+    XCTAssertEqual(root.contentFrame, root.bounds, "the landed panel fills its window again")
+    XCTAssertEqual(root.layer?.masksToBounds, false)
+
+    // Reduce Motion takes the unanimated path: no hold is ever taken.
+    panel.setPresentationMode(.expanded)
+    panel.setPresentationMode(.mini)
+    XCTAssertNil(root.pinnedContentSize)
+    XCTAssertEqual(root.contentFrame, root.bounds)
+    withExtendedLifetime(state) {}
+  }
+
+  /// A fold that catches an unroll keeps the size the unroll already holds:
+  /// the layout on screen never changes size mid-flight, in either direction.
+  /// The fold then covers that held layout until it lands on mini.
+  func testFoldCatchingAnUnrollKeepsTheHeldLayout() throws {
     let (_, panel) = try makePanel("unroll-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     panel.orderFrontRegardless()
@@ -273,19 +314,28 @@ final class OverlayPresentationTraceTests: XCTestCase {
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
     panel.setPresentationMode(.expanded, animated: true)
-    XCTAssertNotNil(root.pinnedContentSize)
+    let held = try XCTUnwrap(root.pinnedContentSize)
     RunLoop.main.run(until: Date().addingTimeInterval(panel.lastMorphDuration / 3))
 
     let mark = trace.recorded
     panel.setPresentationMode(.mini, animated: true)
+    XCTAssertEqual(root.pinnedContentSize, held, "the held layout carries into the fold")
+    XCTAssertEqual(root.contentFrame.size, held)
+    XCTAssertEqual(root.layer?.masksToBounds, true)
+    let began = try XCTUnwrap(
+      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
+    XCTAssertEqual(began.note, "fold")
+
+    RunLoop.main.run(until: Date().addingTimeInterval(panel.lastMorphDuration / 2))
+    XCTAssertEqual(root.contentFrame.size, held, "a step does not lay the content out")
+    XCTAssertEqual(root.contentFrame.maxX, root.bounds.maxX, accuracy: 0.5)
+    XCTAssertEqual(root.contentFrame.maxY, root.bounds.maxY, accuracy: 0.5)
+
+    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
     XCTAssertNil(root.pinnedContentSize)
     XCTAssertEqual(root.contentFrame, root.bounds)
     XCTAssertEqual(root.layer?.masksToBounds, false)
-    let began = try XCTUnwrap(
-      trace.entries(after: mark).first { $0.kind == .frameTransitionBegan })
-    XCTAssertNil(began.note)
-    XCTAssertTrue(pump(untilCompleted: try XCTUnwrap(began.generation)))
-    XCTAssertEqual(panel.frame.size, panel.miniSize)
   }
 
   /// A caller that settles an unroll before its first step lands it once; the
