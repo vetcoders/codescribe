@@ -20,7 +20,8 @@ private struct BubbleOwnerNameButton: View {
     .onHover { hovered = $0 }
     .background { OverlayMenuCursorRegion() }
     .overlayFastHint(
-      String(localized: "Opens this agent's conversation"), palette: palette)
+      String(localized: "Opens this agent's conversation"), palette: palette
+    )
     .accessibilityIdentifier("overlay-message-owner-\(messageID)")
     .accessibilityLabel(Text(verbatim: name))
     .accessibilityHint(Text("Opens this agent's conversation"))
@@ -201,7 +202,8 @@ struct OverlayConversationView: View {
               .csFocusOutline()
               .accessibilityLabel("Jump to current")
               .overlayFastHint(
-                String(localized: "Jump to the current reply"), palette: palette)
+                String(localized: "Jump to the current reply"), palette: palette
+              )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
               .padding(.bottom, composerHeight + 10)
@@ -771,7 +773,8 @@ struct OverlayConversationView: View {
           String(
             localized: "Show the message this replies to",
             comment: "Bubble quote: jumps to the earlier message"),
-          palette: palette)
+          palette: palette
+        )
         .accessibilityHint(Text("Show the message this replies to"))
         .accessibilityIdentifier("overlay-message-parent-\(message.id)")
       }
@@ -828,7 +831,8 @@ struct OverlayConversationView: View {
             String(
               localized: "Reply to this message",
               comment: "Bubble action: quote this message in the composer"),
-            palette: palette)
+            palette: palette
+          )
           .accessibilityHint(Text("Reply to this message"))
           .accessibilityIdentifier("overlay-message-reply-\(message.id)")
         }
@@ -863,7 +867,7 @@ struct OverlayConversationView: View {
         OverlayHeldControlButton(
           title: "Cancel/Edit", hint: String(localized: "Cancel/Edit"), palette: palette
         ) { edit(message) }
-          .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
+        .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
         OverlayHeldControlButton(
           title: "Send now", hint: String(localized: "Send now"), palette: palette
         ) {
