@@ -103,18 +103,22 @@ pub struct SpeechIslandInput<'a> {
     pub existence_floor_rms: Option<f32>,
 }
 
-/// Join Silero speech into islands and count what lies between the clamps.
-pub fn measure_speech_islands(input: SpeechIslandInput<'_>) -> SpeechIslandEvidence {
-    let gap_samples = u64::from(input.sample_rate).saturating_mul(SPEECH_ISLAND_GAP_MS) / 1_000;
-    let mut speech: Vec<(u64, u64)> = input
-        .speech
+/// Silero speech joined across pauses shorter than [`SPEECH_ISLAND_GAP_MS`],
+/// in capture order: each island's clamps and the pauses it joined. Speech
+/// past `observed_samples` is not yet known and is cut there.
+pub fn join_speech_islands(
+    speech: &[(u64, u64)],
+    sample_rate: u32,
+    observed_samples: u64,
+) -> Vec<(u64, u64, u32)> {
+    let gap_samples = u64::from(sample_rate).saturating_mul(SPEECH_ISLAND_GAP_MS) / 1_000;
+    let mut speech: Vec<(u64, u64)> = speech
         .iter()
-        .map(|&(start, end)| (start, end.min(input.observed_samples)))
+        .map(|&(start, end)| (start, end.min(observed_samples)))
         .filter(|(start, end)| end > start)
         .collect();
     speech.sort_unstable();
 
-    // (start, end, inner pauses)
     let mut spans: Vec<(u64, u64, u32)> = Vec::new();
     for (start, end) in speech {
         match spans.last_mut() {
@@ -127,6 +131,12 @@ pub fn measure_speech_islands(input: SpeechIslandInput<'_>) -> SpeechIslandEvide
             _ => spans.push((start, end, 0)),
         }
     }
+    spans
+}
+
+/// Join Silero speech into islands and count what lies between the clamps.
+pub fn measure_speech_islands(input: SpeechIslandInput<'_>) -> SpeechIslandEvidence {
+    let spans = join_speech_islands(input.speech, input.sample_rate, input.observed_samples);
 
     let nuclei = input
         .hops
