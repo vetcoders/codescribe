@@ -91,7 +91,9 @@ requests fresh commands.
 A click on an agent row asks that agent's own follower to bring its vc-frame
 pane, or its iTerm2 or Terminal.app tab, to the Founder's focus. The app never
 drives the terminal; the follower was spawned from the agent's pane or tab and
-inherits its coordinates.
+inherits its coordinates. A Codex agent's thread in the Codex app is the one
+destination the app opens itself, from the lease alone (see
+[Agent panel focus in Frame or a terminal tab](#agent-panel-focus-in-frame-or-a-terminal-tab)).
 
 At start the follower records them in its lease as `frame`: `session`,
 `pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
@@ -116,6 +118,20 @@ refreshes it with the pane; a daemon worker's own tree is skipped because it
 inherits whichever terminal started the daemon. The tty and the iTerm2
 session id are local identifiers: they are written to the lease only and
 never to a bus row.
+
+A Codex follower also records `codex`, its thread in the Codex desktop app
+(installed as ChatGPT.app): `thread_id` (the `provider_session_id`, the id
+the lease and the channel binding already carry), `app_bundle_id`
+(`com.openai.codex`), `rollout` and `remote`. `rollout` is true when the local
+Codex store under `$CODEX_HOME` (default `~/.codex`) holds the thread's
+rollout, `sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` or the same name
+(also `.jsonl.zst`) in `archived_sessions/`; the walk visits the newest date
+directories first and is bounded. A found rollout is re-checked by path on
+every heartbeat, a missing one is searched again at most every 30 seconds, so
+a thread whose rollout appears later becomes openable. `remote` is true when
+a process in the follower's ancestry is a `codex … exec-server --remote …`,
+the Codex Cloud exec-server. Every other provider writes `codex: null`. The
+object adds no new identifier and holds no credential.
 
 The program is not part of the address. Each click runs the public `vc-frame`
 resolved on PATH at that moment (contract of the Vibecrafted maintainer,
@@ -1666,10 +1682,32 @@ Each agent row resolves one destination for its focus button
 (`overlay-focus-panel-CHANNEL`, unchanged): the Frame pane when the roster
 reports `frame_detected` and a compatible `vc-frame` is installed (below),
 otherwise the iTerm2 or Terminal.app tab when it reports `terminal_detected`
-(the lease's `terminal.host_bundle_id` is non-empty). The button shows only
-for a live follower with a destination; its help reads **Focus agent panel in
-Frame** or **Show the agent's terminal tab**, with the `terminal` symbol for a
-tab. `vc-frame` capability gates only the Frame destination.
+(the lease's `terminal.host_bundle_id` is non-empty), otherwise a Codex
+agent's thread in the Codex app when it reports `codex_thread_url` with
+`codex_thread_local` true. A Frame or terminal button shows only for a live
+follower; its help reads **Focus agent panel in Frame** or **Show the agent's
+terminal tab**, with the `terminal` symbol for a tab. `vc-frame` capability
+gates only the Frame destination.
+
+The Codex thread is the one destination the app reaches itself. The roster
+reads the lease's `codex` object without the heartbeat filter (the newest
+lease of the provider session wins; an id outside 8–128 letters, digits, `-`
+and `_` is dropped) and builds `codex://threads/<thread_id>` in one place,
+`ChannelHudState.codex_thread_url`. A click opens that URL with
+`NSWorkspace`: the Codex app activates and shows the thread, without
+AppleScript and without an Automation permission. No
+`codescribe.agent-panel-focus.v1` row is written and no follower acts. This
+is a deliberate exception to "the follower acts": opening a URL is not
+driving a terminal, and Codex app followers are usually dead between turns,
+so the button stays enabled while the row is dimmed as **Disconnected**. Its
+help reads **Show the agent's Codex thread**; the row answers at once with
+**Codex thread opened** or **Could not open the agent's Codex thread**.
+
+The link resolves against the Codex app's local thread store. A Codex Cloud
+thread has no local rollout (`codex_thread_local` false) and its link ends in
+the app's own "no rollout found for thread id" error, so with no Frame pane
+or terminal tab its button is shown greyed with **Codex Cloud thread: open it
+in ChatGPT** instead of failing on click.
 
 The overlay drawer starts fail-closed and renders **Focus agent panel in Frame**
 only after a public `vc-frame` command on `PATH`
