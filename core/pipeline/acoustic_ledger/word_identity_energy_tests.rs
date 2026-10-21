@@ -1434,3 +1434,65 @@ fn recorded_1021_phrase_grain_dt_word_held_across_the_owner_fence_is_not_inserte
     }));
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn recorded_1021_a_redecode_continues_a_word_only_over_most_of_it_and_off_its_neighbours() {
+    // Takes 3ff83fef and dbb410fa (dragon, 2026-10-21): re-decodes of one
+    // word turned "jesteś" into "ale" over 60 ms of it, and "pokazać" into a
+    // 2.76 s "właściwe" across the "generalnie" after it. A successor that
+    // holds most of the word's span and stays off the words beside it still
+    // continues the word.
+    let owner = OccurrenceIdentity::new("redecode-continuation-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..91_200].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[
+                        ("jesteś", 9_600, 36_480),
+                        ("pokazać", 36_480, 62_000),
+                        ("generalnie", 62_000, 86_400),
+                    ],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let held = ledger.slots_of(&owner).unwrap().to_vec();
+    let (jestes, pokazac) = (held[0].clone(), held[1].clone());
+    let redecode = ObservationIdentity::new(ObservationProducer::Whisper, 1, 4, owner.clone());
+    let word = |text: &str, sample_start: u64, sample_end: u64| WordSlot {
+        sample_start,
+        sample_end,
+        text: text.into(),
+        producer: ObservationProducer::Whisper,
+        observation: redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    let covered = |ledger: &AcousticLedger, source: &WordSlot, successor: WordSlot| {
+        assert!(
+            ledger.same_anchored_word(source, &successor),
+            "{source:?} {successor:?}"
+        );
+        ledger.slot_retirement_has_acoustic_coverage(
+            &redecode,
+            source,
+            &[successor],
+            std::slice::from_ref(source),
+        )
+    };
+    assert!(!covered(&ledger, &jestes, word("ale", 30_000, 33_600)));
+    assert!(!covered(
+        &ledger,
+        &pokazac,
+        word("właściwe", 40_000, 90_000)
+    ));
+    assert!(covered(&ledger, &jestes, word("jesteś,", 12_000, 32_000)));
+    assert!(covered(&ledger, &pokazac, word("pokazać", 40_000, 58_000)));
+}
