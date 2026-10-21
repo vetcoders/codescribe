@@ -1,31 +1,36 @@
 import SwiftUI
 
-/// Non-interactive hint. Narrow rails share the overlay's floating hint window
-/// so the scroll viewport cannot clip their labels.
+/// Non-interactive hint. Every caller uses the header's anchor and the one
+/// shared panel, so a scroll view cannot clip the label and a system tooltip
+/// never appears beside it. `floating` places the hint beside a narrow rail;
+/// otherwise it sits below the control, as on the header. A nil accent draws
+/// no ring and does not change the control's own hover wash.
 struct OverlayMiniTooltip: ViewModifier {
   let title: String
   let palette: OverlayAppearancePalette
   var enabled = true
   var floating = false
-  @State private var hovered = false
 
-  @ViewBuilder
   func body(content: Content) -> some View {
-    if floating && enabled {
-      content.modifier(
-        OverlayHeaderControlChrome(
-          title: title, accent: nil, palette: palette, hintLeading: true))
-    } else {
-      OverlayTooltipLayout {
-        content
-          .onHover { hovered = $0 }
-        if hovered && enabled {
-          OverlayTooltipChip(title: title, palette: palette)
-            .allowsHitTesting(false)
-        }
-      }
-      .zIndex(hovered && enabled ? 1 : 0)
-    }
+    content.modifier(
+      OverlayHeaderControlChrome(
+        title: title, accent: nil, palette: palette, hintLeading: floating,
+        showsHint: enabled && !title.isEmpty))
+  }
+}
+
+extension View {
+  /// Immediate click-through hint on `OverlayHintPanel`. The hint does not
+  /// take keyboard or mouse focus. `leading` is the rail placement.
+  func overlayFastHint(
+    _ title: String,
+    palette: OverlayAppearancePalette,
+    leading: Bool = false,
+    enabled: Bool = true
+  ) -> some View {
+    modifier(
+      OverlayMiniTooltip(
+        title: title, palette: palette, enabled: enabled, floating: leading))
   }
 }
 

@@ -281,8 +281,9 @@ struct OverlaySidebarToggleButton: View {
     .csFocusOutline(cornerRadius: 6)
     .foregroundStyle(palette.mutedText.color)
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
-    .help(title)
+    .overlayFastHint(title, palette: palette, leading: true)
     .accessibilityLabel(Text(verbatim: title))
+    .accessibilityHint(Text(verbatim: title))
     .accessibilityIdentifier(identifier)
   }
 }
@@ -490,6 +491,22 @@ struct OverlayAgentAudioControls: View {
     return muted == true
       ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
   }
+  /// The sentence the old system tooltip showed, including "Speaking" while a reply plays.
+  private var speakerHint: String {
+    speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel
+  }
+
+  /// Names a speaker that cannot run. A missing mute state keeps the status
+  /// sentence; a refused control says the action is unavailable.
+  private var speakerAccessibilityHint: String {
+    if muted == nil { return String(localized: "Playback status unavailable") }
+    if !playbackEnabled {
+      return String(
+        localized: "Playback unavailable", comment: "Disabled agent speaker control")
+    }
+    return speakerHint
+  }
+
   private var playbackValue: String {
     if muted == nil { return String(localized: "Playback status unavailable") }
     if broadcast {
@@ -518,10 +535,20 @@ struct OverlayAgentAudioControls: View {
       .tint(Self.litGlass(open ? recordingAccent : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
-      .help(microphoneLabel)
-      .accessibilityLabel(microphoneLabel)
+      .overlayFastHint(microphoneLabel, palette: palette)
+      .accessibilityLabel(Text(verbatim: microphoneLabel))
       .accessibilityValue(
-        open ? String(localized: "Microphone active") : String(localized: "Microphone off")
+        Text(
+          verbatim: open
+            ? String(localized: "Microphone active") : String(localized: "Microphone off"))
+      )
+      .accessibilityHint(
+        Text(
+          verbatim: microphoneEnabled
+            ? microphoneLabel
+            : String(
+              localized: "Microphone unavailable",
+              comment: "Disabled agent microphone control"))
       )
       .accessibilityIdentifier("overlay-agent-microphone")
 
@@ -540,9 +567,10 @@ struct OverlayAgentAudioControls: View {
       .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
-      .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
-      .accessibilityLabel(playbackLabel)
-      .accessibilityValue(playbackValue)
+      .overlayFastHint(speakerHint, palette: palette)
+      .accessibilityLabel(Text(verbatim: playbackLabel))
+      .accessibilityValue(Text(verbatim: playbackValue))
+      .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
       .accessibilityIdentifier("overlay-agent-speaker")
     }
     .modifier(OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }))
@@ -940,6 +968,14 @@ struct OverlayChannelStatusView: View {
     let selected = conversation != nil && conversation?.id == selectedConversationID
     let unread = conversation.flatMap { unreadCounts[$0.id] } ?? 0
     let title = channel.map { notificationTitle(for: $0) } ?? broadcastHeader
+    let canOpen = conversation != nil && onSelectConversation != nil
+    let hint =
+      canOpen
+      ? title + ". "
+        + String(localized: "View conversation without changing the microphone")
+      : String(
+        localized: "No conversation on this channel",
+        comment: "Disabled mini-rail channel pill")
     return Button {
       if let conversation { onSelectConversation?(conversation.id) }
     } label: {
@@ -970,11 +1006,12 @@ struct OverlayChannelStatusView: View {
     }
     .buttonStyle(.plain)
     .csFocusOutline(cornerRadius: 12 * textScale)
-    .disabled(conversation == nil || onSelectConversation == nil)
-    .opacity(conversation == nil || onSelectConversation == nil ? 0.35 : 1)
+    .disabled(!canOpen)
+    .opacity(canOpen ? 1 : 0.35)
     .modifier(OverlayDisconnectedRowDim(disconnected: channel.map { hasDeadFollower($0) } ?? false))
-    .help(title)
+    .overlayFastHint(hint, palette: palette, leading: true)
     .accessibilityLabel(Text(verbatim: title))
+    .accessibilityHint(Text(verbatim: hint))
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityIdentifier("overlay-agent-rail-\(digit)")
   }
@@ -1167,7 +1204,12 @@ struct OverlayChannelStatusView: View {
     if let conversation, let count = unreadCounts[conversation.id], count > 0 {
       tooltipParts.append(String(localized: "\(count) unread replies"))
     }
+    tooltipParts.append(channel.broadcastPolicy.statusHelp)
     let tooltip = tooltipParts.joined(separator: ". ")
+    let identityHint =
+      conversation == nil
+      ? String(localized: "No messages yet")
+      : String(localized: "View conversation without changing the microphone")
     let label = rosterRowLabel(
       title: "\(channel.channel) · \(conversation?.name ?? channel.agent)",
       statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
@@ -1198,14 +1240,10 @@ struct OverlayChannelStatusView: View {
           }
         }
         .foregroundStyle(palette.primaryText.color)
-        .help(
-          (conversation == nil
-            ? String(localized: "No messages yet")
-            : String(localized: "View conversation without changing the microphone"))
-            + ". " + status
-        )
+        .overlayFastHint(tooltip, palette: palette)
         .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
         .accessibilityValue(Text(verbatim: tooltip))
+        .accessibilityHint(Text(verbatim: identityHint))
         .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
         // The controls occupy only the footer. Identity, time and preview
@@ -1286,8 +1324,9 @@ struct OverlayChannelStatusView: View {
               .modifier(OverlayAgentControlStyle())
               .csFocusOutline()
               .disabled(pendingArchives.contains(owner) || open)
-              .help(archiveHelp)
+              .overlayFastHint(archiveHelp, palette: palette)
               .accessibilityLabel(Text(verbatim: archiveHelp))
+              .accessibilityHint(Text(verbatim: archiveHelp))
               .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
             }
           }
@@ -1319,7 +1358,6 @@ struct OverlayChannelStatusView: View {
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
-    .help(tooltip)
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
@@ -1459,7 +1497,10 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
     .foregroundStyle(palette.primaryText.color)
-    .help(String(localized: "View conversation without changing the microphone"))
+    .overlayFastHint(
+      String(localized: "View conversation without changing the microphone"), palette: palette)
+    .accessibilityHint(
+      Text(verbatim: String(localized: "View conversation without changing the microphone")))
     .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
   }
 
@@ -1507,7 +1548,10 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9, outset: 6))
-    .help("View conversation without changing the microphone")
+    .overlayFastHint(
+      String(localized: "View conversation without changing the microphone"), palette: palette)
+    .accessibilityHint(
+      Text(verbatim: String(localized: "View conversation without changing the microphone")))
     .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
   }
 
@@ -1636,7 +1680,9 @@ struct OverlayChannelStatusView: View {
                 .foregroundStyle(palette.mutedText.color)
             }
             .buttonStyle(.plain)
+            .overlayFastHint(String(localized: "Clear search"), palette: palette)
             .accessibilityLabel(Text("Clear search"))
+            .accessibilityHint(Text("Clear search"))
             .accessibilityIdentifier("overlay-saved-conversations-search-clear")
           }
         }
@@ -1671,7 +1717,8 @@ struct OverlayChannelStatusView: View {
         Text("Search failed")
           .font(.system(size: 10 * textScale, weight: .medium))
           .foregroundStyle(palette.errorStatus.color)
-          .help(error)
+          .overlayFastHint(error, palette: palette)
+          .accessibilityHint(Text(verbatim: error))
           .accessibilityIdentifier("overlay-saved-conversations-search-error")
       } else if activeSearchModel.isEffectivePartial {
         HStack(spacing: 4) {
