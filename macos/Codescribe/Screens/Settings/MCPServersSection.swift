@@ -41,7 +41,11 @@ struct MCPServersSection: View {
               permissionLevel: model.mcpServerPermissionLevel(server.name),
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
-              onRemove: { model.requestMcpServerRemoval(server.name) }
+              onRemove: { model.requestMcpServerRemoval(server.name) },
+              onSave: { command, args, endpoint, token in
+                model.updateMcpServer(
+                  server, command: command, args: args, endpoint: endpoint, token: token)
+              }
             )
           }
         }
@@ -56,7 +60,7 @@ struct MCPServersSection: View {
       )
       .padding(.top, model.mcpServers.isEmpty ? 0 : SettingsScale.sectionGap)
 
-      MCPAddServerForm { name, command, args, endpoint, token in
+      MCPServerForm { name, command, args, endpoint, token in
         model.addMcpServer(
           name: name, command: command, args: args,
           endpoint: endpoint, token: token
@@ -138,14 +142,17 @@ struct MCPServerRow: View {
   let onToggle: () -> Void
   let onTest: () -> Void
   let onRemove: () -> Void
+  let onSave: (String, [String], String, String) -> MCPAddFailure?
 
   @State private var showingDetails = false
+  @State private var isEditing = false
 
   init(
     server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
     permissionLevel: String?, initiallyShowingDetails: Bool = false,
     onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
-    onRemove: @escaping () -> Void
+    onRemove: @escaping () -> Void,
+    onSave: @escaping (String, [String], String, String) -> MCPAddFailure? = { _, _, _, _ in nil }
   ) {
     self.server = server
     self.pending = pending
@@ -154,6 +161,7 @@ struct MCPServerRow: View {
     self.onToggle = onToggle
     self.onTest = onTest
     self.onRemove = onRemove
+    self.onSave = onSave
     _showingDetails = State(initialValue: initiallyShowingDetails)
   }
 
@@ -186,9 +194,22 @@ struct MCPServerRow: View {
         HStack(spacing: CSSpace.xs) {
           enabledButton
           testButton
+          SettingsChipButton(action: { isEditing.toggle() }) {
+            Text("Edit").font(SettingsScale.controlLabel)
+          }
+          .accessibilityIdentifier("settings-mcp-edit-\(server.name)")
           removeButton
         }
         .fixedSize(horizontal: true, vertical: false)
+      }
+
+      if isEditing {
+        MCPServerForm(server: server, onCancel: { isEditing = false }) {
+          _, command, args, endpoint, token in
+          let failure = onSave(command, args, endpoint, token)
+          if failure == nil { isEditing = false }
+          return failure
+        }
       }
 
       DisclosureGroup(isExpanded: $showingDetails) {
@@ -399,7 +420,7 @@ private struct MCPServerRowDisclosureStyle: DisclosureGroupStyle {
 
 // MARK: - Add-server form
 
-private struct MCPAddServerForm: View {
+private struct MCPServerForm: View {
   /// Returns nil on success, otherwise the store's refusal translated for the
   /// form. A failed add keeps every field as typed so the fix is one edit away,
   /// and the message sits under the field it names.
@@ -408,17 +429,38 @@ private struct MCPAddServerForm: View {
       _ name: String, _ command: String, _ args: [String],
       _ endpoint: String, _ token: String
     ) -> MCPAddFailure?
+  let server: CsMcpServer?
+  let onCancel: (() -> Void)?
+
+  private struct Argument: Identifiable {
+    let id = UUID()
+    var value: String
+  }
 
   @State private var remote = false
   @State private var name: String = ""
   @State private var command: String = ""
-  @State private var argsText: String = ""
+  @State private var arguments: [Argument] = []
   @State private var endpoint: String = ""
   @State private var token: String = ""
   @State private var addError: MCPAddFailure?
   @FocusState private var focusedField: Field?
 
   private enum Field { case name, endpoint, token, command, args }
+
+  init(
+    server: CsMcpServer? = nil, onCancel: (() -> Void)? = nil,
+    onAdd: @escaping (String, String, [String], String, String) -> MCPAddFailure?
+  ) {
+    self.server = server
+    self.onCancel = onCancel
+    self.onAdd = onAdd
+    _remote = State(initialValue: server?.transport == "remote")
+    _name = State(initialValue: server?.name ?? "")
+    _command = State(initialValue: server?.command ?? "")
+    _arguments = State(initialValue: (server?.args ?? []).map { Argument(value: $0) })
+    _endpoint = State(initialValue: server?.endpoint ?? "")
+  }
 
   /// The field a refusal points at, if the form has one for it.
   private static func field(for failure: MCPAddFailure.Field?) -> Field? {
@@ -451,6 +493,7 @@ private struct MCPAddServerForm: View {
       .controlSize(.small)
 
       labeledField("Server name", placeholder: "e.g. prview", text: $name, focus: .name)
+        .disabled(server != nil)
       if remote {
         labeledField(
           "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
@@ -467,12 +510,33 @@ private struct MCPAddServerForm: View {
             .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
+          if server?.authRef.isEmpty == false {
+            Text("Leave the token empty to keep the saved token.")
+              .font(SettingsScale.helper)
+              .foregroundStyle(Color.secondary)
+          }
         }
       } else {
         labeledField(
           "Launch command", placeholder: "e.g. prview", text: $command, focus: .command)
-        labeledField(
-          "Command arguments", placeholder: "e.g. mcp", text: $argsText, focus: .args)
+        Text("Enter only the executable here. Add each command argument separately below.")
+          .font(SettingsScale.helper)
+          .foregroundStyle(Color.secondary)
+        fieldLabel("Command arguments")
+        ForEach($arguments) { $argument in
+          HStack {
+            TextField("Argument", text: $argument.value)
+              .settingsInputChrome(isFocused: focusedField == .args)
+              .focused($focusedField, equals: .args)
+            SettingsChipButton(action: { arguments.removeAll { $0.id == argument.id } }) {
+              Image(systemName: "minus")
+            }
+            .accessibilityLabel("Remove argument")
+          }
+        }
+        SettingsChipButton(action: { arguments.append(Argument(value: "")) }) {
+          Text("Add argument").font(SettingsScale.controlLabel)
+        }
       }
 
       // A refusal without a field of its own (store I/O, an unknown message)
@@ -484,7 +548,10 @@ private struct MCPAddServerForm: View {
 
       HStack {
         Spacer(minLength: 0)
-        SettingsSaveButton(title: "Add", enabled: canAdd, action: submit)
+        if let onCancel {
+          SettingsChipButton(action: onCancel) { Text("Cancel") }
+        }
+        SettingsSaveButton(title: server == nil ? "Add" : "Save", enabled: canAdd, action: submit)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -537,16 +604,12 @@ private struct MCPAddServerForm: View {
 
   private func submit() {
     guard canAdd else { return }
-    let args =
-      argsText
-      .split(whereSeparator: { $0 == " " || $0 == "\t" })
-      .map(String.init)
     // The name goes through untouched: the store rejects surrounding
     // whitespace rather than trimming it, and the form shows that refusal.
     addError = onAdd(
       name,
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
-      remote ? [] : args,
+      remote ? [] : arguments.map(\.value),
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
       remote ? token : ""
     )?.forTransport(remote: remote, endpoint: endpoint)
@@ -558,7 +621,7 @@ private struct MCPAddServerForm: View {
     }
     name = ""
     command = ""
-    argsText = ""
+    arguments = []
     endpoint = ""
     token = ""
   }
