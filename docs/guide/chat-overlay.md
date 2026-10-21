@@ -74,6 +74,12 @@ Clicking the conversation's name pill, including **0 · All**, opens the
 **Agents** sidebar; the conversation stays selected behind it. Rows you can open
 in the sidebar show a faint highlight under the pointer.
 
+An agent row in the **Agents** list has a button that brings that agent's own
+terminal to the front: its vc-frame pane when it runs in Frame, otherwise its
+iTerm2 or Terminal tab. The button appears only when Codescribe knows where the
+agent runs. If macOS asks whether the terminal may be controlled, allow it, or
+turn it on later in System Settings › Privacy & Security › Automation.
+
 Channel replies appear as selectable messages. Scrolling back pauses following
 the live edge; use the return-to-current control to see the latest messages
 again. Selecting a conversation does not replay old speech.
