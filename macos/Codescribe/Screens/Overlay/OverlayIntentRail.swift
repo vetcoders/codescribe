@@ -112,7 +112,7 @@ enum OverlayDockVisuals {
   }
 }
 
-/// Permanent transcript-action column. Hover content lives above its anchor.
+/// Permanent transcript-action column. Hover hints float over the document.
 /// The same control is the only render of each command.
 @MainActor
 struct OverlayIntentRail: View {

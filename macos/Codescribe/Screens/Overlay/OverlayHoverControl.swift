@@ -1,22 +1,31 @@
 import SwiftUI
 
-/// Immediate, non-interactive hint. It never changes layout or opens a panel.
+/// Non-interactive hint. Narrow rails share the overlay's floating hint window
+/// so the scroll viewport cannot clip their labels.
 struct OverlayMiniTooltip: ViewModifier {
   let title: String
   let palette: OverlayAppearancePalette
   var enabled = true
+  var floating = false
   @State private var hovered = false
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    OverlayTooltipLayout {
-      content
-        .onHover { hovered = $0 }
-      if hovered && enabled {
-        OverlayTooltipChip(title: title, palette: palette)
-          .allowsHitTesting(false)
+    if floating && enabled {
+      content.modifier(
+        OverlayHeaderControlChrome(
+          title: title, accent: nil, palette: palette, hintLeading: true))
+    } else {
+      OverlayTooltipLayout {
+        content
+          .onHover { hovered = $0 }
+        if hovered && enabled {
+          OverlayTooltipChip(title: title, palette: palette)
+            .allowsHitTesting(false)
+        }
       }
+      .zIndex(hovered && enabled ? 1 : 0)
     }
-    .zIndex(hovered && enabled ? 1 : 0)
   }
 }
 
@@ -118,7 +127,8 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .onHover { hovered = $0 }
     .modifier(
       OverlayMiniTooltip(
-        title: title, palette: palette, enabled: showsTooltip && presented == nil)
+        title: title, palette: palette, enabled: showsTooltip && presented == nil,
+        floating: popoverArrow == .trailing)
     )
     .popover(
       isPresented: Binding(

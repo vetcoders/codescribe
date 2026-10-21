@@ -68,7 +68,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       header.contains("showsDiagnostics && state.compactProjection?.degraded == true"))
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
-    let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
+    let refusal = try section(
+      of: source, from: "private var transcriptStatus", to: "private var transcriptScroll")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
     XCTAssertFalse(
       source.contains("revisionStatusRow"),
@@ -1521,9 +1522,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone")
     XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "mic")
     XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "mic.fill")
-    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneScale, 1)
-    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneFontSize, 12)
-    XCTAssertEqual(OverlayAgentAudioControls.speakerFontSize, 12)
+    XCTAssertEqual(OverlayAgentAudioControls.broadcastScale, 1.33)
     XCTAssertEqual(OverlayAgentAudioControls.controlFrame, 16)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains(".overlayMirrored(broadcast)"), "one mirror drawing, shared")
