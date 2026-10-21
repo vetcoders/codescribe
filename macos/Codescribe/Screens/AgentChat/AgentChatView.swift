@@ -433,18 +433,14 @@ private struct AgentIntegratedChrome: ViewModifier {
     .accessibilityLabel(String(localized: "More actions"))
   }
 
+  /// A `Picker` inside a `Menu` renders as a native submenu whose selected
+  /// row carries the system check mark. The previous `Button` list drew the
+  /// mark through a `Label` image, which macOS menus drop, so the submenu
+  /// never showed which width was active.
   private var widthModeMenu: some View {
-    Menu {
+    Picker(selection: $widthModeRaw) {
       ForEach(ChatWidthMode.allCases) { mode in
-        Button {
-          widthModeRaw = mode.rawValue
-        } label: {
-          if mode == widthMode {
-            Label(mode.label, systemImage: "checkmark")
-          } else {
-            Text(mode.label)
-          }
-        }
+        Text(mode.label).tag(mode.rawValue)
       }
     } label: {
       Text("Conversation width", comment: "Submenu of the Agent header menu")
