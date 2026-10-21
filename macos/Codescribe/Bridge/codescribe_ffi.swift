@@ -13676,7 +13676,6 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var middleMouseAgentGesture: Bool
     public var whisperLanguage: CsLanguage
-    public var aiFormattingEnabled: Bool
     /**
      * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
      */
@@ -13820,7 +13819,7 @@ public struct CsSettings: Equatable, Hashable {
         /**
          * A short middle click opens the overlay's agent chooser. Default off.
          * While it is on, the middle button is Codescribe's, not the frontmost app's.
-         */middleMouseAgentGesture: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */middleMouseAgentGesture: Bool, whisperLanguage: CsLanguage,
         /**
          * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
          */pasteMode: CsPasteMode,
@@ -13888,7 +13887,6 @@ public struct CsSettings: Equatable, Hashable {
         self.middleMouseActsAsFn = middleMouseActsAsFn
         self.middleMouseAgentGesture = middleMouseAgentGesture
         self.whisperLanguage = whisperLanguage
-        self.aiFormattingEnabled = aiFormattingEnabled
         self.pasteMode = pasteMode
         self.transcriptSendMode = transcriptSendMode
         self.transcriptTaggingEnabled = transcriptTaggingEnabled
@@ -13976,7 +13974,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 middleMouseAgentGesture: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
-                aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
                 transcriptTaggingEnabled: FfiConverterBool.read(from: &buf),
@@ -14052,7 +14049,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterBool.write(value.middleMouseAgentGesture, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
-        FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
         FfiConverterBool.write(value.transcriptTaggingEnabled, into: &buf)
