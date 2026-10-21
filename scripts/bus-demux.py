@@ -54,7 +54,7 @@ import sys
 import time
 from pathlib import Path
 from stat import S_ISREG
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from types import SimpleNamespace
 
 # =============================================================================
@@ -2696,9 +2696,81 @@ _FRAME_ENV_KEYS = frozenset({
     "ALACRITTY_LOG",
 })
 
+ITERM2_BUNDLE_ID = "com.googlecode.iterm2"
+APPLE_TERMINAL_BUNDLE_ID = "com.apple.Terminal"
+TERMINAL_HOSTS = {ITERM2_BUNDLE_ID: "iterm2", APPLE_TERMINAL_BUNDLE_ID: "apple-terminal"}
+_TERM_PROGRAM_BUNDLES = {"iTerm.app": ITERM2_BUNDLE_ID, "Apple_Terminal": APPLE_TERMINAL_BUNDLE_ID}
+_TERMINAL_ENV_KEYS = frozenset({
+    "__CFBundleIdentifier",
+    "TERM_PROGRAM",
+    "ITERM_SESSION_ID",
+    "TERM_SESSION_ID",
+})
+# iTerm2 exports `w0t5p0:<UUID>`; AppleScript's `id of session` is the UUID.
+_ITERM_SESSION_RE = re.compile(
+    r"(?:^|:)([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
+
+
+def terminal_tty(name: Any) -> str | None:
+    """`ps` prints `ttys005`; the terminals' AppleScript speaks `/dev/ttys005`."""
+    cleaned = str(name or "").strip()
+    if not cleaned or cleaned in ("??", "-"):
+        return None
+    return cleaned if cleaned.startswith("/dev/") else "/dev/" + cleaned
+
+
+def terminal_context(environ: Any, tty: Any = None) -> dict[str, Any] | None:
+    """Name the iTerm2 or Terminal.app tab hosting a process, or None elsewhere.
+
+    The bundle identifier the terminal exports wins over TERM_PROGRAM; any
+    other host (vc-frame's own terminal, an editor's terminal) is not a tab
+    this follower can bring to front.
+    """
+    bundle = str(environ.get("__CFBundleIdentifier") or "")
+    if bundle not in TERMINAL_HOSTS:
+        bundle = _TERM_PROGRAM_BUNDLES.get(str(environ.get("TERM_PROGRAM") or ""), "")
+    if bundle not in TERMINAL_HOSTS:
+        return None
+    session_id = None
+    if bundle == ITERM2_BUNDLE_ID:
+        for key in ("ITERM_SESSION_ID", "TERM_SESSION_ID"):
+            match = _ITERM_SESSION_RE.search(str(environ.get(key) or "").strip())
+            if match:
+                session_id = match.group(1)
+                break
+    return {
+        "host": TERMINAL_HOSTS[bundle],
+        "host_bundle_id": bundle,
+        "tty": terminal_tty(tty),
+        "session_id": session_id,
+    }
+
+
+def inherited_terminal_context(environ: Any) -> dict[str, Any] | None:
+    """The terminal tab of the agent that spawned this follower.
+
+    The tab comes from the inherited environment; its tty from the nearest
+    process in this follower's ancestry that holds one.
+    """
+    terminal = terminal_context(environ)
+    if terminal is None:
+        return None
+    procs = process_table()
+    current = os.getpid()
+    for _ in range(8):
+        info = procs.get(current)
+        if info is None:
+            break
+        tty = terminal_tty(info["tty"])
+        if tty is not None:
+            terminal["tty"] = tty
+            break
+        current = info["ppid"]
+    return terminal
+
 
 def process_environ(pid: int) -> dict[str, str]:
-    """Extract vc-frame environment variables from a live process via `ps eww`."""
+    """Extract vc-frame and terminal-host environment variables from a live process via `ps eww`."""
     import subprocess
 
     try:
@@ -2716,7 +2788,7 @@ def process_environ(pid: int) -> dict[str, str]:
         if "=" not in token:
             continue
         key, value = token.split("=", 1)
-        if key in _FRAME_ENV_KEYS:
+        if key in _FRAME_ENV_KEYS or key in _TERMINAL_ENV_KEYS:
             extracted[key] = value
     return extracted
 
@@ -2787,6 +2859,40 @@ def resolve_claude_frame_context(
     and `claude daemon` (`--bg-pty-host`) workers viewed through a `claude agents`
     or `claude attach` client running inside a vc-frame pane.
     """
+    return _resolve_claude_host_context(
+        provider_session_id, home=home,
+        extract=lambda pid, _info: frame_context(process_environ(pid)),
+        skip_daemon_hosted=False,
+    )
+
+
+def resolve_claude_terminal_context(
+    provider_session_id: str,
+    *,
+    home: Path | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the iTerm2 or Terminal.app tab hosting a Claude Code session.
+
+    Same discovery as resolve_claude_frame_context. A daemon worker
+    (`--bg-pty-host`) inherits the environment of whichever terminal started
+    the daemon, so its own process tree never names its tab; only the
+    attached `claude agents` or `claude attach` client does.
+    """
+    return _resolve_claude_host_context(
+        provider_session_id, home=home,
+        extract=lambda pid, info: terminal_context(process_environ(pid), info.get("tty")),
+        skip_daemon_hosted=True,
+    )
+
+
+def _resolve_claude_host_context(
+    provider_session_id: str,
+    *,
+    home: Path | None,
+    extract: Callable[[int, dict[str, Any]], dict[str, Any] | None],
+    skip_daemon_hosted: bool,
+) -> dict[str, Any] | None:
+    """Find the host context `extract` reads off the process that shows a Claude Code session."""
     if not isinstance(provider_session_id, str) or not provider_session_id.strip():
         return None
     claude_home = (home.expanduser() if home is not None else Path.home()) / ".claude"
@@ -2831,26 +2937,30 @@ def resolve_claude_frame_context(
         if isinstance(wpid, int) and wpid in procs and wpid not in target_pids:
             target_pids.append(wpid)
 
-    # 1. Direct or ancestor vc-frame environment on the session process tree.
+    # 1. Direct or ancestor host environment on the session process tree.
     visited: set[int] = set()
     for start_pid in target_pids:
+        if skip_daemon_hosted and _daemon_hosted(start_pid, procs):
+            continue
         current = start_pid
         for _ in range(8):
             if current <= 1 or current in visited or current not in procs:
                 break
             visited.add(current)
-            frame = frame_context(process_environ(current))
+            frame = extract(current, procs[current])
             if frame is not None:
                 return frame
             current = procs[current]["ppid"]
 
-    # 2. Collect live `claude` client processes running inside vc-frame panes.
+    # 2. Collect live `claude` client processes running inside a known host.
     frame_clients: list[dict[str, Any]] = []
     for pid, info in procs.items():
         command = info["command"]
         if "claude" not in command or "--bg-pty-host" in command:
             continue
-        frame = frame_context(process_environ(pid))
+        if skip_daemon_hosted and _daemon_hosted(pid, procs):
+            continue
+        frame = extract(pid, info)
         if frame is None:
             continue
         # Direct CLI match (`claude --resume <id>` or `claude attach <short>`).
@@ -2956,6 +3066,19 @@ def resolve_claude_frame_context(
     return None
 
 
+def _daemon_hosted(pid: int, procs: dict[int, dict[str, Any]]) -> bool:
+    """Whether a `claude daemon` PTY host (`--bg-pty-host`) runs this process."""
+    current = pid
+    for _ in range(8):
+        info = procs.get(current)
+        if info is None or current <= 1:
+            return False
+        if "--bg-pty-host" in info["command"]:
+            return True
+        current = info["ppid"]
+    return False
+
+
 def frame_cli(environ: Any) -> str | None:
     """The public `vc-frame` on PATH, resolved at each action.
 
@@ -3014,6 +3137,107 @@ def run_panel_focus(frame: dict[str, Any]) -> tuple[str, int | None]:
     return "error", result.returncode
 
 
+OSASCRIPT = "/usr/bin/osascript"
+
+# Values arrive as `argv`, never spliced into the script text.
+_ITERM2_FOCUS_SCRIPT = """
+on run argv
+    set wantedID to item 1 of argv
+    set wantedTTY to item 2 of argv
+    tell application id "com.googlecode.iterm2"
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aSession in sessions of aTab
+                    set matched to false
+                    if wantedID is not "" then
+                        set matched to ((id of aSession) is wantedID)
+                    else
+                        set matched to ((tty of aSession) is wantedTTY)
+                    end if
+                    if matched then
+                        select aWindow
+                        tell aTab to select
+                        tell aSession to select
+                        activate
+                        return "focused"
+                    end if
+                end repeat
+            end repeat
+        end repeat
+    end tell
+    return "missing"
+end run
+"""
+
+_APPLE_TERMINAL_FOCUS_SCRIPT = """
+on run argv
+    set wantedTTY to item 1 of argv
+    tell application id "com.apple.Terminal"
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                if (tty of aTab) is wantedTTY then
+                    set selected of aTab to true
+                    set frontmost of aWindow to true
+                    set index of aWindow to 1
+                    activate
+                    return "focused"
+                end if
+            end repeat
+        end repeat
+    end tell
+    return "missing"
+end run
+"""
+
+
+def terminal_focus_target(terminal: dict[str, Any]) -> str:
+    """The `target` a focus result names for a terminal tab."""
+    return "iterm2" if terminal.get("host") == "iterm2" else "terminal"
+
+
+def run_terminal_focus(terminal: dict[str, Any]) -> tuple[str, int | None]:
+    """Select this agent's own iTerm2 session or Terminal.app tab and bring it to front."""
+    import subprocess
+
+    # Arguments follow the script, so none may read as an osascript option:
+    # a session id is a UUID and a tty a /dev path, or the value is dropped.
+    session_id = str(terminal.get("session_id") or "")
+    session_id = session_id if _ITERM_SESSION_RE.fullmatch(session_id) else ""
+    tty = str(terminal.get("tty") or "")
+    tty = tty if tty.startswith("/dev/") else ""
+    if terminal.get("host") == "iterm2":
+        if not session_id and not tty:
+            return "terminal_missing", None
+        command = [OSASCRIPT, "-e", _ITERM2_FOCUS_SCRIPT, session_id, tty]
+    elif terminal.get("host") == "apple-terminal":
+        if not tty:
+            return "terminal_missing", None
+        command = [OSASCRIPT, "-e", _APPLE_TERMINAL_FOCUS_SCRIPT, tty]
+    else:
+        return "error", None
+    try:
+        result = subprocess.run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            check=False, timeout=PANEL_FOCUS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error", None
+    if result.returncode == 0:
+        answer = result.stdout.strip()
+        if answer == "focused":
+            return "focused", 0
+        if answer == "missing":
+            return "terminal_missing", 0
+        return "error", 0
+    # -1743 is errAEEventNotPermitted: the user declined, or never granted,
+    # Automation control of the terminal.
+    message = f"{result.stdout}\n{result.stderr}".casefold()
+    if "-1743" in message or "not allowed to send apple events" in message \
+            or "not authorized to send apple events" in message:
+        return "automation_denied", result.returncode
+    return "error", result.returncode
+
+
 class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
 
@@ -3045,6 +3269,12 @@ class SessionLease:
         self._provider_metadata_home = provider_metadata_home
         self._inherited_frame = frame_context(os.environ)
         self.frame = self._inherited_frame
+        # A Claude Code follower may run under a daemon that a different
+        # terminal started; its tab is resolved from the session's process.
+        self._inherited_terminal = (
+            inherited_terminal_context(os.environ) if self.provider != "claude-code" else None
+        )
+        self.terminal = self._inherited_terminal
         self._next_frame_discovery = 0.0
         self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
@@ -3278,6 +3508,7 @@ class SessionLease:
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
                 "frame": self.frame,
+                "terminal": self.terminal,
                 **self.repository_context,
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
                 **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
@@ -3285,18 +3516,27 @@ class SessionLease:
         )
 
     def refresh_frame_context(self, *, force: bool = False) -> bool:
-        if self._inherited_frame is not None or self.provider != "claude-code":
+        """Re-resolve a Claude Code session's pane and terminal tab; True when either moved."""
+        if self.provider != "claude-code":
             return False
         now = time.monotonic()
         if not force and now < self._next_frame_discovery:
             return False
         self._next_frame_discovery = now + self.FRAME_DISCOVERY_INTERVAL
-        resolved = resolve_claude_frame_context(
+        changed = False
+        if self._inherited_frame is None:
+            resolved = resolve_claude_frame_context(
+                self.provider_session_id,
+                home=self._provider_metadata_home,
+            )
+            changed = resolved != self.frame
+            self.frame = resolved
+        terminal = resolve_claude_terminal_context(
             self.provider_session_id,
             home=self._provider_metadata_home,
         )
-        changed = resolved != self.frame
-        self.frame = resolved
+        changed = changed or terminal != self.terminal
+        self.terminal = terminal
         return changed
 
     def refresh_provider_model(self) -> None:
@@ -3326,19 +3566,29 @@ class SessionLease:
         else:
             if self.refresh_frame_context(force=True):
                 self.persist(active=True)
-            if self.frame is None:
-                status = "no_frame"
-            else:
+            # A known Frame pane wins; a terminal tab answers otherwise.
+            if self.frame is not None:
                 status, exit_code = run_panel_focus(self.frame)
+            elif self.terminal is not None:
+                status, exit_code = run_terminal_focus(self.terminal)
+            else:
+                status = "no_frame"
+        target = ("frame" if self.frame is not None
+                  else terminal_focus_target(self.terminal) if self.terminal is not None
+                  else None)
         return {
             "schema": AGENT_PANEL_FOCUS_RESULT_SCHEMA, "kind": "agent_panel_focus_result",
             "emitted_at": utc_now(), "request_id": request["request_id"],
             "provider": self.provider, "provider_session_id": self.provider_session_id,
             "lease_id": self.lease_id, "status": status, "exit_code": exit_code,
             "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "target": target,
             "frame": ({key: self.frame.get(key) for key in
                        ("session", "pane_id", "host_bundle_id", "host_pid")}
                       if self.frame else None),
+            "terminal": ({key: self.terminal.get(key) for key in
+                          ("host", "host_bundle_id", "tty")}
+                         if self.terminal else None),
         }
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
