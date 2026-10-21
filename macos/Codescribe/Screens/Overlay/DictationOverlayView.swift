@@ -765,11 +765,14 @@ struct DictationOverlayView: View {
     maximumHeight: CGFloat, width: CGFloat, rail: Rail
   ) -> some View {
     rail
+      // The top padding alone clears the header; the frame keeps the whole
+      // height, so the clearance is paid once and the scroller below it is
+      // exactly the height the expanded floor derives from.
       .padding(.top, headerHeight + 8)
       .padding(.bottom, 12)
       // Keep the complete action buttons outside the native resize band.
       .padding(.trailing, OverlayResizeHit.band)
-      .frame(width: width, height: max(0, maximumHeight - headerHeight - 8))
+      .frame(width: width, height: max(0, maximumHeight))
       .frame(maxHeight: .infinity, alignment: .top)
       .focusable(false)
       .background { CSSidebarMaterial() }
@@ -1445,34 +1448,25 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// Ledger truth under the canvas: what the bytes on screen ARE — a local
-  /// draft, a revision in flight, or the reducer's projection — plus the last
-  /// commit failure. Same states as T15's editor status.
+  /// Ledger truth under the canvas: what the bytes on screen ARE — the
+  /// reducer's projection — plus the last commit failure in full. The
+  /// process stage itself (a revision being formatted or committed, an
+  /// uncommitted draft) has exactly one visible owner, the footer message
+  /// below the canvas, so this row never repeats it.
   private var revisionStatusRow: some View {
     VStack(alignment: .leading, spacing: CSSpace.xxs) {
-      HStack(spacing: CSSpace.xs) {
-        if state.formatterCommitPending {
-          ProgressView()
-            .controlSize(.small)
-          Text("Formatting revision…")
-        } else if state.revisionCommitPending {
-          ProgressView()
-            .controlSize(.small)
-          Text("Committing revision…")
-        } else if state.isRevisionDraftDirty {
-          Image(systemName: "pencil.line")
-          Text("Draft · not committed")
-        } else if state.mode != .coverageRefused {
+      if !state.formatterCommitPending && !state.revisionCommitPending
+        && !state.isRevisionDraftDirty && state.mode != .coverageRefused
+      {
+        HStack(spacing: CSSpace.xs) {
           Image(systemName: "checkmark.seal")
           Text("Ledger projection")
         }
+        .csFont(10, .semibold)
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("overlay-revision-status")
       }
-      .csFont(10, .semibold)
-      .foregroundStyle(
-        state.isRevisionDraftDirty ? CSColor.terracotta : palette.mutedText.color
-      )
-      .accessibilityElement(children: .combine)
-      .accessibilityIdentifier("overlay-revision-status")
 
       // `recoveryFailure` joins the chain because a failed recovery keeps the
       // retained item: the user needs the full sentence, not just the footer
@@ -1693,11 +1687,11 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
   ) -> some View {
     Text(title)
       .font(.headline)
-    overlayPreviewCanvas(width: 360, height: 260) {
+    overlayPreviewCanvas(width: 360, height: DictationOverlayWindow.minSize.height) {
       DictationOverlayView(state: light)
     }
     .preferredColorScheme(.light)
-    overlayPreviewCanvas(width: 360, height: 260) {
+    overlayPreviewCanvas(width: 360, height: DictationOverlayWindow.minSize.height) {
       DictationOverlayView(state: dark)
     }
     .preferredColorScheme(.dark)
@@ -1746,7 +1740,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     // Pinned to the window's min content size so this preview doubles as the
     // min-size regression check: "transcribing…" fills the main status slot and
     // the transcript reserves ~2–3 lines instead of collapsing at the floor.
-    overlayPreviewCanvas(width: 360, height: 260) {
+    overlayPreviewCanvas(width: 360, height: DictationOverlayWindow.minSize.height) {
       DictationOverlayView(state: .previewTranscribing())
     }
   }
@@ -1755,7 +1749,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     // Session ended without usable text: dedicated notice body, no
     // Copy/Format/Send, only Close. Pinned to the min content size so it also
     // guards the floor layout for this outcome.
-    overlayPreviewCanvas(width: 360, height: 260) {
+    overlayPreviewCanvas(width: 360, height: DictationOverlayWindow.minSize.height) {
       DictationOverlayView(state: .previewNoSpeech())
     }
   }
@@ -1767,7 +1761,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
   }
 
   #Preview("Formatted · compact chrome") {
-    overlayPreviewCanvas(width: 340, height: 260) {
+    overlayPreviewCanvas(width: 340, height: DictationOverlayWindow.minSize.height) {
       DictationOverlayView(state: .previewFormatted())
     }
   }

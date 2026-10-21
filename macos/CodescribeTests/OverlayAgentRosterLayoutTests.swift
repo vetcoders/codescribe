@@ -89,14 +89,16 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       let window = show(host, width: width, origin: NSPoint(x: -10000, y: -10000))
       defer { window.close() }
       XCTAssertFalse(state.showsAgentMonitor)
-      XCTAssertEqual(recorder.frame.width, 44, accuracy: 1)
+      XCTAssertEqual(
+        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
       XCTAssertEqual(recorder.frame.maxX, width, accuracy: 1)
       state.unfoldAgentList()
       settle(host)
       XCTAssertTrue(state.showsAgentMonitor)
       state.foldAgentList()
       settle(host)
-      XCTAssertEqual(recorder.frame.width, 44, accuracy: 1)
+      XCTAssertEqual(
+        recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
       XCTAssertNil(state.selectedConversationID)
     }
   }

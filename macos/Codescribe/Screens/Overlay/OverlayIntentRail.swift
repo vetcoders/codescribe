@@ -1,11 +1,25 @@
 import SwiftUI
 
-/// Action availability stays projected; chrome visibility is local presentation only.
-struct OverlayDockLayout: Equatable {
-  /// The overlay window floor, `DictationOverlayWindow.minSize.width`.
-  static let minimumCanvasWidth: CGFloat = 360
-  let projectedIntents: [OverlayIntent]
-  var visibleIntents: [OverlayIntent] { projectedIntents.filter { $0 != .close } }
+/// One slot of the permanent transcript-action column. The column shows every
+/// slot from its first render, always in this order; availability only
+/// changes a slot's enabled state, never its presence or place. `finish`,
+/// `startRecording` and `close` are not slots: the header's recording and
+/// brand controls are their only renders.
+enum OverlayTranscriptActionSlot: Equatable, Hashable {
+  case history
+  case versions
+  case undo
+  case redo
+  case previousTake
+  case intent(OverlayIntent)
+}
+
+/// Whether one fixed slot can run right now, derived from the projected
+/// intents and the versions presentation. Pure, so the whole fixed set can be
+/// falsified without rendering.
+struct OverlayTranscriptActionAvailability: Equatable {
+  let slot: OverlayTranscriptActionSlot
+  let isEnabled: Bool
 }
 
 /// The overlay needs a quiet text-only state; tools are transient. Retained work
@@ -132,63 +146,75 @@ struct OverlayIntentRail: View {
   var onInteraction: () -> Void = {}
   var onPresentationChange: (Bool) -> Void = { _ in }
 
-  private static let documentCommands: [OverlayIntent] = [
-    .finish, .commitRevision, .discardRevision, .insertPaste, .copy,
-  ]
-  private static let engineCommands: [OverlayIntent] = [.retranscribe, .format]
-  private static let deliveryCommands: [OverlayIntent] = [.sendToAgent]
+  /// The complete, finite set of transcript actions, in the order the column
+  /// renders them. The projection only decides which of them are enabled:
+  /// a phase, a selection, an edit or a versions cursor can grey a control,
+  /// never add or remove one. Recovery commands stay behind the previous-take
+  /// menu, and undo/redo behind the versions cursor, exactly as before.
+  static func actionAvailability(
+    intents: [OverlayIntent], versions: OverlayTranscriptVersionsPresentation
+  ) -> [OverlayTranscriptActionAvailability] {
+    let projected = Set(intents)
+    func slot(_ slot: OverlayTranscriptActionSlot, _ enabled: Bool)
+      -> OverlayTranscriptActionAvailability
+    {
+      OverlayTranscriptActionAvailability(slot: slot, isEnabled: enabled)
+    }
+    return [
+      slot(.history, true),
+      slot(.versions, versions.isVisible),
+      slot(.undo, versions.canUndo),
+      slot(.redo, versions.canRedo),
+      slot(
+        .previousTake,
+        projected.contains(.recoverSuperseded) || projected.contains(.discardSuperseded)),
+      slot(.intent(.commitRevision), projected.contains(.commitRevision)),
+      slot(.intent(.discardRevision), projected.contains(.discardRevision)),
+      slot(.intent(.insertPaste), projected.contains(.insertPaste)),
+      slot(.intent(.copy), projected.contains(.copy)),
+      slot(.intent(.retranscribe), projected.contains(.retranscribe)),
+      slot(.intent(.format), projected.contains(.format)),
+      slot(.intent(.sendToAgent), projected.contains(.sendToAgent)),
+    ]
+  }
+
+  /// The slots the current projection lights up; every other slot in the
+  /// fixed set renders disabled. Computed, not stored, so the body below
+  /// stays a direct expression of the fixed column.
+  private var enabledSlots: Set<OverlayTranscriptActionSlot> {
+    Set(
+      Self.actionAvailability(intents: intents, versions: versions)
+        .filter(\.isEnabled).map(\.slot))
+  }
 
   var body: some View {
-    let visible =
-      OverlayDockLayout(projectedIntents: intents).visibleIntents.filter {
-        $0 != .recoverSuperseded && $0 != .discardSuperseded
-      }
-    let document = visible.filter { Self.documentCommands.contains($0) }
-    let engine = visible.filter { Self.engineCommands.contains($0) }
-    let delivery = visible.filter { Self.deliveryCommands.contains($0) }
-    let claimed = Set(Self.documentCommands + Self.engineCommands + Self.deliveryCommands)
-    let remainder = visible.filter { !claimed.contains($0) }
     ScrollView(.vertical) {
-      VStack(spacing: 8) {
-        VStack(spacing: 2) {
+      VStack(spacing: OverlayTranscriptActionsLayout.groupSpacing) {
+        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
           historyControl
-          if versions.isVisible {
-            versionsControl
-            undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
-            undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
-          }
+          versionsControl(enabled: enabledSlots.contains(.versions))
+          undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
+          undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
         }
-        if intents.contains(.recoverSuperseded) || intents.contains(.discardSuperseded) {
-          groupSeparator
-          previousTakeControl
+        groupSeparator
+        previousTakeControl(enabled: enabledSlots.contains(.previousTake))
+        groupSeparator
+        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
+          intentControl(.commitRevision, enabled: enabledSlots.contains(.intent(.commitRevision)))
+          intentControl(.discardRevision, enabled: enabledSlots.contains(.intent(.discardRevision)))
+          intentControl(.insertPaste, enabled: enabledSlots.contains(.intent(.insertPaste)))
+          intentControl(.copy, enabled: enabledSlots.contains(.intent(.copy)))
         }
-        if !document.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(document, id: \.self) { intentControl($0) }
-          }
+        groupSeparator
+        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
+          intentControl(.retranscribe, enabled: enabledSlots.contains(.intent(.retranscribe)))
+          intentControl(.format, enabled: enabledSlots.contains(.intent(.format)))
         }
-        if !engine.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(engine, id: \.self) { intentControl($0) }
-          }
-        }
-        if !delivery.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(delivery, id: \.self) { intentControl($0) }
-          }
-        }
-        if !remainder.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(remainder, id: \.self) { intentControl($0) }
-          }
-        }
+        groupSeparator
+        intentControl(.sendToAgent, enabled: enabledSlots.contains(.intent(.sendToAgent)))
       }
       .frame(maxWidth: .infinity)
-      .padding(.vertical, 4)
+      .padding(.vertical, OverlayTranscriptActionsLayout.contentVerticalPadding)
     }
     .focusable(false)
     .onChange(of: presented) { _, value in
@@ -210,7 +236,7 @@ struct OverlayIntentRail: View {
   private var groupSeparator: some View {
     Rectangle()
       .fill(palette.border.color.opacity(0.7))
-      .frame(width: 18, height: 1)
+      .frame(width: 18, height: OverlayTranscriptActionsLayout.separatorHeight)
       .accessibilityHidden(true)
   }
 
@@ -235,11 +261,12 @@ struct OverlayIntentRail: View {
     }
   }
 
-  private var versionsControl: some View {
+  private func versionsControl(enabled: Bool) -> some View {
     OverlayHoverControl(
       id: Self.versionsControlID, title: Self.versionsTitle(versions),
       palette: palette,
       presented: $presented,
+      isEnabled: enabled,
       popoverArrow: .trailing
     ) {
       Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
@@ -255,11 +282,12 @@ struct OverlayIntentRail: View {
     .accessibilityValue(versions.current?.title ?? "")
   }
 
-  private var previousTakeControl: some View {
+  private func previousTakeControl(enabled: Bool) -> some View {
     OverlayHoverControl(
       id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
       palette: palette,
       presented: $presented,
+      isEnabled: enabled,
       popoverArrow: .trailing
     ) {
       Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
@@ -283,11 +311,12 @@ struct OverlayIntentRail: View {
     }
   }
 
-  private func intentControl(_ intent: OverlayIntent) -> some View {
+  private func intentControl(_ intent: OverlayIntent, enabled: Bool) -> some View {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
       palette: palette, presented: $presented,
       action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) },
+      isEnabled: enabled,
       popoverArrow: .trailing
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
@@ -456,14 +485,13 @@ struct OverlayIntentRail: View {
   {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: title, palette: palette,
-      presented: $presented, action: { dispatch(intent) }, popoverArrow: .trailing
+      presented: $presented, action: { dispatch(intent) }, isEnabled: enabled,
+      popoverArrow: .trailing
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
-        .opacity(enabled ? 1 : 0.35)
     } detail: { _ in
       Text(title)
     }
-    .disabled(!enabled)
     .accessibilityHint(intent.accessibilityHint)
   }
 
