@@ -4246,7 +4246,34 @@ mod slot_ops_tests {
         let parent = ledger.slots_of(&owner).unwrap()[0].clone();
         assert!(!ledger.complete_word_slot(&parent));
         assert_eq!((parent.sample_start, parent.sample_end), (3_200, 11_200));
-        forensic_merge_preserve_five_split_children(ledger, owner, pcm, parent, true);
+        // D5 (ledger speech truth brief): absence is not evidence. The five
+        // decoded words end at 9 600 and the parent's measured speech runs to
+        // 11 200. No observer measured that tail quiet, so the parent is not
+        // split into five children: its words stay, the decode waits as an
+        // alternative over it, and no word is retired.
+        let split = ObservationIdentity::new(ObservationProducer::Whisper, 1102, 0, owner.clone());
+        let pins = (0..5)
+            .map(|i| {
+                WordPin::new(3200 + i * 1280, 3200 + (i + 1) * 1280, "Iwo")
+                    .with_decode_window(0, 14_400)
+            })
+            .collect::<Vec<_>>();
+        assert!(pcm[14_400..].iter().all(|sample| *sample == 0.0));
+        let decision = ledger.admit_word_slots(&split, &pins);
+        assert!(!decision.grants_mutation(), "{decision:?}");
+        assert_eq!(
+            ledger.slots_of(&owner).unwrap(),
+            std::slice::from_ref(&parent)
+        );
+        assert_eq!(ledger.text_of(&owner), Some("Iwo Iwo Iwo Iwo Iwo"));
+        assert!(ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.observation == split
+                && alternative.sources == [parent.clone()]
+                && alternative.reason == "absence_requires_acoustic_evidence"
+        }));
+        assert!(ledger.word_deletions().is_empty());
+        ledger.assert_slot_labels();
+        assert_eq!(ledger.conservation().residue(), 0);
     }
 
     #[test]
@@ -4772,26 +4799,24 @@ mod slot_ops_tests {
                 WordPin::new(8_000, 9_000, "zakłócenie").with_decode_window(0, 7_000),
             ];
             let receipt = ledger.admit_word_slots(&next, &pins);
-            if producer == ObservationProducer::CloudLive {
-                assert!(!receipt.grants_mutation(), "{receipt:?}");
-                assert_eq!(
-                    ledger.slots_of(&owner).unwrap(),
-                    std::slice::from_ref(&source)
-                );
-                assert_eq!(ledger.text_of(&owner), Some("czekam na całość"));
-                assert!(ledger.slot_alternatives().iter().any(
-                    |alternative| alternative.observation == next
+            // D5 (ledger speech truth brief): absence is not evidence. The
+            // owner is one continuous burst and `mamy` covers 4 000..6 000 of
+            // it, so neither producer's partial window retires the coarse
+            // label; the reading waits as an alternative over its source.
+            assert!(!receipt.grants_mutation(), "{producer:?}: {receipt:?}");
+            assert_eq!(
+                ledger.slots_of(&owner).unwrap(),
+                std::slice::from_ref(&source)
+            );
+            assert_eq!(ledger.text_of(&owner), Some("czekam na całość"));
+            assert!(
+                ledger
+                    .slot_alternatives()
+                    .iter()
+                    .any(|alternative| alternative.observation == next
                         && alternative.candidate == "mamy"
-                        && alternative.sources == [source.clone()]
-                ));
-            } else {
-                assert!(receipt.grants_mutation(), "{producer:?}: {receipt:?}");
-                assert_eq!(ledger.text_of(&owner), Some("mamy"));
-                let output = &ledger.slots_of(&owner).unwrap()[0];
-                assert_eq!((output.sample_start, output.sample_end), (4_000, 6_000));
-                assert_eq!(output.observation, next);
-                assert!(ledger.slot_descends_from(output, &source));
-            }
+                        && alternative.sources == [source.clone()])
+            );
             // Child refusals belong to their exact PCM occurrence. The
             // owner-linked alternative preserves their parent/source relation.
             let rejected_pin =
@@ -5365,20 +5390,11 @@ mod slot_ops_tests {
             ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
             assert!(ledger.require_text_recovery(&owner()));
             ledger.admit_word_slots(&observation(ObservationProducer::Whisper, 1), &pins);
-            if variant == 1 {
-                // A one-sample uncovered speech gap prevents group completion,
-                // while individually supported words may replace the weak label.
-                assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
-                let operation = ledger.slot_operations().last().unwrap();
-                assert_eq!(operation.sources, source);
-                assert!(operation.source_ranges.contains(&owner()));
-                assert_eq!(
-                    operation.rule_id,
-                    "acoustic_resegmentation/partial-speech/v1"
-                );
-            } else {
-                assert_eq!(ledger.slots_of(&owner()).unwrap(), source, "{speech:?}");
-            }
+            // D5 (ledger speech truth brief): absence is not evidence. In
+            // variant 1 the words leave a 125 ms pause the energy ladder joins
+            // across, so no observer measured it quiet and `plan` stays; the
+            // reading waits as an alternative (absence_requires_acoustic_evidence).
+            assert_eq!(ledger.slots_of(&owner()).unwrap(), source, "{speech:?}");
             assert!(ledger.group_speech_coverages().is_empty());
             assert!(!ledger.slot_alternatives().is_empty());
             assert!(ledger.text_recovery_pending(&owner()));

@@ -8078,7 +8078,13 @@ mod tests {
             &obs(ObservationProducer::Whisper, 1, occurrence.clone()),
             "entire recovered utterance",
         );
-        assert!(repaired.grants_mutation());
+        // D5 (ledger speech truth brief): absence is not evidence. A whole
+        // label without word geometry cannot show that the held wording is
+        // covered, so it preserves the held label (03beb77a).
+        assert!(
+            matches!(repaired, MutationReceipt::Preserve { .. }),
+            "{repaired:?}"
+        );
         assert!(
             ledger.text_recovery_pending(&occurrence),
             "an exact label is not returned decoder work"
