@@ -435,8 +435,9 @@ the app's Minimize command, and any other miniaturise is undone into a hide.
   `AgentWindowCapabilities` applies the window level.
 - **"•••" menu:** the single home for the header's actions — conversation section
   (Rename, Add to / Remove from favorites, Markdown exports when the conversation
-  is persisted), the "Conversation width" submenu (Standard / Wide / Full
-  width, the conversation column's density — not the window size), "Open
+  is persisted), the "Conversation width" submenu (a native picker — Standard / Wide / Full
+  width with the system check mark on the active mode; the conversation
+  column's density, not the window size), "Open
   settings", and the destructive "Delete Conversation" last, behind the shared
   confirmation. There is no separate width selector or Settings gear in the
   chrome.
