@@ -127,7 +127,7 @@ final class ChatLayoutPolicyTests: XCTestCase {
     )
     let window = NSWindow(contentViewController: host)
     window.setContentSize(NSSize(width: 1120, height: 720))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.orderOut(nil) }
     func find(_ view: NSView) -> NSSplitViewController? {
       if let split = view as? NSSplitView { return split.delegate as? NSSplitViewController }
@@ -145,7 +145,9 @@ final class ChatLayoutPolicyTests: XCTestCase {
     XCTAssertEqual(item.maximumThickness, 300)
 
     let initialWidth = item.viewController.view.frame.width
-    for title in ["Short", "Moderately descriptive title", String(repeating: "Long title ", count: 8)] {
+    for title in [
+      "Short", "Moderately descriptive title", String(repeating: "Long title ", count: 8),
+    ] {
       store.threads[0].title = title
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
       XCTAssertEqual(item.maximumThickness, 300, "titles cannot own the divider bounds")
@@ -272,14 +274,16 @@ final class ChatLayoutPolicyTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/AgentChat/AgentChatView.swift"),
       encoding: .utf8)
-    XCTAssertTrue(header?.contains("AgentWidthModeButton()\n      AgentContextToggle(") == true,
+    XCTAssertTrue(
+      header?.contains("AgentWidthModeButton()\n      AgentContextToggle(") == true,
       "the width button sits beside Context in the window bar's trailing cluster")
     let panel = try? String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Codescribe/Screens/AgentChat/AgentContextPanel.swift"),
       encoding: .utf8)
-    XCTAssertTrue(panel?.contains("@AppStorage(ChatLayoutPolicy.defaultsKey)") == true,
+    XCTAssertTrue(
+      panel?.contains("@AppStorage(ChatLayoutPolicy.defaultsKey)") == true,
       "the button writes the same preference the menu does")
   }
 }

@@ -52,7 +52,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Hover.manual")) as? FloatingOverlayPanel)
     panel.setFrameOrigin(NSPoint(x: 900, y: 500))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       panel.orderOut(nil)
       panel.invalidatePresence()
@@ -111,7 +111,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     let host = FirstMouseHostingView(rootView: Harness(model: model))
     host.sizingOptions = []
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       model.presented = nil
       panel.orderOut(nil)
@@ -159,7 +159,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     let host = FirstMouseHostingView(rootView: Harness(model: model, opensDetails: true))
     host.sizingOptions = []
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       model.presented = nil
       panel.orderOut(nil)

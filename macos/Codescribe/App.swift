@@ -169,6 +169,9 @@ struct CodescribeApp: App {
   init() {
     // Before any engine: a test host must not see the live runtime.
     QualityCaptureHost.isolateFromLiveRuntime()
+    if QualityCaptureHost.hidesTestWindows() {
+      _ = NSApplication.shared.setActivationPolicy(.prohibited)
+    }
     switch AgentBridgeCommandLine.request(arguments: CommandLine.arguments) {
     case .notRequested:
       break
@@ -327,6 +330,8 @@ private final class TestHostSceneView: NSView {
     window.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
     window.isRestorable = false
     window.isExcludedFromWindowsMenu = true
+    window.alphaValue = 0
+    window.ignoresMouseEvents = true
     window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
     window.orderOut(nil)
   }

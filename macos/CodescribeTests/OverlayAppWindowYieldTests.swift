@@ -41,7 +41,7 @@ final class OverlayAppWindowYieldTests: XCTestCase {
     panel.isReleasedWhenClosed = false
     panel.setFrameOrigin(NSPoint(x: 80, y: 80))
     if visible {
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
     }
     let yield = OverlayAppWindowYield(panel: panel, state: state)
     yield.start()
@@ -127,7 +127,7 @@ final class OverlayAppWindowYieldTests: XCTestCase {
       "borderless panel (tray/popover-like): should not yield, got true")
 
     let parent = titledWindow("Settings")
-    parent.orderFrontRegardless()
+    BackgroundTestWindow.present(parent)
     let sheet = titledWindow("Confirm")
     parent.beginSheet(sheet)
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -248,7 +248,7 @@ final class OverlayAppWindowYieldTests: XCTestCase {
     deliver(NSWindow.didBecomeKeyNotification, settings)
     expectMode(
       rig.state, .expanded, "Settings-like titled window: hidden overlay should stay expanded")
-    rig.panel.orderFrontRegardless()
+    BackgroundTestWindow.present(rig.panel)
     XCTAssertTrue(
       rig.panel.isVisible, "FloatingOverlayPanel: shown again for the remembered appearance")
     deliver(NSWindow.didBecomeKeyNotification, settings)

@@ -19,7 +19,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
       styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = view
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
     view.setSelectedRange(NSRange(location: 0, length: 3))
     // SwiftUI may measure a rejected narrow proposal after the placed width.
@@ -52,7 +52,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
         contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       await nextMainQueueTurn()
@@ -107,7 +107,7 @@ final class LiveTranscriptTextViewTests: XCTestCase {
       contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
     func nativeText(in view: NSView) -> LiveTranscriptNativeTextView? {
       if let text = view as? LiveTranscriptNativeTextView { return text }

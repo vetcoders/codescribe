@@ -12,6 +12,7 @@ import XCTest
 @MainActor
 final class OverlayEditKeyGateTests: XCTestCase {
   func testPanelCanBecomeKeyOnlyWhileTheFormattedCanvasIsFirstResponder() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     // Creation starts in mini; these contracts exercise the explicitly opened canvas.
     state.setPresentationMode(.expanded)
@@ -28,7 +29,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
@@ -77,6 +78,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
   }
 
   func testKeyLostFromOutsideClosesTheGateAndResignsTheCanvas() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
@@ -89,7 +91,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     project("final text", phase: "formatted", terminal: true, sequence: 1, to: state)
     settle(root)
@@ -110,6 +112,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
   }
 
   func testClickOpensEditGateForPreselectedCanvas() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
@@ -123,7 +126,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     project("live text", phase: "listening", terminal: false, sequence: 1, to: state)
     settle(root)
@@ -165,6 +168,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
   }
 
   func testLive1656SelectedReadOnlyWordsCanReceiveNativeCopyCommands() async throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.expanded)
     let panel = try XCTUnwrap(
@@ -176,7 +180,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     project("alpha beta gamma", phase: "listening", terminal: false, sequence: 1, to: state)
     settle(root)
@@ -211,6 +215,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
   }
 
   func testLive1656EphemeralPaintReachesCanvasWithoutCommittingDelivery() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
@@ -226,7 +231,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     state.applyCompactProjection(
       CsCompactProjection(

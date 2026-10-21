@@ -1,6 +1,8 @@
 import AppKit
 import XCTest
 
+@testable import Codescribe
+
 @MainActor
 final class BackgroundTestWindowTests: XCTestCase {
   func testHostSettingsStaysBelowThePersonsWindows() {
@@ -13,7 +15,8 @@ final class BackgroundTestWindowTests: XCTestCase {
     }
   }
 
-  func testFixtureStaysBelowNormalWindowsWithoutTakingKeyboardOrActivation() {
+  func testFixtureStaysBelowNormalWindowsWithoutTakingKeyboardOrActivation() throws {
+    try XCTSkipIf(QualityCaptureHost.interactiveWindows(), "This checks the default invisible mode")
     let window = NSWindow(
       contentRect: NSRect(x: 150, y: 150, width: 120, height: 80),
       styleMask: .borderless, backing: .buffered, defer: false)
@@ -21,7 +24,10 @@ final class BackgroundTestWindowTests: XCTestCase {
     defer { window.close() }
     BackgroundTestWindow.present(window)
     XCTAssertLessThan(window.level.rawValue, NSWindow.Level.normal.rawValue)
-    XCTAssertTrue(window.isVisible, "AX can still inspect the fixture")
+    XCTAssertTrue(window.isVisible, "The fixture remains ordered for layout/AX")
+    XCTAssertEqual(window.alphaValue, 0, "No fixture pixels reach the desktop")
+    XCTAssertTrue(window.ignoresMouseEvents, "The fixture cannot intercept the person's input")
+    XCTAssertEqual(window.frame.origin, NSPoint(x: 150, y: 150), "Layout geometry stays intact")
     XCTAssertFalse(window.isKeyWindow)
     XCTAssertFalse(NSApp.isActive, "the test host must not activate over the person's app")
   }

@@ -136,7 +136,7 @@ final class SetupAppearanceTests: XCTestCase {
       window.orderOut(nil)
       window.close()
     }
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     let contentView = try XCTUnwrap(window.contentView)
 
     for progress in OnboardingStep.flow.indices {

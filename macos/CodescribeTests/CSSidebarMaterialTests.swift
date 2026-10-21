@@ -154,7 +154,7 @@ final class CSSidebarMaterialTests: XCTestCase {
     )
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
 
     host.layoutSubtreeIfNeeded()
@@ -208,7 +208,7 @@ final class CSSidebarMaterialTests: XCTestCase {
     let window = NSWindow(contentViewController: host)
     window.isReleasedWhenClosed = false
     window.setContentSize(NSSize(width: 1120, height: 720))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
     for _ in 0..<5 {
       await nextMainQueueTurn()

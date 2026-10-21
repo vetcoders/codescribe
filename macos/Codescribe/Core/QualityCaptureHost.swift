@@ -19,7 +19,31 @@ import Foundation
 /// production and write, which is the safe direction for a real dictation.
 enum QualityCaptureHost {
   /// `XCTestCase` only exists in the process once the test bundle is loaded.
-  static let isRunningTests = NSClassFromString("XCTestCase") != nil
+  static let isRunningTests = testProcess(
+    classLoaded: NSClassFromString("XCTestCase") != nil,
+    environment: ProcessInfo.processInfo.environment)
+
+  static let isolatedGUIVariable = "CODESCRIBE_TEST_ISOLATED_GUI"
+
+  /// Environment markers exist before XCTest has loaded its Objective-C class.
+  static func testProcess(classLoaded: Bool, environment: [String: String]) -> Bool {
+    classLoaded || environment["XCTestConfigurationFilePath"] != nil
+      || environment["XCTestSessionIdentifier"] != nil
+  }
+
+  /// Opt in only in a separate GUI session. The normal suite is invisible.
+  static func interactiveWindows(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    environment[isolatedGUIVariable] == "1"
+  }
+
+  static func hidesTestWindows(
+    runningTests: Bool = isRunningTests,
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    runningTests && !interactiveWindows(environment: environment)
+  }
 
   static let dataDirectoryVariable = "CODESCRIBE_DATA_DIR"
   static let agentBridgeHomeVariable = "CODESCRIBE_AGENT_BRIDGE_HOME"
