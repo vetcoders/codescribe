@@ -210,6 +210,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
   }
 
   func testNarrowRailHoverHintEscapesScrollClipOverTheDocument() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = NSHostingView(
       rootView: HStack(spacing: 0) {
         Color.clear

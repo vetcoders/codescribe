@@ -99,6 +99,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   }
 
   func testAnimatedMorphsLedgerOneWriterPerGenerationAndLandOnTarget() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (state, panel) = try makePanel("morph")
     let afterMake = panelReadiness(panel, label: "afterMake")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))

@@ -276,6 +276,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditOnAHeldMessageWithdrawsOnceAndReturnsTheTextToAnEmptyComposer() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "")
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "")
@@ -299,6 +300,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditAppendsHeldTextAfterABlankLineWhenTheComposerAlreadyHasTyping() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "Już piszę")
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "Już piszę")
@@ -319,6 +321,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditWhoseWithdrawThrowsLeavesTheComposerAndShowsTheError() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "zostaje", thrown: HeldWithdrawRefusal())
     defer { host.close() }
     XCTAssertEqual(
@@ -343,6 +346,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditOnAnExpiredHoldPublishesNothingAndLeavesTheComposer() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(at: now.addingTimeInterval(7), draft: "zostaje")
     defer { host.close() }
     XCTAssertNil(host.holdSecondsRemaining)
@@ -359,6 +363,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testAHeldBubbleOffersOnlyCancelEditAndSendNow() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "")
     defer { host.close() }
     for identifier in ["cancel-edit", "release"] {

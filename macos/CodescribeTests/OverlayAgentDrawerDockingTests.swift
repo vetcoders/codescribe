@@ -779,6 +779,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   }
 
   func testNumberedRailButtonsStayOutsideResizeAndSelectWithoutUnfolding() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     let savedCursor = NSCursor.current
     defer { savedCursor.set() }
@@ -860,6 +861,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   /// the panel's own resize band and window-drag routing. Channel 0 leads:
   /// it is the first pill under the disclosure control.
   func testNumberedRailButtonsTakeNativeClicksWithoutResizeOrUnfolding() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (broadcast, lena, astra) = try rosterFixture()
     for scale: CGFloat in [0.8, 1, 1.6] {
       let state = OverlayState.previewFormatted()

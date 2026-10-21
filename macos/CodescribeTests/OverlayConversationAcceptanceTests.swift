@@ -230,6 +230,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   @MainActor
   func testConversationNamePillExposesChannelAtNormalAndLargeTextSizes() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     for channel in ["0", "2", "7"] {
       let conversationOwner = OverlayConversationOwner(row: owner(leaseA, channel: channel))
       let conversation = OverlayConversation(
@@ -348,6 +349,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   /// click closed the keyboard gate, so the panel was no longer key.
   @MainActor
   func testCommandCCopiesBubbleSelectionAfterTheTranscriptHeldFocus() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     class CopyTarget: NSTextView {
       var copiedText: String?
       override func copy(_ sender: Any?) {
@@ -994,6 +996,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
 
   @MainActor
   func testJumpToCurrentReturnsFromHistoryWithoutReplacingComposer() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     var bus = OverlayChannelDelivery.Bus()
     for index in 0..<30 {
       var row = reply(String(format: "%024x", index + 1))
