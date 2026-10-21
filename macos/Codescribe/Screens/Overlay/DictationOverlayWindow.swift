@@ -184,23 +184,37 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
     isFrameTransitioning = animated
-    // Only an unroll holds its landing layout; a fold, and a fold that
-    // interrupts an unroll, lay out at each step as before.
+    // A morph holds one layout from its first step to its landing. An unroll
+    // holds the landing layout and the growing window reveals it; a fold
+    // holds the departing layout and the shrinking window covers it, so a
+    // step only moves the hosting view instead of laying the panel out at
+    // every intermediate size. A fold that catches an unroll keeps the size
+    // the unroll already holds: the layout on screen never changes size
+    // mid-flight, whichever way the morph is travelling.
+    let container = contentView as? OverlayContentContainer
     let unrolls = animated && mode == .expanded && previous != .expanded
-    (contentView as? OverlayContentContainer)?.pinnedContentSize =
-      unrolls ? restored.size : nil
+    let folds =
+      animated && !unrolls && mode != .expanded
+      && (restored.width < frame.width - 0.5 || restored.height < frame.height - 0.5)
+    if unrolls {
+      container?.pinnedContentSize = restored.size
+    } else if folds {
+      container?.pinnedContentSize = container?.pinnedContentSize ?? frame.size
+    } else {
+      container?.pinnedContentSize = nil
+    }
     OverlayPresentationTrace.shared.record(
       .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
       target: restored, generation: generation,
-      note: settleResize ? "settle_resize" : unrolls ? "unroll" : nil)
+      note: settleResize ? "settle_resize" : unrolls ? "unroll" : folds ? "fold" : nil)
     lastMorphDuration =
       animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
-    guard unrolls else {
+    guard unrolls || folds else {
       animateFrame(to: restored, generation: generation)
       if !animated { completeFrameTransition(generation: generation) }
       return
     }
-    // The landing layout is built before the animator's clock starts: a layout
+    // The held layout is built before the animator's clock starts: a layout
     // inside the first step would cost that step its frames. One turn later the
     // controller has also published the morph duration the SwiftUI fade reads.
     Task { @MainActor [weak self] in
@@ -253,7 +267,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     frameTransitionTarget = nil
     transitionTop = nil
     transitionRight = nil
-    // The landed frame is the held size: releasing it lays nothing out again.
+    // The window has landed on the target frame. Releasing the held size in
+    // this same pass lays the settled layout out once, at the size the window
+    // already has, before the next paint: no second layout follows it and no
+    // element that was visible mid-morph changes its screen position.
     (contentView as? OverlayContentContainer)?.pinnedContentSize = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
     minSize =
@@ -781,13 +798,15 @@ final class OverlayContentContainer: NSView {
   private let hosting: NSView
   let grabPad = OverlayResizeGrabPad()
 
-  /// While the panel unrolls into the expanded view, the content keeps the size
-  /// it lands at, held at the window's top-right corner, and the growing window
-  /// reveals it. Maciej, 2026-10-19: the unroll "robi z tego siekę", the parts
-  /// "się rozpadają, przesuwają". His 13:40 unroll painted five frames in 1.9 s:
-  /// every animator step laid the whole conversation out again at a new width.
-  /// Laid out once, a step only moves this view. The rounded mask keeps the
-  /// panel's corners on the window while it cuts through the held layout.
+  /// While the panel morphs, the content keeps one size, held at the window's
+  /// top-right corner. An unroll holds the size it lands at and the growing
+  /// window reveals it; a fold holds the size it departs from and the
+  /// shrinking window covers it. Maciej, 2026-10-19: the unroll "robi z tego
+  /// siekę", the parts "się rozpadają, przesuwają". His 13:40 unroll painted
+  /// five frames in 1.9 s: every animator step laid the whole conversation out
+  /// again at a new width. Laid out once, a step only moves this view. The
+  /// rounded mask keeps the panel's corners on the window while it cuts
+  /// through the held layout.
   var pinnedContentSize: NSSize? {
     didSet {
       guard pinnedContentSize != oldValue else { return }
@@ -798,7 +817,7 @@ final class OverlayContentContainer: NSView {
     }
   }
 
-  /// The hosting view's frame: the bounds, or the held size during an unroll.
+  /// The hosting view's frame: the bounds, or the held size during a morph.
   var contentFrame: NSRect { hosting.frame }
 
   init(hosting: NSView) {
@@ -830,7 +849,8 @@ final class OverlayContentContainer: NSView {
   }
 
   /// The bounds, or the held size anchored at the top-right corner (this view
-  /// is not flipped), where the mini's controls already sit.
+  /// is not flipped), where the header's trailing controls sit in every form,
+  /// so they keep their screen position through the whole morph.
   private func pinHosting() {
     let frame =
       pinnedContentSize.map {
@@ -1005,9 +1025,11 @@ enum DictationOverlayWindow {
   /// Readability floor for settled regular content and programmatic content
   /// sizing via `clamp(_:to:)`. A live edge gesture records fold intent below
   /// this floor, but paints the current form at its floor until release.
-  /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
-  /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
-  /// lines) without the old action-layer mass.
+  /// Height is the transcript-action column's floor, not a transcript-lines
+  /// guess: the expanded form always shows the full fixed action column, so
+  /// its minimum fits the header, the column's whole stack and its padding at
+  /// once (`OverlayTranscriptActionsLayout.minimumExpandedHeight`). Mini and
+  /// MIDI keep their own sizes and never see this height.
   ///
   /// Width 320 → 360 (Founder, 2026-10-18: at 320 the session counter broke
   /// into one glyph per line and the agent pills swallowed the messages). The
@@ -1019,12 +1041,16 @@ enum DictationOverlayWindow {
   /// at `CSFont.mono(11)`, a 0.6 em advance) + 141 trailing (three 22 pt glyph
   /// buttons + the 51 pt recording pair + 3 × 8 spacing) = 351, rounded up to
   /// 360 for the close dot's hover growth.
-  static let minSize = NSSize(width: 360, height: 260)
-  /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
-  /// Founder spec: the resting state is a horizontal bar (waveform + a few
-  /// transcript lines), never a portrait column. Resizing persists, so users
-  /// who prefer a tall panel drag it once and keep it.
-  static let defaultSize = NSSize(width: 470, height: 280)
+  static let minSize = NSSize(
+    width: 360, height: OverlayTranscriptActionsLayout.minimumExpandedHeight)
+  /// First-launch content size (no persisted value yet). The width keeps the
+  /// landscape proportion of the old 470 × 280 bar, but the height sits on
+  /// the expanded floor: the fixed transcript action column must fit in full
+  /// from the first frame, and a default below `minSize` could never be the
+  /// frame the window actually takes. Resizing persists, so users who prefer
+  /// a taller panel drag it once and keep it.
+  static let defaultSize = NSSize(
+    width: 470, height: OverlayTranscriptActionsLayout.minimumExpandedHeight)
   /// Independent transcription/agents sizes replace the shared v6 frame.
   private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v7"
 

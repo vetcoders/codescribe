@@ -13,13 +13,21 @@ final class DictionaryRecentTakesTests: XCTestCase {
 
   private func writeSidecar(
     _ root: URL, session: String, generatedAt: String?, words: [(String, Int, Int)],
-    refusals: Int = 0, speech: Double? = nil
+    terminal: String? = nil, speechSamples: Int = 0, coveredSamples: Int = 0,
+    refusals: [String] = [], speech: Double? = nil
   ) throws {
+    // The ledger block mirrors a production sidecar: refusals are bare reason
+    // codes, one per refused receipt, and coverage counts Silero speech samples.
+    var ledger: [String: Any] = [
+      "refusals": refusals,
+      "coverage": ["speech_samples": speechSamples, "covered_samples": coveredSamples],
+    ]
+    if let terminal { ledger["terminal"] = ["status": terminal] }
     var object: [String: Any] = [
       "schema_version": 2,
       "session_id": session,
       "words": words.map { ["word": $0.0, "sample_start": $0.1, "sample_end": $0.2, "pin": "whisper"] },
-      "ledger": ["refusals": Array(repeating: ["reason": "no_speech"], count: refusals)],
+      "ledger": ledger,
     ]
     if let generatedAt { object["generated_at"] = generatedAt }
     if let speech { object["vad_speech_pct"] = speech }
@@ -28,15 +36,19 @@ final class DictionaryRecentTakesTests: XCTestCase {
       to: root.appendingPathComponent("sessions/\(session).wav.truth.json"))
   }
 
-  func testReadsTakesNewestFirstWithWordsDestinationAndRefusals() throws {
+  func testReadsTakesNewestFirstWithWordsDestinationAndLedgerState() throws {
     let root = try makeRoot()
     defer { try? FileManager.default.removeItem(at: root) }
     try writeSidecar(
       root, session: "agent-channel-3-aaaa", generatedAt: "2026-10-20T22:59:20.104496+00:00",
-      words: [("Wiesz,", 90_240, 107_520), ("tak", 110_000, 1_495_680)], refusals: 2, speech: 67.3)
+      words: [("Wiesz,", 90_240, 107_520), ("tak", 110_000, 1_495_680)],
+      terminal: "refused", speechSamples: 1_000_000, coveredSamples: 297_000,
+      refusals: Array(repeating: "replayed_range_identity", count: 5) + ["replaced_by_whisper"],
+      speech: 67.3)
     try writeSidecar(
       root, session: "b1c63d87-dictation", generatedAt: "2026-10-21T00:05:00+00:00",
-      words: [("Dobra.", 0, 48_000)])
+      words: [("Dobra.", 0, 48_000)], terminal: "sealed", speechSamples: 40_000,
+      coveredSamples: 40_000)
     try writeSidecar(root, session: "agent-channel-1-empty", generatedAt: nil, words: [])
 
     let takes = try RecentTakesReader.read(root: root.path)
@@ -48,16 +60,26 @@ final class DictionaryRecentTakesTests: XCTestCase {
     XCTAssertEqual(takes[0].wordCount, 0)
     XCTAssertEqual(takes[0].text, "")
     XCTAssertEqual(takes[0].destination, "Agent · channel 1")
+    // No ledger terminal and no measured speech: nothing to claim.
+    XCTAssertNil(takes[0].ledgerStatus)
+    XCTAssertNil(takes[0].anchoredSpeechPercent)
+    XCTAssertFalse(takes[0].ledgerOpen)
 
     XCTAssertEqual(takes[1].id, "b1c63d87-dictation")
     XCTAssertEqual(takes[1].destination, "Dictation")
     XCTAssertEqual(takes[1].durationSeconds, 1, accuracy: 0.001)
+    XCTAssertFalse(takes[1].ledgerOpen)
+    XCTAssertEqual(takes[1].anchoredSpeechPercent ?? 0, 100, accuracy: 0.001)
 
     let agent = takes[2]
     XCTAssertEqual(agent.id, "agent-channel-3-aaaa")
     XCTAssertEqual(agent.text, "Wiesz, tak")
     XCTAssertEqual(agent.wordCount, 2)
-    XCTAssertEqual(agent.refusedWords, 2)
+    // Six refusal receipts on a two-word take say nothing about words: the
+    // row reports how much speech the ledger anchored and that it stayed open.
+    XCTAssertEqual(agent.ledgerStatus, "refused")
+    XCTAssertTrue(agent.ledgerOpen)
+    XCTAssertEqual(agent.anchoredSpeechPercent ?? 0, 29.7, accuracy: 0.001)
     XCTAssertEqual(agent.speechPercent ?? 0, 67.3, accuracy: 0.001)
     // No WAV beside the sidecar: the duration comes from the last sample at 48 kHz.
     XCTAssertEqual(agent.durationSeconds, 1_495_680.0 / 48_000.0, accuracy: 0.001)
@@ -92,6 +114,11 @@ final class DictionaryRecentTakesTests: XCTestCase {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("recent-takes-none-\(UUID().uuidString)", isDirectory: true)
     XCTAssertEqual(try RecentTakesReader.read(root: root.path), [])
+  }
+
+  func testShareLabelRoundsToWholePercent() {
+    XCTAssertTrue(DictionaryRecentTakes.shareLabel(29.7).hasPrefix("30"))
+    XCTAssertTrue(DictionaryRecentTakes.shareLabel(29.7).contains("%"))
   }
 
   func testDurationLabelUsesMinutesPastSixty() {

@@ -40,7 +40,7 @@ final class OverlayMenuCursorTests: XCTestCase {
     var transitions: [Bool] = []
     region.onHover = { transitions.append($0) }
     content.addSubview(region)
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     content.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     defer { panel.close() }
@@ -82,7 +82,7 @@ final class OverlayMenuCursorTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let content = try XCTUnwrap(panel.contentView)
     content.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -166,7 +166,7 @@ final class OverlayMenuCursorTests: XCTestCase {
       rootView: DictationOverlayView(state: state).frame(width: size.width, height: size.height))
     host.sizingOptions = []
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
@@ -280,6 +280,7 @@ final class OverlayMenuCursorTests: XCTestCase {
   }
 
   func testReplyAndDraftMicrophoneKeepTheArrowAndReceiveNativeClicks() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let message = OverlayConversationMessage(
       id: "user:cursor-controls", kind: .user, text: "Selectable message above its Reply button.",
       order: 1, emittedAt: "2026-10-21T01:40:00Z", owner: nil, recipients: [],
@@ -488,7 +489,7 @@ final class OverlayMenuCursorTests: XCTestCase {
     panel.contentView = content
     text.frame = content.bounds
     panel.acceptsMouseMovedEvents = true
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let saved = NSCursor.current
     defer {
       panel.orderOut(nil)

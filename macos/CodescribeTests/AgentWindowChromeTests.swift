@@ -127,7 +127,7 @@ final class AgentWindowChromeTests: XCTestCase {
         styleMask: [.titled], backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.close() }
       pump(window) { host.fittingSize.height > 0 }
       if reduced || contrast {
@@ -473,7 +473,7 @@ final class AgentWindowChromeTests: XCTestCase {
     )
     window.setContentSize(NSSize(width: contentWidth, height: 720))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     return window
   }
 

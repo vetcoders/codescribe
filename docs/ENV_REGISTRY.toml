@@ -1844,3 +1844,10 @@ type = "string"
 reload = "restart"
 category = "test"
 description = "Private request mailbox for the parent-owned external accessibility client in make test-swift. Passed through TEST_RUNNER_ to the isolated XCTest host; never read by app runtime."
+
+[vars.CODESCRIBE_TEST_ISOLATED_GUI]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Explicit opt-in for native keyboard/window/AX acceptance in a separate GUI session. Normal XCTest hosts prohibit activation and make fixtures transparent/non-interactive; native GUI cases report skipped rather than claiming acceptance. Forwarded through TEST_RUNNER_ by make test-swift."

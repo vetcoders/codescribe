@@ -597,34 +597,38 @@ impl AcousticLedger {
         words: &[WordPin],
     ) {
         let owner = &observation.occurrence;
+        let onset_complete = |pin: &WordPin| {
+            pin.decode_sample_start
+                .zip(pin.decode_sample_end)
+                .is_some_and(|(start, end)| {
+                    if observation.producer == ObservationProducer::Whisper {
+                        self.decode_word_onset_complete(owner, start, end, pin.sample_start)
+                    } else {
+                        start < pin.sample_start
+                    }
+                })
+        };
+        let fence_complete = |pin: &WordPin| {
+            pin.decode_sample_end.is_some_and(|end| {
+                if observation.producer == ObservationProducer::Whisper {
+                    pin.sample_end <= end
+                        && !self.decode_word_fence_incomplete(
+                            owner,
+                            pin.decode_sample_start.unwrap(),
+                            end,
+                            pin.sample_start,
+                            pin.sample_end,
+                        )
+                } else {
+                    pin.sample_end < end
+                }
+            })
+        };
         let complete_words = words
             .iter()
             .filter(|pin| {
-                let starts_inside_capture = pin
-                    .decode_sample_start
-                    .zip(pin.decode_sample_end)
-                    .is_some_and(|(start, end)| {
-                        if observation.producer == ObservationProducer::Whisper {
-                            self.decode_word_onset_complete(owner, start, end, pin.sample_start)
-                        } else {
-                            start < pin.sample_start
-                        }
-                    });
-                starts_inside_capture
-                    && pin.decode_sample_end.is_some_and(|end| {
-                        if observation.producer == ObservationProducer::Whisper {
-                            pin.sample_end <= end
-                                && !self.decode_word_fence_incomplete(
-                                    owner,
-                                    pin.decode_sample_start.unwrap(),
-                                    end,
-                                    pin.sample_start,
-                                    pin.sample_end,
-                                )
-                        } else {
-                            pin.sample_end < end
-                        }
-                    })
+                onset_complete(pin)
+                    && fence_complete(pin)
                     && pin.sample_start < pin.sample_end
                     && pin.text.split_whitespace().count() == 1
             })
@@ -637,6 +641,26 @@ impl AcousticLedger {
                 )
             })
             .collect::<Vec<_>>();
+        // The window heard everything between its fences except a word the
+        // fence itself cut: that word's range stays owed.
+        let heard_span = words
+            .first()
+            .and_then(|pin| Some((pin.decode_sample_start?, pin.decode_sample_end?)))
+            .map(|window| {
+                words.iter().fold(window, |(start, end), pin| {
+                    let start = if onset_complete(pin) {
+                        start
+                    } else {
+                        start.max(pin.sample_end)
+                    };
+                    let end = if fence_complete(pin) {
+                        end
+                    } else {
+                        end.min(pin.sample_start)
+                    };
+                    (start, end)
+                })
+            });
         if words
             .iter()
             .any(|pin| pin.decode_sample_start.is_some() || pin.decode_sample_end.is_some())
@@ -657,6 +681,9 @@ impl AcousticLedger {
         {
             self.decoded_word_windows
                 .insert(observation.clone(), (start, end));
+            if let Some(span) = heard_span {
+                self.record_complete_decode_span(observation, span);
+            }
         }
     }
 

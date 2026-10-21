@@ -91,9 +91,20 @@ enum OverlayAgentDrawerLayout {
     (windowWidth - minimumConversationWidth(textScale: textScale)) / textScale
   }
 
-  /// Pills keep their own column, clear of the panel's unscaled resize band.
+  /// The widest pill sets the column: the broadcast glyph (12), one
+  /// monospaced digit (about 7.2 at 12-point semibold) and the pill's
+  /// horizontal padding (2 × 6), all scaled, plus the fixed 3-point
+  /// glyph-to-digit spacing from `railPill`.
+  static func railPillWidth(textScale: CGFloat) -> CGFloat {
+    (12 + 7.2 + 12) * textScale + 3
+  }
+
+  /// A 2-point inset on each side of the widest pill and the panel's resize
+  /// band at the trailing edge. The band is the native resize target itself,
+  /// not an additional gutter: the pills end before it starts, so they stay
+  /// fully clickable while the edge resize keeps working.
   static func railWidth(textScale: CGFloat) -> CGFloat {
-    44 * textScale + OverlayResizeHit.band
+    railPillWidth(textScale: textScale) + 4 + OverlayResizeHit.band
   }
 
   /// The name pill's width: 224 at 1.0.

@@ -80,7 +80,7 @@ final class SettingsWindowChromeTests: XCTestCase {
     )
     window.setContentSize(NSSize(width: contentWidth, height: 760))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     return window
   }
 

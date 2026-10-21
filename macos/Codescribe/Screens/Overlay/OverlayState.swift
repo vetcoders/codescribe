@@ -200,6 +200,77 @@ struct OverlayPresentationStatus: Equatable {
   let calibrationVersion: String?
 }
 
+/// Where an agent's focus button lands. A Frame pane wins whenever it is known
+/// and a compatible `vc-frame` is installed; otherwise the agent's iTerm2 or
+/// Terminal.app tab, which the follower selects itself (UI-69).
+enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
+  case frame
+  case terminal
+
+  static func resolve(
+    _ hud: OverlayChannelHudProjection?, frameFocusAvailable: Bool
+  ) -> OverlayAgentPanelFocusTarget? {
+    if frameFocusAvailable, hud?.frameDetected == true { return .frame }
+    if hud?.terminalDetected == true { return .terminal }
+    return nil
+  }
+
+  var help: String {
+    switch self {
+    case .frame:
+      String(localized: "Focus agent panel in Frame", comment: "Frame focus button help")
+    case .terminal:
+      String(
+        localized: "Show the agent's terminal tab",
+        comment: "Terminal focus button help: brings the agent's iTerm2 or Terminal tab to front")
+    }
+  }
+
+  var requestingText: String {
+    switch self {
+    case .frame:
+      String(localized: "Opening panel in Frame…", comment: "Frame focus in flight")
+    case .terminal:
+      String(localized: "Opening the agent's terminal…", comment: "Terminal focus in flight")
+    }
+  }
+
+  var succeededText: String {
+    switch self {
+    case .frame:
+      String(localized: "Focused in Frame")
+    case .terminal:
+      String(
+        localized: "Terminal tab shown",
+        comment: "Terminal focus result: the agent's tab is in front")
+    }
+  }
+
+  var timeoutText: String {
+    switch self {
+    case .frame:
+      String(
+        localized: "No response from agent panel in Frame.",
+        comment: "Frame focus result: timeout")
+    case .terminal:
+      String(
+        localized: "No response from the agent's terminal.",
+        comment: "Terminal focus result: timeout")
+    }
+  }
+
+  var failureText: String {
+    switch self {
+    case .frame:
+      String(localized: "Could not focus panel in Frame")
+    case .terminal:
+      String(
+        localized: "Could not show the agent's terminal tab",
+        comment: "Terminal focus result: generic failure")
+    }
+  }
+}
+
 /// Immediate (<1 frame) and receipt-reconciled UI state for an agent panel focus
 /// request (`codescribe.agent-panel-focus.v1` → `codescribe.agent-panel-focus-result.v1`).
 struct OverlayAgentPanelFocusState: Equatable, Sendable {
@@ -214,6 +285,9 @@ struct OverlayAgentPanelFocusState: Equatable, Sendable {
   var phase: Phase
   var statusText: String
   var updatedAt: Date
+  /// The destination the request was sent for; the receipt may name a
+  /// different one when the follower's knowledge moved meanwhile.
+  var target: OverlayAgentPanelFocusTarget = .frame
 
   var isRequesting: Bool { phase == .requesting }
   var isSucceeded: Bool { phase == .succeeded }
@@ -1455,24 +1529,39 @@ final class OverlayState {
   func setAgentPanelFocusAvailable(_ available: Bool) {
     guard agentPanelFocusAvailable != available else { return }
     agentPanelFocusAvailable = available
-    if !available, !agentPanelFocusStates.isEmpty {
-      agentPanelFocusStates.removeAll()
+    // `vc-frame` gates only the Frame path; a terminal request stays.
+    if !available, agentPanelFocusStates.values.contains(where: { $0.target == .frame }) {
+      agentPanelFocusStates = agentPanelFocusStates.filter { $0.value.target != .frame }
     }
     onChannelPresentationChanged?()
   }
 
-  /// A saved conversation or unknown pane must never advertise a focus action.
+  /// Where this channel's focus button would land; nil when neither a usable
+  /// Frame pane nor a terminal tab is known.
+  func agentPanelFocusTarget(for channel: String) -> OverlayAgentPanelFocusTarget? {
+    OverlayAgentPanelFocusTarget.resolve(
+      channelHudStates[channel], frameFocusAvailable: agentPanelFocusAvailable)
+  }
+
+  /// A saved conversation, a dead follower or an unknown destination must
+  /// never advertise a focus action.
   func canFocusAgentPanel(_ owner: OverlayConversationOwner) -> Bool {
-    !channelStatusUnavailable && agentPanelFocusAvailable
+    !channelStatusUnavailable
       && archiveCandidate(for: owner.channel) == owner
       && channelHudStates[owner.channel]?.followerAlive == true
-      && channelHudStates[owner.channel]?.frameDetected == true
+      && agentPanelFocusTarget(for: owner.channel) != nil
+  }
+
+  /// Help and accessibility hint for the conversation's focus action.
+  func agentPanelFocusHelp(_ owner: OverlayConversationOwner) -> String? {
+    canFocusAgentPanel(owner) ? agentPanelFocusTarget(for: owner.channel)?.help : nil
   }
 
   /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
   /// while immediately (<1 frame) updating the row state with a spinner.
   func focusAgentPanel(_ owner: OverlayConversationOwner) {
     guard canFocusAgentPanel(owner),
+      let target = agentPanelFocusTarget(for: owner.channel),
       agentPanelFocusStates[owner.channel]?.isRequesting != true
     else { return }
     let request = OverlayAgentPanelFocusRequest(owner: owner)
@@ -1480,8 +1569,9 @@ final class OverlayState {
       requestID: request.requestID,
       owner: owner,
       phase: .requesting,
-      statusText: String(localized: "Opening panel in Frame…"),
-      updatedAt: Date()
+      statusText: target.requestingText,
+      updatedAt: Date(),
+      target: target
     )
     onChannelPresentationChanged?()
 
@@ -1497,8 +1587,9 @@ final class OverlayState {
           requestID: request.requestID,
           owner: owner,
           phase: .failed,
-          statusText: Self.panelFocusFailureReason(error),
-          updatedAt: Date()
+          statusText: Self.panelFocusFailureReason(error, target: target),
+          updatedAt: Date(),
+          target: target
         )
         self.onChannelPresentationChanged?()
       }
@@ -1518,8 +1609,9 @@ final class OverlayState {
         requestID: request.requestID,
         owner: owner,
         phase: .failed,
-        statusText: String(localized: "No response from agent panel in Frame."),
-        updatedAt: Date()
+        statusText: target.timeoutText,
+        updatedAt: Date(),
+        target: target
       )
       self.onChannelPresentationChanged?()
     }
@@ -1533,19 +1625,30 @@ final class OverlayState {
     for (channel, state) in agentPanelFocusStates {
       guard state.phase == .requesting, let result = results[state.requestID] else { continue }
       changed = true
+      // The receipt names where the follower aimed; an older follower names
+      // nothing and only ever aimed at Frame.
+      let target = Self.panelFocusTarget(of: result) ?? state.target
       if result.isSuccess {
         agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
           requestID: state.requestID,
           owner: state.owner,
           phase: .succeeded,
-          statusText: String(localized: "Focused in Frame"),
-          updatedAt: Date()
+          statusText: target.succeededText,
+          updatedAt: Date(),
+          target: target
         )
         foldAfterAgentPanelFocus()
-        let fallbackFrame = channelPlaybackAgents[channel]?.frame
-        let hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
-        let hostBundleID =
-          result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+        let hostPID: Int32?
+        let hostBundleID: String
+        if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
+          hostPID = nil
+          hostBundleID = terminalBundleID
+        } else {
+          let fallbackFrame = channelPlaybackAgents[channel]?.frame
+          hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
+          hostBundleID =
+            result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+        }
         _ = activateTerminalHost(hostPID, hostBundleID)
         let requestID = state.requestID
         Task { @MainActor [weak self] in
@@ -1567,8 +1670,9 @@ final class OverlayState {
           requestID: state.requestID,
           owner: state.owner,
           phase: .failed,
-          statusText: Self.panelFocusStatusReason(for: result.status),
-          updatedAt: Date()
+          statusText: Self.panelFocusStatusReason(for: result, requested: state.target),
+          updatedAt: Date(),
+          target: target
         )
       }
     }
@@ -1583,26 +1687,55 @@ final class OverlayState {
     applyPresentationMode(target, cause: .user)
   }
 
-  private static func panelFocusFailureReason(_ error: Error) -> String {
+  private static func panelFocusFailureReason(
+    _ error: Error, target: OverlayAgentPanelFocusTarget
+  ) -> String {
     if let csError = error as? CsError {
       let trimmed = csError.userFacingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
       if !trimmed.isEmpty { return trimmed }
     }
     let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-    return description.isEmpty
-      ? String(localized: "Could not focus panel in Frame") : description
+    return description.isEmpty ? target.failureText : description
   }
 
-  private static func panelFocusStatusReason(for status: String) -> String {
-    switch status {
+  static func panelFocusTarget(of result: OverlayPanelFocusResult) -> OverlayAgentPanelFocusTarget?
+  {
+    switch result.target {
+    case "frame": .frame
+    case "iterm2", "terminal": .terminal
+    default: nil
+    }
+  }
+
+  static func panelFocusStatusReason(
+    for result: OverlayPanelFocusResult, requested: OverlayAgentPanelFocusTarget
+  ) -> String {
+    let target = panelFocusTarget(of: result) ?? requested
+    switch result.status {
     case "pane_missing":
       return String(localized: "Panel not found in Frame")
+    case "terminal_missing":
+      return String(
+        localized: "Agent's terminal tab not found",
+        comment: "Terminal focus result: no iTerm2 or Terminal tab matches the agent")
+    case "automation_denied":
+      return String(
+        localized:
+          "Terminal control not allowed. Allow it in System Settings › Privacy & Security › Automation.",
+        comment: "Terminal focus result: macOS refused Automation control of the terminal app")
     case "no_frame":
-      return String(localized: "Agent is not running in Frame")
+      // A Frame request answered so lost its pane; a terminal request knew
+      // neither destination by the time it landed.
+      if requested == .frame {
+        return String(localized: "Agent is not running in Frame")
+      }
+      return String(
+        localized: "No terminal known for this agent",
+        comment: "Focus result: the follower knows neither a Frame pane nor a terminal tab")
     case "stale":
       return String(localized: "Panel focus request expired")
     default:
-      return String(localized: "Could not focus panel in Frame")
+      return target.failureText
     }
   }
 
@@ -2661,6 +2794,7 @@ final class OverlayState {
             followerAlive: row.followerAlive,
             provider: row.provider, providerSessionID: row.providerSessionId,
             frameDetected: row.frameDetected,
+            terminalDetected: row.terminalDetected,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             })

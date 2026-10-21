@@ -70,8 +70,11 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
-  /// Only a current owner with a detected Frame pane exposes a navigation action.
+  /// Only a current owner with a detected Frame pane or terminal tab exposes a
+  /// navigation action.
   var onFocusAgentPanel: (() -> Void)? = nil
+  /// What that action does, for its accessibility hint.
+  var focusAgentPanelHint: String? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
   /// Wide windows dock the roster column, which already names the agent and
@@ -371,7 +374,8 @@ struct OverlayConversationView: View {
       Button(action: onFocusAgentPanel) { namePillLabel }
         .buttonStyle(.plain)
         .csFocusOutline()
-        .accessibilityHint("Focus agent panel in Frame")
+        .accessibilityHint(
+          Text(verbatim: focusAgentPanelHint ?? OverlayAgentPanelFocusTarget.frame.help))
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: true))
         .background { OverlayMenuCursorRegion() }

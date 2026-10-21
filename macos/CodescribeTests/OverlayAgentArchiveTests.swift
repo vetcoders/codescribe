@@ -52,7 +52,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
         contentRect: .init(x: -10000, y: -10000, width: 336, height: 480),
         styleMask: [.titled], backing: .buffered, defer: false)
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       try await Task.sleep(for: .milliseconds(50))

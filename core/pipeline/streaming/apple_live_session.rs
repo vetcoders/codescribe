@@ -96,7 +96,7 @@ use crate::pipeline::contracts::{
 };
 use crate::pipeline::engine_tuning::EngineTuning;
 use crate::pipeline::speech_islands::{
-    SpeechIslandEvidence, SpeechIslandInput, measure_speech_islands,
+    SpeechIslandEvidence, SpeechIslandInput, join_speech_islands, measure_speech_islands,
 };
 use crate::pipeline::whisper_word_speech::{
     SileroSpeechDistance, WhisperWordSpeech, WhisperWordSpeechDecision, WhisperWordSpeechVerdict,
@@ -7284,26 +7284,7 @@ fn measure_whisper_window_speech(
         previous_key = key;
         previous_span = Some((segment.range.sample_start, segment.range.sample_end));
     }
-    let mut decisions = judge_whisper_words_tuned(&facts, &state.engine_tuning);
-    if let Some(speech) = observed_silero(state) {
-        for (fact, decision) in facts.iter().zip(&mut decisions) {
-            if decision.admits() {
-                let covered_end = speech
-                    .ranges()
-                    .iter()
-                    .fold(fact.sample_start, |end, range| {
-                        if range.sample_start <= end {
-                            end.max(range.sample_end)
-                        } else {
-                            end
-                        }
-                    });
-                if covered_end < fact.sample_end {
-                    decision.verdict = WhisperWordSpeechVerdict::KeepVisibleUnanchored;
-                }
-            }
-        }
-    }
+    let decisions = judge_whisper_words_tuned(&facts, &state.engine_tuning);
     if decisions
         .iter()
         .any(|decision| matches!(decision.verdict, WhisperWordSpeechVerdict::Unmeasured))
@@ -7731,10 +7712,27 @@ fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUn
     }
 }
 
+/// Whether the span lies on a speech island: Silero speech joined across
+/// pauses shorter than
+/// [`SPEECH_ISLAND_GAP_MS`](crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS),
+/// the clamps the Voice Lab
+/// take report draws. A pause inside a sentence belongs to its island, so a
+/// word pinned there has the right to exist. `None` until Silero has
+/// observed the span.
 fn silero_speech_on_span(state: &AppleSealState, start: u64, end: u64) -> Option<bool> {
     let evidence = observed_silero(state)?;
     span_inside_observed(&evidence, end)?;
-    Some(ranges_overlap_span(&evidence, start, end))
+    let observed_samples = evidence.availability().observed_samples()?;
+    let speech: Vec<(u64, u64)> = evidence
+        .ranges()
+        .iter()
+        .map(|range| (range.sample_start, range.sample_end))
+        .collect();
+    Some(
+        join_speech_islands(&speech, state.sample_rate, observed_samples)
+            .iter()
+            .any(|&(island_start, island_end, _)| island_start < end && start < island_end),
+    )
 }
 
 fn silero_dip_between(
@@ -15116,12 +15114,15 @@ mod rc_w2_acoustic_tests {
             );
             let whisper =
                 ledger.next_word_observation(LedgerObservationProducer::Whisper, index + 1, owner);
+            // A complete window over the owner would pay its text debt
+            // (decision of Maciej, 2026-10-21). Stuck owners are owners no
+            // returned window heard whole: this one misses the first 100 ms.
             ledger.admit_word_slots(
                 &whisper,
                 &pins(index)
                     .map(|(start, end, _, heard)| {
                         WordPin::new(start, end, heard)
-                            .with_decode_window(owner.sample_start, owner.sample_end)
+                            .with_decode_window(owner.sample_start + at(0.1), owner.sample_end)
                     })
                     .collect::<Vec<_>>(),
             );

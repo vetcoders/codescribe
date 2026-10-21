@@ -969,7 +969,12 @@ learned, and where the active rules come from.
   channel), length, word count and the words the ledger admitted. **Copy text**
   puts the take on the pasteboard; **Open in Lab** jumps to the acoustic view
   of the same takes (word pins, PCM slots, Silero ranges), which stays in Lab.
-  A take whose words the ledger refused says how many. The list is read from
+  A take the ledger left open (any terminal status other than sealed or
+  observed silence) says so, with the share of its speech that committed
+  words cover. The ledger's refusal list is not shown as a word count: it
+  repeats a range for every replayed decode and also records Whisper's
+  successful replacements, so it can exceed the take's words several times
+  over. The list is read from
   the take sidecars under `sessions/`; it runs no recognizer and never writes.
 - **Recent corrections** is a filtered list, not a list of every recording.
   A saved take is eligible when normalized delivered or edited text differs

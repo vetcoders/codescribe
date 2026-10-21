@@ -124,7 +124,7 @@ final class AudioRecordingControlTests: XCTestCase {
     window.contentView = host
     window.setContentSize(NSSize(width: 300, height: 100))
     host.frame = NSRect(x: 0, y: 0, width: 300, height: 100)
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer {
       window.contentView = nil
       window.close()

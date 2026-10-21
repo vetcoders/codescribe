@@ -304,18 +304,39 @@ assertions. Real Audio button activation, stop/final-pass presentation, calibrat
 blocking and accessibility still require a separate signed native acceptance;
 these unit witnesses do not claim that acceptance.
 
-## Keep native fixtures behind the person's workspace
+## Invisible fixtures and isolated native acceptance
 
-Use `BackgroundTestWindow.present` for layout, rendering and accessibility
-fixtures. It orders the fixture below normal application windows and never
-requests activation or keyboard ownership. The XCTest-only Settings placeholder
-also configures its own host window below normal windows and parks it offscreen;
-production Settings retains its existing scene and activation path.
+`BackgroundTestWindow.present` is the only presentation owner for native
+fixtures. By default it keeps the original geometry but sets zero window
+opacity, ignores mouse input and orders to the back. Window levels stay intact
+so the fixture retains the production window policy. The XCTest host
+also prohibits application activation before constructing its scene; its
+Settings placeholder is transparent and parked offscreen. The test-process
+check recognizes XCTest launch markers before the XCTest class is loaded.
 
-The roster/header fixtures in the Astra UI cut use this presentation owner.
-Native tests that intentionally call `takeKeyForTranscript`, `makeKeyAndOrderFront`
-or activate another app still exercise real keyboard ownership. Run those in an
-isolated GUI session, rather than during the Founder's work. They are separate
-from background layout/AX acceptance; do not silently skip them and call the
-entire native focus gate passed. `BackgroundTestWindowTests` checks the host's
-Settings level, fixture level, key state and lack of host activation.
+Native tests that exercise actual keyboard ownership, external AX, painted-frame
+occlusion, real AppKit morphs, native wheel delivery or visible opacity transitions call
+`BackgroundTestWindow.requireIsolatedGUI`. They report an explicit XCTest skip
+at the start of the test in the ordinary suite. Skips inside XCTest assertion
+autoclosures become unexpected failures, so the gate belongs before any
+assertions. The AX probe also guards its entry point. A background run does
+**not** certify these native behaviors. Run their full gate only in a separate GUI session with
+`CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift`. This opt-in makes fixture
+windows visible and permits activation in that isolated session. It must never
+be used to run over the Founder's working desktop.
+
+The standalone `scripts/tests/test-window-policy.swift` checks the launch and
+opt-in decision without starting an application or creating a window.
+`BackgroundTestWindowTests` checks the actual native fixture policy in the
+ordinary suite. Direct window-fronting calls belong only to the presentation
+owner; new fixtures must use it too.
+
+The animation and wheel cases retain their real AppKit assertions in the isolated
+GUI gate. A zero-opacity WindowServer fixture is not evidence for those behaviors;
+changing its level or yielding the actor did not make the focused probes pass.
+Local window geometry and layout cases still run without visible pixels.
+
+The standalone fold case also fails on the exact older `0adb8214` source (one
+test, five assertions), even though that version previously passed it in a
+full run. That aggregate pass is not independent native acceptance. The exact
+ordering or fixture dependency remains undiagnosed.
