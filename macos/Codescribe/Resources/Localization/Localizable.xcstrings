@@ -10022,6 +10022,17 @@
         }
       }
     },
+    "Microphone unavailable" : {
+      "comment" : "Disabled agent microphone control",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon niedostępny"
+          }
+        }
+      }
+    },
     "Middle click opens the list, scroll chooses, left click opens the conversation, middle click starts and ends talking." : {
       "localizations" : {
         "pl" : {
@@ -10851,6 +10862,17 @@
         }
       }
     },
+    "No conversation on this channel" : {
+      "comment" : "Disabled mini-rail channel pill",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na tym kanale nie ma rozmowy"
+          }
+        }
+      }
+    },
     "No corrections yet — edit a transcript in the overlay so the engine can learn." : {
       "localizations" : {
         "pl" : {
@@ -11550,6 +11572,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryb notatek"
+          }
+        }
+      }
+    },
+    "Nothing to copy" : {
+      "comment" : "Disabled copy control when the message is empty",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie ma czego skopiować"
           }
         }
       }
@@ -12686,6 +12719,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Stan odsłuchu niedostępny"
+          }
+        }
+      }
+    },
+    "Playback unavailable" : {
+      "comment" : "Disabled agent speaker control",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie niedostępne"
           }
         }
       }
@@ -14297,6 +14341,17 @@
         }
       }
     },
+    "Reply to this message" : {
+      "comment" : "Bubble action: quote this message in the composer",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpowiedz na tę wiadomość"
+          }
+        }
+      }
+    },
     "Requesting playback" : {
       "localizations" : {
         "en" : {
@@ -15792,6 +15847,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż kartę terminala agenta"
+          }
+        }
+      }
+    },
+    "Show the message this replies to" : {
+      "comment" : "Bubble quote: jumps to the earlier message",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż wiadomość, na którą to jest odpowiedź"
           }
         }
       }

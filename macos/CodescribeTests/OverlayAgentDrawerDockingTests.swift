@@ -976,7 +976,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       visual.contains("overlay-agent-descriptor-"),
       "wide rows must show the same provider/model identity as narrow pills")
-    XCTAssertTrue(row.contains(".help("), "descriptor and status live in the row tooltip")
+    XCTAssertTrue(
+      row.contains(".overlayFastHint(tooltip"),
+      "descriptor and status use the same immediate hint as the header")
     XCTAssertTrue(
       visual.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")

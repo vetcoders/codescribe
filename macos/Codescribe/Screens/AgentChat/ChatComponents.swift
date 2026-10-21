@@ -732,13 +732,13 @@ private struct CodeBlockView: View {
       }
     } label: {
       HStack(spacing: 4) {
-        CSIconView(icon: copied ? .check : .copy, size: 9)
+        CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
             ? String(localized: "copied", comment: "Button state after copying")
             : String(localized: "copy", comment: "Button: copy this code block")
         )
-        .font(CSFont.ui(10, .medium))
+        .font(CSFont.ui(10, .semibold))
       }
       .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)
@@ -751,7 +751,15 @@ private struct CodeBlockView: View {
       )
     }
     .csFocusRing()
-    .help("Copy code")
+    .overlayFastHint(codeCopyHint, palette: OverlayAppearancePalette.resolve(colorScheme))
+    .accessibilityLabel(Text(verbatim: codeCopyHint))
+    .accessibilityHint(Text("Copy code"))
+  }
+
+  private var codeCopyHint: String {
+    copied
+      ? String(localized: "copied", comment: "Button state after copying")
+      : String(localized: "Copy code")
   }
 }
 
