@@ -1759,24 +1759,34 @@ mod tests {
 
     // Root-owned controls: measured fixture PCM, actual admissions and disk replay.
     fn forensic_trail_measured_ledger(owner: &OccurrenceIdentity) -> AcousticLedger {
-        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
         let mut pcm = vec![0.0_f32; 16_000];
         pcm[2_000..6_000].fill(0.2);
         pcm[8_000..12_000].fill(0.2);
+        forensic_trail_ledger_over(owner, &pcm, &[(2_000, 12_000)])
+    }
+
+    /// A ledger qualified over `pcm` that holds the capture-energy ladder the
+    /// trail records, `speech` being the ranges that ladder measures.
+    fn forensic_trail_ledger_over(
+        owner: &OccurrenceIdentity,
+        pcm: &[f32],
+        speech: &[(u64, u64)],
+    ) -> AcousticLedger {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
         let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
         let mut writer = CaptureLevelAccumulator::bound_to(&energy);
         for chunk in pcm.chunks(1_000) {
             writer.push_samples(chunk);
         }
-        let speech =
+        let ladder =
             energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, 16_000);
         assert_eq!(
-            speech
+            ladder
                 .ranges()
                 .iter()
                 .map(|range| (range.sample_start, range.sample_end))
                 .collect::<Vec<_>>(),
-            vec![(2_000, 12_000)]
+            speech
         );
         let integral = pcm
             .iter()
@@ -1802,7 +1812,7 @@ mod tests {
                 )
                 .is_qualified()
         );
-        ledger.record_speech_evidence(&speech);
+        ledger.record_speech_evidence(&ladder);
         ledger
     }
 
@@ -2338,14 +2348,23 @@ mod tests {
         let owner = OccurrenceIdentity::new("forensic-trail-partition", 18, 0, 16_000);
         let sink =
             TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
-        let mut ledger = forensic_trail_measured_ledger(&owner);
+        // Speech under the two decoded words and measured room quiet (about
+        // -86 dBFS, under the active-speech floor) around them. The 250 ms
+        // pause is longer than the ladder's merge gap, so the ladder the trail
+        // records measures it quiet and the partition replays exactly; D5
+        // retires the coarse label only over measured absence.
+        let mut pcm = vec![5.0e-5_f32; 16_000];
+        pcm[2_000..6_000].fill(0.2);
+        pcm[10_000..14_000].fill(0.2);
+        let mut ledger =
+            forensic_trail_ledger_over(&owner, &pcm, &[(2_000, 6_000), (10_000, 14_000)]);
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
         assert!(ledger.admit(&apple, "niejasna hipoteza").is_insert());
         let original = ledger.slots_of(&owner).unwrap()[0].clone();
         let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
         let children = [
             WordPin::new(2_000, 6_000, "na").with_decode_window(0, 16_000),
-            WordPin::new(8_000, 12_000, "prawdę").with_decode_window(0, 16_000),
+            WordPin::new(10_000, 14_000, "prawdę").with_decode_window(0, 16_000),
         ];
         assert!(
             ledger
@@ -2367,7 +2386,7 @@ mod tests {
             vec![
                 owner.clone(),
                 OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 2_000, 6_000),
-                OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 8_000, 12_000),
+                OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 10_000, 14_000),
             ]
         );
         assert_eq!(
@@ -2376,7 +2395,7 @@ mod tests {
                 .iter()
                 .map(|slot| (slot.sample_start, slot.sample_end))
                 .collect::<Vec<_>>(),
-            vec![(2_000, 6_000), (8_000, 12_000)]
+            vec![(2_000, 6_000), (10_000, 14_000)]
         );
         drop(sink);
         let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
