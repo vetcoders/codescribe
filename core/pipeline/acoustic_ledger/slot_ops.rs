@@ -4982,23 +4982,15 @@ mod slot_ops_tests {
                 assert!(ledger.require_text_recovery(&owner()));
                 let next = observation(ObservationProducer::Whisper, 1);
                 ledger.admit_word_slots(&next, &pins);
-                if has_speech {
-                    // Measured individual words may improve a coarse hypothesis;
-                    // the still-unaccounted PCM stays debt, not an Apple word floor.
-                    assert_eq!(
-                        ledger.text_of(&owner()),
-                        Some("czy weryfikowałeś dokładnie")
-                    );
-                    let operation = ledger.slot_operations().last().unwrap();
-                    assert_eq!(operation.sources, source);
-                    assert!(operation.source_ranges.contains(&owner()));
-                    assert_eq!(
-                        operation.rule_id,
-                        "acoustic_resegmentation/partial-speech/v1"
-                    );
-                } else {
-                    assert_eq!(ledger.slots_of(&owner()).unwrap(), source);
-                }
+                // D5 (ledger speech truth brief): absence is not evidence. The
+                // pins leave 4_000..6_000 of the coarse source unaccounted, and
+                // no observer measured it quiet, so a decode that omits `plan`
+                // cannot retire it: the group survives whether the speech is
+                // measured or not, and the reading stays an alternative. This
+                // replaces the pre-brief rule "the still-unaccounted PCM stays
+                // debt, not an Apple word floor".
+                let _ = has_speech;
+                assert_eq!(ledger.slots_of(&owner()).unwrap(), source);
                 assert!(!ledger.slot_alternatives().is_empty());
                 assert!(ledger.group_speech_coverages().is_empty());
                 assert!(ledger.text_recovery_pending(&owner()));
@@ -5154,10 +5146,20 @@ mod slot_ops_tests {
                 );
                 ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
                 ledger.admit_word_slots(&next, &pins);
-                // Accepted words may refine the coarse Apple hypothesis.
-                // Only an actual matching neighbouring word settles the rest.
-                assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
                 let covered = matching_request && neighbour_kind == "word";
+                // D5 (ledger speech truth brief): absence is not evidence. Only
+                // an actual matching neighbouring word accounts for the speech
+                // the two new words leave; then they may refine the coarse
+                // Apple hypothesis. Otherwise the decode merely omits `plan`,
+                // the prior label survives and the reading stays an alternative.
+                assert_eq!(
+                    ledger.text_of(&owner()),
+                    Some(if covered {
+                        "czy weryfikowałeś"
+                    } else {
+                        "czy plan weryfikowałeś"
+                    })
+                );
                 if covered {
                     let coverage = ledger.group_speech_coverages().last().unwrap();
                     assert_eq!(coverage.coverage.last().unwrap().pin_owner, neighbour);
@@ -5237,7 +5239,10 @@ mod slot_ops_tests {
                 WordPin::new(5_000, 8_000, "weryfikowałeś"),
             ],
         );
-        assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+        // D5: the deleted neighbour pin no longer accounts for 14_000..16_000,
+        // so the decode merely omits `plan` there. Absence is not evidence:
+        // the prior label survives and the reading stays an alternative.
+        assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
         ledger.note_frontier_return(&owner(), ObservationProducer::Whisper);
         assert!(ledger.text_recovery_pending(&owner()));
         assert_eq!(ledger.seal(&owner()), Err(SealRefusal::TextRecoveryPending));
