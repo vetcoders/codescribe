@@ -7,6 +7,7 @@ import XCTest
 @MainActor
 final class OverlayAgentRosterLayoutTests: XCTestCase {
   func testClockStaysAtTrailingEdgeAcrossWidthsAndTextScales() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     for width in [CGFloat(240), 300, 400] {
       for scale in [CGFloat(1), 1.5, 2] {
         let host = NSHostingView(
@@ -35,6 +36,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
   }
 
   func testActionButtonsSitBelowThePrimaryLabel() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": "roster-layout",

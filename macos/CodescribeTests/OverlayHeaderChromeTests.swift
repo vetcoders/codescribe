@@ -220,6 +220,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// A name pill invokes only the supplied Frame action. With no target it
   /// remains a passive label; the rail owns revealing the agents list.
   func testConversationNamePillUsesOnlyAnAvailableFrameAction() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let conversation = OverlayConversation(
       id: "pill-agent", channel: "3", name: "Astra", owner: nil, messages: [])
     var focused = 0

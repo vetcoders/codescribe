@@ -304,19 +304,23 @@ assertions. Real Audio button activation, stop/final-pass presentation, calibrat
 blocking and accessibility still require a separate signed native acceptance;
 these unit witnesses do not claim that acceptance.
 
-## Invisible fixtures and isolated keyboard acceptance
+## Invisible fixtures and isolated native acceptance
 
 `BackgroundTestWindow.present` is the only presentation owner for native
 fixtures. By default it keeps the original geometry but sets zero window
-opacity, ignores mouse input and orders below normal windows. The XCTest host
+opacity, ignores mouse input and orders to the back. Window levels stay intact
+so the fixture retains the production window policy. The XCTest host
 also prohibits application activation before constructing its scene; its
 Settings placeholder is transparent and parked offscreen. The test-process
 check recognizes XCTest launch markers before the XCTest class is loaded.
 
-Native tests that exercise actual keyboard ownership call
+Native tests that exercise actual keyboard ownership, external AX, painted-frame
+occlusion or visible opacity transitions call
 `BackgroundTestWindow.requireIsolatedGUI`. They report an explicit XCTest skip
-in the ordinary suite; a background run does **not** certify native keyboard
-acceptance. Run the full keyboard gate only in a separate GUI session with
+at the start of the test in the ordinary suite. Skips inside XCTest assertion
+autoclosures become unexpected failures, so the gate belongs before any
+assertions. The AX probe also guards its entry point. A background run does
+**not** certify these native behaviors. Run their full gate only in a separate GUI session with
 `CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift`. This opt-in makes fixture
 windows visible and permits activation in that isolated session. It must never
 be used to run over the Founder's working desktop.

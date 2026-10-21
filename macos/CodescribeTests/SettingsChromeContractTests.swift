@@ -1527,8 +1527,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(creator.contains("AppearanceRow(model: model)"))
     XCTAssertTrue(creator.contains("SheetShadeRows(model: model)"))
     XCTAssertTrue(creator.contains("AppAppearanceChoice.allCases.map(\\.title)"))
-    XCTAssertTrue(creator.contains("shadePicker(SheetShade.darkChoices"))
-    XCTAssertTrue(creator.contains("shadePicker(SheetShade.lightChoices"))
+    let compactCreator = creator.filter { !$0.isWhitespace }
+    XCTAssertTrue(compactCreator.contains("shadePicker(SheetShade.darkChoices"))
+    XCTAssertTrue(compactCreator.contains("shadePicker(SheetShade.lightChoices"))
     XCTAssertFalse(creator.contains("settings-sheet-shade-restart"))
     let tokens = try String(
       contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()

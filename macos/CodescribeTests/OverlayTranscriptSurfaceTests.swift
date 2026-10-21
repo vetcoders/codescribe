@@ -57,6 +57,7 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
   }
 
   func testTranscriptActionHitTargetsStayOutsideTheWindowResizeBand() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     for scale: CGFloat in [0.8, 1, 1.6] {
       let state = OverlayState.previewFormatted()
       let host = NSHostingView(
@@ -93,6 +94,7 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
   /// top-to-bottom order, even in a listening take where almost none of it
   /// can run yet. Availability must never add or remove a control.
   func testFixedActionSetRendersInFullFromTheFirstRender() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewListening()
     let host = NSHostingView(
       rootView: DictationOverlayView(state: state)

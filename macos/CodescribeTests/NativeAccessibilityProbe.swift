@@ -34,6 +34,7 @@ enum NativeAccessibilityProbe {
   }
 
   static func query(_ identifier: String, press: Bool = false) throws -> Reception {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let path = try XCTUnwrap(
       ProcessInfo.processInfo.environment["CODESCRIBE_AX_PROBE"],
       "Run through make test-swift to build the independent AX client")

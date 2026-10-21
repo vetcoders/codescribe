@@ -300,6 +300,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
   /// lifecycle instead of racing the animation.
   @MainActor
   func testHandoffFadeCompletionCannotCloseTheSuccessorsOverlay() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(

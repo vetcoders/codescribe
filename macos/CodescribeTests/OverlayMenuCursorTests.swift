@@ -280,6 +280,7 @@ final class OverlayMenuCursorTests: XCTestCase {
   }
 
   func testReplyAndDraftMicrophoneKeepTheArrowAndReceiveNativeClicks() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let message = OverlayConversationMessage(
       id: "user:cursor-controls", kind: .user, text: "Selectable message above its Reply button.",
       order: 1, emittedAt: "2026-10-21T01:40:00Z", owner: nil, recipients: [],
