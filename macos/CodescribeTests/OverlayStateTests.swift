@@ -5833,7 +5833,9 @@ final class OverlayStateTests: XCTestCase {
     try png.write(to: dest)
     XCTAssertGreaterThan(png.count, 800)
     XCTAssertEqual(DictationOverlayWindow.minSize.width, 360)
-    XCTAssertEqual(DictationOverlayWindow.minSize.height, 260)
+    XCTAssertEqual(
+      DictationOverlayWindow.minSize.height,
+      OverlayTranscriptActionsLayout.minimumExpandedHeight)
   }
 
   /// Project one event for an explicitly named session, so a test can replay

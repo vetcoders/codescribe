@@ -973,7 +973,8 @@ struct LLMLaneModel {
       // list and the account are independent states (Founder brief, round 8).
       if runtime.accountAuth {
         return String(
-          localized: "The API key was rejected, so there is no model list. The account still works.",
+          localized:
+            "The API key was rejected, so there is no model list. The account still works.",
           comment: "Model discovery failed while the provider account stays signed in"
         )
       }
@@ -1203,16 +1204,12 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var interfaceLanguageNotice: String?
   var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
   private let languagePreference: InterfaceLanguagePreference
-  // Appearance and sheet shade (Founder, 2026-10-20). The appearance is handed
-  // to AppKit at once; a shade is read once at launch by `CSPalette`, so it
-  // waits for the same idle-guarded restart as the interface language.
+  // Appearance applies through AppKit; sheet tokens observe their persisted
+  // preference directly, so all open views repaint without restarting.
   @Published private(set) var appearanceChoice: AppAppearanceChoice
-  @Published private(set) var sheetShadeDark: SheetShade
-  @Published private(set) var sheetShadeLight: SheetShade
-  @Published private(set) var applyingSheetShade = false
-  @Published private(set) var sheetShadeNotice: String?
+  var sheetShadeDark: SheetShade { sheetShadePreference.current(dark: true) }
+  var sheetShadeLight: SheetShade { sheetShadePreference.current(dark: false) }
   var onApplyAppearance: (() -> Void)?
-  var onApplySheetShade: ((@escaping @MainActor () -> Void) async throws -> Void)?
   private let appearancePreference: AppearancePreference
   private let sheetShadePreference: SheetShadePreference
   @Published private(set) var newMaxConsultationPending = false
@@ -1437,10 +1434,10 @@ final class SettingsViewModel: ObservableObject {
       processLanguage: processInterfaceLanguage)
     self.interfaceLanguage = languagePreference.current
     self.appearancePreference = AppearancePreference(defaults: languagePreferences)
-    self.sheetShadePreference = SheetShadePreference(defaults: languagePreferences)
+    self.sheetShadePreference =
+      languagePreferences === UserDefaults.standard
+      ? .shared : SheetShadePreference(defaults: languagePreferences)
     self.appearanceChoice = appearancePreference.current
-    self.sheetShadeDark = sheetShadePreference.current(dark: true)
-    self.sheetShadeLight = sheetShadePreference.current(dark: false)
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -2630,47 +2627,9 @@ final class SettingsViewModel: ObservableObject {
     onApplyAppearance?()
   }
 
-  /// True while a saved shade differs from the one this process painted with.
-  var sheetShadeNeedsRestart: Bool {
-    sheetShadeDark.hex != CSPalette.sheetDarkHex || sheetShadeLight.hex != CSPalette.sheetLightHex
-  }
-
-  var sheetShadeRestartTitle: String {
-    applyingSheetShade
-      ? String(localized: "Restarting…", comment: "Sheet shade restart in flight")
-      : String(localized: "Restart now", comment: "Apply the sheet shade")
-  }
-
-  /// Saves the choice at once; the window keeps its launch shade until restart.
+  /// Saves and invalidates every view reading the shared sheet tokens.
   func selectSheetShade(_ shade: SheetShade) {
-    guard !applyingSheetShade else { return }
-    if shade.isDark { sheetShadeDark = shade } else { sheetShadeLight = shade }
     sheetShadePreference.select(shade)
-    sheetShadeNotice = nil
-  }
-
-  /// Same idle guard as the language: a busy runtime keeps the choice saved
-  /// and explains how to retry.
-  func applySheetShade() {
-    guard sheetShadeNeedsRestart, !applyingSheetShade else { return }
-    guard let onApplySheetShade else {
-      sheetShadeNotice = InterfaceLanguageRestartError.unavailable.message(
-        locale: interfaceLanguage.locale)
-      return
-    }
-    applyingSheetShade = true
-    sheetShadeNotice = nil
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      defer { applyingSheetShade = false }
-      do {
-        try sheetShadePreference.flush()
-        try await onApplySheetShade {}
-      } catch {
-        sheetShadeNotice = (error as? InterfaceLanguageRestartError ?? .unavailable)
-          .message(locale: interfaceLanguage.locale)
-      }
-    }
   }
 
   func beginNewMaxConsultation() async {

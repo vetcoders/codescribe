@@ -7,10 +7,33 @@ import XCTest
 /// Transcription keeps its own action column and measures the text beside it.
 @MainActor
 final class OverlayTranscriptSurfaceTests: XCTestCase {
-  func testColumnWidthScalesIndependentlyOfTheAgentsDrawer() {
-    XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidthAtUnitScale, 52)
-    XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidth(textScale: 1), 68)
-    XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidth(textScale: 1.5), 94)
+  func testColumnWidthIsOneControlItsInsetsAndTheResizeBandAtEveryScale() {
+    // The control chrome is unscaled, so the column is the same width at
+    // every supported text scale: 28 control + 4 + 4 insets + 16 resize band.
+    XCTAssertEqual(OverlayTranscriptActionsLayout.contentWidth, 36)
+    for scale: CGFloat in [0.8, 1, 1.6] {
+      XCTAssertEqual(OverlayTranscriptActionsLayout.columnWidth(textScale: scale), 52)
+    }
+    XCTAssertEqual(
+      OverlayTranscriptActionsLayout.columnWidth(textScale: 1)
+        - OverlayTranscriptActionsLayout.contentWidth,
+      OverlayResizeHit.band, "the resize band is the only strip past the controls")
+  }
+
+  func testExpandedMinimumHeightFitsTheWholeFixedActionColumn() {
+    // 12 controls × 28 + inner spacing 14 + 4 separators + outer spacing 64
+    // + vertical padding 8. The window floor pays the 54 pt header clearance
+    // once (the column's top padding below the floating header), the whole
+    // column and its 12 pt bottom padding: 54 + 426 + 12.
+    XCTAssertEqual(OverlayTranscriptActionsLayout.columnHeight, 426)
+    XCTAssertEqual(OverlayTranscriptActionsLayout.minimumExpandedHeight, 492)
+    XCTAssertEqual(
+      DictationOverlayWindow.minSize.height,
+      OverlayTranscriptActionsLayout.minimumExpandedHeight)
+    XCTAssertEqual(
+      DictationOverlayWindow.minimumSize(for: .mini), DictationOverlayWindow.collapsedSize)
+    XCTAssertEqual(
+      DictationOverlayWindow.minimumSize(for: .midi), DictationOverlayWindow.midiSize)
   }
 
   func testConversationInventoryCannotChooseTheTranscriptionCanvas() {
@@ -34,6 +57,7 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
   }
 
   func testTranscriptActionHitTargetsStayOutsideTheWindowResizeBand() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     for scale: CGFloat in [0.8, 1, 1.6] {
       let state = OverlayState.previewFormatted()
       let host = NSHostingView(
@@ -66,8 +90,56 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
     }
   }
 
+  /// The whole fixed action set renders from the first frame, in its fixed
+  /// top-to-bottom order, even in a listening take where almost none of it
+  /// can run yet. Availability must never add or remove a control.
+  func testFixedActionSetRendersInFullFromTheFirstRender() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let state = OverlayState.previewListening()
+    let host = NSHostingView(
+      rootView: DictationOverlayView(state: state)
+        .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+    host.sizingOptions = []
+    let window = NSWindow(
+      contentRect: NSRect(
+        x: -10000, y: -10000, width: 900,
+        height: OverlayTranscriptActionsLayout.minimumExpandedHeight),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    defer { window.orderOut(nil) }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+
+    let identifiers = [
+      "overlay-history-menu", "overlay-versions-menu", "overlay-intent-undo",
+      "overlay-intent-redo", "overlay-previous-take-menu",
+      "overlay-intent-commit-revision", "overlay-intent-discard-revision",
+      "overlay-intent-insert-paste", "overlay-intent-copy",
+      "overlay-intent-retranscribe", "overlay-intent-format",
+      "overlay-intent-send-to-agent",
+    ]
+    var tops: [Double] = []
+    for identifier in identifiers {
+      let element = try XCTUnwrap(
+        NativeAccessibilityProbe.waitForElements(identifier).elements.first,
+        "\(identifier) is not rendered from the first render")
+      tops.append(element.y)
+    }
+    XCTAssertEqual(tops, tops.sorted(), "the fixed column changed its order: \(tops)")
+    XCTAssertEqual(Set(tops).count, identifiers.count, "two controls share one place")
+    // First-to-last top distance of the rendered stack: eleven 28 pt controls
+    // stepped over inner spacing 14, 4 separators and 64 of group spacing.
+    XCTAssertEqual(
+      tops.last! - tops.first!, 390, accuracy: 1,
+      "the rendered column does not match the laid-out column height")
+  }
+
   func testGrowthMeasuresTheTextColumnBesideTheActionsBar() {
-    let line = String(repeating: "recorded words ", count: 40)
+    // Long enough that the measured text clears the expanded floor at both
+    // widths; the growth under test is the narrowing column, not the floor.
+    let line = String(repeating: "recorded words ", count: 240)
     let narrow = OverlayContentSizePolicy.preferredHeight(
       for: line, width: 470, textScale: 1, screen: nil)
     let wide = OverlayContentSizePolicy.preferredHeight(

@@ -13,10 +13,23 @@ struct RecentTake: Identifiable, Sendable, Equatable {
   let wordCount: Int
   /// The admitted words in order, joined with spaces.
   let text: String
-  /// Ledger refusals recorded for the take; zero when the sidecar lists none.
-  let refusedWords: Int
+  /// The ledger's terminal status for the take (`sealed`, `observed_silence`,
+  /// `refused`); nil when the sidecar carries no ledger terminal.
+  let ledgerStatus: String?
+  /// Share of the take's speech that words the ledger committed cover, in
+  /// percent; nil when the sidecar measured no speech. The ledger's refusal
+  /// list is not a word count: it repeats a range for every replayed decode
+  /// and also records Whisper's successful replacements.
+  let anchoredSpeechPercent: Double?
   /// Silero speech share of the take in percent, when the sidecar measured it.
   let speechPercent: Double?
+
+  /// A sealed take and a take observed as silence are closed; any other
+  /// terminal status leaves the take open, owing recovery.
+  var ledgerOpen: Bool {
+    guard let ledgerStatus else { return false }
+    return ledgerStatus != "sealed" && ledgerStatus != "observed_silence"
+  }
 
   /// Where the take went, derived from the session name the controller
   /// assigns: `agent-channel-<n>-<uuid>` for the agent bus, anything else is
@@ -80,13 +93,18 @@ enum RecentTakesReader {
     let texts = words.compactMap { $0["word"] as? String }.filter { !$0.isEmpty }
     let lastSample = words.compactMap { ($0["sample_end"] as? NSNumber)?.doubleValue }.max() ?? 0
     let recordedAt = (object["generated_at"] as? String).flatMap(parseDate) ?? fallbackDate
-    let refusals = ((object["ledger"] as? [String: Any])?["refusals"] as? [Any])?.count ?? 0
+    let ledger = object["ledger"] as? [String: Any]
+    let status = (ledger?["terminal"] as? [String: Any])?["status"] as? String
+    let coverage = ledger?["coverage"] as? [String: Any]
+    let speechSamples = (coverage?["speech_samples"] as? NSNumber)?.doubleValue ?? 0
+    let coveredSamples = (coverage?["covered_samples"] as? NSNumber)?.doubleValue ?? 0
+    let anchored = speechSamples > 0 ? min(100, coveredSamples / speechSamples * 100) : nil
     let speech = (object["vad_speech_pct"] as? NSNumber)?.doubleValue
     let duration = audio.flatMap(wavDuration) ?? (lastSample / fallbackSampleRate)
     return RecentTake(
       id: session, recordedAt: recordedAt, durationSeconds: duration,
       wordCount: texts.count, text: texts.joined(separator: " "),
-      refusedWords: refusals, speechPercent: speech)
+      ledgerStatus: status, anchoredSpeechPercent: anchored, speechPercent: speech)
   }
 
   nonisolated static func parseDate(_ text: String) -> Date? {
@@ -217,10 +235,18 @@ struct DictionaryRecentTakes: View {
           .lineLimit(4)
           .textSelection(.enabled)
       }
-      if take.refusedWords > 0 {
-        Text("\(take.refusedWords) words were refused by the ledger. Open Lab to see which.")
-          .font(CSFont.ui(11))
-          .foregroundStyle(Color.orange)
+      if take.ledgerOpen {
+        Group {
+          if let anchored = take.anchoredSpeechPercent {
+            Text(
+              "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
+            )
+          } else {
+            Text("The ledger did not close this take. Open Lab to see where.")
+          }
+        }
+        .font(CSFont.ui(11))
+        .foregroundStyle(Color.orange)
       }
     }
     .padding(CSSpace.md)
@@ -233,6 +259,12 @@ struct DictionaryRecentTakes: View {
 
   static func dateLabel(_ date: Date) -> String {
     date.formatted(date: .abbreviated, time: .shortened)
+  }
+
+  /// A percentage formatted for the user's locale, so the sign travels with
+  /// the number instead of living in the localized sentence.
+  static func shareLabel(_ percent: Double) -> String {
+    (percent / 100).formatted(.percent.precision(.fractionLength(0)))
   }
 
   static func durationLabel(_ seconds: Double) -> String {

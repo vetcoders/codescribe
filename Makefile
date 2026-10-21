@@ -19,6 +19,11 @@ SHELL := /bin/bash
 # Git's common directory belongs to the main checkout, including in worktrees.
 export CARGO_TARGET_DIR := $(abspath $(dir $(shell git rev-parse --git-common-dir))/target)
 export CARGO_BUILD_BUILD_DIR := $(CARGO_TARGET_DIR)
+# Workspace crates get the same artifact names in every worktree and Cargo
+# trusts source mtimes, so a build from another checkout can stand in for this
+# one. The guard reads where each crate was compiled from its metadata and
+# touches this checkout's crate roots when it was compiled elsewhere.
+TARGET_SOURCE_GUARD := $(shell bash scripts/target-source-guard.sh "$(CARGO_TARGET_DIR)")
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 # Operator tests may source the daily dotenv for real-API credentials, but the

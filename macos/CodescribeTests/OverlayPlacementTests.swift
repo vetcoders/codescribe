@@ -309,7 +309,7 @@ final class OverlayPlacementTests: XCTestCase {
       overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
       panelFactory: { _, _ in panel },
       orderPanelFront: { panel in
-        if showsPanel { panel.orderFrontRegardless() }
+        if showsPanel { BackgroundTestWindow.present(panel) }
       },
       orderPanelOut: { panel in
         if showsPanel { panel.orderOut(nil) }

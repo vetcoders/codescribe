@@ -66,7 +66,37 @@ struct AgentFrameBinding: Equatable, Sendable, Codable {
   }
 }
 
-/// Request published on the agent's bus when the user clicks Focus in Frame in the Overlay.
+/// The iTerm2 or Terminal.app tab a follower names in a
+/// `codescribe.agent-panel-focus-result.v1` row when no Frame pane is known.
+/// The follower selects the tab itself; the app only activates `hostBundleID`.
+struct AgentTerminalBinding: Equatable, Sendable, Codable {
+  let host: String
+  let hostBundleID: String
+  let tty: String?
+
+  init(host: String, hostBundleID: String, tty: String? = nil) {
+    self.host = host
+    self.hostBundleID = hostBundleID
+    self.tty = tty
+  }
+
+  init?(row: [String: Any]) {
+    guard
+      let host = (row["host"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !host.isEmpty,
+      let hostBundleID = (row["host_bundle_id"] as? String)?.trimmingCharacters(
+        in: .whitespacesAndNewlines),
+      !hostBundleID.isEmpty, hostBundleID.count <= 160
+    else { return nil }
+    let tty = (row["tty"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.host = host
+    self.hostBundleID = hostBundleID
+    self.tty = tty?.isEmpty == false ? tty : nil
+  }
+}
+
+/// Request published on the agent's bus when the user clicks the agent's focus
+/// button in the Overlay; the follower picks the Frame pane or the terminal tab.
 struct OverlayAgentPanelFocusRequest: Equatable, Sendable {
   let requestID: String
   let owner: OverlayConversationOwner

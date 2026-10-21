@@ -28,7 +28,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let overlay = try overlaySource()
     XCTAssertFalse(overlay.contains("OverlayEvidence"))
     let transcript = try section(
-      of: overlay, from: "private var transcriptScroll", to: "private var revisionStatusRow")
+      of: overlay, from: "private var transcriptScroll", to: "private var noSpeechBody")
     XCTAssertFalse(
       transcript.contains("state.liveEvidence"),
       "Uncommitted hypotheses never take transcript height")
@@ -68,8 +68,23 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(
       header.contains("showsDiagnostics && state.compactProjection?.degraded == true"))
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
-    let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
+    let refusal = try section(
+      of: source, from: "private var transcriptStatus", to: "private var transcriptScroll")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
+    XCTAssertFalse(
+      source.contains("revisionStatusRow"),
+      "footerMessage is the single status owner; no duplicate revisionStatusRow remains")
+    let footerMessageRow = try section(
+      of: source, from: "private var footerMessageRow", to: "private func footerNoticeLabel")
+    XCTAssertTrue(footerMessageRow.contains("if footerMessageIsPassiveNotice {"))
+    XCTAssertTrue(
+      footerMessageRow.contains("showsTooltip: opensMaxSettings"),
+      "non-Max footer status must not attach a floating tooltip that duplicates the label"
+    )
+    XCTAssertTrue(
+      footerMessageRow.contains("footerMessageDetail(message)"),
+      "error and diagnostic footer rows keep click-popover access to full details"
+    )
     XCTAssertTrue(
       source.contains(
         "if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {"))
@@ -125,6 +140,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testBottomDraggedBarExpandsInsideItsRealScreen() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { panel, root in
       let visible = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
@@ -182,6 +198,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   /// Outside mini only the header band advances the presentation: a still
   /// click on the body drag region keeps its ordinary meaning.
   func testPresentationClickHitsHeaderButNotBodyOutsideMini() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state) { panel, root in
       for mode in [OverlayPresentationMode.midi, .expanded] {
@@ -445,6 +462,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testRouterRestoresCanvasAndDrawerFromMidiWithoutChangingCapture() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     let generation = state.captureGeneration
@@ -483,6 +501,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testInterruptedMorphKeepsOriginalCanvasSizeAndTopEdge() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       let frame = panel.frame
@@ -502,6 +521,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testClampedHoverStripReturnsToItsOriginalMiniPosition() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       state.setPresentationMode(.mini)
@@ -521,6 +541,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testSettingsAndTrayOpenWidgetUseTheCachedPanelWithoutStartingCapture() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     let captureGeneration = state.captureGeneration
@@ -539,7 +560,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         creations += 1
         return panel
       },
-      orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) })
+      orderPanelFront: { BackgroundTestWindow.present($0) }, orderPanelOut: { $0.orderOut(nil) })
     let preference = state.expandedByDefault
     let settingsModel = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())
@@ -570,6 +591,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testOverlayCursorComesFromItsOwnNativeHitSurface() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     try withPanel(state: state, width: 700) { panel, root in
       let canvas = try XCTUnwrap(findTranscript(in: root))
@@ -665,10 +687,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testCollapsePreservesTextSizeAndTopEdgeAcrossBarDrag() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState.previewFormatted()
     let text = state.activeText
     try withPanel(state: state, width: 700) { panel, root in
-      panel.setFrame(NSRect(x: 140, y: 180, width: 700, height: 400), display: true)
+      panel.setFrame(
+        NSRect(
+          x: 140, y: 180, width: 700,
+          height: DictationOverlayWindow.minSize.height + 100),
+        display: true)
       let expanded = panel.frame
       let native = try XCTUnwrap(findTranscript(in: root))
       state.toggleCollapsed()
@@ -800,7 +827,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(intents.contains(.recoverSuperseded))
     XCTAssertTrue(intents.contains(.discardSuperseded))
     XCTAssertTrue(intents.contains(.finish))
-    XCTAssertTrue(rail.contains("OverlayDockLayout(projectedIntents: intents).visibleIntents"))
+    XCTAssertTrue(rail.contains("enabledSlots.contains(.intent(.sendToAgent))"))
     XCTAssertTrue(rail.contains("id: \"overlay-intent-\\(intent.rawValue)\""))
     actions.toggle()
     XCTAssertEqual(actions.phase, .idle, "The same cap removes the guarded rail again")
@@ -810,6 +837,29 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertFalse(source.contains("accessibilityVoiceOverEnabled"))
     XCTAssertFalse(source.contains("@State private var actions = OverlayActionsPresentation()"))
     XCTAssertEqual(OverlayActionsPresentation().phase, .idle)
+  }
+
+  /// Process notices have one owner; actionable failures still open their
+  /// full details after the two worker cuts are combined.
+  func testProcessStageHasOneVisibleOwnerInTheFooter() throws {
+    let source = try overlaySource()
+    let footer = try section(
+      of: source, from: "private var footerMessage: String?",
+      to: "private var footerMessageRow")
+    XCTAssertTrue(footer.contains("\"Formatting revision…\""))
+    XCTAssertTrue(footer.contains("\"Committing revision…\""))
+    XCTAssertTrue(footer.contains("\"Draft · not committed\""))
+    XCTAssertFalse(source.contains("private var revisionStatusRow"))
+    let row = try section(
+      of: source, from: "private var footerMessageRow",
+      to: "private func footerNoticeLabel")
+    XCTAssertTrue(
+      row.contains("footerMessageDetail(message)"),
+      "actionable failures keep their full click detail")
+    let detail = try section(
+      of: source, from: "private func footerMessageDetail",
+      to: "private func openMaxSettings")
+    XCTAssertTrue(detail.contains("errorBody"))
   }
 
   func testActionsHandleUsesPhaseForSymbolLabelAndTooltip() throws {
@@ -860,8 +910,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("OverlayHoverControl("))
     let all: [OverlayIntent] = [.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close]
     XCTAssertEqual(
-      OverlayDockLayout(projectedIntents: all).visibleIntents,
-      [.insertPaste, .copy, .retranscribe, .format, .sendToAgent])
+      OverlayIntentRail.actionAvailability(intents: all, versions: .empty)
+        .filter(\.isEnabled).map(\.slot),
+      [
+        .history, .intent(.insertPaste), .intent(.copy), .intent(.retranscribe),
+        .intent(.format), .intent(.sendToAgent),
+      ])
   }
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
@@ -981,6 +1035,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   }
 
   func testFinishingNoticeSurvivesFoldWithoutChangingBarHeight() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let canvas = try section(
       of: overlaySource(), from: "private func canvasStack", to: "private var header: some View")
     let expanded = try section(of: canvas, from: "if !state.isCollapsed,", to: ".onGeometryChange(")
@@ -1408,6 +1463,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   /// SwiftUI header, so the probe reads AppKit truth: one mounted hover region
   /// per header control and the drag region that backs the wordmark.
   func testMiniAlwaysReadsCsAndCarriesTheAgentsButton() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.channelAudioCaptureActive)
@@ -1476,9 +1532,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone")
     XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "mic")
     XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "mic.fill")
-    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneScale, 1)
-    XCTAssertEqual(OverlayAgentAudioControls.broadcastMicrophoneFontSize, 12)
-    XCTAssertEqual(OverlayAgentAudioControls.speakerFontSize, 12)
+    XCTAssertEqual(OverlayAgentAudioControls.broadcastScale, 1.33)
     XCTAssertEqual(OverlayAgentAudioControls.controlFrame, 16)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
     XCTAssertTrue(roster.contains(".overlayMirrored(broadcast)"), "one mirror drawing, shared")
@@ -1528,9 +1582,12 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.setContentSize(NSSize(width: width, height: 280))
+    panel.setContentSize(NSSize(width: width, height: DictationOverlayWindow.minSize.height))
     if let visible = NSScreen.main?.visibleFrame {
-      panel.setFrameOrigin(NSPoint(x: visible.maxX - width - 40, y: visible.maxY - 320))
+      // Anchor by the top-right corner, 40 pt inside the visible frame, at
+      // whatever height the panel actually took.
+      panel.setFrameOrigin(
+        NSPoint(x: visible.maxX - width - 40, y: visible.maxY - panel.frame.height - 40))
     }
     BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)

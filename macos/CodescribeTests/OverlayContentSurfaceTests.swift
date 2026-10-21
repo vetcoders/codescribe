@@ -39,7 +39,10 @@ final class OverlayContentSurfaceTests: XCTestCase {
     panel.isReleasedWhenClosed = false
     panel.ignoresMouseEvents = true
     let visible = NSScreen.main!.visibleFrame
-    panel.setFrameOrigin(NSPoint(x: visible.maxX - 510, y: visible.maxY - 320))
+    panel.setFrameOrigin(
+      NSPoint(
+        x: visible.maxX - 510,
+        y: visible.maxY - DictationOverlayWindow.defaultSize.height - 40))
     return panel
   }
 
@@ -66,8 +69,8 @@ final class OverlayContentSurfaceTests: XCTestCase {
         DictationOverlayWindow.restoredContentSize(for: nil, surface: .agents, defaults: defaults),
         NSSize(width: 900, height: 700))
       for (surface, size) in [
-        (OverlayContentSurface.transcription, NSSize(width: 500, height: 300)),
-        (.agents, NSSize(width: 760, height: 540)),
+        (OverlayContentSurface.transcription, NSSize(width: 500, height: 560)),
+        (.agents, NSSize(width: 760, height: 560)),
       ] {
         DictationOverlayWindow.persist(size: size, surface: surface, defaults: defaults)
         XCTAssertEqual(
@@ -80,7 +83,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
 
   func testNativeProfilesRoundTripThroughMiniAndMidiWithoutSavingStripSizes() {
     withDefaults { defaults in
-      let agents = NSSize(width: 650, height: 440)
+      let agents = NSSize(width: 650, height: 560)
       DictationOverlayWindow.persist(size: agents, surface: .agents, defaults: defaults)
       let panel = panel(defaults: defaults)
       defer { panel.close() }
@@ -183,7 +186,8 @@ final class OverlayContentSurfaceTests: XCTestCase {
       state.showTranscription()
       let visible = NSScreen.main!.visibleFrame
       OverlayController.isApplyingFrame = true
-      panel.setFrameOrigin(NSPoint(x: visible.maxX - 510, y: visible.maxY - 320))
+      panel.setFrameOrigin(
+        NSPoint(x: visible.maxX - 510, y: visible.maxY - panel.frame.height - 40))
       OverlayController.isApplyingFrame = false
       let anchor = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       let before = panel.frame.height
@@ -210,7 +214,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
   func testRealFoldControlKeepsItsScreenPointAcrossAllFormsAndSurfaces() throws {
     try withDefaults { defaults in
       DictationOverlayWindow.persist(
-        size: NSSize(width: 650, height: 440), surface: .agents, defaults: defaults)
+        size: NSSize(width: 650, height: 560), surface: .agents, defaults: defaults)
       let state = OverlayState.previewListening()
       state.setPresentationMode(.expanded)
       let recorder = SurfaceFoldRecorder()
@@ -244,7 +248,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
       let agentsPoint = try foldPoint()
       XCTAssertEqual(agentsPoint.x, reference.x, accuracy: 0.5)
       XCTAssertEqual(agentsPoint.y, reference.y, accuracy: 0.5)
-      XCTAssertLessThan(panel.level.rawValue, NSWindow.Level.normal.rawValue)
+      XCTAssertEqual(panel.alphaValue, 0, "the fixture stays invisible without changing its level")
       XCTAssertFalse(panel.isKeyWindow)
       XCTAssertFalse(NSApp.isActive)
     }
@@ -268,7 +272,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
       let before = panel.frame
       controller.showForRecording()
       XCTAssertEqual(panel.frame, before)
-      XCTAssertLessThan(panel.level.rawValue, NSWindow.Level.normal.rawValue)
+      XCTAssertEqual(panel.alphaValue, 0, "the fixture stays invisible without changing its level")
       XCTAssertFalse(panel.isKeyWindow)
       XCTAssertFalse(NSApp.isActive)
     }

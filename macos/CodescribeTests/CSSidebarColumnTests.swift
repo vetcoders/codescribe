@@ -31,12 +31,19 @@ final class CSSidebarColumnTests: XCTestCase {
     // Settings is a SwiftUI scene the test cannot open, so it is mounted in a
     // plain window; the Agent window comes from the factory the app uses.
     let windows: [(String, () -> NSWindow)] = [
-      ("Settings", { self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator)))) }),
-      ("Agent", {
-        self.show(
-          AgentWindowChrome.makeWindow(
-            content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil)))))
-      }),
+      (
+        "Settings",
+        { self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator)))) }
+      ),
+      (
+        "Agent",
+        {
+          self.show(
+            AgentWindowChrome.makeWindow(
+              content: NSHostingController(
+                rootView: AgentChatView(store: AgentChatStore(engine: nil)))))
+        }
+      ),
     ]
     for (name, make) in windows {
       let window = make()
@@ -47,7 +54,8 @@ final class CSSidebarColumnTests: XCTestCase {
       // The toolbar, the search field and at most one slot sit above the
       // rows; the footer is the only thing below them.
       XCTAssertLessThan(list.contentInsets.top, 200, "\(name) rows start under the search field")
-      XCTAssertLessThan(list.contentInsets.bottom, 120, "\(name) rows reach the bottom of the column")
+      XCTAssertLessThan(
+        list.contentInsets.bottom, 120, "\(name) rows reach the bottom of the column")
       let rows = try XCTUnwrap(list.documentView as? NSTableView, "\(name) native rows")
       XCTAssertGreaterThan(rows.numberOfRows, 0, "\(name) has rows")
       let first = rows.convert(rows.rect(ofRow: 0), to: nil)
@@ -77,7 +85,7 @@ final class CSSidebarColumnTests: XCTestCase {
 
   private func show(_ window: NSWindow) -> NSWindow {
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     return window
   }
 
@@ -92,10 +100,11 @@ final class CSSidebarColumnTests: XCTestCase {
       RunLoop.current.run(until: Date().addingTimeInterval(0.02))
       window.displayIfNeeded()
       if let root = window.contentView?.superview ?? window.contentView {
-        found = first(in: root) {
-          guard let scroll = $0 as? NSScrollView else { return false }
-          return scroll.documentView is NSTableView && scroll.frame.width <= 320
-        } as? NSScrollView
+        found =
+          first(in: root) {
+            guard let scroll = $0 as? NSScrollView else { return false }
+            return scroll.documentView is NSTableView && scroll.frame.width <= 320
+          } as? NSScrollView
       }
       if let found, ready(found) { break }
     }

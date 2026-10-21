@@ -77,7 +77,7 @@ final class OverlayHeaderMorphTests: XCTestCase {
       state?.presentationMorphDuration = panel.lastMorphDuration
     }
     panel.setFrameOrigin(NSPoint(x: 700, y: 500))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     // Reach the starting form without animation.
     switch start {
     case .mini:
@@ -139,14 +139,17 @@ final class OverlayHeaderMorphTests: XCTestCase {
     let probe = sample.probe
     for i in probe.indices {
       for j in probe.indices where j > i && overlaps(probe[i].rect, probe[j].rect) {
-        out.append("\(probe[i].name) [\(fmt(probe[i].rect))] overlaps \(probe[j].name) [\(fmt(probe[j].rect))]")
+        out.append(
+          "\(probe[i].name) [\(fmt(probe[i].rect))] overlaps \(probe[j].name) [\(fmt(probe[j].rect))]"
+        )
       }
     }
     let areas = sample.regions.sorted { $0.minX < $1.minX }
     for i in areas.indices {
       for j in areas.indices where j > i && overlaps(areas[i], areas[j]) {
         out.append(
-          "hover area #\(i + 1) [\(fmt(areas[i]))] overlaps hover area #\(j + 1) [\(fmt(areas[j]))]")
+          "hover area #\(i + 1) [\(fmt(areas[i]))] overlaps hover area #\(j + 1) [\(fmt(areas[j]))]"
+        )
       }
     }
     return out
@@ -176,7 +179,8 @@ final class OverlayHeaderMorphTests: XCTestCase {
     for (i, rect) in areas.enumerated() where rect.minX < 40 || rect.minX < 0 {
       if rect.minX < -0.5 || rect.maxX > sample.width + 0.5 {
         out.append(
-          "leading hover area #\(i + 1) [\(fmt(rect))] is pushed outside the \(sample.width) pt window")
+          "leading hover area #\(i + 1) [\(fmt(rect))] is pushed outside the \(sample.width) pt window"
+        )
       }
     }
     return out
@@ -226,7 +230,8 @@ final class OverlayHeaderMorphTests: XCTestCase {
       let at = Date().timeIntervalSince(began) / duration
       samples.append(
         observe(
-          rig, label: "\(name) @\(Int(fraction * 100))% (measured \(Int(at * 100))% of \(duration) s)"
+          rig,
+          label: "\(name) @\(Int(fraction * 100))% (measured \(Int(at * 100))% of \(duration) s)"
         ))
     }
     settle(rig.host)
@@ -261,19 +266,23 @@ final class OverlayHeaderMorphTests: XCTestCase {
     }
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMiniToMidi() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMiniToMidi() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .mini, to: .midi, name: "mini->midi")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToExpanded() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToExpanded() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .midi, to: .expanded, name: "midi->expanded")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphExpandedToMidi() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphExpandedToMidi() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .expanded, to: .midi, name: "expanded->midi")
   }
 
-  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToMini() {
+  func testHeaderControlsNeverCollideOrDuplicateMidMorphMidiToMini() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     assertMorph(from: .midi, to: .mini, name: "midi->mini")
   }
 
@@ -306,7 +315,9 @@ final class OverlayHeaderMorphTests: XCTestCase {
         settle(rig.host, seconds: 0.03)
         let violations = settledViolations(observe(rig, label: "\(mode) at \(width) pt"))
         if !violations.isEmpty {
-          let note = width == minimum ? " (its minimum width: the form overflows as soon as it is shown)" : ""
+          let note =
+            width == minimum
+            ? " (its minimum width: the form overflows as soon as it is shown)" : ""
           bad.append("\(mode) at \(width) pt\(note): \(violations)")
         }
         width += 15

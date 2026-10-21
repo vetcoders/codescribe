@@ -240,6 +240,7 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
   }
 
   func testNativeDrawerDistinguishesReadDisconnectedAndUnreadRepliesAtBothTextScales() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let conversation = try fixture(read: true)
     for scale in [CGFloat(1), CGFloat(1.6)] {
       let drawer = view(conversation, alive: false, unread: 8)
@@ -268,6 +269,7 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
   }
 
   func testLongNativeRowFitsFiveTextLinesAtBothTextScales() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     var message = try XCTUnwrap(fixture(read: true).messages.first)
     message.text = String(repeating: "A long routed message with enough text to wrap. ", count: 12)
     message.sourceChannel = "0"

@@ -193,7 +193,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(tools.components(separatedBy: ".fixedSize()").count, 3)
     XCTAssertTrue(
       tools.contains(
-        "      HStack(spacing: CSSpace.md) {\n        Spacer(minLength: 0)\n        Picker(\"Permission for \\(item.displayName)\""))
+        "      HStack(spacing: CSSpace.md) {\n        Spacer(minLength: 0)\n        Picker(\"Permission for \\(item.displayName)\""
+      ))
     XCTAssertFalse(tools.contains(".pickerStyle(.segmented)\n      .frame(maxWidth: .infinity)"))
     XCTAssertFalse(tools.contains(".frame(width: 180)"))
     XCTAssertFalse(tools.contains(".frame(maxWidth: 180)"))
@@ -246,8 +247,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(agent.contains("Text formatting"))
     for (key, value) in [
       ("Formatting engine", "Silnik formatowania"),
-      ("Apple on your Mac first; this provider steps in when Apple fails.",
-       "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."),
+      (
+        "Apple on your Mac first; this provider steps in when Apple fails.",
+        "Najpierw Apple na Twoim Macu; ten dostawca przejmuje, gdy Apple zawiedzie."
+      ),
       ("Cloud provider", "Dostawca w chmurze"),
       ("Apple on this Mac (experimental)", "Apple na tym Macu (eksperymentalne)"),
       ("Used when Apple fails. %@", "Używany, gdy Apple zawiedzie. %@"),
@@ -441,10 +444,13 @@ final class SettingsChromeContractTests: XCTestCase {
     // Views review 1–10 (Founder, 2026-10-20): one sentence that names both
     // upload paths; "You choose the mode under Dictation." is gone.
     XCTAssertEqual(
-      polish["Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription."],
-      "Nagrania wysyłamy do chmury tylko, gdy wybierzesz tryb chmurowy lub retranskrypcję w chmurze.")
+      polish[
+        "Recordings go to the cloud only when you choose Cloud mode or a cloud re-transcription."],
+      "Nagrania wysyłamy do chmury tylko, gdy wybierzesz tryb chmurowy lub retranskrypcję w chmurze."
+    )
     XCTAssertNil(polish["You choose the mode under Dictation."])
-    XCTAssertNil(polish["We send recordings only in Cloud mode or during a manual cloud re-transcription."])
+    XCTAssertNil(
+      polish["We send recordings only in Cloud mode or during a manual cloud re-transcription."])
     // A lane card keeps its key on the first level; the endpoint and the
     // gateway session URL sit under Advanced (Founder decision, 2026-10-18).
     let laneCard = try XCTUnwrap(panel.range(of: "struct SttLaneCard: View {"))
@@ -458,7 +464,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertLessThan(laneAdvanced.lowerBound, laneEndpoint.lowerBound)
     XCTAssertLessThan(laneAdvanced.lowerBound, laneGateway.lowerBound)
     // One header strength across the page: Custom providers is a peer.
-    XCTAssertTrue(panel.contains("SettingsSectionHeaderRow(String(localized: \"Custom providers\")) {"))
+    XCTAssertTrue(
+      panel.contains("SettingsSectionHeaderRow(String(localized: \"Custom providers\")) {"))
     // Lowercase on purpose: an abbreviation and a protocol name start these.
     XCTAssertEqual(polish["e.g. Libraxis"], "np. Libraxis")
     XCTAssertEqual(polish["HTTP(S): %@"], "HTTP(S): %@")
@@ -534,8 +541,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Assistive": "Agent",
       "Formatting": "Formatowanie",
       "The Agent and voice assistant model": "Model Agenta i asystenta głosowego",
-      "Corrections and Smart. Max uses the Agent model.": "Korekta i Smart. Max używa modelu Agenta.",
-      "The model list needs an API key. You can enter a model ID by hand.": "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie.",
+      "Corrections and Smart. Max uses the Agent model.":
+        "Korekta i Smart. Max używa modelu Agenta.",
+      "The model list needs an API key. You can enter a model ID by hand.":
+        "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie.",
       "Connected account": "Połączone konto",
       "Stored API key": "Zapisany klucz API",
       "Could not fetch %@ models. The API key was rejected. Check it under Providers.":
@@ -615,7 +624,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Folders available to the Agent": "Foldery dostępne dla Agenta",
-      "Processes and MCP servers have their own permissions.": "Procesy i serwery MCP mają własne uprawnienia.",
+      "Processes and MCP servers have their own permissions.":
+        "Procesy i serwery MCP mają własne uprawnienia.",
       "Allowed folders": "Dozwolone foldery",
       "The Agent looks for projects here, skipping hidden and build folders.":
         "Agent szuka tu projektów, pomijając ukryte foldery i katalogi build.",
@@ -757,7 +767,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("SettingsSectionHeaderRow(String(localized: \"Defaults\"))"))
     XCTAssertFalse(section.contains("Text(\"Defaults\")"), "Defaults is not a setting name")
     XCTAssertFalse(section.contains("Tool overrides"))
-    XCTAssertTrue(section.contains("Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."))
+    XCTAssertTrue(
+      section.contains(
+        "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."
+      ))
     XCTAssertFalse(section.contains("A rule for one tool outranks"))
     XCTAssertTrue(section.contains("Text(item.displayName)"))
     XCTAssertTrue(section.contains("Text(item.identity)"), "the raw identifier stays")
@@ -800,7 +813,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let expected: [String: String] = [
       "Tool permissions": "Uprawnienia narzędzi",
       "Choose when the Agent may use tools.": "Wybierz, kiedy Agent może korzystać z narzędzi.",
-      "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent.": "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody.",
+      "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent.":
+        "Najpierw obowiązują ustawienia narzędzia, potem serwera, na końcu domyślne. Operacje destrukcyjne są zablokowane. Dostęp do miejsc mogących zawierać sekrety wymaga zgody.",
       "Source": "Źródło",
       "Search tools…": "Szukaj narzędzia…",
       "Deny": "Blokuj",
@@ -985,7 +999,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(section.contains("@State private var showingTechnicalDetails = false"))
     XCTAssertTrue(section.contains("DisclosureGroup(isExpanded: $showingTechnicalDetails)"))
     XCTAssertTrue(section.contains("Text(\"Move MCP configuration to Trash…\")"))
-    XCTAssertTrue(section.contains("SettingsSectionHeaderRow(\n        String(\n          localized: \"Add server\","))
+    XCTAssertTrue(
+      section.contains(
+        "SettingsSectionHeaderRow(\n        String(\n          localized: \"Add server\","))
     XCTAssertFalse(section.contains(".textCase(.uppercase)"), "no uppercase eyebrow in the form")
     XCTAssertFalse(section.contains("skip it"), "the empty state never suggests skipping a step")
     XCTAssertFalse(section.contains("Clear MCP configuration"))
@@ -1500,8 +1516,7 @@ final class SettingsChromeContractTests: XCTestCase {
   }
 
   /// Creator › Appearance (Founder, 2026-10-20): light, dark or system applied
-  /// at once, and the sheet-shade candidates per appearance behind the same
-  /// restart line as the language. The palette reads the shade at launch.
+  /// at once, with live sheet-shade candidates per appearance.
   func testCreatorOffersAppearanceAndSheetShadeCandidates() throws {
     let sources = try settingsSources()
     let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
@@ -1512,15 +1527,16 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(creator.contains("AppearanceRow(model: model)"))
     XCTAssertTrue(creator.contains("SheetShadeRows(model: model)"))
     XCTAssertTrue(creator.contains("AppAppearanceChoice.allCases.map(\\.title)"))
-    XCTAssertTrue(creator.contains("shadePicker(SheetShade.darkChoices"))
-    XCTAssertTrue(creator.contains("shadePicker(SheetShade.lightChoices"))
-    XCTAssertTrue(creator.contains("if model.sheetShadeNeedsRestart {"))
-    XCTAssertTrue(creator.contains("Button(model.sheetShadeRestartTitle) { model.applySheetShade() }"))
+    let compactCreator = creator.filter { !$0.isWhitespace }
+    XCTAssertTrue(compactCreator.contains("shadePicker(SheetShade.darkChoices"))
+    XCTAssertTrue(compactCreator.contains("shadePicker(SheetShade.lightChoices"))
+    XCTAssertFalse(creator.contains("settings-sheet-shade-restart"))
     let tokens = try String(
-      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+      contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent()
         .appendingPathComponent("Codescribe/DesignSystem/Tokens.swift"), encoding: .utf8)
-    XCTAssertTrue(tokens.contains("static let sheetLightHex: UInt32 = SheetShadePreference.launchHex(dark: false)"))
-    XCTAssertTrue(tokens.contains("static let sheetDarkHex: UInt32 = SheetShadePreference.launchHex(dark: true)"))
+    XCTAssertTrue(tokens.contains("static var sheetLightHex:"))
+    XCTAssertTrue(tokens.contains("static var sheetDarkHex:"))
     XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
     XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
     XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E"])
@@ -1591,7 +1607,8 @@ final class SettingsChromeContractTests: XCTestCase {
     // Whisper tab only, with the approved caption, no FP16 in the user's way.
     XCTAssertTrue(
       engine.contains(
-        "\"Live speech recognition and correction in the background, without sending recordings.\""))
+        "\"Live speech recognition and correction in the background, without sending recordings.\"")
+    )
     XCTAssertFalse(engine.contains("Live Whisper refinement"), "one owner: the Whisper tab")
     XCTAssertTrue(whisper.contains("String(localized: \"Live Whisper refinement\")"))
     XCTAssertTrue(
@@ -1600,7 +1617,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(whisper.contains("FP16 model repairs"))
     XCTAssertTrue(whisper.contains("model.recheckLocalWhisperRuntime"))
     // UI-35/36: one Status line beside Check model; no Disk space section.
-    XCTAssertTrue(whisper.contains("static func modelStatus(available: Bool, catalog: CsWhisperModelCatalog?)"))
+    XCTAssertTrue(
+      whisper.contains("static func modelStatus(available: Bool, catalog: CsWhisperModelCatalog?)"))
     XCTAssertTrue(whisper.contains("SettingsChipButton(\"Check model\""))
     XCTAssertFalse(whisper.contains("\"Disk space\""))
     XCTAssertFalse(whisper.contains("diskSpaceSection"))
@@ -1620,9 +1638,11 @@ final class SettingsChromeContractTests: XCTestCase {
     // named for what it is, the old repeated rows gone.
     XCTAssertTrue(license.contains("\"A license unlocks Agent mode.\""))
     XCTAssertFalse(license.contains("Basic mode stays free"))
-    for key in ["Manage key", "Change key", "Key management", "Get license key", "Remove key",
+    for key in [
+      "Manage key", "Change key", "Key management", "Get license key", "Remove key",
       "Key stored in the macOS Keychain", "One-time purchase", "No active license",
-      "Works offline for \\(daysLeft) more days"] {
+      "Works offline for \\(daysLeft) more days",
+    ] {
       XCTAssertTrue(license.contains(key), key)
     }
     XCTAssertTrue(license.contains("\"Codescribe Agent\""))
@@ -1660,7 +1680,8 @@ final class SettingsChromeContractTests: XCTestCase {
     }
     for retired in [
       "Cloud status", "Configure cloud services", "Disk space", "AI formatting",
-      "Basic mode stays free. A license unlocks Agent mode.", "No transcription in this app session",
+      "Basic mode stays free. A license unlocks Agent mode.",
+      "No transcription in this app session",
       "Browse corrections and dictionary rules.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
