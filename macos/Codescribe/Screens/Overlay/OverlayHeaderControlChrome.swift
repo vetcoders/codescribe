@@ -46,6 +46,9 @@ struct OverlayHeaderControlChrome: ViewModifier {
   let palette: OverlayAppearancePalette
   var selected = false
   var hintLeading = false
+  /// Header controls always hint. A reused anchor passes false while a popover
+  /// is open or the control has no title, so the shared panel withdraws.
+  var showsHint = true
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
 
@@ -81,18 +84,26 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .background {
         OverlayMenuCursorRegion { inside in
           hovered = inside
-          if inside {
-            anchor.show(title, palette: palette, leading: hintLeading)
-          } else {
-            anchor.hide()
-          }
+          syncHint(inside: inside)
         }
       }
-      .onChange(of: title) { _, title in
-        if hovered { anchor.show(title, palette: palette, leading: hintLeading) }
-      }
+      .onChange(of: title) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: showsHint) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintLeading) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear { anchor.hide() }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+  }
+
+  /// One owner: the shared panel. Leave, a title change, or `showsHint`
+  /// becoming false withdraws only this anchor, so a neighbor that has since
+  /// taken the panel stays on screen.
+  private func syncHint(inside: Bool) {
+    guard showsHint, inside, !title.isEmpty else {
+      anchor.hide()
+      return
+    }
+    anchor.show(title, palette: palette, leading: hintLeading)
   }
 }
 
