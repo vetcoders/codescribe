@@ -6441,6 +6441,37 @@ mod tests {
         }
     }
 
+    /// The capture energy ladder's measurement of one take: speech over
+    /// `speech`, measured quiet elsewhere up to `observed_samples`. A Whisper
+    /// or cloud decode retires held wording only where its own words cover
+    /// it or this measurement proves the rest quiet (absence proof, D5).
+    fn record_measured_speech(
+        ledger: &mut AcousticLedger,
+        session: &str,
+        capture_epoch: u64,
+        observed_samples: u64,
+        speech: &[(u64, u64)],
+    ) {
+        use codescribe_core::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CAPTURE_ENERGY_PRODUCER,
+            CaptureEvidenceIdentity,
+        };
+        ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new(session, capture_epoch),
+            CAPTURE_ENERGY_PRODUCER,
+            AcousticAvailability::Observed { observed_samples },
+            speech
+                .iter()
+                .map(|&(sample_start, sample_end)| TailSampleRange {
+                    session: session.into(),
+                    capture_epoch,
+                    sample_start,
+                    sample_end,
+                })
+                .collect(),
+        ));
+    }
+
     #[test]
     fn group_answer_preserves_later_speech_and_authenticates_bus_publication() {
         use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
@@ -8743,13 +8774,22 @@ mod tests {
                     .slots_of(&occurrence)
                     .unwrap()
                     .to_vec();
+                // The two decoded words abut over measured speech; the ladder
+                // proves the owner's edges quiet, so the third held word may go.
+                record_measured_speech(
+                    &mut ledger.lock().unwrap(),
+                    "take",
+                    7,
+                    offset + 32_000,
+                    &[(offset + 1_000, offset + 15_000)],
+                );
                 let observation = ObservationIdentity::new(producer, 994, 0, occurrence.clone());
                 let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
                     &observation,
                     &[
                         WordPin::new(offset + 1_000, offset + 7_000, "new")
                             .with_decode_window(0, offset + 32_000),
-                        WordPin::new(offset + 8_000, offset + 15_000, "label")
+                        WordPin::new(offset + 7_000, offset + 15_000, "label")
                             .with_decode_window(0, offset + 32_000),
                     ],
                 );
@@ -8766,7 +8806,7 @@ mod tests {
                         [
                             occurrence.clone(),
                             OccurrenceIdentity::new("take", 7, offset + 1_000, offset + 7_000),
-                            OccurrenceIdentity::new("take", 7, offset + 8_000, offset + 15_000),
+                            OccurrenceIdentity::new("take", 7, offset + 7_000, offset + 15_000),
                         ]
                     );
                     assert_eq!(operation.outputs.len(), 2);
@@ -8853,10 +8893,25 @@ mod tests {
             ledger.seal(&occurrences[0]).unwrap().clone()
         };
         emitter.on_event(&EngineEvent::LedgerSeal { receipt });
+        record_measured_speech(
+            &mut ledger.lock().unwrap(),
+            "take",
+            7,
+            occurrences[2].sample_end,
+            &[
+                (occurrences[0].sample_start, occurrences[0].sample_end),
+                (
+                    occurrences[1].sample_start + 1_000,
+                    occurrences[1].sample_end - 1_000,
+                ),
+                (occurrences[2].sample_start, occurrences[2].sample_end),
+            ],
+        );
         let observation =
             ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, occurrences[1].clone());
-        // This acoustic revision carries complete Word/decode evidence;
-        // a shorter whole-label proposal alone cannot retire source wording.
+        // This acoustic revision carries complete Word/decode evidence over
+        // measured speech; a shorter whole-label proposal alone cannot retire
+        // source wording.
         let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
             &observation,
             &[
@@ -8867,7 +8922,7 @@ mod tests {
                 )
                 .with_decode_window(0, occurrences[1].sample_end + 16_000),
                 codescribe_core::pipeline::acoustic_ledger::WordPin::new(
-                    occurrences[1].sample_start + 8_000,
+                    occurrences[1].sample_start + 7_000,
                     occurrences[1].sample_end - 1_000,
                     "label",
                 )
@@ -8988,10 +9043,21 @@ mod tests {
         });
         let stopped = emitter.begin_stop_canvas().unwrap();
         assert!(plain.missing_words_from(&stopped).is_empty());
+        record_measured_speech(
+            &mut ledger.lock().unwrap(),
+            "take",
+            7,
+            second.sample_end,
+            &[
+                (first.sample_start + 1_000, first.sample_end - 1_000),
+                (second.sample_start, second.sample_end),
+            ],
+        );
         let observation =
             ObservationIdentity::new(ObservationProducer::Whisper, 3, 0, first.clone());
-        // This acoustic revision carries complete Word/decode evidence;
-        // a shorter whole-label proposal alone cannot retire source wording.
+        // This acoustic revision carries complete Word/decode evidence over
+        // measured speech; a shorter whole-label proposal alone cannot retire
+        // source wording.
         let receipt = ledger.lock().unwrap().admit_word_slots_for_tests(
             &observation,
             &[
@@ -9002,7 +9068,7 @@ mod tests {
                 )
                 .with_decode_window(0, first.sample_end + 16_000),
                 codescribe_core::pipeline::acoustic_ledger::WordPin::new(
-                    first.sample_start + 8_000,
+                    first.sample_start + 7_000,
                     first.sample_end - 1_000,
                     "label",
                 )
@@ -12093,14 +12159,15 @@ mod tests {
                 .is_some()
         );
 
+        record_measured_speech(&mut ledger, "brand-session", 22, 48_000, &[(1_000, 31_000)]);
         let whisper =
             ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, occurrence.clone());
         let receipt = ledger.admit_word_slots_for_tests(
             &whisper,
             &[
                 WordPin::new(1_000, 9_000, "pracuję").with_decode_window(0, 48_000),
-                WordPin::new(10_000, 16_000, "nad").with_decode_window(0, 48_000),
-                WordPin::new(17_000, 31_000, "CodeScript").with_decode_window(0, 48_000),
+                WordPin::new(9_000, 16_000, "nad").with_decode_window(0, 48_000),
+                WordPin::new(16_000, 31_000, "CodeScript").with_decode_window(0, 48_000),
             ],
         );
         assert!(matches!(receipt, MutationReceipt::Correct { .. }));
