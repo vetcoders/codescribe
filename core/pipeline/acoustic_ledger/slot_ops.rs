@@ -305,14 +305,13 @@ pub enum SlotOperationRefusal {
     ProducerNotAuthorized,
 }
 
-/// A repetition picker is needed only for equal lexical evidence on the same
-/// PCM. Different words over a coarse source are a partition, not a replay.
-
 /// Speech separated by no more than this is one word's continuity: a valley
 /// this short does not authenticate quiet between anchor pieces, and a
 /// retired source's uncovered edge this short holds no other word.
 pub(super) const WORD_CONTINUITY_MS: u64 = 60;
 
+/// A repetition picker is needed only for equal lexical evidence on the same
+/// PCM. Different words over a coarse source are a partition, not a replay.
 impl AcousticLedger {
     pub(super) fn repetition_target_ambiguous(
         &self,
