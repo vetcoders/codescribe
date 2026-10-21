@@ -25966,14 +25966,32 @@ mod relay_l1_overlap_admission_tests {
     }
 
     fn launch_long(lane: &mut Lane, text: &str) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        launch_long_owner(lane, Some(text))
+    }
+
+    /// [`launch_long`] for an owner Apple left without text: the occurrence is
+    /// qualified and owes its text, and only the capture windows label it.
+    fn launch_long_unlabelled(lane: &mut Lane) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
+        launch_long_owner(lane, None)
+    }
+
+    fn launch_long_owner(
+        lane: &mut Lane,
+        text: Option<&str>,
+    ) -> (OccurrenceIdentity, Vec<TailPatchRequest>) {
         // Three real requests need thirteen seconds on the capture-owned 9/3 grid.
         // The fixture supplies and measures every sample instead of forcing a policy.
         let total = 13 * u64::from(RATE);
         measured_relay_capture(lane, total);
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, total);
-        stage(lane, 1, occurrence.clone(), text);
+        match text {
+            Some(text) => stage(lane, 1, occurrence.clone(), text),
+            None => qualify_unlabelled(lane, &occurrence),
+        }
         assert!(lane.state.register_whisper_owner(&lane.tx, 1, &occurrence));
-        close_lexicon(lane, 1, &occurrence, text);
+        if let Some(text) = text {
+            close_lexicon(lane, 1, &occurrence, text);
+        }
         lane.state.capture_stopping = true;
         lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
@@ -26396,7 +26414,10 @@ mod relay_l1_overlap_admission_tests {
                 &lane,
                 &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
             );
-            let (occurrence, requests) = launch_long(&mut lane, "ras stary");
+            // The windows' routing is measured on an owner Apple left without
+            // text. A coarse two-word Apple label over the whole owner keeps its
+            // words under D5: no single window's words cover all of its speech.
+            let (occurrence, requests) = launch_long_unlabelled(&mut lane);
             let speech = coverage_speech_evidence(&lane.state);
             assert_eq!(
                 speech.availability().observed_samples(),
@@ -26472,17 +26493,18 @@ mod relay_l1_overlap_admission_tests {
                     held_text(&lane, &occurrence).as_deref(),
                     Some("raz stary dwa ogon")
                 );
+                // The later window's different word over a held word's range
+                // is a lexical dispute the held word keeps; the reading waits.
                 let ledger = lane.state.acoustic_ledger.lock().unwrap();
                 for candidate in ["nowy", "trzy"] {
                     assert!(
                         ledger
-                            .word_choices()
+                            .slot_alternatives()
                             .iter()
-                            .any(|choice| choice.candidate.surface == candidate
-                                && !choice.accepted
-                                && !choice.lexical_resolved),
+                            .any(|alternative| alternative.candidate == candidate
+                                && alternative.reason == "word_adjudication_held"),
                         "{candidate}: {:?}",
-                        ledger.word_choices()
+                        ledger.slot_alternatives()
                     );
                 }
             }
@@ -26506,9 +26528,11 @@ mod relay_l1_overlap_admission_tests {
                 &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
             );
             let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 208_000);
-            stage(&mut lane, 1, occurrence.clone(), "ras stary");
+            // The windows' routing is measured on an owner Apple left without
+            // text. A coarse two-word Apple label over the whole owner keeps its
+            // words under D5: no single window's words cover all of its speech.
+            qualify_unlabelled(&mut lane, &occurrence);
             assert!(lane.state.register_whisper_owner(&lane.tx, 1, &occurrence));
-            close_lexicon(&mut lane, 1, &occurrence, "ras stary");
             lane.state.capture_stopping = true;
             lane.state.pump_capture_windows(&lane.tx);
             let _ = drain(&mut lane.rx);
@@ -26603,17 +26627,18 @@ mod relay_l1_overlap_admission_tests {
                     held_text(&lane, &occurrence).as_deref(),
                     Some("raz stary dwa ogon")
                 );
+                // The later window's different word over a held word's range
+                // is a lexical dispute the held word keeps; the reading waits.
                 let ledger = lane.state.acoustic_ledger.lock().unwrap();
                 for candidate in ["nowy", "trzy"] {
                     assert!(
                         ledger
-                            .word_choices()
+                            .slot_alternatives()
                             .iter()
-                            .any(|choice| choice.candidate.surface == candidate
-                                && !choice.accepted
-                                && !choice.lexical_resolved),
+                            .any(|alternative| alternative.candidate == candidate
+                                && alternative.reason == "word_adjudication_held"),
                         "{candidate}: {:?}",
-                        ledger.word_choices()
+                        ledger.slot_alternatives()
                     );
                 }
             }
@@ -28339,15 +28364,14 @@ mod relay_l1_overlap_admission_tests {
             .unwrap()
             .sources
             .clone();
-        assert!(
-            ledger
-                .slot_operations()
-                .iter()
-                .any(|operation| operation.sources == sources
-                    && operation.outputs.iter().any(|slot| slot.text == "prośbę"
-                        && slot.sample_start == 31_000
-                        && slot.sample_end == 50_000))
-        );
+        // D5 (ledger speech truth brief): absence is not evidence. The capture
+        // is speech throughout and the decoded words leave speech under the
+        // group uncovered (10 000..12 000, 30 000..31 000, Apple's "o"), so the
+        // group keeps its words and the decoded reading waits over it.
+        assert!(ledger.slot_alternatives().iter().any(|alternative| {
+            alternative.sources == sources
+                && alternative.reason == "absence_requires_acoustic_evidence"
+        }));
         assert!(
             ledger
                 .slots_of(&owner)
@@ -29955,8 +29979,11 @@ mod relay_l1_overlap_admission_tests {
         let mut lane = open(session);
         let (owner, requests) = launch_three_frame_span(&mut lane, "", &[(100_000, 115_000)]);
         let base = 100_000;
+        // The split words tile the wide pin and its burst: D5 retires a held
+        // word only where its successors cover the speech, and more than one
+        // word's 60 ms continuity left uncovered is room for another word.
         let split = vec![
-            word_pin(session, "Bym", base + 1_000, base + 3_000),
+            word_pin(session, "Bym", base, base + 3_000),
             word_pin(session, "to", base + 3_000, base + 5_000),
             word_pin(session, "powiedział.", base + 5_000, base + 9_000),
             word_pin(session, "Nie.", base + 9_000, base + 11_000),
@@ -31402,6 +31429,9 @@ mod relay_l1_overlap_admission_tests {
             &lane,
             &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
         );
+        // The straddle is measured on an owner Apple left without text. A
+        // coarse two-word Apple label over the whole owner keeps its words
+        // under D5: neither window's words cover all of its speech.
         lane.state.energy_calibration = Some(EnergyCalibration {
             version: "live-member-measured-fixture".into(),
             min_energy_integral: 1.0,
@@ -31409,34 +31439,23 @@ mod relay_l1_overlap_admission_tests {
         });
         assert!(qualify_owned_occurrence(&lane.state, &occurrence));
         assert!(
-            admit_ledger_label(
-                &mut lane.state,
-                &lane.tx,
-                LabelAdmission {
-                    observation: ObservationIdentity::new(
-                        ObservationProducer::Apple,
-                        1,
-                        0,
-                        occurrence.clone()
-                    ),
-                    label: "tak pozza",
-                    energy: EnergyAdmission::RequireExistingQualification,
-                }
-            )
-            .is_some()
+            lane.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .require_text_recovery(&occurrence)
         );
         lane.state.pending_events.insert(
             1,
             PendingAppleSeal {
                 occurrence: occurrence.clone(),
-                raw_text: "tak pozza".into(),
-                layer1_baseline: "tak pozza".into(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
                 start_ts: 96_768.0 / RATE as f32,
                 end_ts: 192_768.0 / RATE as f32,
                 segments: Vec::new(),
             },
         );
-        close_lexicon(&mut lane, 1, &occurrence, "tak pozza");
         lane.state.pump_capture_windows(&lane.tx);
         let _ = drain(&mut lane.rx);
         let requests = take_requests(&mut lane.tail_rx);
@@ -31963,9 +31982,12 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, Some("replayed_range_identity"));
     }
 
-    /// (b) The same windows with Apple text already on the occurrence.
+    /// (b) The same windows with Apple text already on the occurrence. Under
+    /// D5 (absence is not evidence) "ras echo" is one coarse source over the
+    /// whole owner and neither window's words cover all of its measured
+    /// speech, so it keeps its words; (a) carries the word routing.
     #[test]
-    fn labelled_long_occurrence_joins_exclusive_word_pins_around_a_straddle() {
+    fn labelled_long_occurrence_keeps_a_coarse_label_no_window_covers() {
         let session = "relay-labelled-long";
         let mut lane = open(session);
         let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
@@ -32022,54 +32044,36 @@ mod relay_l1_overlap_admission_tests {
             !replay_refusal(&events, "echo"),
             "the first window's overlap pin is replay against the committed occurrence\n{warnings}"
         );
-        assert!(
-            replay_refusal(&events, "raz"),
-            "the later copy of raz is replayed_range_identity\n{warnings}"
-        );
-        assert!(replay_refusal(&events, "krawedz"), "{warnings}");
+        assert!(!replay_refusal(&events, "raz"), "{warnings}");
+        // Both returns were preserved, so the worker counts both skipped.
         assert_eq!(
             (
                 lane.state.tail_patch_jobs_applied,
                 lane.state.tail_patch_jobs_skipped
             ),
-            (2, 0),
+            (0, 2),
             "held={:?}\n{warnings}",
             held_text(&lane, &occurrence)
         );
-        assert_eq!(
-            held_text(&lane, &occurrence).as_deref(),
-            Some("raz krawedz echo trzy cztery")
-        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("ras echo"));
         assert_eq!(held_count(&lane), 1);
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
-        assert!(
-            ledger
-                .layer_trail()
-                .iter()
-                .any(|entry| entry.candidate_label == "dwa" && !entry.decision.grants_mutation()),
-            "{:?}",
-            ledger.layer_trail()
-        );
-        assert!(
+        let source = ledger.slots_of(&occurrence).unwrap().to_vec();
+        assert_eq!(source.len(), 1);
+        assert_eq!(
             ledger
                 .slot_alternatives()
                 .iter()
-                .any(|alternative| alternative.candidate == "dwa"),
-            "{:?}",
+                .filter(|alternative| alternative.sources == source
+                    && alternative.reason == "absence_requires_acoustic_evidence")
+                .count(),
+            2,
+            "each window's reading waits over the coarse source: {:?}",
             ledger.slot_alternatives()
-        );
-        assert!(
-            ledger
-                .slots_of(&occurrence)
-                .unwrap()
-                .iter()
-                .any(|slot| slot.text == "echo"
-                    && slot.sample_start == 66_000
-                    && slot.sample_end == 78_000)
         );
         assert!(ledger.word_deletions().is_empty());
         drop(ledger);
-        assert_conserved(&lane, Some("replayed_range_identity"));
+        assert_conserved(&lane, None);
     }
 
     #[test]
