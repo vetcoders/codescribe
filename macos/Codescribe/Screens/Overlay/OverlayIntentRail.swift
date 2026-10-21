@@ -138,16 +138,23 @@ struct OverlayIntentRail: View {
   private static let engineCommands: [OverlayIntent] = [.retranscribe, .format]
   private static let deliveryCommands: [OverlayIntent] = [.sendToAgent]
 
-  var body: some View {
+  /// Visible commands in their sidebar groups, in the order the rail draws
+  /// them: document, engine, delivery, then anything none of them claims.
+  private var commandGroups: [[OverlayIntent]] {
     let visible =
       OverlayDockLayout(projectedIntents: intents).visibleIntents.filter {
         $0 != .recoverSuperseded && $0 != .discardSuperseded
       }
-    let document = visible.filter { Self.documentCommands.contains($0) }
-    let engine = visible.filter { Self.engineCommands.contains($0) }
-    let delivery = visible.filter { Self.deliveryCommands.contains($0) }
     let claimed = Set(Self.documentCommands + Self.engineCommands + Self.deliveryCommands)
-    let remainder = visible.filter { !claimed.contains($0) }
+    return [
+      visible.filter { Self.documentCommands.contains($0) },
+      visible.filter { Self.engineCommands.contains($0) },
+      visible.filter { Self.deliveryCommands.contains($0) },
+      visible.filter { !claimed.contains($0) },
+    ]
+  }
+
+  var body: some View {
     ScrollView(.vertical) {
       VStack(spacing: 8) {
         VStack(spacing: 2) {
@@ -162,28 +169,10 @@ struct OverlayIntentRail: View {
           groupSeparator
           previousTakeControl
         }
-        if !document.isEmpty {
+        ForEach(commandGroups.filter { !$0.isEmpty }, id: \.self) { group in
           groupSeparator
           VStack(spacing: 2) {
-            ForEach(document, id: \.self) { intentControl($0) }
-          }
-        }
-        if !engine.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(engine, id: \.self) { intentControl($0) }
-          }
-        }
-        if !delivery.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(delivery, id: \.self) { intentControl($0) }
-          }
-        }
-        if !remainder.isEmpty {
-          groupSeparator
-          VStack(spacing: 2) {
-            ForEach(remainder, id: \.self) { intentControl($0) }
+            ForEach(group, id: \.self) { intentControl($0) }
           }
         }
       }

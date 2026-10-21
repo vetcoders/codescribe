@@ -1666,7 +1666,8 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "required_code": [
                 "struct OverlayIntentRail: View",
-                "ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \\.self)",
+                "OverlayDockLayout(projectedIntents: intents).visibleIntents",
+                "intentControl($0)",
                 "dispatch(intent)",
                 "func dispatch(_ intent: OverlayIntent)",
                 "onIntent(intent)"
@@ -1900,9 +1901,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "dispatch",
+              "callee": "intentControl",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "dispatch",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "intentControl",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "minimum_count": 1
             },
