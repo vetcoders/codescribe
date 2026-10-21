@@ -1529,3 +1529,89 @@ fn recorded_1021_a_redecode_continues_a_word_only_over_most_of_it_and_off_its_ne
         std::slice::from_ref(&lone_pokazac),
     ));
 }
+
+#[test]
+fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_its_spelling() {
+    // Take dcc26684 (dragon, 2026-10-21): a Whisper recovery window declared
+    // "długoscią" over 14.12-15.60 s; its midpoint fell just before the owner
+    // fence at 14.88 s, while the next owner already held Whisper's
+    // "długością" over the same speech. The document read "długoscią
+    // długością". One producer cannot hold two words on the same PCM.
+    let mut pcm = vec![0.0_f32; 1_100_000];
+    pcm[315_000..1_000_000].fill(0.1);
+    let left = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 312_000, 714_240);
+    let right = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 714_240, 1_009_152);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, left.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &first,
+                &decoded(
+                    &[("prostu", 645_120, 664_320), ("z", 664_320, 679_680)],
+                    (288_000, 720_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let next = ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, right.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &next,
+                &decoded(
+                    &[
+                        ("długością", 728_640, 748_800),
+                        ("trwania", 748_800, 787_200)
+                    ],
+                    (700_000, 1_000_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let right_before = ledger.slots_of(&right).unwrap().to_vec();
+    let recovery = ObservationIdentity::new(ObservationProducer::Whisper, 1, 12, left.clone());
+    // The recorded recovery returned after the fence settled; the live-edge
+    // deferral this synthetic open burst would add is a separate rule, so
+    // the identity normalizer is asked directly.
+    let pins = decoded(
+        &[("plus", 663_360, 677_760), ("długoscią", 677_760, 748_800)],
+        (663_360, 1_007_040),
+    );
+    let anchors = ledger.measured_word_anchors(&left).unwrap();
+    let incoming = ledger
+        .normalize_anchor_words(&recovery, &pins, &anchors)
+        .unwrap();
+    assert!(
+        incoming.iter().all(|(slot, _)| slot.text != "długoscią"),
+        "the neighbour's word is not a second word of this owner: {:?}",
+        incoming
+            .iter()
+            .map(|(slot, _)| slot.text.as_str())
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(ledger.slots_of(&right).unwrap(), right_before.as_slice());
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == recovery
+            && alternative.reason == "cross_owner_sequence_correspondence"
+            && alternative.candidate == "długoscią"
+    }));
+}
