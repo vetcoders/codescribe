@@ -1498,9 +1498,11 @@ struct OverlayChannelStatusView: View {
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
     .foregroundStyle(palette.primaryText.color)
     .overlayFastHint(
-      String(localized: "View conversation without changing the microphone"), palette: palette)
+      String(localized: "View conversation without changing the microphone"), palette: palette
+    )
     .accessibilityHint(
-      Text(verbatim: String(localized: "View conversation without changing the microphone")))
+      Text(verbatim: String(localized: "View conversation without changing the microphone"))
+    )
     .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
   }
 
@@ -1549,9 +1551,11 @@ struct OverlayChannelStatusView: View {
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9, outset: 6))
     .overlayFastHint(
-      String(localized: "View conversation without changing the microphone"), palette: palette)
+      String(localized: "View conversation without changing the microphone"), palette: palette
+    )
     .accessibilityHint(
-      Text(verbatim: String(localized: "View conversation without changing the microphone")))
+      Text(verbatim: String(localized: "View conversation without changing the microphone"))
+    )
     .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
   }
 
