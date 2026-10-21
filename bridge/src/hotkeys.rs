@@ -1824,6 +1824,11 @@ pub struct CsChannelRosterState {
     /// live follower or no claim. Off means the Frame focus control is idle.
     #[uniffi(default = None)]
     pub frame_detected: Option<bool>,
+    /// Whether the live follower's lease names an iTerm2 or Terminal.app tab;
+    /// `None` = no live follower or no claim. Off means the terminal focus
+    /// control is idle.
+    #[uniffi(default = None)]
+    pub terminal_detected: Option<bool>,
     /// Milliseconds since the Unix epoch of the live follower's oldest
     /// unacknowledged delivery; `None` = no backlog or no follower. The
     /// overlay's "alive but not reading" layer: a process heartbeat proves
@@ -1924,6 +1929,7 @@ impl CodescribeHotkeys {
                     }),
                     follower_alive: state.follower_alive,
                     frame_detected: state.frame_detected,
+                    terminal_detected: state.terminal_detected,
                     unread_since_unix_ms: state.unread_since.and_then(|since| {
                         since
                             .duration_since(std::time::UNIX_EPOCH)
