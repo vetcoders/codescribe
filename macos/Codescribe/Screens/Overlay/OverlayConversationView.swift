@@ -793,6 +793,7 @@ struct OverlayConversationView: View {
           .accessibilityIdentifier("overlay-message-reply-\(message.id)")
         }
       }
+      .background { OverlayMenuCursorRegion() }
     }
     .padding(12)
     .background(
