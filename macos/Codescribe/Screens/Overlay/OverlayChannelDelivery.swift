@@ -1637,6 +1637,10 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
   let elapsedMs: Int?
   let emittedAt: String
   let frame: AgentFrameBinding?
+  /// `frame`, `iterm2` or `terminal`: where the follower aimed. Nil before a
+  /// target was known, and from followers older than terminal focus.
+  let target: String?
+  let terminal: AgentTerminalBinding?
 
   var isSuccess: Bool {
     status == "focused" || status == "already_focused"
@@ -1651,7 +1655,9 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
     exitCode: Int? = nil,
     elapsedMs: Int? = nil,
     emittedAt: String,
-    frame: AgentFrameBinding? = nil
+    frame: AgentFrameBinding? = nil,
+    target: String? = nil,
+    terminal: AgentTerminalBinding? = nil
   ) {
     self.requestID = requestID
     self.provider = provider
@@ -1662,6 +1668,8 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
     self.elapsedMs = elapsedMs
     self.emittedAt = emittedAt
     self.frame = frame
+    self.target = target
+    self.terminal = terminal
   }
 
   init?(row: [String: Any]) {
@@ -1676,7 +1684,10 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
       leaseID.count == 32,
       leaseID.allSatisfy({ "0123456789abcdef".contains($0) }),
       let status = row["status"] as? String,
-      ["focused", "already_focused", "pane_missing", "no_frame", "stale", "error"].contains(status),
+      [
+        "focused", "already_focused", "pane_missing", "terminal_missing", "automation_denied",
+        "no_frame", "stale", "error",
+      ].contains(status),
       let emittedAt = row["emitted_at"] as? String, !emittedAt.isEmpty
     else { return nil }
     self.requestID = requestID
@@ -1688,6 +1699,10 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
     self.elapsedMs = (row["elapsed_ms"] as? NSNumber)?.intValue
     self.emittedAt = emittedAt
     self.frame = (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:))
+    self.target = (row["target"] as? String).flatMap {
+      ["frame", "iterm2", "terminal"].contains($0) ? $0 : nil
+    }
+    self.terminal = (row["terminal"] as? [String: Any]).flatMap(AgentTerminalBinding.init(row:))
   }
 }
 

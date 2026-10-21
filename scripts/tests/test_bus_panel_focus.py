@@ -1,4 +1,5 @@
-"""A click on an agent row brings that agent's own vc-frame pane to focus."""
+"""A click on an agent row brings that agent's own vc-frame pane, or its
+iTerm2 or Terminal.app tab, to focus."""
 import contextlib
 import importlib.util
 import io
@@ -21,6 +22,11 @@ SPEC.loader.exec_module(DEMUX)
 
 FRAME = {"session": "vibecrafted", "pane_id": 9, "socket_dir": "/tmp/vc-frame-501",
          "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854}
+ITERM_UUID = "6F3C1A2B-9D4E-4F50-8A61-0B2C3D4E5F60"
+ITERM_TAB = {"host": "iterm2", "host_bundle_id": "com.googlecode.iterm2",
+             "tty": "/dev/ttys005", "session_id": ITERM_UUID}
+TERMINAL_TAB = {"host": "apple-terminal", "host_bundle_id": "com.apple.Terminal",
+                "tty": "/dev/ttys002", "session_id": None}
 
 
 class FrameContextTests(unittest.TestCase):
@@ -89,7 +95,8 @@ class PanelFocusLeaseTests(unittest.TestCase):
         self.bus.touch()
         self.provider, self.session = "claude-code", "panel-session"
         self.lease_id = DEMUX.lease_identifier(self.provider, self.session)
-        for target, value in (("NativeProviderModelReader", None), ("frame_context", FRAME)):
+        for target, value in (("NativeProviderModelReader", None), ("frame_context", FRAME),
+                              ("resolve_claude_terminal_context", None)):
             patcher = mock.patch.object(DEMUX, target, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -152,10 +159,56 @@ class PanelFocusLeaseTests(unittest.TestCase):
     def test_an_agent_outside_vc_frame_answers_no_frame(self):
         lease = self.lease()
         lease.frame = None
-        with mock.patch.object(DEMUX, "run_panel_focus") as run:
+        with mock.patch.object(DEMUX, "run_panel_focus") as run, \
+                mock.patch.object(DEMUX, "run_terminal_focus") as terminal:
             result = lease.focus_panel(self.request())
         run.assert_not_called()
-        self.assertEqual((result["status"], result["frame"]), ("no_frame", None))
+        terminal.assert_not_called()
+        self.assertEqual((result["status"], result["frame"], result["terminal"], result["target"]),
+                         ("no_frame", None, None, None))
+
+    def test_a_known_pane_wins_over_a_known_terminal_tab(self):
+        lease = self.lease()
+        with mock.patch.object(DEMUX, "resolve_claude_terminal_context", return_value=ITERM_TAB), \
+                mock.patch.object(DEMUX, "run_panel_focus", return_value=("focused", 0)) as run, \
+                mock.patch.object(DEMUX, "run_terminal_focus") as terminal:
+            result = lease.focus_panel(self.request())
+        run.assert_called_once_with(FRAME)
+        terminal.assert_not_called()
+        self.assertEqual((result["status"], result["target"]), ("focused", "frame"))
+        self.assertEqual(result["terminal"], {"host": "iterm2",
+                                              "host_bundle_id": "com.googlecode.iterm2",
+                                              "tty": "/dev/ttys005"})
+
+    def test_without_a_pane_the_terminal_tab_answers(self):
+        lease = self.lease()
+        lease.frame = None
+        with mock.patch.object(DEMUX, "resolve_claude_terminal_context", return_value=ITERM_TAB), \
+                mock.patch.object(DEMUX, "run_panel_focus") as run, \
+                mock.patch.object(DEMUX, "run_terminal_focus", return_value=("focused", 0)) as terminal:
+            result = lease.focus_panel(self.request())
+        run.assert_not_called()
+        terminal.assert_called_once_with(ITERM_TAB)
+        self.assertEqual((result["status"], result["exit_code"], result["target"], result["frame"]),
+                         ("focused", 0, "iterm2", None))
+        # The app needs the host to activate, never the iTerm session id.
+        self.assertEqual(result["terminal"], {"host": "iterm2",
+                                              "host_bundle_id": "com.googlecode.iterm2",
+                                              "tty": "/dev/ttys005"})
+        # The newly resolved tab reached the lease before the answer.
+        state = json.loads((self.root / "leases" / f"{self.lease_id}.json").read_text())
+        self.assertEqual(state["terminal"], ITERM_TAB)
+
+    def test_a_terminal_app_tab_is_named_terminal_and_its_failures_pass_through(self):
+        lease = self.lease()
+        lease.frame = None
+        with mock.patch.object(DEMUX, "resolve_claude_terminal_context", return_value=TERMINAL_TAB), \
+                mock.patch.object(DEMUX, "run_terminal_focus",
+                                  return_value=("automation_denied", 1)):
+            result = lease.focus_panel(self.request())
+        self.assertEqual((result["status"], result["exit_code"], result["target"]),
+                         ("automation_denied", 1, "terminal"))
+        self.assertEqual(result["terminal"]["host_bundle_id"], "com.apple.Terminal")
 
     def test_only_a_request_row_decodes(self):
         self.assertEqual(DEMUX.panel_focus_request(json.dumps(self.request()))["request_id"], "3" * 24)
@@ -200,6 +253,160 @@ class PanelFocusLeaseTests(unittest.TestCase):
         self.assertNotIn(DEMUX.AGENT_PANEL_FOCUS_SCHEMA, output.getvalue())
 
 
+class TerminalContextTests(unittest.TestCase):
+    def test_iterm2_names_its_session_uuid_and_the_tty_is_a_dev_path(self):
+        environ = {"__CFBundleIdentifier": "com.googlecode.iterm2", "TERM_PROGRAM": "iTerm.app",
+                   "ITERM_SESSION_ID": f"w0t5p0:{ITERM_UUID}"}
+        self.assertEqual(DEMUX.terminal_context(environ, "ttys005"), ITERM_TAB)
+
+    def test_term_program_identifies_the_host_when_the_bundle_is_missing(self):
+        iterm = DEMUX.terminal_context({"TERM_PROGRAM": "iTerm.app",
+                                        "TERM_SESSION_ID": f"w1t0p2:{ITERM_UUID}"})
+        self.assertEqual((iterm["host"], iterm["session_id"], iterm["tty"]),
+                         ("iterm2", ITERM_UUID, None))
+        terminal = DEMUX.terminal_context({"TERM_PROGRAM": "Apple_Terminal",
+                                           "TERM_SESSION_ID": "0D9E2C3A-1111-4222-8333-444455556666"},
+                                          "/dev/ttys002")
+        # Terminal.app's session id is not an AppleScript address; the tty is.
+        self.assertEqual(terminal, TERMINAL_TAB)
+
+    def test_any_other_host_has_no_terminal_tab(self):
+        self.assertIsNone(DEMUX.terminal_context({}))
+        self.assertIsNone(DEMUX.terminal_context({"__CFBundleIdentifier": "io.vetcoders.vc-terminal",
+                                                  "TERM_PROGRAM": "zellij"}))
+        self.assertIsNone(DEMUX.terminal_context({"__CFBundleIdentifier": "com.microsoft.VSCode",
+                                                  "TERM_PROGRAM": "vscode"}))
+
+    def test_a_malformed_session_id_is_dropped_not_guessed(self):
+        tab = DEMUX.terminal_context({"__CFBundleIdentifier": "com.googlecode.iterm2",
+                                      "ITERM_SESSION_ID": "w0t5p0:not-a-uuid"}, "??")
+        self.assertEqual((tab["session_id"], tab["tty"]), (None, None))
+
+    def test_tty_names_are_normalized(self):
+        self.assertEqual(DEMUX.terminal_tty("ttys005"), "/dev/ttys005")
+        self.assertEqual(DEMUX.terminal_tty("/dev/ttys005"), "/dev/ttys005")
+        for blank in (None, "", "??", "-"):
+            self.assertIsNone(DEMUX.terminal_tty(blank))
+
+    def test_the_inherited_tab_takes_the_nearest_tty_in_the_follower_ancestry(self):
+        procs = {700: {"pid": 700, "ppid": 650, "tty": "??", "command": "python3 bus-demux.py"},
+                 650: {"pid": 650, "ppid": 1, "tty": "ttys005", "command": "-zsh"}}
+        environ = {"__CFBundleIdentifier": "com.googlecode.iterm2",
+                   "ITERM_SESSION_ID": f"w0t5p0:{ITERM_UUID}"}
+        with mock.patch.object(DEMUX, "process_table", return_value=procs), \
+                mock.patch.object(DEMUX.os, "getpid", return_value=700):
+            self.assertEqual(DEMUX.inherited_terminal_context(environ), ITERM_TAB)
+        with mock.patch.object(DEMUX, "process_table") as table:
+            self.assertIsNone(DEMUX.inherited_terminal_context({"TERM_PROGRAM": "vscode"}))
+        table.assert_not_called()
+
+
+class RunTerminalFocusTests(unittest.TestCase):
+    def run_with(self, terminal=ITERM_TAB, returncode=0, stdout="focused\n", stderr="", error=None):
+        completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+        with mock.patch("subprocess.run", side_effect=error, return_value=completed) as run:
+            outcome = DEMUX.run_terminal_focus(terminal)
+        return outcome, run
+
+    def test_iterm2_receives_the_session_id_and_tty_as_arguments(self):
+        outcome, run = self.run_with()
+        self.assertEqual(outcome, ("focused", 0))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], [DEMUX.OSASCRIPT, "-e"])
+        self.assertEqual(command[3:], [ITERM_UUID, "/dev/ttys005"])
+        script = command[2]
+        self.assertIn('application id "com.googlecode.iterm2"', script)
+        # Values are never spliced into the script text.
+        self.assertNotIn(ITERM_UUID, script)
+        self.assertNotIn("ttys005", script)
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(run.call_args.kwargs["timeout"], DEMUX.PANEL_FOCUS_TIMEOUT_SECONDS)
+
+    def test_terminal_app_is_addressed_by_tty(self):
+        outcome, run = self.run_with(TERMINAL_TAB)
+        self.assertEqual(outcome, ("focused", 0))
+        command = run.call_args.args[0]
+        self.assertIn('application id "com.apple.Terminal"', command[2])
+        self.assertEqual(command[3:], ["/dev/ttys002"])
+
+    def test_iterm2_without_an_id_matches_by_tty(self):
+        _, run = self.run_with({**ITERM_TAB, "session_id": None})
+        self.assertEqual(run.call_args.args[0][3:], ["", "/dev/ttys005"])
+
+    def test_without_an_address_nothing_runs(self):
+        for terminal in ({**ITERM_TAB, "session_id": None, "tty": None},
+                         {**TERMINAL_TAB, "tty": None},
+                         {**TERMINAL_TAB, "tty": "-e"}):
+            with mock.patch("subprocess.run") as run:
+                self.assertEqual(DEMUX.run_terminal_focus(terminal), ("terminal_missing", None))
+            run.assert_not_called()
+
+    def test_outcomes_map_to_statuses(self):
+        self.assertEqual(self.run_with(stdout="missing\n")[0], ("terminal_missing", 0))
+        self.assertEqual(self.run_with(stdout="")[0], ("error", 0))
+        denied = ("execution error: Not authorized to send Apple events to iTerm2. (-1743)")
+        self.assertEqual(self.run_with(returncode=1, stdout="", stderr=denied)[0],
+                         ("automation_denied", 1))
+        self.assertEqual(self.run_with(returncode=1, stdout="",
+                                       stderr="osascript is not allowed to send Apple events")[0],
+                         ("automation_denied", 1))
+        self.assertEqual(self.run_with(returncode=1, stdout="", stderr="syntax error (-2741)")[0],
+                         ("error", 1))
+
+    def test_a_missing_binary_or_a_hung_terminal_is_an_error(self):
+        self.assertEqual(self.run_with(error=FileNotFoundError("osascript"))[0], ("error", None))
+        self.assertEqual(self.run_with(error=subprocess.TimeoutExpired("osascript", 5))[0],
+                         ("error", None))
+        with mock.patch("subprocess.run") as run:
+            self.assertEqual(DEMUX.run_terminal_focus({"host": "kitty"}), ("error", None))
+        run.assert_not_called()
+
+
+class TerminalLeaseTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        self.root = self.home / "bridge"
+        self.bus = self.home / "channel-6.jsonl"
+        self.bus.touch()
+        for target, value in (("NativeProviderModelReader", None), ("frame_context", None)):
+            patcher = mock.patch.object(DEMUX, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def lease(self, provider):
+        lease = DEMUX.SessionLease(
+            root=self.root, provider=provider, provider_session_id=f"{provider}-session",
+            name="igor", bus=self.bus, requested_id=None, ttl_seconds=120,
+            follow_from_end=False, provider_metadata_home=self.home)
+        self.addCleanup(lease.close)
+        return lease
+
+    def test_a_codex_follower_records_the_tab_it_inherited(self):
+        with mock.patch.object(DEMUX, "inherited_terminal_context", return_value=ITERM_TAB), \
+                mock.patch.object(DEMUX, "resolve_claude_terminal_context") as resolve:
+            lease = self.lease("codex")
+        resolve.assert_not_called()
+        state = json.loads(lease.path.read_text())
+        self.assertEqual((state["frame"], state["terminal"]), (None, ITERM_TAB))
+
+    def test_a_claude_code_follower_resolves_the_tab_from_its_session(self):
+        with mock.patch.object(DEMUX, "inherited_terminal_context") as inherited, \
+                mock.patch.object(DEMUX, "resolve_claude_frame_context", return_value=None), \
+                mock.patch.object(DEMUX, "resolve_claude_terminal_context",
+                                  return_value=TERMINAL_TAB) as resolve:
+            lease = self.lease("claude-code")
+        inherited.assert_not_called()
+        resolve.assert_called_once_with("claude-code-session", home=self.home)
+        self.assertEqual(json.loads(lease.path.read_text())["terminal"], TERMINAL_TAB)
+
+    def test_outside_both_terminals_the_lease_names_no_tab(self):
+        with mock.patch.object(DEMUX, "inherited_terminal_context", return_value=None):
+            lease = self.lease("codex")
+        self.assertIsNone(json.loads(lease.path.read_text())["terminal"])
+
+
 class VcFrameOnPathTests(unittest.TestCase):
     """Leo, vibecrafted maintainer, 2026-10-19: an external client runs the public
     `vc-frame` found on PATH at each action, never the engine pin; the pane
@@ -224,6 +431,9 @@ class VcFrameOnPathTests(unittest.TestCase):
         reader = mock.patch.object(DEMUX, "NativeProviderModelReader", return_value=None)
         reader.start()
         self.addCleanup(reader.stop)
+        terminal = mock.patch.object(DEMUX, "resolve_claude_terminal_context", return_value=None)
+        terminal.start()
+        self.addCleanup(terminal.stop)
         self.pinned = self.executable(self.home / "releases/4.4.0+gold/libexec", "pinned")
         self.first = self.executable(self.home / "first/bin", "first")
         self.second = self.executable(self.home / "second/bin", "second")
@@ -476,6 +686,42 @@ class ClaudeDaemonFrameTests(unittest.TestCase):
         run_focus.assert_called_once()
         persisted = json.loads(lease.path.read_text())
         self.assertEqual(persisted["frame"]["pane_id"], 3)
+
+    def test_an_interactive_claude_in_iterm2_names_its_own_tab(self):
+        sid = "5b1f0c7e-2a3d-4e4f-9a5b-6c7d8e9f0a1b"
+        self.write_session(4100, sid, "igor")
+        procs = {
+            4000: {"pid": 4000, "ppid": 1, "tty": "ttys005", "command": "-zsh"},
+            4100: {"pid": 4100, "ppid": 4000, "tty": "ttys005", "command": "claude"},
+        }
+        envs = {4100: {"__CFBundleIdentifier": "com.googlecode.iterm2",
+                       "TERM_PROGRAM": "iTerm.app", "ITERM_SESSION_ID": f"w0t5p0:{ITERM_UUID}"}}
+        with mock.patch.object(DEMUX, "process_table", return_value=procs), \
+                mock.patch.object(DEMUX, "process_environ", side_effect=lambda pid: envs.get(pid, {})):
+            self.assertEqual(DEMUX.resolve_claude_terminal_context(sid, home=self.home), ITERM_TAB)
+            self.assertIsNone(DEMUX.resolve_claude_frame_context(sid, home=self.home))
+
+    def test_a_daemon_worker_takes_the_tab_of_its_attached_client_not_the_daemon_launcher(self):
+        sid = "c0ffee03-0000-4000-8000-000000000003"
+        self.write_session(38260, sid, "claudit")
+        procs = {
+            38250: {"pid": 38250, "ppid": 1, "tty": "ttys010", "command": "claude --bg-pty-host /tmp/b.sock"},
+            38260: {"pid": 38260, "ppid": 38250, "tty": "ttys010", "command": f"claude --resume {sid}"},
+            38226: {"pid": 38226, "ppid": 73198, "tty": "ttys008", "command": "claude attach c0ffee03"},
+        }
+        launcher = "11111111-2222-4333-8444-555555555555"
+        envs = {
+            # The daemon inherited the tab that happened to start it.
+            38260: {"__CFBundleIdentifier": "com.googlecode.iterm2",
+                    "ITERM_SESSION_ID": f"w0t0p0:{launcher}"},
+            38226: {"__CFBundleIdentifier": "com.apple.Terminal", "TERM_PROGRAM": "Apple_Terminal"},
+        }
+        with mock.patch.object(DEMUX, "process_table", return_value=procs), \
+                mock.patch.object(DEMUX, "process_environ", side_effect=lambda pid: envs.get(pid, {})), \
+                mock.patch.object(DEMUX, "tty_window_and_access", return_value=None):
+            tab = DEMUX.resolve_claude_terminal_context(sid, home=self.home)
+        self.assertEqual(tab, {"host": "apple-terminal", "host_bundle_id": "com.apple.Terminal",
+                               "tty": "/dev/ttys008", "session_id": None})
 
 
 if __name__ == "__main__":
