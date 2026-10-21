@@ -26,6 +26,11 @@ pub const CAPTURE_LEVEL_LOW_DB_ENV: &str = "CODESCRIBE_CAPTURE_LEVEL_LOW_DB";
 pub const DEFAULT_CAPTURE_LEVEL_LOW_DB: f32 = -52.0;
 /// macOS 27 gates silence to hard zeros (take 191351, both mic modes).
 pub const DIGITAL_ZERO_ABS: f32 = 1.0e-8;
+/// One millisecond of consecutive digital zeros cannot come from a room: a
+/// voice gate (macOS Voice Isolation, 2026-10-21: 33 % of dragon audio) wrote
+/// them over whatever it removed. Such a run measures nothing, so no observer
+/// may read it as proof of silence.
+pub const DIGITAL_ZERO_RUN_MS: u64 = 1;
 /// Linear RMS below this is not active speech (~−80 dBFS).
 pub const ACTIVE_SPEECH_LINEAR_FLOOR: f32 = 1.0e-4;
 /// Highest RMS the session noise floor estimate may take (−40 dBFS). The
@@ -55,6 +60,9 @@ struct EnergyHop {
     sample_start: u64,
     sample_end: u64,
     rms: f32,
+    /// The hop holds at least [`DIGITAL_ZERO_RUN_MS`] of consecutive digital
+    /// zeros. Its low RMS is a gate's output, not a measurement of the room.
+    gated: bool,
 }
 
 #[derive(Debug, Default)]
@@ -311,7 +319,14 @@ impl CaptureEnergyOwner {
         &self.identity
     }
 
-    fn record_hop(&self, sample_start: u64, sample_end: u64, rms: f32, nonfinite: u64) {
+    fn record_hop(
+        &self,
+        sample_start: u64,
+        sample_end: u64,
+        rms: f32,
+        nonfinite: u64,
+        gated: bool,
+    ) {
         let mut clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
         clock.observed_samples = clock.observed_samples.max(sample_end);
         if nonfinite > 0 {
@@ -328,6 +343,7 @@ impl CaptureEnergyOwner {
             sample_start,
             sample_end,
             rms,
+            gated,
         };
         if let Some(last) = clock.hops.last_mut()
             && last.sample_start == sample_start
@@ -591,6 +607,51 @@ impl CaptureEnergyOwner {
         )
     }
 
+    /// Whether a digital-zero run touches `[sample_start, sample_end)`.
+    ///
+    /// Same clock as [`Self::voiced_hops_in`]. `Some(true)` means at least one
+    /// overlapping hop carries [`DIGITAL_ZERO_RUN_MS`] of exact zeros: a gate
+    /// removed what was there, so quiet in that range is not measured.
+    /// `None` means this owner cannot speak for the range.
+    pub fn digital_zero_in(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<bool> {
+        self.hops_at_or_above(session, capture_epoch, sample_start, sample_end, 0.0)?;
+        let clock = self.clock.lock().unwrap_or_else(|error| error.into_inner());
+        Some(
+            clock.hops.iter().any(|hop| {
+                hop.gated && hop.sample_start < sample_end && hop.sample_end > sample_start
+            }),
+        )
+    }
+
+    /// Measured quiet over `[sample_start, sample_end)`.
+    ///
+    /// `Some(true)` only when every overlapping hop sits below
+    /// [`ACTIVE_SPEECH_LINEAR_FLOOR`] and none carries a digital-zero run.
+    /// `Some(false)` is a voiced hop. A gated range answers `None`: zeros a
+    /// gate wrote are not a measurement, so they cannot prove absence.
+    pub fn measured_quiet_in(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<bool> {
+        let voiced = self.voiced_hops_in(session, capture_epoch, sample_start, sample_end)?;
+        if !voiced.is_empty() {
+            return Some(false);
+        }
+        match self.digital_zero_in(session, capture_epoch, sample_start, sample_end)? {
+            true => None,
+            false => Some(true),
+        }
+    }
+
     /// Every hop of this capture, in order, with its RMS.
     ///
     /// For readers that need the levels themselves, such as syllable-nucleus
@@ -669,6 +730,16 @@ impl CaptureEnergyOwner {
             cursor = cursor.max(hop.sample_end.min(sample_end));
         }
         (cursor >= sample_end).then_some(voiced)
+    }
+}
+
+/// Extend or break a digital-zero run with one sample. Non-finite samples
+/// break it: they are invalid PCM, not a gate's output.
+fn note_zero_run(run: &mut u64, sample: f32) {
+    if sample.is_finite() && sample.abs() <= DIGITAL_ZERO_ABS {
+        *run += 1;
+    } else {
+        *run = 0;
     }
 }
 
@@ -824,6 +895,10 @@ pub struct CaptureLevelAccumulator {
     dropout_blocks: u64,
     seen_speech: bool,
     trailing_zero_run: u64,
+    /// Consecutive digital-zero samples ending at the newest sample.
+    zero_run_samples: u64,
+    /// The pending energy hop already holds a digital-zero run.
+    energy_pending_gated: bool,
 }
 
 impl CaptureLevelAccumulator {
@@ -892,8 +967,15 @@ impl CaptureLevelAccumulator {
         if let Some(owner) = self.energy.as_ref() {
             if let Some(hop_size) = self.energy_hop_size {
                 let mut remaining = samples;
+                let min_run = (hop_size as u64 * 50 * DIGITAL_ZERO_RUN_MS).div_ceil(1_000);
                 while !remaining.is_empty() {
                     let count = remaining.len().min(hop_size - self.energy_pending.len());
+                    for sample in &remaining[..count] {
+                        note_zero_run(&mut self.zero_run_samples, *sample);
+                        if self.zero_run_samples >= min_run {
+                            self.energy_pending_gated = true;
+                        }
+                    }
                     self.energy_pending.extend_from_slice(&remaining[..count]);
                     remaining = &remaining[count..];
                     let invalid = self
@@ -909,14 +991,28 @@ impl CaptureLevelAccumulator {
                         .sum::<f64>();
                     let level = (square_sum / self.energy_pending.len() as f64).sqrt() as f32;
                     let end = self.energy_hop_start + self.energy_pending.len() as u64;
-                    owner.record_hop(self.energy_hop_start, end, level, invalid);
+                    owner.record_hop(
+                        self.energy_hop_start,
+                        end,
+                        level,
+                        invalid,
+                        self.energy_pending_gated,
+                    );
                     if self.energy_pending.len() == hop_size {
                         self.energy_pending.clear();
                         self.energy_hop_start = end;
+                        self.energy_pending_gated = false;
                     }
                 }
             } else {
-                owner.record_hop(sample_start, self.sample_count, rms, nonfinite);
+                // Without a capture rate the run is counted at 48 kHz.
+                let min_run = (48 * DIGITAL_ZERO_RUN_MS).max(1);
+                let mut gated = false;
+                for sample in samples {
+                    note_zero_run(&mut self.zero_run_samples, *sample);
+                    gated |= self.zero_run_samples >= min_run;
+                }
+                owner.record_hop(sample_start, self.sample_count, rms, nonfinite, gated);
             }
         }
         self.digital_zero_samples += zeros;
@@ -1300,6 +1396,57 @@ mod tests {
         assert!(owner.voiced_hops_in("other", 3, 160, 320).is_none());
         let absent = CaptureEnergyOwner::bind("hops", 4);
         assert!(absent.voiced_hops_in("hops", 4, 0, 160).is_none());
+    }
+
+    /// A gate's digital zeros are not a measured silence. On 2026-10-21 macOS
+    /// Voice Isolation wrote 1 ms+ runs of exact zeros over 33 % of dragon's
+    /// audio, edges fading to ±1 LSB. Room quiet keeps a noise floor; only that
+    /// proves absence. The energy still reads the zeros as "below the floor"
+    /// for calibration; absence proofs ask `measured_quiet_in` instead.
+    #[test]
+    fn digital_zero_run_is_unmeasured_quiet_not_proof_of_silence() {
+        let owner = CaptureEnergyOwner::bind("gate", 1);
+        let mut acc = CaptureLevelAccumulator::bound_to_at_rate(&owner, 48_000);
+        // Hop 0: room quiet at about -86 dBFS, no exact zeros.
+        let room: Vec<f32> = (0..960)
+            .map(|i| if i % 2 == 0 { 5.0e-5 } else { -5.0e-5 })
+            .collect();
+        acc.push_samples(&room);
+        // Hop 1: gated, 960 exact zeros.
+        acc.push_samples(&[0.0; 960]);
+        // Hop 2: speech.
+        acc.push_samples(&[0.1; 960]);
+        // Hop 3: 47 zeros (just under 1 ms at 48 kHz) inside room quiet.
+        let mut short = room.clone();
+        short[100..147].fill(0.0);
+        acc.push_samples(&short);
+
+        assert_eq!(
+            owner.voiced_hops_in("gate", 1, 960, 1_920),
+            Some(Vec::new())
+        );
+        assert_eq!(owner.digital_zero_in("gate", 1, 960, 1_920), Some(true));
+        assert_eq!(
+            owner.measured_quiet_in("gate", 1, 960, 1_920),
+            None,
+            "a gated hop measures nothing, so it cannot prove absence"
+        );
+        assert_eq!(owner.measured_quiet_in("gate", 1, 0, 960), Some(true));
+        assert_eq!(
+            owner.measured_quiet_in("gate", 1, 1_920, 2_880),
+            Some(false)
+        );
+        assert_eq!(
+            owner.measured_quiet_in("gate", 1, 2_880, 3_840),
+            Some(true),
+            "a run shorter than 1 ms is a zero crossing, not a gate"
+        );
+        assert_eq!(
+            owner.measured_quiet_in("gate", 1, 0, 1_920),
+            None,
+            "quiet beside a gated hop is still not a whole-range proof"
+        );
+        assert!(owner.measured_quiet_in("other", 1, 0, 960).is_none());
     }
 
     /// Captured zeros and no samples at all are different facts. The first is a

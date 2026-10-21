@@ -761,6 +761,11 @@ fn compose_label(slots: &[WordSlot]) -> String {
         .join(" ")
 }
 
+/// Reason of a [`SlotAlternative`] that only records another engine's word on
+/// its own PCM range (D3: hypotheses are collected, not rejected). It is
+/// evidence for adjudication and inspection, never a refused authority.
+pub const COLLECTED_HYPOTHESIS: &str = "collected_hypothesis";
+
 /// A candidate that did not prove a unique mutation target. The current words
 /// remain intact; producer and generation travel with the candidate for W-6.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1164,6 +1169,28 @@ impl AcousticLedger {
                 .generation
                 .checked_add(1)
                 .expect("word generation exhausted");
+        }
+        // D3, Maciej 2026-10-21: "zbierzmy całość hipotez" — a word the batch
+        // could not place is still one engine's hypothesis on that PCM range.
+        // Keep it, keyed by its own range, beside the words held there. It
+        // changes no text and settles or blocks no debt. A batch that already
+        // kept its reading (whole, as one candidate for the picker) has
+        // collected this word with it; it is not collected twice.
+        let already_kept = self
+            .slot_alternatives
+            .iter()
+            .any(|alternative| alternative.observation == *observation);
+        if !already_kept && !word.text.trim().is_empty() {
+            let beside = self
+                .slots_of(owner)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|held| {
+                    held.sample_start < word.sample_end && word.sample_start < held.sample_end
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.retain_slot_alternative(&rejected, &word.text, beside, COLLECTED_HYPOTHESIS);
         }
         self.refuse_replacement(&rejected, &word.text, RefuseReason::SlotAdmissionRejected);
     }
@@ -2877,6 +2904,23 @@ impl AcousticLedger {
                 non_mutating: None,
             }
         });
+        // Sources this batch retires one by one: each held word that a proposed
+        // word replaces as the same anchored word.
+        let individually_retired = slots
+            .as_ref()
+            .map(|proposed| {
+                self.slots_of(&observation.occurrence)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|source| {
+                        proposed.iter().any(|output| {
+                            output != *source && self.same_anchored_word(source, output)
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let blocked_sources = if observation.producer == ObservationProducer::ManualHuman {
             Vec::new()
         } else {
@@ -2896,10 +2940,21 @@ impl AcousticLedger {
                             })
                         })
                         .map(Vec::as_slice);
+                    let retired = operations
+                        .iter()
+                        .find(|operation| operation.sources.contains(source))
+                        .map_or(individually_retired.as_slice(), |operation| {
+                            operation.sources.as_slice()
+                        });
                     operation_outputs
                         .or(individual_outputs)
                         .is_some_and(|outputs| {
-                            !self.slot_retirement_has_acoustic_coverage(source, outputs)
+                            !self.slot_retirement_has_acoustic_coverage(
+                                observation,
+                                source,
+                                outputs,
+                                retired,
+                            )
                         })
                 })
                 .cloned()
@@ -2997,6 +3052,48 @@ impl AcousticLedger {
         let decision = self.decide_observation(observation, text, slot_revision, slots.is_some());
         let applies_slots = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
+        // D3: a word that replaces another engine's word on the same range
+        // carries that engine's verdict. Group the proposed words by the held
+        // word each one replaces and stamp them before any receipt records
+        // them, so receipts and held slots stay the same words.
+        let slots = if applies_slots && let Some(mut proposed) = slots {
+            let held_sources = self
+                .slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .to_vec();
+            let mut groups: Vec<(WordSlot, Vec<usize>)> = Vec::new();
+            for (index, output) in proposed.iter().enumerate() {
+                if operations
+                    .iter()
+                    .any(|group| group.outputs.contains(output))
+                {
+                    continue;
+                }
+                let Some(source) = held_sources
+                    .iter()
+                    .find(|source| *source != output && self.same_anchored_word(source, output))
+                else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(held, _)| held == source) {
+                    Some((_, members)) => members.push(index),
+                    None => groups.push((source.clone(), vec![index])),
+                }
+            }
+            for (source, members) in groups {
+                let mut outputs = members
+                    .iter()
+                    .map(|index| proposed[*index].clone())
+                    .collect::<Vec<_>>();
+                self.stamp_word_witness(observation, std::slice::from_ref(&source), &mut outputs);
+                for (index, output) in members.into_iter().zip(outputs) {
+                    proposed[index] = output;
+                }
+            }
+            Some(proposed)
+        } else {
+            slots
+        };
         let mut individual_sources = Vec::new();
         if applies_slots && let Some(proposed) = slots.as_ref() {
             for output in proposed {
@@ -7740,15 +7837,18 @@ mod tests {
         ));
         assert!(!ledger.text_recovery_pending(&owner));
         assert_eq!(ledger.text_of(&owner), Some("same words"));
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A (Maciej, 2026-10-21): a range a complete window heard owes
+        // nothing, so no new debt opens on it.
+        assert!(!ledger.require_text_recovery(&owner));
+        // Replaying the same observation still cannot mutate.
         assert!(matches!(
             ledger.admit_word_slots(&word_observation, &pins),
             MutationReceipt::Refuse { .. }
         ));
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         let stale = obs(ObservationProducer::Whisper, 0, owner.clone());
         ledger.admit(&stale, "same words");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.text_of(&owner), Some("same words"));
         let fresh = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
         assert!(fresh.generation > word_observation.generation);
         assert!(matches!(
@@ -7787,15 +7887,16 @@ mod tests {
         );
         assert!(!ledger.text_recovery_pending(&owner));
         let before = ledger.slots_of(&owner).unwrap().to_vec();
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A: the complete window heard the owner, so it owes nothing.
+        assert!(!ledger.require_text_recovery(&owner));
         ledger.admit(
             &obs(ObservationProducer::Formatter, 6, owner.clone()),
             "invented words",
         );
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         ledger.admit(&obs(ObservationProducer::ManualHuman, 7, owner.clone()), "");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         // The UI's whole-document edit enters the document-receipt corridor,
         // not untargeted raw-label admission over already pinned words.
         let revision = ledger
@@ -7815,10 +7916,10 @@ mod tests {
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
         assert_eq!(ledger.text_of(&owner), Some("heard words"));
         assert!(
-            ledger.text_recovery_pending(&owner),
-            "human document edits do not invent acoustic completion"
+            !ledger.text_recovery_pending(&owner),
+            "a human document edit reopens no debt the complete window paid"
         );
-        assert!(!ledger.is_sealed(&owner));
+        assert!(!ledger.is_sealed(&owner), "a document edit is not a seal");
         assert_eq!(ledger.conservation().residue(), 0);
 
         // An explicit human decision on an unpinned provisional label keeps
@@ -8653,12 +8754,25 @@ mod tests {
         );
         assert_eq!(ledger.conservation().residue(), 0);
         ledger.assert_slot_labels();
-        assert!(
-            ledger
-                .slots_of(&owner)
-                .unwrap()
-                .iter()
-                .all(|slot| slot.witness == SlotWitness::Unwitnessed)
+        // D3 (ledger speech truth brief): a second engine on an owned range is
+        // a witness, not silence. Whisper's four words land over Apple's on the
+        // same ranges and agree with them, so they are Confirmed; Apple's `e`,
+        // which no Whisper word reached, keeps no verdict.
+        let witnesses = ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|slot| slot.witness.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witnesses,
+            [
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Unwitnessed,
+            ]
         );
     }
 
