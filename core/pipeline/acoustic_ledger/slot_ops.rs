@@ -2435,24 +2435,13 @@ impl AcousticLedger {
         {
             return true;
         }
-        let Some(speech) = self.speech_evidence.as_ref() else {
+        // The measurement must authenticate as a whole, as it must for the
+        // pin coverage above: one empty, foreign or unobserved range makes it
+        // no observer, and no observer certifies silence.
+        let Some(speech) = self.measured_speech_for(&range) else {
             return false;
         };
         let producer = speech.producer();
-        if !speech
-            .identity()
-            .matches(&owner.session, owner.capture_epoch)
-            || !matches!(
-                producer,
-                CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
-            )
-            || speech
-                .availability()
-                .observed_samples()
-                .is_none_or(|end| end < source.sample_end)
-        {
-            return false;
-        }
         // Each observer testifies only about what it can resolve. The energy
         // ladder joins speech across pauses shorter than its merge gap and
         // Silero pads every range, so neither can call a short pause between
@@ -3390,19 +3379,16 @@ mod slot_ops_tests {
                         !complete,
                         "{producer:?} {window:?} variant{variant}: {decision:?}"
                     );
-                    if complete {
-                        assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
-                        assert!(
-                            decision.grants_mutation()
-                                || matches!(decision, MutationReceipt::Preserve { .. })
-                        );
-                    } else {
-                        assert_eq!(
-                            ledger.slots_of(&owner).unwrap(),
-                            source,
-                            "invalid observer cannot support partial partition"
-                        );
-                    }
+                    // D5 (ledger speech truth brief): absence is not evidence.
+                    // An unusable observer proves no word's own speech, so no
+                    // decode, complete or partial, retires the coarse group;
+                    // a complete window still pays the text debt (decision of
+                    // Maciej, 2026-10-21) and seals below.
+                    assert_eq!(
+                        ledger.slots_of(&owner).unwrap(),
+                        source,
+                        "{producer:?} {window:?} variant{variant}: invalid observer cannot support a partition: {decision:?}"
+                    );
                     assert!(ledger.note_frontier_return(&owner, producer));
                     let coverage =
                         ledger.assess_seal_coverage(&owner.session, owner.capture_epoch, &bad, 0);
