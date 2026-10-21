@@ -264,8 +264,9 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           NativeAccessibilityProbe.waitForElements("overlay-agent-microphone").elements.first)
         let speaker = try XCTUnwrap(
           NativeAccessibilityProbe.waitForElements("overlay-agent-speaker").elements.first)
-        XCTAssertEqual(microphone.frame.height, pill.frame.height, accuracy: 1)
-        XCTAssertEqual(speaker.frame.height, pill.frame.height, accuracy: 1)
+        let controlScale = channel == "0" ? OverlayAgentAudioControls.broadcastScale : 1
+        XCTAssertEqual(microphone.frame.height, pill.frame.height * controlScale, accuracy: 1)
+        XCTAssertEqual(speaker.frame.height, pill.frame.height * controlScale, accuracy: 1)
       }
     }
   }
