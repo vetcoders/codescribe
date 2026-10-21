@@ -216,7 +216,7 @@ struct CodescribeApp: App {
     )
     let delegate = appDelegate
     model.onApplyInterfaceLanguage = { [weak model] beforeTermination in
-      let section = await model?.section ?? .creator
+      let section = model?.section ?? .creator
       try await delegate.restartForInterfaceLanguage(
         relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
@@ -224,7 +224,7 @@ struct CodescribeApp: App {
     // launch, so it rides the same idle-guarded restart as the language.
     model.onApplyAppearance = { AppearancePreference().apply() }
     model.onApplySheetShade = { [weak model] beforeTermination in
-      let section = await model?.section ?? .creator
+      let section = model?.section ?? .creator
       try await delegate.restartForInterfaceLanguage(
         relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
