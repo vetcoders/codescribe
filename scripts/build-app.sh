@@ -438,6 +438,28 @@ FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
+# The bundle owns the library its app loads. Step 2 renamed the build-tree
+# copy, but a cargo run on the shared target between step 2 and the link
+# re-creates that copy with rustc's absolute deps/ name; the app then loads
+# the build tree's file, and dies at launch once target/ is cleaned
+# (21 X 2026). So both ends are named here, after the link.
+EMBEDDED_FFI="$FRAMEWORKS/libcodescribe_ffi.dylib"
+install_name_tool -id @rpath/libcodescribe_ffi.dylib "$EMBEDDED_FFI"
+LINKED_FFI="$(otool -L "$MACOS_DIR/$SCHEME" | awk '/libcodescribe_ffi\.dylib/ {print $1; exit}')"
+if [[ -z "$LINKED_FFI" ]]; then
+  echo "error: $MACOS_DIR/$SCHEME does not link libcodescribe_ffi.dylib" >&2
+  exit 1
+fi
+install_name_tool -change "$LINKED_FFI" @rpath/libcodescribe_ffi.dylib "$MACOS_DIR/$SCHEME"
+for MACHO in "$MACOS_DIR/$SCHEME" "$EMBEDDED_FFI"; do
+  OUTSIDE="$(otool -L "$MACHO" | tail -n +2 | awk '{print $1}' \
+    | grep -v -E '^(@rpath/|@executable_path/|@loader_path/|/System/|/usr/lib/)' || true)"
+  if [[ -n "$OUTSIDE" ]]; then
+    echo "error: $MACHO loads a library outside the bundle and the OS:" >&2
+    echo "$OUTSIDE" >&2
+    exit 1
+  fi
+done
 cp "$STT_SIDECAR_BIN" "$MACOS_DIR/codescribe-stt-sidecar"
 chmod 755 "$MACOS_DIR/codescribe-stt-sidecar"
 if [[ -n "$EMBEDDER_RUNTIME_SOURCE" ]]; then
