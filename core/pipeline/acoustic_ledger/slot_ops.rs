@@ -1114,6 +1114,7 @@ impl AcousticLedger {
                 | "window_start_clipped"
                 | "window_stub_superseded"
                 | "duplicate_pcm_edge_token"
+                | super::COLLECTED_HYPOTHESIS
         ) && source.producer != ObservationProducer::ManualHuman
             && source.producer.authority_rank()
                 <= alternative.observation.producer.authority_rank()

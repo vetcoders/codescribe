@@ -760,6 +760,11 @@ fn compose_label(slots: &[WordSlot]) -> String {
         .join(" ")
 }
 
+/// Reason of a [`SlotAlternative`] that only records another engine's word on
+/// its own PCM range (D3: hypotheses are collected, not rejected). It is
+/// evidence for adjudication and inspection, never a refused authority.
+pub const COLLECTED_HYPOTHESIS: &str = "collected_hypothesis";
+
 /// A candidate that did not prove a unique mutation target. The current words
 /// remain intact; producer and generation travel with the candidate for W-6.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1160,6 +1165,28 @@ impl AcousticLedger {
                 .generation
                 .checked_add(1)
                 .expect("word generation exhausted");
+        }
+        // D3, Maciej 2026-10-21: "zbierzmy całość hipotez" — a word the batch
+        // could not place is still one engine's hypothesis on that PCM range.
+        // Keep it, keyed by its own range, beside the words held there. It
+        // changes no text and settles or blocks no debt. A batch that already
+        // kept its reading (whole, as one candidate for the picker) has
+        // collected this word with it; it is not collected twice.
+        let already_kept = self
+            .slot_alternatives
+            .iter()
+            .any(|alternative| alternative.observation == *observation);
+        if !already_kept && !word.text.trim().is_empty() {
+            let beside = self
+                .slots_of(owner)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|held| {
+                    held.sample_start < word.sample_end && word.sample_start < held.sample_end
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.retain_slot_alternative(&rejected, &word.text, beside, COLLECTED_HYPOTHESIS);
         }
         self.refuse_replacement(&rejected, &word.text, RefuseReason::SlotAdmissionRejected);
     }
