@@ -8,17 +8,19 @@
 # directory, and the workspace crates get the same artifact names in each of
 # them: Cargo hands rustc paths relative to the workspace root and judges a
 # path crate fresh when its source files are older than its last build. After a
-# build in another worktree, this checkout can link that worktree's code
+# build in another worktree, this checkout can link or run that worktree's code
 # without compiling a line of its own (2026-10-21: a root test run executed a
 # worktree's ledger and reported its results as root's).
 #
-# rustc still records the absolute directory it compiled in near the start of
-# each crate's .rmeta. The guard reads it from every workspace crate's metadata
-# written since its last look from this checkout. When one was compiled in
-# another checkout and is newer than this checkout's crate root, Cargo would
-# take it as fresh here, so the guard touches the source root of every
-# workspace target in this checkout and Cargo rebuilds the workspace crates
-# from these sources; dependencies stay shared. Nothing is deleted.
+# rustc still records the absolute directory it compiled in: in each crate's
+# metadata (.rmeta, or the .rlib when the .rmeta is empty) and in the debug
+# paths of every binary, test harness and dylib it links. The guard looks at
+# each workspace target's artifacts written since its last look from this
+# checkout. When one was compiled in another checkout and is newer than this
+# checkout's source root for that target, Cargo would take it as fresh here,
+# so the guard touches the source root of every workspace target in this
+# checkout and Cargo rebuilds the workspace crates from these sources;
+# dependencies stay shared. Nothing is deleted.
 #
 # Builds started at the same moment from two checkouts can still interleave;
 # serialize them through the build announcement on channel 0.
@@ -30,7 +32,7 @@ CHECKOUT="$(git rev-parse --show-toplevel)"
 
 cargo metadata --no-deps --format-version 1 --manifest-path "$CHECKOUT/Cargo.toml" |
     python3 -I -c '
-import glob, hashlib, json, mmap, os, re, sys, time
+import glob, hashlib, json, mmap, os, sys, time
 
 checkout, target_dir = sys.argv[1], sys.argv[2]
 meta = json.load(sys.stdin)
@@ -40,36 +42,77 @@ seen_dir = os.path.join(target_dir, ".target-source-guard")
 seen = os.path.join(seen_dir, hashlib.sha1(checkout.encode()).hexdigest()[:16])
 last_look = os.stat(seen).st_mtime if os.path.exists(seen) else 0.0
 started = time.time()
+ours_prefix = checkout.encode()
+PRINTABLE = range(0x21, 0x7F)
+# Linked binaries follow a source path with "/@/" debug-map markers, so only a
+# character that would continue the file name ends a match.
+NAME_CONTINUES = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
 
+
+def recent_artifacts():
+    """Non-empty files in every deps/ and examples/ written since the last look."""
+    for parent in glob.glob(os.path.join(target_dir, "*")) + glob.glob(os.path.join(target_dir, "*", "*")):
+        for directory in ("deps", "examples"):
+            folder = os.path.join(parent, directory)
+            if not os.path.isdir(folder):
+                continue
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if not entry.is_file() or entry.name.endswith((".d", ".o")):
+                        continue
+                    stat = entry.stat()
+                    if stat.st_mtime > last_look and stat.st_size:
+                        yield entry.name, entry.path, stat.st_mtime
+
+
+def belongs_to(name, crate):
+    """Metadata, library, dylib, or a binary/test harness Cargo built for `crate`."""
+    return (
+        (name.startswith(f"lib{crate}-") and name.endswith((".rmeta", ".rlib")))
+        or (name.startswith(f"lib{crate}") and name.endswith(".dylib"))
+        or (name.startswith(f"{crate}-") and "." not in name)
+    )
+
+
+def compiled_elsewhere(data, suffix):
+    """The other checkout a file was compiled in, or None when it is ours."""
+    end = len(data)
+    other = None
+    while True:
+        at = data.rfind(suffix, 0, end)
+        if at < 0:
+            return other
+        end = at
+        after = at + len(suffix)
+        if after < len(data) and data[after] in NAME_CONTINUES:
+            continue
+        if data[max(0, at - len(ours_prefix)):at] == ours_prefix:
+            return None
+        start = at
+        while start > 0 and data[start - 1] in PRINTABLE:
+            start -= 1
+        found = bytes(data[start:at])
+        anchor = found.rfind(b"/Users/") if b"/Users/" in found else found.rfind(b"/Volumes/")
+        other = (found[anchor:] if anchor >= 0 else found).decode(errors="replace")
+
+
+recent = list(recent_artifacts())
 foreign = set()
 for target in targets:
-    if not {"lib", "rlib", "cdylib", "staticlib", "proc-macro"} & set(target["kind"]):
-        continue
     crate = target["name"].replace("-", "_")
-    root = os.path.relpath(target["src_path"], checkout).encode()
+    suffix = b"/" + os.path.relpath(target["src_path"], checkout).encode()
     root_mtime = os.stat(target["src_path"]).st_mtime
-    built_in = re.compile(rb"(?<![\x21-\x7e])(/[\x21-\x7e]+?)/" + re.escape(root) + rb"(?![\x21-\x7e])")
-    pattern = f"lib{crate}-*.rmeta"
-    for rmeta in glob.glob(os.path.join(target_dir, "*", "deps", pattern)) + glob.glob(
-        os.path.join(target_dir, "*", "*", "deps", pattern)
-    ):
-        mtime = os.stat(rmeta).st_mtime
-        if mtime <= last_look or mtime <= root_mtime:
-            continue
-        # A build that links keeps the metadata inside the .rlib and may leave
-        # the .rmeta empty; an empty .rmeta alone is nothing Cargo can reuse.
-        source = rmeta if os.path.getsize(rmeta) else rmeta[: -len(".rmeta")] + ".rlib"
-        if not os.path.exists(source) or not os.path.getsize(source):
+    for name, path, mtime in recent:
+        if mtime <= root_mtime or not belongs_to(name, crate):
             continue
         try:
-            with open(source, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                match = built_in.search(data)
-                compiled_in = match.group(1).decode() if match else None
-        except OSError as error:
-            print(f"target-source-guard: cannot read {source}: {error}", file=sys.stderr)
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                other = compiled_elsewhere(data, suffix)
+        except (OSError, ValueError) as error:
+            print(f"target-source-guard: cannot read {path}: {error}", file=sys.stderr)
             continue
-        if compiled_in and compiled_in != checkout:
-            foreign.add(compiled_in)
+        if other:
+            foreign.add(other)
 
 if foreign:
     for target in targets:
