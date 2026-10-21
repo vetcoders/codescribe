@@ -2273,25 +2273,55 @@ impl AcousticLedger {
         Ok(sources)
     }
 
-    /// A decode of one word's range that returns, under another spelling, the
-    /// word held right next to it has heard that neighbour again. Takes
-    /// 0d3ede90 (`first.` → `że` beside `że`) and 0428dd93 (`sidebar,` → `o`
-    /// beside `o`) turned the neighbour into a repeat this way.
-    fn successor_repeats_a_neighbour(
+    /// Whether one word decoded over a held word continues it. Another
+    /// producer's word is judged by the shortcut as before: the held word's
+    /// declared range belongs to that producer's clock. A re-decode by the
+    /// same producer shares the source's clock, so its geometry is read: it
+    /// never continues the source across the words that remain beside it;
+    /// under the source's own spelling it is that word at any width; under
+    /// another spelling it must hold most of the source's span and must not
+    /// be spelled like the word held right next to it. Same-request
+    /// re-decodes that failed this on 2026-10-21: `jesteś` → `ale` over 60 ms
+    /// of it (3ff83fef), `pokazać` → a 2.76 s `właściwe` across `generalnie`
+    /// (dbb410fa), `first.` → `że` beside `że` (0d3ede90), `sidebar,` → `o`
+    /// beside `o` (0428dd93).
+    fn successor_continues_source(
         &self,
         source: &WordSlot,
         successor: &WordSlot,
         retired: &[WordSlot],
     ) -> bool {
-        let token = normalize_word_token(&successor.text);
-        if token.is_empty() || token == normalize_word_token(&source.text) {
+        if successor.producer != source.producer {
+            return true;
+        }
+        let continuity =
+            u64::from(self.capture_rate_hz.unwrap_or(16_000)) * WORD_CONTINUITY_MS / 1_000;
+        let held = self.slots_of(&source.observation.occurrence).unwrap_or(&[]);
+        let staying = |slot: &&WordSlot| *slot != source && !retired.contains(*slot);
+        if held.iter().filter(staying).any(|neighbour| {
+            successor
+                .sample_end
+                .min(neighbour.sample_end)
+                .saturating_sub(successor.sample_start.max(neighbour.sample_start))
+                > continuity
+        }) {
             return false;
         }
-        let held = self.slots_of(&source.observation.occurrence).unwrap_or(&[]);
-        let Some(index) = held.iter().position(|slot| slot == source) else {
+        let token = normalize_word_token(&successor.text);
+        if token.is_empty() || token == normalize_word_token(&source.text) {
+            return true;
+        }
+        let overlap = successor
+            .sample_end
+            .min(source.sample_end)
+            .saturating_sub(successor.sample_start.max(source.sample_start));
+        if overlap.saturating_mul(2) < source.sample_end.saturating_sub(source.sample_start) {
             return false;
+        }
+        let Some(index) = held.iter().position(|slot| slot == source) else {
+            return true;
         };
-        [index.checked_sub(1), index.checked_add(1)]
+        ![index.checked_sub(1), index.checked_add(1)]
             .into_iter()
             .flatten()
             .filter_map(|neighbour| held.get(neighbour))
@@ -2371,9 +2401,9 @@ impl AcousticLedger {
         // is its continuation, and any speech its new edges leave is coverage
         // debt the seal accounts for, not a vanished word. A coarse group is
         // not one word; a single-token label is, by the same whitespace cue
-        // `coarse_word_source` reads. A successor spelled like the word held
-        // right next to the source is that neighbour decoded again, not a
-        // continuation: the source's speech then has no word of its own.
+        // `coarse_word_source` reads. Only a successor that continues the
+        // source counts; otherwise the source's speech has no word of its
+        // own and the ordinary acoustic check below decides.
         let mut overlapping = outputs.iter().filter(|output| {
             output.observation.occurrence.same_capture(owner)
                 && output.sample_end > source.sample_start
@@ -2384,7 +2414,7 @@ impl AcousticLedger {
         if let (Some(successor), None) = (overlapping.next(), overlapping.next())
             && one_word
             && self.same_anchored_word(source, successor)
-            && !self.successor_repeats_a_neighbour(source, successor, retired)
+            && self.successor_continues_source(source, successor, retired)
         {
             return true;
         }
