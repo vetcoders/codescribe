@@ -2343,12 +2343,17 @@ impl AcousticLedger {
                 } else {
                     end
                 };
+                // Retiring a held word needs measured quiet. Digital zeros a
+                // voice gate wrote are not a measurement (D5): the word they
+                // overlap may be exactly what the gate removed.
                 Some(
                     hop_start >= hop_end
-                        || energy
-                            .owner
-                            .voiced_hops_in(&owner.session, owner.capture_epoch, hop_start, hop_end)
-                            .is_some_and(|hops| hops.is_empty()),
+                        || energy.owner.measured_quiet_in(
+                            &owner.session,
+                            owner.capture_epoch,
+                            hop_start,
+                            hop_end,
+                        ) == Some(true),
                 )
             } else if let Some(fences) = self.replay_quiet_fences.as_ref() {
                 Some(fences.iter().any(|range| {
@@ -5833,7 +5838,11 @@ mod slot_ops_tests {
         // The earlier proposal returned no complete decoded source scope.
         // The final batch now supplies the same measured capture and bounds.
         use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
-        let mut pcm = vec![0.0_f32; 16_000];
+        // Room quiet sits below the active floor without being exact zeros;
+        // a run of exact zeros is a voice gate's output and proves no quiet.
+        let mut pcm: Vec<f32> = (0..16_000)
+            .map(|i| if i % 2 == 0 { 5.0e-5 } else { -5.0e-5 })
+            .collect();
         pcm[320..1_000].fill(0.2);
         pcm[2_000..3_000].fill(0.2);
         let energy = CaptureEnergyOwner::bind("slot-test", 1);

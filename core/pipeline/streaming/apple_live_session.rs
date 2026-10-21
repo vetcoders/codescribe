@@ -29063,7 +29063,10 @@ mod relay_l1_overlap_admission_tests {
         let session = "physical-coarse-to-four";
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
-        let mut pcm = vec![0.0_f32; 200_000];
+        // Room quiet below the active floor, not a voice gate's exact zeros.
+        let mut pcm: Vec<f32> = (0..200_000)
+            .map(|i| if i % 2 == 0 { 5.0e-5 } else { -5.0e-5 })
+            .collect();
         let mut speech = vec![
             (13_000, 19_000),
             (23_000, 29_000),
