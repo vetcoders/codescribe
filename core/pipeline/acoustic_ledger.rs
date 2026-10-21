@@ -425,7 +425,8 @@ pub enum RefuseReason {
     NoVoicedHopInPin,
     /// This word has no measured Silero speech in its own sample span.
     SpanWithoutOwnSpeech,
-    /// The declared word span exceeds its syllabic acoustic budget.
+    /// Historical receipt: a word refused for the length of its decoder pin.
+    /// Pin timing is not an acoustic boundary; no current decision uses it.
     SpanExceedsSyllableCeiling,
     /// This Whisper word repeats the previous identical word, and the span
     /// was measured. It does not contain its own voiced segment: no energy
