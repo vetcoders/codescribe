@@ -31771,7 +31771,10 @@ mod relay_l1_overlap_admission_tests {
                     "a single split hypothesis cannot retire its complete source: {:#?}",
                     ledger.word_choices()
                 );
-                assert!(ledger.text_recovery_pending(&occurrence));
+                // The complete windows paid the text debt (decision of Maciej,
+                // 2026-10-21); the unresolved split is a lexical dispute kept
+                // in word choices, not missing speech.
+                assert!(!ledger.text_recovery_pending(&occurrence));
             }
             assert_eq!(ledger.conservation().residue(), 0);
         }
@@ -31915,13 +31918,18 @@ mod relay_l1_overlap_admission_tests {
             held_text(&lane, &occurrence).as_deref(),
             Some("raz krawedz echo trzy cztery")
         );
+        // Both complete windows paid the text debt (decision of Maciej,
+        // 2026-10-21). "dwa" against the held "echo" is a lexical dispute,
+        // retained below as an alternative; it does not prove missing speech
+        // (recovery_source_is_pending).
         assert!(
-            lane.state
+            !lane
+                .state
                 .acoustic_ledger
                 .lock()
                 .expect("ledger")
                 .text_recovery_pending(&occurrence),
-            "unresolved lexical replacement must retain its recovery obligation"
+            "a lexical dispute is not text debt"
         );
         assert_eq!(held_count(&lane), 1);
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
@@ -32211,6 +32219,16 @@ mod relay_l1_overlap_admission_tests {
     fn midpoint_owned_edge_word_joins_the_recovery() {
         let mut lane = open("relay-recovery-escape");
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        // The recovery decodes 0..48 000 of the capture: speech under the two
+        // decoded words, measured room tone around them.
+        let mut pcm = vec![ROOM_TONE_RMS; 48_000];
+        pcm[4_000..12_000].fill(0.2);
+        pcm[30_000..32_008].fill(0.2);
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
         stage(&mut lane, 1, occurrence.clone(), "apple");
         assert!(
             lane.state
@@ -32265,11 +32283,20 @@ mod relay_l1_overlap_admission_tests {
     }
 
     /// (d) Debt recovery cannot replace an overlapping higher-rank Lexicon slot.
-    /// The open owner retains its slot and debt, with a refusal in the layer trail.
+    /// The open owner retains its slot, with a refusal in the layer trail; the
+    /// complete recovery window pays the text debt it covered (bbc05929).
     #[test]
     fn recovery_words_refuse_overlapping_higher_rank_lexicon_slot() {
         let mut lane = open("relay-recovery-lexicon");
         let occurrence = OccurrenceIdentity::new(lane.state.session_id.clone(), 1, 0, 32_000);
+        // The owner's speech reaches the buffer and the energy owner, so the
+        // recovered word is measured before its rank is weighed.
+        let pcm = vec![0.2_f32; 32_000];
+        lane.state.audio.push(&pcm);
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
         stage(&mut lane, 1, occurrence.clone(), "lexikon trzymac");
         assert!(
             lane.state
@@ -32321,7 +32348,7 @@ mod relay_l1_overlap_admission_tests {
             admit_completed_window_recovery(&mut lane.state, &lane.tx, &occurrence, &payload);
         // Drain before asserting so an unexpected result reports the actual events.
         let events = drain(&mut lane.rx);
-        assert!(!recovered, "higher-rank slot must retain debt: {events:#?}");
+        assert!(recovered, "the complete window pays its debt: {events:#?}");
         assert_eq!(
             whisper_mutations(&events),
             vec![
@@ -32354,7 +32381,7 @@ mod relay_l1_overlap_admission_tests {
         );
         {
             let ledger = lane.state.acoustic_ledger.lock().expect("ledger");
-            assert!(ledger.text_recovery_pending(&occurrence));
+            assert!(!ledger.text_recovery_pending(&occurrence));
             assert!(!ledger.is_sealed(&occurrence));
             assert_eq!(
                 ledger.slots_of(&occurrence).unwrap(),
@@ -32493,8 +32520,11 @@ mod relay_l1_overlap_admission_tests {
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
             assert_eq!(ledger.text_of(&owner), Some("lexikon trzyma"));
-            assert!(ledger.text_recovery_pending(&owner));
-            assert!(!ledger.is_sealed(&owner));
+            // The complete window paid the text debt it covered; no producer
+            // rank is asked (bbc05929, decision of Maciej, 2026-10-21). The
+            // Lexicon words stay and the answered owner seals.
+            assert!(!ledger.text_recovery_pending(&owner));
+            assert!(ledger.is_sealed(&owner));
             let trail = ledger
                 .layer_trail_for(&owner)
                 .filter(|e| e.observation.producer == ObservationProducer::Whisper)
