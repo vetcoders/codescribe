@@ -1246,8 +1246,8 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
         }
         _ => "reply_id",
     };
-    // Panel focus rows only point at a vc-frame pane; they must never look like
-    // transcript evidence or carry words.
+    // Panel focus rows only point at a vc-frame pane or a terminal tab; they
+    // must never look like transcript evidence or carry words.
     let carries_transcript_claims = || {
         [
             "text",
@@ -1405,11 +1405,24 @@ pub fn append_agent_event(path: &Path, event: &serde_json::Value) -> io::Result<
             if !matches!(
                 event["status"].as_str(),
                 Some(
-                    "focused" | "already_focused" | "pane_missing" | "no_frame" | "stale" | "error"
+                    "focused"
+                        | "already_focused"
+                        | "pane_missing"
+                        | "terminal_missing"
+                        | "automation_denied"
+                        | "no_frame"
+                        | "stale"
+                        | "error"
                 )
             ) || !(event["exit_code"].is_null() || event["exit_code"].is_i64())
                 || event["elapsed_ms"].as_u64().is_none()
                 || !(event["frame"].is_null() || event["frame"].is_object())
+                || !(event["terminal"].is_null() || event["terminal"].is_object())
+                || !(event["target"].is_null()
+                    || matches!(
+                        event["target"].as_str(),
+                        Some("frame" | "iterm2" | "terminal")
+                    ))
                 || chrono::DateTime::parse_from_rfc3339(
                     text_field("emitted_at").ok_or_else(invalid)?,
                 )
@@ -3195,7 +3208,17 @@ mod tests {
             "frame": {"session": "vibecrafted", "pane_id": 9,
                       "host_bundle_id": "io.vetcoders.vibecrafted", "host_pid": 43854},
         });
-        for event in [&request, &result] {
+        // A follower without a pane answers for the agent's terminal tab.
+        let terminal_result = serde_json::json!({
+            "schema": "codescribe.agent-panel-focus-result.v1", "kind": "agent_panel_focus_result",
+            "request_id": "444444444444444444444444", "emitted_at": "2026-10-21T08:30:00Z",
+            "provider": "claude-code", "provider_session_id": "agent-s",
+            "lease_id": &lease[..32], "status": "automation_denied", "exit_code": 1,
+            "elapsed_ms": 140, "target": "iterm2", "frame": null,
+            "terminal": {"host": "iterm2", "host_bundle_id": "com.googlecode.iterm2",
+                         "tty": "/dev/ttys005"},
+        });
+        for event in [&request, &result, &terminal_result] {
             assert!(
                 super::append_agent_event(&path, event).unwrap()["length"]
                     .as_u64()
@@ -3206,7 +3229,7 @@ mod tests {
         let raw = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             crate::durable_bus_oracle::rows(&raw).unwrap(),
-            vec![request.clone(), result.clone()]
+            vec![request.clone(), result.clone(), terminal_result.clone()]
         );
         let before = std::fs::read(&path).unwrap();
         for (base, key, value) in [
@@ -3222,6 +3245,13 @@ mod tests {
             (&result, "exit_code", serde_json::json!("0")),
             (&result, "elapsed_ms", serde_json::json!(-1)),
             (&result, "frame", serde_json::json!("terminal_9")),
+            (&terminal_result, "target", serde_json::json!("kitty")),
+            (
+                &terminal_result,
+                "terminal",
+                serde_json::json!("/dev/ttys005"),
+            ),
+            (&terminal_result, "status", serde_json::json!("tab_missing")),
             (&result, "wav", serde_json::json!("/capture.wav")),
             (&result, "provider_session_id", serde_json::json!("foreign")),
         ] {
