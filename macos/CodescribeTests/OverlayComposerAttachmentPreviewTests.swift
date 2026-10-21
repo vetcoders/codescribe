@@ -78,7 +78,7 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
       contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     host.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     host.layoutSubtreeIfNeeded()

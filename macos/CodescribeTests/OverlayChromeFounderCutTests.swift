@@ -554,7 +554,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         creations += 1
         return panel
       },
-      orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) })
+      orderPanelFront: { BackgroundTestWindow.present($0) }, orderPanelOut: { $0.orderOut(nil) })
     let preference = state.expandedByDefault
     let settingsModel = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe())

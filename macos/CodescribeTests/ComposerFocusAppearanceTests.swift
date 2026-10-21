@@ -28,7 +28,7 @@ final class ComposerFocusAppearanceTests: XCTestCase {
     container.addSubview(host)
     container.addSubview(otherField)
     window.contentView = container
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
 
     settle(host)
@@ -113,7 +113,7 @@ final class ComposerFocusAppearanceTests: XCTestCase {
     container.addSubview(host)
     container.addSubview(otherField)
     window.contentView = container
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
 
     settle(host)
@@ -204,7 +204,7 @@ final class ComposerFocusAppearanceTests: XCTestCase {
 
     let window = TestWindow(frame: host.frame)
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
 
     settle(host)
@@ -243,7 +243,7 @@ final class ComposerFocusAppearanceTests: XCTestCase {
           host.frame = NSRect(x: 0, y: 0, width: width, height: 160)
           let window = TestWindow(frame: host.frame)
           window.contentView = host
-          window.orderFrontRegardless()
+          BackgroundTestWindow.present(window)
           settle(host)
           return window
         }

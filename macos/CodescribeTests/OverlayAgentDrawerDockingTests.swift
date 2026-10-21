@@ -433,6 +433,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       other.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
+    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
     XCTAssertTrue(panel.isKeyWindow)
@@ -463,7 +464,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
     // The keyboard went to another window: the list opens and closes without
     // taking it back.
-    other.makeKeyAndOrderFront(nil)
+    try BackgroundTestWindow.takeKeyboard(other)
     settle(host)
     XCTAssertFalse(panel.isKeyWindow)
     state.showAgentMonitor()
@@ -489,6 +490,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.close()
     }
     let editor = try XCTUnwrap(composerEditor(in: host))
+    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(editor))
 
@@ -518,7 +520,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     panel.delegate = panel
     panel.becomesKeyOnlyIfNeeded = true
     panel.contentView = host
-    panel.orderFront(nil)
+    BackgroundTestWindow.present(panel)
     settle(host)
     return (panel, host)
   }

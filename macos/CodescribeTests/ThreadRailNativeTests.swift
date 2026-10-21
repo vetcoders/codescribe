@@ -7,11 +7,12 @@ import XCTest
 @MainActor
 final class ThreadRailNativeTests: XCTestCase {
   func testNativeSearchFiltersWhileTypingAndEscapeRestoresList() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let rows = [ChatThread(title: "Atlas", meta: ""), ChatThread(title: "Lena", meta: "")]
     let store = AgentChatStore(engine: nil, threads: rows)
     let previous = UserDefaults.standard.object(forKey: "AgentChat.sidebarExpanded.v1")
     UserDefaults.standard.set(true, forKey: "AgentChat.sidebarExpanded.v1")
-    let (window, host) = mount(store)
+    let (window, host) = try mount(store)
     defer {
       window.close()
       restoreSidebar(previous)
@@ -47,11 +48,12 @@ final class ThreadRailNativeTests: XCTestCase {
   }
 
   func testNativeListSelectionOpensThreadAndExternalSelectionReturns() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let rows = [ChatThread(title: "Atlas", meta: ""), ChatThread(title: "Lena", meta: "")]
     let store = AgentChatStore(engine: nil, threads: rows)
     let previous = UserDefaults.standard.object(forKey: "AgentChat.sidebarExpanded.v1")
     UserDefaults.standard.set(true, forKey: "AgentChat.sidebarExpanded.v1")
-    let (window, host) = mount(store)
+    let (window, host) = try mount(store)
     defer {
       window.close()
       restoreSidebar(previous)
@@ -89,13 +91,13 @@ final class ThreadRailNativeTests: XCTestCase {
         keyCode: 36, modifiers: [], hasMarkedText: false, queryIsEmpty: false), .native)
   }
 
-  private func mount(_ store: AgentChatStore) -> (NSWindow, NSView) {
+  private func mount(_ store: AgentChatStore) throws -> (NSWindow, NSView) {
     let controller = NSHostingController(rootView: AgentChatView(store: store))
     let window = NSWindow(contentViewController: controller)
     window.isReleasedWhenClosed = false
     window.styleMask.formUnion([.titled, .closable, .resizable, .fullSizeContentView])
     window.setContentSize(NSSize(width: 840, height: 600))
-    window.makeKeyAndOrderFront(nil)
+    try BackgroundTestWindow.takeKeyboard(window)
     return (window, controller.view)
   }
 

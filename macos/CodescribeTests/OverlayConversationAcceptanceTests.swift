@@ -40,13 +40,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             styleMask: .borderless, backing: .buffered, defer: false)
           window.isReleasedWhenClosed = false
           window.contentView = host
-          window.orderFrontRegardless()
+          BackgroundTestWindow.present(window)
           let userWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
             styleMask: .borderless, backing: .buffered, defer: false)
           userWindow.isReleasedWhenClosed = false
           userWindow.contentView = userHost
-          userWindow.orderFrontRegardless()
+          BackgroundTestWindow.present(userWindow)
           defer {
             window.close()
             userWindow.close()
@@ -92,7 +92,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
             styleMask: .borderless, backing: .buffered, defer: false)
           window.isReleasedWhenClosed = false
           window.contentView = host
-          window.orderFrontRegardless()
+          BackgroundTestWindow.present(window)
           defer { window.close() }
           host.layoutSubtreeIfNeeded()
           RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
@@ -181,7 +181,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     defer { window.close() }
     func settle() {
       host.layoutSubtreeIfNeeded()
@@ -249,7 +249,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         defer { window.close() }
-        window.orderFrontRegardless()
+        BackgroundTestWindow.present(window)
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         host.layoutSubtreeIfNeeded()
@@ -282,7 +282,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     host.sizingOptions = []
     host.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
     func selectableText(in view: NSView) -> NSView? {
@@ -329,7 +329,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     text.isEditable = false
     text.isSelectable = true
     panel.contentView = text
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
+    try BackgroundTestWindow.requireIsolatedGUI()
     panel.takeKeyForTranscript()
     XCTAssertTrue(panel.makeFirstResponder(text))
     text.setSelectedRange(NSRange(location: 6, length: 4))
@@ -375,7 +376,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       panel.releaseKeyAfterTranscript()
       panel.close()
     }
-    panel.orderFront(nil)
+    BackgroundTestWindow.present(panel)
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
     func click(_ view: NSView) throws {
       let location = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
@@ -442,7 +443,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     window.isReleasedWhenClosed = false
     window.contentView = host
     defer { window.close() }
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     func editor(in view: NSView) -> NSTextView? {
       if let text = view as? NSTextView, text.isEditable { return text }
       return view.subviews.lazy.compactMap { editor(in: $0) }.first
@@ -729,7 +730,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           window.isReleasedWhenClosed = false
           window.contentView = host
           defer { window.close() }
-          window.orderFrontRegardless()
+          BackgroundTestWindow.present(window)
           host.layoutSubtreeIfNeeded()
           RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
           host.layoutSubtreeIfNeeded()
@@ -1027,7 +1028,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     func jumpButtons() throws -> [NativeAccessibilityProbe.Element] {
       try NativeAccessibilityProbe.query("overlay-conversation-jump-to-current").elements
     }
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     settle()
     let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
     let document = try XCTUnwrap(scroll.documentView)
@@ -1288,7 +1289,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         state.onPresentationModeChanged = { [weak panel] mode in
           panel?.setPresentationMode(mode, animated: false)
         }
-        panel.orderFrontRegardless()
+        BackgroundTestWindow.present(panel)
         defer { panel.close() }
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))
@@ -1373,7 +1374,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     panel.isReleasedWhenClosed = false
     panel.contentView = host
     panel.setPresentationMode(.expanded)
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.close() }
 
     func elements(_ object: Any) -> [any NSAccessibilityProtocol] {
@@ -1442,6 +1443,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   private func withPanelComposer(
     transcriptFirst: Bool, exerciseReplyProtection: Bool = false
   ) throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     var draft = ""
     var now: TimeInterval = 100
     let state = OverlayState(nowProvider: { now })
@@ -1477,7 +1479,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       panel.releaseKeyAfterTranscript()
       panel.close()
     }
-    panel.orderFront(nil)
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
     func editable(_ view: NSView) -> NSTextView? {
@@ -1945,6 +1947,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   /// step's message, so a red run still names the broken link.
   @MainActor
   func testCommandCOnAnAgentBubbleCopiesItsSelectionThroughTheRealOverlay() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let probe = "BUBBLE COPY PROBE alpha beta gamma"
     var bus = OverlayChannelDelivery.Bus()
     var row = reply(String(format: "%024x", 1))
@@ -1971,7 +1974,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     state.onPresentationModeChanged = { [weak panel] mode in
       panel?.setPresentationMode(mode, animated: false)
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.close() }
     host.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.08))

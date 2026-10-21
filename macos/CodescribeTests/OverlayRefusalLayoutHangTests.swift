@@ -173,7 +173,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       ) as? FloatingOverlayPanel
     )
     panel.setContentSize(NSSize(width: 470, height: 560))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     // One turn commits the hosting hierarchy. A repeating waveform timer must
@@ -326,7 +326,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       overlayEnabledProvider: { true },
       assistiveStatusProvider: { false },
       panelFactory: { _, _ in panel },
-      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { shown in
         shown.orderOut(nil)
         outs += 1
@@ -400,7 +400,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       overlayEnabledProvider: { true },
       assistiveStatusProvider: { false },
       panelFactory: { _, _ in panel },
-      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) },
       runFade: { faded, _, completed in
         faded.alphaValue = 0
@@ -452,7 +452,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
     presence.noteScreenshotIfNeeded(chord)
     XCTAssertFalse(panel.isVisible, "a screenshot chord must not show a hidden overlay")
 
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     presence.noteScreenshotIfNeeded(chord)
     XCTAssertTrue(panel.isVisible)
     XCTAssertEqual(panel.level, .statusBar, "a visible overlay still rises for the screenshot")

@@ -229,7 +229,7 @@ final class OverlayResizeHitTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Resize.threeForms"))
         as? FloatingOverlayPanel)
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       panel.orderOut(nil)
       panel.invalidatePresence()
@@ -323,7 +323,7 @@ final class OverlayResizeHitTests: XCTestCase {
     }
     let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
     panel.setFrameOrigin(NSPoint(x: visible.minX + 100, y: visible.minY + 100))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
@@ -409,7 +409,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let surface = CursorTrackingSurface(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
     panel.contentView = OverlayContentContainer(hosting: surface)
     panel.acceptsMouseMovedEvents = true
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     surface.addTrackingArea(
       NSTrackingArea(
@@ -450,7 +450,7 @@ final class OverlayResizeHitTests: XCTestCase {
     text.string = "Selectable native transcript"
     panel.contentView = OverlayContentContainer(hosting: text)
     panel.acceptsMouseMovedEvents = true
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     text.addTrackingArea(
       NSTrackingArea(
@@ -498,7 +498,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let root = OverlayContentContainer(hosting: hosting)
     panel.contentView = root
     panel.setContentSize(NSSize(width: 400, height: 300))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     root.layoutSubtreeIfNeeded()
     text.setSelectedRange(NSRange(location: 2, length: 5))
@@ -549,7 +549,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: 470, height: 280))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -581,7 +581,7 @@ final class OverlayResizeHitTests: XCTestCase {
         as? FloatingOverlayPanel)
     let controller = OverlayController(
       state: state, overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
-      panelFactory: { _, _ in panel }, orderPanelFront: { $0.orderFrontRegardless() },
+      panelFactory: { _, _ in panel }, orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) })
     controller.show()
     defer {
@@ -641,7 +641,7 @@ final class OverlayResizeHitTests: XCTestCase {
         as? FloatingOverlayPanel)
     let controller = OverlayController(
       state: state, overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
-      panelFactory: { _, _ in panel }, orderPanelFront: { $0.orderFrontRegardless() },
+      panelFactory: { _, _ in panel }, orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) })
     controller.show()
     defer {
@@ -700,7 +700,7 @@ final class OverlayResizeHitTests: XCTestCase {
         contentRect: CGRect(origin: .zero, size: size),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
       panel.contentView = host
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       defer { panel.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
@@ -738,7 +738,7 @@ final class OverlayResizeHitTests: XCTestCase {
       contentRect: CGRect(origin: .zero, size: size),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
@@ -768,7 +768,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.setPresentationMode(mode)
       host.frame = NSRect(origin: .zero, size: panel.frame.size)
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     host.frame = NSRect(origin: .zero, size: panel.frame.size)
     host.layoutSubtreeIfNeeded()
@@ -849,7 +849,7 @@ final class OverlayResizeHitTests: XCTestCase {
         panel.invalidatePresence()
       }
       panel.setContentSize(NSSize(width: width, height: 280))
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       let root = try XCTUnwrap(panel.contentView)
       root.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -932,7 +932,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: 470, height: 280))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -986,7 +986,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: 470, height: 280))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -1084,7 +1084,7 @@ final class OverlayResizeHitTests: XCTestCase {
           builtPanel = panel as? FloatingOverlayPanel
           return panel
         },
-        orderPanelFront: { $0.orderFrontRegardless() },
+        orderPanelFront: { BackgroundTestWindow.present($0) },
         orderPanelOut: { panel in
           orderedOut += 1
           panel.orderOut(nil)
@@ -1150,7 +1150,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: 470, height: 280))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
 
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
@@ -1217,7 +1217,7 @@ final class OverlayResizeHitTests: XCTestCase {
     let visibleFrame = try XCTUnwrap(NSScreen.main?.visibleFrame)
     let resetOrigin = NSPoint(x: visibleFrame.minX + 80, y: visibleFrame.minY + 80)
     panel.setFrameOrigin(resetOrigin)
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
 
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
@@ -1283,7 +1283,7 @@ final class OverlayResizeHitTests: XCTestCase {
     }
     panel.setContentSize(
       NSSize(width: 470, height: DictationOverlayWindow.minSize.height))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
 
     let root = try XCTUnwrap(panel.contentView)
     root.layoutSubtreeIfNeeded()
@@ -1328,7 +1328,7 @@ final class OverlayResizeHitTests: XCTestCase {
         let panel = DictationOverlayWindow.make(state: state, textScale: scale)
         builtPanel = panel as? FloatingOverlayPanel
         return panel
-      }, orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) }
+      }, orderPanelFront: { BackgroundTestWindow.present($0) }, orderPanelOut: { $0.orderOut(nil) }
     )
     controller.show()
     let panel = try XCTUnwrap(builtPanel)
@@ -1381,7 +1381,7 @@ final class OverlayResizeHitTests: XCTestCase {
         builtPanel = panel
         return panel
       },
-      orderPanelFront: { $0.orderFrontRegardless() },
+      orderPanelFront: { BackgroundTestWindow.present($0) },
       orderPanelOut: { $0.orderOut(nil) }
     )
     controller.show()
@@ -1449,7 +1449,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.orderOut(nil)
       panel.invalidatePresence()
     }
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView)
     for (index, text) in ["  raz raz\né 👩‍💻  ", "  raz raz\ne\u{301} 👩‍💻  ", "", "raz raz"].enumerated()
     {
@@ -1630,7 +1630,7 @@ final class OverlayResizeHitTests: XCTestCase {
       panel.invalidatePresence()
     }
     panel.setContentSize(NSSize(width: 470, height: 280))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))

@@ -55,7 +55,7 @@ final class DockPresenceTests: XCTestCase {
 
     let button = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
     XCTAssertTrue(button.isEnabled)
-    window.orderFront(nil)
+    BackgroundTestWindow.present(window)
     XCTAssertTrue(window.isVisible)
     XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(button.action), to: button.target, from: button))
     XCTAssertFalse(window.isVisible, "the yellow button hides the window")
@@ -67,7 +67,7 @@ final class DockPresenceTests: XCTestCase {
   func testAdoptedPlainWindowMiniaturiseEndsHidden() {
     let window = plainWindow()
     DockPresence.adopt(window)
-    window.orderFront(nil)
+    BackgroundTestWindow.present(window)
 
     window.miniaturize(nil)
 
@@ -108,17 +108,17 @@ final class DockPresenceTests: XCTestCase {
     DockPresence.adopt(window)
     XCTAssertTrue(window.styleMask.contains(.miniaturizable))
 
-    window.orderFront(nil)
+    BackgroundTestWindow.present(window)
     window.performMiniaturize(nil)
     XCTAssertFalse(window.isVisible, "the yellow button / ⌘M hides the window")
     XCTAssertFalse(window.isMiniaturized, "it never becomes an Exposé tile")
 
-    window.orderFront(nil)
+    BackgroundTestWindow.present(window)
     window.miniaturize(nil)
     XCTAssertFalse(window.isVisible)
     XCTAssertFalse(window.isMiniaturized)
 
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     XCTAssertTrue(window.isVisible, "the passive reveal brings a hidden window back")
     window.orderOut(nil)
   }

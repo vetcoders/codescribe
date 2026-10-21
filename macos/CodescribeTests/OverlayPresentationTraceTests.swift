@@ -103,7 +103,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
     let afterMake = panelReadiness(panel, label: "afterMake")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     let beforeOrderFront = panelReadiness(panel, label: "beforeOrderFront")
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     let afterOrderFront = panelReadiness(panel, label: "afterOrderFront")
     panel.setPresentationMode(.mini)
@@ -230,7 +230,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   func testUnrollHoldsTheLandingLayoutAtTheTopRightCorner() throws {
     let (state, panel) = try makePanel("unroll")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
@@ -266,7 +266,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   func testFoldHoldsTheDepartingLayoutAtTheTopRightCorner() throws {
     let (state, panel) = try makePanel("fold")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.expanded)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
@@ -309,7 +309,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   func testFoldCatchingAnUnrollKeepsTheHeldLayout() throws {
     let (_, panel) = try makePanel("unroll-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
@@ -343,7 +343,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   func testSettlingAnUnrollBeforeItsFirstStepLandsItOnce() throws {
     let (_, panel) = try makePanel("unroll-settled")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.mini)
     let root = try XCTUnwrap(panel.contentView as? OverlayContentContainer)
@@ -368,7 +368,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   func testFoldCaughtMidwayReturnsToThePreFoldFrame() throws {
     let (_, panel) = try makePanel("fold-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.expanded)
     let before = panel.frame
