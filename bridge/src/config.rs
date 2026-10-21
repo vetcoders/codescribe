@@ -1530,7 +1530,10 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Save one explicit formatting policy prompt through the shared owner.
@@ -1544,7 +1547,10 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Overwrite the BASE assistive prompt file (`assistive.txt`).
@@ -1554,13 +1560,19 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore only the formatting base prompt after explicit UI confirmation:
     /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
-        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
+        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore one explicit formatting policy prompt after UI confirmation:
@@ -1569,19 +1581,28 @@ impl CodescribeConfig {
         &self,
         level: String,
     ) -> Result<(), CsError> {
-        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)
+        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore only the assistive base prompt after explicit UI confirmation:
     /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_assistive_prompt_to_default(&self) -> Result<(), CsError> {
-        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)
+        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Reset both BASE prompt files to their built-in defaults
     /// (`reset_to_defaults`). Does not touch `*_tuning.txt`.
     pub fn reset_prompts_to_defaults(&self) -> Result<(), CsError> {
-        reset_to_defaults().map_err(CsError::from)
+        reset_to_defaults().map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Built-in default formatting prompt (`DEFAULT_FORMATTING_PROMPT`).

@@ -78,6 +78,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   let palette: OverlayAppearancePalette
   @Binding var presented: String?
   var action: (() -> Void)? = nil
+  var showsTooltip = true
   /// The transcript column sits on the trailing edge, so its menus open over
   /// the document. Other chrome keeps the menu below the control.
   var popoverArrow: Edge = .top
@@ -108,7 +109,10 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
     .onHover { hovered = $0 }
-    .modifier(OverlayMiniTooltip(title: title, palette: palette, enabled: presented == nil))
+    .modifier(
+      OverlayMiniTooltip(
+        title: title, palette: palette, enabled: showsTooltip && presented == nil)
+    )
     .popover(
       isPresented: Binding(
         get: { presented == id },

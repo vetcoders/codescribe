@@ -1322,47 +1322,53 @@ struct DictationOverlayView: View {
     return nil
   }
 
+  /// True only for passive, informational footer lines that carry no extra
+  /// diagnostic detail and have no click action. These render as one static,
+  /// non-interactive label (`overlay-footer-notice`) without a duplicate
+  /// floating tooltip or popover.
+  private var footerMessageIsPassiveNotice: Bool {
+    guard state.transcriptStorageError == nil && state.maxPreparationError == nil else {
+      return false
+    }
+    if state.archivedTranscript != nil {
+      if state.archiveActionError != nil || state.recoveryFailure != nil { return false }
+    } else if state.revisionCommitError != nil || state.formatterError != nil
+      || state.recoveryFailure != nil
+    {
+      return false
+    }
+    return state.formatterCommitPending || state.revisionCommitPending
+      || state.isRevisionDraftDirty || state.agentSendCountdownSeconds != nil
+      || state.toast != nil || state.archivedTranscriptOrigin != nil
+  }
+
   @ViewBuilder
   private var footerMessageRow: some View {
     if let message = footerMessage {
       let opensMaxSettings = state.transcriptStorageError == nil && state.maxPreparationError != nil
-      OverlayHoverControl(
-        id: "overlay-footer-message",
-        title: opensMaxSettings
-          ? String(localized: "Click to open Max consultation settings.") : message,
-        palette: palette, presented: $footerDetail,
-        action: opensMaxSettings
-          ? { openMaxSettings(.creator, anchor: .maxConsultation) } : nil
-      ) {
-        Text(message)
-          .csFont(10, .medium)
-          .lineLimit(1)
-          .truncationMode(.tail)
-          .foregroundStyle(palette.primaryText.color)
-          .accessibilityIdentifier("overlay-footer-notice")
-      } detail: { _ in
-        ScrollView {
-          VStack(alignment: .leading, spacing: 8) {
-            if state.presentationStatus != nil && state.archivedTranscript == nil {
-              transcriptStatus
-            } else if state.archivedTranscript == nil
-              && (state.errorDiagnosticDetail != nil || state.mode == .error)
-            {
-              errorBody
-            } else if state.mode == .noSpeech {
-              noSpeechBody
-            } else {
-              Text(message).fixedSize(horizontal: false, vertical: true)
-            }
-          }
-          .csAutohidingScrollers()
+      if footerMessageIsPassiveNotice {
+        footerNoticeLabel(message)
+          .accessibilityLabel(message)
+          .allowsHitTesting(false)
+      } else {
+        OverlayHoverControl(
+          id: "overlay-footer-message",
+          title: opensMaxSettings
+            ? String(localized: "Click to open Max consultation settings.") : message,
+          palette: palette, presented: $footerDetail,
+          action: opensMaxSettings
+            ? { openMaxSettings(.creator, anchor: .maxConsultation) } : nil,
+          showsTooltip: opensMaxSettings
+        ) {
+          footerNoticeLabel(message)
+        } detail: { _ in
+          footerMessageDetail(message)
         }
-        .frame(maxHeight: 320)
+        .accessibilityLabel(message)
+        .accessibilityHint(
+          opensMaxSettings ? Text("Click to open Max consultation settings.") : Text("")
+        )
       }
-      .accessibilityLabel(message)
-      .accessibilityHint(
-        opensMaxSettings ? Text("Click to open Max consultation settings.") : Text("")
-      )
     } else if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {
       OverlayCoverageStatus(
         warning: warning, palette: palette,
@@ -1373,6 +1379,35 @@ struct DictationOverlayView: View {
     } else {
       Color.clear.accessibilityHidden(true)
     }
+  }
+
+  private func footerNoticeLabel(_ message: String) -> some View {
+    Text(message)
+      .csFont(10, .medium)
+      .lineLimit(1)
+      .truncationMode(.tail)
+      .foregroundStyle(palette.primaryText.color)
+      .accessibilityIdentifier("overlay-footer-notice")
+  }
+
+  private func footerMessageDetail(_ message: String) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 8) {
+        if state.presentationStatus != nil && state.archivedTranscript == nil {
+          transcriptStatus
+        } else if state.archivedTranscript == nil
+          && (state.errorDiagnosticDetail != nil || state.mode == .error)
+        {
+          errorBody
+        } else if state.mode == .noSpeech {
+          noSpeechBody
+        } else {
+          Text(message).fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .csAutohidingScrollers()
+    }
+    .frame(maxHeight: 320)
   }
 
   private func openMaxSettings(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
@@ -1388,12 +1423,8 @@ struct DictationOverlayView: View {
         .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
     } else {
       switch state.mode {
-      case .listening, .finalizing:
+      case .listening, .finalizing, .formatted, .coverageRefused:
         EmptyView()
-      case .formatted:
-        revisionStatusRow
-      case .coverageRefused:
-        revisionStatusRow
       case .noSpeech:
         noSpeechBody
           .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
@@ -1443,52 +1474,6 @@ struct DictationOverlayView: View {
       )
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  /// Ledger truth under the canvas: what the bytes on screen ARE — a local
-  /// draft, a revision in flight, or the reducer's projection — plus the last
-  /// commit failure. Same states as T15's editor status.
-  private var revisionStatusRow: some View {
-    VStack(alignment: .leading, spacing: CSSpace.xxs) {
-      HStack(spacing: CSSpace.xs) {
-        if state.formatterCommitPending {
-          ProgressView()
-            .controlSize(.small)
-          Text("Formatting revision…")
-        } else if state.revisionCommitPending {
-          ProgressView()
-            .controlSize(.small)
-          Text("Committing revision…")
-        } else if state.isRevisionDraftDirty {
-          Image(systemName: "pencil.line")
-          Text("Draft · not committed")
-        } else if state.mode != .coverageRefused {
-          Image(systemName: "checkmark.seal")
-          Text("Ledger projection")
-        }
-      }
-      .csFont(10, .semibold)
-      .foregroundStyle(
-        state.isRevisionDraftDirty ? CSColor.terracotta : palette.mutedText.color
-      )
-      .accessibilityElement(children: .combine)
-      .accessibilityIdentifier("overlay-revision-status")
-
-      // `recoveryFailure` joins the chain because a failed recovery keeps the
-      // retained item: the user needs the full sentence, not just the footer
-      // chip. This row is `.formatted`-only, so the persisting footer notice
-      // remains the surface that covers a live capture.
-      if let error = state.revisionCommitError ?? state.formatterError
-        ?? state.recoveryFailure
-      {
-        Label(error, systemImage: "exclamationmark.triangle")
-          .csFont(10, .medium)
-          .foregroundStyle(CSColor.terracotta)
-          .lineLimit(2)
-          .accessibilityIdentifier("overlay-revision-error")
-      }
-    }
-    .allowsHitTesting(false)
   }
 
   /// Terminal outcome for a session that captured no usable speech. Replaces

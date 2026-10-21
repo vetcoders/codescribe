@@ -1098,16 +1098,39 @@ async fn format_text_with_status_channels_for_policy(
         let mut system_prompt = sealed_prompt.composed_content().to_string();
         if assistive {
             if attempt == 0 {
-                info!("Using assistive mode (model: {})", lane.model());
+                info!(
+                    model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
+                    "Using assistive mode (model: {})",
+                    lane.model()
+                );
             }
         } else if attempt == 0 {
             if runtime_settings.values().format_on_device {
                 info!(
+                    policy = policy.as_str(),
+                    cloud_model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
                     "Using formatting mode (on-device: Apple FoundationModels, cloud fallback: {})",
                     lane.model()
                 );
             } else {
-                info!("Using formatting mode (model: {})", lane.model());
+                info!(
+                    policy = policy.as_str(),
+                    model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
+                    "Using formatting mode (model: {})",
+                    lane.model()
+                );
             }
         }
 
@@ -1207,6 +1230,7 @@ async fn format_text_with_status_channels_for_policy(
             warn!(%reason, "no formatting engine available; preserving the source text");
             break;
         }
+        let used_on_device = on_device_output.is_some();
         let result_opt = if on_device_output.is_some() {
             on_device_output
         } else if should_stream {
@@ -1359,7 +1383,16 @@ async fn format_text_with_status_channels_for_policy(
                 }
             }
 
+            let engine = if used_on_device {
+                "apple-on-device"
+            } else {
+                lane.model()
+            };
             info!(
+                engine,
+                policy = policy.as_str(),
+                prompt_source = sealed_prompt.source().as_str(),
+                prompt_sha256 = sealed_prompt.composed_sha256(),
                 "Formatted via AI ({} -> {} chars, assistive={}, content_match={}, raw_like={})",
                 text.len(),
                 formatted.len(),
