@@ -229,6 +229,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// out again on every animator step. The content takes its landing size at
   /// once, held at the window's top-right corner, and the window reveals it.
   func testUnrollHoldsTheLandingLayoutAtTheTopRightCorner() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (state, panel) = try makePanel("unroll")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
@@ -265,6 +266,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// animator step lays the content out again, and releasing the hold lands
   /// on the settled frame in the same pass — no end-of-transition jump.
   func testFoldHoldsTheDepartingLayoutAtTheTopRightCorner() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (state, panel) = try makePanel("fold")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
@@ -308,6 +310,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// the layout on screen never changes size mid-flight, in either direction.
   /// The fold then covers that held layout until it lands on mini.
   func testFoldCatchingAnUnrollKeepsTheHeldLayout() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (_, panel) = try makePanel("unroll-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
@@ -367,6 +370,7 @@ final class OverlayPresentationTraceTests: XCTestCase {
   /// Founder, 2026-10-15: a fold caught by the pointer returns to the frame
   /// the panel had before the fold started, from wherever the morph had got to.
   func testFoldCaughtMidwayReturnsToThePreFoldFrame() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let (_, panel) = try makePanel("fold-caught")
     panel.setFrameOrigin(NSPoint(x: 400, y: 400))
     BackgroundTestWindow.present(panel)
