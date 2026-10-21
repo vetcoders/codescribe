@@ -7837,15 +7837,18 @@ mod tests {
         ));
         assert!(!ledger.text_recovery_pending(&owner));
         assert_eq!(ledger.text_of(&owner), Some("same words"));
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A (Maciej, 2026-10-21): a range a complete window heard owes
+        // nothing, so no new debt opens on it.
+        assert!(!ledger.require_text_recovery(&owner));
+        // Replaying the same observation still cannot mutate.
         assert!(matches!(
             ledger.admit_word_slots(&word_observation, &pins),
             MutationReceipt::Refuse { .. }
         ));
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         let stale = obs(ObservationProducer::Whisper, 0, owner.clone());
         ledger.admit(&stale, "same words");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.text_of(&owner), Some("same words"));
         let fresh = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
         assert!(fresh.generation > word_observation.generation);
         assert!(matches!(
@@ -7884,15 +7887,16 @@ mod tests {
         );
         assert!(!ledger.text_recovery_pending(&owner));
         let before = ledger.slots_of(&owner).unwrap().to_vec();
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A: the complete window heard the owner, so it owes nothing.
+        assert!(!ledger.require_text_recovery(&owner));
         ledger.admit(
             &obs(ObservationProducer::Formatter, 6, owner.clone()),
             "invented words",
         );
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         ledger.admit(&obs(ObservationProducer::ManualHuman, 7, owner.clone()), "");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         // The UI's whole-document edit enters the document-receipt corridor,
         // not untargeted raw-label admission over already pinned words.
         let revision = ledger
@@ -7912,10 +7916,10 @@ mod tests {
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
         assert_eq!(ledger.text_of(&owner), Some("heard words"));
         assert!(
-            ledger.text_recovery_pending(&owner),
-            "human document edits do not invent acoustic completion"
+            !ledger.text_recovery_pending(&owner),
+            "a human document edit reopens no debt the complete window paid"
         );
-        assert!(!ledger.is_sealed(&owner));
+        assert!(!ledger.is_sealed(&owner), "a document edit is not a seal");
         assert_eq!(ledger.conservation().residue(), 0);
 
         // An explicit human decision on an unpinned provisional label keeps
