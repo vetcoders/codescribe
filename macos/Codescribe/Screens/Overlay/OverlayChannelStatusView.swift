@@ -88,6 +88,12 @@ struct OverlayChannelHudProjection: Equatable {
   /// Whether the live follower's lease names an iTerm2 or Terminal.app tab
   /// the follower can bring to front; nil means no claim.
   var terminalDetected: Bool? = nil
+  /// `codex://threads/<id>` of a Codex agent's thread in the Codex app,
+  /// known whether or not its follower is alive; nil means no thread.
+  var codexThreadUrl: String? = nil
+  /// Whether the local Codex store holds that thread, so the link opens;
+  /// false is a Codex Cloud thread.
+  var codexThreadLocal: Bool? = nil
   /// When the live follower's oldest unacknowledged delivery was emitted.
   /// The second liveness layer: a reader process can heartbeat while the
   /// conversation behind it reads nothing (Founder, 2026-10-14).
@@ -1120,16 +1126,37 @@ struct OverlayChannelStatusView: View {
   }
 
   /// Where this row's focus button lands: the Frame pane when one is known
-  /// and `vc-frame` can reach it, otherwise the agent's terminal tab.
+  /// and `vc-frame` can reach it, otherwise the agent's terminal tab,
+  /// otherwise a Codex agent's thread in the Codex app.
   func panelFocusTarget(for channel: OverlayChannelDelivery) -> OverlayAgentPanelFocusTarget? {
     OverlayAgentPanelFocusTarget.resolve(
       hudStates[channel.channel], frameFocusAvailable: panelFocusAvailable)
   }
 
+  /// The row's only known destination is a Codex Cloud thread.
+  func hasCodexCloudThread(_ channel: OverlayChannelDelivery) -> Bool {
+    OverlayAgentPanelFocusTarget.isCodexCloudThread(
+      hudStates[channel.channel], frameFocusAvailable: panelFocusAvailable)
+  }
+
+  /// Frame and terminal destinations need a live follower; a Codex thread
+  /// does not, and a Codex Cloud thread shows its button greyed.
   func showsPanelFocusButton(for channel: OverlayChannelDelivery) -> Bool {
-    archiveCandidates[channel.channel] != nil && onFocusAgentPanel != nil
-      && panelFocusTarget(for: channel) != nil
-      && hudStates[channel.channel]?.followerAlive == true
+    guard archiveCandidates[channel.channel] != nil, onFocusAgentPanel != nil else {
+      return false
+    }
+    if hasCodexCloudThread(channel) { return true }
+    guard let target = panelFocusTarget(for: channel) else { return false }
+    return !target.needsLiveFollower || hudStates[channel.channel]?.followerAlive == true
+  }
+
+  /// The focus button is rendered but cannot act: a disconnected follower
+  /// for Frame or a terminal, no destination at all, or a Codex Cloud thread.
+  /// A local Codex thread opens with the follower disconnected.
+  func panelFocusUnreachable(_ channel: OverlayChannelDelivery) -> Bool {
+    if hasCodexCloudThread(channel) { return true }
+    if panelFocusTarget(for: channel)?.needsLiveFollower == false { return false }
+    return hasDeadFollower(channel) || hasNoTerminalTarget(channel)
   }
 
   func viewConversation(_ channel: OverlayChannelDelivery) {
@@ -1137,8 +1164,7 @@ struct OverlayChannelStatusView: View {
     if selectedConversationID == conversation.id,
       showsPanelFocusButton(for: channel),
       let owner = archiveCandidates[channel.channel],
-      !hasDeadFollower(channel),
-      !hasNoTerminalTarget(channel),
+      !panelFocusUnreachable(channel),
       let onFocusAgentPanel
     {
       onFocusAgentPanel(owner)
@@ -1184,7 +1210,7 @@ struct OverlayChannelStatusView: View {
             .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
           } else if showsPanelFocusButton(for: channel),
             let owner = archiveCandidates[channel.channel],
-            !hasDeadFollower(channel),
+            !panelFocusUnreachable(channel),
             let onFocusAgentPanel
           {
             Button {
@@ -1244,14 +1270,17 @@ struct OverlayChannelStatusView: View {
                   } else {
                     Image(
                       systemName: panelFocusSymbol(
-                        focusState, target: panelFocusTarget(for: channel)))
+                        focusState,
+                        target: panelFocusTarget(for: channel)
+                          ?? (hasCodexCloudThread(channel)
+                            ? OverlayAgentPanelFocusTarget.codexThread : nil)))
                       .font(.system(size: 11, weight: .semibold))
                       .foregroundStyle(
                         focusState?.isSucceeded == true
                           ? palette.successStatus.color
                           : focusState?.isFailed == true
                             ? palette.errorStatus.color
-                            : hasNoTerminalTarget(channel)
+                            : panelFocusUnreachable(channel)
                               ? palette.mutedText.color : palette.primaryText.color
                       )
                   }
@@ -1260,10 +1289,7 @@ struct OverlayChannelStatusView: View {
               }
               .modifier(OverlayAgentControlStyle())
               .csFocusOutline()
-              .disabled(
-                focusState?.isRequesting == true || hasDeadFollower(channel)
-                  || hasNoTerminalTarget(channel)
-              )
+              .disabled(focusState?.isRequesting == true || panelFocusUnreachable(channel))
               .modifier(
                 OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
               )
@@ -1309,7 +1335,7 @@ struct OverlayChannelStatusView: View {
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
         enabled: (conversation != nil && onSelectConversation != nil)
-          || (showsPanelFocusButton(for: channel) && !hasDeadFollower(channel))
+          || (showsPanelFocusButton(for: channel) && !panelFocusUnreachable(channel))
       )
     )
     .modifier(
@@ -1409,12 +1435,22 @@ struct OverlayChannelStatusView: View {
   ) -> String {
     if state?.isSucceeded == true { return "checkmark" }
     if state?.isFailed == true { return "exclamationmark.triangle" }
-    return (state?.target ?? target) == .terminal ? "terminal" : "macwindow.on.rectangle"
+    switch state?.target ?? target {
+    case .some(.terminal): return "terminal"
+    case .some(.codexThread): return "bubble.left.and.text.bubble.right"
+    case .some(.frame), nil: return "macwindow.on.rectangle"
+    }
   }
 
   func panelFocusHelp(
     for channel: OverlayChannelDelivery, state: OverlayAgentPanelFocusState?
   ) -> String {
+    if hasCodexCloudThread(channel) {
+      return OverlayAgentPanelFocusTarget.codexCloudThreadHelp
+    }
+    if panelFocusTarget(for: channel) == .codexThread {
+      return state?.statusText ?? OverlayAgentPanelFocusTarget.codexThread.help
+    }
     if hasDeadFollower(channel) {
       return String(localized: "Agent is disconnected")
     }
