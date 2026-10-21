@@ -27342,9 +27342,13 @@ mod relay_l1_overlap_admission_tests {
             let stale =
                 ObservationIdentity::new(ObservationProducer::Whisper, 92, 0, owner.clone());
             let before = ledger.slots_of(&owner).unwrap().to_vec();
+            // Option A pays a debt with any complete window that heard the
+            // range, stale or not (agreed with Lena, 2026-10-21): the debt is
+            // about hearing the PCM, not about admitting the text. This stale
+            // window hears only half the owner, so the debt stays open.
             let rejected = ledger.admit_word_slots(
                 &stale,
-                &[WordPin::new(4_000, 18_000, "inny").with_decode_window(0, 48_000)],
+                &[WordPin::new(4_000, 18_000, "inny").with_decode_window(0, 24_000)],
             );
             assert!(!rejected.grants_mutation(), "stale: {rejected:?}");
             assert_eq!(ledger.slots_of(&owner).unwrap(), before);
@@ -29064,7 +29068,10 @@ mod relay_l1_overlap_admission_tests {
         let session = "physical-coarse-to-four";
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
-        let mut pcm = vec![0.0_f32; 200_000];
+        // Room quiet below the active floor, not a voice gate's exact zeros.
+        let mut pcm: Vec<f32> = (0..200_000)
+            .map(|i| if i % 2 == 0 { 5.0e-5 } else { -5.0e-5 })
+            .collect();
         let mut speech = vec![
             (13_000, 19_000),
             (23_000, 29_000),

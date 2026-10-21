@@ -803,7 +803,9 @@ impl AcousticLedger {
         // 0..432000) made the clipped burst look like a phrase opening inside
         // the window, and every interior word inherited the window fence.
         let mut fence_extents: Vec<(u64, u64)> = Vec::new();
-        let quiet = u64::from(self.capture_rate_hz.unwrap_or(16_000)) * 60 / 1000;
+        let quiet = u64::from(self.capture_rate_hz.unwrap_or(16_000))
+            * super::slot_ops::WORD_CONTINUITY_MS
+            / 1000;
         let continuous_beyond = |extent: (u64, u64), start: u64, end: u64| {
             (extent.0 <= start.saturating_add(quiet) && extent.1 >= end.saturating_sub(quiet))
                 || extent.1.saturating_sub(extent.0) > end.saturating_sub(start)

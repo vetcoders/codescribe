@@ -307,6 +307,12 @@ pub enum SlotOperationRefusal {
 
 /// A repetition picker is needed only for equal lexical evidence on the same
 /// PCM. Different words over a coarse source are a partition, not a replay.
+
+/// Speech separated by no more than this is one word's continuity: a valley
+/// this short does not authenticate quiet between anchor pieces, and a
+/// retired source's uncovered edge this short holds no other word.
+pub(super) const WORD_CONTINUITY_MS: u64 = 60;
+
 impl AcousticLedger {
     pub(super) fn repetition_target_ambiguous(
         &self,
@@ -1159,6 +1165,7 @@ impl AcousticLedger {
                 | "window_start_clipped"
                 | "window_stub_superseded"
                 | "duplicate_pcm_edge_token"
+                | super::COLLECTED_HYPOTHESIS
         ) && source.producer != ObservationProducer::ManualHuman
             && source.producer.authority_rank()
                 <= alternative.observation.producer.authority_rank()
@@ -2212,22 +2219,51 @@ impl AcousticLedger {
         Ok(sources)
     }
 
-    /// A replacement may retire geometry only when its outputs cover it or
-    /// both capture observers prove every uncovered sample is quiet. Missing
-    /// labels and unavailable measurements supply no absence authority.
+    /// A replacement may retire a source's geometry only where words that
+    /// stay in the document cover it, or where every acoustic observer that
+    /// measured the uncovered stretch heard it quiet. A missing label is never
+    /// evidence of absence, and neither is a missing measurement: with no
+    /// observer over a stretch there is no authority to retire it.
+    ///
+    /// Covering words are the replacement's outputs plus the owner's held
+    /// words that this replacement does not retire: speech an adjacent held
+    /// word accounts for has not disappeared.
+    ///
+    /// A stretch no longer than [`WORD_CONTINUITY_MS`] is the edge of the
+    /// same word, not room for another one: a successor decoded 20 ms later
+    /// than its source (take 9dedf6ec: `tego,` → `tego`) is a retiming.
+    /// Requiring a quiet proof for it made every retimed correction inside
+    /// speech impossible, because the sliver is speech.
+    ///
+    /// The speech observer is whichever acoustic producer the ledger holds
+    /// (Silero boundaries or the capture-energy ladder, as everywhere else in
+    /// the ledger). The energy observer is the capture owner's voiced hops, or
+    /// the restored exact-PCM quiet receipts. When the speech observer is the
+    /// energy ladder, its silence already is the sub-floor measurement.
     pub(super) fn slot_retirement_has_acoustic_coverage(
         &self,
+        observation: &ObservationIdentity,
         source: &WordSlot,
         outputs: &[WordSlot],
+        retired: &[WordSlot],
     ) -> bool {
+        use super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+
         let owner = &source.observation.occurrence;
+        let staying = self
+            .slots_of(owner)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|held| *held != source && !retired.contains(held));
         let mut intervals = outputs
             .iter()
-            .filter(|output| {
-                output.observation.occurrence.same_capture(owner)
-                    && output.sample_start < output.sample_end
+            .chain(staying)
+            .filter(|word| {
+                word.observation.occurrence.same_capture(owner)
+                    && word.sample_start < word.sample_end
             })
-            .map(|output| (output.sample_start, output.sample_end))
+            .map(|word| (word.sample_start, word.sample_end))
             .collect::<Vec<_>>();
         intervals.sort_unstable();
         let mut gaps = Vec::new();
@@ -2244,17 +2280,55 @@ impl AcousticLedger {
         if cursor < source.sample_end {
             gaps.push((cursor, source.sample_end));
         }
+        let continuity =
+            u64::from(self.capture_rate_hz.unwrap_or(16_000)) * WORD_CONTINUITY_MS / 1_000;
+        gaps.retain(|(start, end)| end.saturating_sub(*start) > continuity);
         if gaps.is_empty() {
+            return true;
+        }
+        // One word corrected by one word over it keeps its word: the successor
+        // is its continuation, and any speech its new edges leave is coverage
+        // debt the seal accounts for, not a vanished word. A coarse group is
+        // not one word; a single-token label is, by the same whitespace cue
+        // `coarse_word_source` reads.
+        let mut overlapping = outputs.iter().filter(|output| {
+            output.observation.occurrence.same_capture(owner)
+                && output.sample_end > source.sample_start
+                && output.sample_start < source.sample_end
+        });
+        let one_word =
+            !source.text.trim().contains(char::is_whitespace) || !self.coarse_word_source(source);
+        if let (Some(successor), None) = (overlapping.next(), overlapping.next())
+            && one_word
+            && self.same_anchored_word(source, successor)
+        {
+            return true;
+        }
+        // The ledger's own PCM accounting: every measured speech range under
+        // the source is held by a new word or a committed neighbour's pin.
+        let range = OccurrenceIdentity::new(
+            &owner.session,
+            owner.capture_epoch,
+            source.sample_start,
+            source.sample_end,
+        );
+        if self
+            .speech_pin_coverage(observation, &range, outputs)
+            .is_some()
+        {
             return true;
         }
         let Some(speech) = self.speech_evidence.as_ref() else {
             return false;
         };
+        let producer = speech.producer();
         if !speech
             .identity()
             .matches(&owner.session, owner.capture_epoch)
-            || speech.producer()
-                != super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+            || !matches!(
+                producer,
+                CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
+            )
             || speech
                 .availability()
                 .observed_samples()
@@ -2262,29 +2336,91 @@ impl AcousticLedger {
         {
             return false;
         }
+        // Each observer testifies only about what it can resolve. The energy
+        // ladder joins speech across pauses shorter than its merge gap and
+        // Silero pads every range, so neither can call a short pause between
+        // two words quiet, and the padding next to a word is that word's own.
+        // The capture owner's voiced hops resolve both.
+        let rate = u64::from(self.capture_rate_hz.unwrap_or(16_000));
+        let (merge, pad) = if producer == SILERO_BOUNDARIES_PRODUCER {
+            let pad = (f64::from(super::super::streaming::silero_fusion::ACOUSTIC_SPEECH_PAD_SECS)
+                * rate as f64)
+                .round() as u64;
+            (2 * pad, pad)
+        } else {
+            (
+                rate * crate::audio::capture_receipt::ACTIVE_SPEECH_MERGE_GAP_MS / 1_000,
+                continuity,
+            )
+        };
         gaps.into_iter().all(|(start, end)| {
-            let no_speech = speech
-                .ranges()
-                .iter()
-                .all(|range| range.sample_end <= start || range.sample_start >= end);
+            let after_word = start > source.sample_start;
+            let before_word = end < source.sample_end;
+            let inner_start = if after_word {
+                start.saturating_add(pad)
+            } else {
+                start
+            };
+            let inner_end = if before_word {
+                end.saturating_sub(pad)
+            } else {
+                end
+            };
+            // None: the speech observer cannot resolve this stretch.
+            let speech_quiet = if after_word && before_word && end - start < merge {
+                None
+            } else {
+                Some(
+                    inner_start >= inner_end
+                        || speech.ranges().iter().all(|range| {
+                            range.sample_end <= inner_start || range.sample_start >= inner_end
+                        }),
+                )
+            };
+            if speech_quiet == Some(false) {
+                return false;
+            }
             // Use the capture owner's absolute active-speech floor in both
             // live and restored proofs. A live contradiction never borrows
             // a weaker historical quiet receipt.
-            let below_floor = if let Some(energy) = self.decode_fence_energy.as_ref() {
-                energy
-                    .owner
-                    .voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
-                    .is_some_and(|hops| hops.is_empty())
+            let floor_quiet = if let Some(energy) = self.decode_fence_energy.as_ref() {
+                let hop_start = if after_word {
+                    start.saturating_add(continuity)
+                } else {
+                    start
+                };
+                let hop_end = if before_word {
+                    end.saturating_sub(continuity)
+                } else {
+                    end
+                };
+                // Retiring a held word needs measured quiet. Digital zeros a
+                // voice gate wrote are not a measurement (D5): the word they
+                // overlap may be exactly what the gate removed.
+                Some(
+                    hop_start >= hop_end
+                        || energy.owner.measured_quiet_in(
+                            &owner.session,
+                            owner.capture_epoch,
+                            hop_start,
+                            hop_end,
+                        ) == Some(true),
+                )
+            } else if let Some(fences) = self.replay_quiet_fences.as_ref() {
+                Some(fences.iter().any(|range| {
+                    range.same_capture(owner)
+                        && range.sample_start <= start
+                        && end <= range.sample_end
+                }))
+            } else if producer == CAPTURE_ENERGY_PRODUCER {
+                // No separate energy observer: the ladder's own silence is the
+                // sub-floor measurement, when it could resolve the stretch.
+                speech_quiet
             } else {
-                self.replay_quiet_fences.as_ref().is_some_and(|ranges| {
-                    ranges.iter().any(|range| {
-                        range.same_capture(owner)
-                            && range.sample_start <= start
-                            && end <= range.sample_end
-                    })
-                })
+                // Silero alone is one observer and never the floor.
+                None
             };
-            no_speech && below_floor
+            floor_quiet == Some(true)
         })
     }
 
@@ -2503,9 +2639,9 @@ impl AcousticLedger {
             })
             .collect::<Vec<_>>();
         if observation.producer != ObservationProducer::ManualHuman
-            && sources
-                .iter()
-                .any(|source| !self.slot_retirement_has_acoustic_coverage(source, &outputs))
+            && sources.iter().any(|source| {
+                !self.slot_retirement_has_acoustic_coverage(observation, source, &outputs, &sources)
+            })
         {
             self.record_word_choice(
                 observation,
@@ -2718,22 +2854,35 @@ mod slot_ops_tests {
                     WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
                     WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
                 ];
-                assert!(
-                    ledger.admit_word_slots(&next, &pins).grants_mutation(),
-                    "{state}/{variant}"
+                // D5: only the exact held neighbour word accounts for the speech
+                // the two new words leave. Without it they merely omit `plan`;
+                // absence is not evidence, so the prior label stays.
+                let receipt = ledger.admit_word_slots(&next, &pins);
+                assert_eq!(
+                    receipt.grants_mutation(),
+                    expected,
+                    "{state}/{variant}: {receipt:?}"
                 );
-                assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+                assert_eq!(
+                    ledger.text_of(&owner),
+                    Some(if expected {
+                        "czy weryfikowałeś"
+                    } else {
+                        "czy plan weryfikowałeś"
+                    })
+                );
                 assert_eq!(ledger.slots_of(&neighbour), neighbour_before.as_deref());
                 assert_eq!(
                     !ledger.group_speech_coverages().is_empty(),
                     expected,
                     "{state}/{variant}"
                 );
-                assert!(
+                assert_eq!(
                     ledger
                         .slot_operations()
                         .iter()
-                        .any(|operation| operation.sources.contains(&original))
+                        .any(|operation| operation.sources.contains(&original)),
+                    expected
                 );
                 ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
                 assert_eq!(
@@ -2836,8 +2985,19 @@ mod slot_ops_tests {
                 WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
                 WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
             ];
-            assert!(ledger.admit_word_slots(&next, &pins).grants_mutation());
-            assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+            // D5: only a crossing neighbour word accounts for 14_000..16_000.
+            // Once that word was deleted as no speech, the new words merely
+            // omit `plan`; absence is not evidence, so the prior label stays.
+            let receipt = ledger.admit_word_slots(&next, &pins);
+            assert_eq!(receipt.grants_mutation(), crossing_word, "{receipt:?}");
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if crossing_word {
+                    "czy weryfikowałeś"
+                } else {
+                    "czy plan weryfikowałeś"
+                })
+            );
             assert_eq!(!ledger.group_speech_coverages().is_empty(), crossing_word);
             assert_eq!(ledger.word_deletions().len(), usize::from(!crossing_word));
             ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
@@ -2966,6 +3126,13 @@ mod slot_ops_tests {
 
     #[test]
     fn forensic_scope_sparse_word_times_distinguish_partial_and_complete_work() {
+        // Apple holds "czy plan weryfikowałeś" over the whole owner. Whisper
+        // and cloud hear only "czy weryfikowałeś" at 2_000..8_000; voiced PCM
+        // at 14_000..16_000 stays outside every returned word. D5: a decode
+        // that omits a word is not evidence of its absence, so the held label
+        // stays and the proposal is collected beside it (D3). Option A
+        // (Maciej, 2026-10-21): only a complete window over the owner pays its
+        // text debt; a partial window or untimed words leave the debt open.
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             for window in [None, Some((0, 12_000)), Some((0, 16_000))] {
                 let (mut ledger, owner, _, _) =
@@ -2986,84 +3153,42 @@ mod slot_ops_tests {
                 })
                 .collect::<Vec<_>>();
                 let receipt = ledger.admit_word_slots(&observation, &pins);
-                if producer == ObservationProducer::CloudLive && window != Some((0, 16_000)) {
-                    // Cloud's partial answer retains the unaccounted source.
-                    // The complete-window case below must still replace it;
-                    // Whisper's existing partial-word contract stays intact.
-                    assert!(!receipt.grants_mutation(), "{window:?}: {receipt:?}");
-                    assert_eq!(ledger.slots_of(&owner).unwrap(), source);
-                    assert!(ledger.slot_alternatives().iter().any(|alternative| {
-                        alternative.observation == observation
-                            && alternative.candidate == "czy weryfikowałeś"
-                            && alternative.sources == source
-                    }));
-                    assert!(
-                        !ledger
-                            .slot_operations()
-                            .iter()
-                            .any(|operation| operation.observation == observation)
-                    );
-                    assert!(ledger.text_recovery_pending(&owner));
-                    assert!(ledger.note_frontier_return(&owner, producer));
-                    let coverage = ledger.assess_seal_coverage(
-                        &owner.session,
-                        owner.capture_epoch,
-                        &speech,
-                        0,
-                    );
-                    assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
-                    assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-                    assert!(ledger.word_deletions().is_empty());
-                    ledger.assert_slot_labels();
-                    assert_eq!(ledger.conservation().residue(), 0);
-                    continue;
-                }
                 assert!(
-                    receipt.grants_mutation()
-                        || matches!(receipt, MutationReceipt::Preserve { .. }),
+                    !receipt.grants_mutation(),
                     "{producer:?} {window:?}: {receipt:?}"
                 );
-                assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
-                let operation = ledger.slot_operations().last().unwrap();
-                assert_eq!(operation.sources, source);
-                assert_eq!(operation.outputs.len(), 2);
-                assert_eq!(
-                    (
-                        operation.outputs[0].sample_start,
-                        operation.outputs[1].sample_end
-                    ),
-                    (2_000, 8_000)
-                );
-                assert!(operation.source_ranges.contains(&owner));
+                assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+                assert_eq!(ledger.text_of(&owner), Some("czy plan weryfikowałeś"));
                 assert!(
-                    ledger.group_speech_coverages().is_empty(),
-                    "work completion is not a speech-density receipt"
+                    ledger
+                        .slot_alternatives()
+                        .iter()
+                        .any(|alternative| alternative.observation == observation),
+                    "{producer:?} {window:?}: the omitting proposal is collected"
                 );
+                assert!(
+                    !ledger
+                        .slot_operations()
+                        .iter()
+                        .any(|operation| operation.observation == observation)
+                );
+                assert!(ledger.word_deletions().is_empty());
                 let complete = window == Some((0, 16_000));
-                assert_eq!(ledger.text_recovery_pending(&owner), !complete);
+                assert_eq!(
+                    ledger.text_recovery_pending(&owner),
+                    !complete,
+                    "{producer:?} {window:?}: only a complete window pays the debt"
+                );
                 assert!(ledger.note_frontier_return(&owner, producer));
                 let coverage =
                     ledger.assess_seal_coverage(&owner.session, owner.capture_epoch, &speech, 0);
                 assert!(ledger.record_seal_coverage(coverage.clone()));
                 if complete {
-                    assert_eq!(coverage.status, SealCoverageStatus::Complete);
                     ledger
                         .seal(&owner)
-                        .expect("full actual decoder scope returned");
-                    ledger
-                        .seal_terminal(&owner.session, owner.capture_epoch)
-                        .expect("valid observer and full scope");
+                        .expect("a complete window paid the debt of the held label");
                 } else {
-                    assert!(
-                        ledger.text_recovery_pending(&owner),
-                        "frontier return cannot decode the missing scope"
-                    );
-                    assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
                     assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-                    assert_eq!(
-                        ledger.seal_terminal(&owner.session, owner.capture_epoch),
-                        Err(SealRefusal::TextRecoveryPending)
-                    );
                 }
                 ledger.assert_slot_labels();
                 assert_eq!(ledger.conservation().residue(), 0);
@@ -4973,23 +5098,15 @@ mod slot_ops_tests {
                 assert!(ledger.require_text_recovery(&owner()));
                 let next = observation(ObservationProducer::Whisper, 1);
                 ledger.admit_word_slots(&next, &pins);
-                if has_speech {
-                    // Measured individual words may improve a coarse hypothesis;
-                    // the still-unaccounted PCM stays debt, not an Apple word floor.
-                    assert_eq!(
-                        ledger.text_of(&owner()),
-                        Some("czy weryfikowałeś dokładnie")
-                    );
-                    let operation = ledger.slot_operations().last().unwrap();
-                    assert_eq!(operation.sources, source);
-                    assert!(operation.source_ranges.contains(&owner()));
-                    assert_eq!(
-                        operation.rule_id,
-                        "acoustic_resegmentation/partial-speech/v1"
-                    );
-                } else {
-                    assert_eq!(ledger.slots_of(&owner()).unwrap(), source);
-                }
+                // D5 (ledger speech truth brief): absence is not evidence. The
+                // pins leave 4_000..6_000 of the coarse source unaccounted, and
+                // no observer measured it quiet, so a decode that omits `plan`
+                // cannot retire it: the group survives whether the speech is
+                // measured or not, and the reading stays an alternative. This
+                // replaces the pre-brief rule "the still-unaccounted PCM stays
+                // debt, not an Apple word floor".
+                let _ = has_speech;
+                assert_eq!(ledger.slots_of(&owner()).unwrap(), source);
                 assert!(!ledger.slot_alternatives().is_empty());
                 assert!(ledger.group_speech_coverages().is_empty());
                 assert!(ledger.text_recovery_pending(&owner()));
@@ -5145,10 +5262,20 @@ mod slot_ops_tests {
                 );
                 ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
                 ledger.admit_word_slots(&next, &pins);
-                // Accepted words may refine the coarse Apple hypothesis.
-                // Only an actual matching neighbouring word settles the rest.
-                assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
                 let covered = matching_request && neighbour_kind == "word";
+                // D5 (ledger speech truth brief): absence is not evidence. Only
+                // an actual matching neighbouring word accounts for the speech
+                // the two new words leave; then they may refine the coarse
+                // Apple hypothesis. Otherwise the decode merely omits `plan`,
+                // the prior label survives and the reading stays an alternative.
+                assert_eq!(
+                    ledger.text_of(&owner()),
+                    Some(if covered {
+                        "czy weryfikowałeś"
+                    } else {
+                        "czy plan weryfikowałeś"
+                    })
+                );
                 if covered {
                     let coverage = ledger.group_speech_coverages().last().unwrap();
                     assert_eq!(coverage.coverage.last().unwrap().pin_owner, neighbour);
@@ -5228,7 +5355,10 @@ mod slot_ops_tests {
                 WordPin::new(5_000, 8_000, "weryfikowałeś"),
             ],
         );
-        assert_eq!(ledger.text_of(&owner()), Some("czy weryfikowałeś"));
+        // D5: the deleted neighbour pin no longer accounts for 14_000..16_000,
+        // so the decode merely omits `plan` there. Absence is not evidence:
+        // the prior label survives and the reading stays an alternative.
+        assert_eq!(ledger.text_of(&owner()), Some("czy plan weryfikowałeś"));
         ledger.note_frontier_return(&owner(), ObservationProducer::Whisper);
         assert!(ledger.text_recovery_pending(&owner()));
         assert_eq!(ledger.seal(&owner()), Err(SealRefusal::TextRecoveryPending));
@@ -5454,14 +5584,25 @@ mod slot_ops_tests {
             std::slice::from_ref(&source)
         );
         assert_eq!(source.producer, ObservationProducer::Whisper);
-        ledger.admit_word_slots(
-            &observation(ObservationProducer::Whisper, 2),
-            &[
-                WordPin::new(0, 4_000, "czy"),
-                WordPin::new(6_000, 10_000, "plan"),
-                WordPin::new(12_000, 16_000, "zweryfikowałeś"),
-            ],
+        // D5: the word pins may retire the group only with a measurement of
+        // the pauses between them. Without any observer the group survives;
+        // with speech measured under the three words alone, nothing is lost.
+        let words = [
+            WordPin::new(0, 4_000, "czy"),
+            WordPin::new(6_000, 10_000, "plan"),
+            WordPin::new(12_000, 16_000, "zweryfikowałeś"),
+        ];
+        ledger.admit_word_slots(&observation(ObservationProducer::Whisper, 2), &words);
+        assert_eq!(
+            ledger.slots_of(&owner()).unwrap(),
+            std::slice::from_ref(&source)
         );
+        ledger.record_speech_evidence(&group_speech(&[
+            (0, 4_000),
+            (6_000, 10_000),
+            (12_000, 16_000),
+        ]));
+        ledger.admit_word_slots(&observation(ObservationProducer::Whisper, 3), &words);
         assert_eq!(ledger.text_of(&owner()), Some("czy plan zweryfikowałeś"));
         assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 3);
         assert_eq!(ledger.conservation().residue(), 0);
@@ -5730,7 +5871,11 @@ mod slot_ops_tests {
         // The earlier proposal returned no complete decoded source scope.
         // The final batch now supplies the same measured capture and bounds.
         use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
-        let mut pcm = vec![0.0_f32; 16_000];
+        // Room quiet sits below the active floor without being exact zeros;
+        // a run of exact zeros is a voice gate's output and proves no quiet.
+        let mut pcm: Vec<f32> = (0..16_000)
+            .map(|i| if i % 2 == 0 { 5.0e-5 } else { -5.0e-5 })
+            .collect();
         pcm[320..1_000].fill(0.2);
         pcm[2_000..3_000].fill(0.2);
         let energy = CaptureEnergyOwner::bind("slot-test", 1);
@@ -5770,6 +5915,10 @@ mod slot_ops_tests {
                 .is_qualified()
         );
         ledger.record_speech_evidence(&speech);
+        // D5: retiring "dwa słowa" needs the 62 ms pause between the new words
+        // measured quiet. The energy ladder merges pauses that short, so the
+        // capture owner's voiced hops are the observer that can resolve it.
+        ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
         ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
         assert!(ledger.require_text_recovery(&owner()));
         let original = ledger.slots_of(&owner()).unwrap().to_vec();
