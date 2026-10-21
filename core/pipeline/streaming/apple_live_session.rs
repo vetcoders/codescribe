@@ -28564,8 +28564,9 @@ mod relay_l1_overlap_admission_tests {
         // speech under both Apple slots, and no decoded word covers 4 000..17 000
         // under the first one, so the Apple words stay (the measured form of
         // this geometry is three_real_frames_preserve_independent_pins_...).
+        // "Foundation." lies over speech no held word labels and still lands.
         let text = held_text(&lane, &owner).unwrap_or_default();
-        assert_eq!(text, "usunięcie tego jednego Case", "{mode:?}");
+        assert_eq!(text, "usunięcie tego jednego Case Foundation.", "{mode:?}");
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert!(
             ledger
@@ -29606,10 +29607,11 @@ mod relay_l1_overlap_admission_tests {
             // coarse case the measured voice runs 4 000..46 000 and no decoded
             // word covers 4 000..17 000 under the Apple source, so the Apple
             // words stay and the decoded reading waits as an alternative.
+            // "Foundation." lies over speech no held word labels and lands.
             let expected = if partitioned {
                 "zima usza szarości dalej"
             } else {
-                "usunięcie tego jednego Case"
+                "usunięcie tego jednego Case Foundation."
             };
             assert_eq!(
                 ledger.text_of(&owner),
@@ -29618,7 +29620,15 @@ mod relay_l1_overlap_admission_tests {
                 ledger.word_choices()
             );
             if !partitioned {
-                assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+                let slots = ledger.slots_of(&owner).unwrap();
+                assert_eq!(&slots[..sources.len()], sources.as_slice());
+                assert_eq!(
+                    slots[sources.len()..]
+                        .iter()
+                        .map(|slot| (slot.text.as_str(), slot.producer))
+                        .collect::<Vec<_>>(),
+                    [("Foundation.", ObservationProducer::Whisper)]
+                );
                 assert!(ledger.slot_alternatives().iter().any(|alternative| {
                     alternative.observation.producer == ObservationProducer::Whisper
                         && alternative.reason == "absence_requires_acoustic_evidence"
