@@ -2284,33 +2284,86 @@ impl AcousticLedger {
         {
             return false;
         }
+        // Each observer testifies only about what it can resolve. The energy
+        // ladder joins speech across pauses shorter than its merge gap and
+        // Silero pads every range, so neither can call a short pause between
+        // two words quiet, and the padding next to a word is that word's own.
+        // The capture owner's voiced hops resolve both.
+        let rate = u64::from(self.capture_rate_hz.unwrap_or(16_000));
+        let (merge, pad) = if producer == SILERO_BOUNDARIES_PRODUCER {
+            let pad = (f64::from(super::super::streaming::silero_fusion::ACOUSTIC_SPEECH_PAD_SECS)
+                * rate as f64)
+                .round() as u64;
+            (2 * pad, pad)
+        } else {
+            (
+                rate * crate::audio::capture_receipt::ACTIVE_SPEECH_MERGE_GAP_MS / 1_000,
+                continuity,
+            )
+        };
         gaps.into_iter().all(|(start, end)| {
-            let no_speech = speech
-                .ranges()
-                .iter()
-                .all(|range| range.sample_end <= start || range.sample_start >= end);
-            if !no_speech {
+            let after_word = start > source.sample_start;
+            let before_word = end < source.sample_end;
+            let inner_start = if after_word {
+                start.saturating_add(pad)
+            } else {
+                start
+            };
+            let inner_end = if before_word {
+                end.saturating_sub(pad)
+            } else {
+                end
+            };
+            // None: the speech observer cannot resolve this stretch.
+            let speech_quiet = if after_word && before_word && end - start < merge {
+                None
+            } else {
+                Some(
+                    inner_start >= inner_end
+                        || speech.ranges().iter().all(|range| {
+                            range.sample_end <= inner_start || range.sample_start >= inner_end
+                        }),
+                )
+            };
+            if speech_quiet == Some(false) {
                 return false;
             }
             // Use the capture owner's absolute active-speech floor in both
             // live and restored proofs. A live contradiction never borrows
             // a weaker historical quiet receipt.
-            if let Some(energy) = self.decode_fence_energy.as_ref() {
-                return energy
-                    .owner
-                    .voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
-                    .is_some_and(|hops| hops.is_empty());
-            }
-            if let Some(fences) = self.replay_quiet_fences.as_ref() {
-                return fences.iter().any(|range| {
+            let floor_quiet = if let Some(energy) = self.decode_fence_energy.as_ref() {
+                let hop_start = if after_word {
+                    start.saturating_add(continuity)
+                } else {
+                    start
+                };
+                let hop_end = if before_word {
+                    end.saturating_sub(continuity)
+                } else {
+                    end
+                };
+                Some(
+                    hop_start >= hop_end
+                        || energy
+                            .owner
+                            .voiced_hops_in(&owner.session, owner.capture_epoch, hop_start, hop_end)
+                            .is_some_and(|hops| hops.is_empty()),
+                )
+            } else if let Some(fences) = self.replay_quiet_fences.as_ref() {
+                Some(fences.iter().any(|range| {
                     range.same_capture(owner)
                         && range.sample_start <= start
                         && end <= range.sample_end
-                });
-            }
-            // No separate energy observer is attached. The energy ladder's
-            // own silence is the sub-floor proof; Silero alone is one observer.
-            producer == CAPTURE_ENERGY_PRODUCER
+                }))
+            } else if producer == CAPTURE_ENERGY_PRODUCER {
+                // No separate energy observer: the ladder's own silence is the
+                // sub-floor measurement, when it could resolve the stretch.
+                speech_quiet
+            } else {
+                // Silero alone is one observer and never the floor.
+                None
+            };
+            floor_quiet == Some(true)
         })
     }
 
@@ -2744,22 +2797,35 @@ mod slot_ops_tests {
                     WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
                     WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
                 ];
-                assert!(
-                    ledger.admit_word_slots(&next, &pins).grants_mutation(),
-                    "{state}/{variant}"
+                // D5: only the exact held neighbour word accounts for the speech
+                // the two new words leave. Without it they merely omit `plan`;
+                // absence is not evidence, so the prior label stays.
+                let receipt = ledger.admit_word_slots(&next, &pins);
+                assert_eq!(
+                    receipt.grants_mutation(),
+                    expected,
+                    "{state}/{variant}: {receipt:?}"
                 );
-                assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+                assert_eq!(
+                    ledger.text_of(&owner),
+                    Some(if expected {
+                        "czy weryfikowałeś"
+                    } else {
+                        "czy plan weryfikowałeś"
+                    })
+                );
                 assert_eq!(ledger.slots_of(&neighbour), neighbour_before.as_deref());
                 assert_eq!(
                     !ledger.group_speech_coverages().is_empty(),
                     expected,
                     "{state}/{variant}"
                 );
-                assert!(
+                assert_eq!(
                     ledger
                         .slot_operations()
                         .iter()
-                        .any(|operation| operation.sources.contains(&original))
+                        .any(|operation| operation.sources.contains(&original)),
+                    expected
                 );
                 ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
                 assert_eq!(
@@ -2862,8 +2928,19 @@ mod slot_ops_tests {
                 WordPin::new(2_000, 5_000, "czy").with_decode_window(0, 12_000),
                 WordPin::new(5_000, 8_000, "weryfikowałeś").with_decode_window(0, 12_000),
             ];
-            assert!(ledger.admit_word_slots(&next, &pins).grants_mutation());
-            assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
+            // D5: only a crossing neighbour word accounts for 14_000..16_000.
+            // Once that word was deleted as no speech, the new words merely
+            // omit `plan`; absence is not evidence, so the prior label stays.
+            let receipt = ledger.admit_word_slots(&next, &pins);
+            assert_eq!(receipt.grants_mutation(), crossing_word, "{receipt:?}");
+            assert_eq!(
+                ledger.text_of(&owner),
+                Some(if crossing_word {
+                    "czy weryfikowałeś"
+                } else {
+                    "czy plan weryfikowałeś"
+                })
+            );
             assert_eq!(!ledger.group_speech_coverages().is_empty(), crossing_word);
             assert_eq!(ledger.word_deletions().len(), usize::from(!crossing_word));
             ledger.note_frontier_return(&owner, ObservationProducer::Whisper);
@@ -5468,14 +5545,25 @@ mod slot_ops_tests {
             std::slice::from_ref(&source)
         );
         assert_eq!(source.producer, ObservationProducer::Whisper);
-        ledger.admit_word_slots(
-            &observation(ObservationProducer::Whisper, 2),
-            &[
-                WordPin::new(0, 4_000, "czy"),
-                WordPin::new(6_000, 10_000, "plan"),
-                WordPin::new(12_000, 16_000, "zweryfikowałeś"),
-            ],
+        // D5: the word pins may retire the group only with a measurement of
+        // the pauses between them. Without any observer the group survives;
+        // with speech measured under the three words alone, nothing is lost.
+        let words = [
+            WordPin::new(0, 4_000, "czy"),
+            WordPin::new(6_000, 10_000, "plan"),
+            WordPin::new(12_000, 16_000, "zweryfikowałeś"),
+        ];
+        ledger.admit_word_slots(&observation(ObservationProducer::Whisper, 2), &words);
+        assert_eq!(
+            ledger.slots_of(&owner()).unwrap(),
+            std::slice::from_ref(&source)
         );
+        ledger.record_speech_evidence(&group_speech(&[
+            (0, 4_000),
+            (6_000, 10_000),
+            (12_000, 16_000),
+        ]));
+        ledger.admit_word_slots(&observation(ObservationProducer::Whisper, 3), &words);
         assert_eq!(ledger.text_of(&owner()), Some("czy plan zweryfikowałeś"));
         assert_eq!(ledger.slots_of(&owner()).unwrap().len(), 3);
         assert_eq!(ledger.conservation().residue(), 0);
@@ -5784,6 +5872,10 @@ mod slot_ops_tests {
                 .is_qualified()
         );
         ledger.record_speech_evidence(&speech);
+        // D5: retiring "dwa słowa" needs the 62 ms pause between the new words
+        // measured quiet. The energy ladder merges pauses that short, so the
+        // capture owner's voiced hops are the observer that can resolve it.
+        ledger.record_decode_fence_energy(&energy, pcm.len() as u64, [None, None]);
         ledger.schedule_frontier(owner(), [ObservationProducer::Whisper]);
         assert!(ledger.require_text_recovery(&owner()));
         let original = ledger.slots_of(&owner()).unwrap().to_vec();
