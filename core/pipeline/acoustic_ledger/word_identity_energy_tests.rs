@@ -1287,3 +1287,54 @@ fn recorded_1021_dt_partition_of_a_held_whisper_word_on_speech_stays_an_alternat
             && alternative.sources == [widoczne.clone()]
     }));
 }
+
+#[test]
+fn recorded_1021_a_redecoded_word_spelled_like_its_neighbour_is_not_its_continuation() {
+    // Take 0d3ede90 (dragon, 2026-10-21): Whisper held "first." and the "że"
+    // after it; a later generation of the same request decoded "że" over half
+    // of "first." and the document read "że że". A one-word successor spelled
+    // like the held neighbour is that neighbour heard again, so the source's
+    // speech keeps its own word. A successor of the source's own spelling
+    // still continues it.
+    let owner = OccurrenceIdentity::new("redecode-neighbour-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..91_200].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 8, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("first.", 9_600, 45_120), ("że", 45_120, 71_520)],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let first = ledger.slots_of(&owner).unwrap()[0].clone();
+    let redecode = ObservationIdentity::new(ObservationProducer::Whisper, 8, 6, owner.clone());
+    let successor = |text: &str| WordSlot {
+        sample_start: 12_480,
+        sample_end: 29_760,
+        text: text.into(),
+        producer: ObservationProducer::Whisper,
+        observation: redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    assert!(ledger.same_anchored_word(&first, &successor("że")));
+    assert!(!ledger.slot_retirement_has_acoustic_coverage(
+        &redecode,
+        &first,
+        &[successor("że")],
+        std::slice::from_ref(&first),
+    ));
+    assert!(ledger.slot_retirement_has_acoustic_coverage(
+        &redecode,
+        &first,
+        &[successor("first")],
+        std::slice::from_ref(&first),
+    ));
+}
