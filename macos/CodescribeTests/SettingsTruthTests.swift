@@ -2077,6 +2077,76 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(model.mcpServers.map(\.name), ["prview"])
   }
 
+  func testMcpEditUpdatesTheExistingServerWithoutLosingArgumentsOrState() async {
+    let server = CsMcpServer(
+      name: "unicode-puzzles", command: "/opt/homebrew/bin/node script.js", args: [],
+      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "")
+    let admin = ScriptedMcpAdmin(servers: [server])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer(server.name)
+    for _ in 0..<100 where model.mcpTestPending.contains(server.name) { await Task.yield() }
+    XCTAssertNotNil(model.mcpTestResults[server.name])
+
+    let arguments = ["/path with spaces/server.js", "", "literal \"quotes\"", "line\nbreak"]
+    XCTAssertNil(
+      model.updateMcpServer(
+        server, command: "/opt/homebrew/bin/node", args: arguments, endpoint: "", token: ""))
+    XCTAssertEqual(admin.updates, [server.name])
+    XCTAssertEqual(model.mcpServers.count, 1)
+    XCTAssertEqual(model.mcpServers[0].command, "/opt/homebrew/bin/node")
+    XCTAssertEqual(model.mcpServers[0].args, arguments)
+    XCTAssertEqual(model.mcpServers[0].envKeys, ["TOKEN"])
+    XCTAssertFalse(model.mcpServers[0].enabled)
+    XCTAssertNil(model.mcpTestResults[server.name])
+  }
+
+  func testMcpEditKeepsSavedAuthenticationAndReturnsValidationFailure() {
+    let server = CsMcpServer(
+      name: "remote", command: "", args: [], envKeys: [], enabled: true,
+      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account")
+    let admin = ScriptedMcpAdmin(servers: [server])
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    admin.updateFailure = "Invalid remote MCP endpoint: https://"
+    let failure = model.updateMcpServer(
+      server, command: "", args: [], endpoint: "https://", token: "")
+    XCTAssertEqual(failure?.field, .endpoint)
+    XCTAssertEqual(model.mcpServers[0].endpoint, server.endpoint)
+    admin.updateFailure = nil
+    XCTAssertNil(
+      model.updateMcpServer(
+        server, command: "", args: [], endpoint: "https://new.example/mcp", token: ""))
+    XCTAssertEqual(model.mcpServers[0].authRef, "saved-account")
+    XCTAssertEqual(model.mcpServers[0].endpoint, "https://new.example/mcp")
+  }
+
+  func testMcpEditDiscardsAHandshakeFromTheOldConfiguration() async {
+    let server = CsMcpServer.samples[0]
+    let admin = ScriptedMcpAdmin(servers: [server])
+    admin.holdTest = true
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
+    model.reloadMcpServers()
+    model.testMcpServer(server.name)
+    for _ in 0..<100 where admin.testContinuation == nil { await Task.yield() }
+    XCTAssertNotNil(admin.testContinuation)
+    XCTAssertNil(
+      model.updateMcpServer(
+        server, command: "fixed", args: [], endpoint: "", token: ""))
+    XCTAssertFalse(model.mcpTestPending.contains(server.name))
+    let oldTest = admin.testContinuation
+    admin.testContinuation = nil
+    oldTest?.resume(
+      returning: CsMcpTestResult(
+        ok: false, toolCount: 0, serverName: "", serverVersion: "", protocolVersion: "",
+        error: "old command not found"))
+    for _ in 0..<10 { await Task.yield() }
+    XCTAssertNil(model.mcpTestResults[server.name])
+  }
+
   /// The store's typed refusals (`core/mcp/config_store.rs` validate_*) map to
   /// one sentence each and to the field they are about; the bridge's
   /// `Config(msg: …)` wrapper never reaches the form. An unknown message keeps
@@ -2514,6 +2584,9 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   private var servers: [CsMcpServer]
   private let serverRules: [String]
   var addFailure: String?
+  var updateFailure: String?
+  var holdTest = false
+  var testContinuation: CheckedContinuation<CsMcpTestResult, Never>?
   private(set) var updates: [String] = []
 
   init(servers: [CsMcpServer], addFailure: String? = nil, rules serverRules: [String] = []) {
@@ -2534,6 +2607,7 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   }
 
   func updateServer(name: String, input: CsMcpServerInput) throws {
+    if let updateFailure { throw CsError.Config(msg: updateFailure) }
     updates.append(name)
     guard let index = servers.firstIndex(where: { $0.name == name }) else { return }
     servers[index] = CsMcpServer(
@@ -2546,7 +2620,10 @@ private final class ScriptedMcpAdmin: MCPAdminEngine {
   func removeServer(name: String) throws { servers.removeAll { $0.name == name } }
 
   func testServer(_ name: String) async -> CsMcpTestResult {
-    CsMcpTestResult(
+    if holdTest {
+      return await withCheckedContinuation { testContinuation = $0 }
+    }
+    return CsMcpTestResult(
       ok: true, toolCount: 3, serverName: name, serverVersion: "1.0", protocolVersion: "",
       error: "")
   }

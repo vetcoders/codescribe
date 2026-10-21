@@ -1248,6 +1248,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var mcpServers: [CsMcpServer] = []
   @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
   @Published private(set) var mcpTestPending: Set<String> = []
+  private var mcpTestGenerations: [String: UUID] = [:]
   @Published private(set) var toolCapabilities: [CsToolCapability] = []
   /// True while the tool catalog is being discovered. Discovery spawns every
   /// configured MCP server and waits for its `tools/list`, so the Tools tab
@@ -2072,6 +2073,30 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Edit the existing entry in place; the store preserves env and unknown
+  /// fields. An empty token retains the existing Keychain reference.
+  func updateMcpServer(
+    _ server: CsMcpServer, command: String, args: [String],
+    endpoint: String, token: String
+  ) -> MCPAddFailure? {
+    guard let mcpAdmin else { return nil }
+    do {
+      try mcpAdmin.updateServer(
+        name: server.name,
+        input: CsMcpServerInput(
+          name: server.name, command: command, args: args, enabled: server.enabled,
+          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token))
+      invalidateMcpTest(server.name)
+      reloadMcpServers()
+      refreshAgentStatus()
+      return nil
+    } catch {
+      let failure = MCPAddFailure(error)
+      lastError = failure.detail
+      return failure
+    }
+  }
+
   /// The server the Remove button asked about. While it is set the alert is
   /// up and nothing has been deleted: Cancel, Escape or closing the alert
   /// clears it, only the alert's destructive button removes.
@@ -2106,7 +2131,7 @@ final class SettingsViewModel: ObservableObject {
           endpoint: server.endpoint, authRef: server.authRef, token: ""
         )
       )
-      mcpTestResults[server.name] = nil
+      invalidateMcpTest(server.name)
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -2119,7 +2144,7 @@ final class SettingsViewModel: ObservableObject {
     guard let mcpAdmin else { return }
     do {
       try mcpAdmin.removeServer(name: name)
-      mcpTestResults[name] = nil
+      invalidateMcpTest(name)
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -2146,11 +2171,20 @@ final class SettingsViewModel: ObservableObject {
     guard let mcpAdmin else { return }
     guard !mcpTestPending.contains(name) else { return }
     mcpTestPending.insert(name)
+    let generation = UUID()
+    mcpTestGenerations[name] = generation
     Task {
       let result = await mcpAdmin.testServer(name)
+      guard mcpTestGenerations[name] == generation else { return }
       mcpTestPending.remove(name)
       mcpTestResults[name] = result
     }
+  }
+
+  private func invalidateMcpTest(_ name: String) {
+    mcpTestGenerations[name] = UUID()
+    mcpTestPending.remove(name)
+    mcpTestResults[name] = nil
   }
 
   func select(_ target: SettingsSection) {
