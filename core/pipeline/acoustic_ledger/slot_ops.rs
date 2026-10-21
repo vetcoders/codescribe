@@ -2273,6 +2273,33 @@ impl AcousticLedger {
         Ok(sources)
     }
 
+    /// A decode of one word's range that returns, under another spelling, the
+    /// word held right next to it has heard that neighbour again. Takes
+    /// 0d3ede90 (`first.` → `że` beside `że`) and 0428dd93 (`sidebar,` → `o`
+    /// beside `o`) turned the neighbour into a repeat this way.
+    fn successor_repeats_a_neighbour(
+        &self,
+        source: &WordSlot,
+        successor: &WordSlot,
+        retired: &[WordSlot],
+    ) -> bool {
+        let token = normalize_word_token(&successor.text);
+        if token.is_empty() || token == normalize_word_token(&source.text) {
+            return false;
+        }
+        let held = self.slots_of(&source.observation.occurrence).unwrap_or(&[]);
+        let Some(index) = held.iter().position(|slot| slot == source) else {
+            return false;
+        };
+        [index.checked_sub(1), index.checked_add(1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|neighbour| held.get(neighbour))
+            .any(|neighbour| {
+                !retired.contains(neighbour) && normalize_word_token(&neighbour.text) == token
+            })
+    }
+
     /// A replacement may retire a source's geometry only where words that
     /// stay in the document cover it, or where every acoustic observer that
     /// measured the uncovered stretch heard it quiet. A missing label is never
@@ -2344,7 +2371,9 @@ impl AcousticLedger {
         // is its continuation, and any speech its new edges leave is coverage
         // debt the seal accounts for, not a vanished word. A coarse group is
         // not one word; a single-token label is, by the same whitespace cue
-        // `coarse_word_source` reads.
+        // `coarse_word_source` reads. A successor spelled like the word held
+        // right next to the source is that neighbour decoded again, not a
+        // continuation: the source's speech then has no word of its own.
         let mut overlapping = outputs.iter().filter(|output| {
             output.observation.occurrence.same_capture(owner)
                 && output.sample_end > source.sample_start
@@ -2355,6 +2384,7 @@ impl AcousticLedger {
         if let (Some(successor), None) = (overlapping.next(), overlapping.next())
             && one_word
             && self.same_anchored_word(source, successor)
+            && !self.successor_repeats_a_neighbour(source, successor, retired)
         {
             return true;
         }
