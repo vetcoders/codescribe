@@ -814,12 +814,14 @@ impl AcousticLedger {
         }
         let mut prior = self.slots_of(owner).unwrap_or(&[]).to_vec();
         let boundary_tolerance = self.capture_rate_hz.map(u64::from);
+        let decodes = pins
+            .iter()
+            .filter_map(|pin| pin.decode_sample_start.zip(pin.decode_sample_end))
+            .collect::<Vec<_>>();
+        let neighbour_words = self.adjacent_boundary_words(owner, &decodes);
+        // Sequence correspondence needs more than one pin of context.
         if pins.len() > 1 {
-            let decodes = pins
-                .iter()
-                .filter_map(|pin| pin.decode_sample_start.zip(pin.decode_sample_end))
-                .collect::<Vec<_>>();
-            prior.extend(self.adjacent_boundary_words(owner, &decodes));
+            prior.extend(neighbour_words.iter().cloned());
             prior.sort_by_key(|source| (source.sample_start, source.sample_end));
         }
         let anchored_prior = prior
@@ -976,15 +978,16 @@ impl AcousticLedger {
         // whatever its spelling. Take dcc26684: a recovery window declared
         // "długoscią" over 14.12-15.60 s, routed by its midpoint to the owner
         // ending at 14.88 s, while the next owner held "długością" over the
-        // same speech; the document read "długoscią długością".
+        // same speech; the document read "długoscią długością". The evidence
+        // is shared PCM, not sequence, so it holds for a lone pin too: edge
+        // deferral had left that recovery callback with "długoscią" alone.
         for index in 0..pins.len() {
             if correspondence[index].is_some() {
                 continue;
             }
             let (pin_start, pin_end) = pins[index].declared();
-            let neighbour = anchored_prior.iter().copied().find(|held| {
-                &held.observation.occurrence != owner
-                    && held.producer == observation.producer
+            let neighbour = neighbour_words.iter().find(|held| {
+                held.producer == observation.producer
                     && !correspondence.contains(&Some(*held))
                     && self.original_anchor_word_range(held).is_some_and(|range| {
                         range
