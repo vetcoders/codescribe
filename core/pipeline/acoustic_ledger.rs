@@ -2976,6 +2976,49 @@ impl AcousticLedger {
         (Some(kept), kept_operations, Some(label))
     }
 
+    /// D5 for part of a batch. When the batch cannot retire some held
+    /// sources, it retires none: every operation, and every proposed word that
+    /// replaces or overlaps a held word, is withheld and kept as one
+    /// alternative over the blocked sources. A word over speech no held word
+    /// labels still lands (field shape W27 of take fc40155d): appending it
+    /// replaces nothing. `None` when the batch proposes no such word.
+    fn withhold_unproven_retirements(
+        &mut self,
+        observation: &ObservationIdentity,
+        slots: Option<&[WordSlot]>,
+        operations: &[SlotOperationReceipt],
+        blocked: &[WordSlot],
+    ) -> Option<(Vec<WordSlot>, String)> {
+        let proposed = slots?;
+        let held = self
+            .slots_of(&observation.occurrence)
+            .unwrap_or(&[])
+            .to_vec();
+        let gap_word = |word: &WordSlot| {
+            !operations
+                .iter()
+                .any(|operation| operation.outputs.contains(word))
+                && !held.iter().any(|source| {
+                    source.sample_start < word.sample_end && word.sample_start < source.sample_end
+                })
+        };
+        let (kept, withheld): (Vec<WordSlot>, Vec<WordSlot>) = proposed
+            .iter()
+            .cloned()
+            .partition(|word| held.contains(word) || gap_word(word));
+        if kept.iter().all(|word| held.contains(word)) {
+            return None;
+        }
+        self.retain_slot_alternative(
+            observation,
+            &compose_label(&withheld),
+            blocked.to_vec(),
+            "absence_requires_acoustic_evidence",
+        );
+        let label = compose_label(&kept);
+        Some((kept, label))
+    }
+
     fn admit_slot_batch(
         &mut self,
         observation: &ObservationIdentity,
@@ -3073,7 +3116,19 @@ impl AcousticLedger {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        if !blocked_sources.is_empty() {
+        // D5: a source the batch cannot retire keeps its words. The rest of
+        // the batch still applies: proven retirements, and words over speech
+        // no held word labels (field shape W27 of take fc40155d).
+        let unproven = if blocked_sources.is_empty() {
+            None
+        } else if let Some(kept) = self.withhold_unproven_retirements(
+            observation,
+            slots.as_deref(),
+            operations,
+            &blocked_sources,
+        ) {
+            Some(kept)
+        } else {
             let held_by = self
                 .committed
                 .get(&observation.occurrence)
@@ -3092,7 +3147,11 @@ impl AcousticLedger {
             };
             self.record_layer_decision(observation, text, &decision, None);
             return decision;
-        }
+        };
+        let (slots, operations, text) = match unproven.as_ref() {
+            Some((kept, label)) => (Some(kept.clone()), &[][..], label.as_str()),
+            None => (slots, operations, text),
+        };
         self.offered_observations += 1;
         let has_pinned_sources = self
             .slots_of(&observation.occurrence)
