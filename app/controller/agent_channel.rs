@@ -421,6 +421,10 @@ pub struct ChannelHudState {
     /// Whether that live follower's lease names a vc-frame pane, so a focus
     /// request can land. `None` = no live follower or no claim.
     pub frame_detected: Option<bool>,
+    /// Whether that live follower's lease names an iTerm2 or Terminal.app
+    /// tab the follower can bring to front. `None` = no live follower or no
+    /// claim.
+    pub terminal_detected: Option<bool>,
     /// When the live follower's oldest unacknowledged delivery was emitted.
     /// A heartbeat proves the reader process, not the conversation behind
     /// it; a backlog that only grows is the overlay's "alive but not
@@ -1741,6 +1745,7 @@ impl RecordingController {
                     provider_session_id: open.provider_session_id.clone(),
                     follower_alive: None,
                     frame_detected: None,
+                    terminal_detected: None,
                     unread_since: None,
                 })
             })
@@ -1768,7 +1773,7 @@ impl RecordingController {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
             .unwrap_or(0.0);
-        let live = codescribe_core::stt::active_names::live_follower_frames_at(
+        let live = codescribe_core::stt::active_names::live_follower_hosts_at(
             bridge_home,
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
@@ -1791,7 +1796,14 @@ impl RecordingController {
                 return None;
             };
             live.get(&(provider.to_lowercase(), session.to_string()))
-                .copied()
+                .map(|hosts| hosts.frame_pane)
+        };
+        let terminal = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return None;
+            };
+            live.get(&(provider.to_lowercase(), session.to_string()))
+                .map(|hosts| hosts.terminal_tab)
         };
         let unread_since = |provider: &Option<String>,
                             session: &Option<String>|
@@ -1807,6 +1819,7 @@ impl RecordingController {
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
             state.frame_detected = framed(&state.provider, &state.provider_session_id);
+            state.terminal_detected = terminal(&state.provider, &state.provider_session_id);
             state.unread_since = unread_since(&state.provider, &state.provider_session_id);
         }
         if !states.iter().any(|state| state.channel == "0") {
@@ -1825,6 +1838,7 @@ impl RecordingController {
                 provider_session_id: None,
                 follower_alive: None,
                 frame_detected: None,
+                terminal_detected: None,
                 unread_since: None,
             });
         }
@@ -1855,6 +1869,7 @@ impl RecordingController {
                 utterance_silence_ms: 0,
                 follower_alive: alive(&provider, &session),
                 frame_detected: framed(&provider, &session),
+                terminal_detected: terminal(&provider, &session),
                 unread_since: unread_since(&provider, &session),
                 provider,
                 provider_session_id: session,
