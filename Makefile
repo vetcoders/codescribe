@@ -263,6 +263,7 @@ install-app: install-voice-lab
 	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
+	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
 
 # ============================================================================
 # Run
