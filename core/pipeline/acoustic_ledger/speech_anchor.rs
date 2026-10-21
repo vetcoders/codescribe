@@ -977,6 +977,36 @@ impl AcousticLedger {
                 }
             }
         }
+        // One producer cannot hold two words on the same PCM. A pin whose
+        // declared range covers most of the original range of a word the same
+        // producer holds in an adjacent owner is that word decoded again,
+        // whatever its spelling. Take dcc26684: a recovery window declared
+        // "długoscią" over 14.12-15.60 s, routed by its midpoint to the owner
+        // ending at 14.88 s, while the next owner held "długością" over the
+        // same speech; the document read "długoscią długością".
+        for index in 0..pins.len() {
+            if correspondence[index].is_some() {
+                continue;
+            }
+            let (pin_start, pin_end) = pins[index].declared();
+            let neighbour = anchored_prior.iter().copied().find(|held| {
+                &held.observation.occurrence != owner
+                    && held.producer == observation.producer
+                    && !correspondence.contains(&Some(*held))
+                    && self.original_anchor_word_range(held).is_some_and(|range| {
+                        range
+                            .sample_end
+                            .min(pin_end)
+                            .saturating_sub(range.sample_start.max(pin_start))
+                            .saturating_mul(2)
+                            >= range.sample_end.saturating_sub(range.sample_start)
+                    })
+            });
+            if neighbour.is_some() {
+                correspondence[index] = neighbour;
+                sequence = false;
+            }
+        }
         // A partial Apple phrase has no independently timed unmatched words.
         // Retain it whole as phrase evidence instead of planting its unmatched
         // spelling on an arbitrary later anchor. Matching complete sequences
