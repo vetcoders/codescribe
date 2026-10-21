@@ -52,7 +52,10 @@ by hand.
 
 Worktrees share one Cargo `target` directory in the main checkout: `make` sets
 `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR` from the common Git directory.
-When calling Cargo directly, point both at that same absolute path.
+When calling Cargo directly, point both at that same absolute path and run
+`scripts/target-source-guard.sh "$CARGO_TARGET_DIR"` first: workspace crates
+share artifact names across worktrees, and without the guard Cargo can reuse
+the build of the worktree that compiled last instead of compiling yours.
 
 Swift targets build without warning suppression; suppressors are not allowed.
 
