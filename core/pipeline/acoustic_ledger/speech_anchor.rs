@@ -337,10 +337,15 @@ impl AcousticLedger {
     }
 
     /// An owner fence partitions delivery, not the capture's speech. The
-    /// adjacent owners' measured words within one second of this owner's
-    /// edges, whose original range lies inside one of the actual `decodes`,
-    /// join this owner's ordered correspondence problem. They supply context
-    /// only: an admission may not mutate their owner.
+    /// measured words of every owner disjoint from this one within one
+    /// second of its edges, whose original range lies inside one of the
+    /// actual `decodes`, join this owner's ordered correspondence problem.
+    /// They supply context only: an admission may not mutate their owner.
+    ///
+    /// The nearest map entry is not the neighbour: live windows leave short
+    /// occurrences that overlap this owner and sort between it and the next
+    /// one (dcc26684: 7.08-7.28 s after the owner 6.50-14.88 s, 5.70-7.30 s
+    /// before it), and taking only that entry saw no neighbour at all.
     pub(super) fn adjacent_boundary_words(
         &self,
         owner: &OccurrenceIdentity,
@@ -349,27 +354,15 @@ impl AcousticLedger {
         let Some(tolerance) = self.capture_rate_hz.map(u64::from) else {
             return Vec::new();
         };
-        let adjacent = self
-            .committed
-            .range(..owner.clone())
-            .next_back()
-            .into_iter()
-            .chain(
-                self.committed
-                    .range((
-                        std::ops::Bound::Excluded(owner.clone()),
-                        std::ops::Bound::Unbounded,
-                    ))
-                    .next(),
-            );
-        let mut words = Vec::new();
-        for (neighbor, held) in adjacent {
-            if !neighbor.same_capture(owner)
-                || !(neighbor.sample_end <= owner.sample_start
+        let adjacent = self.committed.iter().filter(|(neighbor, _)| {
+            neighbor.same_capture(owner)
+                && (neighbor.sample_end <= owner.sample_start
                     || owner.sample_end <= neighbor.sample_start)
-            {
-                continue;
-            }
+                && neighbor.sample_end.saturating_add(tolerance) >= owner.sample_start
+                && neighbor.sample_start <= owner.sample_end.saturating_add(tolerance)
+        });
+        let mut words = Vec::new();
+        for (_, held) in adjacent {
             words.extend(
                 held.slots
                     .iter()

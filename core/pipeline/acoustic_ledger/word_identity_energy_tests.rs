@@ -1587,6 +1587,32 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
             )
             .grants_mutation()
     );
+    // Live windows leave short occurrences inside the owner; in key order
+    // one sorts between this owner and the next (7.08-7.28 s in the take).
+    let live = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 420_000, 440_000);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: live.clone(),
+                    duration_ms: (live.sample_end - live.sample_start) as f64 / 48.0,
+                    energy_integral: (live.sample_end - live.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(live.sample_start),
+                    vad_close_sample: Some(live.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let live_word = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, live.clone());
+    ledger.admit_word_slots(
+        &live_word,
+        &decoded(&[("coś", 420_000, 440_000)], (400_000, 460_000)),
+    );
+    assert!(ledger.committed.contains_key(&live));
     let right_before = ledger.slots_of(&right).unwrap().to_vec();
     let recovery = ObservationIdentity::new(ObservationProducer::Whisper, 1, 12, left.clone());
     // The recorded recovery returned after the fence settled; the live-edge
