@@ -1245,6 +1245,10 @@ final class OverlayState {
   /// reaches the overlay, so the map re-reads it when it appears and when the
   /// pointer enters it, before any hint is shown.
   private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
+  /// The window owner refits compact to the channel map (see
+  /// `noteChannelMapLayout`).
+  @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
+  @ObservationIgnored private var channelMapLayoutKey: [String] = []
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
     CodescribeConfig().loadSettings().channelModifier
@@ -1480,6 +1484,7 @@ final class OverlayState {
       }
       agentArchiveRevision &+= 1
       archivedAgentOwners.insert(owner)
+      noteChannelMapLayout()
       onChannelPresentationChanged?()
     } catch {
       agentArchiveError = String(
@@ -2346,6 +2351,7 @@ final class OverlayState {
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
+      noteChannelMapLayout()
       onChannelPresentationChanged?()
     }
     applyChannelDelivery(snapshot.deliveries)
@@ -2788,6 +2794,24 @@ final class OverlayState {
     channelObservationTask = nil
   }
 
+  /// The compact channel map as the window owner sizes it: the projection
+  /// the strip renders, without click targets or unread marks, which do not
+  /// change a chip's width.
+  var channelMapLayoutModel: OverlayChannelMapModel {
+    OverlayChannelMapModel(
+      channels: visibleChannelRows, hudStates: channelHudStates,
+      broadcastName: String(localized: "All"), selectableDigits: [], unreadDigits: [])
+  }
+
+  /// Reports a change of the map's channels or names, never a capture that
+  /// opens or closes, so compact's width follows the roster and not the chord.
+  private func noteChannelMapLayout() {
+    let key = channelMapLayoutModel.chips.map { $0.digit + "\u{1F}" + $0.name }
+    guard key != channelMapLayoutKey else { return }
+    channelMapLayoutKey = key
+    onChannelMapLayoutChanged?()
+  }
+
   func refreshAgentChannelModifier() {
     let modifier = OverlayChannelChordModifier(setting: agentChannelModifierSetting())
     if modifier != agentChannelModifier { agentChannelModifier = modifier }
@@ -2832,6 +2856,7 @@ final class OverlayState {
     hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
+    noteChannelMapLayout()
     if wasCapturingAudio != audioCaptureActive {
       levelMeter.reset()
       hasMeasuredAudioLevel = false
@@ -2915,6 +2940,7 @@ final class OverlayState {
     let wasOpen = hasOpenChannel
     channelDelivery = snapshot
     channelStatusUnavailable = false
+    noteChannelMapLayout()
     if hasOpenChannel {
       cancelAutoHide()
     } else if wasOpen && terminal {

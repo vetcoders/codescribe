@@ -227,6 +227,13 @@ extension OverlayChannelPill {
     glyphWidth * scale + gap * scale + textWidth(arrow, size: nameSize * scale) + gap * scale
   }
 
+  /// The room `MIC →` adds to a chip. The window owner reserves it in
+  /// compact's natural width, so opening a channel keeps the chips.
+  @MainActor
+  static func microphoneRouteWidth(scale: CGFloat) -> CGFloat {
+    routeWidth(gap: chipGap, scale: scale)
+  }
+
   /// A chip's width: padding, `MIC →` while recording, the circled digit and
   /// the name.
   @MainActor
