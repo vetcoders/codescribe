@@ -1732,6 +1732,11 @@ impl AcousticLedger {
             }
         }
         if !voice_replays.is_empty() && incoming.is_empty() {
+            // A window that only repeats held words still heard its whole
+            // decode range, so its return pays the text debt it covered
+            // (decision of Maciej, 2026-10-21) like any complete return. A
+            // second delivery of the same observation stopped at `answered`.
+            self.record_word_decode_bounds(observation, words);
             let candidate = original_words
                 .iter()
                 .map(|pin| pin.text.as_str())

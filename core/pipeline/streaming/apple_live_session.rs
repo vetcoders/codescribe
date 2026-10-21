@@ -25262,8 +25262,11 @@ mod relay_l1_overlap_admission_tests {
     /// 0.2 RMS and fixture silence is digital zero, so the floor reads the
     /// fixture's own PCM the way a calibrated take reads the room.
     const EXISTENCE_FLOOR_RMS: f32 = 0.01;
-    /// Room tone between spoken words: measured, and below the floor.
-    const ROOM_TONE_RMS: f32 = 0.004;
+    /// Room tone between spoken words, about -86 dBFS: under the existence
+    /// floor and the active-speech floor and not digital zero, so every
+    /// observer measures it quiet. A voice gate's exact zeros measure nothing
+    /// (204c8e03).
+    const ROOM_TONE_RMS: f32 = 5.0e-5;
 
     struct Lane {
         state: AppleSealState,
@@ -31136,8 +31139,9 @@ mod relay_l1_overlap_admission_tests {
     fn private_complete_window_set_keeps_admitted_word_and_seals_quiet_rest() {
         let session = "seam-stop-slots";
         let mut lane = open(session);
-        // Only the represented word is voiced; the capture proves the rest silent.
-        let mut pcm = vec![0.0_f32; LONG_SAMPLES as usize];
+        // Only the represented word is voiced; the capture proves the rest
+        // silent with measured room tone, not a voice gate's exact zeros.
+        let mut pcm = vec![ROOM_TONE_RMS; LONG_SAMPLES as usize];
         pcm[60_000..80_000].fill(0.2);
         lane.state.audio.push(&pcm);
         record_energy(
