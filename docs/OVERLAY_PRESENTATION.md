@@ -68,7 +68,10 @@ with the map popover). `OverlayChannelPill` is the single owner of the
 numbered pill visual: the rail pill, the map's chips and its counter render the
 digit through it, from immutable display values and one action. It receives no
 `OverlayState`, conversation or command. The map's collapse threshold is
-measured from the same text metrics the pill draws with.
+measured from the same text metrics the pill draws with, and the window owner
+sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
+receives `DictationOverlayWindow.midiNaturalWidth` whenever
+`OverlayState.onChannelMapLayoutChanged` reports new channels or names.
 
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A folded rail pill already selects that conversation,

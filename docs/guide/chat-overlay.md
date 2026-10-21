@@ -20,7 +20,12 @@ expanding; moving the window changes that pin.
 
 Mini is a fixed strip. Compact supports horizontal resizing. Expanded supports
 edge and corner resizing. The minimum visible sizes are 200 × 46, 410 × 46 and
-320 × 260 points respectively. During dragging the current form keeps its
+320 × 260 points respectively. Compact's own width follows its channel map: with
+agents on the bus it opens wide enough for every chip, and it grows or shrinks
+at its upper-right corner when a channel is added or archived. Narrow it by
+hand and it keeps your width for the rest of the session, with the chips folded
+into the counter; widen it and it keeps your width, growing only when the map
+needs more. During dragging the current form keeps its
 readable floor. A sufficiently small requested drag can select a compact form
 when released; it does not squeeze an expanded transcript into a tiny frame
 while the gesture is still in progress.
@@ -70,9 +75,10 @@ next to **0 · All** for a broadcast. Selecting a row only changes what you view
 the microphone control changes whom you speak to. The named agent must be
 attached with its own provider and session identity.
 
-Clicking the conversation's name pill, including **0 · All**, opens the
-**Agents** sidebar; the conversation stays selected behind it. Rows you can open
-in the sidebar show a faint highlight under the pointer.
+The conversation's name pill brings that agent's Frame pane or terminal to the
+front when Codescribe knows where it runs; to change conversations, use the
+channel menu or, in the compact form, the channel chips. Rows you can open in the
+sidebar show a faint highlight under the pointer.
 
 An agent row in the **Agents** list has a button that brings that agent's own
 terminal to the front: its vc-frame pane when it runs in Frame, otherwise its
@@ -117,8 +123,9 @@ When the strip is too narrow for every chip, the chips collapse into one
 counter: `4 ▾`, the number of mapped channels with channel 0 included, or
 `MIC → 5` while a channel records. Pointing at the counter lists the whole map;
 clicking it opens the **Agents** list. If even the counter does not fit, the map
-steps aside so the header buttons and the fold control keep their place; widen
-the compact strip to bring it back. The strip stays 46 points tall, and larger
+steps aside so the header buttons and the fold control keep their place. By
+default the strip is as wide as its chips need, so the counter appears only
+after you narrow it. The strip stays 46 points tall, and larger
 text grows the chips only as far as that height allows.
 
 ## Type a message and attach clipboard content
