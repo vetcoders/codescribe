@@ -28560,8 +28560,12 @@ mod relay_l1_overlap_admission_tests {
         );
         lane.state
             .return_outstanding_whisper_without_label(&lane.tx);
+        // D5 (ledger speech truth brief): absence is not evidence. The take is
+        // speech under both Apple slots, and no decoded word covers 4 000..17 000
+        // under the first one, so the Apple words stay (the measured form of
+        // this geometry is three_real_frames_preserve_independent_pins_...).
         let text = held_text(&lane, &owner).unwrap_or_default();
-        assert_eq!(text, "na Case Foundation.", "{mode:?}");
+        assert_eq!(text, "usunięcie tego jednego Case", "{mode:?}");
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
         assert!(
             ledger
@@ -29274,6 +29278,25 @@ mod relay_l1_overlap_admission_tests {
             12.5,
         );
         let ledger = lane.state.acoustic_ledger.lock().unwrap();
+        if leading_speech {
+            // D5 (ledger speech truth brief): absence is not evidence. The
+            // measured speech at 10 000..12 000 lies under the coarse Apple
+            // source and under no decoded word, so the source keeps its words
+            // and the decoded reading waits as an alternative over it.
+            assert_eq!(ledger.text_of(&owner), Some("wierszu kiedyś dalej"));
+            assert_eq!(
+                ledger.slots_of(&owner).unwrap(),
+                [source.clone(), unrelated.clone()]
+            );
+            assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                alternative.observation.producer == ObservationProducer::Whisper
+                    && alternative.sources == [source.clone()]
+                    && alternative.reason == "absence_requires_acoustic_evidence"
+            }));
+            assert!(ledger.word_deletions().is_empty());
+            assert_eq!(ledger.conservation().residue(), 0);
+            return;
+        }
         assert_eq!(
             ledger.text_of(&owner),
             Some("wierszyk był sobie kiedyś dalej")
@@ -29579,10 +29602,14 @@ mod relay_l1_overlap_admission_tests {
                 lane.state.complete_whisper_window(&lane.tx, returned, 15.0);
             }
             let ledger = lane.state.acoustic_ledger.lock().unwrap();
+            // D5 (ledger speech truth brief): absence is not evidence. In the
+            // coarse case the measured voice runs 4 000..46 000 and no decoded
+            // word covers 4 000..17 000 under the Apple source, so the Apple
+            // words stay and the decoded reading waits as an alternative.
             let expected = if partitioned {
                 "zima usza szarości dalej"
             } else {
-                "na tym naprawdę jesteśmy z Technicznym Foundation."
+                "usunięcie tego jednego Case"
             };
             assert_eq!(
                 ledger.text_of(&owner),
@@ -29590,11 +29617,14 @@ mod relay_l1_overlap_admission_tests {
                 "partitioned={partitioned}; choices={:?}",
                 ledger.word_choices()
             );
-            let changed = if partitioned {
-                &sources[2..3]
-            } else {
-                &sources[..]
-            };
+            if !partitioned {
+                assert_eq!(ledger.slots_of(&owner).unwrap(), sources);
+                assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.observation.producer == ObservationProducer::Whisper
+                        && alternative.reason == "absence_requires_acoustic_evidence"
+                }));
+            }
+            let changed = if partitioned { &sources[2..3] } else { &[][..] };
             for source in changed {
                 let operations = ledger
                     .slot_operations()
@@ -31520,59 +31550,28 @@ mod relay_l1_overlap_admission_tests {
                 assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
                 assert_eq!(ledger.group_speech_coverages().len(), 1, "{warnings}");
             } else {
-                // Apple is a coarse hypothesis, never a lexical floor. A
-                // complete Word decode may account for its entire source scope;
-                // a partial decode must carry the same source as explicit debt.
-                assert_eq!(ledger.text_of(&occurrence), Some("tak poza"), "{warnings}");
+                // D5 (ledger speech truth brief): absence is not evidence. The
+                // speech at 160 000..188 000 lies under the coarse Apple group
+                // and under no decoded word, so the group keeps its words and
+                // the decoded reading waits as an alternative over it.
+                assert_eq!(
+                    ledger.text_of(&occurrence),
+                    Some("apple floor"),
+                    "{warnings}"
+                );
+                assert_eq!(ledger.slots_of(&occurrence).unwrap(), sources_before);
                 assert!(ledger.group_speech_coverages().is_empty());
+                assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.reason == "absence_requires_acoustic_evidence"
+                        && alternative.sources == sources_before
+                }));
                 let range = &covering.provider_request.identity.range;
                 let full_source_decoded = range.sample_start <= occurrence.sample_start
                     && range.sample_end >= occurrence.sample_end;
-                eprintln!(
-                    "L41_SOURCE_SCOPE window={}..{} owner={}..{} full={full_source_decoded} pending={} sealed={}",
-                    range.sample_start,
-                    range.sample_end,
-                    occurrence.sample_start,
-                    occurrence.sample_end,
-                    ledger.text_recovery_pending(&occurrence),
-                    ledger.is_sealed(&occurrence)
-                );
                 assert_eq!(
                     ledger.text_recovery_pending(&occurrence),
                     !full_source_decoded
                 );
-                // Later deterministic word receipts may follow the acoustic
-                // split. Find the actual source-accounting operation and check
-                // each final word's physical provenance rather than requiring
-                // the last operation to have the original group as parent.
-                let operation = ledger
-                    .slot_operations()
-                    .iter()
-                    .find(|operation| operation.sources == sources_before)
-                    .expect("original source accounting");
-                assert!(operation.source_ranges.contains(&occurrence));
-                assert!(operation.outputs.iter().any(|output| output.text == "tak"));
-                let slots = ledger.slots_of(&occurrence).unwrap();
-                assert_eq!(
-                    slots
-                        .iter()
-                        .map(|slot| slot.text.as_str())
-                        .collect::<Vec<_>>(),
-                    vec!["tak", "poza"]
-                );
-                for output in slots {
-                    let provenance = ledger.slot_source_ranges(output);
-                    assert!(
-                        provenance
-                            .iter()
-                            .any(|source| source.same_capture(&occurrence)
-                                && range.sample_start <= source.sample_start
-                                && source.sample_end <= range.sample_end
-                                && source.sample_start <= output.sample_start
-                                && source.sample_end >= output.sample_end),
-                        "{output:?}: {provenance:?}"
-                    );
-                }
                 if !full_source_decoded {
                     assert!(ledger.slot_alternatives().iter().any(
                         |alternative| alternative.reason == "partial_group_speech_pending"

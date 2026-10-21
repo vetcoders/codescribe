@@ -2579,16 +2579,18 @@ mod tests {
             "group-split" => {
                 ledger.admit(&apple, "na prawdę");
                 // Decode scope proves the coarse owner was examined; word clocks
-                // stay inside that scope and retain their own physical gap.
+                // stay inside that scope. The capture is speech throughout, so
+                // the PCM between and around the words is speech no output word
+                // covers: D5 (absence is not evidence) keeps the coarse slot and
+                // the scoped reading waits as an alternative.
                 let mut scoped_children = children.clone();
                 scoped_children[0].sample_start = 2_000;
                 scoped_children[0].sample_end = 6_000;
                 scoped_children[1].sample_start = 8_000;
                 scoped_children[1].sample_end = 12_000;
                 let scoped_children = scoped_children.map(|pin| pin.with_decode_window(0, 16_000));
+                let source = ledger.slots_of(&owner).unwrap().to_vec();
                 let receipt = ledger.admit_word_slots(&whisper, &scoped_children);
-                // The lexical projection is unchanged; the accepted slot
-                // operation still records its new word geometry.
                 assert_eq!(
                     receipt,
                     MutationReceipt::Preserve {
@@ -2597,23 +2599,29 @@ mod tests {
                     }
                 );
                 assert_eq!(ledger.text_of(&owner), Some("na prawdę"));
-                let operation = ledger.slot_operations().last().unwrap();
-                assert_eq!(operation.kind, SlotOperationKind::Split);
-                assert_eq!(operation.source_ranges[0], owner);
-                assert_eq!(
-                    operation
-                        .outputs
+                assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+                assert!(
+                    !ledger
+                        .slot_operations()
                         .iter()
-                        .map(|slot| (slot.sample_start, slot.sample_end))
-                        .collect::<Vec<_>>(),
-                    [(2_000, 6_000), (8_000, 12_000)]
+                        .any(|operation| operation.kind == SlotOperationKind::Split)
                 );
+                assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.observation == whisper
+                        && alternative.sources == source
+                        && alternative.reason == "absence_requires_acoustic_evidence"
+                }));
             }
             "explicit-split" => {
                 ledger.admit_word_slots(&apple, &[WordPin::new(0, 16_000, "na prawdę")]);
                 let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+                // The capture is speech throughout, so the split's words abut:
+                // D5 lets a split retire its source only over speech its words
+                // account for.
+                let mut abutting = children.clone();
+                abutting[1].sample_start = 4_000;
                 ledger
-                    .split_word_slot(&whisper, &target, &children)
+                    .split_word_slot(&whisper, &target, &abutting)
                     .unwrap();
                 assert_eq!(
                     ledger.slot_operations().last().unwrap().kind,
