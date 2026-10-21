@@ -527,6 +527,7 @@ struct DictationOverlayView: View {
                 onFocusAgentPanel: conversation.owner.flatMap { owner in
                   state.canFocusAgentPanel(owner) ? { state.focusAgentPanel(owner) } : nil
                 },
+                focusAgentPanelHint: conversation.owner.flatMap { state.agentPanelFocusHelp($0) },
                 onOpenOwnerConversation: { state.openConversation(for: $0) },
                 hidesNavigation: columnShown,
                 onComposerEditorActive: { state.noteComposerEditorActive($0) },
@@ -1216,8 +1217,8 @@ struct DictationOverlayView: View {
     view.archiveError = state.agentArchiveError
     view.panelFocusStates = state.agentPanelFocusStates
     view.panelFocusAvailable = state.agentPanelFocusAvailable
-    view.onFocusAgentPanel =
-      state.agentPanelFocusAvailable ? { state.focusAgentPanel($0) } : nil
+    // The view resolves the destination per row; `vc-frame` gates only Frame.
+    view.onFocusAgentPanel = { state.focusAgentPanel($0) }
     view.gestureFocusID = state.agentGestureFocusID
     view.onGestureHover = { state.hoverAgentGestureTarget($0) }
     return view

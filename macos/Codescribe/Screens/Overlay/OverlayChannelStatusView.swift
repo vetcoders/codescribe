@@ -85,6 +85,9 @@ struct OverlayChannelHudProjection: Equatable {
   /// Whether the live follower's lease names a vc-frame pane. False means a
   /// focus request has nowhere to land; nil means no claim.
   var frameDetected: Bool? = nil
+  /// Whether the live follower's lease names an iTerm2 or Terminal.app tab
+  /// the follower can bring to front; nil means no claim.
+  var terminalDetected: Bool? = nil
   /// When the live follower's oldest unacknowledged delivery was emitted.
   /// The second liveness layer: a reader process can heartbeat while the
   /// conversation behind it reads nothing (Founder, 2026-10-14).
@@ -1115,9 +1118,16 @@ struct OverlayChannelStatusView: View {
     currentConversations.first { $0.channel == channel.channel }
   }
 
+  /// Where this row's focus button lands: the Frame pane when one is known
+  /// and `vc-frame` can reach it, otherwise the agent's terminal tab.
+  func panelFocusTarget(for channel: OverlayChannelDelivery) -> OverlayAgentPanelFocusTarget? {
+    OverlayAgentPanelFocusTarget.resolve(
+      hudStates[channel.channel], frameFocusAvailable: panelFocusAvailable)
+  }
+
   func showsPanelFocusButton(for channel: OverlayChannelDelivery) -> Bool {
-    panelFocusAvailable && archiveCandidates[channel.channel] != nil && onFocusAgentPanel != nil
-      && hudStates[channel.channel]?.frameDetected == true
+    archiveCandidates[channel.channel] != nil && onFocusAgentPanel != nil
+      && panelFocusTarget(for: channel) != nil
       && hudStates[channel.channel]?.followerAlive == true
   }
 
@@ -1127,7 +1137,7 @@ struct OverlayChannelStatusView: View {
       showsPanelFocusButton(for: channel),
       let owner = archiveCandidates[channel.channel],
       !hasDeadFollower(channel),
-      !hasNoFramePane(channel),
+      !hasNoTerminalTarget(channel),
       let onFocusAgentPanel
     {
       onFocusAgentPanel(owner)
@@ -1231,14 +1241,16 @@ struct OverlayChannelStatusView: View {
                     ProgressView()
                       .controlSize(.mini)
                   } else {
-                    Image(systemName: panelFocusSymbol(focusState))
+                    Image(
+                      systemName: panelFocusSymbol(
+                        focusState, target: panelFocusTarget(for: channel)))
                       .font(.system(size: 11, weight: .semibold))
                       .foregroundStyle(
                         focusState?.isSucceeded == true
                           ? palette.successStatus.color
                           : focusState?.isFailed == true
                             ? palette.errorStatus.color
-                            : hasNoFramePane(channel)
+                            : hasNoTerminalTarget(channel)
                               ? palette.mutedText.color : palette.primaryText.color
                       )
                   }
@@ -1249,7 +1261,7 @@ struct OverlayChannelStatusView: View {
               .csFocusOutline()
               .disabled(
                 focusState?.isRequesting == true || hasDeadFollower(channel)
-                  || hasNoFramePane(channel)
+                  || hasNoTerminalTarget(channel)
               )
               .modifier(
                 OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
@@ -1380,18 +1392,23 @@ struct OverlayChannelStatusView: View {
     }
   }
 
-  /// The live follower attached without vc-frame pane coordinates, so a focus
-  /// request has nowhere to land: the control rests greyed instead of failing
-  /// on click (Maciej, 2026-10-19: "przycisków kierowania do frame brak gdy
-  /// frame session nie wykryty u agenta - wyszarzony").
-  func hasNoFramePane(_ channel: OverlayChannelDelivery) -> Bool {
-    hudStates[channel.channel]?.frameDetected == false
+  /// The live follower named neither a vc-frame pane nor a terminal tab, so a
+  /// focus request has nowhere to land: the control rests greyed instead of
+  /// failing on click (Maciej, 2026-10-19: "przycisków kierowania do frame
+  /// brak gdy frame session nie wykryty u agenta - wyszarzony"). No claim at
+  /// all is not a refusal.
+  func hasNoTerminalTarget(_ channel: OverlayChannelDelivery) -> Bool {
+    guard let hud = hudStates[channel.channel] else { return false }
+    return hud.frameDetected != true && hud.terminalDetected != true
+      && (hud.frameDetected == false || hud.terminalDetected == false)
   }
 
-  func panelFocusSymbol(_ state: OverlayAgentPanelFocusState?) -> String {
+  func panelFocusSymbol(
+    _ state: OverlayAgentPanelFocusState?, target: OverlayAgentPanelFocusTarget? = nil
+  ) -> String {
     if state?.isSucceeded == true { return "checkmark" }
     if state?.isFailed == true { return "exclamationmark.triangle" }
-    return "macwindow.on.rectangle"
+    return (state?.target ?? target) == .terminal ? "terminal" : "macwindow.on.rectangle"
   }
 
   func panelFocusHelp(
@@ -1400,13 +1417,20 @@ struct OverlayChannelStatusView: View {
     if hasDeadFollower(channel) {
       return String(localized: "Agent is disconnected")
     }
-    if hasNoFramePane(channel) {
-      return String(localized: "Agent is not in a Frame pane")
+    if hasNoTerminalTarget(channel) {
+      // A follower older than terminal focus only ever claimed a pane.
+      return hudStates[channel.channel]?.terminalDetected == nil
+        ? String(
+          localized: "Agent is not in a Frame pane",
+          comment: "Frame focus help: the follower attached without vc-frame pane coordinates")
+        : String(
+          localized: "No terminal known for this agent",
+          comment: "Focus result: the follower knows neither a Frame pane nor a terminal tab")
     }
     if let state {
       return state.statusText
     }
-    return String(localized: "Focus agent panel in Frame")
+    return (panelFocusTarget(for: channel) ?? .frame).help
   }
 
   /// The "0 · All" row keeps the roster's model; its title carries the

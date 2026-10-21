@@ -58,7 +58,8 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     on state: OverlayState,
     owner: OverlayConversationOwner,
     panelFocusAvailable: Bool = true,
-    frameDetected: Bool? = true
+    frameDetected: Bool? = true,
+    terminalDetected: Bool? = nil
   ) {
     state.applyChannelRoster([
       CsChannelRosterState(
@@ -68,7 +69,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
         channel: owner.channel, audience: owner.name, provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: true, frameDetected: frameDetected,
-        unreadSinceUnixMs: nil),
+        terminalDetected: terminalDetected, unreadSinceUnixMs: nil),
     ])
     if panelFocusAvailable {
       state.setAgentPanelFocusAvailable(true)
@@ -124,7 +125,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       hudStates: state.channelHudStates)
     statusView.panelFocusAvailable = true
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == owner.channel })
-    XCTAssertTrue(statusView.hasNoFramePane(row))
+    XCTAssertTrue(statusView.hasNoTerminalTarget(row))
     XCTAssertEqual(
       statusView.panelFocusHelp(for: row, state: nil),
       String(localized: "Agent is not in a Frame pane"))
@@ -145,7 +146,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       hudStates: state.channelHudStates)
     statusView.panelFocusStates = [owner.channel: failed]
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == owner.channel })
-    XCTAssertFalse(statusView.hasNoFramePane(row))
+    XCTAssertFalse(statusView.hasNoTerminalTarget(row))
     XCTAssertEqual(statusView.rowStateText(for: row, receiptText: "Read"), "Read")
     XCTAssertEqual(statusView.panelFocusSymbol(failed), "exclamationmark.triangle")
     XCTAssertEqual(
@@ -861,5 +862,197 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     state.focusAgentPanel(owner)
     XCTAssertNil(state.agentPanelFocusStates[owner.channel])
     XCTAssertTrue(issuedRequests.isEmpty)
+  }
+
+  // MARK: Terminal tab focus (UI-69)
+
+  private func terminalStatusView(
+    owner: OverlayConversationOwner, row: OverlayChannelDelivery,
+    frameDetected: Bool?, terminalDetected: Bool?, panelFocusAvailable: Bool
+  ) -> OverlayChannelStatusView {
+    var view = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        row.channel: OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: owner.provider, providerSessionID: owner.providerSessionID,
+          frameDetected: frameDetected, terminalDetected: terminalDetected)
+      ])
+    view.archiveCandidates = [row.channel: owner]
+    view.panelFocusAvailable = panelFocusAvailable
+    view.onFocusAgentPanel = { _ in }
+    return view
+  }
+
+  func testTerminalHostedAgentShowsTheButtonWithoutVcFrame() throws {
+    let owner = makeOwner()
+    let row = OverlayChannelDelivery(
+      channel: owner.channel, agent: owner.name, deliveryID: nil, stage: nil, isOpen: false)
+    let view = terminalStatusView(
+      owner: owner, row: row, frameDetected: false, terminalDetected: true,
+      panelFocusAvailable: false)
+    XCTAssertEqual(view.panelFocusTarget(for: row), .terminal)
+    XCTAssertTrue(view.showsPanelFocusButton(for: row))
+    XCTAssertFalse(view.hasNoTerminalTarget(row))
+    XCTAssertEqual(
+      view.panelFocusHelp(for: row, state: nil),
+      String(localized: "Show the agent's terminal tab"))
+    XCTAssertEqual(view.panelFocusSymbol(nil, target: .terminal), "terminal")
+    XCTAssertEqual(view.panelFocusSymbol(nil, target: .frame), "macwindow.on.rectangle")
+
+    let state = OverlayState.previewFormatted()
+    armRoster(
+      on: state, owner: owner, panelFocusAvailable: false, frameDetected: false,
+      terminalDetected: true)
+    XCTAssertTrue(state.canFocusAgentPanel(owner))
+    XCTAssertEqual(
+      state.agentPanelFocusHelp(owner), String(localized: "Show the agent's terminal tab"))
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { request in
+      issuedRequests.append(request)
+      try await Task.sleep(for: .seconds(10))
+    }
+    state.focusAgentPanel(owner)
+    let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
+    XCTAssertEqual(focusState.phase, .requesting)
+    XCTAssertEqual(focusState.target, .terminal)
+    XCTAssertEqual(focusState.statusText, String(localized: "Opening the agent's terminal…"))
+    // `vc-frame` disappearing does not cancel a terminal request.
+    state.setAgentPanelFocusAvailable(true)
+    state.setAgentPanelFocusAvailable(false)
+    XCTAssertEqual(state.agentPanelFocusStates[owner.channel]?.target, .terminal)
+  }
+
+  func testAgentWithNeitherPaneNorTerminalHasNoButton() throws {
+    let owner = makeOwner()
+    let row = OverlayChannelDelivery(
+      channel: owner.channel, agent: owner.name, deliveryID: nil, stage: nil, isOpen: false)
+    let view = terminalStatusView(
+      owner: owner, row: row, frameDetected: false, terminalDetected: false,
+      panelFocusAvailable: true)
+    XCTAssertNil(view.panelFocusTarget(for: row))
+    XCTAssertFalse(view.showsPanelFocusButton(for: row))
+    XCTAssertTrue(view.hasNoTerminalTarget(row))
+    XCTAssertEqual(
+      view.panelFocusHelp(for: row, state: nil),
+      String(localized: "No terminal known for this agent"))
+
+    let state = OverlayState.previewFormatted()
+    armRoster(on: state, owner: owner, frameDetected: false, terminalDetected: false)
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { issuedRequests.append($0) }
+    state.focusAgentPanel(owner)
+    XCTAssertFalse(state.canFocusAgentPanel(owner))
+    XCTAssertNil(state.agentPanelFocusHelp(owner))
+    XCTAssertTrue(issuedRequests.isEmpty)
+  }
+
+  func testAKnownPaneWinsOnlyWhileVcFrameCanReachIt() {
+    let owner = makeOwner()
+    let row = OverlayChannelDelivery(
+      channel: owner.channel, agent: owner.name, deliveryID: nil, stage: nil, isOpen: false)
+    let both = terminalStatusView(
+      owner: owner, row: row, frameDetected: true, terminalDetected: true,
+      panelFocusAvailable: true)
+    XCTAssertEqual(both.panelFocusTarget(for: row), .frame)
+    XCTAssertEqual(
+      both.panelFocusHelp(for: row, state: nil), String(localized: "Focus agent panel in Frame"))
+    let withoutVcFrame = terminalStatusView(
+      owner: owner, row: row, frameDetected: true, terminalDetected: true,
+      panelFocusAvailable: false)
+    XCTAssertEqual(withoutVcFrame.panelFocusTarget(for: row), .terminal)
+    XCTAssertTrue(withoutVcFrame.showsPanelFocusButton(for: row))
+  }
+
+  func testTerminalReceiptActivatesTheTerminalAppNotFrame() throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(
+      on: state, owner: owner, panelFocusAvailable: false, frameDetected: false,
+      terminalDetected: true)
+    state.panelFocusSuccessHoldDuration = .seconds(30)
+    state.requestAgentPanelFocusCommand = { _ in }
+    var activations: [(Int32?, String?)] = []
+    state.activateTerminalHost = { pid, bundleID in
+      activations.append((pid, bundleID))
+      return true
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(state.agentPanelFocusStates[owner.channel]?.requestID)
+
+    let row: [String: Any] = [
+      "schema": "codescribe.agent-panel-focus-result.v1",
+      "kind": "agent_panel_focus_result",
+      "request_id": requestID,
+      "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID,
+      "lease_id": owner.leaseID,
+      "status": "focused",
+      "exit_code": 0,
+      "elapsed_ms": 140,
+      "emitted_at": "2026-10-21T08:30:00Z",
+      "target": "iterm2",
+      "frame": NSNull(),
+      "terminal": [
+        "host": "iterm2", "host_bundle_id": "com.googlecode.iterm2", "tty": "/dev/ttys005",
+      ],
+    ]
+    let result = try XCTUnwrap(OverlayPanelFocusResult(row: row))
+    XCTAssertEqual(result.target, "iterm2")
+    XCTAssertNil(result.frame)
+    XCTAssertEqual(
+      result.terminal,
+      AgentTerminalBinding(
+        host: "iterm2", hostBundleID: "com.googlecode.iterm2", tty: "/dev/ttys005"))
+
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(
+        deliveries: [], conversations: [], panelFocusResults: [requestID: result]))
+    let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
+    XCTAssertEqual(focusState.phase, .succeeded)
+    XCTAssertEqual(focusState.statusText, String(localized: "Terminal tab shown"))
+    XCTAssertEqual(activations.count, 1)
+    XCTAssertNil(activations.first?.0)
+    XCTAssertEqual(activations.first?.1, "com.googlecode.iterm2")
+  }
+
+  func testTerminalFailureStatusesDecodeAndReadAsTerminalReasons() throws {
+    func result(_ status: String, target: String? = nil) throws -> OverlayPanelFocusResult {
+      var row: [String: Any] = [
+        "schema": "codescribe.agent-panel-focus-result.v1",
+        "kind": "agent_panel_focus_result",
+        "request_id": String(repeating: "a", count: 24),
+        "provider": "codex", "provider_session_id": "session-5",
+        "lease_id": String(repeating: "b", count: 32),
+        "status": status, "emitted_at": "2026-10-21T08:31:00Z",
+      ]
+      if let target { row["target"] = target }
+      return try XCTUnwrap(OverlayPanelFocusResult(row: row), status)
+    }
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(
+        for: try result("terminal_missing", target: "terminal"), requested: .terminal),
+      String(localized: "Agent's terminal tab not found"))
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(
+        for: try result("automation_denied", target: "iterm2"), requested: .terminal),
+      String(
+        localized:
+          "Terminal control not allowed. Allow it in System Settings › Privacy & Security › Automation."
+      ))
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(for: try result("no_frame"), requested: .terminal),
+      String(localized: "No terminal known for this agent"))
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(for: try result("no_frame"), requested: .frame),
+      String(localized: "Agent is not running in Frame"))
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(
+        for: try result("error", target: "terminal"), requested: .terminal),
+      String(localized: "Could not show the agent's terminal tab"))
+    XCTAssertEqual(
+      OverlayState.panelFocusStatusReason(for: try result("error"), requested: .frame),
+      String(localized: "Could not focus panel in Frame"))
+    XCTAssertNil(try result("focused", target: "kitty").target, "an unknown target is dropped")
   }
 }
