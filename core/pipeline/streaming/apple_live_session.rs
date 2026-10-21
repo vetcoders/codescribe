@@ -33960,8 +33960,12 @@ mod tc2_window_contract_tests {
         }
     }
 
+    /// A jittered re-decode of a spoken word lies on the same measured burst,
+    /// so it is the same acoustic word (D4): the later copy is a replay of
+    /// that range and the surface the first completion admitted stays, as
+    /// case and punctuation equivalence does on a seam (58f4b33c).
     #[test]
-    fn jittered_replay_keeps_one_slot_and_latest_revision_in_either_completion_order() {
+    fn jittered_replay_keeps_one_slot_and_the_first_surface_in_either_completion_order() {
         for reversed in [false, true] {
             let mut f = fixture();
             let first = f.requests.try_recv().unwrap();
@@ -33982,35 +33986,49 @@ mod tc2_window_contract_tests {
             for result in results {
                 f.state.complete_whisper_window(&f.events, result, 10.7);
             }
-            let (winner, loser) = if reversed {
-                ("Alpha, delta", "alpha")
+            let (winner, loser, kept) = if reversed {
+                ("alpha delta", "Alpha,", (248_000, 266_000))
             } else {
-                ("alpha delta", "Alpha,")
+                ("Alpha, delta", "alpha", (246_464, 262_784))
             };
             assert_words(&f, winner);
             let ledger = f.state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.slots_of(&f.occurrence).unwrap().len(), 2);
-            assert!(ledger.layer_trail_for(&f.occurrence).any(|entry| {
+            // The replay refusal is filed on the kept word's range.
+            let trail = || {
+                ledger
+                    .layer_trail()
+                    .iter()
+                    .filter(|entry| entry.observation.occurrence.same_capture(&f.occurrence))
+            };
+            assert!(trail().any(|entry| {
                 entry.candidate_label == loser
                     && matches!(
                         entry.decision,
                         MutationReceipt::Refuse {
-                            reason: RefuseReason::ReplacedByWhisper,
+                            reason: RefuseReason::ReplayedRangeIdentity,
                             ..
                         }
                     )
             }));
-            for native in [(246_464, 262_784), (248_000, 266_000)] {
-                assert!(
-                    ledger
-                        .slot_operations()
-                        .iter()
-                        .flat_map(|operation| &operation.source_ranges)
-                        .any(|range| range.same_capture(&f.occurrence)
-                            && (range.sample_start, range.sample_end) == native),
-                    "both original PCM declarations survive the single-word correction: {native:?}"
-                );
-            }
+            assert!(
+                ledger
+                    .slots_of(&f.occurrence)
+                    .unwrap()
+                    .iter()
+                    .any(|slot| (slot.sample_start, slot.sample_end) == kept),
+                "the kept word keeps the PCM its first completion declared: {kept:?}"
+            );
+            assert!(
+                !trail().any(|entry| matches!(
+                    entry.decision,
+                    MutationReceipt::Refuse {
+                        reason: RefuseReason::ReplacedByWhisper,
+                        ..
+                    }
+                )),
+                "a replay of one word is not a correction of it"
+            );
         }
     }
 
