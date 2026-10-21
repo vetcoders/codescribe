@@ -75,12 +75,17 @@ enum CSPalette {
   /// dark sheet keeps the hue of the Vibecrafted terminal's navy (#0B0B12,
   /// `~/.config/vibecrafted/terminal-theme.toml`) lifted one step above the
   /// 6 % bubble lift.
-  /// Shipped values are `SheetShade.todayLight` / `.todayDark`; a saved
-  /// click-through candidate (`SheetShadePreference`) replaces them for the
-  /// life of the process, so the whole app paints one sheet per launch.
-  static let sheetLightHex: UInt32 = SheetShadePreference.launchHex(dark: false)
-  static let sheetDarkHex: UInt32 = SheetShadePreference.launchHex(dark: true)
-  static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
+  /// Read the observable preference while a view evaluates its tokens. The
+  /// palette and its SwiftUI projection must not freeze a launch-time colour.
+  static var sheetLightHex: UInt32 { SheetShadePreference.shared.current(dark: false).hex }
+  static var sheetDarkHex: UInt32 { SheetShadePreference.shared.current(dark: true).hex }
+  static var sheet: NSColor { sheetColor(preference: .shared) }
+
+  static func sheetColor(preference: SheetShadePreference) -> NSColor {
+    adaptive(
+      light: NSColor(hex: preference.current(dark: false).hex),
+      dark: NSColor(hex: preference.current(dark: true).hex))
+  }
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
@@ -144,7 +149,7 @@ enum CSColor {
   static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
   static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
-  static let sheet = Color(nsColor: CSPalette.sheet)
+  static var sheet: Color { Color(nsColor: CSPalette.sheet) }
 
   /// Lifted surface wash. Dark mode lifts with a white veil; on paper the same
   /// lift is a white card over the warm base, so the veil maps to a stronger

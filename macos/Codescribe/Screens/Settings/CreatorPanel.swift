@@ -190,7 +190,8 @@ struct CreatorPanel: View {
           .fixedSize(horizontal: false, vertical: true)
       }
       if let notice = model.creatorAgentBridgeNotice {
-        Text(notice).font(SettingsScale.helper).foregroundStyle(Color.primary).textSelection(.enabled)
+        Text(notice).font(SettingsScale.helper).foregroundStyle(Color.primary).textSelection(
+          .enabled)
       }
       if let error = model.creatorAgentBridgeError {
         Text(error)
@@ -691,8 +692,7 @@ private struct AppearanceRow: View {
 // MARK: - Sheet shade rows
 
 /// Click-through candidates for the content sheet, one row per appearance
-/// (Founder and Maciej, 2026-10-20). A shade is read at launch, so the rows
-/// end with the same restart line the language uses.
+/// (Founder and Maciej, 2026-10-20). Selecting a shade repaints the open app.
 private struct SheetShadeRows: View {
   @ObservedObject var model: SettingsViewModel
 
@@ -704,34 +704,12 @@ private struct SheetShadeRows: View {
       shadePicker(SheetShade.darkChoices, selection: darkSelection, id: "settings-sheet-shade-dark")
     }
     SettingsControlRow(
-      title: String(localized: "Panel shade, light", comment: "Settings row: sheet shade for light"),
+      title: String(
+        localized: "Panel shade, light", comment: "Settings row: sheet shade for light"),
       subtitle: "#\(model.sheetShadeLight.rawValue)"
     ) {
-      shadePicker(SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
-    }
-    if model.sheetShadeNeedsRestart {
-      HStack(spacing: 12) {
-        Text(
-          "Codescribe will restart with the new shade. Your recording must finish first.",
-          comment: "Sheet shade restart explanation"
-        )
-        .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        Button(model.sheetShadeRestartTitle) { model.applySheetShade() }
-          .buttonStyle(.bordered)
-          .controlSize(.small)
-          .disabled(model.applyingSheetShade)
-          .accessibilityIdentifier("settings-sheet-shade-restart")
-      }
-    }
-    if let notice = model.sheetShadeNotice {
-      Text(notice)
-        .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.terracotta)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("settings-sheet-shade-notice")
+      shadePicker(
+        SheetShade.lightChoices, selection: lightSelection, id: "settings-sheet-shade-light")
     }
   }
 
