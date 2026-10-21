@@ -1112,8 +1112,20 @@ struct DictationOverlayView: View {
           .accessibilityHidden(true)
         }
       if !mini {
-        sessionTimer
-          .allowsHitTesting(false)
+        // The compact strip carries the channel map between the clock and the
+        // actions (bus intercom spec §5.1). The map brings its own leading
+        // gap, so where it yields its place the strip keeps today's spacing.
+        HStack(spacing: 0) {
+          sessionTimer
+            .allowsHitTesting(false)
+          if density == .midi, let map = channelMap {
+            map
+              .onAppear { state.refreshAgentChannelModifier() }
+              .onHover { inside in
+                if inside { state.refreshAgentChannelModifier() }
+              }
+          }
+        }
       }
 
       HStack(spacing: 8) {
@@ -1170,6 +1182,21 @@ struct DictationOverlayView: View {
     .accessibilityAddTraits(transcriptionSelected ? .isSelected : [])
     .accessibilityValue(transcriptPreviewAccessibilityValue)
     .accessibilityIdentifier("overlay-transcription-preview")
+  }
+
+  /// The compact strip's channel map, or nil before the roster names a
+  /// channel. A chip selects its conversation through the roster, as a rail
+  /// pill does; the counter is the map's entry point (W2: the map popover).
+  /// Internal so a test can drive the same values the strip renders.
+  var channelMap: OverlayChannelMapView? {
+    let roster = channelStatusView
+    let model = roster.channelMapModel
+    guard !model.chips.isEmpty else { return nil }
+    return OverlayChannelMapView(
+      model: model, modifier: state.agentChannelModifier, palette: palette,
+      textScale: textScale, animates: overlayVisible,
+      onSelectChannel: { roster.selectChannelConversation($0) },
+      onOpenMap: { state.showAgentMonitor() })
   }
 
   /// Internal so a test can assert that two body passes share one search model.
