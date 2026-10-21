@@ -307,6 +307,12 @@ pub enum SlotOperationRefusal {
 
 /// A repetition picker is needed only for equal lexical evidence on the same
 /// PCM. Different words over a coarse source are a partition, not a replay.
+
+/// Speech separated by no more than this is one word's continuity: a valley
+/// this short does not authenticate quiet between anchor pieces, and a
+/// retired source's uncovered edge this short holds no other word.
+pub(super) const WORD_CONTINUITY_MS: u64 = 60;
+
 impl AcousticLedger {
     pub(super) fn repetition_target_ambiguous(
         &self,
@@ -2161,22 +2167,50 @@ impl AcousticLedger {
         Ok(sources)
     }
 
-    /// A replacement may retire geometry only when its outputs cover it or
-    /// both capture observers prove every uncovered sample is quiet. Missing
-    /// labels and unavailable measurements supply no absence authority.
+    /// A replacement may retire a source's geometry only where words that
+    /// stay in the document cover it, or where every acoustic observer that
+    /// measured the uncovered stretch heard it quiet. A missing label is never
+    /// evidence of absence, and neither is a missing measurement: with no
+    /// observer over a stretch there is no authority to retire it.
+    ///
+    /// Covering words are the replacement's outputs plus the owner's held
+    /// words that this replacement does not retire: speech an adjacent held
+    /// word accounts for has not disappeared.
+    ///
+    /// A stretch no longer than [`WORD_CONTINUITY_MS`] is the edge of the
+    /// same word, not room for another one: a successor decoded 20 ms later
+    /// than its source (take 9dedf6ec: `tego,` → `tego`) is a retiming.
+    /// Requiring a quiet proof for it made every retimed correction inside
+    /// speech impossible, because the sliver is speech.
+    ///
+    /// The speech observer is whichever acoustic producer the ledger holds
+    /// (Silero boundaries or the capture-energy ladder, as everywhere else in
+    /// the ledger). The energy observer is the capture owner's voiced hops, or
+    /// the restored exact-PCM quiet receipts. When the speech observer is the
+    /// energy ladder, its silence already is the sub-floor measurement.
     pub(super) fn slot_retirement_has_acoustic_coverage(
         &self,
         source: &WordSlot,
         outputs: &[WordSlot],
+        retired: &[WordSlot],
     ) -> bool {
+        use super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+        use crate::audio::capture_receipt::CAPTURE_ENERGY_PRODUCER;
+
         let owner = &source.observation.occurrence;
+        let staying = self
+            .slots_of(owner)
+            .unwrap_or(&[])
+            .iter()
+            .filter(|held| *held != source && !retired.contains(held));
         let mut intervals = outputs
             .iter()
-            .filter(|output| {
-                output.observation.occurrence.same_capture(owner)
-                    && output.sample_start < output.sample_end
+            .chain(staying)
+            .filter(|word| {
+                word.observation.occurrence.same_capture(owner)
+                    && word.sample_start < word.sample_end
             })
-            .map(|output| (output.sample_start, output.sample_end))
+            .map(|word| (word.sample_start, word.sample_end))
             .collect::<Vec<_>>();
         intervals.sort_unstable();
         let mut gaps = Vec::new();
@@ -2193,17 +2227,23 @@ impl AcousticLedger {
         if cursor < source.sample_end {
             gaps.push((cursor, source.sample_end));
         }
+        let continuity =
+            u64::from(self.capture_rate_hz.unwrap_or(16_000)) * WORD_CONTINUITY_MS / 1_000;
+        gaps.retain(|(start, end)| end.saturating_sub(*start) > continuity);
         if gaps.is_empty() {
             return true;
         }
         let Some(speech) = self.speech_evidence.as_ref() else {
             return false;
         };
+        let producer = speech.producer();
         if !speech
             .identity()
             .matches(&owner.session, owner.capture_epoch)
-            || speech.producer()
-                != super::super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+            || !matches!(
+                producer,
+                CAPTURE_ENERGY_PRODUCER | SILERO_BOUNDARIES_PRODUCER
+            )
             || speech
                 .availability()
                 .observed_samples()
@@ -2216,24 +2256,28 @@ impl AcousticLedger {
                 .ranges()
                 .iter()
                 .all(|range| range.sample_end <= start || range.sample_start >= end);
+            if !no_speech {
+                return false;
+            }
             // Use the capture owner's absolute active-speech floor in both
             // live and restored proofs. A live contradiction never borrows
             // a weaker historical quiet receipt.
-            let below_floor = if let Some(energy) = self.decode_fence_energy.as_ref() {
-                energy
+            if let Some(energy) = self.decode_fence_energy.as_ref() {
+                return energy
                     .owner
                     .voiced_hops_in(&owner.session, owner.capture_epoch, start, end)
-                    .is_some_and(|hops| hops.is_empty())
-            } else {
-                self.replay_quiet_fences.as_ref().is_some_and(|ranges| {
-                    ranges.iter().any(|range| {
-                        range.same_capture(owner)
-                            && range.sample_start <= start
-                            && end <= range.sample_end
-                    })
-                })
-            };
-            no_speech && below_floor
+                    .is_some_and(|hops| hops.is_empty());
+            }
+            if let Some(fences) = self.replay_quiet_fences.as_ref() {
+                return fences.iter().any(|range| {
+                    range.same_capture(owner)
+                        && range.sample_start <= start
+                        && end <= range.sample_end
+                });
+            }
+            // No separate energy observer is attached. The energy ladder's
+            // own silence is the sub-floor proof; Silero alone is one observer.
+            producer == CAPTURE_ENERGY_PRODUCER
         })
     }
 
@@ -2452,9 +2496,9 @@ impl AcousticLedger {
             })
             .collect::<Vec<_>>();
         if observation.producer != ObservationProducer::ManualHuman
-            && sources
-                .iter()
-                .any(|source| !self.slot_retirement_has_acoustic_coverage(source, &outputs))
+            && sources.iter().any(|source| {
+                !self.slot_retirement_has_acoustic_coverage(source, &outputs, &sources)
+            })
         {
             self.record_word_choice(
                 observation,
