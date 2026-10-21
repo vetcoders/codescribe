@@ -9164,16 +9164,6 @@
         }
       }
     },
-    "Ledger projection" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatwierdzone w rejestrze"
-          }
-        }
-      }
-    },
     "Ledger sensitivity" : {
       "localizations" : {
         "pl" : {

@@ -237,7 +237,16 @@ mod archived_format_outcome_tests {
     }
 }
 
-fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
+fn log_formatter_revision(
+    receipt: &UserRevisionCommit,
+    level: FormattingPolicy,
+    source: &str,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) {
+    let prompt = runtime_settings
+        .ai_execution()
+        .formatter()
+        .formatting_prompt();
     info!(
         session_id = %receipt.session_id,
         source_revision = receipt.source_revision,
@@ -245,6 +254,9 @@ fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy,
         provenance_receipt = %receipt.provenance_receipt,
         format_level = level.as_str(),
         source,
+        prompt_source = prompt.map(|p| p.source().as_str()).unwrap_or("none"),
+        prompt_sha256 = prompt.map(|p| p.composed_sha256()).unwrap_or("none"),
+        settings_sha256 = runtime_settings.digest().as_str(),
         "formatter revision committed"
     );
 }
@@ -2664,7 +2676,12 @@ impl RecordingController {
         let receipt = presentation
             .apply_formatter_revision(session_id, source_revision, format_level, result)
             .map_err(anyhow::Error::new)?;
-        log_formatter_revision(&receipt, format_level, level_source);
+        log_formatter_revision(
+            &receipt,
+            format_level,
+            level_source,
+            runtime_settings.as_ref(),
+        );
         self.sync_live_archive(&presentation, &receipt.session_id)
             .await;
         Ok(receipt)
@@ -2754,12 +2771,19 @@ impl RecordingController {
             }
             _ => None,
         };
+        let prompt = runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt();
         info!(
             format_level = format_level.as_str(),
             source = level_source,
             outcome = outcome.label(),
             source_revision,
             revision = revision.as_ref().map(|revision| revision.revision),
+            prompt_source = prompt.map(|p| p.source().as_str()).unwrap_or("none"),
+            prompt_sha256 = prompt.map(|p| p.composed_sha256()).unwrap_or("none"),
+            settings_sha256 = runtime_settings.digest().as_str(),
             "archived transcript formatting settled"
         );
         Ok(ArchivedFormatReceipt { outcome, revision })
@@ -2769,6 +2793,12 @@ impl RecordingController {
         &self,
         requested_level: Option<FormattingPolicy>,
     ) -> Arc<RuntimeSettingsSnapshot> {
+        if self.runtime_settings_refresh_pending.load(Ordering::SeqCst) {
+            let _serial_guard = self.serial_lock.lock().await;
+            if self.current_state().await == State::Idle {
+                let _ = self.refresh_pending_runtime_settings_locked().await;
+            }
+        }
         let settings = self.runtime_settings_arc().await;
         match requested_level {
             Some(level) => Arc::new(settings.with_formatting_level(level)),
@@ -13110,6 +13140,81 @@ mod formatter_revision_request_tests {
         }
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_save_during_active_take_preserves_running_generation_then_updates_next_request_snapshot()
+     {
+        use codescribe_core::config::prompts::{
+            PromptKind, PromptSource, PromptWriteReason, write_prompt,
+        };
+        use codescribe_core::test_isolation::EnvGuard;
+
+        let temp = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            temp.path().to_str().expect("utf-8 temp dir"),
+        );
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        assert_eq!(
+            before
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .source(),
+            PromptSource::BuiltInFallback
+        );
+
+        // While a take is active, saving a custom Smart prompt defers refresh so
+        // the running take's sealed generation remains untouched.
+        *controller.state.write().await = State::RecToggle;
+        write_prompt(
+            PromptKind::FormattingSmart,
+            "Custom Smart prompt v2 with explicit paragraph breaks",
+            PromptWriteReason::SettingsSave,
+        )
+        .unwrap();
+        assert!(
+            !controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .unwrap()
+        );
+        assert!(Arc::ptr_eq(
+            &before,
+            &controller.runtime_settings_arc().await
+        ));
+        assert!(
+            controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+
+        // Once the take returns to Idle, the next formatter request consumes the
+        // deferred refresh and seals the saved prompt into the new snapshot.
+        *controller.state.write().await = State::Idle;
+        let next_request = controller
+            .formatter_revision_settings(Some(FormattingPolicy::Smart))
+            .await;
+        let sealed_prompt = next_request
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .unwrap();
+        assert_eq!(sealed_prompt.source(), PromptSource::CustomFile);
+        assert!(
+            sealed_prompt
+                .composed_content()
+                .contains("Custom Smart prompt v2 with explicit paragraph breaks")
+        );
+        assert!(
+            !controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+    }
+
     #[derive(Clone, Default)]
     struct ReceiptLog(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -13134,6 +13239,8 @@ mod formatter_revision_request_tests {
 
     #[test]
     fn formatter_log_names_level_and_source_without_changing_reducer_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = snapshot(root.path(), FormattingPolicy::Smart);
         for source in ["request", "settings"] {
             let log = ReceiptLog::default();
             let subscriber = tracing_subscriber::fmt()
@@ -13149,11 +13256,14 @@ mod formatter_revision_request_tests {
                 provenance_receipt: "formatter-test-4-5-0".into(),
             };
             tracing::subscriber::with_default(subscriber, || {
-                log_formatter_revision(&receipt, FormattingPolicy::Smart, source);
+                log_formatter_revision(&receipt, FormattingPolicy::Smart, source, &settings);
             });
             let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
             assert!(text.contains("format_level=\"smart\""));
             assert!(text.contains(&format!("source=\"{source}\"")));
+            assert!(text.contains("prompt_source=\"built_in_fallback\""));
+            assert!(text.contains("prompt_sha256="));
+            assert!(text.contains("settings_sha256="));
             assert!(text.contains("provenance_receipt=formatter-test-4-5-0"));
             assert_eq!(receipt.provenance_receipt, "formatter-test-4-5-0");
             assert_eq!(receipt.source_revision, 4);

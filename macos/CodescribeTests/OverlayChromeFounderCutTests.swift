@@ -28,7 +28,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let overlay = try overlaySource()
     XCTAssertFalse(overlay.contains("OverlayEvidence"))
     let transcript = try section(
-      of: overlay, from: "private var transcriptScroll", to: "private var revisionStatusRow")
+      of: overlay, from: "private var transcriptScroll", to: "private var noSpeechBody")
     XCTAssertFalse(
       transcript.contains("state.liveEvidence"),
       "Uncommitted hypotheses never take transcript height")
@@ -70,6 +70,20 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
     let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
     XCTAssertFalse(refusal.contains("coverageRefusedBody"))
+    XCTAssertFalse(
+      source.contains("revisionStatusRow"),
+      "footerMessage is the single status owner; no duplicate revisionStatusRow remains")
+    let footerMessageRow = try section(
+      of: source, from: "private var footerMessageRow", to: "private func footerNoticeLabel")
+    XCTAssertTrue(footerMessageRow.contains("if footerMessageIsPassiveNotice {"))
+    XCTAssertTrue(
+      footerMessageRow.contains("showsTooltip: opensMaxSettings"),
+      "non-Max footer status must not attach a floating tooltip that duplicates the label"
+    )
+    XCTAssertTrue(
+      footerMessageRow.contains("footerMessageDetail(message)"),
+      "error and diagnostic footer rows keep click-popover access to full details"
+    )
     XCTAssertTrue(
       source.contains(
         "if bottomChromeSlots.showsCoverageWarning, let warning = state.footerWarning {"))

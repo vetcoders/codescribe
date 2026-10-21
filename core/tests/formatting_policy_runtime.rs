@@ -265,3 +265,30 @@ async fn max_uses_explicit_consultation_even_for_short_corrections() {
         }
     }
 }
+
+#[test]
+fn default_smart_prompt_enforces_paragraph_breaks_and_forbids_summarization() {
+    let smart = prompts::DEFAULT_SMART_FORMATTING_PROMPT;
+    assert!(
+        smart.contains("separated by a blank line (`\\n\\n`)"),
+        "Smart prompt must explicitly require blank-line paragraph breaks on topic shifts"
+    );
+    assert!(
+        smart.contains("Never summarize, compress, or cut constituent clauses."),
+        "Smart prompt must forbid summarizing multi-sentence monologues"
+    );
+    assert!(
+        smart.contains("paraphrase first-person metaphors into third-person descriptions"),
+        "Smart prompt must forbid flattening first-person metaphors into third-person summaries"
+    );
+    assert!(
+        smart.contains("preserve every negation (`nie`, `not`)")
+            && smart.contains("repo")
+            && smart.contains("vc-grill"),
+        "Smart prompt must preserve negations, software/repo terms, and CLI flags"
+    );
+    assert!(
+        smart.contains("\n\nDruga sprawa:"),
+        "Smart prompt example must demonstrate multi-paragraph (`\\n\\n`) separation"
+    );
+}
