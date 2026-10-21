@@ -981,16 +981,24 @@ impl AcousticLedger {
         // same speech; the document read "długoscią długością". The evidence
         // is shared PCM, not sequence, so it holds for a lone pin too: edge
         // deferral had left that recovery callback with "długoscią" alone.
-        // Refusing removes the pin, so the two ranges must lie almost wholly
-        // over each other, at least three quarters of each: a pin that holds
-        // the word and more speech is another token glued to it (bad24852: a
-        // 4.24 s "release.dmdn" shared 51% of itself with "Release..." and
-        // also carried "DMDN"; dcc26684 shares 95%).
+        // A plain word that covers most of the neighbour's word is that word.
+        // A token Whisper glued from several words (a separator inside it)
+        // may hold the neighbour's word and another one: it is that word only
+        // when the two ranges lie almost wholly over each other, three
+        // quarters of each (bad24852: a 4.24 s "release.dmdn" shared 51% of
+        // itself with "Release..." and also carried "DMDN"). One bar for both
+        // failed on Lena's replays either way: one half refused that glued
+        // token, three quarters lost dbb410fa and 0d3ede90 again.
         for index in 0..pins.len() {
             if correspondence[index].is_some() {
                 continue;
             }
             let (pin_start, pin_end) = pins[index].declared();
+            let glued = pins[index]
+                .text
+                .trim_matches(|ch: char| !ch.is_alphanumeric())
+                .chars()
+                .any(|ch| !ch.is_alphanumeric());
             let neighbour = neighbour_words.iter().find(|held| {
                 held.producer == observation.producer
                     && !correspondence.contains(&Some(*held))
@@ -998,10 +1006,14 @@ impl AcousticLedger {
                         let shared = range
                             .sample_end
                             .min(pin_end)
-                            .saturating_sub(range.sample_start.max(pin_start))
-                            .saturating_mul(4);
-                        shared >= range.sample_end.saturating_sub(range.sample_start) * 3
-                            && shared >= pin_end.saturating_sub(pin_start) * 3
+                            .saturating_sub(range.sample_start.max(pin_start));
+                        let held_length = range.sample_end.saturating_sub(range.sample_start);
+                        if glued {
+                            shared * 4 >= held_length * 3
+                                && shared * 4 >= pin_end.saturating_sub(pin_start) * 3
+                        } else {
+                            shared * 2 >= held_length
+                        }
                     })
             });
             if neighbour.is_some() {

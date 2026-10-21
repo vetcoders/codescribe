@@ -1657,4 +1657,22 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
         alternative.observation == glued
             && alternative.reason == "cross_owner_sequence_correspondence"
     }));
+
+    // A plain word over most of the neighbour's word is that word even when
+    // it reaches further: one bar of three quarters for every pin lost the
+    // dbb410fa and 0d3ede90 gains of the plain-majority rule again.
+    let plain = ObservationIdentity::new(ObservationProducer::Whisper, 1, 14, left.clone());
+    let plain_pins = decoded(&[("długoscią", 677_760, 809_520)], (663_360, 1_007_040));
+    let plain_incoming = ledger
+        .normalize_anchor_words(&plain, &plain_pins, &anchors)
+        .unwrap();
+    assert!(
+        plain_incoming
+            .iter()
+            .all(|(slot, _)| slot.text != "długoscią")
+    );
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == plain
+            && alternative.reason == "cross_owner_sequence_correspondence"
+    }));
 }
