@@ -1579,10 +1579,10 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
                 &next,
                 &decoded(
                     &[
-                        ("długością", 728_640, 748_800),
-                        ("trwania", 748_800, 787_200)
+                        ("długością", 680_640, 747_840),
+                        ("trwania", 747_840, 787_200)
                     ],
-                    (700_000, 1_000_000),
+                    (663_360, 1_000_000),
                 )
             )
             .grants_mutation()
@@ -1636,5 +1636,25 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
         alternative.observation == recovery
             && alternative.reason == "cross_owner_sequence_correspondence"
             && alternative.candidate == "długoscią"
+    }));
+    // A pin that holds the neighbour's word and more speech is another token
+    // glued to it (bad24852: "release.dmdn" shared 51% of itself with
+    // "Release..." and also carried "DMDN"); it stays this owner's.
+    let glued = ObservationIdentity::new(ObservationProducer::Whisper, 1, 13, left.clone());
+    let glued_pins = decoded(
+        &[("długością.dmdn", 677_760, 809_520)],
+        (663_360, 1_007_040),
+    );
+    let glued_incoming = ledger
+        .normalize_anchor_words(&glued, &glued_pins, &anchors)
+        .unwrap();
+    assert!(
+        glued_incoming
+            .iter()
+            .any(|(slot, _)| slot.text == "długością.dmdn")
+    );
+    assert!(!ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == glued
+            && alternative.reason == "cross_owner_sequence_correspondence"
     }));
 }

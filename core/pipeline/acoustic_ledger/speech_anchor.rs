@@ -981,6 +981,11 @@ impl AcousticLedger {
         // same speech; the document read "długoscią długością". The evidence
         // is shared PCM, not sequence, so it holds for a lone pin too: edge
         // deferral had left that recovery callback with "długoscią" alone.
+        // Refusing removes the pin, so the two ranges must lie almost wholly
+        // over each other, at least three quarters of each: a pin that holds
+        // the word and more speech is another token glued to it (bad24852: a
+        // 4.24 s "release.dmdn" shared 51% of itself with "Release..." and
+        // also carried "DMDN"; dcc26684 shares 95%).
         for index in 0..pins.len() {
             if correspondence[index].is_some() {
                 continue;
@@ -990,12 +995,13 @@ impl AcousticLedger {
                 held.producer == observation.producer
                     && !correspondence.contains(&Some(*held))
                     && self.original_anchor_word_range(held).is_some_and(|range| {
-                        range
+                        let shared = range
                             .sample_end
                             .min(pin_end)
                             .saturating_sub(range.sample_start.max(pin_start))
-                            .saturating_mul(2)
-                            >= range.sample_end.saturating_sub(range.sample_start)
+                            .saturating_mul(4);
+                        shared >= range.sample_end.saturating_sub(range.sample_start) * 3
+                            && shared >= pin_end.saturating_sub(pin_start) * 3
                     })
             });
             if neighbour.is_some() {
