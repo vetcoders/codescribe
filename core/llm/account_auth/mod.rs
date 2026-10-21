@@ -825,18 +825,34 @@ pub async fn authorization_header(provider: ProviderKind) -> Result<String, Acco
 /// its refresh token, and every response after the first invalidates the token
 /// the others are about to store — signing the user out mid-session.
 pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthError> {
-    let tokens = load_account_tokens(provider)?;
+    let tokens = credential_io(move || load_account_tokens(provider)).await?;
     if !tokens.expires_within(REFRESH_SKEW) {
         return Ok(tokens.access_token);
     }
 
     let _lock = refresh_lock(provider).lock().await;
     // Re-read under the lock: a concurrent holder may have just refreshed.
-    let tokens = load_account_tokens(provider)?;
+    let tokens = credential_io(move || load_account_tokens(provider)).await?;
     if !tokens.expires_within(REFRESH_SKEW) {
         return Ok(tokens.access_token);
     }
     Ok(refresh_tokens(provider, tokens).await?.access_token)
+}
+
+/// Run a Keychain operation on the blocking pool. A Keychain call can wait on
+/// a macOS authorization dialog for as long as the dialog stays open; on the
+/// polling thread it froze every future polled beside it, and their timeouts
+/// with them. A live take polls its formatter jobs inline, so one cold read
+/// stopped the whole session until the dialog closed (replay cbf54ca9,
+/// 2026-10-21). Off the polling thread, the caller's own deadline still fires.
+async fn credential_io<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, AccountAuthError> + Send + 'static,
+) -> Result<T, AccountAuthError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            AccountAuthError::Storage(format!("credential storage task ended: {error}"))
+        })?
 }
 
 /// Per-provider refresh mutex. Held across the network round trip AND the
@@ -883,7 +899,8 @@ pub async fn refresh_tokens(
     let issuer = issuer_for(provider);
     let refreshed =
         refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await?;
-    store_account_tokens(provider, &refreshed)?;
+    let stored = refreshed.clone();
+    credential_io(move || store_account_tokens(provider, &stored)).await?;
     Ok(refreshed)
 }
 
@@ -1211,6 +1228,19 @@ mod tests {
         let loaded = load_account_tokens(ProviderKind::OpenAiResponses).unwrap();
         assert_eq!(loaded.access_token, "access");
         assert_eq!(loaded.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    /// The thread polling `access_token` never performs the Keychain read:
+    /// that read can wait on an authorization dialog, and a live take polls
+    /// its formatter jobs inline (replay cbf54ca9 stopped for 13 minutes).
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn access_token_reads_credentials_off_the_polling_thread() {
+        let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _bundle = crate::config::keychain::test_support::install_bundle(&[]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let _ = access_token(ProviderKind::OpenAiResponses).await;
+        assert!(probe.attempts().is_empty(), "{:?}", probe.attempts());
     }
 
     /// Each provider uses a distinct keychain account so tokens never cross-wire.
