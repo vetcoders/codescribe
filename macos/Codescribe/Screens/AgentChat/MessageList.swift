@@ -1758,8 +1758,11 @@ private struct CopyButton: View {
 /// there is nothing to copy.
 struct CopyMessageButton: View {
   let text: String
-  var labelFont: Font = CSFont.ui(10, .medium)
+  var labelFont: Font = CSFont.ui(10, .semibold)
   var restingColor: Color = CSColor.textTertiary
+  /// Overlay passes its palette. Agent chat resolves the same tokens from the scheme.
+  var palette: OverlayAppearancePalette? = nil
+  @Environment(\.colorScheme) private var colorScheme
   @State private var copied = false
   @State private var hovering = false
 
@@ -1772,7 +1775,7 @@ struct CopyMessageButton: View {
       }
     } label: {
       HStack(spacing: 4) {
-        CSIconView(icon: copied ? .check : .copy, size: 9)
+        CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
             ? String(localized: "copied", comment: "Button state after copying")
@@ -1785,7 +1788,35 @@ struct CopyMessageButton: View {
     .csFocusRing()
     .disabled(text.isEmpty)
     .onHover { hovering = $0 }
-    .help("Copy message")
+    .overlayFastHint(copyStateLabel, palette: hintPalette)
+    .accessibilityLabel(Text(verbatim: copyStateLabel))
+    .accessibilityHint(Text(verbatim: copyAccessibilityHint))
+  }
+
+  private var hintPalette: OverlayAppearancePalette {
+    palette ?? OverlayAppearancePalette.resolve(colorScheme)
+  }
+
+  /// Hover and VoiceOver name the action. An empty message stays disabled and says so.
+  private var copyStateLabel: String {
+    if text.isEmpty {
+      return String(
+        localized: "Nothing to copy",
+        comment: "Disabled copy control when the message is empty")
+    }
+    if copied {
+      return String(localized: "copied", comment: "Button state after copying")
+    }
+    return String(localized: "Copy message")
+  }
+
+  private var copyAccessibilityHint: String {
+    if text.isEmpty {
+      return String(
+        localized: "Nothing to copy",
+        comment: "Disabled copy control when the message is empty")
+    }
+    return String(localized: "Copy message")
   }
 
   private var labelColor: Color {

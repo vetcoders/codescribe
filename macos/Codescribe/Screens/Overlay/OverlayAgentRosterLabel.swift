@@ -41,8 +41,7 @@ struct OverlayAgentRosterLabel: View {
               .foregroundStyle(
                 broadcastPolicy == .on ? palette.agentAccent.color : palette.mutedText.color
               )
-              .help(broadcastPolicy.statusHelp)
-              .accessibilityLabel(broadcastPolicy.statusHelp)
+              .accessibilityLabel(Text(verbatim: broadcastPolicy.statusHelp))
               .accessibilityIdentifier("overlay-broadcast-policy-\(channel)")
           }
           Spacer(minLength: 4)
@@ -66,7 +65,7 @@ struct OverlayAgentRosterLabel: View {
             .foregroundStyle(palette.mutedText.color)
             .lineLimit(1)
             .truncationMode(.middle)
-            .help(descriptor)
+            .accessibilityLabel(Text(verbatim: descriptor))
             .accessibilityIdentifier("overlay-agent-descriptor-\(channel)")
         }
         if let preview {

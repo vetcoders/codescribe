@@ -19,7 +19,10 @@ private struct BubbleOwnerNameButton: View {
     .buttonStyle(.plain)
     .onHover { hovered = $0 }
     .background { OverlayMenuCursorRegion() }
+    .overlayFastHint(
+      String(localized: "Opens this agent's conversation"), palette: palette)
     .accessibilityIdentifier("overlay-message-owner-\(messageID)")
+    .accessibilityLabel(Text(verbatim: name))
     .accessibilityHint(Text("Opens this agent's conversation"))
   }
 }
@@ -27,6 +30,7 @@ private struct BubbleOwnerNameButton: View {
 /// Maciej (2026-10-17): held controls hover like the owner name and Copy — muted at rest, brighter on hover.
 private struct OverlayHeldControlButton: View {
   let title: LocalizedStringKey
+  let hint: String
   let palette: OverlayAppearancePalette
   let action: () -> Void
   @State private var hovered = false
@@ -39,6 +43,9 @@ private struct OverlayHeldControlButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovered = $0 }
+    .overlayFastHint(hint, palette: palette)
+    .accessibilityLabel(Text(title))
+    .accessibilityHint(Text(verbatim: hint))
   }
 }
 
@@ -193,7 +200,9 @@ struct OverlayConversationView: View {
               .modifier(OverlayAgentControlStyle())
               .csFocusOutline()
               .accessibilityLabel("Jump to current")
-              .help("Jump to the current reply")
+              .overlayFastHint(
+                String(localized: "Jump to the current reply"), palette: palette)
+              .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
               .padding(.bottom, composerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -370,20 +379,37 @@ struct OverlayConversationView: View {
   @ViewBuilder
   private var conversationNamePill: some View {
     if let onFocusAgentPanel {
-      // Interactive glass is the system's own hover and press feedback.
-      Button(action: onFocusAgentPanel) { namePillLabel }
-        .buttonStyle(.plain)
-        .csFocusOutline()
-        .accessibilityHint(
-          Text(verbatim: focusAgentPanelHint ?? OverlayAgentPanelFocusTarget.frame.help))
-        .accessibilityIdentifier("overlay-conversation-name")
-        .modifier(OverlayNamePillGlass(interactive: true))
-        .background { OverlayMenuCursorRegion() }
+      focusedNamePill(onFocusAgentPanel)
     } else {
       namePillLabel
+        .overlayFastHint(providerIdentity, palette: palette, enabled: !providerIdentity.isEmpty)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: false))
+    }
+  }
+
+  private var providerIdentity: String {
+    conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" } ?? ""
+  }
+
+  /// Interactive glass is the system's own hover and press feedback.
+  @ViewBuilder
+  private func focusedNamePill(_ action: @escaping () -> Void) -> some View {
+    let focusHint = focusAgentPanelHint ?? OverlayAgentPanelFocusTarget.frame.help
+    let pill =
+      Button(action: action) { namePillLabel }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .overlayFastHint(focusHint, palette: palette)
+      .accessibilityHint(Text(verbatim: focusHint))
+      .accessibilityIdentifier("overlay-conversation-name")
+      .modifier(OverlayNamePillGlass(interactive: true))
+      .background { OverlayMenuCursorRegion() }
+    if providerIdentity.isEmpty {
+      pill
+    } else {
+      pill.accessibilityValue(Text(verbatim: providerIdentity))
     }
   }
 
@@ -396,10 +422,7 @@ struct OverlayConversationView: View {
           verbatim: conversation.channel.isEmpty
             ? conversation.name : "\(conversation.channel) · \(conversation.name)"
         )
-        .help(
-          Text(
-            verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
-              ?? ""))
+
         if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale, weight: .regular))
@@ -667,7 +690,8 @@ struct OverlayConversationView: View {
         // the accessibility tree as an unlabelled unknown element, so the
         // native style stays and the frame steps back by its inset instead.
         .padding(.leading, -Self.receiptMenuLabelInset)
-        .help("Show details")
+        .overlayFastHint(String(localized: "Show details"), palette: palette)
+        .accessibilityHint(Text("Show details"))
         .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
       } else {
         ForEach(message.recipients, id: \.owner.id) { recipient in
@@ -743,6 +767,12 @@ struct OverlayConversationView: View {
         .buttonStyle(.plain)
         .font(.system(size: 10 * textScale))
         .foregroundStyle(palette.mutedText.color)
+        .overlayFastHint(
+          String(
+            localized: "Show the message this replies to",
+            comment: "Bubble quote: jumps to the earlier message"),
+          palette: palette)
+        .accessibilityHint(Text("Show the message this replies to"))
         .accessibilityIdentifier("overlay-message-parent-\(message.id)")
       }
       if let question = addressedQuestion(for: message) {
@@ -792,8 +822,14 @@ struct OverlayConversationView: View {
             revisionFocus &+= 1
           }
           .buttonStyle(.plain)
-          .font(.system(size: 10 * textScale))
+          .font(.system(size: 10 * textScale, weight: .semibold))
           .foregroundStyle(palette.mutedText.color)
+          .overlayFastHint(
+            String(
+              localized: "Reply to this message",
+              comment: "Bubble action: quote this message in the composer"),
+            palette: palette)
+          .accessibilityHint(Text("Reply to this message"))
           .accessibilityIdentifier("overlay-message-reply-\(message.id)")
         }
       }
@@ -824,9 +860,13 @@ struct OverlayConversationView: View {
       HStack(spacing: 12) {
         // One control takes the message back: it leaves the clock and its text
         // returns to the composer, where deleting it is the plain withdraw.
-        OverlayHeldControlButton(title: "Cancel/Edit", palette: palette) { edit(message) }
+        OverlayHeldControlButton(
+          title: "Cancel/Edit", hint: String(localized: "Cancel/Edit"), palette: palette
+        ) { edit(message) }
           .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
-        OverlayHeldControlButton(title: "Send now", palette: palette) {
+        OverlayHeldControlButton(
+          title: "Send now", hint: String(localized: "Send now"), palette: palette
+        ) {
           performDeliveryControl(.release, message: message)
         }
         .accessibilityIdentifier("overlay-message-release-\(message.id)")
@@ -901,6 +941,14 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
     message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
   }
 
+  /// The play control's hint follows the same states that enable or refuse it.
+  private var playHint: String {
+    if active { return String(localized: "Stop") }
+    if pending { return String(localized: "Requesting playback") }
+    if message.owner == nil { return String(localized: "Playback status unavailable") }
+    return String(localized: "Play")
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 4) {
@@ -914,15 +962,17 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
               .contentShape(Rectangle())
           }
           .buttonStyle(.borderless)
-          .accessibilityLabel(active ? Text("Stop") : Text("Play"))
-          .help(active ? Text("Stop") : Text("Play"))
           .disabled(!active && (pending || message.owner == nil))
+          .overlayFastHint(playHint, palette: palette)
+          .accessibilityLabel(Text(verbatim: playHint))
+          .accessibilityHint(Text(verbatim: playHint))
           .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
           if let playback = message.playback {
             let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
             Text(verbatim: label)
               .lineLimit(1)
-              .help(label)
+              .overlayFastHint(label, palette: palette)
+              .accessibilityHint(Text(verbatim: label))
               .accessibilityIdentifier("overlay-playback-status-\(message.id)")
           } else if pending {
             Text("Requesting playback").lineLimit(1)
@@ -931,8 +981,10 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
         receipts
         Spacer(minLength: 8)
         CopyMessageButton(
-          text: message.text, labelFont: .system(size: 10 * textScale),
-          restingColor: palette.mutedText.color
+          text: message.text,
+          labelFont: .system(size: 10 * textScale, weight: .semibold),
+          restingColor: palette.mutedText.color,
+          palette: palette
         )
         .fixedSize()
         .buttonStyle(.borderless)
