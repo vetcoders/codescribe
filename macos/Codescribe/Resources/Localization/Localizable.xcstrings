@@ -4236,6 +4236,40 @@
         }
       }
     },
+    "Channel %@, %@, shortcut %@" : {
+      "comment" : "Compact overlay channel chip: digit, agent name, the channel chord (e.g. Ctrl 5)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, %2$@, shortcut %3$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, %2$@, skrót %3$@"
+          }
+        }
+      }
+    },
+    "Channel %@, %@, shortcut %@, microphone open" : {
+      "comment" : "Compact overlay channel chip: digit, agent name, the channel chord (e.g. Ctrl 5); the microphone feeds this channel",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, %2$@, shortcut %3$@, microphone open"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, %2$@, skrót %3$@, mikrofon otwarty"
+          }
+        }
+      }
+    },
     "Channel 0" : {
       "comment" : "Pill context menu: membership in channel-zero broadcasts",
       "localizations" : {
@@ -4265,6 +4299,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kanał 0 · steruj: wiadomości budzą agenta"
+          }
+        }
+      }
+    },
+    "Channel map" : {
+      "comment" : "Compact overlay: the collapsed counter that stands for every mapped channel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mapa kanałów"
           }
         }
       }
@@ -10018,6 +10063,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Mikrofon wyłączony"
+          }
+        }
+      }
+    },
+    "Microphone open on channel %@" : {
+      "comment" : "Compact overlay channel map counter: the channel digits the microphone feeds",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mikrofon otwarty na kanale %@"
           }
         }
       }

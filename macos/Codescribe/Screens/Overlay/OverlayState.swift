@@ -1240,6 +1240,15 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
+  /// The Agent channel chord's modifier, named in the compact channel map's
+  /// shortcut hints. Settings own it in `settings.json`; no change event
+  /// reaches the overlay, so the map re-reads it when it appears and when the
+  /// pointer enters it, before any hint is shown.
+  private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
+  /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
+  @ObservationIgnored var agentChannelModifierSetting: () -> String = {
+    CodescribeConfig().loadSettings().channelModifier
+  }
   /// An empty pre-controller response is not evidence of disconnected agents.
   private(set) var hasLoadedChannelRoster = false
   private(set) var channelToggleError: String?
@@ -2777,6 +2786,11 @@ final class OverlayState {
   func stopObservingChannelDelivery() {
     channelObservationTask?.cancel()
     channelObservationTask = nil
+  }
+
+  func refreshAgentChannelModifier() {
+    let modifier = OverlayChannelChordModifier(setting: agentChannelModifierSetting())
+    if modifier != agentChannelModifier { agentChannelModifier = modifier }
   }
 
   func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
