@@ -4116,7 +4116,6 @@ mod slot_ops_tests {
         owner: OccurrenceIdentity,
         pcm: Vec<f32>,
         parent: WordSlot,
-        parent_has_tail: bool,
     ) {
         let mut split =
             ObservationIdentity::new(ObservationProducer::Whisper, 1102, 0, owner.clone());
@@ -4149,7 +4148,7 @@ mod slot_ops_tests {
         };
         let sources = ledger.slots_of(&owner).unwrap().to_vec();
         println!(
-            "parent-tail={parent_has_tail} actual split decision={split_decision:?}; sources={sources:?}; operations={:?}",
+            "actual split decision={split_decision:?}; sources={sources:?}; operations={:?}",
             ledger.slot_operations()
         );
         assert_eq!(
@@ -4168,17 +4167,7 @@ mod slot_ops_tests {
         assert!(operation.rule_id.starts_with("acoustic_resegmentation/"));
         assert_eq!(operation.sources, vec![parent.clone()]);
         assert_eq!(operation.outputs, sources);
-        if parent_has_tail {
-            assert!(
-                operation
-                    .source_ranges
-                    .iter()
-                    .any(|range| range.sample_end > 9_600)
-            );
-            assert_eq!(operation.outputs.last().unwrap().sample_end, 9_600);
-        } else {
-            assert!(ledger.complete_word_slot(&parent));
-        }
+        assert!(ledger.complete_word_slot(&parent));
         let lineage = sources
             .iter()
             .map(|source| ledger.slot_source_ranges(source))
@@ -4186,11 +4175,11 @@ mod slot_ops_tests {
         let operations_before = ledger.slot_operations().len();
         ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
         // A complete decode window that covered the owner already paid its text
-        // debt (decision of Maciej, 2026-10-21). The parent tail reaches past
-        // the split's returned words, so only that variant still owes text.
-        let covered = ledger.complete_decode_covers(&owner);
-        assert_eq!(covered, !parent_has_tail);
-        assert_eq!(ledger.require_text_recovery(&owner), !covered);
+        // debt (decision of Maciej, 2026-10-21). A parent whose measured tail
+        // the split leaves uncovered is never split (D5; see
+        // forensic_merge_partial_coarse_parent_tail_cannot_retire_five_complete_words).
+        assert!(ledger.complete_decode_covers(&owner));
+        assert!(!ledger.require_text_recovery(&owner));
         let next = ledger.next_word_observation(ObservationProducer::Whisper, 1102, &owner);
         let decision = ledger.admit_word_slots(
             &next,
@@ -4198,7 +4187,7 @@ mod slot_ops_tests {
         );
         let after = ledger.slots_of(&owner).unwrap().to_vec();
         println!(
-            "parent-tail={parent_has_tail} contraction={decision:?}; after={after:?}; text={:?}; recovery={}",
+            "contraction={decision:?}; after={after:?}; text={:?}; recovery={}",
             ledger.text_of(&owner),
             ledger.text_recovery_pending(&owner)
         );
@@ -4216,13 +4205,9 @@ mod slot_ops_tests {
             lineage
         );
         assert_eq!(ledger.slot_operations().len(), operations_before);
-        assert_eq!(ledger.text_recovery_pending(&owner), !covered);
+        assert!(!ledger.text_recovery_pending(&owner));
         assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
-        if covered {
-            assert!(ledger.seal(&owner).is_ok());
-        } else {
-            assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-        }
+        assert!(ledger.seal(&owner).is_ok());
         assert!(ledger.word_deletions().is_empty());
         assert_eq!(
             ledger.len(),
@@ -4281,7 +4266,7 @@ mod slot_ops_tests {
         let (ledger, owner, pcm) = forensic_merge_capture("complete-parent-five", 1);
         let parent = ledger.slots_of(&owner).unwrap()[0].clone();
         assert!(ledger.complete_word_slot(&parent));
-        forensic_merge_preserve_five_split_children(ledger, owner, pcm, parent, false);
+        forensic_merge_preserve_five_split_children(ledger, owner, pcm, parent);
     }
 
     #[test]
@@ -5382,7 +5367,7 @@ mod slot_ops_tests {
             WordPin::new(0, 4_000, "czy"),
             WordPin::new(6_000, 16_000, "weryfikowałeś"),
         ];
-        for (variant, speech) in evidence.into_iter().enumerate() {
+        for speech in evidence {
             let (mut ledger, _) = forensic_coarse_fixture(false);
             let source = ledger.slots_of(&owner()).unwrap().to_vec();
             ledger.record_speech_evidence(&valid);
