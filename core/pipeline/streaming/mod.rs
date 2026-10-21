@@ -24,7 +24,7 @@ pub(crate) mod speech_progress;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
 
-pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
+pub use apple_live_session::{APPLE_FINAL_OVERLAP_WARNING_CODE, retained_formatter_deadline};
 pub use session::{
     SessionConfig, TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition,
     TailPatchSessionReceipt, collect_buffered_engine_events,
