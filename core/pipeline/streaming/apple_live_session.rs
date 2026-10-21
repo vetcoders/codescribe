@@ -96,8 +96,7 @@ use crate::pipeline::contracts::{
 };
 use crate::pipeline::engine_tuning::EngineTuning;
 use crate::pipeline::speech_islands::{
-    SPEECH_ISLAND_GAP_MS, SpeechIslandEvidence, SpeechIslandInput, join_speech_islands,
-    measure_speech_islands,
+    SpeechIslandEvidence, SpeechIslandInput, join_speech_islands, measure_speech_islands,
 };
 use crate::pipeline::whisper_word_speech::{
     SileroSpeechDistance, WhisperWordSpeech, WhisperWordSpeechDecision, WhisperWordSpeechVerdict,
@@ -7714,7 +7713,9 @@ fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUn
 }
 
 /// Whether the span lies on a speech island: Silero speech joined across
-/// pauses shorter than [`SPEECH_ISLAND_GAP_MS`], the clamps the Voice Lab
+/// pauses shorter than
+/// [`SPEECH_ISLAND_GAP_MS`](crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS),
+/// the clamps the Voice Lab
 /// take report draws. A pause inside a sentence belongs to its island, so a
 /// word pinned there has the right to exist. `None` until Silero has
 /// observed the span.
