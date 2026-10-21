@@ -1638,6 +1638,8 @@ impl AcousticLedger {
                         .collect::<Vec<_>>(),
                 ));
                 projected
+            } else if let Some(aligned) = self.declared_sequence_alignment(observation, words) {
+                aligned
             } else {
                 declared_slots()
             }

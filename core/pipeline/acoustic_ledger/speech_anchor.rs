@@ -336,6 +336,143 @@ impl AcousticLedger {
         )
     }
 
+    /// A phrase-grain callback still names single words. When its sequence
+    /// only partly matches the word pins another producer holds over the same
+    /// observed speech, each single-word pin that aligns in order with a held
+    /// word is that word and adopts its geometry: one producer's displaced
+    /// clock cannot found a second copy of one spoken word beside it. Phrase
+    /// pins and unaligned words keep their declared ranges. The alignment is
+    /// monotone and a repeated spelling aligns only when both sides repeat it
+    /// equally, so repetitions keep their positions. A measured Whisper word
+    /// never inherits another producer's clock.
+    pub(super) fn declared_sequence_alignment<'a>(
+        &self,
+        observation: &ObservationIdentity,
+        words: &'a [WordPin],
+    ) -> Option<Vec<(WordSlot, &'a WordPin)>> {
+        if observation.producer == ObservationProducer::Whisper {
+            return None;
+        }
+        let owner = &observation.occurrence;
+        let speech = self.speech_evidence.as_ref()?;
+        if !speech
+            .identity()
+            .matches(&owner.session, owner.capture_epoch)
+            || !speech.is_observed()
+        {
+            return None;
+        }
+        let tolerance = u64::from(self.capture_rate_hz?);
+        let held = self
+            .slots_of(owner)?
+            .iter()
+            .filter(|slot| {
+                slot.producer != observation.producer
+                    && self.word_pin_observations.contains(&slot.observation)
+            })
+            .collect::<Vec<_>>();
+        let words = words
+            .iter()
+            .filter(|pin| !pin.text.trim().is_empty())
+            .collect::<Vec<_>>();
+        if held.is_empty() || words.is_empty() {
+            return None;
+        }
+        let over_speech = |start: u64, end: u64| {
+            speech.ranges().iter().any(|range| {
+                range.session == owner.session
+                    && range.capture_epoch == owner.capture_epoch
+                    && range.sample_start < end
+                    && start < range.sample_end
+            })
+        };
+        let held_tokens = held
+            .iter()
+            .map(|slot| normalize_word_token(&slot.text))
+            .collect::<Vec<_>>();
+        let offered_tokens = words
+            .iter()
+            .map(|pin| {
+                (pin.text.split_whitespace().count() == 1)
+                    .then(|| normalize_word_token(&pin.text))
+                    .filter(|token| !token.is_empty())
+            })
+            .collect::<Vec<_>>();
+        let mut held_counts = BTreeMap::new();
+        let mut offered_counts = BTreeMap::new();
+        for token in &held_tokens {
+            *held_counts.entry(token.as_str()).or_insert(0_usize) += 1;
+        }
+        for token in offered_tokens.iter().flatten() {
+            *offered_counts.entry(token.as_str()).or_insert(0_usize) += 1;
+        }
+        let matches = |i: usize, j: usize| {
+            let (held, pin) = (held[i], words[j]);
+            offered_tokens[j].as_deref().is_some_and(|token| {
+                token == held_tokens[i]
+                    && (held_counts.get(token) == Some(&1)
+                        || offered_counts.get(token) == held_counts.get(token))
+            }) && over_speech(held.sample_start, held.sample_end)
+                && over_speech(pin.sample_start, pin.sample_end)
+                && held.sample_start <= pin.sample_end.saturating_add(tolerance)
+                && pin.sample_start <= held.sample_end.saturating_add(tolerance)
+        };
+        let mut lengths = vec![vec![0_usize; words.len() + 1]; held.len() + 1];
+        for i in (0..held.len()).rev() {
+            for j in (0..words.len()).rev() {
+                lengths[i][j] = if matches(i, j) {
+                    1 + lengths[i + 1][j + 1]
+                } else {
+                    lengths[i + 1][j].max(lengths[i][j + 1])
+                };
+            }
+        }
+        let mut correspondence = vec![None; words.len()];
+        let (mut i, mut j) = (0, 0);
+        while i < held.len() && j < words.len() {
+            if matches(i, j) && lengths[i][j] == 1 + lengths[i + 1][j + 1] {
+                correspondence[j] = Some(held[i]);
+                i += 1;
+                j += 1;
+            } else if lengths[i + 1][j] > lengths[i][j + 1] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        if correspondence.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(
+            words
+                .into_iter()
+                .zip(correspondence)
+                .map(|(pin, held)| {
+                    let (sample_start, sample_end) = held.map_or(
+                        (
+                            pin.sample_start.max(owner.sample_start),
+                            pin.sample_end.min(owner.sample_end),
+                        ),
+                        |held| (held.sample_start, held.sample_end),
+                    );
+                    (
+                        WordSlot {
+                            sample_start,
+                            sample_end,
+                            text: pin.text.clone(),
+                            producer: observation.producer,
+                            observation: observation.clone(),
+                            witness: SlotWitness::Unwitnessed,
+                            confidence: pin.confidence,
+                            surface_rewritten: pin.surface_rewritten,
+                        },
+                        pin,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     pub fn word_anchor_identity(&self, slot: &WordSlot) -> Option<&WordAnchorIdentity> {
         let slot = self.geometry_preserving_word_source(slot)?;
         self.anchor_word_state
