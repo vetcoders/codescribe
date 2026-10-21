@@ -1201,3 +1201,89 @@ fn recorded_1021_phrase_grain_dt_word_after_a_displaced_whisper_clock_is_one_wor
     );
     assert_eq!(ledger.conservation().residue(), 0);
 }
+
+#[test]
+fn recorded_1021_dt_partition_of_a_held_whisper_word_on_speech_stays_an_alternative() {
+    // Take 0428dd93 (dragon, 2026-10-21): Whisper held "widoczne" over 2 s of
+    // speech where the reference hears "widoczne"; word adjudication chose DT's
+    // partition "są one", next to the following "one", and the document read
+    // "one one". Where the instruments hear speech, DT does not retire the
+    // Whisper word. A DT word over speech no word holds is still admitted, and
+    // a Whisper word with no speech under it stays open to DT falsification.
+    let owner = OccurrenceIdentity::new("dt-over-whisper-on-speech-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..78_000].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("jakby", 9_600, 24_000), ("widoczne", 24_000, 72_000)],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let widoczne = ledger.slots_of(&owner).unwrap()[1].clone();
+    let echo = WordSlot {
+        sample_start: 84_000,
+        sample_end: 90_000,
+        text: "echo".into(),
+        ..widoczne.clone()
+    };
+    ledger
+        .committed
+        .get_mut(&owner)
+        .unwrap()
+        .slots
+        .push(echo.clone());
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        owner.clone(),
+    );
+    let dt_word = |text: &str, sample_start: u64, sample_end: u64| WordSlot {
+        sample_start,
+        sample_end,
+        text: text.into(),
+        producer: ObservationProducer::AppleDictation,
+        observation: dt.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    let partition = SlotOperationReceipt {
+        observation: dt.clone(),
+        kind: SlotOperationKind::Split,
+        sources: vec![widoczne.clone()],
+        outputs: vec![
+            dt_word("są", 24_000, 43_200),
+            dt_word("one", 52_800, 72_000),
+        ],
+        source_ranges: Vec::new(),
+        rule_id: "fixture".into(),
+    };
+    let falsifier = dt_word("cisza", 84_000, 90_000);
+    let novel = dt_word("nowe", 72_000, 77_000);
+    let mut proposed = partition.outputs.clone();
+    proposed.extend([novel.clone(), falsifier.clone()]);
+
+    let (kept, operations, label) = ledger.withhold_lower_authority_over_speech(
+        &dt,
+        Some(proposed),
+        std::slice::from_ref(&partition),
+    );
+
+    assert!(operations.is_empty());
+    assert_eq!(kept, Some(vec![novel, falsifier]));
+    assert_eq!(label.as_deref(), Some("nowe cisza"));
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == dt
+            && alternative.reason == "lower_authority_over_speech"
+            && alternative.candidate == "są one"
+            && alternative.sources == [widoczne.clone()]
+    }));
+}

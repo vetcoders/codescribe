@@ -2886,6 +2886,96 @@ impl AcousticLedger {
     }
 
     /// All slot batches commit here, including explicit geometric operations.
+    /// Where the instruments hear speech, a producer of lower authority does
+    /// not retire a word a higher one holds, not even by retiming it: its
+    /// proposal leaves the batch and stays an alternative on the held word,
+    /// while the rest of the batch is still admitted. A held word with no
+    /// speech range under it is not protected here; the lower producer may
+    /// still falsify it through the acoustic coverage check. Returns the kept
+    /// slots and operations, and the kept label when anything was withheld.
+    fn withhold_lower_authority_over_speech(
+        &mut self,
+        observation: &ObservationIdentity,
+        slots: Option<Vec<WordSlot>>,
+        operations: &[SlotOperationReceipt],
+    ) -> (
+        Option<Vec<WordSlot>>,
+        Vec<SlotOperationReceipt>,
+        Option<String>,
+    ) {
+        let owner = &observation.occurrence;
+        let held = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        let protected = |source: &WordSlot| {
+            observation.producer != ObservationProducer::ManualHuman
+                && source.producer.authority_rank() > observation.producer.authority_rank()
+                && !self.speech_evidence.as_ref().is_some_and(|speech| {
+                    speech
+                        .identity()
+                        .matches(&owner.session, owner.capture_epoch)
+                        && speech
+                            .availability()
+                            .observed_samples()
+                            .is_some_and(|end| end >= source.sample_end)
+                        && speech.ranges().iter().all(|range| {
+                            range.sample_end <= source.sample_start
+                                || range.sample_start >= source.sample_end
+                        })
+                })
+        };
+        let (withheld_operations, kept_operations): (Vec<_>, Vec<_>) = operations
+            .iter()
+            .cloned()
+            .partition(|operation| operation.sources.iter().any(&protected));
+        let mut withheld_sources = withheld_operations
+            .iter()
+            .flat_map(|operation| operation.sources.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut withheld_outputs = withheld_operations
+            .iter()
+            .flat_map(|operation| operation.outputs.iter().cloned())
+            .collect::<Vec<_>>();
+        let Some(proposed) = slots else {
+            return (None, kept_operations, None);
+        };
+        let mut kept = Vec::with_capacity(proposed.len());
+        for output in proposed {
+            if withheld_outputs.contains(&output) {
+                continue;
+            }
+            if kept_operations
+                .iter()
+                .any(|operation| operation.outputs.contains(&output))
+            {
+                kept.push(output);
+                continue;
+            }
+            match held
+                .iter()
+                .find(|source| **source != output && self.same_anchored_word(source, &output))
+            {
+                Some(source) if protected(source) => {
+                    withheld_sources.push(source.clone());
+                    withheld_outputs.push(output);
+                }
+                _ => kept.push(output),
+            }
+        }
+        if withheld_outputs.is_empty() {
+            return (Some(kept), kept_operations, None);
+        }
+        withheld_sources.sort_by_key(|word| (word.sample_start, word.sample_end));
+        withheld_sources.dedup();
+        withheld_outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+        self.retain_slot_alternative(
+            observation,
+            &compose_label(&withheld_outputs),
+            withheld_sources,
+            "lower_authority_over_speech",
+        );
+        let label = compose_label(&kept);
+        (Some(kept), kept_operations, Some(label))
+    }
+
     fn admit_slot_batch(
         &mut self,
         observation: &ObservationIdentity,
@@ -2906,6 +2996,27 @@ impl AcousticLedger {
                 non_mutating: None,
             }
         });
+        let (slots, kept_operations, kept_label) =
+            self.withhold_lower_authority_over_speech(observation, slots, operations);
+        let operations = kept_operations.as_slice();
+        if kept_label.is_some()
+            && slots.as_ref().is_some_and(Vec::is_empty)
+            && operations.is_empty()
+        {
+            let held_by = self
+                .committed
+                .get(&observation.occurrence)
+                .map_or(observation.producer, |held| held.producer);
+            self.offered_observations += 1;
+            self.note_answered(observation);
+            let decision = MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(),
+                held_by,
+            };
+            self.record_layer_decision(observation, text, &decision, None);
+            return decision;
+        }
+        let text = kept_label.as_deref().unwrap_or(text);
         // Sources this batch retires one by one: each held word that a proposed
         // word replaces as the same anchored word.
         let individually_retired = slots
