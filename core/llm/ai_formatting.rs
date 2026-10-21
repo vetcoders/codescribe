@@ -1466,10 +1466,9 @@ async fn call_anthropic_messages(
     assistive: bool,
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    let api_key = lane.credential().request_api_key().unwrap_or_default();
-    if let Some(reason) = lane.request_unavailable_reason() {
-        anyhow::bail!("{reason}");
-    }
+    let api_key = lane_request_credential(lane, true)
+        .await?
+        .unwrap_or_default();
     call_anthropic_messages_resolved(
         user_message,
         system_prompt,
@@ -1762,12 +1761,13 @@ async fn call_llm_endpoint(
 /// refreshed when near expiry, for this request only. Returns
 /// `(secret, bearer_only)` — account tokens must not also go out as `x-api-key`.
 async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
-    if let Some(reason) = lane.request_unavailable_reason() {
-        anyhow::bail!("{reason}");
-    }
-    if lane.credential().account_auth()
-        && let Some(vendor) = lane.vendor()
-    {
+    let account_vendor = lane
+        .credential()
+        .account_auth()
+        .then(|| lane.vendor())
+        .flatten();
+    let api_key = lane_request_credential(lane, account_vendor.is_none()).await?;
+    if let Some(vendor) = account_vendor {
         let token = account_auth::access_token(vendor).await.map_err(|error| {
             anyhow::anyhow!(
                 "{} account authentication failed: {error}",
@@ -1776,10 +1776,31 @@ async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
         })?;
         return Ok((token, true));
     }
-    Ok((
-        lane.credential().request_api_key().unwrap_or_default(),
-        false,
-    ))
+    Ok((api_key.unwrap_or_default(), false))
+}
+
+/// The lane's request-time credential verdict, taken on the blocking pool:
+/// refusal when no credential truth exists now, else the stored API key when
+/// `read_api_key`. Both read the Keychain on a cold cache, and a Keychain call
+/// can wait on a macOS authorization dialog for as long as it stays open. A
+/// live take polls its formatter jobs inline, so a read on the polling thread
+/// stopped the whole session and every job deadline with it (replay cbf54ca9,
+/// 2026-10-21).
+async fn lane_request_credential(
+    lane: &RuntimeLlmLane,
+    read_api_key: bool,
+) -> Result<Option<String>> {
+    let lane = lane.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(reason) = lane.request_unavailable_reason() {
+            anyhow::bail!("{reason}");
+        }
+        Ok(read_api_key
+            .then(|| lane.credential().request_api_key())
+            .flatten())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("credential storage task ended: {error}"))?
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API) through the sealed lane.
@@ -2423,6 +2444,30 @@ mod tests {
         "LLM_ASSISTIVE_PROVIDER",
         "LLM_ASSISTIVE_MODEL",
     ];
+
+    /// The formatter lane's credential verdict and key read happen off the
+    /// polling thread: a live take polls formatter jobs inline, and a cold
+    /// Keychain read can wait on an authorization dialog indefinitely.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn formatter_lane_credentials_are_read_off_the_polling_thread() {
+        let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+        let mut env = TestEnv::clean();
+        env.set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_str().expect("utf-8 test data path"),
+        );
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
+        }
+        env.guards.push(EnvGuard::remove("LLM_OPENAI_API_KEY"));
+        let snapshot = Config::load_runtime_snapshot().expect("seal lane topology");
+        let lane = snapshot.llm_lanes().formatting().clone();
+        let _bundle = crate::config::keychain::test_support::install_bundle(&[]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let _ = lane_request_credential(&lane, true).await;
+        assert!(probe.attempts().is_empty(), "{:?}", probe.attempts());
+    }
 
     /// Both lanes on one Custom row at the mock server, sealed before any key
     /// exists (the production controller built through `new_without_keychain`);
