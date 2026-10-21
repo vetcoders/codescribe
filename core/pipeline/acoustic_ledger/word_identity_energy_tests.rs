@@ -1143,3 +1143,61 @@ fn an_interior_word_does_not_inherit_the_bursts_left_decode_cut() {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 }
+
+#[test]
+fn recorded_1021_phrase_grain_dt_word_after_a_displaced_whisper_clock_is_one_word() {
+    // Take 3ff83fef (dragon, 2026-10-21): "jesteś po prostu wolny i". Whisper
+    // pinned "wolny." at 8.00-8.30 s, over the tail of "prostu" and the pause
+    // after it; the speech of "wolny" is at 8.90-9.28 s. DT declared "po
+    // prostu" as one phrase and "wolny" at 8.79-9.36 s. Silero joined the
+    // whole stretch into one speech range, so continuous PCM stands in for it.
+    let owner = OccurrenceIdentity::new("phrase-dt-displaced-clock-1021", 1, 24_000, 480_000);
+    let mut pcm = vec![0.0_f32; 500_000];
+    pcm[41_472..470_000].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[
+                        ("jesteś", 338_880, 365_760),
+                        ("po", 365_760, 374_400),
+                        ("prostu", 374_400, 384_000),
+                        ("wolny.", 384_000, 398_400),
+                        ("i", 444_480, 457_920),
+                    ],
+                    (0, 480_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        owner.clone(),
+    );
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("jesteś", 342_720, 354_240),
+                ("po prostu", 370_080, 390_240),
+                ("wolny", 421_920, 449_280),
+            ],
+            (0, 480_000),
+        ),
+    );
+    let text = ledger.text_of(&owner).unwrap();
+    assert_eq!(
+        lowercase_tokens(text)
+            .iter()
+            .filter(|token| token.as_str() == "wolny")
+            .count(),
+        1,
+        "one spoken word displaced by one producer's clock is one word: {text:?}",
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
