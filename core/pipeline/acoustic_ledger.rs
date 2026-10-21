@@ -2908,7 +2908,12 @@ impl AcousticLedger {
                     operation_outputs
                         .or(individual_outputs)
                         .is_some_and(|outputs| {
-                            !self.slot_retirement_has_acoustic_coverage(source, outputs, retired)
+                            !self.slot_retirement_has_acoustic_coverage(
+                                observation,
+                                source,
+                                outputs,
+                                retired,
+                            )
                         })
                 })
                 .cloned()

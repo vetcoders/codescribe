@@ -2190,6 +2190,7 @@ impl AcousticLedger {
     /// energy ladder, its silence already is the sub-floor measurement.
     pub(super) fn slot_retirement_has_acoustic_coverage(
         &self,
+        observation: &ObservationIdentity,
         source: &WordSlot,
         outputs: &[WordSlot],
         retired: &[WordSlot],
@@ -2231,6 +2232,38 @@ impl AcousticLedger {
             u64::from(self.capture_rate_hz.unwrap_or(16_000)) * WORD_CONTINUITY_MS / 1_000;
         gaps.retain(|(start, end)| end.saturating_sub(*start) > continuity);
         if gaps.is_empty() {
+            return true;
+        }
+        // One word corrected by one word over it keeps its word: the successor
+        // is its continuation, and any speech its new edges leave is coverage
+        // debt the seal accounts for, not a vanished word. A coarse group is
+        // not one word; a single-token label is, by the same whitespace cue
+        // `coarse_word_source` reads.
+        let mut overlapping = outputs.iter().filter(|output| {
+            output.observation.occurrence.same_capture(owner)
+                && output.sample_end > source.sample_start
+                && output.sample_start < source.sample_end
+        });
+        let one_word =
+            !source.text.trim().contains(char::is_whitespace) || !self.coarse_word_source(source);
+        if let (Some(successor), None) = (overlapping.next(), overlapping.next())
+            && one_word
+            && self.same_anchored_word(source, successor)
+        {
+            return true;
+        }
+        // The ledger's own PCM accounting: every measured speech range under
+        // the source is held by a new word or a committed neighbour's pin.
+        let range = OccurrenceIdentity::new(
+            &owner.session,
+            owner.capture_epoch,
+            source.sample_start,
+            source.sample_end,
+        );
+        if self
+            .speech_pin_coverage(observation, &range, outputs)
+            .is_some()
+        {
             return true;
         }
         let Some(speech) = self.speech_evidence.as_ref() else {
@@ -2497,7 +2530,7 @@ impl AcousticLedger {
             .collect::<Vec<_>>();
         if observation.producer != ObservationProducer::ManualHuman
             && sources.iter().any(|source| {
-                !self.slot_retirement_has_acoustic_coverage(source, &outputs, &sources)
+                !self.slot_retirement_has_acoustic_coverage(observation, source, &outputs, &sources)
             })
         {
             self.record_word_choice(
