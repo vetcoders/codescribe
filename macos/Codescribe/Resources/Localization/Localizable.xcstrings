@@ -5113,6 +5113,40 @@
         }
       }
     },
+    "Codex Cloud thread: open it in ChatGPT" : {
+      "comment" : "Codex focus button help: a Codex Cloud thread the desktop app cannot open",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Codex Cloud thread: open it in ChatGPT"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wątek Codex Cloud: otwórz go w ChatGPT"
+          }
+        }
+      }
+    },
+    "Codex thread opened" : {
+      "comment" : "Codex focus result: the ChatGPT (Codex) app opened the agent's thread",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Codex thread opened"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Otwarto wątek Codex"
+          }
+        }
+      }
+    },
     "Collapse" : {
       "comment" : "Fold the message back to its head",
       "localizations" : {
@@ -5879,6 +5913,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie udało się wczytać rozmów. Spróbuj odświeżyć listę."
+          }
+        }
+      }
+    },
+    "Could not open the agent's Codex thread" : {
+      "comment" : "Codex focus result: macOS did not open the codex:// link",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Could not open the agent's Codex thread"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się otworzyć wątku agenta w Codex"
           }
         }
       }
@@ -15775,6 +15826,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż surowy tekst"
+          }
+        }
+      }
+    },
+    "Show the agent's Codex thread" : {
+      "comment" : "Codex focus button help: opens the agent's thread in the ChatGPT (Codex) app",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Show the agent's Codex thread"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pokaż wątek agenta w Codex"
           }
         }
       }

@@ -202,18 +202,36 @@ struct OverlayPresentationStatus: Equatable {
 
 /// Where an agent's focus button lands. A Frame pane wins whenever it is known
 /// and a compatible `vc-frame` is installed; otherwise the agent's iTerm2 or
-/// Terminal.app tab, which the follower selects itself (UI-69).
+/// Terminal.app tab, which the follower selects itself (UI-69); otherwise a
+/// Codex agent's thread in the Codex app, which the overlay opens itself
+/// through `codex://threads/<id>` (UI-70).
 enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
   case frame
   case terminal
+  case codexThread
 
   static func resolve(
     _ hud: OverlayChannelHudProjection?, frameFocusAvailable: Bool
   ) -> OverlayAgentPanelFocusTarget? {
     if frameFocusAvailable, hud?.frameDetected == true { return .frame }
     if hud?.terminalDetected == true { return .terminal }
+    if hud?.codexThreadUrl != nil, hud?.codexThreadLocal == true { return .codexThread }
     return nil
   }
+
+  /// A Codex Cloud thread and no other destination: the Codex app's local
+  /// store cannot open its link ("no rollout found"), so the button rests
+  /// greyed and says where the thread lives instead.
+  static func isCodexCloudThread(
+    _ hud: OverlayChannelHudProjection?, frameFocusAvailable: Bool
+  ) -> Bool {
+    resolve(hud, frameFocusAvailable: frameFocusAvailable) == nil
+      && hud?.codexThreadUrl != nil && hud?.codexThreadLocal == false
+  }
+
+  /// Frame and terminal focus are carried out by the agent's follower; the
+  /// Codex app opens a thread link with no follower at all.
+  var needsLiveFollower: Bool { self != .codexThread }
 
   var help: String {
     switch self {
@@ -223,6 +241,10 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
       String(
         localized: "Show the agent's terminal tab",
         comment: "Terminal focus button help: brings the agent's iTerm2 or Terminal tab to front")
+    case .codexThread:
+      String(
+        localized: "Show the agent's Codex thread",
+        comment: "Codex focus button help: opens the agent's thread in the ChatGPT (Codex) app")
     }
   }
 
@@ -232,6 +254,8 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
       String(localized: "Opening panel in Frame…", comment: "Frame focus in flight")
     case .terminal:
       String(localized: "Opening the agent's terminal…", comment: "Terminal focus in flight")
+    // Never shown: the overlay opens the link at once and answers directly.
+    case .codexThread: help
     }
   }
 
@@ -243,6 +267,10 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
       String(
         localized: "Terminal tab shown",
         comment: "Terminal focus result: the agent's tab is in front")
+    case .codexThread:
+      String(
+        localized: "Codex thread opened",
+        comment: "Codex focus result: the ChatGPT (Codex) app opened the agent's thread")
     }
   }
 
@@ -256,6 +284,8 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
       String(
         localized: "No response from the agent's terminal.",
         comment: "Terminal focus result: timeout")
+    // Opening a link waits for nobody, so it cannot time out.
+    case .codexThread: failureText
     }
   }
 
@@ -267,7 +297,18 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
       String(
         localized: "Could not show the agent's terminal tab",
         comment: "Terminal focus result: generic failure")
+    case .codexThread:
+      String(
+        localized: "Could not open the agent's Codex thread",
+        comment: "Codex focus result: macOS did not open the codex:// link")
     }
+  }
+
+  /// Help of the greyed button of a Codex Cloud thread.
+  static var codexCloudThreadHelp: String {
+    String(
+      localized: "Codex Cloud thread: open it in ChatGPT",
+      comment: "Codex focus button help: a Codex Cloud thread the desktop app cannot open")
   }
 }
 
@@ -1523,6 +1564,10 @@ final class OverlayState {
     RealAgentBridgeInstaller.activateAgentTerminalHost(
       hostPID: hostPID, hostBundleID: hostBundleID)
   }
+  /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
+  @ObservationIgnored var openCodexThreadLink: @MainActor (URL) -> Bool = { url in
+    NSWorkspace.shared.open(url)
+  }
   @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
   @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
 
@@ -1544,12 +1589,14 @@ final class OverlayState {
   }
 
   /// A saved conversation, a dead follower or an unknown destination must
-  /// never advertise a focus action.
+  /// never advertise a focus action. A Codex thread is the exception to the
+  /// follower: the app opens its link itself.
   func canFocusAgentPanel(_ owner: OverlayConversationOwner) -> Bool {
-    !channelStatusUnavailable
-      && archiveCandidate(for: owner.channel) == owner
-      && channelHudStates[owner.channel]?.followerAlive == true
-      && agentPanelFocusTarget(for: owner.channel) != nil
+    guard !channelStatusUnavailable,
+      archiveCandidate(for: owner.channel) == owner,
+      let target = agentPanelFocusTarget(for: owner.channel)
+    else { return false }
+    return !target.needsLiveFollower || channelHudStates[owner.channel]?.followerAlive == true
   }
 
   /// Help and accessibility hint for the conversation's focus action.
@@ -1558,12 +1605,17 @@ final class OverlayState {
   }
 
   /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
-  /// while immediately (<1 frame) updating the row state with a spinner.
+  /// while immediately (<1 frame) updating the row state with a spinner. A
+  /// Codex thread sends no request: the overlay opens its link directly.
   func focusAgentPanel(_ owner: OverlayConversationOwner) {
     guard canFocusAgentPanel(owner),
       let target = agentPanelFocusTarget(for: owner.channel),
       agentPanelFocusStates[owner.channel]?.isRequesting != true
     else { return }
+    if target == .codexThread {
+      openAgentCodexThread(owner)
+      return
+    }
     let request = OverlayAgentPanelFocusRequest(owner: owner)
     agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
       requestID: request.requestID,
@@ -1614,6 +1666,50 @@ final class OverlayState {
         target: target
       )
       self.onChannelPresentationChanged?()
+    }
+  }
+
+  /// Opens the agent's Codex thread in the Codex app. Opening a URL is not
+  /// driving a terminal, so unlike Frame and terminal focus no follower acts
+  /// and the row answers at once (UI-70).
+  private func openAgentCodexThread(_ owner: OverlayConversationOwner) {
+    let target = OverlayAgentPanelFocusTarget.codexThread
+    let requestID = OverlayAgentPanelFocusRequest.makeRequestID()
+    let opened: Bool
+    if let link = channelHudStates[owner.channel]?.codexThreadUrl,
+      let url = URL(string: link), url.scheme == "codex"
+    {
+      opened = openCodexThreadLink(url)
+    } else {
+      opened = false
+    }
+    agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+      requestID: requestID,
+      owner: owner,
+      phase: opened ? .succeeded : .failed,
+      statusText: opened ? target.succeededText : target.failureText,
+      updatedAt: Date(),
+      target: target
+    )
+    if opened {
+      foldAfterAgentPanelFocus()
+    }
+    onChannelPresentationChanged?()
+    guard opened else { return }
+    let channel = owner.channel
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
+      } catch {
+        return
+      }
+      if self.agentPanelFocusStates[channel]?.requestID == requestID,
+        self.agentPanelFocusStates[channel]?.phase == .succeeded
+      {
+        self.agentPanelFocusStates.removeValue(forKey: channel)
+        self.onChannelPresentationChanged?()
+      }
     }
   }
 
@@ -2795,6 +2891,8 @@ final class OverlayState {
             provider: row.provider, providerSessionID: row.providerSessionId,
             frameDetected: row.frameDetected,
             terminalDetected: row.terminalDetected,
+            codexThreadUrl: row.codexThreadUrl,
+            codexThreadLocal: row.codexThreadLocal,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             })
