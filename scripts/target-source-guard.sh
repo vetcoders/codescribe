@@ -24,6 +24,12 @@
 #
 # Builds started at the same moment from two checkouts can still interleave;
 # serialize them through the build announcement on channel 0.
+#
+# The guard keeps its last-look stamps under the target's tmp/ directory. The
+# disk cleaner enforces the project's 30 GB build budget only on a directory
+# whose root holds nothing but Cargo's own entries, so a stamp directory beside
+# debug/ hid the shared target from the budget and it grew to 80 GB
+# (2026-10-21).
 
 set -euo pipefail
 
@@ -38,7 +44,7 @@ checkout, target_dir = sys.argv[1], sys.argv[2]
 meta = json.load(sys.stdin)
 targets = [t for p in meta["packages"] for t in p["targets"]]
 
-seen_dir = os.path.join(target_dir, ".target-source-guard")
+seen_dir = os.path.join(target_dir, "tmp", "target-source-guard")
 seen = os.path.join(seen_dir, hashlib.sha1(checkout.encode()).hexdigest()[:16])
 last_look = os.stat(seen).st_mtime if os.path.exists(seen) else 0.0
 started = time.time()
