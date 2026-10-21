@@ -845,7 +845,9 @@ mod tests {
         );
         let key = ("codex".to_string(), CODEX_THREAD.to_string());
         assert_eq!(
-            codex_threads_at(temp.path()).get(&key).map(|thread| thread.rollout),
+            codex_threads_at(temp.path())
+                .get(&key)
+                .map(|thread| thread.rollout),
             Some(false)
         );
 
@@ -859,7 +861,9 @@ mod tests {
             codex_facts(CODEX_THREAD, true, false),
         );
         assert_eq!(
-            codex_threads_at(temp.path()).get(&key).map(|thread| thread.rollout),
+            codex_threads_at(temp.path())
+                .get(&key)
+                .map(|thread| thread.rollout),
             Some(true)
         );
 
