@@ -3011,6 +3011,48 @@ impl AcousticLedger {
         let decision = self.decide_observation(observation, text, slot_revision, slots.is_some());
         let applies_slots = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
+        // D3: a word that replaces another engine's word on the same range
+        // carries that engine's verdict. Group the proposed words by the held
+        // word each one replaces and stamp them before any receipt records
+        // them, so receipts and held slots stay the same words.
+        let slots = if applies_slots && let Some(mut proposed) = slots {
+            let held_sources = self
+                .slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .to_vec();
+            let mut groups: Vec<(WordSlot, Vec<usize>)> = Vec::new();
+            for (index, output) in proposed.iter().enumerate() {
+                if operations
+                    .iter()
+                    .any(|group| group.outputs.contains(output))
+                {
+                    continue;
+                }
+                let Some(source) = held_sources
+                    .iter()
+                    .find(|source| *source != output && self.same_anchored_word(source, output))
+                else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(held, _)| held == source) {
+                    Some((_, members)) => members.push(index),
+                    None => groups.push((source.clone(), vec![index])),
+                }
+            }
+            for (source, members) in groups {
+                let mut outputs = members
+                    .iter()
+                    .map(|index| proposed[*index].clone())
+                    .collect::<Vec<_>>();
+                self.stamp_word_witness(observation, std::slice::from_ref(&source), &mut outputs);
+                for (index, output) in members.into_iter().zip(outputs) {
+                    proposed[index] = output;
+                }
+            }
+            Some(proposed)
+        } else {
+            slots
+        };
         let mut individual_sources = Vec::new();
         if applies_slots && let Some(proposed) = slots.as_ref() {
             for output in proposed {
