@@ -1566,6 +1566,25 @@ provider submission identity stays `unresolved`; no unrelated entry is removed.
 The mailbox, transcript journal, original ACK marker and retained audio remain
 independent of pending provider queue removal.
 
+### Threads outside the local Codex store
+
+Native wakeup reaches only a thread the local Codex CLI can load. `codex queue`
+and `thread/queue/delete` resolve the thread from the local thread store, whose
+sessions are the `rollout-*-<thread-id>.jsonl` files under `~/.codex/sessions`.
+A thread that lives in the cloud — for example a Codex conversation started from
+the ChatGPT app with a cloud environment, where this Mac runs only its executor
+(`codex exec-server --remote https://…`) — has no local rollout. Every
+submission is refused with `invalid thread-store request: no rollout found for thread id …` and the transport receipt records `disposition: rejected`.
+Pointing `codex queue --remote unix://` at the shared local app-server daemon
+does not help: that daemon does not hold the thread either.
+
+Such an agent still reads, acknowledges, sends and speaks normally; only waking
+it after its turn has ended is unavailable. Keep its turn open with one
+`cs-bus --watch --until-event` for as long as it must hear the bus, or let an
+orchestrator that is woken through its own channel resume it. To see where a
+thread lives, follow the process tree of its `cs-bus --watch`: a
+`codex exec-server --remote` parent means a cloud thread.
+
 ## Unexpected listener loss and recovery
 
 A listening session has four layers. Each is observed by a different component,
