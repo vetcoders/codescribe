@@ -2863,6 +2863,23 @@ impl AcousticLedger {
                 non_mutating: None,
             }
         });
+        // Sources this batch retires one by one: each held word that a proposed
+        // word replaces as the same anchored word.
+        let individually_retired = slots
+            .as_ref()
+            .map(|proposed| {
+                self.slots_of(&observation.occurrence)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|source| {
+                        proposed.iter().any(|output| {
+                            output != *source && self.same_anchored_word(source, output)
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let blocked_sources = if observation.producer == ObservationProducer::ManualHuman {
             Vec::new()
         } else {
@@ -2882,10 +2899,16 @@ impl AcousticLedger {
                             })
                         })
                         .map(Vec::as_slice);
+                    let retired = operations
+                        .iter()
+                        .find(|operation| operation.sources.contains(source))
+                        .map_or(individually_retired.as_slice(), |operation| {
+                            operation.sources.as_slice()
+                        });
                     operation_outputs
                         .or(individual_outputs)
                         .is_some_and(|outputs| {
-                            !self.slot_retirement_has_acoustic_coverage(source, outputs)
+                            !self.slot_retirement_has_acoustic_coverage(source, outputs, retired)
                         })
                 })
                 .cloned()
