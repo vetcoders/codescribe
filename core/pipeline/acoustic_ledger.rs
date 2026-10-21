@@ -8667,12 +8667,25 @@ mod tests {
         );
         assert_eq!(ledger.conservation().residue(), 0);
         ledger.assert_slot_labels();
-        assert!(
-            ledger
-                .slots_of(&owner)
-                .unwrap()
-                .iter()
-                .all(|slot| slot.witness == SlotWitness::Unwitnessed)
+        // D3 (ledger speech truth brief): a second engine on an owned range is
+        // a witness, not silence. Whisper's four words land over Apple's on the
+        // same ranges and agree with them, so they are Confirmed; Apple's `e`,
+        // which no Whisper word reached, keeps no verdict.
+        let witnesses = ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|slot| slot.witness.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witnesses,
+            [
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Unwitnessed,
+            ]
         );
     }
 
