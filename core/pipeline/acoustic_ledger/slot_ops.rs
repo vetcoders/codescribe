@@ -2279,12 +2279,12 @@ impl AcousticLedger {
     /// same producer shares the source's clock, so its geometry is read: it
     /// never continues the source across the words that remain beside it;
     /// under the source's own spelling it is that word at any width; under
-    /// another spelling it must hold most of the source's span and must not
-    /// be spelled like the word held right next to it. Same-request
-    /// re-decodes that failed this on 2026-10-21: `jesteś` → `ale` over 60 ms
-    /// of it (3ff83fef), `pokazać` → a 2.76 s `właściwe` across `generalnie`
-    /// (dbb410fa), `first.` → `że` beside `że` (0d3ede90), `sidebar,` → `o`
-    /// beside `o` (0428dd93).
+    /// another spelling the two must lie mostly over each other, each holding
+    /// most of the other's span, and it must not be spelled like the word held
+    /// right next to it. Same-request re-decodes that failed this on
+    /// 2026-10-21: `jesteś` → `ale` over 60 ms of it (3ff83fef), `pokazać` →
+    /// a 2.76 s `właściwe` from 0.53 s of it (dbb410fa), `first.` → `że`
+    /// beside `że` (0d3ede90), `sidebar,` → `o` beside `o` (0428dd93).
     fn successor_continues_source(
         &self,
         source: &WordSlot,
@@ -2315,7 +2315,10 @@ impl AcousticLedger {
             .sample_end
             .min(source.sample_end)
             .saturating_sub(successor.sample_start.max(source.sample_start));
-        if overlap.saturating_mul(2) < source.sample_end.saturating_sub(source.sample_start) {
+        if overlap.saturating_mul(2) < source.sample_end.saturating_sub(source.sample_start)
+            || overlap.saturating_mul(2)
+                < successor.sample_end.saturating_sub(successor.sample_start)
+        {
             return false;
         }
         let Some(index) = held.iter().position(|slot| slot == source) else {
