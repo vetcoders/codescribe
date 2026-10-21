@@ -1495,4 +1495,37 @@ fn recorded_1021_a_redecode_continues_a_word_only_over_most_of_it_and_off_its_ne
     ));
     assert!(covered(&ledger, &jestes, word("jesteś,", 12_000, 32_000)));
     assert!(covered(&ledger, &pokazac, word("pokazać", 40_000, 58_000)));
+
+    // Recorded order on dbb410fa: "generalnie" was not held yet when the
+    // 2.76 s "właściwe" re-decoded "pokazać", so no word beside it stayed.
+    let lone = OccurrenceIdentity::new("redecode-continuation-lone-1021", 1, 0, 96_000);
+    let mut lone_ledger = measured_ledger_at_rate(&lone, &pcm, RATE);
+    let lone_whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, lone.clone());
+    assert!(
+        lone_ledger
+            .admit_word_slots(
+                &lone_whisper,
+                &decoded(&[("pokazać", 36_480, 62_000)], (0, 96_000))
+            )
+            .grants_mutation()
+    );
+    let lone_pokazac = lone_ledger.slots_of(&lone).unwrap()[0].clone();
+    let lone_redecode = ObservationIdentity::new(ObservationProducer::Whisper, 2, 4, lone.clone());
+    let lone_successor = WordSlot {
+        sample_start: 40_000,
+        sample_end: 90_000,
+        text: "właściwe".into(),
+        producer: ObservationProducer::Whisper,
+        observation: lone_redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    assert!(lone_ledger.same_anchored_word(&lone_pokazac, &lone_successor));
+    assert!(!lone_ledger.slot_retirement_has_acoustic_coverage(
+        &lone_redecode,
+        &lone_pokazac,
+        &[lone_successor],
+        std::slice::from_ref(&lone_pokazac),
+    ));
 }
