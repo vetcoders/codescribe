@@ -43,7 +43,7 @@ actor VoiceLabRuntime {
   }
 
   nonisolated static func consoleURL(port: Int) -> URL {
-    URL(string: "http://127.0.0.1:\(port)/lab")!
+    URL(string: "http://127.0.0.1:\(port)/lab/take")!
   }
 
   nonisolated static func shouldSpawn(
@@ -199,7 +199,7 @@ actor VoiceLabRuntime {
         <h1>codescribe loopback</h1>
         <p>Dev install pointers. Do not rewrite these URLs.</p>
         <ul>
-          <li><a href="http://127.0.0.1:\(port)/lab">Voice Lab</a> — <code>http://127.0.0.1:\(port)/lab</code></li>
+          <li><a href="\(consoleURL(port: port).absoluteString)">Voice Lab</a> — <code>\(consoleURL(port: port).absoluteString)</code></li>
           <li>STT file HTTP — <code>http://127.0.0.1:8444/v1/audio/transcriptions</code></li>
           <li>STT live WebSocket — <code>ws://127.0.0.1:8446</code></li>
         </ul>

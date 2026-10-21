@@ -61,6 +61,15 @@ final class DeveloperSurfaceTests: XCTestCase {
     )
   }
 
+  func testVoiceLabOpensTakeReportOnTheSelectedPort() {
+    for port in [8765, 8769] {
+      let url = VoiceLabRuntime.consoleURL(port: port)
+      XCTAssertEqual(url.host, "127.0.0.1")
+      XCTAssertEqual(url.port, port)
+      XCTAssertEqual(url.path, "/lab/take")
+    }
+  }
+
   func testVoiceLabSpawnIsCSOnlyAndIdleWhenAlreadyUp() {
     XCTAssertTrue(
       VoiceLabRuntime.shouldSpawn(
