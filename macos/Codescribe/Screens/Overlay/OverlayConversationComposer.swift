@@ -188,6 +188,7 @@ struct OverlayConversationComposer: View {
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle()).buttonStyle(.plain)
+        .background { OverlayMenuCursorRegion() }
         .disabled(draftMicrophoneBusy)
         .accessibilityLabel(
           draftMicrophoneRecording ? Text("Stop dictation") : Text("Dictate message")
@@ -203,6 +204,7 @@ struct OverlayConversationComposer: View {
         )
         .contentShape(Circle())
         .buttonStyle(.plain)
+        .background { OverlayMenuCursorRegion() }
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
     }

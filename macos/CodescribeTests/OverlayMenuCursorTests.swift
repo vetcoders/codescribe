@@ -220,8 +220,10 @@ final class OverlayMenuCursorTests: XCTestCase {
     let chips = panel.menuCursorRegions.allObjects.filter {
       $0.window === panel && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
     }
-    let chipRow = try XCTUnwrap(chips.first, "the attachment row registers a cursor region")
-    XCTAssertEqual(chips.count, 1, "only the chip row, never the editor")
+    let chipRow = try XCTUnwrap(
+      chips.max { $0.bounds.width < $1.bounds.width },
+      "the attachment row registers a cursor region")
+    XCTAssertGreaterThan(chipRow.bounds.width, 100, "the whole chip row, not only Send")
     let frame = chipRow.convert(chipRow.bounds, to: nil)
     let saved = NSCursor.current
     defer { saved.set() }
@@ -275,6 +277,86 @@ final class OverlayMenuCursorTests: XCTestCase {
     XCTAssertTrue(panel.refreshCursor(at: NSPoint(x: frame.midX, y: frame.midY)), "chip \(frame)")
     XCTAssertEqual(NSCursor.current, .arrow)
     XCTAssertEqual(panel.cursor(at: NSPoint(x: 40, y: 30)), .iBeam, "text keeps its cursor")
+  }
+
+  func testReplyAndDraftMicrophoneKeepTheArrowAndReceiveNativeClicks() throws {
+    let message = OverlayConversationMessage(
+      id: "user:cursor-controls", kind: .user, text: "Selectable message above its Reply button.",
+      order: 1, emittedAt: "2026-10-21T01:40:00Z", owner: nil, recipients: [],
+      deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    let conversation = OverlayConversation(
+      id: "cursor-controls", channel: "0", name: "All", owner: nil, messages: [message])
+    var replies = 0
+    var microphoneClicks = 0
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: .constant(""), sending: false, sendError: nil, onSend: {},
+      onReply: { _ in replies += 1 })
+    let host = NSHostingView(
+      rootView: VStack(spacing: 30) {
+        view.messageBubble(message)
+        OverlayConversationComposer(
+          palette: .dark, draft: .constant("Editable draft"), sending: false, onSubmit: {},
+          onToggleDraftMicrophone: { microphoneClicks += 1 })
+      }.padding(30))
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 200, y: 200, width: 600, height: 350),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = OverlayContentContainer(hosting: host)
+    BackgroundTestWindow.present(panel)
+    let saved = NSCursor.current
+    defer {
+      panel.orderOut(nil)
+      saved.set()
+    }
+    panel.contentView?.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    for identifier in [
+      "overlay-message-reply-\(message.id)", "overlay-conversation-draft-microphone",
+    ] {
+      let button = try XCTUnwrap(
+        NativeAccessibilityProbe.waitForElements(identifier).elements.first)
+      let screenTop = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+      let point = panel.convertPoint(
+        fromScreen: NSPoint(
+          x: button.x + button.width / 2, y: screenTop - button.y - button.height / 2))
+      XCTAssertEqual(panel.cursor(at: point), .arrow, identifier)
+      for type in [NSEvent.EventType.mouseMoved, .cursorUpdate] {
+        NSCursor.iBeam.set()
+        let event =
+          type == .cursorUpdate
+          ? NSEvent.enterExitEvent(
+            with: type, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: 1, trackingNumber: 0, userData: nil)
+          : NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 0, pressure: 0)
+        panel.sendEvent(try XCTUnwrap(event))
+        XCTAssertEqual(NSCursor.current, .arrow, identifier)
+      }
+      // AX locates the control; the real panel receives both mouse events.
+      for (type, number) in [(NSEvent.EventType.leftMouseDown, 2), (.leftMouseUp, 3)] {
+        panel.sendEvent(
+          try XCTUnwrap(
+            NSEvent.mouseEvent(
+              with: type, location: point, modifierFlags: [],
+              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+              context: nil, eventNumber: number, clickCount: 1,
+              pressure: type == .leftMouseDown ? 1 : 0)))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+      }
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    }
+    XCTAssertEqual(replies, 1)
+    XCTAssertEqual(microphoneClicks, 1)
+    let editor = try XCTUnwrap(editableTextView(in: host))
+    let typing = editor.convert(NSPoint(x: editor.bounds.midX, y: editor.bounds.midY), to: nil)
+    XCTAssertEqual(panel.cursor(at: typing), .iBeam, "the draft remains a native text input")
   }
 
   private func editableTextView(in view: NSView) -> NSTextView? {
