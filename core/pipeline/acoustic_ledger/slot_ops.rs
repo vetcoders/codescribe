@@ -3126,6 +3126,13 @@ mod slot_ops_tests {
 
     #[test]
     fn forensic_scope_sparse_word_times_distinguish_partial_and_complete_work() {
+        // Apple holds "czy plan weryfikowałeś" over the whole owner. Whisper
+        // and cloud hear only "czy weryfikowałeś" at 2_000..8_000; voiced PCM
+        // at 14_000..16_000 stays outside every returned word. D5: a decode
+        // that omits a word is not evidence of its absence, so the held label
+        // stays and the proposal is collected beside it (D3). Option A
+        // (Maciej, 2026-10-21): only a complete window over the owner pays its
+        // text debt; a partial window or untimed words leave the debt open.
         for producer in [ObservationProducer::Whisper, ObservationProducer::CloudLive] {
             for window in [None, Some((0, 12_000)), Some((0, 16_000))] {
                 let (mut ledger, owner, _, _) =
@@ -3146,84 +3153,42 @@ mod slot_ops_tests {
                 })
                 .collect::<Vec<_>>();
                 let receipt = ledger.admit_word_slots(&observation, &pins);
-                if producer == ObservationProducer::CloudLive && window != Some((0, 16_000)) {
-                    // Cloud's partial answer retains the unaccounted source.
-                    // The complete-window case below must still replace it;
-                    // Whisper's existing partial-word contract stays intact.
-                    assert!(!receipt.grants_mutation(), "{window:?}: {receipt:?}");
-                    assert_eq!(ledger.slots_of(&owner).unwrap(), source);
-                    assert!(ledger.slot_alternatives().iter().any(|alternative| {
-                        alternative.observation == observation
-                            && alternative.candidate == "czy weryfikowałeś"
-                            && alternative.sources == source
-                    }));
-                    assert!(
-                        !ledger
-                            .slot_operations()
-                            .iter()
-                            .any(|operation| operation.observation == observation)
-                    );
-                    assert!(ledger.text_recovery_pending(&owner));
-                    assert!(ledger.note_frontier_return(&owner, producer));
-                    let coverage = ledger.assess_seal_coverage(
-                        &owner.session,
-                        owner.capture_epoch,
-                        &speech,
-                        0,
-                    );
-                    assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
-                    assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-                    assert!(ledger.word_deletions().is_empty());
-                    ledger.assert_slot_labels();
-                    assert_eq!(ledger.conservation().residue(), 0);
-                    continue;
-                }
                 assert!(
-                    receipt.grants_mutation()
-                        || matches!(receipt, MutationReceipt::Preserve { .. }),
+                    !receipt.grants_mutation(),
                     "{producer:?} {window:?}: {receipt:?}"
                 );
-                assert_eq!(ledger.text_of(&owner), Some("czy weryfikowałeś"));
-                let operation = ledger.slot_operations().last().unwrap();
-                assert_eq!(operation.sources, source);
-                assert_eq!(operation.outputs.len(), 2);
-                assert_eq!(
-                    (
-                        operation.outputs[0].sample_start,
-                        operation.outputs[1].sample_end
-                    ),
-                    (2_000, 8_000)
-                );
-                assert!(operation.source_ranges.contains(&owner));
+                assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+                assert_eq!(ledger.text_of(&owner), Some("czy plan weryfikowałeś"));
                 assert!(
-                    ledger.group_speech_coverages().is_empty(),
-                    "work completion is not a speech-density receipt"
+                    ledger
+                        .slot_alternatives()
+                        .iter()
+                        .any(|alternative| alternative.observation == observation),
+                    "{producer:?} {window:?}: the omitting proposal is collected"
                 );
+                assert!(
+                    !ledger
+                        .slot_operations()
+                        .iter()
+                        .any(|operation| operation.observation == observation)
+                );
+                assert!(ledger.word_deletions().is_empty());
                 let complete = window == Some((0, 16_000));
-                assert_eq!(ledger.text_recovery_pending(&owner), !complete);
+                assert_eq!(
+                    ledger.text_recovery_pending(&owner),
+                    !complete,
+                    "{producer:?} {window:?}: only a complete window pays the debt"
+                );
                 assert!(ledger.note_frontier_return(&owner, producer));
                 let coverage =
                     ledger.assess_seal_coverage(&owner.session, owner.capture_epoch, &speech, 0);
                 assert!(ledger.record_seal_coverage(coverage.clone()));
                 if complete {
-                    assert_eq!(coverage.status, SealCoverageStatus::Complete);
                     ledger
                         .seal(&owner)
-                        .expect("full actual decoder scope returned");
-                    ledger
-                        .seal_terminal(&owner.session, owner.capture_epoch)
-                        .expect("valid observer and full scope");
+                        .expect("a complete window paid the debt of the held label");
                 } else {
-                    assert!(
-                        ledger.text_recovery_pending(&owner),
-                        "frontier return cannot decode the missing scope"
-                    );
-                    assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
                     assert_eq!(ledger.seal(&owner), Err(SealRefusal::TextRecoveryPending));
-                    assert_eq!(
-                        ledger.seal_terminal(&owner.session, owner.capture_epoch),
-                        Err(SealRefusal::TextRecoveryPending)
-                    );
                 }
                 ledger.assert_slot_labels();
                 assert_eq!(ledger.conservation().residue(), 0);
