@@ -1615,13 +1615,10 @@ fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_i
     assert!(ledger.committed.contains_key(&live));
     let right_before = ledger.slots_of(&right).unwrap().to_vec();
     let recovery = ObservationIdentity::new(ObservationProducer::Whisper, 1, 12, left.clone());
-    // The recorded recovery returned after the fence settled; the live-edge
-    // deferral this synthetic open burst would add is a separate rule, so
-    // the identity normalizer is asked directly.
-    let pins = decoded(
-        &[("plus", 663_360, 677_760), ("długoscią", 677_760, 748_800)],
-        (663_360, 1_007_040),
-    );
+    // The recorded callback reached the identity normalizer as "długoscią"
+    // alone: live-edge deferral had held back "plus". That lone pin carries
+    // no sequence context, so the normalizer is asked directly with it.
+    let pins = decoded(&[("długoscią", 677_760, 748_800)], (663_360, 1_007_040));
     let anchors = ledger.measured_word_anchors(&left).unwrap();
     let incoming = ledger
         .normalize_anchor_words(&recovery, &pins, &anchors)
