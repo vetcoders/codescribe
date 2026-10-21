@@ -27674,9 +27674,15 @@ mod relay_l1_overlap_admission_tests {
     fn direct_word_text_drops_unpinned_copies_and_keeps_pinned_repeats() {
         let session = "direct-unpinned-loop";
         let mut lane = open(session);
+        // Three spoken words inside one Silero range, each its own voiced
+        // burst: the 20 ms hops between them fall below the floor.
+        let mut pcm = vec![0.0_f32; 160_000];
+        for (start, end) in [(40_000, 42_000), (42_600, 44_400), (45_000, 48_000)] {
+            pcm[start..end].fill(0.2);
+        }
         record_energy(
             &lane,
-            &[vec![0.0; 40_000], vec![0.2; 8_000], vec![0.0; 112_000]],
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
         );
         record_silero(&mut lane, 160_000, Some((40_000, 48_000)));
 
@@ -27697,12 +27703,14 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(lane.state.direct_unpinned_repeats, 3);
         assert_eq!(lane.state.direct_words_over_silence, 0);
 
+        // Each counted repeat lies on its own burst and lasts longer than one
+        // repeat syllable (WHISPER_REPEAT_MIN_MS_PER_SYLLABLE).
         let counted = direct_payload(
             session,
             vec![
-                word_pin(session, "trzy,", 41_000, 42_500),
-                word_pin(session, "trzy,", 43_000, 44_500),
-                word_pin(session, "trzy.", 45_000, 46_500),
+                word_pin(session, "trzy,", 40_100, 41_900),
+                word_pin(session, "trzy,", 42_700, 44_400),
+                word_pin(session, "trzy.", 45_100, 46_900),
             ],
             TailSegmentGrain::Word,
         );
