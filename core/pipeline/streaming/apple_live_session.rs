@@ -12027,7 +12027,13 @@ mod c13a_lifecycle_tests {
         let session = "walkaround-755-gap-repro";
         let (tx, mut event_rx) = mpsc::unbounded_channel();
         let mut state = state_for_session(session);
-        state.audio.push(&vec![0.25; CAPTURE_END]);
+        // The capture reaches the energy owner with the buffer, on a device
+        // calibrated to a 0.01 RMS existence floor; the take is 0.25 RMS.
+        let pcm = vec![0.25; CAPTURE_END];
+        state.existence_floor_rms = Some(0.01);
+        state.audio.push(&pcm);
+        CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, TEST_SAMPLE_RATE)
+            .push_samples(&pcm);
 
         let apple_occurrence = OccurrenceIdentity::new(session, 1, 694_272, 837_632);
         stage_pending_occurrence(
@@ -14376,6 +14382,9 @@ mod rc_w2_acoustic_tests {
     const PAD: u64 = 1_024;
     /// `SEAL_COVERAGE_INCOMPLETE_MS` (250 ms) at [`RATE`].
     const THRESHOLD: u64 = 4_000;
+    /// Calibrated existence floor of the fixture's capture device. Fixture
+    /// speech is 0.25 RMS and fixture silence is digital zero.
+    const EXISTENCE_FLOOR_RMS: f32 = 0.01;
 
     // capture_receipt owns a per-test-thread clock for every energy consumer.
     // No module-local mutex can protect a process-global reset/feed/read sequence.
@@ -14387,11 +14396,22 @@ mod rc_w2_acoustic_tests {
     fn state_for(session: &str, capture_secs: f32) -> AppleSealState {
         let mut state = AppleSealState::new_for_session(RATE, session.into(), 0);
         state.energy_calibration = Some(EnergyCalibration::new("synthetic", 1.0, 1));
+        state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
         if capture_secs > 0.0 {
             state
                 .audio
                 .push(&vec![0.25f32; (capture_secs * RATE as f32) as usize]);
         }
+        state
+    }
+
+    /// [`state_for`] whose capture also reached the energy owner, the way a
+    /// recorder delivers it: the same PCM, read against the calibrated floor.
+    fn measured_state_for(session: &str, capture_secs: f32) -> AppleSealState {
+        let mut state = state_for(session, 0.0);
+        let pcm = vec![0.25f32; (capture_secs * RATE as f32) as usize];
+        state.audio.push(&pcm);
+        CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, RATE).push_samples(&pcm);
         state
     }
 
@@ -16353,7 +16373,7 @@ mod rc_w2_acoustic_tests {
     /// carry it, not through the receipt struct alone.
     #[test]
     fn a_legacy_skip_verdict_still_reaches_ledger_admission() {
-        let mut state = state_for("rc-w2-legacy-skip", 2.0);
+        let mut state = measured_state_for("rc-w2-legacy-skip", 2.0);
         let (tx, _rx) = mpsc::unbounded_channel();
         let occurrence =
             OccurrenceIdentity::new(state.session_id.clone(), state.capture_epoch, 0, at(1.0));
@@ -17224,7 +17244,7 @@ mod rc_w2_acoustic_tests {
     /// that wholly contains it.
     #[test]
     fn short_flush_hears_eight_seconds_and_context_words_stay_out_of_the_label() {
-        let mut state = state_for("context-window", 10.0);
+        let mut state = measured_state_for("context-window", 10.0);
         let occurrence_end = at(10.0);
         let occurrence_len = (0.31 * RATE as f32).round() as u64;
         let occurrence_start = occurrence_end - occurrence_len;
@@ -22317,6 +22337,9 @@ mod live_refinement_admission_tests {
     use super::*;
 
     const RATE: u32 = 1_000;
+    /// Calibrated existence floor of the fixture's capture device. Fixture
+    /// speech is 0.25 RMS, so a word over measured fixture PCM clears it.
+    const EXISTENCE_FLOOR_RMS: f32 = 0.01;
 
     fn fixture(
         capacity: usize,
@@ -22340,6 +22363,7 @@ mod live_refinement_admission_tests {
                 min_valley_samples: 1,
             }),
         );
+        state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
         state.audio.push(&vec![0.25; 20_000]);
         (state, events, receiver, requests)
     }
@@ -24623,8 +24647,21 @@ mod live_refinement_admission_tests {
     }
 
     // One physical owner, qualified on the 48 kHz capture clock.
+    /// Qualify the member from the PCM the capture holds under it.
     fn tc3_stage_member(state: &mut AppleSealState, occurrence: &OccurrenceIdentity) {
         let calibration = state.energy_calibration.clone().unwrap();
+        let window = state
+            .window_by_samples(occurrence.sample_start, occurrence.sample_end)
+            .unwrap();
+        let energy_integral = window
+            .samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        let peak = window
+            .samples
+            .iter()
+            .fold(0.0_f32, |peak, x| peak.max(x.abs()));
         let mut ledger = state.acoustic_ledger.lock().unwrap();
         assert!(
             ledger
@@ -24632,9 +24669,10 @@ mod live_refinement_admission_tests {
                     &AcousticEvidence {
                         occurrence: occurrence.clone(),
                         duration_ms: occurrence.sample_len() as f64 / 48.0,
-                        energy_integral: occurrence.sample_len() as f64 * 0.0625,
-                        mean_rms_dbfs: -12.0,
-                        peak_dbfs: -12.0,
+                        energy_integral,
+                        mean_rms_dbfs: 10.0
+                            * (energy_integral / occurrence.sample_len() as f64).log10(),
+                        peak_dbfs: 20.0 * f64::from(peak).log10(),
                         vad_open_sample: Some(occurrence.sample_start),
                         vad_close_sample: Some(occurrence.sample_end),
                         evidence_calibration_version: calibration.version.clone(),
@@ -24682,7 +24720,15 @@ mod live_refinement_admission_tests {
             }),
         );
         let head = 720_000_usize;
-        state.audio.push(&vec![0.25; head]);
+        // One 0.4 s spoken burst under the returned word, as in
+        // `forensic_live_transport_capture`, then room tone below the floor:
+        // speech that ran on through every window would leave the word at the
+        // capture origin possibly cut, and the ledger would rightly wait.
+        let mut pcm = vec![0.004; head];
+        pcm[..19_200].fill(0.25);
+        state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
+        state.audio.push(&pcm);
+        CaptureLevelAccumulator::bound_to_at_rate(&state.capture_energy, 48_000).push_samples(&pcm);
         state.capture_stopping = true;
         let owner = OccurrenceIdentity::new("ef1fa240", 7, 0, head as u64);
         tc3_stage_member(&mut state, &owner);
@@ -25209,6 +25255,12 @@ mod relay_l1_overlap_admission_tests {
     use tokio::sync::mpsc;
 
     const RATE: u32 = 16_000;
+    /// The capture device's calibrated existence floor. Fixture speech is
+    /// 0.2 RMS and fixture silence is digital zero, so the floor reads the
+    /// fixture's own PCM the way a calibrated take reads the room.
+    const EXISTENCE_FLOOR_RMS: f32 = 0.01;
+    /// Room tone between spoken words: measured, and below the floor.
+    const ROOM_TONE_RMS: f32 = 0.004;
 
     struct Lane {
         state: AppleSealState,
@@ -25620,6 +25672,7 @@ mod relay_l1_overlap_admission_tests {
         let (tail_tx, tail_rx) = mpsc::channel(8);
         let mut state = AppleSealState::new_for_session(RATE, session.to_string(), 1);
         state.tail_patch = Some(tail_tx);
+        state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
         Lane {
             state,
             tx,
@@ -28163,6 +28216,18 @@ mod relay_l1_overlap_admission_tests {
         session: &str,
         held: &[(&str, u64, u64)],
     ) -> (Lane, OccurrenceIdentity, Vec<TailPatchRequest>) {
+        forensic_lane_voiced(mode, session, held, &[(0, 200_000)])
+    }
+
+    /// [`forensic_lane_in`] whose owner PCM is speech only over `voiced` and
+    /// sub-floor room tone elsewhere, so each spoken word has its own voiced
+    /// segment on the capture clock.
+    fn forensic_lane_voiced(
+        mode: BufferMode,
+        session: &str,
+        held: &[(&str, u64, u64)],
+        voiced: &[(u64, u64)],
+    ) -> (Lane, OccurrenceIdentity, Vec<TailPatchRequest>) {
         let _ = mode;
         let mut lane = open(session);
         let owner = OccurrenceIdentity::new(session, 1, 0, 200_000);
@@ -28184,8 +28249,16 @@ mod relay_l1_overlap_admission_tests {
                 );
             }
         }
-        let pcm = piece(1, &owner, "");
-        lane.state.audio.push(&pcm.audio);
+        // The owner's PCM reaches the energy owner too, as a capture does.
+        let mut pcm = vec![ROOM_TONE_RMS; owner.sample_len() as usize];
+        for &(start, end) in voiced {
+            pcm[start as usize..end as usize].fill(0.2);
+        }
+        record_energy(
+            &lane,
+            &pcm.chunks(320).map(<[f32]>::to_vec).collect::<Vec<_>>(),
+        );
+        lane.state.audio.push(&pcm);
         lane.state.pump_capture_windows(&lane.tx);
         let requests = take_requests(&mut lane.tail_rx);
         (lane, owner, requests)
@@ -29596,16 +29669,22 @@ mod relay_l1_overlap_admission_tests {
 
     fn real_repetitions_on_distinct_pcm_stay(mode: BufferMode) {
         let session = &mode.session("forensic-repetitions");
-        let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
-        let pins = vec![
-            word_pin(session, "Iwo", 1_000, 5_000),
-            word_pin(session, "Iwo", 7_000, 11_000),
-            word_pin(session, "Iwo", 13_000, 17_000),
-            word_pin(session, "Iwo", 19_000, 23_000),
-            word_pin(session, "Iwo", 25_000, 29_000),
-            word_pin(session, "trzema", 31_000, 38_000),
-            word_pin(session, "trzema", 40_000, 48_000),
+        let spoken = [
+            ("Iwo", 1_000, 5_000),
+            ("Iwo", 7_000, 11_000),
+            ("Iwo", 13_000, 17_000),
+            ("Iwo", 19_000, 23_000),
+            ("Iwo", 25_000, 29_000),
+            ("trzema", 31_000, 38_000),
+            ("trzema", 40_000, 48_000),
         ];
+        // Each repeat is its own voiced burst, with room tone between them.
+        let voiced = spoken.map(|(_, start, end)| (start, end));
+        let (mut lane, owner, requests) = forensic_lane_voiced(mode, session, &[], &voiced);
+        let pins = spoken
+            .iter()
+            .map(|&(text, start, end)| word_pin(session, text, start, end))
+            .collect::<Vec<_>>();
         lane.state
             .complete_whisper_window(&lane.tx, completion(&requests[0], pins), 12.5);
         assert_eq!(
@@ -29930,10 +30009,20 @@ mod relay_l1_overlap_admission_tests {
     // once, and a real repetition inside that second stays twice.
     #[test]
     fn buffer_modes_hold_a_shared_region_word_once_and_keep_real_repetitions() {
+        // Second window start on the 9 s / 3 s capture grid at 16 kHz.
+        const SHARED_BASE: u64 = 48_000;
         for mode in BufferMode::BOTH {
             let session = &mode.session("buffer-overlap");
-            let (mut lane, owner, requests) = forensic_lane_in(mode, session, &[]);
+            // Each spoken word is its own voiced burst, with room tone between.
+            let voiced = [
+                (SHARED_BASE - 10_000, SHARED_BASE - 2_000),
+                (SHARED_BASE + 1_000, SHARED_BASE + 4_000),
+                (SHARED_BASE + 5_000, SHARED_BASE + 8_000),
+                (SHARED_BASE + 20_000, SHARED_BASE + 30_000),
+            ];
+            let (mut lane, owner, requests) = forensic_lane_voiced(mode, session, &[], &voiced);
             let (base, first_end) = shared_window_region(&requests);
+            assert_eq!(base, SHARED_BASE, "{mode:?}: the grid's second window");
             assert!(base + 8_000 < first_end, "{mode:?}: no window-edge stub");
             let shared = |text: &str, start: u64, end: u64| {
                 word_pin(session, text, base + start, base + end)
@@ -32407,8 +32496,12 @@ mod tc2_window_contract_tests {
         capture: Option<CaptureLevelAccumulator>,
     }
 
+    /// Calibrated existence floor of the fixture's capture device. Fixture
+    /// speech is 0.2 RMS, so every word over the take's PCM clears it.
+    const EXISTENCE_FLOOR_RMS: f32 = 0.01;
+
     fn fixture() -> Fixture {
-        fixture_with_pcm(vec![0.2; 719_000], false)
+        fixture_with_pcm(vec![0.2; 719_000], true)
     }
 
     fn fixture_with_pcm(pcm: Vec<f32>, measure_energy: bool) -> Fixture {
@@ -32427,6 +32520,7 @@ mod tc2_window_contract_tests {
                 min_valley_samples: 1,
             }),
         );
+        state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
         state.audio.push(&pcm);
         let mut capture =
             measure_energy.then(|| CaptureLevelAccumulator::bound_to(&state.capture_energy));
@@ -32459,6 +32553,19 @@ mod tc2_window_contract_tests {
             requests,
             occurrence,
             capture,
+        }
+    }
+
+    /// Later capture: the PCM reaches the buffer and the energy owner
+    /// together, on the same 20 ms hops as the fixture's first capture.
+    fn capture_more(f: &mut Fixture, pcm: &[f32]) {
+        f.state.audio.push(pcm);
+        let capture = f
+            .capture
+            .as_mut()
+            .expect("the fixture measures its capture");
+        for chunk in pcm.chunks(960) {
+            capture.push_samples(chunk);
         }
     }
 
@@ -32541,7 +32648,7 @@ mod tc2_window_contract_tests {
     fn advance_live_horizon_frames(f: &mut Fixture) -> Vec<TailPatchRequest> {
         let head = f.state.audio.session_sample_end();
         assert!(head <= 864_000);
-        f.state.audio.push(&vec![0.2; (864_000 - head) as usize]);
+        capture_more(f, &vec![0.2; (864_000 - head) as usize]);
         f.state.pump_capture_windows(&f.events);
         let mut frames = Vec::new();
         while let Ok(request) = f.requests.try_recv() {
@@ -32615,7 +32722,7 @@ mod tc2_window_contract_tests {
         assert!(f.state.refinement_pending.is_empty());
         assert_words(&f, "alpha");
         let head = f.state.audio.session_sample_end();
-        f.state.audio.push(&vec![0.2; 743_424 - head as usize]);
+        capture_more(&mut f, &vec![0.2; 743_424 - head as usize]);
         f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
         f.physical.close_open(743_424);
         assert!(reconcile_silero_ledger(
@@ -32718,7 +32825,7 @@ mod tc2_window_contract_tests {
 
         // Next physical closure and its context pad, from the same take.
         let head = f.state.audio.session_sample_end();
-        f.state.audio.push(&vec![0.2; 743_424 - head as usize]);
+        capture_more(&mut f, &vec![0.2; 743_424 - head as usize]);
         f.physical.open_or_extend(SESSION, 1, 508_416, 743_424);
         f.physical.close_open(743_424);
         assert!(reconcile_silero_ledger(
@@ -32870,7 +32977,7 @@ mod tc2_window_contract_tests {
                 );
             }
             assert_words(&f, "alpha");
-            f.state.audio.push(&vec![0.2; 700_000]);
+            capture_more(&mut f, &vec![0.2; 700_000]);
             f.physical.open_or_extend(SESSION, 1, 1_100_000, 1_300_000);
             f.physical.close_open(1_300_000);
             assert!(reconcile_silero_ledger(
@@ -33190,7 +33297,19 @@ mod tc2_window_contract_tests {
     #[test]
     fn horizon_open_owner_survives_partition_change_with_one_identity() {
         let mut f = fixture();
-        f.state.audio.push(&vec![0.2; 2_000_000]);
+        // Speech under the words these owners hear and room tone between
+        // them. Two million samples of one tone would measure as a single
+        // 42 s burst whose word geometry swallows every later label on it;
+        // the pause before `contained` is longer than one word's continuity.
+        let mut later = vec![0.004; 2_000_000];
+        for (start, end) in [
+            (2_140_000, 2_148_000),
+            (2_153_000, 2_157_000),
+            (2_320_000, 2_324_000),
+        ] {
+            later[start - 719_000..end - 719_000].fill(0.2);
+        }
+        capture_more(&mut f, &later);
         let owner = OccurrenceIdentity::new(SESSION, 1, 2_132_992, 2_325_504);
         f.physical
             .open_or_extend(SESSION, 1, owner.sample_start, owner.sample_end);
@@ -33238,7 +33357,7 @@ mod tc2_window_contract_tests {
             &mut f.state,
             &f.events,
             &reclosed,
-            &[apple_word("contained", 2_150_000, 2_154_000)],
+            &[apple_word("contained", 2_153_000, 2_157_000)],
         ));
         f.state.pump_capture_windows(&f.events);
         assert_eq!(f.state.windows_admitted, windows_before);
@@ -33264,7 +33383,7 @@ mod tc2_window_contract_tests {
             &reclosed,
             &[apple_word("late", 2_320_000, 2_324_000)],
         ));
-        f.state.audio.push(&vec![0.2; 17_000]);
+        capture_more(&mut f, &vec![0.2; 17_000]);
         f.state.pump_capture_windows(&f.events);
         let requests = std::iter::from_fn(|| f.requests.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(requests.len(), 1);
@@ -33413,7 +33532,7 @@ mod tc2_window_contract_tests {
                 // first so the taken request is that overlap window.
                 let later = OccurrenceIdentity::new(SESSION, 1, 744_000, 792_000);
                 let head = f.state.audio.session_sample_end();
-                f.state.audio.push(&vec![0.2; 864_000 - head as usize]);
+                capture_more(&mut f, &vec![0.2; 864_000 - head as usize]);
                 f.physical
                     .open_or_extend(SESSION, 1, later.sample_start, later.sample_end);
                 f.physical.close_open(later.sample_end);
@@ -33748,8 +33867,15 @@ mod tc2_window_contract_tests {
 
     #[test]
     fn stop_recovery_routes_ef1fa_pad_words_to_held_owner() {
+        // A recovery decode starts on a burst boundary. Room tone fills the
+        // four 20 ms hops before the first pad word's speech; without that
+        // pause, continuous speech before 126 464 leaves `pad1` possibly cut
+        // at the window start, and the ledger rightly waits for a window that
+        // hears it whole.
+        let mut pcm = vec![0.2; 719_000];
+        pcm[122_880..126_720].fill(0.004);
         for sealed in [false, true] {
-            let mut f = fixture();
+            let mut f = fixture_with_pcm(pcm.clone(), true);
             let held = OccurrenceIdentity::new(SESSION, 1, 56_832, 222_208);
             let mut physical = UtteranceLedger::new();
             physical.open_or_extend(SESSION, 1, held.sample_start, held.sample_end);
