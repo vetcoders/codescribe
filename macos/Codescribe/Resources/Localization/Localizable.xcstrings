@@ -1793,40 +1793,6 @@
         }
       }
     },
-    "%lld words were refused by the ledger. Open Lab to see which." : {
-      "localizations" : {
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld słowa odrzucone przez ledger. Otwórz Lab, żeby zobaczyć które."
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld słów odrzuconych przez ledger. Otwórz Lab, żeby zobaczyć które."
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld słowo odrzucone przez ledger. Otwórz Lab, żeby zobaczyć które."
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "translated",
-                  "value" : "%lld słów odrzuconych przez ledger. Otwórz Lab, żeby zobaczyć które."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "%llu occurrences" : {
       "localizations" : {
         "en" : {
@@ -17743,6 +17709,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie można sprawdzić ścieżki instalacji."
+          }
+        }
+      }
+    },
+    "The ledger anchored %@ of the speech and did not close this take. Open Lab to see where." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ledger zakotwiczył %@ mowy i nie domknął tego nagrania. Otwórz Lab, żeby zobaczyć gdzie."
+          }
+        }
+      }
+    },
+    "The ledger did not close this take. Open Lab to see where." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ledger nie domknął tego nagrania. Otwórz Lab, żeby zobaczyć gdzie."
           }
         }
       }
