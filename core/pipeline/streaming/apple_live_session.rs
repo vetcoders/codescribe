@@ -7331,10 +7331,11 @@ fn direct_text_heard_by_silero(
     }
     let window = measure_whisper_window_speech(state, &payload.segments);
     let mut over_silence = vec![false; payload.segments.len()];
-    for ((segment, decision), dropped) in payload
+    for (((segment, decision), fact), dropped) in payload
         .segments
         .iter()
         .zip(&window.decisions)
+        .zip(&window.facts)
         .zip(over_silence.iter_mut())
     {
         if let WhisperWordSpeechVerdict::Refuse(reason) = decision.verdict {
@@ -7344,6 +7345,8 @@ fn direct_text_heard_by_silero(
                 sample_start = segment.range.sample_start,
                 sample_end = segment.range.sample_end,
                 reason = reason.as_str(),
+                silence = fact.silence_under_span.as_str(),
+                silero_distance = ?fact.silero_speech_distance,
                 "direct_word_over_silence"
             );
         }
@@ -27626,17 +27629,28 @@ mod relay_l1_overlap_admission_tests {
 
         let payload = direct_payload(session, words(), TailSegmentGrain::Word);
         let window = measure_whisper_window_speech(&lane.state, &payload.segments);
+        // Silero observed the span and no speech island touches it, so the
+        // gate refuses it as span_without_own_speech (96b602fa, c28d375a);
+        // the word's measurement still carries what lay under it and how far
+        // the nearest speech was.
         assert_eq!(
             window.decisions[1].verdict,
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-                silence: SilenceUnderSpan::DigitalZero,
-                distance_ms: Some(((120_000 - speech_end) * 1_000 / u64::from(RATE)) as u32),
-            }),
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech)
+        );
+        assert_eq!(
+            (
+                window.facts[1].silence_under_span,
+                window.facts[1].silero_speech_distance
+            ),
+            (
+                SilenceUnderSpan::DigitalZero,
+                SileroSpeechDistance::Ms((120_000 - speech_end) * 1_000 / u64::from(RATE)),
+            ),
             "the word over digital zero, far from speech, carries its class and distance"
         );
         assert!(!matches!(
             window.decisions[0].verdict,
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan { .. })
+            WhisperWordSpeechVerdict::Refuse(_)
         ));
         assert_eq!(
             direct_text_heard_by_silero(&mut lane.state, &payload),
@@ -27779,9 +27793,10 @@ mod relay_l1_overlap_admission_tests {
     /// Qualified occurrence, last 1.5 s measured silence. A Whisper pin that
     /// lies wholly in that silence is offered as an exclusive tail.
     ///
-    /// The pin's own range is checked by energy and a Silero extent covering
-    /// its end. Their agreement refuses a plausible Whisper silence hallucination
-    /// with a named receipt; nothing is relabelled, appended, or painted.
+    /// Silero's extent covers the pin's end and no speech island touches it,
+    /// so Silero refuses this plausible Whisper silence hallucination with a
+    /// named receipt; energy decides only where Silero has not observed the
+    /// span (c28d375a). Nothing is relabelled, appended, or painted.
     #[test]
     fn whisper_pin_wholly_inside_measured_silence_cannot_relabel_or_append() {
         let mut lane = open("relay-silent-pin");
@@ -27832,16 +27847,17 @@ mod relay_l1_overlap_admission_tests {
             "no voiced hop is a refusal, not paint"
         );
         assert!(
-            named_refusal(&events, "no_voiced_hop_in_pin"),
-            "the refusal is named no_voiced_hop_in_pin"
+            named_refusal(&events, "span_without_own_speech"),
+            "the refusal is named span_without_own_speech"
         );
         assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
         assert_eq!(held_count(&lane), 1);
-        assert!(
-            energy_lookups(&lane) >= 1,
-            "the lookup that found no voiced hop is on the conservation receipt"
+        assert_eq!(
+            energy_lookups(&lane),
+            0,
+            "Silero observed the span; no energy lookup decided the refusal"
         );
-        assert_conserved(&lane, Some("no_voiced_hop_in_pin"));
+        assert_conserved(&lane, Some("span_without_own_speech"));
     }
 
     /// The same geometry, with the pin overlapping a voiced hop.
