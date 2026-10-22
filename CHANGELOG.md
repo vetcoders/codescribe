@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Message bubble actions brighten their icon and label together on hover, without redundant tooltips or button chrome. The composer microphone and Send share that feedback; Send keeps its filled paper plane in softer, adaptive terracotta.
 - Creator: the collapsed overlay channel map is opt-in, with a live **Channel map in the overlay** switch. With it off, mini restores the `cs` wordmark and its earlier widths; compact no longer grows for agent chips. The choice never changes microphone routing.
 
 - Agent window: the "Conversation width" submenu under "More actions" marks the active mode with the system check mark (native picker); before, the mark never rendered and the choice looked ignored.
