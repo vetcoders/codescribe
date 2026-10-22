@@ -78,6 +78,10 @@ final class DockPresenceTests: XCTestCase {
     XCTAssertTrue(button.isEnabled, "a key moment re-enables the hide control")
     XCTAssertNotNil(button.target)
 
+    // The flip under test must not leave the whole suite running as an
+    // accessory app; the host's policy comes back whatever happens next.
+    let priorPolicy = NSApp.activationPolicy()
+    defer { NSApp.setActivationPolicy(priorPolicy) }
     button.isEnabled = false
     DockPresence.apply(showDockIcon: false)
     XCTAssertTrue(button.isEnabled, "a policy flip re-enables every adopted window's control")
