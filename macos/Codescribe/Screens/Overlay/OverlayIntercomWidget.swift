@@ -20,13 +20,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
-  /// One group-resize gesture scales from one baseline. The resize view
-  /// replays absolute deltas against its mouse-down frame, so that frame
-  /// identifies the gesture.
-  @ObservationIgnored private var groupResizeGesture: (frame: CGRect, baseScale: Double)?
+  /// One group-resize gesture scales from one baseline, identified by the
+  /// resize view's per-mouse-down gesture id (a bare frame cannot tell two
+  /// gestures apart when the second starts from the same place and size).
+  @ObservationIgnored private var groupResizeGesture: (gesture: UUID, baseScale: Double)?
   /// A card's resize that converted it into an instance hands the rest of
-  /// that same gesture to the instance, identified by the mouse-down frame.
-  @ObservationIgnored private var resizeHandoff: (frame: CGRect, id: UUID)?
+  /// that same gesture to the instance.
+  @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
   fileprivate private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
@@ -503,9 +503,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// the rest of the drag over (Astra on 05c013749).
   fileprivate func resize(
     _ identity: OverlayIntercomCardIdentity, from frame: CGRect, delta: CGSize,
-    edge: OverlayIntercomWidgetLayout.ResizeEdge
+    edge: OverlayIntercomWidgetLayout.ResizeEdge, gesture: UUID
   ) {
-    if resizeHandoff?.frame != frame { resizeHandoff = nil }
+    if resizeHandoff?.gesture != gesture { resizeHandoff = nil }
     if let handoff = resizeHandoff {
       resizeInstance(handoff.id, from: frame, delta: delta, edge: edge)
       return
@@ -516,7 +516,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
       visibleFrame: visibleFrame(for: panel))
     if let id = detachIntoInstance(identity, frame: fitted) {
-      resizeHandoff = (frame: frame, id: id)
+      resizeHandoff = (gesture: gesture, id: id)
     }
     presentation.folded = true
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
@@ -528,11 +528,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// deltas against its mouse-down frame (also on mouse-up), so compounding
   /// the current scale per event would run away (Olga, D1 on 181d27afb).
   fileprivate func resizeGroup(
-    from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge
+    from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge, gesture: UUID
   ) {
     guard let header else { return }
-    if groupResizeGesture?.frame != frame {
-      groupResizeGesture = (frame: frame, baseScale: desktop.groupScale)
+    if groupResizeGesture?.gesture != gesture {
+      groupResizeGesture = (gesture: gesture, baseScale: desktop.groupScale)
     }
     let base = groupResizeGesture?.baseScale ?? desktop.groupScale
     let fitted = OverlayIntercomWidgetLayout.resizedFrame(
@@ -707,8 +707,8 @@ private struct OverlayIntercomHeader: View {
     .overlay {
       // The group's left edge resizes every attached fiszka proportionally.
       // The header's corners keep their buttons; pills carry the corners.
-      OverlayIntercomResizeHandles(corners: false) { frame, delta, edge in
-        controller.resizeGroup(from: frame, delta: delta, edge: edge)
+      OverlayIntercomResizeHandles(corners: false) { frame, delta, edge, gesture in
+        controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
       }
     }
     .contextMenu {
@@ -817,8 +817,8 @@ private struct OverlayIntercomCard: View {
     }
     .overlay {
       if expanded {
-        OverlayIntercomResizeHandles { frame, delta, edge in
-          controller.resize(identity, from: frame, delta: delta, edge: edge)
+        OverlayIntercomResizeHandles { frame, delta, edge, gesture in
+          controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
         }
       } else {
         // The group resizes like one window from a pill's left edge and
@@ -826,8 +826,8 @@ private struct OverlayIntercomCard: View {
         // bottom-right zone steps left of the audio slot (Astra, V2).
         OverlayIntercomResizeHandles(
           trailingInset: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-        ) { frame, delta, edge in
-          controller.resizeGroup(from: frame, delta: delta, edge: edge)
+        ) { frame, delta, edge, gesture in
+          controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
         }
       }
     }
@@ -1056,6 +1056,12 @@ private struct OverlayIntercomConversationBody: View {
   }
 }
 
+/// One resize event: the gesture's mouse-down frame, the absolute delta, the
+/// dragged edge, and the gesture's identity (one mouse-down, one UUID).
+private typealias OverlayIntercomResizeAction = (
+  CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge, UUID
+) -> Void
+
 private struct OverlayIntercomResizeHandles: View {
   /// The header keeps its corners for buttons; its left edge still resizes
   /// the group. Pills and cards expose the left edge and both bottom corners.
@@ -1063,7 +1069,7 @@ private struct OverlayIntercomResizeHandles: View {
   /// A pill's audio slot owns the true bottom-right corner, so its resize
   /// zone steps left by this much instead of covering the microphone.
   var trailingInset: CGFloat = 0
-  let resize: (CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge) -> Void
+  let resize: OverlayIntercomResizeAction
 
   var body: some View {
     ZStack(alignment: .bottomLeading) {
@@ -1151,7 +1157,7 @@ private struct OverlayIntercomInstanceCard: View {
     }
     .overlay {
       if !mini {
-        OverlayIntercomResizeHandles { frame, delta, edge in
+        OverlayIntercomResizeHandles { frame, delta, edge, _ in
           controller.resizeInstance(instanceID, from: frame, delta: delta, edge: edge)
         }
       }
@@ -1240,7 +1246,7 @@ private struct OverlayIntercomInstanceCard: View {
 
 private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   let edge: OverlayIntercomWidgetLayout.ResizeEdge
-  let resize: (CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge) -> Void
+  let resize: OverlayIntercomResizeAction
 
   func makeNSView(context: Context) -> OverlayIntercomResizeView { OverlayIntercomResizeView() }
   func updateNSView(_ nsView: OverlayIntercomResizeView, context: Context) {
@@ -1251,25 +1257,37 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
 
 private final class OverlayIntercomResizeView: NSView {
   var edge = OverlayIntercomWidgetLayout.ResizeEdge.left
-  var resize: (CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge) -> Void = { _, _, _ in }
+  var resize: OverlayIntercomResizeAction = { _, _, _, _ in }
   private var origin: CGPoint?
   private var originalFrame: CGRect?
+  /// One mouse-down is one gesture. A bare frame cannot identify it: the
+  /// next gesture can start from the same place and size (Astra on
+  /// fca13c1c9), and only this identity keys the controller's handoffs.
+  private var gesture = UUID()
+  private var moved = false
 
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
     origin = NSEvent.mouseLocation
     originalFrame = window?.frame
+    gesture = UUID()
+    moved = false
   }
   override func mouseDragged(with event: NSEvent) {
     guard let origin, let originalFrame else { return }
+    moved = true
     let point = NSEvent.mouseLocation
-    resize(originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge)
+    resize(
+      originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge, gesture)
   }
   override func mouseUp(with event: NSEvent) {
-    mouseDragged(with: event)
+    // A motionless click on a corner is not a resize: replaying it with a
+    // zero delta would convert the card into an instance for nothing.
+    if moved { mouseDragged(with: event) }
     origin = nil
     originalFrame = nil
+    moved = false
   }
   override func resetCursorRects() {
     addCursorRect(bounds, cursor: edge == .left ? .resizeLeftRight : .crosshair)
