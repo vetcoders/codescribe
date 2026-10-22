@@ -87,7 +87,7 @@ use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, NoAuthorityReason,
     ObservationIdentity as LedgerObservationIdentity,
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, OverlapPinClass,
-    RefuseReason, SealCoverageReceipt, SealRefusal, SilenceUnderSpan, WitnessSegment,
+    RefuseReason, SealCoverageReceipt, SealRefusal, SilenceUnderSpan,
 };
 use crate::pipeline::contracts::{
     ApplePhraseOutcome, ClosedApplePhrase, EngineEvent, EventSink, PreviewPin,
@@ -8856,7 +8856,6 @@ fn handle_dictation_witness_return(
         elapsed_ms = payload.elapsed_ms,
         "dictation_witness_return"
     );
-    apply_returned_witness(state, ev_tx, &identity, &payload);
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
     let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
@@ -9076,7 +9075,6 @@ fn run_terminal_dictation_witness(
             elapsed_ms = payload.elapsed_ms,
             "dictation_witness_return"
         );
-        apply_returned_witness(state, ev_tx, &identity, &payload);
         admit_dictation_witness_payload(
             state,
             ev_tx,
@@ -9086,42 +9084,6 @@ fn run_terminal_dictation_witness(
             &gaps,
             threshold_samples,
         );
-    }
-}
-
-/// Record witness segments on slots that share their PCM range.
-fn apply_returned_witness(
-    state: &mut AppleSealState,
-    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    identity: &TailRequestIdentity,
-    payload: &TailProviderPayload,
-) {
-    let witness_segments = payload
-        .segments
-        .iter()
-        .map(|segment| WitnessSegment {
-            sample_start: segment.range.sample_start,
-            sample_end: segment.range.sample_end,
-            text: segment.text.clone(),
-        })
-        .collect::<Vec<_>>();
-    let corrections = {
-        let mut ledger = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ledger.apply_witness_segments(
-            identity.range.sample_start,
-            identity.range.sample_end,
-            &witness_segments,
-        )
-    };
-    for (observation, label, receipt) in corrections {
-        let _ = ev_tx.send(EngineEvent::LedgerMutation {
-            observation,
-            label,
-            receipt,
-        });
     }
 }
 
