@@ -6169,6 +6169,19 @@ impl RecordingController {
             }
 
             if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                let bindings = crate::os::hotkeys::get_mode_hotkey_bindings();
+                let channel_modifier = crate::os::hotkeys::get_channel_modifier();
+                if agent_channel::ordinary_hold_shares_channel_modifier(
+                    bindings.dictation,
+                    channel_modifier,
+                ) && controller.has_open_agent_channels().await
+                {
+                    info!(
+                        ?channel_modifier,
+                        "Hold-start declined: the hold key is the channel modifier and a channel is open; the digit chord closes it"
+                    );
+                    return;
+                }
                 if let Err(error) = controller.close_agent_channels_for_dictation().await {
                     error!(%error, "Hold-start refused: agent channel did not close");
                     return;

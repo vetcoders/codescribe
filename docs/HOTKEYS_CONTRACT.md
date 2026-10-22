@@ -89,6 +89,14 @@ terminal task then joins and publishes the final receipt; its words are retained
 For hold gestures, handover waits until the existing start delay has elapsed.
 The modifier alone can still become a channel chord or be released without a
 take; an explicit channel gesture cancels that pending ordinary hold.
+When the hold's base key is also the agent-channel modifier (`HoldFn` with
+`AGENT_CHANNEL_MODIFIER=fn`, `HoldCtrl` with `ctrl`) and a channel is open,
+the elapsed delay admits nothing: the hold stays the chord's prefix, the
+channel survives, no hang-up receipt is written, and the digit chord is the
+only way to close it (Founder, 2026-10-22: a Fn held past the delay before the
+digit hung up the channel, the digit reopened it, and the reopened microphone
+fed Whisper silence). Dictation on that key starts only once no channel is
+open; the toggle gestures and the other hold presets are unaffected.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
