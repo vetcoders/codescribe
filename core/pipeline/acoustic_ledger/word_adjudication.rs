@@ -59,7 +59,9 @@ use serde::{Deserialize, Serialize};
 /// has no decoder-fence completeness receipt.
 /// v30: owner projection cannot hide a new Whisper word's clipped onset or
 /// trailing fence; unprojected incomplete onsets retain visible evidence.
-pub const WORD_POLICY: &str = "word-adjudication/v34-voiced-replay";
+/// v35: a banded complete Whisper word respells, 1:1, the fence side of an
+/// incumbent Whisper word pinned below the rights floor of its own window.
+pub const WORD_POLICY: &str = "word-adjudication/v35-window-position";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +219,27 @@ fn trial_digest(trial: &WordTrial) -> [u8; 32] {
 pub(super) fn label_equal(a: &str, b: &str) -> bool {
     // Equality is evidence about a resolved component, never a target finder.
     normalize_word_token(a) == normalize_word_token(b)
+}
+
+/// Two spellings of one word that differ only within the third of its
+/// letters nearest a window fence: the ending at a right fence, the onset at
+/// a left fence. The letters on the far side were decoded with context.
+fn respelled_toward_fence(held: &str, heard: &str, right_fence: bool) -> bool {
+    let letters = |text: &str| {
+        let mut letters = text
+            .chars()
+            .filter(|ch| ch.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<Vec<_>>();
+        if !right_fence {
+            letters.reverse();
+        }
+        letters
+    };
+    let (held, heard) = (letters(held), letters(heard));
+    let budget = held.len().max(heard.len()) / 3;
+    let shared = held.iter().zip(&heard).take_while(|(a, b)| a == b).count();
+    budget > 0 && held.len() - shared <= budget && heard.len() - shared <= budget
 }
 
 /// Two labels spell the same letters in the same order, however a decoder
@@ -1986,8 +2009,68 @@ impl AcousticLedger {
                     )
                 })
             });
+        // Window position: the symmetric half of `band_rights`. An incumbent
+        // pinned below the rights floor of its own decode sits where the
+        // decoder completes clipped phonemes into plausible words, but only
+        // on the side its window cut: near the right fence the ending, near
+        // the left fence the onset. A banded copy of the same word may
+        // replace those letters, never the side that was heard in full.
+        // Take d8d1da2a (2026-10-22): "obudziłem." at q 0.11 kept the slot
+        // over "obudziła." at q 0.97, "żyję" at 0.45 over "żyje" at 0.77;
+        // both differ in the ending at the right fence, and the banded
+        // copies had the worse logprobs. Clip02 fcf12e76 (2026-10-10): the
+        // right-edge "Gentamycyną." (q 0.17) is right and the banded
+        // "kentamycyną." (q 1.0) is wrong in the onset, so it stays.
+        let window_position_authority = trial.is_none()
+            && fresh
+            && complete
+            && candidate.family() == ObservationProducer::Whisper
+            && candidate.acoustic_boundaries_complete
+            && candidate.q >= BAND_RIGHTS_FLOOR
+            && raw_disagrees
+            && !negation_disagrees
+            && !apple_veto
+            && sources.len() == 1
+            && outputs.len() == 1
+            && component
+                .incumbent
+                .original_text
+                .as_deref()
+                .zip(raw)
+                .zip(component.incumbent.decode)
+                .zip(
+                    component
+                        .incumbent
+                        .pins
+                        .iter()
+                        .map(|pin| pin.sample_start)
+                        .min()
+                        .zip(component.incumbent.pins.iter().map(|pin| pin.sample_end).max()),
+                )
+                .is_some_and(|(((held, heard), (left, right)), (start, end))| {
+                    let right_fence = right.saturating_sub(end) < start.saturating_sub(left);
+                    respelled_toward_fence(held, heard, right_fence)
+                })
+            && component.incumbent.family() == ObservationProducer::Whisper
+            && component.incumbent.q < BAND_RIGHTS_FLOOR
+            && component
+                .incumbent
+                .decode
+                .is_some_and(|decode| candidate.decode != Some(decode))
+            // One edge copy against one banded copy: a second complete frame
+            // agreeing with the incumbent is lexical evidence, whatever its q.
+            && !prior_support.iter().any(|h| {
+                h.family() == ObservationProducer::Whisper
+                    && h.complete
+                    && h.decode != component.incumbent.decode
+                    && h.original_text
+                        .as_deref()
+                        .zip(component.incumbent.original_text.as_deref())
+                        .is_some_and(|(a, b)| label_equal(a, b))
+            });
         let lexical_resolved = independent_witness
             || complete_fence_authority
+            || window_position_authority
             || provisional_apple
             || confirmed_trial
             || (trial.is_none()
@@ -2013,6 +2096,8 @@ impl AcousticLedger {
             (true, "independent_same_speech_range")
         } else if complete_fence_authority {
             (true, "live_complete_fences")
+        } else if window_position_authority {
+            (true, "window_position")
         } else if !geometry_preserves_complete_source {
             (false, "incomplete_acoustic_boundary")
         } else if trial.is_some() {
