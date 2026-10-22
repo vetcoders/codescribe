@@ -227,8 +227,6 @@ pub enum ObservationProducer {
     /// Independent DictationTranscriber witness over recorder-owned PCM.
     /// Its measured ranges may contest an existing label through word
     /// adjudication; its omission of a label grants no deletion authority.
-    /// On a range a slot already owns, a coinciding witness segment confirms
-    /// or corrects that slot; it still does not birth a second occurrence.
     AppleDictation,
     /// Whisper tail retranscription.
     Whisper,
@@ -583,31 +581,6 @@ pub enum SlotWitness {
     },
     /// The witness decoded this range without a label. This never deletes it.
     Absent { range: OccurrenceIdentity },
-}
-
-/// One timed label from a second engine, addressed by PCM range.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WitnessSegment {
-    /// First sample of the witness segment.
-    pub sample_start: u64,
-    /// Exclusive end of the witness segment.
-    pub sample_end: u64,
-    /// Surface the witness heard.
-    pub text: String,
-}
-
-/// Two PCM spans name one spoken range when their intersection is at least
-/// half the longer span. A mere overlap — a phrase across a word, or a
-/// neighbour that only clips the edge — is not that range.
-fn ranges_coincide(start: u64, end: u64, other_start: u64, other_end: u64) -> bool {
-    if end <= start || other_end <= other_start || start >= other_end || other_start >= end {
-        return false;
-    }
-    let overlap = end.min(other_end).saturating_sub(start.max(other_start));
-    let longer = end
-        .saturating_sub(start)
-        .max(other_end.saturating_sub(other_start));
-    longer > 0 && overlap.saturating_mul(2) >= longer
 }
 
 /// Ordered lexical evidence inside one physically owned occurrence.
@@ -1197,14 +1170,6 @@ impl AcousticLedger {
                 .checked_add(1)
                 .expect("word generation exhausted");
         }
-        // A witness segment on a range a slot already owns confirms or
-        // corrects that slot; it is not a refused second occurrence.
-        if self
-            .adjudicate_owned_range(&rejected, word.sample_start, word.sample_end, &word.text)
-            .is_some()
-        {
-            return;
-        }
         // D3, Maciej 2026-10-21: "zbierzmy całość hipotez" — a word the batch
         // could not place is still one engine's hypothesis on that PCM range.
         // Keep it, keyed by its own range, beside the words held there. It
@@ -1228,184 +1193,6 @@ impl AcousticLedger {
             self.retain_slot_alternative(&rejected, &word.text, beside, COLLECTED_HYPOTHESIS);
         }
         self.refuse_replacement(&rejected, &word.text, RefuseReason::SlotAdmissionRejected);
-    }
-
-    /// A witness segment on a range a slot already owns is a correction, not a
-    /// rejected admission. Only the DictationTranscriber witness holds this
-    /// right, and only over unsealed slots no human wrote. The ranges must
-    /// coincide (half the longer span); labels are compared as normalized
-    /// tokens, never by similarity. `Some` means the owned range was confirmed
-    /// or corrected and must not be refused.
-    pub fn adjudicate_owned_range(
-        &mut self,
-        observation: &ObservationIdentity,
-        sample_start: u64,
-        sample_end: u64,
-        label: &str,
-    ) -> Option<MutationReceipt> {
-        let label = label.trim();
-        if observation.producer != ObservationProducer::AppleDictation || label.is_empty() {
-            return None;
-        }
-        let capture = observation.occurrence.clone();
-        let (owner, index) = self.committed.iter().find_map(|(owner, held)| {
-            if !owner.same_capture(&capture) || self.is_sealed(owner) {
-                return None;
-            }
-            held.slots.iter().enumerate().find_map(|(index, slot)| {
-                (slot.producer != ObservationProducer::ManualHuman
-                    && slot.producer != observation.producer
-                    && ranges_coincide(
-                        slot.sample_start,
-                        slot.sample_end,
-                        sample_start,
-                        sample_end,
-                    ))
-                .then_some((owner.clone(), index))
-            })
-        })?;
-        let slot = self.committed.get(&owner)?.slots.get(index)?;
-        let from = slot.producer;
-        let same = word_adjudication::label_equal(&slot.text, label);
-        let range = OccurrenceIdentity::new(
-            capture.session.clone(),
-            capture.capture_epoch,
-            sample_start,
-            sample_end,
-        );
-        if let Some(held) = self.committed.get_mut(&owner) {
-            if same {
-                held.slots[index].witness = SlotWitness::Confirmed;
-            } else {
-                held.slots[index].witness = SlotWitness::Contested {
-                    witness_label: label.to_string(),
-                    range,
-                };
-                held.slots[index].text = label.to_string();
-                held.recompose();
-            }
-        }
-        let receipt = if same {
-            MutationReceipt::Preserve {
-                occurrence: owner,
-                held_by: from,
-            }
-        } else {
-            MutationReceipt::Correct {
-                occurrence: owner,
-                from,
-                to: observation.producer,
-            }
-        };
-        self.record_layer_decision(observation, label, &receipt, None);
-        Some(receipt)
-    }
-
-    /// Attach witness segments to the unsealed slots that share their PCM
-    /// range: a coinciding segment confirms or corrects the slot, and a slot
-    /// the window covered without any segment on it is marked `Absent`, which
-    /// never deletes it. Human words are never touched. Returns each
-    /// correction with the label the witness heard.
-    pub fn apply_witness_segments(
-        &mut self,
-        window_start: u64,
-        window_end: u64,
-        segments: &[WitnessSegment],
-    ) -> Vec<(ObservationIdentity, String, MutationReceipt)> {
-        let owners: Vec<OccurrenceIdentity> = self
-            .committed
-            .keys()
-            .filter(|owner| owner.sample_start < window_end && window_start < owner.sample_end)
-            .filter(|owner| !self.is_sealed(owner))
-            .cloned()
-            .collect();
-        let mut receipts = Vec::new();
-        for owner in owners {
-            let count = self
-                .committed
-                .get(&owner)
-                .map(|held| held.slots.len())
-                .unwrap_or(0);
-            for index in 0..count {
-                let Some(slot) = self
-                    .committed
-                    .get(&owner)
-                    .and_then(|held| held.slots.get(index))
-                else {
-                    continue;
-                };
-                if slot.sample_end <= window_start
-                    || slot.sample_start >= window_end
-                    || matches!(
-                        slot.producer,
-                        ObservationProducer::ManualHuman | ObservationProducer::AppleDictation
-                    )
-                {
-                    continue;
-                }
-                let (start, end, from, slot_observation) = (
-                    slot.sample_start,
-                    slot.sample_end,
-                    slot.producer,
-                    slot.observation.clone(),
-                );
-                let unwitnessed = matches!(slot.witness, SlotWitness::Unwitnessed);
-                let same_as = |text: &str| word_adjudication::label_equal(&slot.text, text);
-                let overlaps = segments
-                    .iter()
-                    .any(|segment| start < segment.sample_end && segment.sample_start < end);
-                let covering = segments
-                    .iter()
-                    .find(|segment| {
-                        !segment.text.trim().is_empty()
-                            && ranges_coincide(start, end, segment.sample_start, segment.sample_end)
-                    })
-                    .map(|segment| (segment.clone(), same_as(&segment.text)));
-                let Some((segment, same)) = covering else {
-                    if unwitnessed && !overlaps && start >= window_start && end <= window_end {
-                        let range = OccurrenceIdentity::new(
-                            owner.session.clone(),
-                            owner.capture_epoch,
-                            window_start,
-                            window_end,
-                        );
-                        if let Some(held) = self.committed.get_mut(&owner) {
-                            held.slots[index].witness = SlotWitness::Absent { range };
-                        }
-                    }
-                    continue;
-                };
-                if same {
-                    if let Some(held) = self.committed.get_mut(&owner) {
-                        held.slots[index].witness = SlotWitness::Confirmed;
-                    }
-                    continue;
-                }
-                let label = segment.text.trim().to_string();
-                let range = OccurrenceIdentity::new(
-                    owner.session.clone(),
-                    owner.capture_epoch,
-                    segment.sample_start,
-                    segment.sample_end,
-                );
-                if let Some(held) = self.committed.get_mut(&owner) {
-                    held.slots[index].witness = SlotWitness::Contested {
-                        witness_label: label.clone(),
-                        range,
-                    };
-                    held.slots[index].text = label.clone();
-                    held.recompose();
-                }
-                let receipt = MutationReceipt::Correct {
-                    occurrence: owner.clone(),
-                    from,
-                    to: ObservationProducer::AppleDictation,
-                };
-                self.record_layer_decision(&slot_observation, &label, &receipt, None);
-                receipts.push((slot_observation, label, receipt));
-            }
-        }
-        receipts
     }
 
     pub(super) fn assigned_word_pin_ranges(
