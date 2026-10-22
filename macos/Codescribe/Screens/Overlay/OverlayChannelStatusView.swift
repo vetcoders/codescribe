@@ -1305,16 +1305,17 @@ struct OverlayChannelStatusView: View {
                         focusState,
                         target: panelFocusTarget(for: channel)
                           ?? (hasCodexCloudThread(channel)
-                            ? OverlayAgentPanelFocusTarget.codexThread : nil)))
-                      .font(.system(size: 11, weight: .semibold))
-                      .foregroundStyle(
-                        focusState?.isSucceeded == true
-                          ? palette.successStatus.color
-                          : focusState?.isFailed == true
-                            ? palette.errorStatus.color
-                            : panelFocusUnreachable(channel)
-                              ? palette.mutedText.color : palette.primaryText.color
-                      )
+                            ? OverlayAgentPanelFocusTarget.codexThread : nil))
+                    )
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(
+                      focusState?.isSucceeded == true
+                        ? palette.successStatus.color
+                        : focusState?.isFailed == true
+                          ? palette.errorStatus.color
+                          : panelFocusUnreachable(channel)
+                            ? palette.mutedText.color : palette.primaryText.color
+                    )
                   }
                 }
                 .frame(width: 16, height: 16)

@@ -342,7 +342,6 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var agentDrawerResize: (start: CGFloat, width: CGFloat)?
-  @State private var pointerInsideAgentRail = false
   @State private var closeDotHovered = false
   @State private var pointerInsideOverlay = false
   @State private var overlayVisible = false
@@ -435,7 +434,7 @@ struct DictationOverlayView: View {
     .onAppear {
       FontLoader.register()
     }
-    .onChange(of: state.channelMapEnabled) { _, _ in
+    .onChange(of: state.channelMapInHeader) { _, _ in
       state.channelMapPreferenceChanged()
     }
   }
@@ -1069,7 +1068,8 @@ struct DictationOverlayView: View {
       chromeWaveform(barCount: density.waveformBars)
         .frame(
           minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth,
-          maxWidth: horizontalMap ? 120 : .infinity)
+          maxWidth: horizontalMap ? 120 : .infinity
+        )
         .layoutPriority(-1)
         .opacity(mini ? 0 : 1)
         .allowsHitTesting(!mini)
@@ -1191,7 +1191,8 @@ struct DictationOverlayView: View {
         speaking: roster.conversation(for: channel)?.replySpeaking == true,
         focusSymbol: showsFocus
           ? roster.panelFocusSymbol(
-            focusState, target: roster.panelFocusTarget(for: channel)
+            focusState,
+            target: roster.panelFocusTarget(for: channel)
               ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil)) : nil,
         focusLabel: showsFocus ? roster.panelFocusHelp(for: channel, state: focusState) : "",
         focusEnabled: !roster.panelFocusUnreachable(channel),

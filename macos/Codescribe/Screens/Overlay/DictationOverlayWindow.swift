@@ -270,6 +270,21 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
   }
 
+  /// A direct request for the agent column reserves both panes before the
+  /// expansion begins. Width determines geometry, never whether the click works.
+  func ensureAgentsSplitWidth(_ minimum: CGFloat) {
+    let screenWidth = (screen ?? NSScreen.main)?.visibleFrame.width ?? minimum
+    let floor = min(minimum, screenWidth)
+    let saved =
+      expandedSizes[.agents]
+      ?? DictationOverlayWindow.restoredContentSize(surface: .agents, defaults: contentSizeDefaults)
+    guard saved.width < floor || (contentSurface == .agents && frame.width < floor) else { return }
+    expandedSizes[.agents] = NSSize(width: max(saved.width, floor), height: saved.height)
+    if contentSurface == .agents, presentationMode == .expanded, !isUserResizing {
+      setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
+    }
+  }
+
   /// Remembered or default expanded size, raised to the qualified content
   /// height when the controller still owns automatic sizing.
   private func expandedPresentationSize() -> NSSize {
@@ -1283,10 +1298,10 @@ enum DictationOverlayWindow {
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
       panel.setChannelMapPresentation(
-        enabled: state.channelMapEnabled, capturing: state.channelAudioCaptureActive,
+        enabled: state.channelMapInHeader, capturing: state.channelAudioCaptureActive,
         naturalWidth: miniNaturalWidth(map: map, textScale: textScale.scale))
       panel.setMidiNaturalWidth(
-        state.channelMapEnabled
+        state.channelMapInHeader
           ? midiNaturalWidth(
             map: map, textScale: textScale.scale,
             visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width) : midiSize.width)
@@ -1294,9 +1309,14 @@ enum DictationOverlayWindow {
     fitToChannelMap()
     state.onChannelMapLayoutChanged = fitToChannelMap
     state.onRestoreMidiNaturalWidth = { [weak panel] in panel?.restoreMidiNaturalWidth() }
-    state.onAgentSidebarPresented = { [weak panel] in
-      panel?.makeFirstResponder(nil)
-      panel?.releaseKeyAfterTranscript()
+    state.onAgentSidebarPresented = { [weak panel, weak state] in
+      guard let panel else { return }
+      if state?.agentsLayout == .split {
+        panel.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+      }
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
     }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }

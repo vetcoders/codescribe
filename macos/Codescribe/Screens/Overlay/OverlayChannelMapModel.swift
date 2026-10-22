@@ -265,9 +265,10 @@ struct OverlayChannelMapModel: Equatable, Sendable {
     {
       return preferred
     }
-    return switch presentation(
-      availableWidth: availableWidth, namedWidth: namedWidth, digitsWidth: digitsWidth,
-      counterWidth: counterWidth)
+    return
+      switch presentation(
+        availableWidth: availableWidth, namedWidth: namedWidth, digitsWidth: digitsWidth,
+        counterWidth: counterWidth)
     {
     case .chips: namedWidth
     case .digits: digitsWidth

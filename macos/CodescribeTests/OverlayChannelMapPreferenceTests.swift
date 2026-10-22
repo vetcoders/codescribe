@@ -18,6 +18,46 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertFalse(OverlayChannelMapPreference(defaults: defaults).enabled)
   }
 
+  func testLayoutPersistsWithoutEnablingTheMapAndUnknownChoiceKeepsTheStrip() throws {
+    let name = "CodescribeTests.intercom-layout.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    XCTAssertEqual(preference.layout, .horizontal)
+    preference.selectLayout(.vertical)
+    XCTAssertFalse(preference.enabled)
+    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).layout, .vertical)
+    defaults.set("unknown-layout", forKey: OverlayChannelMapPreference.layoutKey)
+    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).layout, .horizontal)
+  }
+
+  func testSwitchingLayoutKeepsCaptureSelectionAndDraft() throws {
+    let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "3", audience: "astra", provider: "codex", providerSessionId: "layout-fixture",
+        open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+        unreadSinceUnixMs: nil)
+    ])
+    let generation = state.captureGeneration
+    let selected = state.selectedConversationID
+    let hud = state.channelHudStates
+    state.conversationDrafts["layout-draft"] = "unfinished message"
+    state.channelMapPreference.selectLayout(.vertical)
+    XCTAssertTrue(state.channelMapEnabled)
+    XCTAssertFalse(state.channelMapInHeader)
+    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertEqual(state.selectedConversationID, selected)
+    XCTAssertEqual(state.channelHudStates, hud)
+    XCTAssertEqual(state.conversationDrafts["layout-draft"], "unfinished message")
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+    state.channelMapPreference.selectLayout(.horizontal)
+    XCTAssertTrue(state.channelMapInHeader)
+    XCTAssertNotNil(DictationOverlayView(state: state).channelMap)
+  }
+
   func testOptOutHidesOnlyMapAndKeepsConversationAndCapture() throws {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)

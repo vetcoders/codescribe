@@ -203,3 +203,26 @@ asks its existing window owner to refit, including while a take is open.
 When disabled, mini draws `cs` at its earlier 200 pt width (164 while an agent
 records), and compact's natural width is 410. The microphone, selected owner,
 transcript and explicit resize choice are retained.
+
+### Intercom layouts and independent panes
+
+Creator's channel-map opt-in also offers **Intercom layout**. Horizontal keeps
+Monika's strip and gives names and separate microphone/playback/focus controls
+priority over the waveform at wide widths. Vertical shows independently movable,
+nonactivating desktop capsules. Native capsule windows leave the gaps to the
+desktop; only one hovered agent opens a message preview. A name selects and
+reveals the existing conversation, while an explicit microphone changes capture.
+The same `OverlayChannelMapPreference` stores the layout; switching it preserves
+the selected conversation, drafts and active route. No second inventory or
+recorder is created. The default remains horizontal, and an absent opt-in stays off.
+
+The roster toggle belongs to its right column; the conversation toggle belongs
+to its left canvas. A reveal always requests a side column, independent of width.
+A narrow host grows to the split floor where the display permits it, with both
+panes retained during the morph. An ordinary saved width is clamped to leave
+conversation space. Only explicit conversation folding or an explicit divider
+drag chooses the roster-only layout; its left reveal edge remains reachable.
+Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
+
+Open nonzero capture uses a violet microphone; only an open channel zero uses
+the outlined broadcast megaphone. These glyphs project routing and never choose it.

@@ -65,6 +65,24 @@ struct CreatorPanel: View {
           .toggleStyle(.switch)
           .accessibilityIdentifier("settings-overlay-channel-map")
         }
+        SettingsControlRow(
+          title: String(localized: "Intercom layout"),
+          subtitle: String(
+            localized: "Choose the horizontal strip or floating vertical agent pills.")
+        ) {
+          Picker(
+            "Intercom layout",
+            selection: Binding(
+              get: { model.overlayIntercomLayout },
+              set: { model.selectOverlayIntercomLayout($0) })
+          ) {
+            Text("Horizontal strip").tag(OverlayIntercomLayout.horizontal)
+            Text("Floating agent pills").tag(OverlayIntercomLayout.vertical)
+          }
+          .labelsHidden()
+          .disabled(!model.overlayChannelMapEnabled)
+          .accessibilityIdentifier("settings-overlay-intercom-layout")
+        }
       }
       .padding(.top, SettingsScale.sectionGap)
 

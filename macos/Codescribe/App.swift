@@ -1059,6 +1059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     idleRestartCoordinator?.invalidate()
     trayPanel.dismiss()
     model.chat.invalidate()
+    model.overlay.stopIntercomPresentation()
     appActionListener?.invalidate()
     voiceDeliveryListener?.invalidate()
     trayStatus.invalidate()
