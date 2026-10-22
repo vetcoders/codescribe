@@ -69,6 +69,8 @@ struct MCPServersSection: View {
       .padding(.top, SettingsScale.headerGap)
 
       DisclosureGroup(isExpanded: $showingTechnicalDetails) {
+        // The group takes its content's width; without this frame the pane
+        // centres it under the form (Founder, 2026-10-23 01:20).
         VStack(alignment: .leading, spacing: CSSpace.xs) {
           Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
             .font(SettingsScale.helper)
@@ -90,6 +92,7 @@ struct MCPServersSection: View {
           .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
         }
         .padding(.top, CSSpace.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
       } label: {
         Text("Technical details")
           .font(SettingsScale.helper)
@@ -518,7 +521,8 @@ private struct MCPServerForm: View {
         }
       } else {
         labeledField(
-          "Launch command", placeholder: "e.g. prview", text: $command, focus: .command)
+          "Launch command", placeholder: "e.g. /usr/local/bin/prview", text: $command,
+          focus: .command)
         Text("Enter only the executable here. Add each command argument separately below.")
           .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)

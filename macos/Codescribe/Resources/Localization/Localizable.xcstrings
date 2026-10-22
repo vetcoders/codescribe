@@ -9487,7 +9487,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Polecenie uruchomieniowe"
+            "value" : "Polecenie"
           }
         }
       }
@@ -21702,6 +21702,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "czas"
+          }
+        }
+      }
+    },
+    "e.g. /usr/local/bin/prview" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "np. /usr/local/bin/prview"
           }
         }
       }
