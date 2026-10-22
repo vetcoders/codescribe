@@ -2,6 +2,12 @@
 
 ## Overlay conversation viewing and speech
 
+The channel map in mini and compact is opt-in in Settings → Creator →
+**Channel map in the overlay**, off by default. With it off, mini keeps `cs` and
+its earlier 200 × 46 pt size (164 × 46 while an agent records); compact's natural
+width is 410 pt. An explicit user resize stays respected. The map geometry below
+applies when that switch is enabled. The switch changes presentation only.
+
 Overlay size is selected explicitly. Each ordinary preview-button click advances
 mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
 is the shared pin: the strip grows leftward and the transcript grows downward,

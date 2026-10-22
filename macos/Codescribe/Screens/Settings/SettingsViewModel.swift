@@ -1212,6 +1212,8 @@ final class SettingsViewModel: ObservableObject {
   var onApplyAppearance: (() -> Void)?
   private let appearancePreference: AppearancePreference
   private let sheetShadePreference: SheetShadePreference
+  private let channelMapPreference: OverlayChannelMapPreference
+  var overlayChannelMapEnabled: Bool { channelMapPreference.enabled }
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   /// Called only after the Rust owner accepts a fresh consultation.
@@ -1439,6 +1441,9 @@ final class SettingsViewModel: ObservableObject {
       languagePreferences === UserDefaults.standard
       ? .shared : SheetShadePreference(defaults: languagePreferences)
     self.appearanceChoice = appearancePreference.current
+    self.channelMapPreference =
+      languagePreferences === UserDefaults.standard
+      ? .shared : OverlayChannelMapPreference(defaults: languagePreferences)
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -2664,6 +2669,11 @@ final class SettingsViewModel: ObservableObject {
   /// Saves and invalidates every view reading the shared sheet tokens.
   func selectSheetShade(_ shade: SheetShade) {
     sheetShadePreference.select(shade)
+  }
+
+  func selectOverlayChannelMap(_ enabled: Bool) {
+    objectWillChange.send()
+    channelMapPreference.select(enabled)
   }
 
   func beginNewMaxConsultation() async {

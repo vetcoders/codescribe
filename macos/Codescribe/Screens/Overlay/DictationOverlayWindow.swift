@@ -57,9 +57,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// controls and, with an agent bound, the channel counter. The controller
   /// reports it whenever the counter changes (bus intercom spec §13.4).
   private(set) var miniNaturalWidth = DictationOverlayWindow.miniFloorWidth
+  private var channelMapEnabled = false
+  private var channelCapturing = false
   var miniSize: NSSize {
-    NSSize(width: miniNaturalWidth, height: DictationOverlayWindow.collapsedHeight)
+    NSSize(
+      width: channelMapEnabled ? miniNaturalWidth : (channelCapturing ? 164 : 200),
+      height: DictationOverlayWindow.collapsedHeight)
   }
+
   /// Compact's natural width: the 410 pt floor plus the channel map
   /// (`DictationOverlayWindow.midiNaturalWidth`). The controller reports it
   /// whenever the map's channels change.
@@ -368,9 +373,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// trailing edge stays, so the microphones keep their screen position. A
   /// morph in flight lands on the size it started with; its completion
   /// settles here.
-  func setMiniNaturalWidth(_ width: CGFloat) {
-    let natural = max(width, DictationOverlayWindow.miniFloorWidth)
-    guard abs(natural - miniNaturalWidth) > 0.5 else { return }
+  func setChannelMapPresentation(enabled: Bool, capturing: Bool, naturalWidth: CGFloat) {
+    let natural = max(naturalWidth, DictationOverlayWindow.miniFloorWidth)
+    guard
+      enabled != channelMapEnabled || capturing != channelCapturing
+        || abs(natural - miniNaturalWidth) > 0.5
+    else { return }
+    channelMapEnabled = enabled
+    channelCapturing = capturing
     miniNaturalWidth = natural
     settleMiniWidth()
   }
@@ -1272,11 +1282,14 @@ enum DictationOverlayWindow {
     let fitToChannelMap = { [weak panel, weak state] in
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
-      panel.setMiniNaturalWidth(miniNaturalWidth(map: map, textScale: textScale.scale))
+      panel.setChannelMapPresentation(
+        enabled: state.channelMapEnabled, capturing: state.channelAudioCaptureActive,
+        naturalWidth: miniNaturalWidth(map: map, textScale: textScale.scale))
       panel.setMidiNaturalWidth(
-        midiNaturalWidth(
-          map: map, textScale: textScale.scale,
-          visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width))
+        state.channelMapEnabled
+          ? midiNaturalWidth(
+            map: map, textScale: textScale.scale,
+            visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width) : midiSize.width)
     }
     fitToChannelMap()
     state.onChannelMapLayoutChanged = fitToChannelMap

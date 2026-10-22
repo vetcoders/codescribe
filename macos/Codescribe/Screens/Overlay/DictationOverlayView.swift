@@ -435,6 +435,9 @@ struct DictationOverlayView: View {
     .onAppear {
       FontLoader.register()
     }
+    .onChange(of: state.channelMapEnabled) { _, _ in
+      state.channelMapPreferenceChanged()
+    }
   }
 
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
@@ -1076,7 +1079,8 @@ struct DictationOverlayView: View {
     let mini = density == .mini
     // Mini's row gaps are half the 8 pt between its trailing controls, so the
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
-    return HStack(spacing: mini ? DictationOverlayWindow.miniRowSpacing : 10) {
+    let mapEnabled = state.channelMapEnabled
+    return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
       // brand dot leads, and the channel counter takes the word's place: the
@@ -1084,7 +1088,7 @@ struct DictationOverlayView: View {
       // microphone badge. This replaces Maciej's 2026-10-20 rule that mini
       // always reads "cs"; his agents button and its stop meaning stay.
       HStack(spacing: DictationOverlayWindow.miniBrandGap) {
-        Wordmark(size: density.brandSize, spacing: 5, showsWord: !mini) {
+        Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {
           closeButton
         }
         .fixedSize()
@@ -1105,7 +1109,7 @@ struct DictationOverlayView: View {
       // The flexible centre keeps one identity in every density; in mini it
       // collapses to a spacer so the recording controls stay trailing.
       chromeWaveform(barCount: density.waveformBars)
-        .frame(minWidth: density.waveformMinWidth, maxWidth: .infinity)
+        .frame(minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth, maxWidth: .infinity)
         .layoutPriority(-1)
         .opacity(mini ? 0 : 1)
         .allowsHitTesting(!mini)
@@ -1200,6 +1204,7 @@ struct DictationOverlayView: View {
   /// its natural width (spec §13.4). No popover: the hover hint lists the
   /// agents. Internal so a test can drive the same values the header renders.
   var channelMap: OverlayChannelMapView? {
+    guard state.channelMapEnabled else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }

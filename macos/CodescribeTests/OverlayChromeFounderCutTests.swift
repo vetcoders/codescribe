@@ -1471,6 +1471,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
   func testMiniCarriesTheChannelCounterInPlaceOfCsAndHugsItsContent() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
+    optIntoChannelMap(state)
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.channelAudioCaptureActive)
     func roster(open: Bool) -> [CsChannelRosterState] {

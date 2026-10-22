@@ -83,7 +83,7 @@ sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
 receives `DictationOverlayWindow.midiNaturalWidth`, bounded by the 820 pt
 `midiChannelMapBudget`, whenever `OverlayState.onChannelMapLayoutChanged`
 reports new agents or names. The same hook, which also fires when the open
-digits change, feeds `FloatingOverlayPanel.setMiniNaturalWidth` with
+digits change, feeds `FloatingOverlayPanel.setChannelMapPresentation` with
 `DictationOverlayWindow.miniNaturalWidth`: mini is as wide as its content, its
 130 pt floor of controls plus the counter as drawn, at the same header scale
 as compact. Placement and the saved position still describe the 200 pt
@@ -191,3 +191,15 @@ supplied large-text screenshots. Geometry checks should cover row widths
 button bounds and the five-line budget. Preserve action and accessibility
 coverage when moving a view to another file; source-shape assertions may need
 to follow the new owner.
+
+### Channel map opt-in
+
+Settings → Creator → **Channel map in the overlay** controls the map's mini
+counter and compact chips together. It is off for an absent preference.
+`OverlayChannelMapPreference` owns this process-only chrome choice in the app
+preference domain, as `AppearancePreference` does; it is not core configuration.
+Creator and every overlay observe that same owner. The view's change handler
+asks its existing window owner to refit, including while a take is open.
+When disabled, mini draws `cs` at its earlier 200 pt width (164 while an agent
+records), and compact's natural width is 410. The microphone, selected owner,
+transcript and explicit resize choice are retained.
