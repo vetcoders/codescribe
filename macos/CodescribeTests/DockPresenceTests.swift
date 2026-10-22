@@ -62,6 +62,32 @@ final class DockPresenceTests: XCTestCase {
     XCTAssertFalse(window.isMiniaturized, "it never becomes an Exposé tile")
   }
 
+  /// Maciej, 2026-10-22: Settings showed a dead grey minimise dot. AppKit
+  /// revalidates the traffic lights after a policy flip or a key change and
+  /// disables an accessory app's minimise; every key moment must re-point
+  /// and re-enable the hide control.
+  func testRevalidatedMinimiseButtonComesBackAsTheHideControl() throws {
+    let window = plainWindow()
+    DockPresence.adopt(window)
+    let button = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
+
+    button.isEnabled = false
+    button.target = nil
+    button.action = #selector(NSWindow.performMiniaturize(_:))
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+    XCTAssertTrue(button.isEnabled, "a key moment re-enables the hide control")
+    XCTAssertNotNil(button.target)
+
+    button.isEnabled = false
+    DockPresence.apply(showDockIcon: false)
+    XCTAssertTrue(button.isEnabled, "a policy flip re-enables every adopted window's control")
+
+    BackgroundTestWindow.present(window)
+    XCTAssertTrue(NSApp.sendAction(try XCTUnwrap(button.action), to: button.target, from: button))
+    XCTAssertFalse(window.isVisible, "the restored control still hides, never miniaturises")
+    XCTAssertFalse(window.isMiniaturized)
+  }
+
   /// Minimize All and the title-bar double-click preference reach AppKit's own
   /// miniaturise; the hider undoes it into a hide at once.
   func testAdoptedPlainWindowMiniaturiseEndsHidden() {
