@@ -409,20 +409,20 @@ struct StaticStatusPill: View {
 struct Wordmark<Dot: View>: View {
   var size: CGFloat = 15
   var spacing: CGFloat = 9
-  /// Identifier for the word, for probes that measure the brand block.
-  var textIdentifier: String = ""
-  /// The lowercase "cs" in place of the word, where a surface needs the room.
-  var short = false
+  /// False draws the dot alone, where a surface puts its own content in the
+  /// word's place: the overlay's mini header carries its channel counter.
+  var showsWord = true
   @ViewBuilder var dot: () -> Dot
   var body: some View {
     HStack(spacing: spacing) {
       dot()
-      Text(verbatim: short ? "cs" : "codescribe")
-        .font(CSFont.ui(size, .bold))
-        .tracking(-0.3)
-        .foregroundStyle(CSColor.textHigh)
-        .allowsHitTesting(false)
-        .accessibilityIdentifier(textIdentifier)
+      if showsWord {
+        Text(verbatim: "codescribe")
+          .font(CSFont.ui(size, .bold))
+          .tracking(-0.3)
+          .foregroundStyle(CSColor.textHigh)
+          .allowsHitTesting(false)
+      }
     }
   }
 }
