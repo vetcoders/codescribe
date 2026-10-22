@@ -270,6 +270,16 @@
         }
       }
     },
+    "%@ / %@ · %@ · reasoning %@" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ / %@ · %@ · rozumowanie %@"
+          }
+        }
+      }
+    },
     "%@ Hz" : {
       "comment" : "The placeholder is an audio sample rate in hertz",
       "localizations" : {
@@ -414,6 +424,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostawca: %@"
+          }
+        }
+      }
+    },
+    "%@ reasoning" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "rozumowanie %@"
           }
         }
       }
@@ -3266,6 +3286,17 @@
         }
       }
     },
+    "Answered, text unchanged" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpowiedź przyszła, tekst bez zmian"
+          }
+        }
+      }
+    },
     "Anthropic API key" : {
       "comment" : "Anthropic is a company name",
       "localizations" : {
@@ -4792,6 +4823,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz mikrofon i dostosuj nagrywanie."
+          }
+        }
+      }
+    },
+    "Choose how long the Agent thinks" : {
+      "comment" : "Palette command: the Agent's reasoning effort",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz, jak długo Agent ma myśleć"
           }
         }
       }
@@ -7853,6 +7895,17 @@
         }
       }
     },
+    "Extra high" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bardzo wysoki"
+          }
+        }
+      }
+    },
     "Extra shortcuts" : {
       "localizations" : {
         "pl" : {
@@ -7881,6 +7934,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Błąd: %@"
+          }
+        }
+      }
+    },
+    "Failed; see the log" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie powiodło się; sprawdź log"
           }
         }
       }
@@ -8162,6 +8226,28 @@
         }
       }
     },
+    "Formatted" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sformatowano"
+          }
+        }
+      }
+    },
+    "Formats a raw transcript, or your text, the way dictation does." : {
+      "comment" : "Formatting test row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Formatuje surową transkrypcję albo Twój tekst tak samo jak dyktowanie."
+          }
+        }
+      }
+    },
     "Formatter revision receipt was inconsistent" : {
       "localizations" : {
         "pl" : {
@@ -8264,6 +8350,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatowanie wersji…"
+          }
+        }
+      }
+    },
+    "Formatting test text" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst do testu formatowania"
           }
         }
       }
@@ -8666,6 +8762,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Schowaj transkrypcję"
+          }
+        }
+      }
+    },
+    "High" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wysoki"
           }
         }
       }
@@ -9470,6 +9577,16 @@
         }
       }
     },
+    "Leave the token empty to keep the saved token." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zostaw puste pole tokenu, aby zachować zapisany token."
+          }
+        }
+      }
+    },
     "Leave the username and password out of the server URL. Put the token in the access token field; it goes to the Keychain." : {
       "localizations" : {
         "pl" : {
@@ -9934,6 +10051,17 @@
         }
       }
     },
+    "Low" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niski"
+          }
+        }
+      }
+    },
     "Low confidence" : {
       "comment" : "Dictionary badge: the engine was unsure here",
       "localizations" : {
@@ -10120,6 +10248,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Trwa pomiar…"
+          }
+        }
+      }
+    },
+    "Medium" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Średni"
           }
         }
       }
@@ -10401,6 +10540,17 @@
         }
       }
     },
+    "Minimal" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Minimalny"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -10461,6 +10611,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Konfiguracja modeli"
+          }
+        }
+      }
+    },
+    "Model default keeps what the model does on its own. In the chat: /effort." : {
+      "comment" : "Agent reasoning row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domyślny dla modelu zostawia to, co model robi sam z siebie. W czacie: /effort."
+          }
+        }
+      }
+    },
+    "Model default" : {
+      "comment" : "Agent reasoning level: the model's own",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domyślny dla modelu"
           }
         }
       }
@@ -11106,6 +11278,17 @@
         }
       }
     },
+    "No answer in time" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak odpowiedzi w czasie"
+          }
+        }
+      }
+    },
     "No archived audio for this row — will not fall back to last_session.wav." : {
       "localizations" : {
         "pl" : {
@@ -11257,6 +11440,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie dodano jeszcze żadnych własnych dostawców."
+          }
+        }
+      }
+    },
+    "No effort sent; the model decides" : {
+      "comment" : "Model default reasoning entry",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez wskazania poziomu; decyduje model"
           }
         }
       }
@@ -11668,6 +11862,28 @@
         }
       }
     },
+    "None answers fastest. Higher levels are slower; choose one only if a model needs it." : {
+      "comment" : "Formatting reasoning row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak odpowiada najszybciej. Wyższe poziomy są wolniejsze; wybierz je tylko wtedy, gdy model tego potrzebuje."
+          }
+        }
+      }
+    },
+    "None" : {
+      "comment" : "Reasoning level",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak"
+          }
+        }
+      }
+    },
     "Not calibrated" : {
       "localizations" : {
         "pl" : {
@@ -11867,6 +12083,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie wysłano — transkrypt czeka jako szkic."
+          }
+        }
+      }
+    },
+    "Not sent: formatting is off or runs on the Agent" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie wysłano: formatowanie jest wyłączone albo działa na Agencie"
           }
         }
       }
@@ -13847,6 +14074,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Gotowy — skonfigurowano %1$@, może wysyłać żądania, %2$@"
+          }
+        }
+      }
+    },
+    "Reasoning" : {
+      "comment" : "Settings row: how long the lane's model may think before answering",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozumowanie"
           }
         }
       }
@@ -17910,6 +18148,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sprawdź: %@"
+          }
+        }
+      }
+    },
+    "Test formatting" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Testuj formatowanie"
           }
         }
       }
@@ -22252,6 +22500,17 @@
         }
       }
     },
+    "not sent" : {
+      "comment" : "Reasoning field absent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "nie wysłano"
+          }
+        }
+      }
+    },
     "nothing" : {
       "comment" : "Model details: no resident weights",
       "localizations" : {
@@ -24012,6 +24271,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończono pomyślnie"
+          }
+        }
+      }
+    },
+    "tak jeśli nie stosuje się zaleceń dokumentacji…" : {
+      "comment" : "Formatting test placeholder: a raw unpunctuated transcript",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "tak jeśli nie stosuje się zaleceń dokumentacji…"
           }
         }
       }

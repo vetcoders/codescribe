@@ -36,6 +36,9 @@ Responses (/v1/responses)
 https://…/mcp
 status
 
+# A sample raw Polish transcript used as a placeholder; the source is already Polish.
+tak jeśli nie stosuje się zaleceń dokumentacji…
+
 # Key names as the keyboard prints them.
 hotkeys.binding.doubleCtrl
 
