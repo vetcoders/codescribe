@@ -925,6 +925,90 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
   }
 
+  /// Astra's full-view contract (2026-10-22, brief rev c11709ef): the classic
+  /// full roster carries all actions and information inline. A secondary
+  /// click anywhere on it resolves no big agent menu — "Write / Forward…",
+  /// microphone, playback, Show in Agents and archive never hang off a row —
+  /// and no AppKit tooltip duplicates the inline metadata. The resolved
+  /// policy menu on 0 · All is the positive control that the scan sees real
+  /// menus at all.
+  func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let channels = [
+      OverlayChannelDelivery(
+        channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
+      OverlayChannelDelivery(
+        channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
+    ]
+    let view = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { _ in })
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 1600).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 900)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    host.layoutSubtreeIfNeeded()
+
+    let forbidden = [
+      "Write / Forward", "Speak to agent", "Stop speaking to agent", "Mute agent replies",
+      "Unmute agent replies", "Show in Agents", "archive agent", "move to archive",
+    ]
+    func titles(of menu: NSMenu) -> [String] {
+      menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
+    }
+    var resolvedMenus = 0
+    let step: CGFloat = 12
+    for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
+      for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
+        let point = NSPoint(x: x, y: y)
+        guard
+          let event = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: host.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 9_200,
+            clickCount: 1, pressure: 1)
+        else { continue }
+        var view = host.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        guard let menu else { continue }
+        resolvedMenus += 1
+        menu.delegate?.menuNeedsUpdate?(menu)
+        let resolved = titles(of: menu)
+        for title in resolved {
+          for marker in forbidden {
+            XCTAssertFalse(
+              title.contains(marker),
+              "the big agent menu leaked into the full roster at \(point): \(resolved)")
+          }
+        }
+      }
+    }
+    XCTAssertGreaterThan(
+      resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
+
+    var tooltips: [String] = []
+    func walk(_ view: NSView) {
+      if let tip = view.toolTip, !tip.isEmpty { tooltips.append(tip) }
+      for child in view.subviews { walk(child) }
+    }
+    walk(host)
+    XCTAssertTrue(
+      tooltips.isEmpty,
+      "the full roster shows its information inline, never as system tooltips: \(tooltips)")
+  }
+
   /// ⌘+ grew the docked column and the conversation, but the roster's own text
   /// stayed at 1.0 (Maciej, 2026-10-19): the overlay calls `monitorBody` on a
   /// status view that is never installed, so its environment read the default.
