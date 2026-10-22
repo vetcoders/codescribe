@@ -294,11 +294,32 @@ struct SpeechEdgeCursor {
     sample_rate_hz: u32,
 }
 
+/// Schema of the per-channel file the reply playback guard reads.
+const CHANNEL_SPEECH_NOW_SCHEMA: &str = "codescribe.channel-speech-now.v1";
+
+/// `bus-demux` starts an agent reply into an open channel only after this
+/// file reports measured quiet, so a reply waits for a pause, not for a seal.
+fn channel_speech_now_path(digit: u8) -> PathBuf {
+    active_names::bridge_home()
+        .join("runtime")
+        .join(format!("channel-speech-{digit}.json"))
+}
+
+#[derive(Debug)]
+struct SpeechNowFile {
+    path: PathBuf,
+    channel: u8,
+    session_id: String,
+    opened_at: SystemTime,
+    published: Option<&'static str>,
+}
+
 /// Cadence follows measured speech edges, never recognizer output timing.
 #[derive(Debug, Default)]
 pub(crate) struct ChannelSpeechClock {
     last_edge: Option<SpeechEdgeCursor>,
     phase: ChannelSpeechPhase,
+    now_file: Option<SpeechNowFile>,
 }
 
 impl ChannelSpeechClock {
@@ -348,6 +369,92 @@ impl ChannelSpeechClock {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// `fresh` has seen no edge since the session opened; `unmeasured` is a
+    /// broken edge chain and is never reported as quiet.
+    fn phase_label(&self) -> &'static str {
+        match (&self.phase, &self.last_edge) {
+            (ChannelSpeechPhase::Unmeasured, None) => "fresh",
+            (ChannelSpeechPhase::Unmeasured, Some(_)) => "unmeasured",
+            (ChannelSpeechPhase::Speaking, _) => "speaking",
+            (ChannelSpeechPhase::Quiet { .. }, _) => "quiet",
+        }
+    }
+
+    /// Publish this session's phase from now on.
+    fn publish_to(
+        &mut self,
+        path: PathBuf,
+        channel: u8,
+        session_id: String,
+        opened_at: SystemTime,
+    ) {
+        self.now_file = Some(SpeechNowFile {
+            path,
+            channel,
+            session_id,
+            opened_at,
+            published: None,
+        });
+        self.publish_now(SystemTime::now());
+    }
+
+    /// Rewrite the file when the phase changed. Runs under the clock lock, so
+    /// an earlier edge never overwrites a later one.
+    fn publish_now(&mut self, now: SystemTime) {
+        let phase = self.phase_label();
+        let since = match (&self.phase, &self.now_file) {
+            (ChannelSpeechPhase::Quiet { since }, _) => *since,
+            (ChannelSpeechPhase::Unmeasured, Some(file)) if self.last_edge.is_none() => {
+                file.opened_at
+            }
+            _ => now,
+        };
+        let Some(file) = self.now_file.as_mut() else {
+            return;
+        };
+        if file.published == Some(phase) {
+            return;
+        }
+        let since_ms = since
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let row = serde_json::json!({
+            "schema": CHANNEL_SPEECH_NOW_SCHEMA,
+            "channel": file.channel.to_string(),
+            "session_id": file.session_id,
+            "phase": phase,
+            "since_ms": since_ms,
+            "pid": std::process::id(),
+        });
+        let Some(name) = file.path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let staging = file
+            .path
+            .with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+        let written = file
+            .path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&staging, format!("{row}\n")))
+            .and_then(|()| std::fs::rename(&staging, &file.path));
+        match written {
+            Ok(()) => file.published = Some(phase),
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                tracing::warn!(%error, phase, "channel speech phase not published");
+            }
+        }
+    }
+
+    /// Stop publishing and remove this session's file; the channel is closing.
+    fn withdraw_now(&mut self) {
+        if let Some(file) = self.now_file.take() {
+            let _ = std::fs::remove_file(&file.path);
         }
     }
 
@@ -1175,10 +1282,11 @@ impl RecordingController {
                             hold_badge::update_transcript(cursor_token, text);
                         }))
                         .with_speech_activity_observer(Arc::new(move |evidence| {
-                            voice_clock
+                            let mut clock = voice_clock
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner())
-                                .observe(evidence, SystemTime::now());
+                                .unwrap_or_else(|error| error.into_inner());
+                            clock.observe(evidence, SystemTime::now());
+                            clock.publish_now(SystemTime::now());
                         }))
                         .with_cursor_observer(Arc::new(move |projection| {
                             hold_badge::update_voice_state(cursor_token, projection.voice);
@@ -1230,6 +1338,7 @@ impl RecordingController {
         };
 
         let audience = bound.audience.clone();
+        let published_clock = Arc::clone(&speech_clock);
         let receipt_session = session_id.clone();
         let receipt_provider = bound.provider.clone();
         let receipt_provider_session = bound.provider_session_id.clone();
@@ -1268,6 +1377,14 @@ impl RecordingController {
             );
         }
         if matches!(mode, ChannelOpenMode::Live) {
+            // Before the open receipt: the guard never sees this session open
+            // without its phase file.
+            if let Some(session) = receipt_session.clone() {
+                published_clock
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .publish_to(channel_speech_now_path(digit), digit, session, opened_at);
+            }
             let line = crate::presentation::agent_ack::channel_session_line(
                 &crate::presentation::agent_ack::ChannelSessionLine {
                     state: "open",
@@ -1330,6 +1447,10 @@ impl RecordingController {
         autoseal_secs: u64,
     ) -> Result<()> {
         let stopped_at = Instant::now();
+        open.speech_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .withdraw_now();
         let retained_capture =
             super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
                 codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
@@ -1592,6 +1713,13 @@ impl RecordingController {
         if self.channel_guards_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        // A reply `bus-demux` plays through afplay is the agent, not the
+        // Founder: channel feeds drop the microphone while it plays.
+        crate::audio::tts_duck::watch_external_playback(
+            active_names::bridge_home()
+                .join("runtime")
+                .join(crate::audio::tts_duck::EXTERNAL_PLAYBACK_MARKER),
+        );
         let controller = Arc::clone(self);
         handle.spawn(async move {
             let orphans = controller
@@ -4525,6 +4653,52 @@ mod channel_transcription_controls_tests {
             None,
             "another end without its start is unmeasured"
         );
+    }
+
+    /// The playback guard reads the phase file: a fresh session reports quiet
+    /// since it opened, speech holds it, a broken edge chain is never quiet,
+    /// and closing the channel removes the file.
+    #[test]
+    fn capture_clock_publishes_its_phase_for_the_playback_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtime").join("channel-speech-3.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+        };
+        let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let t = opened + Duration::from_secs(2);
+        let mut clock = ChannelSpeechClock::default();
+        clock.publish_now(t);
+        assert!(
+            !path.exists(),
+            "nothing is published before the session opens"
+        );
+        clock.publish_to(path.clone(), 3, "agent-channel-3-x".into(), opened);
+        let row = read();
+        assert_eq!(row["schema"], CHANNEL_SPEECH_NOW_SCHEMA);
+        assert_eq!(row["channel"], "3");
+        assert_eq!(row["session_id"], "agent-channel-3-x");
+        assert_eq!(row["phase"], "fresh");
+        assert_eq!(row["since_ms"], 1_000_000);
+        assert_eq!(row["pid"], std::process::id());
+        clock.observe(&measured_clock_edge(1, 0, true), t);
+        clock.publish_now(t);
+        assert_eq!(read()["phase"], "speaking");
+        clock.observe(&measured_clock_edge(2, 16_000, false), t);
+        clock.publish_now(t + Duration::from_secs(9));
+        let row = read();
+        assert_eq!(row["phase"], "quiet");
+        assert_eq!(
+            row["since_ms"], 1_002_000,
+            "quiet dates from the measured end"
+        );
+        clock.observe(&measured_clock_edge(3, 32_000, false), t);
+        clock.publish_now(t);
+        assert_eq!(read()["phase"], "unmeasured");
+        clock.withdraw_now();
+        assert!(!path.exists());
+        clock.publish_now(t);
+        assert!(!path.exists(), "a closed session never writes again");
     }
 
     #[tokio::test]
