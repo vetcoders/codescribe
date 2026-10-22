@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier, holding it past the start delay before the digit no longer hangs up the open channel and starts a phantom dictation that the digit then reopened; while a channel is open that hold admits nothing and the digit chord alone closes the channel.
+
 ### Added
 
 - Shortcuts: a widget chord shows the collapsed widget from anywhere and hides it again while nothing is recording; a recording or open channel only comes forward. `Control+Shift+B` by default; Settings › Shortcuts › Extra shortcuts records your own (Control, Option or Command plus a letter or Space), persisted as `WIDGET_SHORTCUT` and applied without a restart.

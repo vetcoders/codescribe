@@ -1770,6 +1770,11 @@ impl RecordingController {
     /// Ordinary capture admission holds the controller's serial lock. Release
     /// each channel feed before admission; tracked tails join and publish its
     /// existing close receipt independently of the next capture.
+    /// Whether any agent channel is open right now.
+    pub(crate) async fn has_open_agent_channels(&self) -> bool {
+        !self.agent_channels.lock().await.is_empty()
+    }
+
     pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
         let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
         open.sort_by_key(|(digit, _)| *digit);
@@ -1797,6 +1802,29 @@ impl RecordingController {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// Whether an ordinary hold's base key is also the agent-channel modifier.
+    ///
+    /// With `channel_modifier = fn` and `Dictation = HoldFn` (the Founder's
+    /// setup), a lone Fn press is the prefix of every channel chord. Once the
+    /// hold delay has elapsed the ordinary hold used to hang up the open channel
+    /// and admit dictation, and the digit that followed landed on a closed
+    /// channel and opened it again — a phantom hold, a reopened microphone and
+    /// Whisper hallucinating from silence (Founder, 2026-10-22 23:1x). While a
+    /// channel is open, such a hold is the chord's prefix, never dictation: the
+    /// digit chord closes the channel, and dictation starts only once no channel
+    /// is open. Ctrl behaves the same with `HoldCtrl` and `channel_modifier = ctrl`.
+    pub(crate) fn ordinary_hold_shares_channel_modifier(
+        dictation: crate::config::ShortcutBinding,
+        channel_modifier: crate::config::ChannelModifier,
+    ) -> bool {
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        matches!(
+            (dictation, channel_modifier),
+            (ShortcutBinding::HoldFn, ChannelModifier::Fn)
+                | (ShortcutBinding::HoldCtrl, ChannelModifier::Ctrl)
+        )
     }
 
     /// Quiet delivery contract (Founder seal cc6c8248): silence seals and
@@ -2698,6 +2726,105 @@ mod tests {
             controller.reset().await;
             assert_eq!(controller.current_state().await, State::Idle);
         }
+    }
+
+    #[test]
+    fn an_ordinary_hold_shares_the_channel_modifier_only_on_the_same_key() {
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        assert!(ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldFn,
+            ChannelModifier::Fn
+        ));
+        assert!(ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldCtrl,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldFn,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldCtrlShift,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::DoubleCtrl,
+            ChannelModifier::Ctrl
+        ));
+    }
+
+    /// Founder, 2026-10-22 23:1x: with Fn as the channel modifier, holding Fn
+    /// past the delay before the digit hung up the open channel, the digit
+    /// reopened it, and the phantom hold plus the reopened microphone fed
+    /// Whisper silence ("*piękne*"). Past the delay the hold must now admit
+    /// nothing while a channel is open: the channel survives, no hang-up
+    /// receipt is written, and the release leaves Idle untouched.
+    #[tokio::test]
+    #[serial]
+    async fn fn_modifier_hold_past_the_delay_keeps_the_open_channel_and_admits_nothing() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        use crate::os::hotkeys::{
+            ModeHotkeyBindings, get_channel_modifier, get_hold_start_delay_ms,
+            get_mode_hotkey_bindings, set_channel_modifier, set_mode_hotkey_bindings,
+        };
+
+        let previous_bindings = get_mode_hotkey_bindings();
+        let previous_modifier = get_channel_modifier();
+        set_mode_hotkey_bindings(ModeHotkeyBindings {
+            dictation: ShortcutBinding::HoldFn,
+            ..previous_bindings
+        });
+        set_channel_modifier(ChannelModifier::Fn);
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-fn-modifier",
+        )
+        .await;
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        tokio::time::sleep(Duration::from_millis(get_hold_start_delay_ms() + 700)).await;
+
+        let channel_preserved = controller.agent_channel_snapshot(3).await.is_some();
+        let state_after_delay = controller.current_state().await;
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("release");
+        let state_after_release = controller.current_state().await;
+        let rows = bus_rows(&channel_bus);
+        controller.reset().await;
+        set_mode_hotkey_bindings(previous_bindings);
+        set_channel_modifier(previous_modifier);
+
+        assert!(
+            channel_preserved,
+            "Fn is the channel modifier: a hold past the delay must not hang up the open channel"
+        );
+        assert_eq!(
+            state_after_delay,
+            State::Idle,
+            "no phantom hold is admitted"
+        );
+        assert_eq!(state_after_release, State::Idle);
+        assert!(rows.is_empty(), "no hang-up receipt: {rows:?}");
     }
 
     #[tokio::test]
