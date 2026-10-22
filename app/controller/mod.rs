@@ -6171,7 +6171,7 @@ impl RecordingController {
             if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
                 let bindings = crate::os::hotkeys::get_mode_hotkey_bindings();
                 let channel_modifier = crate::os::hotkeys::get_channel_modifier();
-                if agent_channel::ordinary_hold_shares_channel_modifier(
+                if RecordingController::ordinary_hold_shares_channel_modifier(
                     bindings.dictation,
                     channel_modifier,
                 ) && controller.has_open_agent_channels().await
