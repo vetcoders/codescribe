@@ -31,6 +31,8 @@ class CaptureAttachmentTests(unittest.TestCase):
         self.stage = {"schema": DEMUX.CAPTURE_ATTACHMENT_SCHEMA, "kind": "capture_attachment",
                       "stage_id": "1" * 24, "session_id": self.session, "capture_epoch": 7,
                       "source_sequence": 0, "commit_bus": str(self.bus), "audience": "all",
+                      "reducer_revision": 1, "occurrence_session_id": self.session,
+                      "sample_start": 10, "sample_end": 100, "document_index": 0,
                       "recipients": self.recipients, "attachments": [self.pointer]}
 
     def evidence(self, **changes):
@@ -83,6 +85,28 @@ class CaptureAttachmentTests(unittest.TestCase):
                 self.assertEqual(len(sealed), 1)
                 self.assertNotIn("attachments", sealed[0])
                 self.assertEqual(sealed[0]["text"], "Voice words")
+
+    def test_paste_keeps_its_source_after_continued_speech_revises_the_same_range(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        normalizer.normalize(self.evidence())
+        normalizer.normalize(self.evidence(sequence=1, reducer_revision=2,
+                                          rendered_text="More voice words"))
+        normalizer.normalize(self.stage)
+        self.commit()
+        sealed = self.seal(normalizer)
+        self.assertEqual(sealed[0]["attachments"], [self.pointer])
+        self.assertNotIn("capture_attachment_sources", sealed[0])
+
+    def test_pasted_source_survives_restart_after_newer_projection(self):
+        original = DEMUX.EvidenceNormalizer()
+        original.normalize(self.evidence())
+        original.normalize(self.evidence(sequence=1, reducer_revision=2,
+                                         sample_start=10, sample_end=100))
+        restored = DEMUX.EvidenceNormalizer()
+        restored.restore_channel_documents(json.loads(json.dumps(list(original.channel_documents().values()))))
+        restored.normalize(self.stage)
+        self.commit()
+        self.assertEqual(self.seal(restored)[0]["attachments"], [self.pointer])
 
     def test_stale_target_or_recipient_change_cannot_retarget_file(self):
         self.commit()

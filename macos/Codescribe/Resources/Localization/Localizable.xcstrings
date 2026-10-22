@@ -3483,6 +3483,16 @@
         }
       }
     },
+    "Attaching to this recording…" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dołączanie do tego nagrania…"
+          }
+        }
+      }
+    },
     "Attachments for active recording" : {
       "localizations" : {
         "pl" : {

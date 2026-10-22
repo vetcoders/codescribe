@@ -1008,6 +1008,7 @@ fn capture_attachment_source(
     }
     let mut decoder = generation::Decoder::default();
     let mut latest = None;
+    let mut selected = None;
     let mut open = false;
     let mut seen_stage = false;
     let mut ended = false;
@@ -1050,6 +1051,11 @@ fn capture_attachment_source(
                     open = false;
                 }
                 if row["schema"] == "codescribe.transcript-evidence.v1" {
+                    if row["capture_epoch"] == request["capture_epoch"]
+                        && row["sequence"] == request["source_sequence"]
+                    {
+                        selected = Some(row.clone());
+                    }
                     latest = Some(row);
                 }
             }
@@ -1058,10 +1064,24 @@ fn capture_attachment_source(
     if decoder.incomplete() {
         return Err(invalid());
     }
-    if !open || ended {
+    // The UI and the append owner observe the same evolving capture at
+    // different times. Continued speech may advance sequence, revision and
+    // occurrence while a pasted file is being described. Revalidate the exact
+    // selected row, not a demand that speaking stop until the append finishes.
+    // A different epoch/address or the capture's close still ends admission.
+    // A ledger terminal observation only seals a segment of an open capture.
+    let same_capture = selected
+        .as_ref()
+        .zip(latest.as_ref())
+        .is_some_and(|(selected, latest)| {
+            ["capture_epoch", "audience", "recipients"]
+                .iter()
+                .all(|key| selected[*key] == latest[*key])
+        });
+    if !open || ended || !same_capture {
         return Ok((None, seen_stage));
     }
-    Ok((latest, seen_stage))
+    Ok((selected, seen_stage))
 }
 
 /// Attachment staging consumes the capture's frozen address; it cannot create
@@ -1180,14 +1200,6 @@ fn append_capture_attachment(
                     || source["sample_start"] != initial["sample_start"]
                     || source["sample_end"] != initial["sample_end"]
                     || source["document_index"] != initial["document_index"]
-                    || matches!(
-                        source["reducer_action"].as_str(),
-                        Some(
-                            "record_ledger_terminal_seal"
-                                | "apply_direct_transcript_terminal"
-                                | "session_ended"
-                        )
-                    )
                 {
                     return Err(invalid());
                 }
@@ -3005,6 +3017,99 @@ mod tests {
                     .count(),
                 1
             );
+        }
+    }
+
+    #[test]
+    fn capture_attachment_keeps_pasted_segment_when_speech_advances() {
+        use std::io::Write;
+        let (_temp, buses, request) = capture_attachment_fixture();
+        for bus in &buses {
+            let first = std::fs::read_to_string(bus).unwrap();
+            let mut next: serde_json::Value =
+                serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
+            next["sequence"] = 1.into();
+            next["reducer_revision"] = 2.into();
+            next["document_index"] = 1.into();
+            next["sample_start"] = 50.into();
+            next["sample_end"] = 100.into();
+            next["rendered_text"] = "Continued speech".into();
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{next}"
+            )
+            .unwrap();
+        }
+        super::append_agent_event(&buses[0], &request).unwrap();
+        // A retry also resolves that same historical segment and is idempotent.
+        super::append_agent_event(&buses[0], &request).unwrap();
+        for bus in &buses {
+            let rows = std::fs::read_to_string(bus).unwrap();
+            let stages = rows
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|row| row["schema"] == "codescribe.capture-attachment.v1")
+                .collect::<Vec<_>>();
+            assert_eq!(stages.len(), 1);
+            assert_eq!(stages[0]["source_sequence"], 0);
+            assert_eq!(stages[0]["reducer_revision"], 1);
+            assert_eq!(stages[0]["sample_start"], 10);
+            assert_eq!(stages[0]["sample_end"], 50);
+            assert_eq!(stages[0]["document_index"], 0);
+        }
+    }
+
+    #[test]
+    fn capture_attachment_accepts_a_sealed_segment_while_capture_stays_open() {
+        use std::io::Write;
+        let (_temp, buses, request) = capture_attachment_fixture();
+        for bus in &buses {
+            let first = std::fs::read_to_string(bus).unwrap();
+            let mut sealed: serde_json::Value =
+                serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
+            sealed["sequence"] = 1.into();
+            sealed["reducer_action"] = "record_ledger_terminal_seal".into();
+            writeln!(
+                std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                "{sealed}"
+            )
+            .unwrap();
+        }
+        let mut selected = request;
+        selected["source_sequence"] = 1.into();
+        super::append_agent_event(&buses[0], &selected).unwrap();
+    }
+
+    #[test]
+    fn capture_attachment_historical_segment_cannot_borrow_changed_capture_or_address() {
+        use std::io::Write;
+        for change in ["capture_epoch", "audience", "recipients", "status"] {
+            let (_temp, buses, request) = capture_attachment_fixture();
+            for bus in &buses {
+                let first = std::fs::read_to_string(bus).unwrap();
+                let mut next: serde_json::Value =
+                    serde_json::from_str(first.lines().nth(1).unwrap()).unwrap();
+                next["sequence"] = 1.into();
+                next[change] = match change {
+                    "capture_epoch" => 8.into(),
+                    "audience" => "another audience".into(),
+                    "recipients" => serde_json::json!([]),
+                    _ => "session_ended".into(),
+                };
+                writeln!(
+                    std::fs::OpenOptions::new().append(true).open(bus).unwrap(),
+                    "{next}"
+                )
+                .unwrap();
+            }
+            assert!(super::append_agent_event(&buses[0], &request).is_err());
+            for bus in &buses {
+                assert!(
+                    !std::fs::read_to_string(bus)
+                        .unwrap()
+                        .contains("capture_attachment")
+                );
+            }
         }
     }
 

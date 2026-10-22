@@ -7,6 +7,121 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testPasteBeforeFirstWordsWaitsWithoutErrorAndDrainsOnSameCaptureProjection() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let empty = OverlayConversation(
+      id: receiving.id, channel: receiving.channel, name: receiving.name,
+      owner: receiving.owner, messages: [])
+    let target = try XCTUnwrap(receiving.messages.first?.activeCaptureAttachmentTarget)
+    let session = OverlayCaptureAttachmentSession(
+      id: target.captureSessionID, channel: "0", openedAt: "2026-10-20T21:59:59Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [empty], activeCaptureAttachmentSessions: [session]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "1", audience: empty.name, provider: empty.owner?.provider,
+        providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    let delivered = expectation(description: "first segment drains the pending image")
+    state.publishCaptureAttachments = { paths, received in
+      XCTAssertEqual(paths, ["/fixture/first.png"])
+      XCTAssertEqual(received, target)
+      delivered.fulfill()
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/first.png"], in: empty))
+    await state.sendCaptureAttachments(in: empty.id)
+    XCTAssertNil(state.captureAttachmentErrors[empty.id])
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id]?.target)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.captureSessionID, session.id)
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [receiving], activeCaptureAttachmentSessions: [session]))
+    await fulfillment(of: [delivered], timeout: 2)
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id])
+  }
+
+  func testWaitingPasteCannotMoveOntoSuccessorCaptureOnSnapshotOrRetry() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let target = try XCTUnwrap(receiving.messages.first?.activeCaptureAttachmentTarget)
+    let empty = OverlayConversation(
+      id: receiving.id, channel: receiving.channel, name: receiving.name,
+      owner: receiving.owner, messages: [])
+    let original = OverlayCaptureAttachmentSession(
+      id: "agent-channel-0-predecessor", channel: "0", openedAt: "2026-10-20T21:59:58Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let successor = OverlayCaptureAttachmentSession(
+      id: target.captureSessionID, channel: "0", openedAt: "2026-10-20T21:59:59Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [empty], activeCaptureAttachmentSessions: [original]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "1", audience: empty.name, provider: empty.owner?.provider,
+        providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    var sends = 0
+    state.publishCaptureAttachments = { _, _ in sends += 1 }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/pending.png"], in: empty))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [receiving], activeCaptureAttachmentSessions: [successor]))
+    await state.retryCaptureAttachments(in: empty.id)
+    XCTAssertEqual(sends, 0)
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id]?.target)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.captureSessionID, original.id)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/pending.png"])
+  }
+
+  func testCaptureOpeningAndFrozenRecipientsAreAvailableBeforeWords() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let session = "agent-channel-1-before-words"
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: fixture.recipient()))
+    bus.consume([
+      "schema": "codescribe.channel-recipients.v1", "session_id": session,
+      "channel": "1", "recipients": [fixture.recipient()],
+    ])
+    bus.consume([
+      "schema": "codescribe.channel-session.v1", "kind": "channel_session",
+      "session_id": session, "channel": "1", "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID, "opened_at": "2026-10-20T22:00:00Z",
+      "state": "open", "loud": true,
+    ])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions.map(\.id), [session])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions.first?.recipientIDs, [owner.id])
+    bus.consume([
+      "schema": "codescribe.channel-session.v1", "kind": "channel_session",
+      "session_id": session, "channel": "1", "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID, "opened_at": "2026-10-20T22:00:00Z",
+      "state": "sealed", "loud": true,
+    ])
+    XCTAssertTrue(bus.activeCaptureAttachmentSessions.isEmpty)
+  }
+
   func testCapturePasteDuringAnAwaitedPublicationDrainsTheSecondFile() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

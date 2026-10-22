@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Images pasted during a live agent take remain bound to the selected audio segment while speech advances. Pasting before the first segment waits quietly and attaches automatically to that same capture; Retry no longer moves the file to the latest utterance. The follower keeps the committed image in the same voice message across revisions and restart.
 - Clicking a floating agent capsule pins its small message preview. Hover remains transient; opening the full conversation is an explicit action inside the preview.
 - Agent and conversation pane buttons stay with their own panels. Showing the agent list opens a side column at every width; hiding it stays hidden until an explicit reveal. Individual-agent capture shows a microphone; channel-zero broadcast shows an outlined megaphone.
 - Message bubble actions brighten their icon and label together on hover, without redundant tooltips or button chrome. The composer microphone and Send share that feedback; Send keeps its filled paper plane in softer, adaptive terracotta.

@@ -2448,6 +2448,8 @@ final class OverlayState {
     applyChannelDelivery(snapshot.deliveries)
     reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
+    resolveWaitingCaptureAttachments(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -2584,7 +2586,11 @@ final class OverlayState {
   struct CaptureAttachmentDraft {
     var target: OverlayCaptureAttachmentTarget?
     var paths: [String]
+    var captureSessionID: String? = nil
+    var pastedAt: Date = Date()
   }
+  @ObservationIgnored private var activeCaptureAttachmentSessions:
+    [OverlayCaptureAttachmentSession] = []
   private(set) var captureAttachmentDrafts: [String: CaptureAttachmentDraft] = [:]
   private(set) var pendingCaptureAttachmentSends: Set<String> = []
   private(set) var captureAttachmentErrors: [String: String] = [:]
@@ -2660,6 +2666,11 @@ final class OverlayState {
       return false
     }
     var staged = existing ?? CaptureAttachmentDraft(target: target, paths: [])
+    if staged.captureSessionID == nil {
+      staged.captureSessionID =
+        target?.captureSessionID
+        ?? captureSessionForPaste(in: conversation, at: staged.pastedAt)?.id
+    }
     for path in paths where !staged.paths.contains(path) { staged.paths.append(path) }
     guard !staged.paths.isEmpty else { return false }
     captureAttachmentDrafts[conversation.id] = staged
@@ -2667,13 +2678,51 @@ final class OverlayState {
     return true
   }
 
+  /// A late first projection may resolve a paste only onto a capture already
+  /// open at paste time, addressed to this exact conversation. A successor take
+  /// cannot inherit pending files just because the same agent number is reused.
+  private func captureSessionForPaste(in conversation: OverlayConversation, at pastedAt: Date)
+    -> OverlayCaptureAttachmentSession?
+  {
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let plain = ISO8601DateFormatter()
+    let candidates = activeCaptureAttachmentSessions.filter { session in
+      guard session.includes(conversation),
+        let opened = parser.date(from: session.openedAt) ?? plain.date(from: session.openedAt)
+      else { return false }
+      return opened <= pastedAt
+    }
+    guard Set(candidates.map(\.id)).count == 1 else { return nil }
+    return candidates.first
+  }
+
+  private func resolveWaitingCaptureAttachments(in projected: [OverlayConversation]) {
+    for (id, original) in captureAttachmentDrafts where original.target == nil {
+      guard let conversation = projected.first(where: { $0.id == id }),
+        let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
+        original.captureSessionID == nil || original.captureSessionID == session.id,
+        let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
+          .first(where: {
+            $0.captureSessionID == session.id && $0.recipientIDs.sorted() == session.recipientIDs
+          })
+      else { continue }
+      var resolved = original
+      resolved.captureSessionID = session.id
+      resolved.target = target
+      captureAttachmentDrafts[id] = resolved
+      captureAttachmentErrors.removeValue(forKey: id)
+      Task { await sendCaptureAttachments(in: id) }
+    }
+  }
+
   func sendCaptureAttachments(in conversationID: String) async {
     guard let staged = captureAttachmentDrafts[conversationID], !staged.paths.isEmpty,
       !pendingCaptureAttachmentSends.contains(conversationID)
     else { return }
     guard let target = staged.target else {
-      captureAttachmentErrors[conversationID] = String(
-        localized: "Wait for the spoken message, then retry these attachments.")
+      // Waiting for the first committed segment is normal, not an I/O failure.
+      // The existing snapshot stream will resolve the same capture and drain it.
       return
     }
     pendingCaptureAttachmentSends.insert(conversationID)
@@ -2698,30 +2747,12 @@ final class OverlayState {
   }
 
   func retryCaptureAttachments(in conversationID: String) async {
-    guard var staged = captureAttachmentDrafts[conversationID],
+    guard captureAttachmentDrafts[conversationID] != nil,
       !pendingCaptureAttachmentSends.contains(conversationID)
     else { return }
-    if let current = conversations.first(where: { $0.id == conversationID })?
-      .messages.reversed().compactMap(\.activeCaptureAttachmentTarget).first
-    {
-      if let original = staged.target {
-        // A retry may refresh a revision of the same occurrence, never move
-        // the file onto the next utterance or a newly bound audience.
-        if original.captureSessionID == current.captureSessionID,
-          original.captureEpoch == current.captureEpoch,
-          original.occurrenceID == current.occurrenceID,
-          original.recipientIDs == current.recipientIDs,
-          original.busPath == current.busPath
-        {
-          staged.target = current
-        }
-      } else {
-        // No evidence existed at paste time. Only this explicit retry chooses
-        // the now-visible occurrence; background polling cannot do so.
-        staged.target = current
-      }
-      captureAttachmentDrafts[conversationID] = staged
-    }
+    resolveWaitingCaptureAttachments(in: conversations)
+    // Preserve an already selected segment. The append owner revalidates its
+    // exact historical coordinates even while newer speech advances the bus.
     await sendCaptureAttachments(in: conversationID)
   }
 
