@@ -2000,6 +2000,264 @@ fn first_placement_from_a_window_edge_still_lands() {
     assert_eq!(ledger.text_of(&owner), Some("początek"));
 }
 
+/// A 48 kHz owner for recorded window geometry; pins and windows in the
+/// tests below are the recorded ones.
+fn window_position_ledger(start: u64, end: u64) -> (AcousticLedger, OccurrenceIdentity) {
+    let owner = OccurrenceIdentity::new("window-position", 1, start, end);
+    let mut ledger = AcousticLedger::new();
+    ledger.bind_capture_rate(48_000);
+    let calibration = EnergyCalibration::new("trial-test", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: owner.clone(),
+                    duration_ms: (end - start) as f64 / 48.0,
+                    energy_integral: 100.0,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -10.0,
+                    vad_open_sample: Some(owner.sample_start),
+                    vad_close_sample: Some(owner.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    ledger.schedule_frontier(
+        owner.clone(),
+        [ObservationProducer::Apple, ObservationProducer::Whisper],
+    );
+    (ledger, owner)
+}
+
+fn decode_window(
+    ledger: &mut AcousticLedger,
+    owner: &OccurrenceIdentity,
+    generation: u64,
+    decode: (u64, u64),
+    words: &[(u64, u64, &str)],
+) {
+    let pins = words
+        .iter()
+        .map(|&(start, end, text)| {
+            WordPin::new(start, end, text).with_decode_window(decode.0, decode.1)
+        })
+        .collect::<Vec<_>>();
+    ledger.admit_word_slots(
+        &ObservationIdentity::new(ObservationProducer::Whisper, 1, generation, owner.clone()),
+        &pins,
+    );
+}
+
+/// Take agent-channel-2-d8d1da2a: the live window (0–9 s) pinned "żyję"
+/// (q 0.45) and "obudziłem." (q 0.11) at its right fence; the Stop window
+/// (3–11.47 s) heard "żyje" (q 0.77) and "obudziła." (q 0.97) in its band.
+/// The banded copies respell the endings in place.
+#[test]
+fn an_edge_pinned_word_yields_to_its_banded_respelling() {
+    let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (0, 432_000),
+        &[(248_640, 367_680, "żyję"), (384_960, 415_680, "obudziłem.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("żyję obudziłem."));
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (144_000, 550_400),
+        &[(248_640, 367_680, "żyje"), (384_000, 419_520, "obudziła.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("żyje obudziła."));
+    assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
+    let respelled = ledger
+        .word_choices()
+        .iter()
+        .filter(|choice| choice.accepted && choice.reason == "window_position")
+        .map(|choice| choice.candidate.q)
+        .collect::<Vec<_>>();
+    assert_eq!(respelled, [772_440, 966_141]);
+}
+
+/// Window position only chooses between spellings of one physical word
+/// heard once at an edge and once in a band. Everything else keeps needing
+/// lexical evidence.
+#[test]
+fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() {
+    for (case, held, candidate, decode) in [
+        (
+            "different word",
+            "Gentamycyną.",
+            "metodem",
+            (144_000, 550_400),
+        ),
+        (
+            "edge against edge",
+            "obudziłem.",
+            "obudziła.",
+            (300_000, 420_000),
+        ),
+        ("negation", "nie", "nic", (144_000, 550_400)),
+    ] {
+        let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
+        decode_window(
+            &mut ledger,
+            &owner,
+            0,
+            (0, 432_000),
+            &[(384_960, 415_680, held)],
+        );
+        decode_window(
+            &mut ledger,
+            &owner,
+            1,
+            decode,
+            &[(384_960, 415_680, candidate)],
+        );
+        assert_eq!(ledger.text_of(&owner), Some(held), "{case}");
+        assert!(
+            !ledger
+                .word_choices()
+                .iter()
+                .any(|choice| choice.reason == "window_position"),
+            "{case}"
+        );
+    }
+}
+
+/// Two complete frames agreeing on the edge label are lexical evidence; one
+/// banded frame cannot outvote them by position.
+#[test]
+fn window_position_cannot_outvote_a_corroborated_edge_label() {
+    let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (0, 432_000),
+        &[(384_960, 415_680, "obudziłem.")],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (8_000, 424_000),
+        &[(384_960, 415_680, "obudziłem.")],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        2,
+        (144_000, 550_400),
+        &[(384_960, 415_680, "obudziła.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("obudziłem."));
+}
+
+/// Clip02 fcf12e76 (build584; report work-261011-003620-47788): req 18 pinned
+/// the right "Gentamycyną." 0.5 s before its right fence (q 0.17), req 19
+/// heard "kentamycyną." in its band (q 1.0). The banded copy differs in the
+/// onset, which the edge window heard in full, so the edge copy stays.
+#[test]
+fn window_position_keeps_the_onset_a_right_fence_window_heard() {
+    let (mut ledger, owner) = window_position_ledger(2_621_952, 2_866_688);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (2_448_000, 2_880_000),
+        &[(2_808_960, 2_856_000, "Gentamycyną.")],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (2_592_000, 3_024_000),
+        &[(2_808_960, 2_856_000, "kentamycyną.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("Gentamycyną."));
+    assert!(
+        !ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.reason == "window_position")
+    );
+}
+
+/// The mirror case: a window starting 0.2 s before the word clipped its
+/// onset (q 0.07); a banded copy respells the onset, the ending is shared.
+#[test]
+fn a_left_fence_onset_yields_to_its_banded_respelling() {
+    let (mut ledger, owner) = window_position_ledger(2_621_952, 2_866_688);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (2_799_360, 3_231_360),
+        &[(2_808_960, 2_856_000, "kentamycyną.")],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (2_592_000, 3_024_000),
+        &[(2_808_960, 2_856_000, "Gentamycyną.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("Gentamycyną."));
+    assert!(
+        ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.accepted && choice.reason == "window_position")
+    );
+}
+
+/// Clip02 fcf12e76 in full: req 18 "z Gentamycyną." (right fence), req 19
+/// "z kentamycyną." (band), then the EOF-shortened Stop window that starts
+/// inside "eksterna." and splits the word into "gęta metodem.". Neither later
+/// window may replace the drug name: one is a different onset, the other a
+/// different partition, and no second frame agrees with either.
+#[test]
+fn clip02_windows_keep_gentamycyna() {
+    let (mut ledger, owner) = window_position_ledger(2_621_952, 2_866_688);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (2_448_000, 2_880_000),
+        &[
+            (2_804_160, 2_808_960, "z"),
+            (2_808_960, 2_856_000, "Gentamycyną."),
+        ],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (2_592_000, 3_024_000),
+        &[
+            (2_804_160, 2_806_080, "z"),
+            (2_806_080, 2_856_000, "kentamycyną."),
+        ],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        2,
+        (2_736_000, 3_027_456),
+        &[
+            (2_804_160, 2_807_040, "z"),
+            (2_807_040, 2_821_440, "gęta"),
+            (2_821_440, 2_856_000, "metodem."),
+        ],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("z Gentamycyną."));
+}
+
 /// Measured 2026-10-08 on a pl-PL replay: Apple's word pins ran 0.1-0.4 s
 /// early against Whisper's, so a midpoint grouping paired Whisper "Niczego"
 /// with Apple "Niczego nie" and Whisper "nie" with Apple "testował". A policy
