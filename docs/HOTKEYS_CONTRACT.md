@@ -132,7 +132,14 @@ separate from resize. This source change does not certify absence of transient
 flicker on a live window.
 
 Opening a capture channel follows the exact provider/session conversation and
-scrolls to its newest message. New messages on that open channel keep the latest
+scrolls to its newest message. In mini and compact with the channel map on
+(Creator preference `codescribe.overlay.channel_map`), the chord keeps that
+form: the conversation is selected, the strip's chip or counter shows the open
+digit, and the overlay does not unfold onto the Agents canvas. With the map
+off, or when the overlay is already expanded, the Agents canvas unfolds onto
+the conversation (the overlay's expand-by-default preference permitting).
+Incoming replies, a dictation take start and the preferred expansion keep
+their own rules. New messages on that open channel keep the latest
 entry visible; a passive roster poll does not replace a manually selected thread.
 The newest messages are painted first without reordering the observer history.
 
