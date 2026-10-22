@@ -224,11 +224,43 @@ name expands that same card down into `OverlayConversationView`: messages,
 editable draft, attachments and manual Send, without opening the main overlay.
 The expanded card is bound to the exact conversation/provider/session/lease,
 so another hover or a reused channel digit cannot replace its draft or target.
-Close collapses the card and retains the draft. Its top grip can detach and
-move the same window; detaching folds the remaining group to its header.
-Clicking the header unfolds it again and refits the visible rows to the screen.
-The left edge and bottom corners resize
-the conversation. The card becomes key only after an explicit click.
+Close collapses the card and retains the draft. A real drag of its top grip
+detaches the same window; a motionless click never detaches or moves anything.
+Detaching folds the remaining group to its header, and clicking the header
+unfolds it again and refits the visible rows to the screen. The left edge and
+bottom corners of a detached window resize that conversation. The card becomes
+key only after an explicit click.
+
+### Durable fiszki and the group zoom
+
+A detached conversation is a durable **fiszka** (Maciej, 2026-10-22): a view
+instance with its own persistent identity, separate from the conversation it
+presents. The same agent can keep several fiszki in different places at once;
+each one records its own position, size and mini/closed window state, and all
+of them observe the one shared conversation, draft and command state. Restore
+on the next launch is a UI operation: windows come back exactly as left, a
+closed instance stays closed, mini returns as mini, and nothing opens a
+microphone, re-sends a message or changes recipients. An instance follows the
+exact conversation owner; a reused digit or an identical display name never
+rebinds it. When the exact owner is gone the saved words stay readable and the
+live actions withdraw.
+
+Every instance window has minimize and close. Both are window operations: they
+never disconnect, archive or re-address the agent. Mini rests with the name,
+the activity dots and the one audio slot; hover reveals restore and close.
+Closing records the fiszka as closed, and detaching the same conversation from
+the group reopens that saved window instead of minting a duplicate; a second
+detach while one instance is open deliberately creates another copy. Resizing
+an expanded group card is an explicit independent placement and turns it into
+a fiszka with its own geometry.
+
+The attached group resizes like one window. The left edge of the header and
+the left edge plus bottom corners of any resting pill scale every attached
+fiszka proportionally; the drag ratio becomes a persisted group zoom between
+1 and 2.5 over the text scale. Detached fiszki keep their own geometry and the
+plain text scale. The persisted desktop (instances plus the group zoom) lives
+with the other chrome preferences in the app domain, never in the engine's
+runtime configuration.
 
 The single audio slot uses the existing microphone command at rest and the
 existing playback command while `conversation.replySpeaking` is true. Actual

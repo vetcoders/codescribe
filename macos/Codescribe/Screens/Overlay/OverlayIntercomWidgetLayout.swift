@@ -162,7 +162,6 @@ struct OverlayIntercomPresentation: Equatable {
 
   var hovered: OverlayIntercomCardIdentity?
   var expanded: Set<OverlayIntercomCardIdentity> = []
-  var detached: Set<OverlayIntercomCardIdentity> = []
   var folded = false
 
   mutating func enter(_ identity: OverlayIntercomCardIdentity) {
@@ -173,23 +172,17 @@ struct OverlayIntercomPresentation: Equatable {
     if hovered == identity { hovered = nil }
   }
 
+  /// One conversation opens inside the group at a time. A second place for
+  /// the same or another agent is a durable detached instance, not a second
+  /// group expansion.
   mutating func expand(_ identity: OverlayIntercomCardIdentity) {
     guard identity.conversationID != nil, identity.ownerID != nil else { return }
-    expanded.formIntersection(detached)
-    expanded.insert(identity)
+    expanded = [identity]
     hovered = nil
-  }
-
-  mutating func detach(_ identity: OverlayIntercomCardIdentity) {
-    guard expanded.contains(identity) else { return }
-    detached.insert(identity)
-    hovered = nil
-    folded = true
   }
 
   mutating func close(_ identity: OverlayIntercomCardIdentity) {
     expanded.remove(identity)
-    detached.remove(identity)
     leave(identity)
   }
 }

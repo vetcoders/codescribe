@@ -11,8 +11,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let state: OverlayState
   @ObservationIgnored private let textScale: TextScaleController
   @ObservationIgnored private let revealConversation: () -> Void
+  @ObservationIgnored private let desktopStore: OverlayIntercomDesktopStore
   @ObservationIgnored private var header: OverlayIntercomPanel?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
+  @ObservationIgnored private var instancePanels: [UUID: OverlayIntercomPanel] = [:]
   @ObservationIgnored private var identities: [OverlayIntercomCardIdentity] = []
   @ObservationIgnored private var sizes: [OverlayIntercomCardIdentity: CGSize] = [:]
   @ObservationIgnored private var visible = false
@@ -22,15 +24,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
   fileprivate private(set) var focusRevisions: [OverlayIntercomCardIdentity: UInt64] = [:]
+  /// The durable desktop: detached fiszki and the group's proportional scale
+  /// (Maciej, 2026-10-22). Tracked, so cards re-render on zoom and restore.
+  fileprivate private(set) var desktop: OverlayIntercomDesktopState
+  fileprivate private(set) var instanceFocusRevisions: [UUID: UInt64] = [:]
 
   init(
     state: OverlayState, textScale: TextScaleController,
-    revealConversation: @escaping () -> Void = {}
+    revealConversation: @escaping () -> Void = {},
+    desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore()
   ) {
     self.state = state
     self.textScale = textScale
     self.revealConversation = revealConversation
+    self.desktopStore = desktopStore
+    desktop = desktopStore.load()
     super.init()
+  }
+
+  /// Group geometry multiplies the text scale by the persisted group zoom.
+  /// Detached instances keep their own geometry and the plain text scale.
+  fileprivate var groupScale: CGFloat { CGFloat(desktop.groupScale) }
+  private var effectiveScale: CGFloat { textScale.scale * groupScale }
+
+  private func saveDesktop() {
+    desktopStore.save(desktop)
   }
 
   func setVisible(_ visible: Bool, relativeTo anchor: NSWindow?) {
@@ -42,6 +60,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       presentation.hovered = nil
       header?.orderOut(nil)
       for panel in cards.values { panel.setPresented(false, animated: false) }
+      for panel in instancePanels.values { panel.setPresented(false, animated: false) }
       return
     }
     if header == nil {
@@ -50,7 +69,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
       panel.contentView = NSHostingView(
         rootView: TextScaleRoot(controller: textScale) {
-          OverlayIntercomHeader(state: state, controller: self)
+          OverlayIntercomGroupZoom(controller: self) {
+            OverlayIntercomHeader(state: state, controller: self)
+          }
         })
       let fallback = anchor?.frame ?? NSScreen.main?.visibleFrame ?? .zero
       let stored = UserDefaults.standard.array(forKey: Self.positionKey) as? [Double]
@@ -63,7 +84,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.setFrame(CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
       header = panel
     }
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: textScale.scale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    materializeInstances()
     header?.orderFrontRegardless()
   }
 
@@ -77,6 +99,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.close()
     }
     cards.removeAll()
+    for panel in instancePanels.values {
+      panel.delegate = nil
+      panel.contentView = nil
+      panel.close()
+    }
+    instancePanels.removeAll()
     header?.delegate = nil
     header?.contentView = nil
     header?.close()
@@ -92,11 +120,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         name: $0.name)
     }
     // Channel reuse cannot replace the editor underneath a draft. The old
-    // exact owner keeps its existing card, like an explicitly detached one.
+    // exact owner's open card survives as a durable detached instance.
     for identity in presentation.expanded where !identities.contains(identity) {
-      presentation.detach(identity)
+      detachIntoInstance(identity)
     }
-    let retained = Set(identities).union(presentation.expanded)
+    let retained = Set(identities)
     for identity in Set(cards.keys).subtracting(retained) {
       let panel = cards.removeValue(forKey: identity)
       panel?.delegate = nil
@@ -134,9 +162,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
       panel.contentView = NSHostingView(
         rootView: TextScaleRoot(controller: textScale) {
-          OverlayIntercomCard(
-            state: state, identity: identity, index: index, controller: self,
-            onRevealConversation: revealConversation)
+          OverlayIntercomGroupZoom(controller: self) {
+            OverlayIntercomCard(
+              state: state, identity: identity, index: index, controller: self,
+              onRevealConversation: revealConversation)
+          }
         })
       cards[identity] = panel
     }
@@ -145,14 +175,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   private var screenFrame: CGRect { visibleFrame(for: header) }
 
-  private var groupIdentities: [OverlayIntercomCardIdentity] {
-    identities.filter { !presentation.detached.contains($0) }
-  }
+  private var groupIdentities: [OverlayIntercomCardIdentity] { identities }
 
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
       count: groupIdentities.count, offset: rowOffset, visibleHeight: availableHeight,
-      scale: textScale.scale)
+      scale: effectiveScale)
   }
 
   fileprivate var hasOverflow: Bool { visibleRows.count < groupIdentities.count }
@@ -161,10 +189,128 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   func presentsConversation(_ conversationID: String?) -> Bool {
     guard visible, let conversationID else { return false }
-    return presentation.expanded.contains { identity in
+    if presentation.expanded.contains(where: { identity in
       identity.conversationID == conversationID && cards[identity]?.isPresented == true
         && state.conversations.contains(where: { identity.matches($0) })
+    }) {
+      return true
     }
+    return desktop.instances.contains { instance in
+      instance.conversationID == conversationID && !instance.closed && !instance.minimized
+        && instancePanels[instance.id]?.isPresented == true
+        && state.conversations.contains(where: { instance.matches($0) })
+    }
+  }
+
+  // MARK: - Durable instances
+
+  fileprivate func instance(for id: UUID) -> OverlayIntercomInstance? {
+    desktop.instances.first { $0.id == id }
+  }
+
+  /// Window creation and frame projection for the saved desktop. Restore is a
+  /// UI operation: it never opens a microphone or re-sends anything, and a
+  /// closed instance stays closed until the fiszka is detached again.
+  private func materializeInstances() {
+    guard !invalidated else { return }
+    for (id, panel) in instancePanels
+    where !desktop.instances.contains(where: { $0.id == id }) {
+      panel.delegate = nil
+      panel.contentView = nil
+      panel.close()
+      instancePanels.removeValue(forKey: id)
+      instanceFocusRevisions.removeValue(forKey: id)
+    }
+    for instance in desktop.instances {
+      guard !instance.closed else {
+        instancePanels[instance.id]?.setPresented(false, animated: false)
+        continue
+      }
+      let panel: OverlayIntercomPanel
+      if let existing = instancePanels[instance.id] {
+        panel = existing
+      } else {
+        panel = OverlayIntercomPanel()
+        panel.delegate = self
+        panel.contentView = NSHostingView(
+          rootView: TextScaleRoot(controller: textScale) {
+            OverlayIntercomInstanceCard(
+              state: state, instanceID: instance.id, controller: self,
+              onRevealConversation: revealConversation)
+          })
+        instancePanels[instance.id] = panel
+      }
+      panel.acceptsConversationFocus = !instance.minimized
+      positioning = true
+      let fitted = instanceFrame(instance, for: panel)
+      if panel.frame != fitted { panel.setFrame(fitted, display: true) }
+      positioning = false
+      panel.setPresented(
+        visible, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+  }
+
+  /// Mini keeps the stored window's top-right corner and shrinks to one row;
+  /// the expanded frame survives underneath for restore.
+  private func instanceFrame(_ instance: OverlayIntercomInstance, for panel: NSWindow)
+    -> CGRect
+  {
+    let stored = instance.frame
+    let visibleFrame = visibleFrame(for: panel)
+    guard instance.minimized else {
+      return OverlayIntercomWidgetLayout.cardFrame(
+        below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
+        size: stored.size, visibleFrame: visibleFrame)
+    }
+    let height = OverlayIntercomWidgetLayout.controlHeight(scale: textScale.scale)
+    return OverlayIntercomWidgetLayout.cardFrame(
+      below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
+      size: CGSize(width: stored.width, height: height), visibleFrame: visibleFrame)
+  }
+
+  fileprivate func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+    desktop.instances[index].minimized = minimized
+    if minimized { instancePanels[id]?.resignKey() }
+    saveDesktop()
+    materializeInstances()
+    if !minimized, let panel = instancePanels[id] {
+      instanceFocusRevisions[id, default: 0] &+= 1
+      panel.makeKeyAndOrderFront(nil)
+    }
+  }
+
+  /// X is a window operation: the saved fiszka stays recorded as closed and
+  /// detaching the same conversation reopens it. No disconnect, no archive.
+  fileprivate func closeInstance(_ id: UUID) {
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+    instancePanels[id]?.resignKey()
+    desktop.instances[index].closed = true
+    saveDesktop()
+    materializeInstances()
+  }
+
+  fileprivate func resizeInstance(
+    _ id: UUID, from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge
+  ) {
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }),
+      let panel = instancePanels[id], !desktop.instances[index].minimized
+    else { return }
+    let fitted = OverlayIntercomWidgetLayout.resizedFrame(
+      frame, delta: delta, edge: edge,
+      minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
+      visibleFrame: visibleFrame(for: panel))
+    desktop.instances[index].frame = fitted
+    saveDesktop()
+    positioning = true
+    panel.setFrame(fitted, display: true)
+    positioning = false
+  }
+
+  fileprivate func focusInstance(_ id: UUID) {
+    guard let panel = instancePanels[id], instance(for: id)?.minimized == false else { return }
+    instanceFocusRevisions[id, default: 0] &+= 1
+    panel.makeKeyAndOrderFront(nil)
   }
 
   fileprivate func scrollGroup(_ steps: Int) {
@@ -192,15 +338,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     for (identity, panel) in cards {
       let expanded = presentation.expanded.contains(identity)
       panel.acceptsConversationFocus = expanded
-      if presentation.detached.contains(identity) {
-        let fitted = OverlayIntercomWidgetLayout.conversationFrame(
-          below: panel.frame, size: panel.frame.size, visibleFrame: visibleFrame(for: panel),
-          scale: textScale.scale)
-        if panel.frame != fitted { panel.setFrame(fitted, display: true) }
-        panel.setPresented(
-          true, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        continue
-      }
       guard !presentation.folded, let index = group.firstIndex(of: identity), range.contains(index)
       else {
         panel.setPresented(
@@ -209,17 +346,17 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       }
       let row = OverlayIntercomWidgetLayout.rowFrame(
         index: index - range.lowerBound, header: header.frame, count: range.count,
-        visibleFrame: screenFrame, scale: textScale.scale)
+        visibleFrame: screenFrame, scale: effectiveScale)
       let frame: CGRect
       if expanded {
         frame = OverlayIntercomWidgetLayout.conversationFrame(
           below: row,
           size: sizes[identity]
-            ?? OverlayIntercomWidgetLayout.conversationSize(scale: textScale.scale),
-          visibleFrame: screenFrame, scale: textScale.scale)
+            ?? OverlayIntercomWidgetLayout.conversationSize(scale: effectiveScale),
+          visibleFrame: screenFrame, scale: effectiveScale)
       } else if presentation.hovered == identity {
         frame = OverlayIntercomWidgetLayout.previewFrame(
-          beside: row, visibleFrame: screenFrame, scale: textScale.scale)
+          beside: row, visibleFrame: screenFrame, scale: effectiveScale)
       } else {
         frame = row
       }
@@ -254,34 +391,81 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate func close(_ identity: OverlayIntercomCardIdentity) {
     cards[identity]?.resignKey()
     presentation.close(identity)
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: textScale.scale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   fileprivate func toggleGroup() {
     presentation.folded.toggle()
     presentation.hovered = nil
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: textScale.scale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
+  /// Detaching makes the fiszka durable (Maciej, 2026-10-22). A closed saved
+  /// instance of this exact conversation reopens instead of a duplicate; a
+  /// second detach while one is already open deliberately duplicates.
   fileprivate func detach(_ identity: OverlayIntercomCardIdentity) {
-    presentation.detach(identity)
-    positionCards()
+    guard presentation.expanded.contains(identity) else { return }
+    detachIntoInstance(identity)
+    presentation.folded = true
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
+  private func detachIntoInstance(_ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil) {
+    guard identity.conversationID != nil, identity.ownerID != nil else {
+      presentation.close(identity)
+      return
+    }
+    let current =
+      frame ?? cards[identity]?.frame
+      ?? CGRect(
+        origin: header?.frame.origin ?? .zero,
+        size: OverlayIntercomWidgetLayout.conversationSize(scale: textScale.scale))
+    if let index = desktop.instances.firstIndex(where: {
+      $0.conversationID == identity.conversationID && $0.ownerID == identity.ownerID && $0.closed
+    }) {
+      desktop.instances[index].closed = false
+    } else {
+      desktop.upsert(OverlayIntercomInstance(identity: identity, frame: current))
+    }
+    cards[identity]?.resignKey()
+    presentation.close(identity)
+    saveDesktop()
+    materializeInstances()
+  }
+
+  /// Resizing an expanded group card is an explicit independent placement:
+  /// it becomes a durable instance with its own geometry (brief: a single
+  /// conversation's resize never replaces the proportional group resize).
   fileprivate func resize(
     _ identity: OverlayIntercomCardIdentity, from frame: CGRect, delta: CGSize,
     edge: OverlayIntercomWidgetLayout.ResizeEdge
   ) {
     guard let panel = cards[identity], presentation.expanded.contains(identity) else { return }
-    // Resizing is an explicit independent placement, just like dragging the grip.
-    presentation.detach(identity)
     let fitted = OverlayIntercomWidgetLayout.resizedFrame(
       frame, delta: delta, edge: edge,
       minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
       visibleFrame: visibleFrame(for: panel))
-    sizes[identity] = fitted.size
-    panel.setFrame(fitted, display: true)
-    positionCards()
+    detachIntoInstance(identity, frame: fitted)
+    presentation.folded = true
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+  }
+
+  /// The group resizes like one window: the drag ratio becomes the shared
+  /// proportional scale of every attached fiszka, persisted with the desktop.
+  fileprivate func resizeGroup(
+    from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge
+  ) {
+    guard let header else { return }
+    let fitted = OverlayIntercomWidgetLayout.resizedFrame(
+      frame, delta: delta, edge: edge,
+      minimum: CGSize(width: 80, height: OverlayIntercomWidgetLayout.headerHeight),
+      visibleFrame: visibleFrame(for: header))
+    let scaled = OverlayIntercomDesktopState.groupScale(
+      current: desktop.groupScale, currentWidth: frame.width, requestedWidth: fitted.width)
+    guard scaled != desktop.groupScale else { return }
+    desktop.groupScale = scaled
+    saveDesktop()
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   func windowDidMove(_ notification: Notification) {
@@ -297,8 +481,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       positionCards()
       UserDefaults.standard.set(
         [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
-    } else if let identity = cards.first(where: { $0.value === panel })?.key,
-      presentation.detached.contains(identity)
+    } else if let id = instancePanels.first(where: { $0.value === panel })?.key,
+      let index = desktop.instances.firstIndex(where: { $0.id == id })
     {
       let fitted = OverlayIntercomWidgetLayout.cardFrame(
         below: panel.frame, size: panel.frame.size, visibleFrame: visibleFrame(for: panel))
@@ -307,6 +491,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         panel.setFrame(fitted, display: true)
         positioning = false
       }
+      // A mini window moves the stored expanded frame by its top-right corner,
+      // so restore opens where the person last left the fiszka.
+      var stored = desktop.instances[index].frame
+      stored.origin.x = fitted.maxX - stored.width
+      stored.origin.y = fitted.maxY - stored.height
+      desktop.instances[index].frame = stored
+      saveDesktop()
     }
   }
 }
@@ -434,6 +625,13 @@ private struct OverlayIntercomHeader: View {
         }, controller: controller
       )
     )
+    .overlay {
+      // The group's left edge resizes every attached fiszka proportionally.
+      // The header's corners keep their buttons; pills carry the corners.
+      OverlayIntercomResizeHandles(corners: false) { frame, delta, edge in
+        controller.resizeGroup(from: frame, delta: delta, edge: edge)
+      }
+    }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
   }
 }
@@ -466,7 +664,9 @@ private final class OverlayIntercomDragView: NSView {
   var onDrag: () -> Void = {}
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-  override func mouseDown(with event: NSEvent) {
+  // A real drag moves the window (and detaches, where the grip detaches).
+  // A click that never moves is not a detach and not a move.
+  override func mouseDragged(with event: NSEvent) {
     onDrag()
     window?.performDrag(with: event)
   }
@@ -522,6 +722,12 @@ private struct OverlayIntercomCard: View {
       if expanded {
         OverlayIntercomResizeHandles { frame, delta, edge in
           controller.resize(identity, from: frame, delta: delta, edge: edge)
+        }
+      } else {
+        // The group resizes like one window from a pill's left edge and
+        // bottom corners: every attached fiszka scales proportionally.
+        OverlayIntercomResizeHandles { frame, delta, edge in
+          controller.resizeGroup(from: frame, delta: delta, edge: edge)
         }
       }
     }
@@ -627,6 +833,35 @@ private struct OverlayIntercomCard: View {
     _ conversation: OverlayConversation?, palette: OverlayAppearancePalette,
     speaking: Bool, open: Bool
   ) -> some View {
+    OverlayIntercomAudioSlot(
+      state: state, conversation: conversation, name: name, digit: identity.digit,
+      palette: palette, speaking: speaking, open: open)
+  }
+
+  private func conversationBody(
+    _ conversation: OverlayConversation, palette: OverlayAppearancePalette
+  ) -> some View {
+    OverlayIntercomConversationBody(
+      state: state, conversation: conversation, palette: palette,
+      focusRevision: controller.focusRevisions[identity] ?? 0)
+  }
+}
+
+/// One audio slot: a microphone at rest, a speaker during a reply, driven by
+/// the shared recording/playback commands. Group cards and durable instances
+/// paint the same control.
+private struct OverlayIntercomAudioSlot: View {
+  @Environment(\.csTextScale) private var scale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  let state: OverlayState
+  let conversation: OverlayConversation?
+  let name: String
+  let digit: String
+  let palette: OverlayAppearancePalette
+  let speaking: Bool
+  let open: Bool
+
+  var body: some View {
     Button {
       guard let conversation else { return }
       Task {
@@ -651,17 +886,17 @@ private struct OverlayIntercomCard: View {
       restingColor: palette.agentAccent.color.opacity(speaking || open ? 1 : 0.8),
       hoverColor: palette.agentAccent.color
     )
-    .disabled(audioDisabled(conversation, speaking: speaking))
+    .disabled(audioDisabled)
     .accessibilityLabel(
       (speaking
         ? String(localized: "Mute agent replies")
         : open ? String(localized: "Stop recording") : String(localized: "Start recording"))
         + ": " + name
     )
-    .accessibilityIdentifier("overlay-intercom-audio-\(identity.digit)")
+    .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
   }
 
-  private func audioDisabled(_ conversation: OverlayConversation?, speaking: Bool) -> Bool {
+  private var audioDisabled: Bool {
     guard let conversation else { return true }
     if speaking {
       return state.conversationPlaybackMuted(conversation) == nil
@@ -672,15 +907,23 @@ private struct OverlayIntercomCard: View {
       || (!state.conversationMicrophoneOpen(conversation)
         && state.channelHudStates[conversation.channel]?.followerAlive == false)
   }
+}
 
-  private func conversationBody(
-    _ conversation: OverlayConversation, palette: OverlayAppearancePalette
-  ) -> some View {
+/// The one shared conversation surface a card or an instance unrolls: the
+/// existing messages, composer, attachments and manual Send. A view instance
+/// is a new presentation of this shared state, never a second document.
+private struct OverlayIntercomConversationBody: View {
+  let state: OverlayState
+  let conversation: OverlayConversation
+  let palette: OverlayAppearancePalette
+  let focusRevision: UInt64
+
+  var body: some View {
     OverlayConversationView(
       conversation: conversation, palette: palette, topInset: 0, bottomInset: 12,
       pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
       onControl: { message, stop in Task { await state.controlReply(message, stop: stop) } },
-      composerFocusRevision: controller.focusRevisions[identity] ?? 0,
+      composerFocusRevision: focusRevision,
       draft: Binding(
         get: { state.conversationDrafts[conversation.id] ?? "" },
         set: { state.conversationDrafts[conversation.id] = $0 }),
@@ -714,6 +957,9 @@ private struct OverlayIntercomCard: View {
 }
 
 private struct OverlayIntercomResizeHandles: View {
+  /// The header keeps its corners for buttons; its left edge still resizes
+  /// the group. Pills and cards expose the left edge and both bottom corners.
+  var corners = true
   let resize: (CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge) -> Void
 
   var body: some View {
@@ -722,13 +968,164 @@ private struct OverlayIntercomResizeHandles: View {
         OverlayIntercomResizeHandle(edge: .left, resize: resize).frame(width: 5)
         Spacer(minLength: 0)
       }
-      HStack {
-        OverlayIntercomResizeHandle(edge: .bottomLeft, resize: resize).frame(width: 14, height: 14)
-        Spacer(minLength: 0)
-        OverlayIntercomResizeHandle(edge: .bottomRight, resize: resize).frame(width: 14, height: 14)
+      if corners {
+        HStack {
+          OverlayIntercomResizeHandle(edge: .bottomLeft, resize: resize)
+            .frame(width: 14, height: 14)
+          Spacer(minLength: 0)
+          OverlayIntercomResizeHandle(edge: .bottomRight, resize: resize)
+            .frame(width: 14, height: 14)
+        }
+        .frame(height: 14)
       }
-      .frame(height: 14)
     }
+  }
+}
+
+/// Multiplies the surrounding text scale by the persisted group zoom. Group
+/// windows live inside it; detached instances keep the plain text scale.
+private struct OverlayIntercomGroupZoom<Content: View>: View {
+  @Environment(\.csTextScale) private var scale
+  let controller: OverlayIntercomWidgetController
+  @ViewBuilder var content: Content
+
+  var body: some View {
+    content.environment(\.csTextScale, scale * controller.groupScale)
+  }
+}
+
+/// A durable fiszka: its own window over the shared conversation state. Mini
+/// rests with the name, activity and one audio slot; hover reveals restore
+/// and close. X and minimize are window operations, never disconnect/archive.
+private struct OverlayIntercomInstanceCard: View {
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.csTextScale) private var scale
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @State private var hovering = false
+  let state: OverlayState
+  let instanceID: UUID
+  let controller: OverlayIntercomWidgetController
+  let onRevealConversation: () -> Void
+
+  var body: some View {
+    if let instance = controller.instance(for: instanceID) {
+      content(instance)
+    } else {
+      Color.clear
+    }
+  }
+
+  private func content(_ instance: OverlayIntercomInstance) -> some View {
+    let palette = OverlayAppearancePalette.resolve(colorScheme)
+    let conversation = state.conversations.first { instance.matches($0) }
+    let mini = instance.minimized
+    return VStack(spacing: 0) {
+      headerRow(instance, conversation: conversation, palette: palette)
+        .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      if !mini {
+        if let conversation {
+          OverlayIntercomConversationBody(
+            state: state, conversation: conversation, palette: palette,
+            focusRevision: controller.instanceFocusRevisions[instanceID] ?? 0
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          // The exact owner is gone from the roster. The saved words stay
+          // readable; live actions withdraw instead of guessing a successor.
+          Text("Conversation unavailable").csFont(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+      }
+    }
+    .foregroundStyle(palette.primaryText.color)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
+    .clipShape(RoundedRectangle(cornerRadius: mini ? 30 * max(1, scale) : 16))
+    .overlay {
+      RoundedRectangle(cornerRadius: mini ? 30 * max(1, scale) : 16)
+        .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
+    }
+    .overlay {
+      if !mini {
+        OverlayIntercomResizeHandles { frame, delta, edge in
+          controller.resizeInstance(instanceID, from: frame, delta: delta, edge: edge)
+        }
+      }
+    }
+    .onHover { hovering = $0 }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-intercom-instance-\(instance.digit)")
+  }
+
+  private func headerRow(
+    _ instance: OverlayIntercomInstance, conversation: OverlayConversation?,
+    palette: OverlayAppearancePalette
+  ) -> some View {
+    let speaking = conversation?.replySpeaking == true
+    let open = conversation.map { state.conversationMicrophoneOpen($0) } ?? false
+    let current =
+      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
+      == true
+    let reachable = current && state.channelHudStates[instance.digit]?.followerAlive == true
+    let mini = instance.minimized
+    return HStack(spacing: 3) {
+      Image(systemName: "hand.draw").font(.system(size: 10 * scale))
+        .frame(width: 24 * max(1, scale))
+        .overlay(OverlayIntercomDragHandle())
+        .accessibilityLabel("Move fiszka")
+      Button {
+        if mini {
+          controller.setInstanceMinimized(instanceID, false)
+        } else {
+          controller.focusInstance(instanceID)
+        }
+      } label: {
+        HStack(spacing: 5) {
+          Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
+          Circle().fill(reachable ? palette.successStatus.color : palette.mutedText.color)
+            .frame(width: 5, height: 5)
+          if let conversation, state.unreadReplies(in: conversation) > 0 {
+            Circle().fill(palette.agentAccent.color).frame(width: 5, height: 5)
+          }
+          Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: speaking ? palette.agentAccent.color : palette.primaryText.color,
+        hoverColor: palette.agentAccent.color
+      )
+      .accessibilityLabel(
+        (mini ? String(localized: "Restore fiszka") : String(localized: "Open conversation"))
+          + ": " + instance.name)
+      OverlayIntercomAudioSlot(
+        state: state, conversation: conversation, name: instance.name, digit: instance.digit,
+        palette: palette, speaking: speaking, open: open)
+      if !mini || hovering {
+        Button(
+          mini ? "Restore" : "Minimize",
+          systemImage: mini ? "arrow.up.left.and.arrow.down.right" : "minus"
+        ) {
+          controller.setInstanceMinimized(instanceID, !mini)
+        }
+        .labelStyle(.iconOnly).buttonStyle(.plain)
+        .frame(width: 22 * max(1, scale), height: 30 * max(1, scale))
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
+        .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
+        Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
+          .labelStyle(.iconOnly).buttonStyle(.plain)
+          .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+          .conversationActionHover(
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+          )
+          .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
+      }
+    }
+    .padding(.trailing, 4)
   }
 }
 

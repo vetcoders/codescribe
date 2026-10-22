@@ -50,25 +50,20 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertFalse(presentation.folded)
   }
 
-  /// A detached conversation keeps living beside the group; closing it
-  /// returns it without touching the others.
-  func testDetachedConversationSurvivesTheNextClickAndClosesAlone() throws {
+  /// Detaching left the presentation layer (2026-10-22): a detached fiszka is
+  /// a durable OverlayIntercomInstance. Inside the group one conversation
+  /// opens at a time; another agent's click replaces it, close returns it.
+  func testGroupOpensOneConversationAndAnotherClickReplacesIt() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
     let astra = try identity("astra", channel: "3", lease: "b")
     var presentation = OverlayIntercomPresentation()
 
-    presentation.detach(lena)
-    XCTAssertTrue(presentation.detached.isEmpty, "only an expanded card can be detached")
     presentation.expand(lena)
-    presentation.detach(lena)
-    XCTAssertEqual(presentation.detached, [lena])
-    XCTAssertTrue(presentation.folded, "the rest of the group folds after a detach")
-
+    XCTAssertEqual(presentation.expanded, [lena])
     presentation.expand(astra)
-    XCTAssertEqual(presentation.expanded, [lena, astra])
-    presentation.close(lena)
-    XCTAssertEqual(presentation.expanded, [astra])
-    XCTAssertTrue(presentation.detached.isEmpty)
+    XCTAssertEqual(presentation.expanded, [astra], "one attached conversation at a time")
+    presentation.close(astra)
+    XCTAssertTrue(presentation.expanded.isEmpty)
   }
 
   /// A digit with no bound conversation can paint a capsule, never a composer.
