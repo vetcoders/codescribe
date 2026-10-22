@@ -2031,6 +2031,24 @@ fn window_position_ledger(start: u64, end: u64) -> (AcousticLedger, OccurrenceId
     (ledger, owner)
 }
 
+/// Apple's words over the same capture, as a live recognizer delivers them
+/// after Whisper already holds the span.
+fn apple_words(
+    ledger: &mut AcousticLedger,
+    owner: &OccurrenceIdentity,
+    generation: u64,
+    words: &[(u64, u64, &str)],
+) {
+    let pins = words
+        .iter()
+        .map(|&(start, end, text)| WordPin::new(start, end, text))
+        .collect::<Vec<_>>();
+    ledger.admit_word_slots(
+        &ObservationIdentity::new(ObservationProducer::Apple, 1, generation, owner.clone()),
+        &pins,
+    );
+}
+
 fn decode_window(
     ledger: &mut AcousticLedger,
     owner: &OccurrenceIdentity,
@@ -2051,11 +2069,12 @@ fn decode_window(
 }
 
 /// Take agent-channel-2-d8d1da2a: the live window (0–9 s) pinned "żyję"
-/// (q 0.45) and "obudziłem." (q 0.11) at its right fence; the Stop window
-/// (3–11.47 s) heard "żyje" (q 0.77) and "obudziła." (q 0.97) in its band.
-/// The banded copies respell the endings in place.
+/// (q 0.45) and "obudziłem." (q 0.11) at its right fence; Apple heard
+/// "obudziła"; the Stop window (3–11.47 s) heard "żyje" (q 0.77) and
+/// "obudziła." (q 0.97) in its band. Only the ending another engine heard is
+/// respelled; "żyje" has no second engine and the edge copy stays.
 #[test]
-fn an_edge_pinned_word_yields_to_its_banded_respelling() {
+fn an_edge_pinned_word_yields_to_its_corroborated_banded_respelling() {
     let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
     decode_window(
         &mut ledger,
@@ -2064,6 +2083,7 @@ fn an_edge_pinned_word_yields_to_its_banded_respelling() {
         (0, 432_000),
         &[(248_640, 367_680, "żyję"), (384_960, 415_680, "obudziłem.")],
     );
+    apple_words(&mut ledger, &owner, 0, &[(388_320, 408_480, "obudziła")]);
     assert_eq!(ledger.text_of(&owner), Some("żyję obudziłem."));
     decode_window(
         &mut ledger,
@@ -2072,7 +2092,7 @@ fn an_edge_pinned_word_yields_to_its_banded_respelling() {
         (144_000, 550_400),
         &[(248_640, 367_680, "żyje"), (384_000, 419_520, "obudziła.")],
     );
-    assert_eq!(ledger.text_of(&owner), Some("żyje obudziła."));
+    assert_eq!(ledger.text_of(&owner), Some("żyję obudziła."));
     assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
     let respelled = ledger
         .word_choices()
@@ -2080,14 +2100,73 @@ fn an_edge_pinned_word_yields_to_its_banded_respelling() {
         .filter(|choice| choice.accepted && choice.reason == "window_position")
         .map(|choice| choice.candidate.q)
         .collect::<Vec<_>>();
-    assert_eq!(respelled, [772_440, 966_141]);
+    assert_eq!(respelled, [966_141]);
+}
+
+/// Over 15 corpus takes a banded ending alone was wrong 3 times in 4
+/// ("Ciekawie", "informacje", "chce"): position without a second engine
+/// leaves the edge copy in place.
+#[test]
+fn a_banded_respelling_alone_keeps_the_edge_word() {
+    let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (0, 432_000),
+        &[(384_960, 415_680, "obudziłem.")],
+    );
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (144_000, 550_400),
+        &[(384_000, 419_520, "obudziła.")],
+    );
+    assert_eq!(ledger.text_of(&owner), Some("obudziłem."));
+    assert!(
+        !ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.reason == "window_position")
+    );
+}
+
+/// Another engine that heard the edge spelling keeps it, even when it also
+/// heard the banded one.
+#[test]
+fn window_position_cannot_respell_a_word_another_engine_heard() {
+    let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
+    decode_window(
+        &mut ledger,
+        &owner,
+        0,
+        (0, 432_000),
+        &[(384_960, 415_680, "Ciekawe,")],
+    );
+    apple_words(&mut ledger, &owner, 0, &[(388_320, 408_480, "ciekawie")]);
+    apple_words(&mut ledger, &owner, 1, &[(388_320, 408_480, "ciekawe")]);
+    decode_window(
+        &mut ledger,
+        &owner,
+        1,
+        (144_000, 550_400),
+        &[(384_000, 419_520, "Ciekawie,")],
+    );
+    assert!(
+        !ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.reason == "window_position")
+    );
 }
 
 /// Window position only chooses between spellings of one physical word
-/// heard once at an edge and once in a band. Everything else keeps needing
-/// lexical evidence.
+/// heard once at an edge and once in a band, and only on the fence side.
+/// Each case carries Apple's agreement with the candidate, so only its own
+/// guard refuses it.
 #[test]
-fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() {
+fn window_position_cannot_replace_a_different_word_an_edge_copy_a_negation_or_two_words() {
     for (case, held, candidate, decode) in [
         (
             "different word",
@@ -2102,6 +2181,7 @@ fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() 
             (300_000, 420_000),
         ),
         ("negation", "nie", "nic", (144_000, 550_400)),
+        ("two words", "agenta, bo", "agenta", (144_000, 550_400)),
     ] {
         let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
         decode_window(
@@ -2111,6 +2191,7 @@ fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() 
             (0, 432_000),
             &[(384_960, 415_680, held)],
         );
+        apple_words(&mut ledger, &owner, 0, &[(388_320, 408_480, candidate)]);
         decode_window(
             &mut ledger,
             &owner,
@@ -2118,7 +2199,6 @@ fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() 
             decode,
             &[(384_960, 415_680, candidate)],
         );
-        assert_eq!(ledger.text_of(&owner), Some(held), "{case}");
         assert!(
             !ledger
                 .word_choices()
@@ -2130,7 +2210,7 @@ fn window_position_cannot_replace_a_different_word_an_edge_copy_or_a_negation() 
 }
 
 /// Two complete frames agreeing on the edge label are lexical evidence; one
-/// banded frame cannot outvote them by position.
+/// banded frame cannot outvote them by position, Apple or not.
 #[test]
 fn window_position_cannot_outvote_a_corroborated_edge_label() {
     let (mut ledger, owner) = window_position_ledger(225_600, 439_680);
@@ -2148,6 +2228,7 @@ fn window_position_cannot_outvote_a_corroborated_edge_label() {
         (8_000, 424_000),
         &[(384_960, 415_680, "obudziłem.")],
     );
+    apple_words(&mut ledger, &owner, 0, &[(388_320, 408_480, "obudziła")]);
     decode_window(
         &mut ledger,
         &owner,
@@ -2155,13 +2236,19 @@ fn window_position_cannot_outvote_a_corroborated_edge_label() {
         (144_000, 550_400),
         &[(384_960, 415_680, "obudziła.")],
     );
-    assert_eq!(ledger.text_of(&owner), Some("obudziłem."));
+    assert!(
+        !ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.reason == "window_position")
+    );
 }
 
 /// Clip02 fcf12e76 (build584; report work-261011-003620-47788): req 18 pinned
 /// the right "Gentamycyną." 0.5 s before its right fence (q 0.17), req 19
 /// heard "kentamycyną." in its band (q 1.0). The banded copy differs in the
-/// onset, which the edge window heard in full, so the edge copy stays.
+/// onset, which the edge window heard in full, so the edge copy stays even
+/// with an engine behind the banded spelling.
 #[test]
 fn window_position_keeps_the_onset_a_right_fence_window_heard() {
     let (mut ledger, owner) = window_position_ledger(2_621_952, 2_866_688);
@@ -2172,6 +2259,12 @@ fn window_position_keeps_the_onset_a_right_fence_window_heard() {
         (2_448_000, 2_880_000),
         &[(2_808_960, 2_856_000, "Gentamycyną.")],
     );
+    apple_words(
+        &mut ledger,
+        &owner,
+        0,
+        &[(2_810_000, 2_854_000, "kentamycyną")],
+    );
     decode_window(
         &mut ledger,
         &owner,
@@ -2179,7 +2272,6 @@ fn window_position_keeps_the_onset_a_right_fence_window_heard() {
         (2_592_000, 3_024_000),
         &[(2_808_960, 2_856_000, "kentamycyną.")],
     );
-    assert_eq!(ledger.text_of(&owner), Some("Gentamycyną."));
     assert!(
         !ledger
             .word_choices()
@@ -2189,9 +2281,9 @@ fn window_position_keeps_the_onset_a_right_fence_window_heard() {
 }
 
 /// The mirror case: a window starting 0.2 s before the word clipped its
-/// onset (q 0.07); a banded copy respells the onset, the ending is shared.
+/// onset (q 0.07); with Apple behind it, a banded copy respells the onset.
 #[test]
-fn a_left_fence_onset_yields_to_its_banded_respelling() {
+fn a_left_fence_onset_yields_to_its_corroborated_banded_respelling() {
     let (mut ledger, owner) = window_position_ledger(2_621_952, 2_866_688);
     decode_window(
         &mut ledger,
@@ -2199,6 +2291,12 @@ fn a_left_fence_onset_yields_to_its_banded_respelling() {
         0,
         (2_799_360, 3_231_360),
         &[(2_808_960, 2_856_000, "kentamycyną.")],
+    );
+    apple_words(
+        &mut ledger,
+        &owner,
+        0,
+        &[(2_810_000, 2_854_000, "Gentamycyną")],
     );
     decode_window(
         &mut ledger,
