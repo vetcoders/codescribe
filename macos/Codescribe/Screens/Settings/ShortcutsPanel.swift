@@ -381,6 +381,13 @@ struct ShortcutsPanel: View {
           .frame(maxWidth: 160)
         }
         divider
+        inputSurfaceRow(
+          title: "Show or hide the widget",
+          detail: "Shows the collapsed widget anywhere; hides it again while nothing is recording."
+        ) {
+          fixedChordPill("⌃⇧B", spoken: String(localized: "Control Shift B"))
+        }
+        divider
         pasteTranscriptRow
       }
       .settingsGroupedInset(padding: 0)
@@ -437,6 +444,25 @@ struct ShortcutsPanel: View {
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, SettingsScale.rowInsetV)
+  }
+
+  /// A chord the app owns outright (no picker): the same pill shape as the
+  /// mode bindings, read-only, with the spelled-out form for VoiceOver.
+  private func fixedChordPill(_ caps: String, spoken: String) -> some View {
+    Text(verbatim: caps)
+      .font(SettingsScale.monoValue)
+      .foregroundStyle(CSColor.terracotta)
+      .padding(.horizontal, SettingsScale.controlInsetH)
+      .padding(.vertical, SettingsScale.controlInsetV)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          .fill(Color.primary.opacity(0.08))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+      )
+      .accessibilityLabel(Text(spoken))
   }
 
   private var channelModifierBinding: Binding<String> {

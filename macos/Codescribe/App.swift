@@ -76,7 +76,7 @@ extension OpenWindowAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
   private enum Action: Sendable {
-    case showAgent, maxApprovalsChanged
+    case showAgent, toggleWidget, maxApprovalsChanged
     case agentGesture(CsAgentGestureInput)
   }
   private let continuation: AsyncStream<Action>.Continuation
@@ -86,6 +86,7 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
   init(
     maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
     agentGesture: @escaping @MainActor @Sendable (CsAgentGestureInput) -> Void = { _ in },
+    toggleWidget: @escaping @MainActor @Sendable () -> Void = {},
     summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
     let channel = AsyncStream<Action>.makeStream()
@@ -94,6 +95,7 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
       for await action in channel.stream {
         switch action {
         case .showAgent: summonAgent()
+        case .toggleWidget: toggleWidget()
         case .maxApprovalsChanged: await maxApprovalsChanged()
         case .agentGesture(let input): agentGesture(input)
         }
@@ -103,6 +105,10 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 
   func onShowAgent() {
     continuation.yield(.showAgent)
+  }
+
+  func onToggleWidget() {
+    continuation.yield(.toggleWidget)
   }
 
   func onMaxApprovalsChanged() {
@@ -1331,6 +1337,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       },
       agentGesture: { [weak self] input in
         self?.model.overlay.handleAgentGesture(input)
+      },
+      toggleWidget: { [weak self] in
+        self?.model.overlay.toggleWidget()
+        appLogger.info("Widget toggle command handled")
       },
       summonAgent: { [weak action] in
         action?.perform()

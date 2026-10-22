@@ -198,7 +198,10 @@ not a successful mute. Text remains visible when audio playback fails.
 
 ## Built-in Agent window
 
-Open **Show Agent** from the menu bar or use `Command+Shift+Space`. Select a
+Open **Show Agent** from the menu bar or use `Command+Shift+Space`. The
+collapsed widget itself answers `Control+Shift+B` from anywhere: hidden, it
+shows; visible and idle, it hides; recording or holding an open channel, it
+only comes forward. Select a
 conversation in its sidebar, or create one explicitly with **New conversation**
 at the top of the sidebar. The sidebar looks and behaves like the one in Settings: the button at the
 left of the toolbar, or `Control+Command+S`, hides and shows it. Summoning the

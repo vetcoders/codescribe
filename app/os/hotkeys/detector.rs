@@ -63,6 +63,9 @@ pub enum HoldMode {
 pub enum HotkeyEvent {
     /// Front the existing Agent window without starting recording or sending.
     ShowAgent,
+    /// Show the collapsed overlay widget, or hide it while nothing records.
+    /// UI-only like [`Self::ShowAgent`]: it never touches the microphone.
+    ToggleWidget,
     /// Deliver the current in-memory deferred transcript at the active caret.
     InsertHere,
     /// Hold gesture detected (press/release configured modifier combo)
@@ -278,6 +281,7 @@ pub enum HotkeyPhysicalKey {
     Fn,
     Space,
     V,
+    B,
     /// Top-row or keypad digit. `0` is the broadcast channel.
     Digit(u8),
     Other,
@@ -380,6 +384,8 @@ pub struct HotkeyDetector {
     last_hid_key_down: Option<Instant>,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
+    /// Ctrl+Shift+B is down; key repeat must not toggle the widget twice.
+    toggle_widget_b_down: bool,
     insert_here_v_down: bool,
     /// Edge-trigger for `arm_ignored` diagnostics (visibility only).
     wrong_arm_logged: bool,
@@ -422,6 +428,7 @@ impl Default for HotkeyDetector {
             last_hid_key_down: None,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
+            toggle_widget_b_down: false,
             insert_here_v_down: false,
             wrong_arm_logged: false,
             arm_modifier_down: false,
@@ -492,6 +499,9 @@ impl HotkeyDetector {
                 }
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
+                }
+                if key == HotkeyPhysicalKey::B {
+                    self.toggle_widget_b_down = false;
                 }
                 if key == HotkeyPhysicalKey::V {
                     self.insert_here_v_down = false;
@@ -739,6 +749,20 @@ impl HotkeyDetector {
             }
             self.show_agent_space_down = true;
             return Some(HotkeyEvent::ShowAgent);
+        }
+
+        if key == HotkeyPhysicalKey::B
+            && modifiers.ctrl
+            && modifiers.shift
+            && !modifiers.cmd
+            && !modifiers.option
+            && !modifiers.fn_key
+        {
+            if self.toggle_widget_b_down {
+                return None;
+            }
+            self.toggle_widget_b_down = true;
+            return Some(HotkeyEvent::ToggleWidget);
         }
 
         let dictation_binding = config.mode_bindings.dictation;
@@ -1530,6 +1554,63 @@ mod tests {
             ),
             Some(HotkeyEvent::ShowAgent),
             "a new physical Space press must emit exactly one new command"
+        );
+    }
+
+    #[test]
+    /// ⌃⇧B emits ToggleWidget once per physical press; repeats and wrong mods are silent.
+    fn detector_toggle_widget_command_table_emits_once_per_b_press() {
+        let config = fn_hold_double_option_config();
+        let base = Instant::now();
+        let control_shift = mods(true, false, true, false, false);
+
+        let cases = [
+            (mods(true, false, false, false, false), None),
+            (mods(false, false, true, false, false), None),
+            (mods(false, false, true, true, false), None),
+            (mods(true, true, true, false, false), None),
+            (control_shift, Some(HotkeyEvent::ToggleWidget)),
+            // Auto-repeat is another key-down before key-up and must not toggle twice.
+            (control_shift, None),
+        ];
+
+        let mut detector = HotkeyDetector::default();
+        for (index, (modifiers, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::KeyDown {
+                        now: base + Duration::from_millis(index as u64),
+                        key: HotkeyPhysicalKey::B,
+                        modifiers,
+                    },
+                    config,
+                ),
+                expected,
+                "unexpected command detection at table row {index}"
+            );
+        }
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyUp {
+                    key: HotkeyPhysicalKey::B,
+                    modifiers: control_shift,
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::B,
+                    modifiers: control_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ToggleWidget),
+            "a new physical B press must emit exactly one new command"
         );
     }
 
