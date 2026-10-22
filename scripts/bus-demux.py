@@ -89,6 +89,14 @@ TERMINAL_PUBLICATIONS = (TERMINAL_SEAL, DIRECT_TERMINAL)
 #: ``state_change_allowed: false`` — parity with the Stop lane's degraded
 #: handoff: the take is delivered but no longer allowed to certify itself.
 COVERAGE_REFUSED = "refused"
+#: A channel-session row stamped ``publication: controller`` comes from a
+#: controller that publishes every take's closing decision itself: a closing
+#: seal stamped ``closing_decision: publish``, or a publication refusal. For
+#: such a session the net above never promotes a draft. On 2026-10-22 it
+#: delivered take f32ff617, a 224 ms unwitnessed "Dziękuję.", because no
+#: controller decision existed and the net stood in for one.
+CONTROLLER_PUBLICATION = "controller"
+CLOSING_PUBLISH = "publish"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 AGENT_TURN_LEASE_FILENAME = "agent-turn.lock"
 SEALED = "transcript_sealed"
@@ -1229,6 +1237,10 @@ class EvidenceNormalizer:
     :meth:`pop_flushes`. A ledger terminal receipt carries certification;
     without it the envelope keeps ``coverage: "refused"``. Physical occurrence
     coordinates and receipts accompany the full render, never split its text.
+
+    The net is for producers that never decide. A session whose channel rows
+    declare ``publication: controller`` is delivered only from the
+    controller's closing seal; its drafts alone settle silently.
     """
 
     #: Unsealed channel sessions retained for the flush net. The quiet
@@ -1245,6 +1257,9 @@ class EvidenceNormalizer:
         self._settled_sessions: set[str] = set()
         self._session_docs: dict[str, dict[str, Any]] = {}
         self._channel_open_times: dict[str, tuple[str, float]] = {}
+        # Sessions whose channel rows declared ``publication: controller``,
+        # oldest first. Their close never promotes an undecided draft.
+        self._controller_sessions: dict[str, None] = {}
         self._flushes: list[dict[str, Any]] = []
         self._publication_refusals: dict[str, dict[str, Any]] = {}
 
@@ -1283,6 +1298,7 @@ class EvidenceNormalizer:
             return
         self._session_docs.pop(session, None)
         self._channel_open_times.pop(session, None)
+        self._controller_sessions.pop(session, None)
         self._settled_sessions.add(session)
         self._flushes = [event for event in self._flushes if event.get("session_id") != session]
         self._publication_refusals[session] = dict(receipt)
@@ -1410,7 +1426,7 @@ class EvidenceNormalizer:
             previous["capture_source_sequence"] = clean["capture_source_sequence"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
             if event.get("status") == SEALED:
-                for key in ("hold_until", "utterance_id"):
+                for key in ("hold_until", "utterance_id", "closing_decision"):
                     if key in event:
                         previous[key] = event[key]
         else:
@@ -1424,6 +1440,10 @@ class EvidenceNormalizer:
         session = str(row.get("session_id") or "")
         if not session or channel_of_session(session) != channel:
             return
+        if row.get("publication") == CONTROLLER_PUBLICATION:
+            self._controller_sessions[session] = None
+            while len(self._controller_sessions) > self.MAX_TRACKED_SESSIONS:
+                self._controller_sessions.pop(next(iter(self._controller_sessions)))
         # A delayed predecessor close is evidence only for that named capture.
         # It cannot terminate documents belonging to a newer admitted take.
         if str(row.get("state") or "") != "open":
@@ -1482,10 +1502,16 @@ class EvidenceNormalizer:
 
     def _flush_session(self, session: str, emitted_at: Any) -> None:
         self._channel_open_times.pop(session, None)
+        controller = session in self._controller_sessions
+        self._controller_sessions.pop(session, None)
         clean = self._session_docs.pop(session, None)
         if not clean or session in self._settled_sessions:
             return
         self._settled_sessions.add(session)
+        if controller and clean.get("closing_decision") != CLOSING_PUBLISH:
+            # The controller decides this take's publication. Without its
+            # closing seal there is nothing to deliver, only drafts.
+            return
         if not (clean.get("text") or "").strip():
             return
         final = dict(clean)
@@ -1538,7 +1564,8 @@ class EvidenceNormalizer:
             clean["audience"] = audience
         if channel_of_session(str(event.get("session_id") or "")) is not None and event.get("utterance_id") is None:
             clean.pop("utterance_id", None)
-        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id", "hold_until"):
+        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id",
+                    "hold_until", "closing_decision"):
             if key in event:
                 clean[key] = event[key]
         return clean

@@ -876,6 +876,126 @@ assert normalizer.normalize(ended) is ended
 assert normalizer.pop_flushes() == []
 PY
 
+# Controller-published takes: a channel whose rows declare
+# `publication: controller` is delivered only from the controller's closing
+# seal. Drafts alone never become a message (take f32ff617, 2026-10-22: a
+# 224 ms unwitnessed "Dziękuję." reached agents through this net). Sessions
+# without the declaration keep the net for producers that never decide.
+python3 - "$DEMUX" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("bus_demux_controller", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+declared = {"publication": module.CONTROLLER_PUBLICATION}
+
+def channel(state, session, at, **extra):
+    row = {"schema": module.CHANNEL_SESSION_SCHEMA, "kind": "channel_session",
+           "state": state, "reason": "opened" if state == "open" else "hangup",
+           "channel": "1", "agent": "leon", "session_id": session,
+           "opened_at": "2026-10-22T13:48:56Z", "emitted_at": at}
+    row.update(extra)
+    return row
+
+def draft(session, revision, text, **extra):
+    row = {"schema": module.EVIDENCE_SCHEMA, "sequence": revision, "session_id": session,
+           "audience": "leon", "channel": "1", "mode": "agent",
+           "reducer_action": "seal_coverage", "reducer_revision": revision,
+           "document_index": 0, "rendered_text": text, "phase": "listening",
+           "terminal": False, "capture_epoch": 7,
+           "emitted_at": f"2026-10-22T13:48:5{revision}Z"}
+    row.update(extra)
+    return row
+
+def closing(session, revision, text):
+    return draft(session, revision, text, status=module.SEALED, terminal=True,
+                 coverage="refused", hold_until="2026-10-22T13:49:09Z",
+                 closing_decision=module.CLOSING_PUBLISH)
+
+def run(rows, normalizer=None):
+    normalizer = normalizer or module.EvidenceNormalizer()
+    flushed = []
+    for row in rows:
+        normalizer.normalize(row)
+        flushed.extend(normalizer.pop_flushes())
+    return normalizer, flushed
+
+# Drafts only: the close settles the take without a delivery, and a late
+# re-projection followed by another close cannot re-arm the net.
+phantom = "agent-channel-1-f32ff617"
+normalizer, flushed = run([
+    channel("open", phantom, "2026-10-22T13:48:56Z", **declared),
+    draft(phantom, 1, "Dziękuję."),
+    draft(phantom, 2, "Dziękuję."),
+    channel("sealed", phantom, "2026-10-22T13:48:59Z", **declared),
+])
+assert flushed == [], flushed
+_, flushed = run([draft(phantom, 3, "Dziękuję."),
+                  channel("sealed", phantom, "2026-10-22T13:49:01Z", **declared)], normalizer)
+assert flushed == [], flushed
+
+# The controller's refusal settles the take; the lifecycle rows after it
+# deliver nothing.
+refused = "agent-channel-1-refused"
+_, flushed = run([
+    channel("open", refused, "2026-10-22T13:48:56Z", **declared),
+    draft(refused, 1, "Dziękuję."),
+    {"schema": module.PUBLICATION_SCHEMA, "status": "channel_publication_refused",
+     "session_id": refused, "channel": "1", "capture_epoch": 7, "sequence": 2,
+     "reason": "sound_without_speech", "entirely_unwitnessed": True, "speech_floor_ms": 400},
+    {"schema": module.CLEAN_SCHEMA, "session_id": refused, "status": "session_ended",
+     "phase": "no_speech", "terminal": True},
+    channel("sealed", refused, "2026-10-22T13:48:59Z", **declared),
+])
+assert flushed == [], flushed
+
+# A session_ended that precedes the close of a declared session is not a
+# decision either.
+ended = "agent-channel-1-ended"
+_, flushed = run([
+    channel("open", ended, "2026-10-22T13:48:56Z", **declared),
+    draft(ended, 1, "Leon, to tylko szkic."),
+    {"schema": module.CLEAN_SCHEMA, "session_id": ended, "status": "session_ended",
+     "terminal": True},
+    channel("sealed", ended, "2026-10-22T13:48:59Z", **declared),
+])
+assert flushed == [], flushed
+
+# The closing seal is the delivery, carrying its hold, whether it repeats the
+# last draft's phase or brings a newer revision. A follower that attached
+# mid-take sees the declaration on the close row alone.
+for name, last, opened in (("same-phase", 2, True), ("newer", 3, True), ("late-attach", 3, False)):
+    session = f"agent-channel-1-{name}"
+    rows = [channel("open", session, "2026-10-22T13:48:56Z", **declared)] if opened else []
+    rows += [
+        draft(session, 1, "Leon, sprawdź"),
+        draft(session, 2, "Leon, sprawdź bus."),
+        closing(session, last, "Leon, sprawdź bus."),
+        {"schema": module.CLEAN_SCHEMA, "session_id": session, "status": module.SEALED,
+         "terminal": True, "text": "Leon, sprawdź bus."},
+        channel("sealed", session, "2026-10-22T13:48:59Z", **declared),
+    ]
+    _, flushed = run(rows)
+    assert len(flushed) == 1, (name, flushed)
+    message = flushed[0]
+    assert message["status"] == module.SEALED, message
+    assert message["text"] == "Leon, sprawdź bus.", message
+    assert message["hold_until"] == "2026-10-22T13:49:09Z", message
+    assert message["coverage"] == "refused", message
+    assert message["closing_decision"] == "publish", message
+    assert message["emitted_at"] == "2026-10-22T13:48:59Z", message
+
+# Without the declaration the net still delivers the last draft, refused.
+legacy = "agent-channel-1-legacy"
+_, flushed = run([
+    channel("open", legacy, "2026-10-22T13:48:56Z"),
+    draft(legacy, 1, "Leon, stara aplikacja."),
+    channel("sealed", legacy, "2026-10-22T13:48:59Z"),
+])
+assert [row["coverage"] for row in flushed] == ["refused"], flushed
+assert "closing_decision" not in flushed[0], flushed
+PY
+
 # A take's audio is its own ~/.codescribe/sessions/<session_id>.wav
 # (or $CODESCRIBE_DATA_DIR/sessions/...). last_session.wav is never the id.
 WAV_HOME="$WORKDIR/codescribe-home"
