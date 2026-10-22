@@ -1197,9 +1197,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // The overlay draws the same lockup as every other window; the dot slot
     // carries the close button.
     XCTAssertTrue(header.contains("Wordmark("))
-    XCTAssertTrue(
-      try self.source(at: "Codescribe/DesignSystem/Components.swift")
-        .contains("Text(verbatim: short ? \"cs\" : \"codescribe\")"))
+    let components = try self.source(at: "Codescribe/DesignSystem/Components.swift")
+    XCTAssertTrue(components.contains("Text(verbatim: \"codescribe\")"))
+    XCTAssertFalse(components.contains("\"cs\""), "no surface reads cs since spec §13.4")
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
     // not window drags (Founder 19:18: the dot next to codescribe closes).
@@ -1457,16 +1457,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(stop.recordingIdentifier, "overlay-stop-recording")
   }
 
-  /// Maciej, 2026-10-20: mini always reads "cs" and always carries the agents
-  /// button beside the ordinary microphone and the expand arrow, whether or
-  /// not an agent records. An AX walk of the test panel does not surface the
-  /// SwiftUI header, so the probe reads AppKit truth: one mounted hover region
-  /// per header control and the drag region that backs the wordmark.
-  func testMiniAlwaysReadsCsAndCarriesTheAgentsButton() throws {
+  /// Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini; the
+  /// brand dot leads and the channel counter takes the word's place. Maciej's
+  /// 2026-10-20 rule stays for the rest: mini always carries the agents button
+  /// beside the ordinary microphone and the expand arrow, whether or not an
+  /// agent records. An AX walk of the test panel does not surface the SwiftUI
+  /// header, so the probe reads AppKit truth: one mounted hover region per
+  /// header control and the drag region that backs the brand.
+  func testMiniCarriesTheChannelCounterInPlaceOfCs() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let state = OverlayState()
     state.setPresentationMode(.mini)
     XCTAssertFalse(state.channelAudioCaptureActive)
+    func roster(open: Bool) -> [CsChannelRosterState] {
+      [
+        .init(
+          channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
+          open: open, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil)
+      ]
+    }
     try withPanel(state: state) { panel, root in
       @MainActor func headerControls() -> Int {
         panel.menuCursorRegions.allObjects.filter { view in
@@ -1475,7 +1485,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
           else { return false }
           let rect = root.convert(region.bounds, from: region)
           let top = root.isFlipped ? rect.minY : root.bounds.height - rect.maxY
-          return rect.width <= 30 && rect.height <= 30 && top < 46
+          return rect.width <= 34 && rect.height <= 30 && top < 46
         }.count
       }
       @MainActor func brandWidth() throws -> CGFloat {
@@ -1486,34 +1496,42 @@ final class OverlayChromeFounderCutTests: XCTestCase {
           }, "mini: no brand drag region")
         return region.bounds.width
       }
-      @MainActor func settleWordmark() {
+      @MainActor func settleHeader() {
         self.settle(root)
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
         root.layoutSubtreeIfNeeded()
       }
       let restingControls = headerControls()
-      let restingBrand = try brandWidth()
       XCTAssertGreaterThanOrEqual(
-        restingControls, 3, "mini with no agent capture: agents, microphone and expand arrow")
-      XCTAssertLessThan(restingBrand, 40, "mini with no agent capture already reads cs")
-      state.applyChannelRoster([
-        .init(
-          channel: "4", audience: "bruno", provider: "codex", providerSessionId: "bus-agent",
-          open: true, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
-          unreadSinceUnixMs: nil)
-      ])
+        restingControls, 3, "mini with no agent: agents, microphone and expand arrow")
+      XCTAssertLessThan(try brandWidth(), 12, "mini draws the brand dot alone, no cs")
+      XCTAssertEqual(
+        panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
+
+      // A bound agent puts the counter beside the dot; mini keeps 200 pt.
+      state.applyChannelRoster(roster(open: false))
       state.setPresentationMode(.mini)
-      settleWordmark()
-      XCTAssertEqual(headerControls(), restingControls, "capture adds no control to mini")
-      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "the wordmark stays cs")
-      // 09:36 (2026-10-19): no gap beside "cs"; mini hugs the controls while an agent records.
+      settleHeader()
+      XCTAssertEqual(headerControls(), restingControls + 1, "the counter joins mini")
+      XCTAssertLessThan(try brandWidth(), 12, "the counter, not cs, follows the dot")
+      XCTAssertEqual(
+        panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5,
+        "mini stays 200 pt with its counter")
       let trailing = panel.frame.maxX
+
+      // The agent records: the counter becomes the open digit with its badge,
+      // and mini hugs its controls at 164 pt (09:36, 2026-10-19).
+      state.applyChannelRoster(roster(open: true))
+      state.setPresentationMode(.mini)
+      settleHeader()
+      XCTAssertEqual(headerControls(), restingControls + 1, "capture adds no control to mini")
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.agentMiniSize.width, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
+
       state.applyChannelRoster([])
-      settleWordmark()
+      settleHeader()
       XCTAssertEqual(headerControls(), restingControls, "the agents button stays")
-      XCTAssertEqual(try brandWidth(), restingBrand, accuracy: 0.5, "cs stays after capture")
       XCTAssertEqual(
         panel.frame.width, DictationOverlayWindow.collapsedSize.width, accuracy: 0.5)
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
@@ -1561,7 +1579,10 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         "symbol: \"megaphone.fill\", tint: OverlayRecordingLight.agent.color, mirrored: true"))
     XCTAssertTrue(roster.contains(".scaleEffect(x: mirrored ? -1 : 1, y: 1)"))
     let header = try headerSource(try overlaySource())
-    XCTAssertTrue(header.contains("short: mini"))
+    // Spec §13.4: mini draws the dot without the word; the counter follows.
+    XCTAssertTrue(header.contains("showsWord: !mini"))
+    XCTAssertTrue(header.contains("if mini, let map = channelMap {"))
+    XCTAssertFalse(header.contains("short: mini"))
     XCTAssertFalse(header.contains("miniAgentMicrophone"))
   }
 

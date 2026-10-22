@@ -66,8 +66,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// The width the user gave the compact strip with its edge in this session,
   /// and whether that was narrower than the natural width at the time. A
   /// narrowed strip keeps the user's width: roster changes no longer resize it
-  /// and the map collapses to its counter. A strip the user widened grows when
-  /// the map outgrows it and never shrinks below the user's width.
+  /// and the map drops the chips' names, or collapses to its counter, whose
+  /// click gives the natural width back (`restoreMidiNaturalWidth`). A strip
+  /// the user widened grows when the map outgrows it and never shrinks below
+  /// the user's width.
   private var midiUserWidth: CGFloat?
   private(set) var midiShrunkByUser = false
   /// The width compact settles to: the user's after a manual shrink, else the
@@ -320,6 +322,16 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let natural = max(width, DictationOverlayWindow.midiSize.width)
     guard abs(natural - midiNaturalWidth) > 0.5 else { return }
     midiNaturalWidth = natural
+    settleMidiWidth()
+  }
+
+  /// The channel counter's click in compact (spec §13.4): the width the user
+  /// gave the strip is forgotten, so it settles to its natural width at its
+  /// upper-right pin and the chips return. A morph, drag or resize in flight
+  /// settles first, and its completion lands on the natural width.
+  func restoreMidiNaturalWidth() {
+    midiUserWidth = nil
+    midiShrunkByUser = false
     settleMidiWidth()
   }
 
@@ -1052,33 +1064,49 @@ enum DictationOverlayWindow {
   static let collapsedHeight: CGFloat = 46
   static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
   /// Mini while an agent records, hugging its controls: 32 outer padding
-  /// (`16 - clipInset` + `clipInset` per side) + 30 leading (9 pt close dot +
-  /// 6 + 15 pt "cs" at `CSFont.ui(13, .bold)`) + 2 × 6 row spacing + 4 for
-  /// the collapsed waveform's minimum + 81 trailing (the 22 pt agent control,
-  /// 8, and the 51 pt recording pair) = 159, as a SwiftUI fitting-size probe
-  /// of that row measured it; 164 leaves the trailing arrow 5 pt of slack.
+  /// (`16 - clipInset` + `clipInset` per side) + the 9 pt close dot + 6 + the
+  /// 19 pt recording channel counter (`OverlayChannelPill.counterWidth` of one
+  /// circled digit at scale 1, in the place the 15 pt "cs" had) + 2 × 6 row
+  /// spacing + 4 for the collapsed waveform's minimum + 81 trailing (the 22 pt
+  /// agent control, 8, and the 51 pt recording pair) = 163. A SwiftUI
+  /// fitting-size probe measured the "cs" row at 159; the counter adds 4.
   static let agentMiniSize = NSSize(width: 164, height: collapsedHeight)
   /// Compact's floor, and its whole width while no channel is mapped.
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
+  /// The most compact grows to for its channel chips: two floors (bus
+  /// intercom spec §13.1). Past it the chips drop their names.
+  static let midiChannelMapBudget = 2 * midiSize.width
 
-  /// Compact's natural width: the floor plus the channel map's measured row,
-  /// its leading gap and room for one `MIC →` indicator, so opening a channel
-  /// does not collapse the map. With no map it is the floor; it never exceeds
-  /// the screen's visible width and never goes below the floor.
+  /// Compact's natural width (spec §13.1): the floor, the map's leading gap,
+  /// room for channel 0's digit chip, which leads the row while the
+  /// microphone broadcasts, so the chord changes neither the width nor the
+  /// tier, and the row of the first tier that fits the 820 pt budget: the
+  /// named chips, else the digit-only chips with room for the longest name,
+  /// which the selected conversation's chip keeps. The microphone badge adds
+  /// no width. With no agent it is the floor; it never exceeds the budget or
+  /// the screen's visible width, and never goes below the floor.
   @MainActor
   static func midiNaturalWidth(
     map: OverlayChannelMapModel, textScale: CGFloat, visibleWidth: CGFloat? = nil
   ) -> CGFloat {
-    guard !map.chips.isEmpty else { return midiSize.width }
+    let agents = map.agents
+    guard !agents.isEmpty else { return midiSize.width }
     let scale = OverlayChannelPill.headerScale(textScale)
-    let widths = map.chips.map {
-      OverlayChannelPill.chipWidth(name: $0.name, microphoneOpen: false, scale: scale)
+    let spacing = OverlayChannelMapView.chipSpacing
+    let digit = OverlayChannelPill.chipWidth(name: nil, scale: scale)
+    let named = agents.map { OverlayChannelPill.chipWidth(name: $0.name, scale: scale) }
+    let base = midiSize.width + OverlayChannelMapView.leadingGap + digit + spacing
+    let namedWidth = ceil(
+      base + OverlayChannelMapModel.rowWidth(chipWidths: named, spacing: spacing))
+    let natural: CGFloat
+    if namedWidth <= midiChannelMapBudget {
+      natural = namedWidth
+    } else {
+      let digits = OverlayChannelMapModel.rowWidth(
+        chipWidths: Array(repeating: digit, count: agents.count), spacing: spacing)
+      let longestName = (named.max() ?? digit) - digit
+      natural = min(ceil(base + digits + longestName), midiChannelMapBudget)
     }
-    let row = OverlayChannelMapModel.rowWidth(
-      chipWidths: widths, spacing: OverlayChannelMapView.chipSpacing)
-    let natural = ceil(
-      midiSize.width + OverlayChannelMapView.leadingGap + row
-        + OverlayChannelPill.microphoneRouteWidth(scale: scale))
     guard let visibleWidth else { return natural }
     return max(midiSize.width, min(natural, visibleWidth))
   }
@@ -1203,7 +1231,7 @@ enum DictationOverlayWindow {
       state?.setPresentationMode(mode)
     }
     panel.setMiniHugsAgentControls(state.channelAudioCaptureActive)
-    // Compact's width follows the channel map (bus intercom spec 5.1, W1b).
+    // Compact's width follows the channel map (bus intercom spec 5.1, 13.1).
     let fitMidiToChannelMap = { [weak panel, weak state] in
       guard let panel, let state else { return }
       panel.setMidiNaturalWidth(
@@ -1213,6 +1241,7 @@ enum DictationOverlayWindow {
     }
     fitMidiToChannelMap()
     state.onChannelMapLayoutChanged = fitMidiToChannelMap
+    state.onRestoreMidiNaturalWidth = { [weak panel] in panel?.restoreMidiNaturalWidth() }
     state.onAgentCaptureChanged = { [weak panel] capturing in
       panel?.setMiniHugsAgentControls(capturing)
     }

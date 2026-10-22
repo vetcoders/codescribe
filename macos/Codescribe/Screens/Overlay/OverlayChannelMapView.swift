@@ -1,49 +1,72 @@
 import SwiftUI
 
-/// The compact overlay's channel map (bus intercom spec §5.1, §5.4): one chip
-/// per mapped channel between the session timer and the actions, collapsing
-/// into one counter when the strip is too narrow for the row.
+/// The collapsed overlay's channel map (bus intercom spec §5.1, §13).
+///
+/// In compact it is one chip per agent between the session timer and the
+/// actions. Where the strip has no room for the names, the chips drop them
+/// (the selected conversation's chip keeps its own); where even the digits do
+/// not fit, the row collapses into one counter. In mini it is the counter
+/// alone, in the place the "cs" wordmark had.
 ///
 /// A chip selects that channel's conversation through the roster's own
-/// selection path, exactly as its rail pill does (decision D1). Neither a chip
-/// nor the counter opens a microphone or retargets a capture.
+/// selection path, exactly as its rail pill does (decision D1). The counter
+/// changes the overlay's form or width through its action. Neither a chip nor
+/// the counter opens a microphone or retargets a capture.
 struct OverlayChannelMapView: View {
+  enum Placement: Equatable {
+    /// Compact's header: named chips, digit-only chips, the counter or nothing.
+    case strip
+    /// Mini's header: the counter only, at the fixed scale mini is measured in.
+    case mini
+  }
+
   /// The map's distance from the session timer. The map carries it, so a map
   /// that yields its place costs the strip nothing.
   static let leadingGap: CGFloat = 8
   static let chipSpacing: CGFloat = 4
 
   let model: OverlayChannelMapModel
+  let placement: Placement
   let modifier: OverlayChannelChordModifier
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
   let animates: Bool
   /// A chip's digit; the roster resolves the conversation and its owner.
   let onSelectChannel: (String) -> Void
-  /// The collapsed counter's click, the map's single entry point. In W1 it
-  /// opens the Agents list as the Agents button does; W2 replaces it, and the
-  /// counter's hint, with the map popover.
-  let onOpenMap: () -> Void
+  /// The counter's click (spec §13.4): mini switches to compact; a compact
+  /// strip the user narrowed returns to its natural width.
+  let onCounter: () -> Void
 
   var body: some View {
-    let scale = OverlayChannelPill.headerScale(textScale)
-    let widths = model.chips.map {
-      OverlayChannelPill.chipWidth(name: $0.name, microphoneOpen: $0.microphoneOpen, scale: scale)
+    switch placement {
+    case .mini:
+      counterPill(scale: 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("overlay-channel-map")
+    case .strip:
+      strip
     }
-    let row = OverlayChannelMapModel.rowWidth(chipWidths: widths, spacing: Self.chipSpacing)
+  }
+
+  private var strip: some View {
+    let scale = OverlayChannelPill.headerScale(textScale)
+    let named = model.rowWidth(for: .chips, scale: scale, spacing: Self.chipSpacing)
+    let digits = model.rowWidth(for: .digits, scale: scale, spacing: Self.chipSpacing)
     let counter = OverlayChannelPill.counterWidth(
-      figure: model.counterFigure, microphoneOpen: model.microphoneOpen, scale: scale)
+      figure: String(model.count), openDigitCount: model.openDigits.count, scale: scale)
     return OverlayChannelMapSlot(
-      rowWidth: row, counterWidth: counter, leadingGap: Self.leadingGap,
+      namedWidth: named, digitsWidth: digits, counterWidth: counter, leadingGap: Self.leadingGap,
       height: OverlayChannelPill.headerHeight
     ) {
       // The slot proposes exactly the width it claimed, so this reads the
       // same decision the slot took; no state, no feedback loop.
       GeometryReader { proxy in
         switch OverlayChannelMapModel.presentation(
-          availableWidth: proxy.size.width, rowWidth: row, counterWidth: counter)
+          availableWidth: proxy.size.width, namedWidth: named, digitsWidth: digits,
+          counterWidth: counter)
         {
-        case .chips: chips(scale: scale)
+        case .chips: chips(.chips, scale: scale)
+        case .digits: chips(.digits, scale: scale)
         case .counter: counterPill(scale: scale)
         case .hidden: Color.clear.accessibilityHidden(true)
         }
@@ -53,15 +76,16 @@ struct OverlayChannelMapView: View {
     .accessibilityIdentifier("overlay-channel-map")
   }
 
-  private func chips(scale: CGFloat) -> some View {
+  private func chips(_ presentation: OverlayChannelMapPresentation, scale: CGFloat) -> some View {
     HStack(spacing: Self.chipSpacing) {
       ForEach(model.chips) { chip in
         OverlayChannelPill(
           form: .chip,
           display: OverlayChannelPill.Display(
-            figure: chip.digit, name: chip.name, disconnected: chip.disconnected,
-            microphoneOpen: chip.microphoneOpen, broadcast: chip.isBroadcast,
-            unread: chip.unread, enabled: chip.selectable, animates: animates),
+            figure: chip.digit, name: chip.showsName(in: presentation) ? chip.name : nil,
+            disconnected: chip.disconnected, microphoneOpen: chip.microphoneOpen,
+            unread: chip.unread, selected: chip.selected, enabled: chip.selectable,
+            animates: animates),
           hint: chip.hint(modifier: modifier),
           accessibilityText: chip.accessibilityLabel(modifier: modifier),
           accessibilityValue: chip.disconnected ? String(localized: "Disconnected") : "",
@@ -78,25 +102,26 @@ struct OverlayChannelMapView: View {
     OverlayChannelPill(
       form: .counter,
       display: OverlayChannelPill.Display(
-        figure: model.counterFigure, microphoneOpen: model.microphoneOpen,
-        broadcast: model.openDigits == ["0"], unread: model.anyUnread, animates: animates),
+        figure: String(model.count), microphoneOpen: model.microphoneOpen,
+        openDigits: model.openDigits, unread: model.anyUnread, animates: animates),
       hint: model.counterHint,
       accessibilityText: String(
         localized: "Channel map",
         comment: "Compact overlay: the collapsed counter that stands for every mapped channel"),
       accessibilityValue: model.counterAccessibilityValue,
       identifier: "overlay-channel-map-toggle",
-      palette: palette, textScale: scale, action: onOpenMap)
+      palette: palette, textScale: scale, action: onCounter)
   }
 }
 
-/// Claims the width of what the map shows: the whole row, the counter, or
-/// nothing. A plain flexible frame would keep the leftover beside a counter;
-/// reporting the counter's width hands it back to the waveform. A map that
-/// cannot fit even the counter claims no width, so it never pushes the
-/// actions or the fold button out of the strip.
+/// Claims the width of what the map shows: the named row, the digit-only
+/// row, the counter, or nothing. A plain flexible frame would keep the
+/// leftover beside a counter; reporting the shown width hands it back to the
+/// waveform. A map that cannot fit even the counter claims no width, so it
+/// never pushes the actions or the fold button out of the strip.
 struct OverlayChannelMapSlot: Layout {
-  let rowWidth: CGFloat
+  let namedWidth: CGFloat
+  let digitsWidth: CGFloat
   let counterWidth: CGFloat
   let leadingGap: CGFloat
   let height: CGFloat
@@ -119,7 +144,8 @@ struct OverlayChannelMapSlot: Layout {
   func width(proposed: CGFloat?) -> CGFloat {
     let available = proposed.map { max(0, $0 - leadingGap) }
     let occupied = OverlayChannelMapModel.occupiedWidth(
-      availableWidth: available, rowWidth: rowWidth, counterWidth: counterWidth)
+      availableWidth: available, namedWidth: namedWidth, digitsWidth: digitsWidth,
+      counterWidth: counterWidth)
     return occupied > 0 ? occupied + leadingGap : 0
   }
 }

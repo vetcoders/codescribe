@@ -306,10 +306,11 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.width, threeWidth, accuracy: 0.5, "a channel that leaves shrinks it")
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
 
-    // An open microphone does not resize the strip: the natural width already
-    // reserves one MIC → indicator. (Opening a channel in the live overlay
-    // also unfolds it, so the width is compared on the projection.)
-    func map(open: Bool) -> OverlayChannelMapModel {
+    // An open microphone does not resize the strip: the badge adds no width,
+    // and the natural width already holds channel 0's chip, which leads the
+    // row while the microphone broadcasts. (Opening a channel in the live
+    // overlay also unfolds it, so the width is compared on the projection.)
+    func map(open: Bool, broadcast: Bool = false) -> OverlayChannelMapModel {
       OverlayChannelMapModel(
         channels: [
           OverlayChannelDelivery(
@@ -317,22 +318,77 @@ final class OverlayResizeHitTests: XCTestCase {
         ],
         hudStates: [
           "0": OverlayChannelHudProjection(
-            open: false, loud: false, autosealDeadline: nil, followerAlive: nil),
+            open: broadcast, loud: false, autosealDeadline: nil, followerAlive: nil),
           "3": OverlayChannelHudProjection(
             open: open, loud: false, autosealDeadline: nil, followerAlive: true),
-        ], broadcastName: "All", selectableDigits: [], unreadDigits: [])
+        ], selectableDigits: [], unreadDigits: [])
     }
     let closed = DictationOverlayWindow.midiNaturalWidth(map: map(open: false), textScale: 1)
     XCTAssertEqual(
       DictationOverlayWindow.midiNaturalWidth(map: map(open: true), textScale: 1), closed)
-    let recordingRow = OverlayChannelMapModel.rowWidth(
-      chipWidths: [
-        OverlayChannelPill.chipWidth(name: "All", microphoneOpen: false, scale: 1),
-        OverlayChannelPill.chipWidth(name: "Igor", microphoneOpen: true, scale: 1),
-      ], spacing: OverlayChannelMapView.chipSpacing)
+    XCTAssertEqual(
+      DictationOverlayWindow.midiNaturalWidth(map: map(open: false, broadcast: true), textScale: 1),
+      closed, "broadcasting on 0 keeps the width")
+    let spacing = OverlayChannelMapView.chipSpacing
+    let broadcasting = map(open: false, broadcast: true)
+    XCTAssertEqual(broadcasting.chips.map(\.digit), ["0", "3"])
     XCTAssertLessThanOrEqual(
-      DictationOverlayWindow.midiSize.width + OverlayChannelMapView.leadingGap + recordingRow,
-      closed + 1, "the reserved room holds a recording chip")
+      DictationOverlayWindow.midiSize.width + OverlayChannelMapView.leadingGap
+        + broadcasting.rowWidth(for: .chips, scale: 1, spacing: spacing),
+      closed + 0.5, "the reserved room holds channel 0's chip beside the named row")
+  }
+
+  @MainActor
+  func testCompactNeverGrowsPastTheBudgetAndNineAgentsShowDigits() throws {
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.budget")
+    defer { panel.invalidatePresence() }
+    let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+    let names = ["Miksa", "Nora", "Igor", "Hania", "Kuba", "Konfig", "Klara", "Leon", "Zofia"]
+    state.applyChannelRoster(
+      [mapRosterRow("0", "All")]
+        + names.enumerated().map { mapRosterRow(String($0.offset + 1), $0.element) })
+    let map = state.channelMapLayoutModel
+    XCTAssertEqual(map.count, 9)
+    let natural = naturalMidiWidth(state, panel)
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
+    XCTAssertLessThanOrEqual(
+      panel.frame.width, DictationOverlayWindow.midiChannelMapBudget + 0.5,
+      "nine agents never take compact past 820 pt")
+    XCTAssertGreaterThan(panel.frame.width, DictationOverlayWindow.midiSize.width)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the fold button keeps its point")
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+    // The room beyond the floor holds the digit-only row, not the named one.
+    let spacing = OverlayChannelMapView.chipSpacing
+    let room = natural - DictationOverlayWindow.midiSize.width - OverlayChannelMapView.leadingGap
+    XCTAssertGreaterThanOrEqual(room + 0.5, map.rowWidth(for: .digits, scale: 1, spacing: spacing))
+    XCTAssertLessThan(room, map.rowWidth(for: .chips, scale: 1, spacing: spacing))
+  }
+
+  @MainActor
+  func testCompactCounterClickGivesTheNarrowedStripItsNaturalWidthBack() throws {
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.counter")
+    defer { panel.invalidatePresence() }
+    let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
+    state.applyChannelRoster(three)
+    let natural = panel.frame.width
+    let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+    XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+    _ = panel.updateUserResize(to: NSPoint(x: 2_000, y: 0))
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
+    XCTAssertTrue(panel.midiShrunkByUser, "the strip shows its counter")
+
+    state.activateChannelMapCounter()
+    XCTAssertFalse(panel.midiShrunkByUser)
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "the chips come back")
+    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+    XCTAssertEqual(state.presentationMode, .midi)
+    // The roster drives the width again.
+    state.applyChannelRoster(three + [mapRosterRow("5", "Kuba")])
+    XCTAssertEqual(panel.frame.width, naturalMidiWidth(state, panel), accuracy: 0.5)
+    XCTAssertGreaterThan(panel.frame.width, natural)
   }
 
   @MainActor
@@ -488,11 +544,18 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     root.layoutSubtreeIfNeeded()
-    let brand = try XCTUnwrap(descendant(identifier: "overlay-mini-brand-drag-region", in: root))
-    // Mini always reads "cs" (Maciej, 2026-10-20): the region's middle is the
-    // close dot's edge, so the probe sits on the word, the region's trailing end.
-    let point = brand.convert(
-      NSPoint(x: brand.bounds.maxX - 4, y: brand.bounds.midY), to: nil)
+    // Mini has no "cs" since the bus intercom W2 (spec §13.4): the body the
+    // probe drags is the empty centre, the widest gap between header controls.
+    let controls = panel.menuCursorRegions.allObjects
+      .filter { $0.window === panel && !$0.isHiddenOrHasHiddenAncestor }
+      .map { $0.convert($0.bounds, to: nil) }
+      .filter { $0.width <= 30 && $0.height <= 30 }
+      .sorted { $0.minX < $1.minX }
+    XCTAssertGreaterThanOrEqual(controls.count, 2, "mini: dot and trailing controls")
+    let gap = try XCTUnwrap(
+      zip(controls, controls.dropFirst()).max { $0.1.minX - $0.0.maxX < $1.1.minX - $1.0.maxX })
+    XCTAssertGreaterThan(gap.1.minX - gap.0.maxX, 8, "mini keeps an empty centre")
+    let point = NSPoint(x: (gap.0.maxX + gap.1.minX) / 2, y: gap.1.midY)
     XCTAssertTrue(panel.isWindowDragHit(at: point))
     let recording = state.recording
     let start = panel.frame

@@ -14,27 +14,29 @@ struct OverlayChannelPill: View {
   enum Form: Equatable {
     /// The folded Agents list: status dot and digit.
     case rail
-    /// A channel of the compact map: circled digit and agent name, or
-    /// `MIC → 5 Kuba` while the microphone feeds the channel.
+    /// A channel of the compact map: the circled digit, and the agent's name
+    /// where the strip has room for names (bus intercom spec §13.1).
     case chip
-    /// The collapsed map: the channel count and `▾`, or `MIC → 5`.
+    /// The collapsed map in compact and in mini: the agent count and `▾`, or
+    /// the circled digits of the channels the microphone feeds.
     case counter
   }
 
   struct Display: Equatable {
-    /// The channel digit; for the counter, its figure (the channel count, or
-    /// the recording digits).
+    /// The channel digit; for the counter, the number of agents.
     let figure: String
-    /// The agent's name on a chip; the rail and the counter carry none.
+    /// The agent's name on a chip that shows it; a digit-only chip, the rail
+    /// and the counter carry none.
     var name: String? = nil
     /// The rail's status dot.
     var dot: OverlayAgentDotKind? = nil
     /// The follower is gone: the pill dims as the roster's Disconnected row.
     var disconnected = false
-    /// The microphone feeds this channel now (chip and counter forms).
+    /// The microphone feeds this channel now (chip and counter forms): the
+    /// digit carries the microphone badge and the pill the recording tint.
     var microphoneOpen = false
-    /// Channel 0 speaks through the left-facing megaphone, as its row does.
-    var broadcast = false
+    /// The counter's circled digits while the microphone is open.
+    var openDigits: [String] = []
     var unread = false
     var selected = false
     var enabled = true
@@ -52,7 +54,8 @@ struct OverlayChannelPill: View {
   let identifier: String
   let palette: OverlayAppearancePalette
   /// The rail passes the roster's text scale; the compact strip passes
-  /// `headerScale(_:)` so its 46 pt row keeps its height.
+  /// `headerScale(_:)` so its 46 pt row keeps its height, and mini passes 1,
+  /// as its fixed widths are measured at that scale.
   let textScale: CGFloat
   let action: () -> Void
 
@@ -86,15 +89,16 @@ struct OverlayChannelPill: View {
     form == .rail ? 24 * textScale : Self.headerHeight
   }
 
+  private var recording: Bool { display.microphoneOpen && form != .rail }
+
   /// Recording takes the active-speaker violet, as the roster's open
-  /// microphone does (`OverlayAgentAudioControls`).
+  /// microphone and the `.agent` light do (`OverlayAgentAudioControls`).
   private var tint: Color {
-    display.microphoneOpen && form != .rail
-      ? palette.agentAccent.color : palette.primaryText.color
+    recording ? palette.agentAccent.color : palette.primaryText.color
   }
 
   private var fill: Color {
-    if display.microphoneOpen && form != .rail {
+    if recording {
       return palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
     }
     return display.selected ? palette.agentAccent.color.opacity(0.22) : CSColor.hairline(0.06)
@@ -107,18 +111,12 @@ struct OverlayChannelPill: View {
       case .rail:
         HStack(spacing: 3) {
           OverlayAgentStatusDot(kind: display.dot ?? .idle, palette: palette)
-          figure
+          figure(display.figure, size: 12)
         }
         .padding(.horizontal, 6 * textScale)
       case .chip:
         HStack(spacing: Self.chipGap * textScale) {
-          if display.microphoneOpen { route }
-          figure
-            .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
-            .overlay {
-              Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1)
-                .accessibilityHidden(true)
-            }
+          circledDigit(display.figure)
           if let name = display.name {
             Text(verbatim: name)
               .font(Self.nameFont(textScale))
@@ -129,18 +127,22 @@ struct OverlayChannelPill: View {
         }
         .padding(.horizontal, Self.chipPadding * textScale)
       case .counter:
-        HStack(spacing: Self.counterGap * textScale) {
-          if display.microphoneOpen {
-            route
-            figure
-          } else {
-            figure
+        if display.microphoneOpen {
+          HStack(spacing: Self.counterGap * textScale) {
+            ForEach(display.openDigits, id: \.self) { digit in
+              circledDigit(digit)
+            }
+          }
+          .padding(.horizontal, Self.counterRecordingPadding * textScale)
+        } else {
+          HStack(spacing: Self.counterGap * textScale) {
+            figure(display.figure, size: Self.nameSize)
             Text(verbatim: Self.caret)
               .font(Self.nameFont(textScale))
               .frame(width: Self.textWidth(Self.caret, size: Self.nameSize * textScale))
           }
+          .padding(.horizontal, Self.counterPadding * textScale)
         }
-        .padding(.horizontal, Self.counterPadding * textScale)
       }
     }
     .foregroundStyle(tint)
@@ -148,28 +150,38 @@ struct OverlayChannelPill: View {
     .background(Capsule(style: .continuous).fill(fill))
   }
 
-  /// The digit: drawn once, whatever the form.
-  private var figure: some View {
-    let size = form == .chip ? Self.digitSize : form == .counter ? Self.nameSize : 12
-    return Text(verbatim: display.figure)
+  /// The digit: drawn here once, whatever the form.
+  private func figure(_ text: String, size: CGFloat) -> some View {
+    Text(verbatim: text)
       .font(.system(size: size * textScale, weight: .semibold))
       .monospacedDigit()
       .lineLimit(1)
       .fixedSize()
   }
 
-  /// `MIC →`: the microphone, or channel 0's left-facing megaphone, and the arrow.
-  @ViewBuilder
-  private var route: some View {
-    Image(systemName: display.broadcast ? "megaphone" : "mic.fill")
-      .font(.system(size: Self.glyphSize * textScale, weight: .semibold))
-      .overlayMirrored(display.broadcast)
+  /// A chip's or the recording counter's digit in its circle, with the
+  /// microphone badge while the microphone feeds the channel (spec §13.3).
+  /// The badge overlaps the circle, so it adds no width.
+  private func circledDigit(_ digit: String) -> some View {
+    figure(digit, size: Self.digitSize)
+      .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
+      .overlay {
+        Circle().strokeBorder(tint.opacity(0.5), lineWidth: 1)
+          .accessibilityHidden(true)
+      }
+      .overlay(alignment: .bottomTrailing) {
+        if recording { microphoneBadge }
+      }
+  }
+
+  private var microphoneBadge: some View {
+    Image(systemName: "mic.fill")
+      .font(.system(size: Self.badgeGlyphSize * textScale, weight: .bold))
+      .foregroundStyle(palette.desktopBackground.color)
       .symbolEffect(.pulse, isActive: display.animates && !reduceMotion)
-      .frame(width: Self.glyphWidth * textScale)
-      .accessibilityHidden(true)
-    Text(verbatim: Self.arrow)
-      .font(Self.nameFont(textScale))
-      .frame(width: Self.textWidth(Self.arrow, size: Self.nameSize * textScale))
+      .frame(width: Self.badgeDiameter * textScale, height: Self.badgeDiameter * textScale)
+      .background(Circle().fill(palette.agentAccent.color))
+      .offset(x: Self.badgeOffset * textScale, y: Self.badgeOffset * textScale)
       .accessibilityHidden(true)
   }
 }
@@ -177,7 +189,7 @@ struct OverlayChannelPill: View {
 // MARK: Header metrics
 
 /// The compact map's widths come from the same values the pill draws with,
-/// so the collapse threshold is measured, not a constant (the approach of
+/// so the collapse thresholds are measured, not constants (the approach of
 /// `OverlayAgentDrawerLayout.railPillWidth`).
 extension OverlayChannelPill {
   /// The header's control diameter: chips stand as tall as its buttons.
@@ -188,15 +200,19 @@ extension OverlayChannelPill {
   static let chipPadding: CGFloat = 6
   static let chipGap: CGFloat = 4
   static let counterPadding: CGFloat = 5
+  /// The recording counter hugs its circled digit, so in the 164 pt mini it
+  /// fits the room the "cs" wordmark had (`DictationOverlayWindow.agentMiniSize`).
+  static let counterRecordingPadding: CGFloat = 2
   static let counterGap: CGFloat = 2
   static let digitCircle: CGFloat = 15
   static let digitSize: CGFloat = 10
   static let nameSize: CGFloat = 11
-  static let glyphSize: CGFloat = 9
-  static let glyphWidth: CGFloat = 11
+  static let badgeDiameter: CGFloat = 9
+  static let badgeGlyphSize: CGFloat = 5.5
+  /// How far the badge sits past the circle's bottom-right edge.
+  static let badgeOffset: CGFloat = 3
   /// A long agent name truncates instead of collapsing the whole map.
   static let maxNameWidth: CGFloat = 96
-  static let arrow = "\u{2192}"
   static let caret = "\u{25BE}"
 
   static func headerScale(_ textScale: CGFloat) -> CGFloat {
@@ -222,40 +238,28 @@ extension OverlayChannelPill {
     min(textWidth(name, size: nameSize * scale), maxNameWidth * scale)
   }
 
+  /// A chip's width: padding, the circled digit and, when the chip shows
+  /// one, the name. The microphone badge overlaps the circle and adds none.
   @MainActor
-  private static func routeWidth(gap: CGFloat, scale: CGFloat) -> CGFloat {
-    glyphWidth * scale + gap * scale + textWidth(arrow, size: nameSize * scale) + gap * scale
-  }
-
-  /// The room `MIC →` adds to a chip. The window owner reserves it in
-  /// compact's natural width, so opening a channel keeps the chips.
-  @MainActor
-  static func microphoneRouteWidth(scale: CGFloat) -> CGFloat {
-    routeWidth(gap: chipGap, scale: scale)
-  }
-
-  /// A chip's width: padding, `MIC →` while recording, the circled digit and
-  /// the name.
-  @MainActor
-  static func chipWidth(name: String, microphoneOpen: Bool, scale: CGFloat) -> CGFloat {
+  static func chipWidth(name: String?, scale: CGFloat) -> CGFloat {
     var width = 2 * chipPadding * scale + digitCircle * scale
-    if microphoneOpen { width += routeWidth(gap: chipGap, scale: scale) }
-    width += chipGap * scale + nameWidth(name, scale: scale)
+    if let name { width += chipGap * scale + nameWidth(name, scale: scale) }
     return ceil(width)
   }
 
-  /// The counter's width: `4 ▾`, or `MIC → 5`.
+  /// The counter's width: `4 ▾`, or the circled digits of the open channels.
   @MainActor
-  static func counterWidth(figure: String, microphoneOpen: Bool, scale: CGFloat) -> CGFloat {
-    var width =
-      2 * counterPadding * scale
-      + textWidth(figure, size: nameSize * scale, monospacedDigits: true)
-    if microphoneOpen {
-      width += routeWidth(gap: counterGap, scale: scale)
-    } else {
-      width += counterGap * scale + textWidth(caret, size: nameSize * scale)
+  static func counterWidth(figure: String, openDigitCount: Int, scale: CGFloat) -> CGFloat {
+    guard openDigitCount == 0 else {
+      let digits = CGFloat(openDigitCount)
+      return ceil(
+        2 * counterRecordingPadding * scale + digits * digitCircle * scale
+          + (digits - 1) * counterGap * scale)
     }
-    return ceil(width)
+    return ceil(
+      2 * counterPadding * scale
+        + textWidth(figure, size: nameSize * scale, monospacedDigits: true)
+        + counterGap * scale + textWidth(caret, size: nameSize * scale))
   }
 }
 
