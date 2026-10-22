@@ -6,10 +6,13 @@ Overlay size is selected explicitly. Each ordinary preview-button click advances
 mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
 is the shared pin: the strip grows leftward and the transcript grows downward,
 with display containment applied when the full target cannot fit. The context
-menu also selects any of the three modes directly. Mini is fixed; midi supports
-horizontal resize; regular supports edge and corner resize around that same pin.
-Settled native floors are mini 200 × 46 pt, midi 410 × 46 pt and regular
-320 × 260 pt. During a drag, the painted frame respects the current form's floor.
+menu also selects any of the three modes directly. Mini is not resizable and is
+as wide as its content; midi supports horizontal resize; regular supports edge
+and corner resize around that same pin. Settled native floors are mini
+130 × 46 pt (its controls), midi 410 × 46 pt and regular 320 × 260 pt. Screen
+anchors, the saved position and resize gestures reason in a 200 × 46 pt mini
+placement strip (`DictationOverlayWindow.miniPlacementSize`); mini is drawn at
+that strip's trailing edge. During a drag, the painted frame respects the current form's floor.
 The panel separately retains the requested gesture size: on release, requested
 height of at least 153 pt selects regular; below that, requested width below
 305 pt selects mini and larger width selects midi. Thus release-to-fold remains
@@ -22,8 +25,14 @@ pauses terminal auto-hide; it does not change the capture route or window size.
 Mini and compact carry the channel map (`docs/guide/chat-overlay.md`, "Channel
 map in the collapsed overlay"). Mini's header is the brand dot, the channel
 counter, the agents button, the microphone and the form control; it no longer
-reads "cs". Mini stays 200 × 46 pt, and 164 × 46 pt while an agent records,
-when the counter is the open channel's digit with the microphone badge.
+reads "cs". Mini is as wide as its content (`DictationOverlayWindow.miniNaturalWidth`):
+its 130 pt floor (32 pt padding, the 9 pt dot, two 4 pt gaps around the closed
+centre, 81 pt of trailing controls) plus, with a channel on the map, 6 pt and
+the counter as drawn, the agent count with `▾` or the open channel's digit with
+the microphone badge. It resizes in one step at its upper-right pin when the
+counter changes, opening and closing a microphone included; there is no
+separate width while an agent records. No two neighbouring controls stand
+further apart than the 8 pt between the trailing controls.
 Compact's map sits between the session timer and the header actions. The
 46 pt height, the 410 × 46 pt compact floor and the fold control's point are
 unchanged. Compact's natural width (`DictationOverlayWindow.midiNaturalWidth`)

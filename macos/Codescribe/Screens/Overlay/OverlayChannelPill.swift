@@ -53,9 +53,8 @@ struct OverlayChannelPill: View {
   var accessibilityValue = ""
   let identifier: String
   let palette: OverlayAppearancePalette
-  /// The rail passes the roster's text scale; the compact strip passes
-  /// `headerScale(_:)` so its 46 pt row keeps its height, and mini passes 1,
-  /// as its fixed widths are measured at that scale.
+  /// The rail passes the roster's text scale; mini and compact pass
+  /// `headerScale(_:)` so their 46 pt row keeps its height.
   let textScale: CGFloat
   let action: () -> Void
 
@@ -200,8 +199,8 @@ extension OverlayChannelPill {
   static let chipPadding: CGFloat = 6
   static let chipGap: CGFloat = 4
   static let counterPadding: CGFloat = 5
-  /// The recording counter hugs its circled digit, so in the 164 pt mini it
-  /// fits the room the "cs" wordmark had (`DictationOverlayWindow.agentMiniSize`).
+  /// The recording counter hugs its circled digit; mini, which is as wide as
+  /// its content, narrows with it (`DictationOverlayWindow.miniNaturalWidth`).
   static let counterRecordingPadding: CGFloat = 2
   static let counterGap: CGFloat = 2
   static let digitCircle: CGFloat = 15

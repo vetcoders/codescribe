@@ -218,7 +218,8 @@ final class OverlayResizeHitTests: XCTestCase {
     panel.endUserResize()
     panel.settleFrameTransition()
     XCTAssertEqual(state.presentationMode, .mini, "The fold gesture commits only on release")
-    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    // Mini is content-sized (spec §13.4): the panel's measured mini.
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
     XCTAssertFalse(panel.beginUserResize(edge: .left, at: .zero))
   }
 
@@ -338,6 +339,64 @@ final class OverlayResizeHitTests: XCTestCase {
       closed + 0.5, "the reserved room holds channel 0's chip beside the named row")
   }
 
+  /// Mini is as wide as its content (spec §13.4): the counter's figure, the
+  /// agent count or the open digits, resizes it at its upper-right pin, one
+  /// step, as compact follows its chips.
+  @MainActor
+  func testMiniFollowsItsCounterAtTheUpperRightPin() throws {
+    let state = OverlayState.previewFormatted()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "Resize.miniCounter"))
+        as? FloatingOverlayPanel)
+    defer { panel.invalidatePresence() }
+    state.setPresentationMode(.mini)
+    panel.settleFrameTransition()
+    let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
+    panel.setFrameOrigin(
+      NSPoint(x: visible.maxX - 40 - panel.frame.width, y: visible.maxY - 40 - panel.frame.height))
+    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
+    let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+    func natural() -> CGFloat {
+      DictationOverlayWindow.miniNaturalWidth(map: state.channelMapLayoutModel, textScale: 1)
+    }
+    func roster(open: Bool) -> [CsChannelRosterState] {
+      let row = mapRosterRow("3", "Igor")
+      return [
+        mapRosterRow("0", "All"),
+        CsChannelRosterState(
+          channel: row.channel, audience: row.audience, provider: row.provider,
+          providerSessionId: row.providerSessionId, open: open, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
+      ]
+    }
+
+    state.applyChannelRoster(roster(open: false))
+    let counting = natural()
+    XCTAssertGreaterThan(counting, DictationOverlayWindow.miniFloorWidth)
+    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the counter widens mini")
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
+
+    // Opening the channel turns the counter into its digit; the live overlay
+    // may unfold for the conversation, so mini is re-entered first.
+    state.applyChannelRoster(roster(open: true))
+    state.setPresentationMode(.mini)
+    panel.settleFrameTransition()
+    XCTAssertLessThan(natural(), counting)
+    XCTAssertEqual(panel.frame.width, natural(), accuracy: 0.5, "mini narrows to the digit")
+    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+
+    state.applyChannelRoster(roster(open: false))
+    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the count returns")
+    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
+    // The saved position is the placement strip at the same trailing edge.
+    XCTAssertEqual(
+      panel.originForPersistence.x, pin.x - DictationOverlayWindow.miniPlacementSize.width,
+      accuracy: 0.5)
+  }
+
   @MainActor
   func testCompactNeverGrowsPastTheBudgetAndNineAgentsShowDigits() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.budget")
@@ -453,7 +512,9 @@ final class OverlayResizeHitTests: XCTestCase {
     let text = state.activeText
     let generation = state.captureGeneration
     let sizes: [(OverlayPresentationMode, NSSize)] = [
-      (.mini, DictationOverlayWindow.collapsedSize), (.midi, DictationOverlayWindow.midiSize),
+      // The gesture's mini request is the placement strip (spec §13.4):
+      // release-to-fold reasons in it; mini then lands at its own width.
+      (.mini, DictationOverlayWindow.miniPlacementSize), (.midi, DictationOverlayWindow.midiSize),
       (.expanded, NSSize(width: 600, height: 560)),
     ]
     let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
@@ -544,18 +605,10 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     root.layoutSubtreeIfNeeded()
-    // Mini has no "cs" since the bus intercom W2 (spec §13.4): the body the
-    // probe drags is the empty centre, the widest gap between header controls.
-    let controls = panel.menuCursorRegions.allObjects
-      .filter { $0.window === panel && !$0.isHiddenOrHasHiddenAncestor }
-      .map { $0.convert($0.bounds, to: nil) }
-      .filter { $0.width <= 30 && $0.height <= 30 }
-      .sorted { $0.minX < $1.minX }
-    XCTAssertGreaterThanOrEqual(controls.count, 2, "mini: dot and trailing controls")
-    let gap = try XCTUnwrap(
-      zip(controls, controls.dropFirst()).max { $0.1.minX - $0.0.maxX < $1.1.minX - $1.0.maxX })
-    XCTAssertGreaterThan(gap.1.minX - gap.0.maxX, 8, "mini keeps an empty centre")
-    let point = NSPoint(x: (gap.0.maxX + gap.1.minX) / 2, y: gap.1.midY)
+    // Mini has no "cs" and hugs its controls (bus intercom spec §13.4): the
+    // body the probe drags is the strip under the control row, in the middle.
+    let point = NSPoint(x: panel.frame.width / 2, y: 5)
+    XCTAssertNil(OverlayResizeHit.edge(at: point, in: root.bounds), "mini has no resize band")
     XCTAssertTrue(panel.isWindowDragHit(at: point))
     let recording = state.recording
     let start = panel.frame
@@ -881,7 +934,8 @@ final class OverlayResizeHitTests: XCTestCase {
     panel.setPresentationMode(.mini)
     XCTAssertEqual(panel.frame, start)
     panel.endUserResize()
-    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    // Mini is content-sized (spec §13.4): the panel's measured mini.
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
     panel.setPresentationMode(.expanded)
     XCTAssertTrue(panel.beginUserResize(edge: .right, at: pointer))
     panel.setPresentationMode(.mini)

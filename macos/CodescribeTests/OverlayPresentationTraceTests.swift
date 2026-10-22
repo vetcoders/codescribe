@@ -116,7 +116,8 @@ final class OverlayPresentationTraceTests: XCTestCase {
     XCTAssertTrue(
       ready, "Initial mini never became ready: \(panelReadiness(panel, label: "timeout"))")
     guard ready else { return }
-    XCTAssertEqual(panel.frame.size, DictationOverlayWindow.collapsedSize)
+    // Mini is content-sized (bus intercom spec §13.4): the panel's measured mini.
+    XCTAssertEqual(panel.frame.size, panel.miniSize)
     let afterSetMini = panelReadiness(panel, label: "afterSetMini")
     let initialTrace = formatTraceEntries(trace.entries)
     let initialReadiness =
