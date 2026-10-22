@@ -430,8 +430,9 @@ def installation_idle(
     ``emitted_at`` is missing or unparseable stays live: abandonment must
     be proven, not presumed.
     Channel buses from the binding file and ``buses/channel-*.jsonl`` share
-    this guard. Only ``open`` holds a channel; any other lifecycle state or
-    a successor session on that channel ends it, as in the channel consumer.
+    this guard. Only ``open`` holds a channel; a later state of that session
+    or the open of a successor on that channel ends it, as in the channel
+    consumer. A predecessor's close never ends its successor.
     Silence alone does not release it. An open channel with no receipt for
     six hours uses the CLI abandonment threshold; unknown timestamps keep
     blocking. Evidence rows refresh the session's last known activity.
@@ -601,18 +602,26 @@ def installation_idle(
                                 or not session_id
                             ):
                                 raise ValueError("channel row has no identity")
-                            # A newer session on this channel supersedes its old open
-                            # receipt, matching _consume_channel_row and orphan seals.
-                            open_channels = {
-                                sid: value
-                                for sid, value in open_channels.items()
-                                if value[0] != channel
-                            }
                             if str(event.get("state") or "") == "open":
+                                # A newer session on this channel supersedes its
+                                # old open receipt, matching orphan seals.
+                                open_channels = {
+                                    sid: value
+                                    for sid, value in open_channels.items()
+                                    if value[0] != channel
+                                }
                                 emitted = event.get("emitted_at") or event.get("opened_at")
                                 open_channels[session_id] = (
                                     channel, emitted if isinstance(emitted, str) else None
                                 )
+                            else:
+                                # The controller reopens a channel before the
+                                # predecessor's tail publishes its seal (20:23:35
+                                # open b868b9ec, 20:23:36 sealed 896f2cea). That
+                                # close names only its own session, as in
+                                # _consume_channel_row; ending the successor let
+                                # replies play into Maciej's open microphone.
+                                open_channels.pop(session_id, None)
                             continue
                         if (
                             event.get("schema") == EVIDENCE_SCHEMA
