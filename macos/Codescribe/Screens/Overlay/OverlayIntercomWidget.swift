@@ -24,6 +24,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// replays absolute deltas against its mouse-down frame, so that frame
   /// identifies the gesture.
   @ObservationIgnored private var groupResizeGesture: (frame: CGRect, baseScale: Double)?
+  /// A card's resize that converted it into an instance hands the rest of
+  /// that same gesture to the instance, identified by the mouse-down frame.
+  @ObservationIgnored private var resizeHandoff: (frame: CGRect, id: UUID)?
   fileprivate private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
@@ -443,10 +446,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
-  private func detachIntoInstance(_ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil) {
+  @discardableResult
+  private func detachIntoInstance(
+    _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil
+  ) -> UUID? {
     guard identity.conversationID != nil, identity.ownerID != nil else {
       presentation.close(identity)
-      return
+      return nil
     }
     let current =
       frame ?? cards[identity]?.frame
@@ -486,21 +492,32 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     presentation.close(identity)
     saveDesktop()
     materializeInstances()
+    return id
   }
 
   /// Resizing an expanded group card is an explicit independent placement:
   /// it becomes a durable instance with its own geometry (brief: a single
   /// conversation's resize never replaces the proportional group resize).
+  /// The gesture then continues on the new instance until mouse-up — the
+  /// resize view replays events against its mouse-down frame, which hands
+  /// the rest of the drag over (Astra on 05c013749).
   fileprivate func resize(
     _ identity: OverlayIntercomCardIdentity, from frame: CGRect, delta: CGSize,
     edge: OverlayIntercomWidgetLayout.ResizeEdge
   ) {
+    if resizeHandoff?.frame != frame { resizeHandoff = nil }
+    if let handoff = resizeHandoff {
+      resizeInstance(handoff.id, from: frame, delta: delta, edge: edge)
+      return
+    }
     guard let panel = cards[identity], presentation.expanded.contains(identity) else { return }
     let fitted = OverlayIntercomWidgetLayout.resizedFrame(
       frame, delta: delta, edge: edge,
       minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
       visibleFrame: visibleFrame(for: panel))
-    detachIntoInstance(identity, frame: fitted)
+    if let id = detachIntoInstance(identity, frame: fitted) {
+      resizeHandoff = (frame: frame, id: id)
+    }
     presentation.folded = true
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
@@ -741,8 +758,12 @@ private final class OverlayIntercomDragView: NSView {
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   // A real drag moves the window (and detaches, where the grip detaches).
-  // A click that never moves is not a detach and not a move.
+  // A click that never moves is not a detach and not a move. The window
+  // reference is taken BEFORE onDrag: a detach swaps the panel's content
+  // view, which removes this view from the window and nils self.window
+  // (Astra, D2 trace on 05c013749).
   override func mouseDragged(with event: NSEvent) {
+    let window = window
     onDrag()
     window?.performDrag(with: event)
   }
