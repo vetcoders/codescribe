@@ -60,7 +60,8 @@ use serde::{Deserialize, Serialize};
 /// v30: owner projection cannot hide a new Whisper word's clipped onset or
 /// trailing fence; unprojected incomplete onsets retain visible evidence.
 /// v35: a banded complete Whisper word respells, 1:1, the fence side of an
-/// incumbent Whisper word pinned below the rights floor of its own window.
+/// incumbent Whisper word pinned below the rights floor of its own window,
+/// when Apple or DT heard the banded spelling and not the incumbent's.
 pub const WORD_POLICY: &str = "word-adjudication/v35-window-position";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
@@ -225,6 +226,12 @@ pub(super) fn label_equal(a: &str, b: &str) -> bool {
 /// letters nearest a window fence: the ending at a right fence, the onset at
 /// a left fence. The letters on the far side were decoded with context.
 fn respelled_toward_fence(held: &str, heard: &str, right_fence: bool) -> bool {
+    if [held, heard]
+        .iter()
+        .any(|label| label.split_whitespace().nth(1).is_some())
+    {
+        return false;
+    }
     let letters = |text: &str| {
         let mut letters = text
             .chars()
@@ -1143,6 +1150,35 @@ impl AcousticLedger {
             .any(|held| &held.owner == owner)
     }
 
+    /// One-word labels Apple or DT proposed for these slots: retained
+    /// alternatives over any of them, and Apple hypotheses of the component.
+    fn independent_labels<'a>(
+        &'a self,
+        targets: &[SlotTarget],
+        component: &'a WordAdjudication,
+    ) -> Vec<&'a str> {
+        self.slot_alternatives
+            .iter()
+            .filter(|alternative| {
+                matches!(
+                    alternative.observation.producer,
+                    ObservationProducer::Apple | ObservationProducer::AppleDictation
+                ) && alternative
+                    .sources
+                    .iter()
+                    .any(|source| targets.contains(&SlotTarget::from(source)))
+            })
+            .map(|alternative| alternative.candidate.as_str())
+            .chain(
+                component
+                    .apple
+                    .iter()
+                    .filter_map(|hypothesis| hypothesis.original_text.as_deref()),
+            )
+            .filter(|label| label.split_whitespace().nth(1).is_none())
+            .collect()
+    }
+
     pub(crate) fn word_evidence_input(
         &self,
         observation: &ObservationIdentity,
@@ -2014,13 +2050,15 @@ impl AcousticLedger {
         // decoder completes clipped phonemes into plausible words, but only
         // on the side its window cut: near the right fence the ending, near
         // the left fence the onset. A banded copy of the same word may
-        // replace those letters, never the side that was heard in full.
+        // replace those letters, never the side that was heard in full, and
+        // only when another engine already heard the banded spelling.
+        // Position alone measured worse: over 15 corpus takes the banded
+        // ending was wrong 3 times in 4 ("Ciekawie", "informacje", "chce").
         // Take d8d1da2a (2026-10-22): "obudziłem." at q 0.11 kept the slot
-        // over "obudziła." at q 0.97, "żyję" at 0.45 over "żyje" at 0.77;
-        // both differ in the ending at the right fence, and the banded
-        // copies had the worse logprobs. Clip02 fcf12e76 (2026-10-10): the
-        // right-edge "Gentamycyną." (q 0.17) is right and the banded
-        // "kentamycyną." (q 1.0) is wrong in the onset, so it stays.
+        // over "obudziła." at q 0.97, which Apple had heard 2.2 s earlier.
+        // Clip02 fcf12e76 (2026-10-10): the right-edge "Gentamycyną."
+        // (q 0.17) is right and the banded "kentamycyną." (q 1.0) is wrong in
+        // the onset, so it stays.
         let window_position_authority = trial.is_none()
             && fresh
             && complete
@@ -2067,7 +2105,16 @@ impl AcousticLedger {
                         .as_deref()
                         .zip(component.incumbent.original_text.as_deref())
                         .is_some_and(|(a, b)| label_equal(a, b))
-            });
+            })
+            && {
+                let heard = self.independent_labels(&targets, &component);
+                raw.is_some_and(|raw| heard.iter().any(|label| label_equal(label, raw)))
+                    && !component
+                        .incumbent
+                        .original_text
+                        .as_deref()
+                        .is_some_and(|held| heard.iter().any(|label| label_equal(label, held)))
+            };
         let lexical_resolved = independent_witness
             || complete_fence_authority
             || window_position_authority
