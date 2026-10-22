@@ -19,25 +19,35 @@ readability floor. Moving the window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
 
-Compact carries the channel map (`docs/guide/chat-overlay.md`, "Channel map in
-the compact overlay") between the session timer and the header actions. The
+Mini and compact carry the channel map (`docs/guide/chat-overlay.md`, "Channel
+map in the collapsed overlay"). Mini's header is the brand dot, the channel
+counter, the agents button, the microphone and the form control; it no longer
+reads "cs". Mini stays 200 × 46 pt, and 164 × 46 pt while an agent records,
+when the counter is the open channel's digit with the microphone badge.
+Compact's map sits between the session timer and the header actions. The
 46 pt height, the 410 × 46 pt compact floor and the fold control's point are
-unchanged. Compact's natural width is that floor plus the map's measured chips,
-their gap and room for one `MIC →` indicator
-(`DictationOverlayWindow.midiNaturalWidth`), capped at the screen's visible
-width; with no channel mapped it is the floor. Entering compact lands on it, and
-a roster change while compact is shown (a channel bound, archived or renamed)
-resizes the strip in one step at its upper-right pin, with display containment
-as for any morph; opening or closing a microphone does not. A manual
-horizontal resize gives the width to the user for the session: narrower than
-the natural width, it is kept and roster changes no longer resize the strip
-(the map collapses to its counter); wider, it is kept and grows only when the
-natural width exceeds it. A map that cannot fit even its counter claims no
-width. Its shortcut hints read the
-Agent channel modifier from settings (`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and
-never assume Ctrl. A chip click is passive selection, like a rail pill: it never
-opens or closes a channel's microphone or retargets a running capture. The map
-adds no hotkey of its own.
+unchanged. Compact's natural width (`DictationOverlayWindow.midiNaturalWidth`)
+is that floor plus the map's gap, room for channel 0's digit chip (shown only
+while the microphone broadcasts) and the row of the first tier that fits the
+820 pt budget (`midiChannelMapBudget`, two floors): named chips, else
+digit-only chips with room for the selected conversation's name. The screen's
+visible width remains only a last cap; with no agent bound it is the floor.
+Entering compact lands on it, and a roster change while compact is shown (an
+agent bound, archived or renamed) resizes the strip in one step at its
+upper-right pin, with display containment as for any morph; opening or closing
+a microphone, channel 0 included, does not. A manual horizontal resize gives
+the width to the user for the session: narrower than the natural width, it is
+kept and roster changes no longer resize the strip (the chips drop to digits
+or the counter); wider, it is kept and grows only when the natural width
+exceeds it. A map that cannot fit even its counter claims no width. Its
+shortcut hints read the Agent channel modifier from settings
+(`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and never assume Ctrl. A chip click is
+passive selection, like a rail pill. The counter click changes form or width
+only: in mini it selects compact, as the form control's "Expand to compact
+widget" does; in a compact strip the user narrowed it forgets that width so
+the strip settles to its natural width. Neither ever opens or closes a
+channel's microphone or retargets a running capture. The map adds no hotkey
+and no chord of its own.
 
 The overlay's channel menu separates **My dictation**, **0 · All**, and exact
 named-agent conversations from the explicit **Capture channels** controls.
