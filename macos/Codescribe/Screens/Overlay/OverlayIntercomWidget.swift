@@ -109,7 +109,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           OverlayIntercomRow(
             state: state, digit: digit, index: index,
             onPreview: { [weak self] in self?.togglePreview(digit: digit) },
-            onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
+            onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) },
+            onRevealConversation: revealConversation)
         })
       rows[digit] = panel
     }
@@ -303,6 +304,7 @@ private struct OverlayIntercomRow: View {
   let index: Int
   let onPreview: () -> Void
   let onHover: (Bool) -> Void
+  let onRevealConversation: () -> Void
 
   private var chip: OverlayChannelMapChip? {
     state.channelMapLayoutModel.agents.first { $0.digit == digit }
@@ -400,6 +402,11 @@ private struct OverlayIntercomRow: View {
     .onHover(perform: onHover)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-intercom-row-\(digit)")
+    .modifier(
+      OverlayChannelStatusView.intercomRoster(
+        state: state, palette: palette, animates: true,
+        onRevealConversation: onRevealConversation
+      ).agentPillMenu(for: digit, showsInlineError: false))
   }
 }
 

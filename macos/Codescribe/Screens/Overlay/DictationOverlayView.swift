@@ -1220,7 +1220,8 @@ struct DictationOverlayView: View {
           let owner = roster.archiveCandidates[digit]
         else { return }
         roster.onFocusAgentPanel?(owner)
-      })
+      },
+      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) })
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
@@ -1235,57 +1236,8 @@ struct DictationOverlayView: View {
 
   /// Internal so a test can assert that two body passes share one search model.
   var channelStatusView: OverlayChannelStatusView {
-    var view = OverlayChannelStatusView(
-      channels: state.visibleChannelRows.filter { $0.channel != "0" },
-      unavailable: state.channelStatusUnavailable,
-      palette: palette, animates: overlayVisible,
-      hudStates: state.channelHudStates,
-      agentDescriptors: state.channelAgentDescriptors,
-      onToggleChannel: { digit in
-        Task { await state.toggleAgentChannel(digit, keepsAgentList: true) }
-      },
-      toggleError: state.channelToggleError,
-      pendingToggleChannels: state.pendingChannelToggles,
-      conversations: state.conversations,
-      selectedConversationID: state.selectedConversationID,
-      unreadCounts: Dictionary(
-        uniqueKeysWithValues: state.conversations.map {
-          ($0.id, state.unreadReplies(in: $0))
-        }),
-      // A row or a rail pill: in the agents view the conversation slides out.
-      onSelectConversation: { id in
-        if let id { state.chooseConversation(id) } else { state.selectConversation(nil) }
-      },
-      onShowMonitor: state.toggleAgentSidebar,
-      // The drawer value is rebuilt on every body pass and only its
-      // `monitorBody(...)` is installed, so a `@State` on it never persists:
-      // each HUD tick handed the drawer a fresh, empty search model and the
-      // query vanished mid-typing. The overlay state owns the model.
-      searchModel: state.savedConversationSearch,
-      rosterReady: state.hasLoadedChannelRoster
-    )
-    view.mutedChannels = state.channelPlaybackMuted
-    view.headerSelected =
-      !state.isCollapsed && state.windowContentSurface == .agents
-    view.agentMicrophoneStops = state.agentsButtonStopsRecording
-    view.pendingMuteChannels = state.pendingPlaybackChannels
-    view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
-    view.playbackError = state.playbackPreferenceError
-    view.archiveCandidates = Dictionary(
-      uniqueKeysWithValues: state.visibleChannelRows.compactMap {
-        state.archiveCandidate(for: $0.channel).map { ($0.channel, $0) }
-      })
-    view.pendingArchives = state.pendingAgentArchives
-    view.archivedOwners = state.archivedAgentOwners
-    view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
-    view.archiveError = state.agentArchiveError
-    view.panelFocusStates = state.agentPanelFocusStates
-    view.panelFocusAvailable = state.agentPanelFocusAvailable
-    // The view resolves the destination per row; `vc-frame` gates only Frame.
-    view.onFocusAgentPanel = { state.focusAgentPanel($0) }
-    view.gestureFocusID = state.agentGestureFocusID
-    view.onGestureHover = { state.hoverAgentGestureTarget($0) }
-    return view
+    OverlayChannelStatusView.intercomRoster(
+      state: state, palette: palette, animates: overlayVisible)
   }
 
   private var transcriptPreviewHelp: String {

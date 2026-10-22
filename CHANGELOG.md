@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent pills share a context menu for writing, speaking, playback, showing the agent list, supported terminal navigation, broadcast membership and Do not disturb. Disconnect remains blocked during recording. The general overlay menu keeps its actions except Pin; the header pin button remains available.
 - Images pasted during a live agent take remain bound to the selected audio segment while speech advances. Pasting before the first segment waits quietly and attaches automatically to that same capture; Retry no longer moves the file to the latest utterance. The follower keeps the committed image in the same voice message across revisions and restart.
 - Clicking a floating agent capsule pins its small message preview. Hover remains transient; opening the full conversation is an explicit action inside the preview.
 - Agent and conversation pane buttons stay with their own panels. Showing the agent list opens a side column at every width; hiding it stays hidden until an explicit reveal. Individual-agent capture shows a microphone; channel-zero broadcast shows an outlined megaphone.

@@ -41,6 +41,8 @@ struct OverlayChannelMapView: View {
   var onToggleMicrophone: ((String) -> Void)? = nil
   var onTogglePlayback: ((String) -> Void)? = nil
   var onFocusChannel: ((String) -> Void)? = nil
+  /// The roster supplies the same menu as the rail and floating intercom.
+  var agentPillMenu: ((String) -> OverlayBroadcastPolicyMenu)? = nil
 
   private enum Actions: Equatable {
     case all, microphone, none
@@ -120,6 +122,9 @@ struct OverlayChannelMapView: View {
         }
         .fixedSize()
         .accessibilityElement(children: .contain)
+        .modifier(
+          agentPillMenu?(chip.digit)
+            ?? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
       }
     }
   }

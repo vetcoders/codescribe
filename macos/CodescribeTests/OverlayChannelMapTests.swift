@@ -597,6 +597,122 @@ final class OverlayChannelMapTests: XCTestCase {
 
   // MARK: - Source shape (§5.5, §13.3, §13.4, invariants)
 
+  func testPillWriteKeepsTheSelectedOwnerAndDoesNotFocusItsTerminalOrRecord() throws {
+    let (state, _, _, astra) = try armedState()
+    state.chooseConversation(astra.id)
+    let generation = state.captureGeneration
+    var selections: [String?] = []
+    var focused: [OverlayConversationOwner] = []
+    var toggles: [UInt8] = []
+    var roster = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" }, unavailable: false,
+      palette: .dark, animates: false, hudStates: state.channelHudStates,
+      onToggleChannel: { toggles.append($0) }, conversations: state.conversations,
+      selectedConversationID: astra.id,
+      onSelectConversation: { selections.append($0) })
+    roster.onFocusAgentPanel = { focused.append($0) }
+    let actions = try XCTUnwrap(roster.agentPillMenu(for: "3").agentActions)
+    XCTAssertTrue(actions.write.enabled)
+    actions.write.perform()
+    XCTAssertEqual(selections, [astra.id])
+    XCTAssertTrue(focused.isEmpty, "writing to an already selected agent is still composing")
+    XCTAssertTrue(toggles.isEmpty)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(roster.agentPillMenu(for: "0").members.isEmpty)
+    XCTAssertNil(roster.agentPillMenu(for: "7").agentActions)
+  }
+
+  func testPillShowInAgentsDuringCaptureCannotBecomeTheHeaderStopAction() throws {
+    let (state, _, _, astra) = try armedState()
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "3", audience: "astra", provider: "codex",
+        providerSessionId: "astra-session", open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    state.chooseConversation(astra.id)
+    state.setPresentationMode(.midi)
+    let generation = state.captureGeneration
+    let roster = DictationOverlayView(state: state).channelStatusView
+    let show = try XCTUnwrap(roster.agentPillMenu(for: "3").agentActions?.showInAgents)
+    XCTAssertTrue(show.enabled)
+    show.perform()
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertTrue(state.channelHudStates["3"]?.open == true)
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+    XCTAssertEqual(state.captureGeneration, generation)
+  }
+
+  func testPillAudioCommandsRefusePendingAndUnknownPlaybackWithoutOptimisticState() throws {
+    let (state, _, _, _) = try armedState()
+    var toggles: [UInt8] = []
+    var playback: [String] = []
+    var roster = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" }, unavailable: false,
+      palette: .dark, animates: false, hudStates: state.channelHudStates,
+      onToggleChannel: { toggles.append($0) }, conversations: state.conversations)
+    roster.onTogglePlayback = { playback.append($0) }
+    roster.pendingToggleChannels = ["3"]
+    roster.pendingMuteChannels = ["3"]
+    roster.mutedChannels = ["3": false]
+    let pending = try XCTUnwrap(roster.agentPillMenu(for: "3").agentActions)
+    XCTAssertFalse(try XCTUnwrap(pending.microphone).enabled)
+    XCTAssertFalse(try XCTUnwrap(pending.playback).enabled)
+    pending.microphone?.perform()
+    pending.playback?.perform()
+    XCTAssertTrue(toggles.isEmpty)
+    XCTAssertTrue(playback.isEmpty)
+    roster.pendingToggleChannels = []
+    roster.pendingMuteChannels = []
+    roster.mutedChannels = [:]
+    let unknown = try XCTUnwrap(roster.agentPillMenu(for: "3").agentActions?.playback)
+    XCTAssertFalse(unknown.enabled)
+    unknown.perform()
+    XCTAssertTrue(playback.isEmpty, "missing receipt is not permission to toggle")
+    roster.mutedChannels = ["3": true]
+    let ready = try XCTUnwrap(roster.agentPillMenu(for: "3").agentActions)
+    XCTAssertTrue(try XCTUnwrap(ready.microphone).enabled)
+    XCTAssertTrue(try XCTUnwrap(ready.playback).enabled)
+    ready.microphone?.perform()
+    ready.playback?.perform()
+    XCTAssertEqual(toggles, [3])
+    XCTAssertEqual(playback, ["3"])
+    XCTAssertFalse(roster.hudStates["3"]?.open == true)
+  }
+
+  func testPillArchiveUsesExactOwnerAndRefusesPendingOrOpenCapture() throws {
+    let (state, _, _, astra) = try armedState()
+    let owner = try XCTUnwrap(astra.owner)
+    var archived: [OverlayConversationOwner] = []
+    func roster(open: Bool = false, pending: Bool = false) -> OverlayChannelStatusView {
+      var view = OverlayChannelStatusView(
+        channels: state.visibleChannelRows.filter { $0.channel != "0" }, unavailable: false,
+        palette: .dark, animates: false,
+        hudStates: ["3": hud(open: open, session: "astra-session")],
+        conversations: state.conversations)
+      view.archiveCandidates = ["3": owner]
+      view.onArchiveAgent = { archived.append($0) }
+      view.pendingArchives = pending ? [owner] : []
+      return view
+    }
+    XCTAssertNil(
+      roster().agentPillMenu(for: "3").agentActions?.focus,
+      "unknown terminal must not inherit a navigation action")
+    for view in [roster(pending: true), roster(open: true)] {
+      let action = try XCTUnwrap(view.agentPillMenu(for: "3").agentActions?.archive)
+      XCTAssertFalse(action.enabled)
+      action.perform()
+    }
+    XCTAssertTrue(archived.isEmpty)
+    let ready = try XCTUnwrap(roster().agentPillMenu(for: "3").agentActions?.archive)
+    XCTAssertTrue(ready.enabled)
+    ready.perform()
+    XCTAssertEqual(archived, [owner])
+  }
+
   func testRailPillsAndMapChipsShareOnePillView() throws {
     let status = try overlaySource("OverlayChannelStatusView.swift")
     let rail = try section(
