@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab install-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
@@ -207,6 +207,12 @@ site-dev:
 
 install-voice-lab:
 	@./scripts/install-voice-lab.sh
+
+# The Lab alone, without building the app: commits on the voice-lab checkout's
+# local main (not its working tree or branch), then the running Lab server
+# restarts so new Python is live.
+install-lab:
+	@./scripts/install-voice-lab.sh --checkout-main --restart-server
 
 .PHONY: install-bus verify-install-bus
 install-bus:
@@ -1323,6 +1329,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Local-release install to /Applications'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-voice-lab' 'Install the private developer console when this machine can reach it'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-lab' 'Voice Lab alone from the voice-lab checkout'"'"'s main, no app build'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'site-dev' 'Astro site at site/ (http://localhost:4321) — not make site:dev'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-stable' 'Everyday: notarize slim DMG + install that stapled .app'
 	@printf '\n'
