@@ -13,7 +13,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private var rows: [String: OverlayIntercomPanel] = [:]
   private var digits: [String] = []
   private var preview: OverlayIntercomPanel?
-  private var previewDigit: String?
+  private var previewChoice = OverlayIntercomPreviewChoice.hidden
+  private var previewDigit: String? { previewChoice.digit }
   private var previewDismissal: Task<Void, Never>?
   private var visible = false
   private var positioning = false
@@ -107,7 +108,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         rootView: TextScaleRoot(controller: textScale) {
           OverlayIntercomRow(
             state: state, digit: digit, index: index,
-            onOpenConversation: { [weak self] id in self?.openConversation(id) },
+            onPreview: { [weak self] in self?.togglePreview(digit: digit) },
             onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
         })
       rows[digit] = panel
@@ -157,35 +158,54 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     revealConversation()
   }
 
+  private func togglePreview(digit: String) {
+    presentPreview(previewChoice.clicking(digit))
+  }
+
   fileprivate func hover(digit: String, inside: Bool) {
+    if !inside, previewDigit != digit { return }
     previewDismissal?.cancel()
     previewDismissal = nil
     if inside {
-      guard visible, let row = rows[digit] else { return }
-      if previewDigit == digit { return }
-      dismissPreview()
-      let panel = OverlayIntercomPanel()
-      panel.contentView = NSHostingView(
-        rootView: TextScaleRoot(controller: textScale) {
-          OverlayIntercomPreview(
-            state: state, digit: digit,
-            onOpenConversation: { [weak self] id in self?.openConversation(id) },
-            onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
-        })
-      panel.setFrame(
-        OverlayIntercomWidgetLayout.previewFrame(beside: row.frame, visibleFrame: screenFrame),
-        display: true)
-      preview = panel
-      previewDigit = digit
-      panel.orderFrontRegardless()
-    } else {
-      // A brief grace period permits crossing the real desktop gap into the
-      // one preview. This task is hover lifetime, never a polling loop.
+      presentPreview(previewChoice.entering(digit))
+    } else if !previewChoice.isPinned {
+      // A short grace permits crossing the real desktop gap into the preview.
       previewDismissal = Task { [weak self] in
         do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-        self?.dismissPreview()
+        guard let self else { return }
+        self.presentPreview(self.previewChoice.leaving(digit))
       }
     }
+  }
+
+  private func presentPreview(_ choice: OverlayIntercomPreviewChoice) {
+    previewDismissal?.cancel()
+    previewDismissal = nil
+    guard let digit = choice.digit else {
+      dismissPreview()
+      return
+    }
+    guard visible, let row = rows[digit] else { return }
+    if previewDigit == digit, preview != nil {
+      previewChoice = choice
+      return
+    }
+    dismissPreview()
+    let panel = OverlayIntercomPanel()
+    panel.contentView = NSHostingView(
+      rootView: TextScaleRoot(controller: textScale) {
+        OverlayIntercomPreview(
+          state: state, digit: digit,
+          onOpenConversation: { [weak self] id in self?.openConversation(id) },
+          onClose: { [weak self] in self?.dismissPreview() },
+          onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
+      })
+    panel.setFrame(
+      OverlayIntercomWidgetLayout.previewFrame(beside: row.frame, visibleFrame: screenFrame),
+      display: true)
+    preview = panel
+    previewChoice = choice
+    panel.orderFrontRegardless()
   }
 
   private func dismissPreview() {
@@ -195,7 +215,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     preview?.contentView = nil
     preview?.close()
     preview = nil
-    previewDigit = nil
+    previewChoice = .hidden
   }
 }
 
@@ -281,12 +301,13 @@ private struct OverlayIntercomRow: View {
   let state: OverlayState
   let digit: String
   let index: Int
-  let onOpenConversation: (String) -> Void
+  let onPreview: () -> Void
   let onHover: (Bool) -> Void
 
   private var chip: OverlayChannelMapChip? {
     state.channelMapLayoutModel.agents.first { $0.digit == digit }
   }
+
   private var conversation: OverlayConversation? {
     intercomConversation(state: state, digit: digit)
   }
@@ -298,9 +319,7 @@ private struct OverlayIntercomRow: View {
     let reachable =
       !state.channelStatusUnavailable && state.channelHudStates[digit]?.followerAlive == true
     HStack(spacing: 3) {
-      Button {
-        if let conversation { onOpenConversation(conversation.id) }
-      } label: {
+      Button(action: onPreview) {
         HStack(spacing: 7) {
           Circle()
             .fill(reachable ? palette.successStatus.color : palette.mutedText.color)
@@ -323,11 +342,8 @@ private struct OverlayIntercomRow: View {
         .contentShape(Capsule())
       }
       .buttonStyle(.plain)
-      .disabled(conversation == nil)
-      .accessibilityLabel(String(localized: "Open conversation") + ": " + (chip?.name ?? digit))
+      .accessibilityLabel(String(localized: "Preview message") + ": " + (chip?.name ?? digit))
       .accessibilityIdentifier("overlay-intercom-name-\(digit)")
-      .help(
-        disconnected ? String(localized: "Disconnected") : String(localized: "Open conversation"))
 
       Button {
         guard let number = UInt8(digit) else { return }
@@ -393,6 +409,7 @@ private struct OverlayIntercomPreview: View {
   let state: OverlayState
   let digit: String
   let onOpenConversation: (String) -> Void
+  let onClose: () -> Void
   let onHover: (Bool) -> Void
 
   var body: some View {
@@ -400,6 +417,17 @@ private struct OverlayIntercomPreview: View {
     let conversation = intercomConversation(state: state, digit: digit)
     let message = conversation?.messages.last
     VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text(conversation?.name ?? digit).csFont(12, .semibold)
+        Spacer(minLength: 8)
+        Button("Close", systemImage: "xmark", action: onClose)
+          .labelStyle(.iconOnly)
+          .buttonStyle(.plain)
+          .conversationActionHover(
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+          )
+          .accessibilityIdentifier("overlay-intercom-preview-close")
+      }
       if let message {
         Text(OverlayChannelStatusView.messageRoute(of: message).label).csFont(11, .semibold)
           .foregroundStyle(palette.agentAccent.color).lineLimit(2)
@@ -407,7 +435,6 @@ private struct OverlayIntercomPreview: View {
           .csFont(12).foregroundStyle(palette.bodyText.color)
           .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
       } else {
-        Text(conversation?.name ?? digit).csFont(12, .semibold)
         Text("No messages yet").csFont(12).foregroundStyle(palette.mutedText.color)
       }
       Spacer(minLength: 0)

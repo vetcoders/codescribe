@@ -1,6 +1,12 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Preview message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Podgląd wiadomości" } }
+      }
+    },
     "Intercom layout": {
       "extractionState": "manual",
       "localizations": {
