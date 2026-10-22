@@ -479,6 +479,9 @@ actor OverlayChannelDeliveryReader {
     }
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries, conversations: built.conversations,
+      activeCaptureAttachmentSessions: Array(
+        Set(buses.values.flatMap { $0.projection.activeCaptureAttachmentSessions })
+      ).sorted { $0.id < $1.id },
       archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs,
       panelFocusResults: panelFocusResults)
   }

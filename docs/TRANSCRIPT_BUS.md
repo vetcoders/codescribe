@@ -1475,7 +1475,12 @@ last option for more files). Sequence zero is valid. A channel digit, current
 focus or latest text is never a substitute for the exact session and epoch.
 
 The Rust append owner validates that the capture remains open and the source
-sequence still names its latest evidence. It copies the source occurrence
+sequence names an exact retained evidence row. Continued speech may advance the
+latest sequence, revision or occurrence while a paste is in flight; that does
+not retarget or invalidate the selected row. A changed epoch, frozen audience
+or recipient set, and closed capture evidence still refuse admission. Sealing
+one ledger segment does not close an otherwise open channel capture.
+It copies the selected source occurrence
 coordinates and frozen audience/recipients, then acquires every recipient bus's
 normal append lease in sorted order. It validates the same source on every bus
 before writing `codescribe.capture-attachment.v1` pending receipts. Only after
@@ -1491,9 +1496,14 @@ envelope. It never emits a separate typed message or resolves new recipients.
 The overlay projects the pointers on the same capture bubble; secondary history
 resolves the named primary commit through its existing generation reader. The
 transcript reducer's document is unchanged. Files pasted before evidence exists
-remain staged with a retry prompt; only the user's explicit retry can choose
-the now-visible occurrence. A retry cannot move an already-bound file to a new
-occurrence or audience.
+wait without an error. The read-only opening receipt and frozen recipients bind
+that wait to a capture already open at paste time. Its first matching evidence
+automatically drains the files through the same append owner. A successor take
+cannot inherit the files. Retry retains an already-bound exact segment; it does
+not choose the latest occurrence or a new audience. The follower retains source
+coordinates across revisions and restart, so continued speech cannot drop a
+committed image from the final voice envelope. This segment association does
+not yet supply the exact audio sample corresponding to the paste gesture.
 
 ## Overlay draft dictation and Reply
 

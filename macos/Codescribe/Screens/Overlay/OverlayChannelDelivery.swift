@@ -373,6 +373,19 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       Set((captureAttachmentStages ?? [:]).values.map(\.commitBus))
     }
 
+    /// The capture's opening and frozen audience exist before its first words.
+    /// This is read-only bus evidence for a paste waiting for that first segment.
+    var activeCaptureAttachmentSessions: [OverlayCaptureAttachmentSession] {
+      sessions.compactMap { channel, session in
+        guard session.isOpen, !endedSessions.contains(session.sessionID),
+          let recipients = captureRecipients[session.sessionID], !recipients.isEmpty
+        else { return nil }
+        return OverlayCaptureAttachmentSession(
+          id: session.sessionID, channel: channel, openedAt: session.openedAt,
+          recipientIDs: recipients.map(\.id).sorted())
+      }
+    }
+
     func conversations(
       busPath: String, now: Date = Date(),
       verifiedCaptureAttachmentCommits: [String: String] = [:]
@@ -1537,6 +1550,18 @@ struct OverlayCaptureAttachmentSegment: Codable, Equatable, Sendable {
   let recipientIDs: [String]
 }
 
+struct OverlayCaptureAttachmentSession: Equatable, Hashable, Sendable {
+  let id: String
+  let channel: String
+  let openedAt: String
+  let recipientIDs: [String]
+
+  func includes(_ conversation: OverlayConversation) -> Bool {
+    if conversation.channel == "0" { return channel == "0" && conversation.owner == nil }
+    return conversation.owner.map { recipientIDs.contains($0.id) } == true
+  }
+}
+
 struct OverlayCaptureAttachmentTarget: Equatable, Sendable {
   let captureSessionID: String
   let captureEpoch: UInt64
@@ -1709,6 +1734,7 @@ struct OverlayPanelFocusResult: Equatable, Sendable, Codable {
 struct OverlayChannelDeliverySnapshot: Equatable, Sendable {
   let deliveries: [OverlayChannelDelivery]
   let conversations: [OverlayConversation]
+  var activeCaptureAttachmentSessions: [OverlayCaptureAttachmentSession] = []
   var archivedOwners: Set<OverlayConversationOwner> = []
   /// First-load archive replies are history, including their broadcast mirrors.
   var historyReplyIDs: Set<String> = []

@@ -1379,12 +1379,28 @@ class EvidenceNormalizer:
         clean["capture_source_sequence"] = event.get("capture_source_sequence")
         if clean["capture_source_sequence"] is None:
             clean["capture_source_sequence"] = source_rows[-1].get("sequence")
+        # A paste names one observed source sequence. Keep that metadata across
+        # continued speech, even when a revision replaces the same PCM range in
+        # the visible occurrence inventory. Text is never an attachment key.
+        attachment_sources = {
+            (item.get("capture_epoch"), item.get("sequence")): item
+            for item in (previous or event).get("capture_attachment_sources", [])
+        }
+        for source in source_rows:
+            coordinates = {key: source.get(key, event.get(key)) for key in (
+                "capture_epoch", "sequence", "reducer_revision", "occurrence_session_id",
+                "sample_start", "sample_end", "document_index",
+            )}
+            attachment_sources.setdefault(
+                (coordinates["capture_epoch"], coordinates["sequence"]), coordinates)
+        clean["capture_attachment_sources"] = list(attachment_sources.values())
         if previous:
             for key in ("attachments", "capture_attachment_stages"):
                 if previous.get(key):
                     clean[key] = previous[key]
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
+            previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
             return False
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
@@ -1392,6 +1408,7 @@ class EvidenceNormalizer:
         if same_phase:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_source_sequence"] = clean["capture_source_sequence"]
+            previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
             if event.get("status") == SEALED:
                 for key in ("hold_until", "utterance_id"):
                     if key in event:
@@ -1439,13 +1456,13 @@ class EvidenceNormalizer:
     def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
         session = str(receipt.get("session_id") or "")
         document = self._session_docs.get(session)
-        source_sequence = (document or {}).get("capture_source_sequence")
-        if source_sequence is None:
-            source_sequence = ((document or {}).get("occurrences") or [document or {}])[-1].get("sequence")
+        source = next((row for row in (document or {}).get("capture_attachment_sources", [])
+                       if row.get("sequence") == receipt.get("source_sequence")
+                       and row.get("capture_epoch") == receipt.get("capture_epoch")), None)
         if (receipt.get("kind") != "capture_attachment" or document is None
                 or session in self._settled_sessions
                 or receipt.get("capture_epoch") != document.get("capture_epoch")
-                or receipt.get("source_sequence") != source_sequence
+                or source is None
                 or receipt.get("audience") != document.get("audience")
                 or receipt.get("recipients") != document.get("recipients")):
             return
@@ -1472,6 +1489,7 @@ class EvidenceNormalizer:
         if not (clean.get("text") or "").strip():
             return
         final = dict(clean)
+        final.pop("capture_attachment_sources", None)
         attachments = list(clean.get("attachments", []))
         for stage in clean.get("capture_attachment_stages", []):
             if (stage.get("capture_epoch") == clean.get("capture_epoch")

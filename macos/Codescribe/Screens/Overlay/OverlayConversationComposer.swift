@@ -118,6 +118,10 @@ struct OverlayConversationComposer: View {
             }
           }
           .font(.system(size: 10 * textScale))
+        } else {
+          Text("Attaching to this recording…")
+            .font(.system(size: 10 * textScale))
+            .foregroundStyle(palette.mutedText.color)
         }
       }
       let attached = attachments
