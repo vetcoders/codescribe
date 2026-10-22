@@ -56,6 +56,9 @@ struct OverlayChannelPill: View {
   /// The rail passes the roster's text scale; mini and compact pass
   /// `headerScale(_:)` so their 46 pt row keeps its height.
   let textScale: CGFloat
+  /// Named horizontal chips are self-describing; the counter retains its
+  /// list hint and the folded roster retains its existing hints.
+  var showsHint = true
   let action: () -> Void
 
   var body: some View {
@@ -77,7 +80,7 @@ struct OverlayChannelPill: View {
     .disabled(!display.enabled)
     .opacity(display.enabled ? 1 : 0.35)
     .modifier(OverlayDisconnectedRowDim(disconnected: display.disconnected))
-    .modifier(OverlayChannelPillHint(form: form, hint: hint, palette: palette))
+    .modifier(OverlayChannelPillHint(form: form, hint: hint, palette: palette, enabled: showsHint))
     .accessibilityLabel(Text(verbatim: accessibilityText))
     .accessibilityValue(Text(verbatim: accessibilityValue))
     .accessibilityAddTraits(display.selected ? .isSelected : [])
@@ -193,6 +196,9 @@ struct OverlayChannelPill: View {
 extension OverlayChannelPill {
   /// The header's control diameter: chips stand as tall as its buttons.
   static let headerHeight: CGFloat = OverlayMicrophoneGlyph.diameter
+  /// Separate mic, speaker and panel actions share the header pill height.
+  static let actionWidth: CGFloat = headerHeight
+  static let actionGap: CGFloat = 2
   /// Text scale stops growing the strip's pills where a 22 pt pill still
   /// holds its circled digit; the header row stays 46 pt at any scale.
   static let headerScaleCeiling: CGFloat = 1.25
@@ -269,14 +275,72 @@ private struct OverlayChannelPillHint: ViewModifier {
   let form: OverlayChannelPill.Form
   let hint: String
   let palette: OverlayAppearancePalette
+  let enabled: Bool
 
   @ViewBuilder
   func body(content: Content) -> some View {
-    switch form {
-    case .rail:
-      content.overlayFastHint(hint, palette: palette, leading: true)
-    case .chip, .counter:
-      content.modifier(OverlayHeaderControlChrome(title: hint, accent: nil, palette: palette))
+    if enabled {
+      switch form {
+      case .rail:
+        content.overlayFastHint(hint, palette: palette, leading: true)
+      case .chip, .counter:
+        content.modifier(OverlayHeaderControlChrome(title: hint, accent: nil, palette: palette))
+      }
+    } else {
+      content
     }
+  }
+}
+
+/// A sibling of the name button, never a nested hit target. The compact
+/// capsule follows the channel pill's native shell and fixed header metrics.
+struct OverlayChannelMapActionButton: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  let symbol: String
+  let label: String
+  var value = ""
+  let identifier: String
+  let palette: OverlayAppearancePalette
+  let scale: CGFloat
+  var enabled = true
+  var active = false
+  var pulses = false
+  var pending = false
+  var succeeded = false
+  var failed = false
+  let action: () -> Void
+
+  private var tint: Color {
+    if failed { return palette.errorStatus.color }
+    if succeeded { return palette.successStatus.color }
+    return active ? palette.agentAccent.color : palette.primaryText.color
+  }
+
+  var body: some View {
+    Button(action: action) {
+      Group {
+        if pending {
+          ProgressView().controlSize(.mini)
+        } else {
+          Image(systemName: symbol)
+            .font(.system(size: 11 * scale, weight: .semibold))
+            .symbolEffect(.pulse, isActive: pulses && !reduceMotion)
+        }
+      }
+      .foregroundStyle(tint)
+      .frame(width: OverlayChannelPill.actionWidth, height: OverlayChannelPill.headerHeight)
+      .background(
+        Capsule(style: .continuous)
+          .fill(active ? palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
+            : CSColor.hairline(0.06)))
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .csFocusOutline(cornerRadius: OverlayChannelPill.headerHeight / 2)
+    .disabled(!enabled || pending)
+    .opacity(enabled ? 1 : 0.35)
+    .accessibilityLabel(Text(verbatim: label))
+    .accessibilityValue(Text(verbatim: value))
+    .accessibilityIdentifier(identifier)
   }
 }

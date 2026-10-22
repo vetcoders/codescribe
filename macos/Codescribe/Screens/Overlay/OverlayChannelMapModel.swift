@@ -115,6 +115,22 @@ enum OverlayChannelMapPresentation: Equatable, Sendable {
   case hidden
 }
 
+/// Display values for the horizontal intercom's existing agent commands.
+/// The header resolves availability through the roster; the map owns no
+/// capture, playback preference or panel destination.
+struct OverlayChannelMapControls: Equatable, Sendable {
+  var microphoneEnabled = false
+  var muted: Bool? = nil
+  var playbackEnabled = false
+  var speaking = false
+  var focusSymbol: String? = nil
+  var focusLabel = ""
+  var focusEnabled = false
+  var focusPending = false
+  var focusSucceeded = false
+  var focusFailed = false
+}
+
 /// The collapsed overlay's channel map (bus intercom spec §5.1, §6, §13): a
 /// projection of the same roster snapshot the Agents canvas reads. It holds
 /// no state, polls nothing and never names a session; a click resolves the
@@ -236,9 +252,20 @@ struct OverlayChannelMapModel: Equatable, Sendable {
   /// Reporting the shown row's or the counter's width, not the proposal,
   /// hands the rest back to the waveform.
   static func occupiedWidth(
-    availableWidth: CGFloat?, namedWidth: CGFloat, digitsWidth: CGFloat, counterWidth: CGFloat
+    availableWidth: CGFloat?, namedWidth: CGFloat, digitsWidth: CGFloat, counterWidth: CGFloat,
+    preferredWidths: [CGFloat] = []
   ) -> CGFloat {
-    switch presentation(
+    // Rich named rows give up their extra controls before any name goes away.
+    // Every candidate is measured from the same button frames the map draws.
+    if namedWidth > 0,
+      let preferred = preferredWidths.first(where: { width in
+        let fits = availableWidth.map { !$0.isFinite || $0 + 0.5 >= width }
+        return width > 0 && (fits ?? true)
+      })
+    {
+      return preferred
+    }
+    return switch presentation(
       availableWidth: availableWidth, namedWidth: namedWidth, digitsWidth: digitsWidth,
       counterWidth: counterWidth)
     {
