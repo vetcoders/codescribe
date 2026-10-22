@@ -155,6 +155,12 @@ digit with the dot instead of the count. When the channel closes, the plain
 chip and the count return. The dot says where your voice goes; it is not a
 receipt.
 
+With the map shown, pressing the channel chord in mini or compact keeps that
+form: the chip or the counter shows the open digit, and the overlay does not
+unfold onto the **Agents** canvas. Unfold it yourself when you want to read the
+conversation. Without the map, the chord unfolds the overlay onto that
+agent's conversation.
+
 When compact has no room for the names, the chips show digits only; the chip of
 the conversation you have selected keeps its name, and pointing at a chip still
 names it. When even the digits do not fit the width you set by hand, the chips

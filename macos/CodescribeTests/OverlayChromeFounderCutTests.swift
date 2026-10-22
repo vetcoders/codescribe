@@ -1550,10 +1550,11 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(panel.frame.maxX, trailing, accuracy: 0.5, "the controls stay put")
       let counting = panel.frame.width
 
-      // The agent records: the counter becomes the open digit with its badge
-      // and mini narrows with it; the 164 pt variant is this same rule.
+      // The agent records: the counter becomes the open digit with its dot
+      // and mini narrows with it; the 164 pt variant is this same rule. With
+      // the map on, the chord keeps mini (bus intercom spec §14 W3).
       state.applyChannelRoster(roster(open: true))
-      state.setPresentationMode(.mini)
+      XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
       settleHeader()
       XCTAssertEqual(headerControls().count, restingControls + 1, "capture adds no control")
       assertHugsContent("recording counter")
