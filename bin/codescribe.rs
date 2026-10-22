@@ -253,10 +253,13 @@ fn main() -> std::process::ExitCode {
     // lock has to be in place before ANY parsing — so the decision is made
     // from raw argv, exactly as the standalone binary made it from its first
     // statement. See `cli::corpus` for why this cannot be a typed check.
+    // Replay holds no credential either (`cli::replay`).
     //
     // SAFETY: first executable statement of the process, before Clap, before
     // the tracing subscriber, before any thread or runtime exists.
-    if codescribe::cli::corpus::corpus_argv_requested() {
+    if codescribe::cli::corpus::corpus_argv_requested()
+        || codescribe::cli::replay::replay_argv_requested()
+    {
         unsafe {
             std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
         }

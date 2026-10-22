@@ -23,6 +23,21 @@ use crate::controller::production_replay::{RecordedTakeRun, replay_recorded_take
 
 pub const REPLAY_RECEIPT_SCHEMA: &str = "codescribe.replay-receipt.v1";
 
+/// Raw-argv test for `codescribe replay`, used before Clap has run.
+///
+/// Replay never runs the cloud Layer 1 or the live formatter, so it needs no
+/// credential, yet probing those lanes asked the Keychain for the LLM key. A
+/// replay started outside a GUI session then hung on a Keychain prompt nobody
+/// could click. Like the corpus lane, it accepts only an exact `replay` first.
+pub fn replay_argv_requested() -> bool {
+    replay_argv_requested_in(std::env::args_os())
+}
+
+/// The decision above over an explicit argv, so the guard can be tested.
+pub fn replay_argv_requested_in(argv: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    argv.into_iter().nth(1).is_some_and(|word| word == "replay")
+}
+
 #[derive(clap::Args, Debug)]
 pub struct ReplayArgs {
     /// Session id, or a retained audio file of the take
@@ -224,6 +239,28 @@ fn same_commit(recorded: &str, replayer: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_exact_replay_command_locks_the_keychain() {
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        };
+        assert!(replay_argv_requested_in(argv(&[
+            "codescribe",
+            "replay",
+            "take"
+        ])));
+        assert!(!replay_argv_requested_in(argv(&[
+            "codescribe",
+            "transcribe",
+            "replay"
+        ])));
+        assert!(!replay_argv_requested_in(argv(&["codescribe", "--replay"])));
+        assert!(!replay_argv_requested_in(argv(&["codescribe"])));
+    }
 
     #[test]
     fn short_commits_of_one_build_match_across_lengths() {
