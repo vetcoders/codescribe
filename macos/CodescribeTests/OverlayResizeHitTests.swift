@@ -399,6 +399,63 @@ final class OverlayResizeHitTests: XCTestCase {
       accuracy: 0.5)
   }
 
+  /// A take must not cost the map its tier (bus intercom spec §14 W3): the
+  /// compact header lays out the level meter (`waveformMinWidth`) and the
+  /// session timer at rest as well as during a take, inside the 410 pt floor
+  /// `midiNaturalWidth` starts from. Starting a take with three named agents
+  /// on the strip therefore changes neither the strip's width nor the chips'
+  /// widths, and the counter never replaces them.
+  @MainActor
+  func testStartingATakeKeepsTheCompactWidthAndTheChipTier() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.take")
+    defer { panel.invalidatePresence() }
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    state.applyChannelRoster([
+      mapRosterRow("0", "All"), mapRosterRow("3", "Igor"), mapRosterRow("4", "Hania"),
+      mapRosterRow("6", "Konfig"),
+    ])
+    panel.settleFrameTransition()
+    XCTAssertEqual(state.channelMapLayoutModel.count, 3)
+    let natural = naturalMidiWidth(state, panel)
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
+    XCTAssertLessThan(
+      natural, DictationOverlayWindow.midiChannelMapBudget, "three names fit the budget")
+
+    @MainActor func chipWidths() throws -> [Double] {
+      panel.contentView?.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      let widths = try ["3", "4", "6"].map { digit in
+        let elements = try NativeAccessibilityProbe.waitForElements(
+          "overlay-channel-chip-\(digit)"
+        ).elements
+        return try XCTUnwrap(elements.first, "chip \(digit)").width
+      }
+      let counter = try NativeAccessibilityProbe.query("overlay-channel-map-toggle").elements
+      XCTAssertTrue(counter.isEmpty, "the chips, not the counter")
+      return widths
+    }
+    let resting = try chipWidths()
+    for width in resting {
+      XCTAssertGreaterThan(
+        width, Double(OverlayChannelPill.chipWidth(name: nil, scale: 1)) + 0.5,
+        "at rest every chip carries its name")
+    }
+
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.recording)
+    XCTAssertEqual(state.presentationMode, .midi)
+    panel.settleFrameTransition()
+    XCTAssertEqual(naturalMidiWidth(state, panel), natural, "a take keeps the natural width")
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "a take keeps the strip's width")
+    let recording = try chipWidths()
+    XCTAssertEqual(recording.count, resting.count)
+    for (during, before) in zip(recording, resting) {
+      XCTAssertEqual(during, before, accuracy: 0.5, "a take keeps the named tier")
+    }
+  }
+
   @MainActor
   func testCompactNeverGrowsPastTheBudgetAndNineAgentsShowDigits() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.budget")
