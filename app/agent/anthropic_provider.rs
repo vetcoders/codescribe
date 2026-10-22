@@ -41,7 +41,7 @@ use codescribe_core::agent::{
     ToolDefinition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
-use codescribe_core::llm::provider::{ProviderKind, capability_policy};
+use codescribe_core::llm::provider::{ProviderKind, ReasoningEffort, capability_policy};
 
 /// Value of the mandatory `anthropic-version` header.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -82,6 +82,8 @@ pub struct AnthropicProvider {
     initial_response_timeout: Duration,
     /// Deadline between chunks of an already-started stream.
     inter_chunk_timeout: Duration,
+    /// Reasoning level the user chose for the Agent; `None` keeps the model's.
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl AnthropicProvider {
@@ -99,6 +101,7 @@ impl AnthropicProvider {
             request_timing,
         )?;
         result.api_key_account = Some(lane.credential().key_account().to_string());
+        result.reasoning_effort = lane.reasoning();
         Ok(result)
     }
 
@@ -135,6 +138,7 @@ impl AnthropicProvider {
             default_max_tokens: DEFAULT_MAX_TOKENS,
             initial_response_timeout,
             inter_chunk_timeout,
+            reasoning_effort: None,
         })
     }
 }
@@ -168,7 +172,7 @@ impl AgentProvider for AnthropicProvider {
             .unwrap_or(self.default_max_tokens);
 
         let system = build_system(options.system_prompt.as_deref(), messages);
-        let body = build_request_body(
+        let mut body = build_request_body(
             &model,
             system,
             messages,
@@ -178,6 +182,7 @@ impl AgentProvider for AnthropicProvider {
             policy.adaptive_thinking,
         )
         .context("Failed to build Anthropic Messages request")?;
+        apply_reasoning_effort(&mut body, self.reasoning_effort, policy.adaptive_thinking);
 
         info!(
             "Anthropic agent request (model={}, messages={}, tools={}, max_tokens={}, temperature={}, timeout={}s)",
@@ -283,6 +288,36 @@ fn build_system(prompt: Option<&str>, messages: &[Message]) -> Option<String> {
 ///
 /// # Errors
 /// Returns an error if a message fails to project onto the wire shape.
+/// Apply the Agent's chosen reasoning level to a built Messages body, as
+/// oh-my-pi's adaptive mode does: `thinking: adaptive` plus
+/// `output_config.effort`. The adaptive vocabulary has no `minimal`, so it is
+/// sent as `low`. `none` drops the thinking block. A model without the
+/// adaptive dial is left as built; no level means the model's own reasoning.
+fn apply_reasoning_effort(
+    body: &mut Value,
+    effort: Option<ReasoningEffort>,
+    adaptive_thinking: bool,
+) {
+    let (Some(effort), Some(body)) = (effort, body.as_object_mut()) else {
+        return;
+    };
+    if effort == ReasoningEffort::None {
+        body.remove("thinking");
+        return;
+    }
+    if !adaptive_thinking {
+        return;
+    }
+    let wire = match effort {
+        ReasoningEffort::Minimal => ReasoningEffort::Low,
+        effort => effort,
+    };
+    body.insert(
+        "output_config".to_string(),
+        json!({ "effort": wire.as_str() }),
+    );
+}
+
 fn build_request_body(
     model: &str,
     system: Option<String>,
@@ -1122,6 +1157,44 @@ mod tests {
     }
 
     #[test]
+    /// The Agent's chosen level: adaptive effort on models with the dial,
+    /// no thinking block for `none`, the model's own reasoning when unset.
+    fn agent_reasoning_level_sets_adaptive_effort_or_drops_thinking() {
+        let messages = vec![text_message(Role::User, "hi")];
+        let adaptive = || {
+            build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, true)
+                .expect("request body should build")
+        };
+
+        let mut body = adaptive();
+        apply_reasoning_effort(&mut body, None, true);
+        assert_eq!(body, adaptive(), "no level keeps the model's own reasoning");
+
+        let mut body = adaptive();
+        apply_reasoning_effort(&mut body, Some(ReasoningEffort::Minimal), true);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+
+        let mut body = adaptive();
+        apply_reasoning_effort(&mut body, Some(ReasoningEffort::XHigh), true);
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+
+        let mut body = adaptive();
+        apply_reasoning_effort(&mut body, Some(ReasoningEffort::None), true);
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("output_config").is_none());
+
+        let mut plain =
+            build_request_body("claude-haiku", None, &messages, &[], 4096, None, false).unwrap();
+        let before = plain.clone();
+        apply_reasoning_effort(&mut plain, Some(ReasoningEffort::High), false);
+        assert_eq!(
+            plain, before,
+            "a model without the adaptive dial is left as built"
+        );
+    }
+
+    #[test]
     /// Adaptive thinking emits type=adaptive with no budget_tokens; false leaves wire clean.
     fn adaptive_thinking_true_puts_the_thinking_block_on_the_wire() {
         let messages = vec![text_message(Role::User, "hi")];
@@ -1438,6 +1511,7 @@ mod tests {
             default_max_tokens: 1024,
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            reasoning_effort: None,
         }
     }
 
