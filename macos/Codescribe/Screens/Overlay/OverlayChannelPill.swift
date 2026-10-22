@@ -33,7 +33,8 @@ struct OverlayChannelPill: View {
     /// The follower is gone: the pill dims as the roster's Disconnected row.
     var disconnected = false
     /// The microphone feeds this channel now (chip and counter forms): the
-    /// digit carries the microphone badge and the pill the recording tint.
+    /// digit carries the violet open-channel dot and the pill the recording
+    /// tint (bus intercom spec §14).
     var microphoneOpen = false
     /// The counter's circled digits while the microphone is open.
     var openDigits: [String] = []
@@ -162,8 +163,9 @@ struct OverlayChannelPill: View {
   }
 
   /// A chip's or the recording counter's digit in its circle, with the
-  /// microphone badge while the microphone feeds the channel (spec §13.3).
-  /// The badge overlaps the circle, so it adds no width.
+  /// violet dot while the microphone feeds the channel (spec §14: a dot, no
+  /// glyph; the Agents button carries the microphone or megaphone sign). The
+  /// dot overlaps the circle, so it adds no width.
   private func circledDigit(_ digit: String) -> some View {
     figure(digit, size: Self.digitSize)
       .frame(width: Self.digitCircle * textScale, height: Self.digitCircle * textScale)
@@ -172,18 +174,33 @@ struct OverlayChannelPill: View {
           .accessibilityHidden(true)
       }
       .overlay(alignment: .bottomTrailing) {
-        if recording { microphoneBadge }
+        if recording { openChannelDot }
       }
   }
 
-  private var microphoneBadge: some View {
-    Image(systemName: "mic.fill")
-      .font(.system(size: Self.badgeGlyphSize * textScale, weight: .bold))
-      .foregroundStyle(palette.desktopBackground.color)
-      .symbolEffect(.pulse, isActive: display.animates && !reduceMotion)
-      .frame(width: Self.badgeDiameter * textScale, height: Self.badgeDiameter * textScale)
-      .background(Circle().fill(palette.agentAccent.color))
-      .offset(x: Self.badgeOffset * textScale, y: Self.badgeOffset * textScale)
+  /// The open channel's dot: the recording violet with a rim in the panel
+  /// colour so it reads over the violet circle. It pulses as the recording
+  /// light does, only while the pill animates and Reduce Motion is off.
+  @ViewBuilder
+  private var openChannelDot: some View {
+    if display.animates && !reduceMotion {
+      TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+        openChannelDotShape.opacity(
+          OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
+      }
+    } else {
+      openChannelDotShape
+    }
+  }
+
+  private var openChannelDotShape: some View {
+    Circle()
+      .fill(palette.agentAccent.color)
+      .overlay {
+        Circle().strokeBorder(palette.desktopBackground.color, lineWidth: Self.openDotRim)
+      }
+      .frame(width: Self.openDotDiameter * textScale, height: Self.openDotDiameter * textScale)
+      .offset(x: Self.openDotOffset * textScale, y: Self.openDotOffset * textScale)
       .accessibilityHidden(true)
   }
 }
@@ -212,10 +229,12 @@ extension OverlayChannelPill {
   static let digitCircle: CGFloat = 15
   static let digitSize: CGFloat = 10
   static let nameSize: CGFloat = 11
-  static let badgeDiameter: CGFloat = 9
-  static let badgeGlyphSize: CGFloat = 5.5
-  /// How far the badge sits past the circle's bottom-right edge.
-  static let badgeOffset: CGFloat = 3
+  /// The open channel's dot. Its centre sits where the W2 microphone badge's
+  /// did (9 pt, 3 pt past the edge), on the circle's bottom-right rim.
+  static let openDotDiameter: CGFloat = 7
+  static let openDotRim: CGFloat = 1
+  /// How far the dot sits past the circle's bottom-right edge.
+  static let openDotOffset: CGFloat = 2
   /// A long agent name truncates instead of collapsing the whole map.
   static let maxNameWidth: CGFloat = 96
   static let caret = "\u{25BE}"
@@ -244,7 +263,7 @@ extension OverlayChannelPill {
   }
 
   /// A chip's width: padding, the circled digit and, when the chip shows
-  /// one, the name. The microphone badge overlaps the circle and adds none.
+  /// one, the name. The open-channel dot overlaps the circle and adds none.
   @MainActor
   static func chipWidth(name: String?, scale: CGFloat) -> CGFloat {
     var width = 2 * chipPadding * scale + digitCircle * scale
