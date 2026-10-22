@@ -253,7 +253,7 @@ fn main() -> std::process::ExitCode {
     // lock has to be in place before ANY parsing — so the decision is made
     // from raw argv, exactly as the standalone binary made it from its first
     // statement. See `cli::corpus` for why this cannot be a typed check.
-    // Replay holds no credential either (`cli::replay`).
+    // Replay measures without credentials too (`cli::replay`).
     //
     // SAFETY: first executable statement of the process, before Clap, before
     // the tracing subscriber, before any thread or runtime exists.
