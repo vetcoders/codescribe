@@ -828,6 +828,7 @@ private struct YouTurn: View {
 private struct ContextChip: View {
   let selection: String?
   let app: String?
+  @Environment(\.colorScheme) private var colorScheme
   @State private var expanded = false
 
   var body: some View {
@@ -839,17 +840,19 @@ private struct ContextChip: View {
           CSIconView(
             icon: expanded ? .chevronDown : .chevronRight,
             size: 8,
-            weight: .semibold,
-            color: CSColor.textTertiary
+            weight: .semibold
           )
           Text("context")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textTertiary)
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing()
-      .help("Selection and app captured with this voice turn")
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+        hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+      )
+      .accessibilityHint(Text("Selection and app captured with this voice turn"))
 
       if expanded {
         VStack(alignment: .leading, spacing: 5) {
@@ -903,6 +906,7 @@ private struct ContextChip: View {
 /// restored turns with a nil URL surface an honest missing-asset state.
 struct AttachmentChip: View {
   let attachment: MessageAttachment
+  @Environment(\.colorScheme) private var colorScheme
   @State private var thumbnail: NSImage?
   @State private var showPreview = false
 
@@ -918,11 +922,10 @@ struct AttachmentChip: View {
             .frame(width: 18, height: 18)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         } else {
-          CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
+          CSIconView(icon: .photo, size: 11)
         }
         Text(attachment.name)
           .font(CSFont.ui(10.5, .medium))
-          .foregroundStyle(Color.primary)
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
@@ -936,15 +939,15 @@ struct AttachmentChip: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
-    // Inside the overlay panel the chip floats above message text whose
-    // tracking set the I-beam (Maciej, 2026-10-17 01:15Z); the region claims
-    // the arrow there and registers nothing in an ordinary window.
-    .background { OverlayMenuCursorRegion() }
-    .help(
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityHint(
       attachment.url == nil
-        ? String(localized: "Preview attachment (original file may be missing)")
-        : String(localized: "Preview attachment")
+        ? Text("Preview attachment (original file may be missing)")
+        : Text("Preview attachment")
     )
     .onAppear {
       if thumbnail == nil, let url = attachment.url {
@@ -1694,7 +1697,7 @@ private struct RawText: View {
 private struct RenderModeButton: View {
   let mode: MessageRenderMode
   let action: () -> Void
-  @State private var hovering = false
+  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     Button(action: action) {
@@ -1707,13 +1710,13 @@ private struct RenderModeButton: View {
         )
         .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(hovering ? Color.secondary : CSColor.textTertiary)
     }
-    .csFocusRing()
-    .onHover { hovering = $0 }
-    .help(
-      mode == .raw
-        ? String(localized: "Render as markdown") : String(localized: "Show raw text"))
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityHint(mode == .raw ? Text("Render as markdown") : Text("Show raw text"))
   }
 }
 
@@ -1764,7 +1767,6 @@ struct CopyMessageButton: View {
   var palette: OverlayAppearancePalette? = nil
   @Environment(\.colorScheme) private var colorScheme
   @State private var copied = false
-  @State private var hovering = false
 
   var body: some View {
     Button {
@@ -1783,21 +1785,22 @@ struct CopyMessageButton: View {
         )
         .font(labelFont)
       }
-      .foregroundStyle(labelColor)
     }
-    .csFocusRing()
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: copied ? CSColor.oliveLight.opacity(0.8) : restingColor,
+      hoverColor: copied ? CSColor.oliveLight : actionPalette.primaryText.color
+    )
     .disabled(text.isEmpty)
-    .onHover { hovering = $0 }
-    .overlayFastHint(copyStateLabel, palette: hintPalette)
     .accessibilityLabel(Text(verbatim: copyStateLabel))
     .accessibilityHint(Text(verbatim: copyAccessibilityHint))
   }
 
-  private var hintPalette: OverlayAppearancePalette {
+  private var actionPalette: OverlayAppearancePalette {
     palette ?? OverlayAppearancePalette.resolve(colorScheme)
   }
 
-  /// Hover and VoiceOver name the action. An empty message stays disabled and says so.
+  /// VoiceOver names the action. An empty message stays disabled and says so.
   private var copyStateLabel: String {
     if text.isEmpty {
       return String(
@@ -1817,11 +1820,6 @@ struct CopyMessageButton: View {
         comment: "Disabled copy control when the message is empty")
     }
     return String(localized: "Copy message")
-  }
-
-  private var labelColor: Color {
-    if copied { return CSColor.oliveLight }
-    return hovering ? Color.secondary : restingColor
   }
 }
 
@@ -1857,6 +1855,7 @@ private struct PulseDot: View {
 
 /// Shared by the permanent turn action and its context-menu entry.
 struct AssistantSpeechButton: View {
+  @Environment(\.colorScheme) private var colorScheme
   let messageID: UUID
   let isSpeaking: Bool
   let unavailableReason: String?
@@ -1875,9 +1874,12 @@ struct AssistantSpeechButton: View {
     )
     .buttonStyle(.plain)
     .font(CSFont.mono(10, .medium))
-    .foregroundStyle(Color.secondary)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
     .disabled(isDisabled)
-    .help(help)
+    .accessibilityHint(Text(verbatim: help))
     .accessibilityIdentifier("assistant-speak-\(messageID)")
   }
 }

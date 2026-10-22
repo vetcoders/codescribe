@@ -740,18 +740,17 @@ private struct CodeBlockView: View {
         )
         .font(CSFont.ui(10, .semibold))
       }
-      .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)
       .padding(.vertical, 3)
-      .background(Color.primary.opacity(0.08))
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-      )
     }
-    .csFocusRing()
-    .overlayFastHint(codeCopyHint, palette: OverlayAppearancePalette.resolve(colorScheme))
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: copied
+        ? CSColor.oliveLight.opacity(0.8)
+        : OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: copied
+        ? CSColor.oliveLight : OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
     .accessibilityLabel(Text(verbatim: codeCopyHint))
     .accessibilityHint(Text("Copy code"))
   }

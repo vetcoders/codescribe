@@ -183,12 +183,14 @@ struct OverlayConversationComposer: View {
               isActive: draftMicrophoneRecording && !reduceMotion)
         }
         .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-        .foregroundStyle(palette.agentAccent.color)
         .frame(
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle()).buttonStyle(.plain)
-        .background { OverlayMenuCursorRegion() }
+        .conversationActionHover(
+          restingColor: palette.agentAccent.color.opacity(0.8),
+          hoverColor: palette.agentAccent.color
+        )
         .disabled(draftMicrophoneBusy)
         .accessibilityLabel(
           draftMicrophoneRecording ? Text("Stop dictation") : Text("Dictate message")
@@ -198,13 +200,15 @@ struct OverlayConversationComposer: View {
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)
         .labelStyle(.iconOnly)
         .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-        .foregroundStyle(CSColor.terracotta)
         .frame(
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle())
         .buttonStyle(.plain)
-        .background { OverlayMenuCursorRegion() }
+        .conversationActionHover(
+          restingColor: palette.listeningStatus.color.opacity(0.8),
+          hoverColor: palette.listeningStatus.color
+        )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
     }
