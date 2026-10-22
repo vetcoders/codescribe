@@ -485,7 +485,9 @@ final class OverlayController: ObservableObject {
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size: NSSize
     switch state.presentationMode {
-    case .mini: size = DictationOverlayWindow.collapsedSize
+    // Anchors and the saved origin describe the resting mini strip; mini is
+    // drawn at its natural width at that strip's trailing edge (below).
+    case .mini: size = DictationOverlayWindow.miniPlacementSize
     case .midi:
       size = NSSize(
         width: min(
@@ -502,14 +504,21 @@ final class OverlayController: ObservableObject {
     } else {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
+    // Mini is as wide as its content (bus intercom spec §13.4).
+    let drawn =
+      state.presentationMode == .mini
+      ? (panel as? FloatingOverlayPanel)?.miniSize ?? size : size
     guard let origin else {
       OverlayPresentationTrace.shared.record(
         .placementApplied, mode: state.presentationMode, frame: panel.frame,
-        target: NSRect(origin: panel.frame.origin, size: size), note: "content_size_only")
-      panel.setContentSize(size)
+        target: NSRect(origin: panel.frame.origin, size: drawn), note: "content_size_only")
+      panel.setContentSize(drawn)
       return
     }
-    let frame = NSRect(origin: origin, size: size)
+    // The placement strip's trailing edge is the shared upper-right pin.
+    let frame = NSRect(
+      x: origin.x + size.width - drawn.width, y: origin.y, width: drawn.width,
+      height: drawn.height)
     OverlayPresentationTrace.shared.record(
       .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
       note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")

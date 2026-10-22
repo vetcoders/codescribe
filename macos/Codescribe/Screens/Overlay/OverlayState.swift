@@ -764,8 +764,6 @@ final class OverlayState {
   /// (auto-hide, warmup watchdog, agent delivery) — wired by the orchestrator,
   /// which keeps an open agent channel on screen against it.
   var onClose: (() -> Void)?
-  /// An agent channel started or stopped recording; mini hugs its controls.
-  var onAgentCaptureChanged: ((Bool) -> Void)?
   /// The human Close intent (the brand dot) — wired by the orchestrator to a
   /// dismissal that no automatic visibility rule can veto.
   var onCloseIntent: (() -> Void)?
@@ -1286,7 +1284,7 @@ final class OverlayState {
   /// reaches the overlay, so the map re-reads it when it appears and when the
   /// pointer enters it, before any hint is shown.
   private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
-  /// The window owner refits compact to the channel map (see
+  /// The window owner refits mini and compact to the channel map (see
   /// `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
   /// The window owner returns compact to its natural width, forgetting a
@@ -2902,11 +2900,16 @@ final class OverlayState {
       unreadDigits: [])
   }
 
-  /// Reports a change of the map's agents or names, never a capture that
-  /// opens or closes (channel 0's chip included), so compact's width follows
-  /// the roster and not the chord.
+  /// Reports a change of the map's agents or names, or of its open digits.
+  /// Mini's counter turns from the agent count into the open digits, so
+  /// mini's width follows the chord; compact's natural width ignores open
+  /// microphones (channel 0's chip included), so the chord never resizes the
+  /// strip and its refit is a no-op.
   private func noteChannelMapLayout() {
-    let key = channelMapLayoutModel.agents.map { $0.digit + "\u{1F}" + $0.name }
+    let map = channelMapLayoutModel
+    let key =
+      map.agents.map { $0.digit + "\u{1F}" + $0.name }
+      + ["\u{1E}" + map.openDigits.joined(separator: ",")]
     guard key != channelMapLayoutKey else { return }
     channelMapLayoutKey = key
     onChannelMapLayoutChanged?()
@@ -3006,7 +3009,6 @@ final class OverlayState {
     // full idle interval. Unchanged roster polls must not extend that interval.
     if wasChannelCapturing != channelAudioCaptureActive {
       noteAutoCollapseActivity()
-      onAgentCaptureChanged?(channelAudioCaptureActive)
       // The session counter runs for a channel take as it does for dictation:
       // from the first open channel until the last one closes. An open
       // dictation keeps its own clock.

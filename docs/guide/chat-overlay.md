@@ -18,9 +18,11 @@ Use the preview control to cycle through mini, compact and expanded forms, or
 choose a form from its context menu. The upper-right corner stays pinned while
 expanding; moving the window changes that pin.
 
-Mini is a fixed strip. Compact supports horizontal resizing. Expanded supports
-edge and corner resizing. The minimum visible sizes are 200 × 46, 410 × 46 and
-320 × 260 points respectively. Compact's own width follows its channel map: with
+Mini is as wide as its content: the brand dot, the channel counter and its
+controls, with no empty space between them, so it narrows or widens a little
+when the counter changes. Compact supports horizontal resizing. Expanded
+supports edge and corner resizing. The minimum visible sizes are 130 × 46,
+410 × 46 and 320 × 260 points respectively. Compact's own width follows its channel map: with
 agents on the bus it opens wide enough for every named chip, up to 820 points,
 and it grows or shrinks at its upper-right corner when a channel is added or
 archived. Past 820 points the chips drop their names instead of widening the
