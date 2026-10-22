@@ -20,6 +20,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
+  /// One group-resize gesture scales from one baseline. The resize view
+  /// replays absolute deltas against its mouse-down frame, so that frame
+  /// identifies the gesture.
+  @ObservationIgnored private var groupResizeGesture: (frame: CGRect, baseScale: Double)?
   fileprivate private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
@@ -251,12 +255,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   /// Mini keeps the stored window's top-right corner and shrinks to one row;
-  /// the expanded frame survives underneath for restore.
+  /// the expanded frame survives underneath for restore. The monitor comes
+  /// from the SAVED geometry: a freshly created panel still has a zero frame,
+  /// which would elect one arbitrary screen for every restored fiszka
+  /// (Olga, D3 on 181d27afb).
   private func instanceFrame(_ instance: OverlayIntercomInstance, for panel: NSWindow)
     -> CGRect
   {
     let stored = instance.frame
-    let visibleFrame = visibleFrame(for: panel)
+    let visibleFrame = visibleFrame(around: panel.frame == .zero ? stored : panel.frame)
     guard instance.minimized else {
       return OverlayIntercomWidgetLayout.cardFrame(
         below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
@@ -322,8 +329,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   private func visibleFrame(for panel: NSWindow?) -> CGRect {
-    let frame = panel?.frame ?? .zero
-    return NSScreen.screens.max(by: {
+    visibleFrame(around: panel?.frame ?? .zero)
+  }
+
+  private func visibleFrame(around frame: CGRect) -> CGRect {
+    NSScreen.screens.max(by: {
       $0.visibleFrame.intersection(frame).width * $0.visibleFrame.intersection(frame).height
         < $1.visibleFrame.intersection(frame).width * $1.visibleFrame.intersection(frame).height
     })?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
@@ -420,14 +430,36 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       ?? CGRect(
         origin: header?.frame.origin ?? .zero,
         size: OverlayIntercomWidgetLayout.conversationSize(scale: textScale.scale))
+    let id: UUID
     if let index = desktop.instances.firstIndex(where: {
       $0.conversationID == identity.conversationID && $0.ownerID == identity.ownerID && $0.closed
     }) {
+      // The reopened fiszka lands under the gesture that summoned it; its
+      // saved placement is superseded by where the person is holding it now.
       desktop.instances[index].closed = false
+      desktop.instances[index].minimized = false
+      desktop.instances[index].frame = current
+      id = desktop.instances[index].id
     } else {
-      desktop.upsert(OverlayIntercomInstance(identity: identity, frame: current))
+      let instance = OverlayIntercomInstance(identity: identity, frame: current)
+      desktop.upsert(instance)
+      id = instance.id
     }
-    cards[identity]?.resignKey()
+    // A grip drag hands this exact window to the window server (performDrag),
+    // so the same panel becomes the instance window and the drag continues
+    // under the cursor instead of dying with a hidden group card.
+    if let panel = cards.removeValue(forKey: identity) {
+      panel.resignKey()
+      panel.contentView = NSHostingView(
+        rootView: TextScaleRoot(controller: textScale) {
+          OverlayIntercomInstanceCard(
+            state: state, instanceID: id, controller: self,
+            onRevealConversation: revealConversation)
+        })
+      sizes.removeValue(forKey: identity)
+      focusRevisions.removeValue(forKey: identity)
+      instancePanels[id] = panel
+    }
     presentation.close(identity)
     saveDesktop()
     materializeInstances()
@@ -452,16 +484,23 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   /// The group resizes like one window: the drag ratio becomes the shared
   /// proportional scale of every attached fiszka, persisted with the desktop.
+  /// One gesture keeps one scale baseline — the resize view replays absolute
+  /// deltas against its mouse-down frame (also on mouse-up), so compounding
+  /// the current scale per event would run away (Olga, D1 on 181d27afb).
   fileprivate func resizeGroup(
     from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge
   ) {
     guard let header else { return }
+    if groupResizeGesture?.frame != frame {
+      groupResizeGesture = (frame: frame, baseScale: desktop.groupScale)
+    }
+    let base = groupResizeGesture?.baseScale ?? desktop.groupScale
     let fitted = OverlayIntercomWidgetLayout.resizedFrame(
       frame, delta: delta, edge: edge,
       minimum: CGSize(width: 80, height: OverlayIntercomWidgetLayout.headerHeight),
       visibleFrame: visibleFrame(for: header))
     let scaled = OverlayIntercomDesktopState.groupScale(
-      current: desktop.groupScale, currentWidth: frame.width, requestedWidth: fitted.width)
+      current: base, currentWidth: frame.width, requestedWidth: fitted.width)
     guard scaled != desktop.groupScale else { return }
     desktop.groupScale = scaled
     saveDesktop()
