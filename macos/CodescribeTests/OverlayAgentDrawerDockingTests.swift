@@ -957,6 +957,8 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       view.archiveCandidates = ["2": lenaOwner, "3": astraOwner]
     }
     view.onArchiveAgent = { _ in }
+    view.onFocusAgentPanel = { _ in }
+    view.panelFocusAvailable = true
     let host = NSHostingView(
       rootView: view.monitorBody(maximumHeight: 1600).environment(\.csTextScale, 1)
         .frame(width: 360))
@@ -969,9 +971,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     BackgroundTestWindow.present(window)
     host.layoutSubtreeIfNeeded()
 
+    // The same localization keys the production menu uses, so the markers
+    // survive a Polish (or any) runtime language (Astra, T4).
     let forbidden = [
-      "Write / Forward", "Speak to agent", "Stop speaking to agent", "Mute agent replies",
-      "Unmute agent replies", "Show in Agents", "archive agent", "move to archive",
+      String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
+      String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
+      String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
+      String(localized: "Disconnect and archive agent"),
+      String(localized: "Remove from list and move to archive"),
     ]
     func titles(of menu: NSMenu) -> [String] {
       menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
@@ -1020,29 +1027,97 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       tooltips.isEmpty,
       "the full roster shows its information inline, never as system tooltips: \(tooltips)")
 
-    // The custom hint panel is the other tooltip owner (overlayFastHint →
-    // OverlayHintPanel). Hover every cursor region: a hint that repeats the
-    // inline metadata — descriptor, preview, session — is the duplicated
-    // tooltip the contract forbids; an action label is not a duplicate.
-    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
-    var regions: [OverlayMenuCursorRegionView] = []
-    func collect(_ view: NSView) {
-      if let region = view as? OverlayMenuCursorRegionView { regions.append(region) }
-      for child in view.subviews { collect(child) }
+    // The matcher itself is proven on a sentinel first: a probe carrying the
+    // REAL agentPillMenu(for: "2") must expose the forbidden commands, and
+    // performing its write item must reach the spied conversation target.
+    var sentinelSelected: String?
+    var sentinel = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      onToggleChannel: { _ in },
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { sentinelSelected = $0 })
+    sentinel.onTogglePlayback = { _ in }
+    sentinel.mutedChannels = ["2": false]
+    let probeHost = NSHostingView(
+      rootView: VStack {
+        Text(verbatim: "menu-probe").frame(width: 180, height: 40)
+          .modifier(sentinel.agentPillMenu(for: "2", showsInlineError: false))
+        Text(verbatim: "hint-probe").frame(width: 180, height: 40)
+          .overlayFastHint("probe-hint", palette: .dark)
+      }
+      .frame(width: 200, height: 120))
+    probeHost.frame = NSRect(x: 0, y: 0, width: 200, height: 120)
+    let probeWindow = NSWindow(
+      contentRect: probeHost.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    probeWindow.isReleasedWhenClosed = false
+    defer { probeWindow.orderOut(nil) }
+    probeWindow.contentView = probeHost
+    BackgroundTestWindow.present(probeWindow)
+    probeHost.layoutSubtreeIfNeeded()
+
+    func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
+      guard
+        let event = NSEvent.mouseEvent(
+          with: .rightMouseDown, location: container.convert(point, to: nil),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: window.windowNumber, context: nil, eventNumber: 9_300,
+          clickCount: 1, pressure: 1)
+      else { return nil }
+      var view = container.hitTest(point)
+      while let current = view {
+        if let menu = current.menu(for: event) { return menu }
+        view = current.superview
+      }
+      return nil
     }
-    collect(host)
-    for region in regions {
-      let center = region.convert(
-        NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+    let probeMenu = resolvedMenu(
+      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    let probeTitles = probeMenu.map(titles(of:)) ?? []
+    XCTAssertTrue(
+      forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
+      "the sentinel agent menu must trip the matcher, or absence proves nothing: \(probeTitles)")
+    if let probeMenu,
+      let writeIndex = probeMenu.items.firstIndex(where: {
+        $0.title.contains(String(localized: "Write / Forward…"))
+      })
+    {
+      probeMenu.performActionForItem(at: writeIndex)
+      XCTAssertEqual(sentinelSelected, lena.id, "the write command reaches its exact conversation")
+    }
+
+    // The custom hint panel is the other tooltip owner (overlayFastHint →
+    // OverlayHintPanel). The probe proves hover really presents a readable
+    // hint; then every roster region is hovered, and a hint repeating the
+    // inline metadata — descriptor, preview, session — is the duplicated
+    // tooltip the contract forbids. An action label is not a duplicate.
+    func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
+      var found: [OverlayMenuCursorRegionView] = []
+      if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
+      for child in view.subviews { found.append(contentsOf: regions(in: child)) }
+      return found
+    }
+    let probeRegions = regions(in: probeHost)
+    XCTAssertFalse(probeRegions.isEmpty, "the hint probe composes a hover region")
+    var sawProbeHint = false
+    for region in probeRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
       region.updateHover(at: center)
-      if let panel = OverlayHintPanel.shared.presentedPanel,
-        let chip = panel.contentViewController as? NSHostingController<OverlayTooltipChip>
-      {
-        let hint = chip.rootView.title
+      if OverlayHintPanel.shared.presentedTitle == "probe-hint" { sawProbeHint = true }
+      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+    }
+    XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
+
+    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let rosterRegions = regions(in: host)
+    XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
+    for region in rosterRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if let hint = OverlayHintPanel.shared.presentedTitle {
         for marker in metadata {
           XCTAssertFalse(
-            hint.contains(marker),
-            "a hover hint duplicates inline roster metadata: \(hint)")
+            hint.contains(marker), "a hover hint duplicates inline roster metadata: \(hint)")
         }
       }
       region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
