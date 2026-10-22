@@ -739,6 +739,38 @@ pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolic
     }
 }
 
+/// Reasoning effort the formatting lane asks its provider for, in the
+/// Responses API's own words. `None` is the default and the higher levels are
+/// opt-in (Maciej, 2026-10-22): formatting transforms text it already has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningEffort {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub const ALL: [ReasoningEffort; 4] = [Self::None, Self::Low, Self::Medium, Self::High];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// A stored or typed level; anything else is not a level.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.as_str().eq_ignore_ascii_case(value.trim()))
+    }
+}
+
 /// Which formatting/assistive lane a provider value is being resolved for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmMode {
