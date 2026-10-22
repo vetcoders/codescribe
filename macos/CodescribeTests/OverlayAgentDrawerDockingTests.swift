@@ -940,11 +940,23 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       OverlayChannelDelivery(
         channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
     ]
-    let view = OverlayChannelStatusView(
+    // The roster is fully armed (Astra on f105d23f4): every action callback
+    // and owner fixture is present, so the absence of the big menu is proven
+    // against the surface that could actually compose it.
+    var view = OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: .dark, animates: false,
       hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      agentDescriptors: ["2": "codex · gpt-6", "3": "codex · gpt-6"],
+      onToggleChannel: { _ in },
       conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
       onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false, "3": false]
+    view.onTogglePlayback = { _ in }
+    view.onShowAgentInMonitor = { _ in }
+    if let lenaOwner = lena.owner, let astraOwner = astra.owner {
+      view.archiveCandidates = ["2": lenaOwner, "3": astraOwner]
+    }
+    view.onArchiveAgent = { _ in }
     let host = NSHostingView(
       rootView: view.monitorBody(maximumHeight: 1600).environment(\.csTextScale, 1)
         .frame(width: 360))
@@ -1007,6 +1019,34 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       tooltips.isEmpty,
       "the full roster shows its information inline, never as system tooltips: \(tooltips)")
+
+    // The custom hint panel is the other tooltip owner (overlayFastHint →
+    // OverlayHintPanel). Hover every cursor region: a hint that repeats the
+    // inline metadata — descriptor, preview, session — is the duplicated
+    // tooltip the contract forbids; an action label is not a duplicate.
+    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    var regions: [OverlayMenuCursorRegionView] = []
+    func collect(_ view: NSView) {
+      if let region = view as? OverlayMenuCursorRegionView { regions.append(region) }
+      for child in view.subviews { collect(child) }
+    }
+    collect(host)
+    for region in regions {
+      let center = region.convert(
+        NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if let panel = OverlayHintPanel.shared.presentedPanel,
+        let chip = panel.contentViewController as? NSHostingController<OverlayTooltipChip>
+      {
+        let hint = chip.rootView.title
+        for marker in metadata {
+          XCTAssertFalse(
+            hint.contains(marker),
+            "a hover hint duplicates inline roster metadata: \(hint)")
+        }
+      }
+      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+    }
   }
 
   /// ⌘+ grew the docked column and the conversation, but the roster's own text
