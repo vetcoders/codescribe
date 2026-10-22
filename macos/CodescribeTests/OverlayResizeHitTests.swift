@@ -609,8 +609,10 @@ final class OverlayResizeHitTests: XCTestCase {
     root.layoutSubtreeIfNeeded()
     // Mini has no "cs" and hugs its controls (bus intercom spec §13.4): the
     // body the probe drags is the strip under the control row, in the middle.
+    // Mini has no resize band, so that strip is drag surface.
     let point = NSPoint(x: panel.frame.width / 2, y: 5)
-    XCTAssertNil(OverlayResizeHit.edge(at: point, in: root.bounds), "mini has no resize band")
+    XCTAssertNil(
+      OverlayResizeHit.edge(at: point, in: root.bounds, mode: .mini), "mini has no resize band")
     XCTAssertTrue(panel.isWindowDragHit(at: point))
     let recording = state.recording
     let start = panel.frame
@@ -899,13 +901,23 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertFalse(panel.isUserResizing)
     XCTAssertEqual(panel.frame, resized)
     XCTAssertEqual(root.subviews.first?.frame, root.bounds)
+    // Channel 3 opened during the gesture, so the overlay follows its
+    // conversation to the agents surface. That surface switch waits for the
+    // gesture and starts on release as an animated settle to the agents
+    // surface's remembered size. The round trip is measured from where that
+    // settle lands, never from a slice of its animation.
+    panel.settleFrameTransition()
+    let expanded = panel.frame
     state.setPresentationMode(.mini)
     panel.setPresentationMode(.mini)
     state.setPresentationMode(.expanded)
     panel.setPresentationMode(.expanded)
+    panel.settleFrameTransition()
     root.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
-    XCTAssertEqual(panel.frame.size, resized.size)
+    XCTAssertEqual(
+      panel.frame.size, expanded.size,
+      "a mini-expanded round trip lands the expanded frame where it was")
     XCTAssertTrue(editor(in: root) === textView)
     XCTAssertEqual(textView.string, text)
     XCTAssertEqual(textView.selectedRange(), NSRange(location: 2, length: 3))

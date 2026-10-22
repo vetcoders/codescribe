@@ -577,9 +577,12 @@ final class OverlayChannelMapTests: XCTestCase {
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     for digit in ["2", "3"] {
-      let chip = try XCTUnwrap(
-        NativeAccessibilityProbe.waitForElements("overlay-channel-chip-\(digit)").elements.first,
-        "chip \(digit)")
+      // The probe's XCTSkip (no isolated GUI session) must reach the runner;
+      // inside XCTUnwrap's autoclosure it would be recorded as a failure.
+      let elements = try NativeAccessibilityProbe.waitForElements(
+        "overlay-channel-chip-\(digit)"
+      ).elements
+      let chip = try XCTUnwrap(elements.first, "chip \(digit)")
       XCTAssertEqual(chip.role, "AXButton")
       XCTAssertLessThanOrEqual(chip.height, OverlayChannelPill.headerHeight + 0.5)
     }
