@@ -179,8 +179,12 @@ pub struct CsSettings {
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
     pub llm_formatting_provider: Option<String>,
     pub llm_formatting_model: Option<String>,
+    /// Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+    pub llm_formatting_reasoning: String,
     pub llm_assistive_provider: Option<String>,
     pub llm_assistive_model: Option<String>,
+    /// Agent reasoning level: `default` (the model's own) or a chosen level.
+    pub llm_assistive_reasoning: String,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
     /// Read-only diagnostic env override captured by the runtime snapshot.
@@ -295,8 +299,21 @@ impl CsSettings {
                 .or_else(|| Some(formatting.provider().as_string())),
             llm_formatting_model: setting_string(settings.llm_formatting_model.clone())
                 .or_else(|| Some(formatting.model().to_string())),
+            llm_formatting_reasoning: settings
+                .llm_formatting_reasoning
+                .as_deref()
+                .and_then(codescribe_core::llm::provider::ReasoningEffort::parse)
+                .unwrap_or_default()
+                .as_str()
+                .to_string(),
             llm_assistive_model: setting_string(settings.llm_assistive_model.clone())
                 .or_else(|| Some(assistive.model().to_string())),
+            llm_assistive_reasoning: settings
+                .llm_assistive_reasoning
+                .as_deref()
+                .and_then(codescribe_core::llm::provider::ReasoningEffort::parse)
+                .map_or("default", |effort| effort.as_str())
+                .to_string(),
             llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
                 .or_else(|| Some(assistive.provider().as_string())),
             formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
@@ -450,6 +467,45 @@ pub struct CsApiKeyProbeResult {
     pub status: CsApiKeyProbeStatus,
     pub message: String,
     pub probed_endpoint: Option<String>,
+}
+
+/// One Settings › Formatting › Test request, measured. `status` is one of
+/// `applied`, `unchanged`, `skipped`, `failed`, `timed_out`. Never a secret.
+#[derive(uniffi::Record)]
+pub struct CsFormattingProbe {
+    pub status: String,
+    pub input: String,
+    pub output: String,
+    pub elapsed_ms: u64,
+    /// The live formatter job's deadline the request had to meet.
+    pub deadline_ms: u64,
+    pub provider: String,
+    pub model: String,
+    /// The reasoning effort sent; `None` when the request carried no field.
+    pub reasoning: Option<String>,
+}
+
+impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormattingProbe {
+    fn from(probe: codescribe_core::llm::ai_formatting::FormattingProbe) -> Self {
+        use codescribe_core::llm::ai_formatting::FormattingProbeStatus as Status;
+        Self {
+            status: match probe.status {
+                Status::Applied => "applied",
+                Status::Unchanged => "unchanged",
+                Status::Skipped => "skipped",
+                Status::Failed => "failed",
+                Status::TimedOut => "timed_out",
+            }
+            .to_string(),
+            input: probe.input,
+            output: probe.output,
+            elapsed_ms: u64::try_from(probe.elapsed.as_millis()).unwrap_or(u64::MAX),
+            deadline_ms: u64::try_from(probe.deadline.as_millis()).unwrap_or(u64::MAX),
+            provider: probe.provider,
+            model: probe.model,
+            reasoning: probe.reasoning.map(str::to_string),
+        }
+    }
 }
 
 /// One selectable model for a provider (id sent on the wire + display label).
@@ -1048,6 +1104,27 @@ impl CodescribeConfig {
             .into_iter()
             .find(|provider| provider.key_account == account);
         Ok(probe_api_key_liveness(&account, provider.as_ref()).into())
+    }
+
+    /// Settings › Formatting › Test: format `sample` once through the live
+    /// formatter path (empty `sample` sends the built-in raw transcript).
+    /// Blocks for up to the live deadline; Swift calls it off MainActor.
+    pub fn test_formatting(&self, sample: String) -> Result<CsFormattingProbe, CsError> {
+        let runtime = load_runtime_snapshot_for_lane();
+        let language = runtime
+            .values()
+            .whisper_language
+            .whisper_hint()
+            .map(str::to_string);
+        let probe = application_runtime::block_on(async move {
+            codescribe_core::llm::ai_formatting::probe_formatting(
+                Some(&sample),
+                language.as_deref(),
+                &runtime,
+            )
+            .await
+        })?;
+        Ok(probe.into())
     }
 
     /// Explicit credential acquisition. Swift executes this off MainActor.
@@ -4249,6 +4326,67 @@ mod settings_snapshot_tests {
             CsSettings::from_runtime_snapshot(&normal).layered_transcription,
             None
         );
+    }
+
+    /// Settings shows the level the formatting lane will send: `none` until
+    /// the user opts in, and never a word that is not a level.
+    #[test]
+    fn formatting_reasoning_projects_its_level_with_none_as_default() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/formatting-reasoning"),
+            1_700_000_000_000,
+        );
+        for (stored, shown) in [
+            (None, "none"),
+            (Some("high"), "high"),
+            (Some("turbo"), "none"),
+        ] {
+            input.user_settings.llm_formatting_reasoning = stored.map(str::to_string);
+            let runtime = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(
+                CsSettings::from_runtime_snapshot(&runtime).llm_formatting_reasoning,
+                shown,
+                "{stored:?}"
+            );
+            let lane_level = runtime
+                .llm_lanes()
+                .formatting()
+                .reasoning()
+                .map(|effort| effort.as_str());
+            assert_eq!(lane_level, Some(shown), "{stored:?}");
+        }
+    }
+
+    /// The Agent shows `default` until a level is chosen, `none` included.
+    #[test]
+    fn assistive_reasoning_projects_default_until_chosen() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/assistive-reasoning"),
+            1_700_000_000_000,
+        );
+        for (stored, shown, lane) in [
+            (None, "default", None),
+            (Some("none"), "none", Some("none")),
+            (Some("xhigh"), "xhigh", Some("xhigh")),
+        ] {
+            input.user_settings.llm_assistive_reasoning = stored.map(str::to_string);
+            let runtime = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(
+                CsSettings::from_runtime_snapshot(&runtime).llm_assistive_reasoning,
+                shown,
+                "{stored:?}"
+            );
+            let lane_level = runtime
+                .llm_lanes()
+                .assistive()
+                .reasoning()
+                .map(|effort| effort.as_str());
+            assert_eq!(lane_level, lane, "{stored:?}");
+        }
     }
 
     /// C15D falsifier (source-level; W2 does not execute): Settings UI projection

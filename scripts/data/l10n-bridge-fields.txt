@@ -93,6 +93,12 @@ data  CsDocumentVersion.receiptId
 data  CsEnergyCalibrationReport.deviceName
 data  CsEnergyCalibrationReport.version
 data  CsEnergyCalibrationReport.path
+data  CsFormattingProbe.status
+data  CsFormattingProbe.input
+data  CsFormattingProbe.output
+data  CsFormattingProbe.provider
+data  CsFormattingProbe.model
+data  CsFormattingProbe.reasoning
 data  CsHistoryEntry.path
 data  CsHistoryEntry.preview
 prose CsHotkeyConflict.gestureLabel
@@ -243,8 +249,10 @@ data  CsSettings.sttFileEndpoint
 data  CsSettings.sttLiveEndpoint
 data  CsSettings.llmFormattingProvider
 data  CsSettings.llmFormattingModel
+data  CsSettings.llmFormattingReasoning
 data  CsSettings.llmAssistiveProvider
 data  CsSettings.llmAssistiveModel
+data  CsSettings.llmAssistiveReasoning
 data  CsSettings.formattingLevel
 data  CsSettings.whisperModel
 data  CsSettings.layeredTranscription

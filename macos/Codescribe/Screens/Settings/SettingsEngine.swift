@@ -91,6 +91,9 @@ protocol SettingsEngine {
   func clearApiKey(account: String) throws
   func testApiKey(account: String) throws -> CsApiKeyProbeResult
   func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult
+  /// One formatting request through the live formatter path; empty `sample`
+  /// sends the built-in raw transcript. Takes up to the live deadline.
+  func testFormattingAsync(sample: String) async throws -> CsFormattingProbe
 
   // Provider registry (vendors + custom rows), lane binding, model discovery.
   func availableProviders() -> [CsProviderOption]
@@ -288,6 +291,11 @@ final class RealSettingsEngine: SettingsEngine {
   nonisolated func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult {
     try await Task.detached(priority: .userInitiated) {
       try CodescribeConfig().testApiKey(account: account)
+    }.value
+  }
+  nonisolated func testFormattingAsync(sample: String) async throws -> CsFormattingProbe {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().testFormatting(sample: sample)
     }.value
   }
 
@@ -604,6 +612,18 @@ struct MockSettingsEngine: SettingsEngine {
   func clearApiKey(account: String) throws {}
   func testApiKey(account: String) throws -> CsApiKeyProbeResult {
     CsApiKeyProbeResult.sample(account: account)
+  }
+  func testFormattingAsync(sample: String) async throws -> CsFormattingProbe {
+    CsFormattingProbe(
+      status: "applied",
+      input: sample.isEmpty ? "tak jeśli nie stosuje się zaleceń dokumentacji" : sample,
+      output: "Tak, jeśli nie stosuje się zaleceń dokumentacji.",
+      elapsedMs: 1410,
+      deadlineMs: 30_000,
+      provider: "mtplx-local",
+      model: settings.llmFormattingModel ?? "",
+      reasoning: settings.llmFormattingReasoning
+    )
   }
 
   func availableProviders() -> [CsProviderOption] {
@@ -1036,8 +1056,10 @@ extension CsSettings {
     // Contract §C: lane = provider ref + model; no endpoint fields on CsSettings.
     llmFormattingProvider: "openai-responses",
     llmFormattingModel: "gpt-4o-mini",
+    llmFormattingReasoning: "none",
     llmAssistiveProvider: "openai-responses",
     llmAssistiveModel: "gpt-4o",
+    llmAssistiveReasoning: "default",
     formattingLevel: "correction",
     whisperModel: "whisper-large-v3-turbo",
     layeredTranscription: nil,

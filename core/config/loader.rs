@@ -739,14 +739,31 @@ impl Config {
         }
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
-        RuntimeLlmLane::seal(
+        let sealed = RuntimeLlmLane::seal(
             lane,
             provider,
             model,
             credential,
             configuration_fault,
             unavailable_reason,
-        )
+        );
+        match lane {
+            RuntimeLlmLaneKind::Formatting => sealed.with_reasoning(
+                settings
+                    .llm_formatting_reasoning
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .unwrap_or_default(),
+            ),
+            RuntimeLlmLaneKind::Assistive => match settings
+                .llm_assistive_reasoning
+                .as_deref()
+                .and_then(crate::llm::provider::ReasoningEffort::parse)
+            {
+                Some(effort) => sealed.with_reasoning(effort),
+                None => sealed,
+            },
+        }
     }
 
     fn runtime_provider_reference(
@@ -1898,8 +1915,25 @@ impl Config {
         match key {
             "LLM_FORMATTING_PROVIDER" => settings.llm_formatting_provider = normalized,
             "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = normalized,
+            // `none` is the default, so it is stored as unset; a word that is
+            // not a level is refused rather than kept.
+            "LLM_FORMATTING_REASONING" => {
+                settings.llm_formatting_reasoning = normalized
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .filter(|effort| *effort != crate::llm::provider::ReasoningEffort::None)
+                    .map(|effort| effort.as_str().to_string())
+            }
             "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider = normalized,
             "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model = normalized,
+            // Every level is a choice here, `none` included; `default` or a
+            // word that is not a level returns the lane to the model's own.
+            "LLM_ASSISTIVE_REASONING" => {
+                settings.llm_assistive_reasoning = normalized
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .map(|effort| effort.as_str().to_string())
+            }
             _ => return false,
         }
         true
@@ -3386,6 +3420,52 @@ mod tests {
                 "/speech/assistive/llm_model",
             ),
         ]
+    }
+
+    /// The Agent keeps `none` as a choice; `default` clears it.
+    #[test]
+    #[serial]
+    fn assistive_reasoning_level_saves_every_level_and_clears_on_default() {
+        for batch in [false, true] {
+            for (written, stored) in [
+                ("xhigh", Some("xhigh")),
+                ("none", Some("none")),
+                ("off", Some("none")),
+                ("Minimal", Some("minimal")),
+                ("default", None),
+                ("", None),
+            ] {
+                let saved = save_snapshot("LLM_ASSISTIVE_REASONING", written, batch);
+                assert_eq!(
+                    saved.llm_assistive_reasoning.as_deref(),
+                    stored,
+                    "{written:?} batch={batch}"
+                );
+            }
+        }
+    }
+
+    /// `none` is the default and is stored as unset; a word that is not a
+    /// level never reaches settings.json.
+    #[test]
+    #[serial]
+    fn formatting_reasoning_level_saves_only_opt_in_levels() {
+        for batch in [false, true] {
+            for (written, stored) in [
+                ("high", Some("high")),
+                ("Low", Some("low")),
+                ("none", None),
+                ("turbo", None),
+                ("", None),
+            ] {
+                let saved = save_snapshot("LLM_FORMATTING_REASONING", written, batch);
+                assert_eq!(
+                    saved.llm_formatting_reasoning.as_deref(),
+                    stored,
+                    "{written:?} batch={batch}"
+                );
+            }
+        }
     }
 
     /// Write one key via single or batch path, then reload `UserSettings` for compare.
