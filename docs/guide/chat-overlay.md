@@ -146,12 +146,14 @@ counter opens or closes the microphone or changes the destination of a
 recording in progress; use the channel chord or a microphone control to speak.
 
 While the microphone feeds a channel, that channel's digit carries a small
-microphone badge in the agent violet, and its chip takes the same tint, in its
-usual place. While you broadcast on channel 0, a `0` chip with the badge leads
-the row. In mini, and in a compact strip folded to its counter, the counter
-shows the open channel's digit with the badge instead of the count. When the
-channel closes, the plain chip and the count return. The badge says where your
-voice goes; it is not a receipt.
+violet dot, and its chip takes the same tint, in its usual place. The digit
+carries no symbol: the **Agents** button shows a violet microphone while you
+speak to one agent and a megaphone only while you broadcast to all. While you
+broadcast on channel 0, a `0` chip with the dot leads the row. In mini, and in
+a compact strip folded to its counter, the counter shows the open channel's
+digit with the dot instead of the count. When the channel closes, the plain
+chip and the count return. The dot says where your voice goes; it is not a
+receipt.
 
 When compact has no room for the names, the chips show digits only; the chip of
 the conversation you have selected keeps its name, and pointing at a chip still
