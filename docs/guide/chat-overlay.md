@@ -116,8 +116,9 @@ arrows to reach the remaining agents.
 A detached fiszka keeps its place, size and mini state across app restarts,
 and the same agent can stand in several places at once — detach again for
 another copy. Minimize shrinks a fiszka to its name, activity and audio slot;
-hover it to restore or close. Closing a fiszka only hides that window: detach
-the same conversation again and it comes back where you left it. Resize a
+click it to restore, hover it to reveal its close button. Closing a fiszka only hides that window: detach the same conversation again —
+or right-click the Intercom header and pick it from the saved list — and it
+comes back where you left it. Resize a
 fiszka from its left edge or bottom corners. Dragging a resting pill's left
 edge or bottom corners (or the header's left edge) zooms the whole attached
 group proportionally. Closing a card or switching layouts keeps its draft. The separate

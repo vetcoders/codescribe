@@ -98,6 +98,39 @@
         }
       }
     },
+    "No saved fiszki": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brak zapisanych fiszek"
+          }
+        }
+      }
+    },
+    "Move fiszka": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przenieś fiszkę"
+          }
+        }
+      }
+    },
+    "Restore fiszka": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przywróć fiszkę"
+          }
+        }
+      }
+    },
     "Classic": {
       "extractionState": "manual",
       "localizations": {

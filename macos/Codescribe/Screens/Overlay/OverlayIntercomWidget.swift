@@ -269,10 +269,19 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
         size: stored.size, visibleFrame: visibleFrame)
     }
+    // Mini is a compact pill anchored at the stored window's top-right: its
+    // width comes from its own content, never from the expanded conversation
+    // (Astra, V3 — a 900 pt conversation must not leave a 900 pt mini). The
+    // expanded frame survives untouched for restore.
+    let unit = max(1, textScale.scale)
+    let nameFont = NSFont.systemFont(ofSize: 11 * textScale.scale, weight: .semibold)
+    let nameWidth = (instance.name as NSString).size(withAttributes: [.font: nameFont]).width
     let height = OverlayIntercomWidgetLayout.controlHeight(scale: textScale.scale)
+    // Grip 24 + dots ~24 + audio slot 30 + the X's fixed slot 26 + padding.
+    let width = min(stored.width, nameWidth + (24 + 30 + 26) * unit + 36)
     return OverlayIntercomWidgetLayout.cardFrame(
-      below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
-      size: CGSize(width: stored.width, height: height), visibleFrame: visibleFrame)
+      below: CGRect(x: stored.maxX - width, y: stored.maxY, width: width, height: 0),
+      size: CGSize(width: width, height: height), visibleFrame: visibleFrame)
   }
 
   fileprivate func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
@@ -318,6 +327,20 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let panel = instancePanels[id], instance(for: id)?.minimized == false else { return }
     instanceFocusRevisions[id, default: 0] &+= 1
     panel.makeKeyAndOrderFront(nil)
+  }
+
+  /// The explicit road back to a saved closed fiszka, independent of the
+  /// roster (Olga, D4): a replaced channel owner removes the group card, and
+  /// without this the saved record had no UI that could show it again.
+  fileprivate var closedInstances: [OverlayIntercomInstance] {
+    desktop.instances.filter(\.closed)
+  }
+
+  fileprivate func reopenInstance(_ id: UUID) {
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+    desktop.instances[index].closed = false
+    saveDesktop()
+    materializeInstances()
   }
 
   fileprivate func scrollGroup(_ steps: Int) {
@@ -671,6 +694,20 @@ private struct OverlayIntercomHeader: View {
         controller.resizeGroup(from: frame, delta: delta, edge: edge)
       }
     }
+    .contextMenu {
+      // The explicit road back to a saved closed fiszka, independent of the
+      // roster. Reopening is a window operation: no microphone, no send.
+      let closed = controller.closedInstances
+      if closed.isEmpty {
+        Text("No saved fiszki")
+      } else {
+        ForEach(closed) { instance in
+          Button("\(instance.digit) · \(instance.name)") {
+            controller.reopenInstance(instance.id)
+          }
+        }
+      }
+    }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
   }
 }
@@ -764,8 +801,11 @@ private struct OverlayIntercomCard: View {
         }
       } else {
         // The group resizes like one window from a pill's left edge and
-        // bottom corners: every attached fiszka scales proportionally.
-        OverlayIntercomResizeHandles { frame, delta, edge in
+        // bottom corners: every attached fiszka scales proportionally. The
+        // bottom-right zone steps left of the audio slot (Astra, V2).
+        OverlayIntercomResizeHandles(
+          trailingInset: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+        ) { frame, delta, edge in
           controller.resizeGroup(from: frame, delta: delta, edge: edge)
         }
       }
@@ -999,6 +1039,9 @@ private struct OverlayIntercomResizeHandles: View {
   /// The header keeps its corners for buttons; its left edge still resizes
   /// the group. Pills and cards expose the left edge and both bottom corners.
   var corners = true
+  /// A pill's audio slot owns the true bottom-right corner, so its resize
+  /// zone steps left by this much instead of covering the microphone.
+  var trailingInset: CGFloat = 0
   let resize: (CGRect, CGSize, OverlayIntercomWidgetLayout.ResizeEdge) -> Void
 
   var body: some View {
@@ -1014,6 +1057,7 @@ private struct OverlayIntercomResizeHandles: View {
           Spacer(minLength: 0)
           OverlayIntercomResizeHandle(edge: .bottomRight, resize: resize)
             .frame(width: 14, height: 14)
+            .padding(.trailing, trailingInset)
         }
         .frame(height: 14)
       }
@@ -1143,8 +1187,7 @@ private struct OverlayIntercomInstanceCard: View {
         state: state, conversation: conversation, name: instance.name, digit: instance.digit,
         palette: palette, speaking: speaking, open: open)
       // Mini rests with the name, activity and the one audio slot (Astra):
-      // clicking the fiszka itself restores it, so no extra Restore button;
-      // hover reveals only the X.
+      // clicking the fiszka itself restores it, so no extra Restore button.
       if !mini {
         Button("Minimize", systemImage: "minus") {
           controller.setInstanceMinimized(instanceID, true)
@@ -1156,15 +1199,19 @@ private struct OverlayIntercomInstanceCard: View {
         )
         .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
       }
-      if !mini || hovering {
-        Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
-          .labelStyle(.iconOnly).buttonStyle(.plain)
-          .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
-          .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-          )
-          .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
-      }
+      // The X keeps a fixed place so the audio slot never moves: a hover
+      // only changes its visibility, never the row's geometry (Astra, V1 —
+      // a reflow let a click aimed at the remembered microphone close the
+      // fiszka).
+      Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
+        .labelStyle(.iconOnly).buttonStyle(.plain)
+        .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
+        .opacity(!mini || hovering ? 1 : 0)
+        .allowsHitTesting(!mini || hovering)
+        .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
     .padding(.trailing, 4)
   }

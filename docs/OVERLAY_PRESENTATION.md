@@ -247,10 +247,15 @@ live actions withdraw.
 
 Every instance window has minimize and close. Both are window operations: they
 never disconnect, archive or re-address the agent. Mini rests with the name,
-the activity dots and the one audio slot; hover reveals restore and close.
-Closing records the fiszka as closed, and detaching the same conversation from
-the group reopens that saved window instead of minting a duplicate; a second
-detach while one instance is open deliberately creates another copy. Resizing
+the activity dots and the one audio slot, measured to its own compact width at
+the stored window's top-right corner; clicking the fiszka restores it, and
+hover reveals the close control in its fixed place, so the audio slot never
+moves. Closing records the fiszka as closed, and detaching the same
+conversation from the group reopens that saved window instead of minting a
+duplicate; a second detach while one instance is open deliberately creates
+another copy. The Intercom header's context menu lists the saved closed
+fiszki, the explicit road back when the channel's owner is no longer in the
+group. Resizing
 an expanded group card is an explicit independent placement and turns it into
 a fiszka with its own geometry.
 
