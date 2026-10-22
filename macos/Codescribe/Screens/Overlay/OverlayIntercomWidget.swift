@@ -159,6 +159,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate var hasPrevious: Bool { visibleRows.lowerBound > 0 }
   fileprivate var hasNext: Bool { visibleRows.upperBound < groupIdentities.count }
 
+  func presentsConversation(_ conversationID: String?) -> Bool {
+    guard visible, let conversationID else { return false }
+    return presentation.expanded.contains { identity in
+      identity.conversationID == conversationID && cards[identity]?.isPresented == true
+        && state.conversations.contains(where: { identity.matches($0) })
+    }
+  }
+
   fileprivate func scrollGroup(_ steps: Int) {
     guard visible, !presentation.folded else { return }
     rowOffset = min(
@@ -181,12 +189,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     defer { positioning = false }
     let range = visibleRows
     let group = groupIdentities
-    var shown: Set<OverlayIntercomCardIdentity> = []
     for (identity, panel) in cards {
       let expanded = presentation.expanded.contains(identity)
       panel.acceptsConversationFocus = expanded
       if presentation.detached.contains(identity) {
-        shown.insert(identity)
         let fitted = OverlayIntercomWidgetLayout.conversationFrame(
           below: panel.frame, size: panel.frame.size, visibleFrame: visibleFrame(for: panel),
           scale: textScale.scale)
@@ -217,7 +223,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       } else {
         frame = row
       }
-      shown.insert(identity)
       if panel.frame != frame {
         panel.setFrame(
           frame, display: true,
@@ -225,13 +230,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       }
       panel.setPresented(true, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
-    // Expanded/hovered cards cover neighbours without shifting their frames.
-    for identity in presentation.expanded.intersection(shown) {
-      cards[identity]?.orderFrontRegardless()
-    }
-    if let hovered = presentation.hovered, shown.contains(hovered) {
-      cards[hovered]?.orderFrontRegardless()
-    }
+    // Geometry and hover leave the order of presented windows alone. Only an
+    // explicit expand below (or a native click/focus) raises a conversation.
   }
 
   fileprivate func hover(_ identity: OverlayIntercomCardIdentity, inside: Bool) {
@@ -319,6 +319,8 @@ private final class OverlayIntercomPanel: NSPanel {
   var onScroll: (CGFloat) -> Void = { _ in }
   private var presented = false
   private var visibilityRevision: UInt64 = 0
+
+  var isPresented: Bool { presented && isVisible }
 
   func setPresented(_ value: Bool, animated: Bool) {
     guard presented != value else { return }

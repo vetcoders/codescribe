@@ -152,6 +152,14 @@ struct OverlayIntercomCardIdentity: Hashable {
 /// Hover is independent of expanded conversations. Neither gesture selects a
 /// capture destination; all durable drafts remain in OverlayState.
 struct OverlayIntercomPresentation: Equatable {
+  /// A visible card already presents its own draft capture. A main-overlay
+  /// composer, or a draft with no visible card, keeps the existing show path.
+  static func shouldShowMainOverlayForDraftCapture(
+    verticalIntercomActive: Bool, mainPanelVisible: Bool, conversationPresentedInIntercom: Bool
+  ) -> Bool {
+    !verticalIntercomActive || mainPanelVisible || !conversationPresentedInIntercom
+  }
+
   var hovered: OverlayIntercomCardIdentity?
   var expanded: Set<OverlayIntercomCardIdentity> = []
   var detached: Set<OverlayIntercomCardIdentity> = []

@@ -382,7 +382,15 @@ final class OverlayController: ObservableObject {
   /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
     if state.draftCapture.hasRequest {
-      show(preserveVisiblePosition: true)
+      let preference = state.channelMapPreference
+      if OverlayIntercomPresentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: preference.enabled && preference.layout == .vertical,
+        mainPanelVisible: panel?.isVisible == true,
+        conversationPresentedInIntercom:
+          intercomWidget?.presentsConversation(state.draftCapture.conversationID) == true)
+      {
+        show(preserveVisiblePosition: true)
+      }
       return
     }
     refreshAssistiveLatch()
