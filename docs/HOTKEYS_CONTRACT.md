@@ -47,6 +47,10 @@ while the microphone broadcasts) and the row of the first tier that fits the
 820 pt budget (`midiChannelMapBudget`, two floors): named chips, else
 digit-only chips with room for the selected conversation's name. The screen's
 visible width remains only a last cap; with no agent bound it is the floor.
+The floor already holds the header's level meter (its 56 pt
+`waveformMinWidth`) and the session timer, which compact lays out at rest as
+well as during a take, so starting a take changes neither the strip's width
+nor its chips' tier.
 Entering compact lands on it, and a roster change while compact is shown (an
 agent bound, archived or renamed) resizes the strip in one step at its
 upper-right pin, with display containment as for any morph; opening or closing
