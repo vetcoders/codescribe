@@ -33095,6 +33095,7 @@ mod tc2_window_contract_tests {
     /// A return parked behind the in-flight live witness stays parked until
     /// the witness answers. Returning it again on every horizon tick logged
     /// 483 745 `admission_horizon_closed` lines in one take (13467366).
+    /// The witness is out while the later windows return, as in that take.
     #[test]
     fn horizon_leaves_a_return_parked_behind_the_live_witness() {
         let mut f = fixture();
@@ -33105,16 +33106,9 @@ mod tc2_window_contract_tests {
                 10.7,
             );
         }
-        advance_live_horizon(&mut f);
-        let (id, owner) = f
-            .state
-            .unsealed_word_owners()
-            .into_iter()
-            .find(|(_, owner)| *owner == f.occurrence)
-            .unwrap();
-        // The live witness is out; the window's return parks behind it.
         f.state.dictation_witness_inflight = true;
-        f.state.return_whisper_without_label(&f.events, id, &owner);
+        advance_live_horizon(&mut f);
+        let owner = f.occurrence.clone();
         assert_eq!(f.state.dictation_witness_waiting, vec![owner.clone()]);
         let logged = super::live_refinement_admission_tests::refinement_log(|| {
             for _ in 0..3 {
