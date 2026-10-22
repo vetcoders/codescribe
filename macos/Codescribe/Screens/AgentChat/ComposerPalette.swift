@@ -26,6 +26,7 @@ struct ComposerPaletteEntry: Identifiable, Equatable {
 /// row in `allCases` — the parser and the filter need no changes.
 enum ComposerPaletteCommand: String, CaseIterable, Equatable {
   case model
+  case effort
   case grants
 
   var keyword: String { rawValue }
@@ -33,6 +34,10 @@ enum ComposerPaletteCommand: String, CaseIterable, Equatable {
   var summary: String {
     switch self {
     case .model: String(localized: "Choose the Agent model")
+    case .effort:
+      String(
+        localized: "Choose how long the Agent thinks",
+        comment: "Palette command: the Agent's reasoning effort")
     case .grants:
       String(
         localized: "Tools with “always allow”",
@@ -148,6 +153,7 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
   func entries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry] {
     switch command {
     case .model: models()
+    case .effort: efforts()
     case .grants: grants()
     }
   }
@@ -160,6 +166,8 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
       guard entry.id != runtimeLaneProvider().model else { return }
       try settings.updateConfig(key: "LLM_ASSISTIVE_MODEL", value: entry.id)
       cachedModels = nil
+    case .effort:
+      try settings.updateConfig(key: "LLM_ASSISTIVE_REASONING", value: entry.id)
     case .grants:
       try mcpAdmin.revokeToolGrant(key: entry.id)
     }
@@ -207,6 +215,24 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
     cachedModelStamp = stamp
     cachedModelsAt = Date()
     return entries
+  }
+
+  /// The Agent's reasoning levels, oh-my-pi's `/effort`: the model's own
+  /// reasoning first, then every level lowest first, the current one marked.
+  private func efforts() -> [ComposerPaletteEntry] {
+    let current = settings.loadSettings().llmAssistiveReasoning
+    let modelDefault = ComposerPaletteEntry(
+      id: "default",
+      title: String(localized: "Model default", comment: "Agent reasoning level: the model's own"),
+      subtitle: String(
+        localized: "No effort sent; the model decides", comment: "Model default reasoning entry"),
+      isCurrent: current == "default"
+    )
+    return [modelDefault]
+      + ReasoningLevel.all.map { level in
+        ComposerPaletteEntry(
+          id: level.id, title: level.title, subtitle: nil, isCurrent: current == level.id)
+      }
   }
 
   private func grants() -> [ComposerPaletteEntry] {

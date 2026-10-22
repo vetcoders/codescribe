@@ -74,6 +74,7 @@ private struct LLMLaneEditor: View {
 
   @State private var modelDraft = ""
   @FocusState private var modelFocused: Bool
+  @State private var probeSample = ""
 
   private var laneModel: LLMLaneModel { model.llmLane(lane) }
 
@@ -196,7 +197,8 @@ private struct LLMLaneEditor: View {
 
       // The source caption sits under the row title: a third line under the
       // field made the card tall for one short word.
-      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10) {
+      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10)
+      {
         VStack(alignment: .trailing, spacing: CSSpace.xs) {
           // Discovery state ("discovering…", cached, failed) is the line above.
           if laneModel.usesDiscoveredPicker {
@@ -252,7 +254,149 @@ private struct LLMLaneEditor: View {
         .onAppear { modelDraft = laneModel.configuredModel }
         .onChange(of: laneModel.configuredModel) { _, stored in modelDraft = stored }
       }
+
+      reasoningRow
+      if lane == .formatting {
+        formattingTestRow
+      }
     }
+  }
+
+  /// How long the lane's model may think, in oh-my-pi's levels. Formatting
+  /// transforms text it already has, so it asks for none unless the user opts
+  /// in (Maciej, 2026-10-22). The Agent keeps the model's own reasoning until a
+  /// level is chosen. A provider that refuses a level is asked again lower.
+  private var reasoningRow: some View {
+    let isFormatting = lane == .formatting
+    return SettingsControlRow(
+      title: String(
+        localized: "Reasoning",
+        comment: "Settings row: how long the lane's model may think before answering"),
+      subtitle: isFormatting
+        ? String(
+          localized:
+            "None answers fastest. Higher levels are slower; choose one only if a model needs it.",
+          comment: "Formatting reasoning row explanation")
+        : String(
+          localized:
+            "Model default keeps what the model does on its own. In the chat: /effort.",
+          comment: "Agent reasoning row explanation"),
+      inset: 10
+    ) {
+      Picker(
+        "",
+        selection: Binding(
+          get: {
+            isFormatting
+              ? model.settings.llmFormattingReasoning : model.settings.llmAssistiveReasoning
+          },
+          set: { level in
+            if isFormatting {
+              model.setFormattingReasoning(level)
+            } else {
+              model.setAgentReasoning(level)
+            }
+          }
+        )
+      ) {
+        if !isFormatting {
+          Text("Model default", comment: "Agent reasoning level: the model's own").tag("default")
+        }
+        ForEach(ReasoningLevel.all) { level in
+          Text(level.title).tag(level.id)
+        }
+      }
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityLabel("\(lane.title) reasoning")
+    }
+  }
+
+  /// One request through the live formatter path, so a provider is proven
+  /// before a take depends on it (Maciej, 2026-10-22). Empty text sends a
+  /// built-in raw transcript.
+  private var formattingTestRow: some View {
+    SettingsControlRow(
+      title: String(localized: "Test", comment: "Settings row: send one formatting request now"),
+      subtitle: String(
+        localized: "Formats a raw transcript, or your text, the way dictation does.",
+        comment: "Formatting test row explanation"),
+      inset: 10
+    ) {
+      VStack(alignment: .leading, spacing: CSSpace.sm) {
+        HStack(spacing: CSSpace.sm) {
+          TextField(
+            String(
+              localized: "tak jeśli nie stosuje się zaleceń dokumentacji…",
+              comment: "Formatting test placeholder: a raw unpunctuated transcript"),
+            text: $probeSample, axis: .vertical
+          )
+          .lineLimit(1...4)
+          .settingsInputChrome(isFocused: false)
+          .accessibilityLabel("Formatting test text")
+          Button {
+            model.testFormatting(sample: probeSample)
+          } label: {
+            if model.formattingProbePending {
+              ProgressView().controlSize(.small)
+            } else {
+              Text("Test", comment: "Button: send one formatting request")
+            }
+          }
+          .disabled(model.formattingProbePending)
+          .accessibilityLabel("Test formatting")
+        }
+        if let probe = model.formattingProbe {
+          formattingProbeResult(probe)
+        }
+      }
+      .frame(width: 440)
+    }
+  }
+
+  private func formattingProbeResult(_ probe: CsFormattingProbe) -> some View {
+    let seconds = { (ms: UInt64) in String(format: "%.1f s", Double(ms) / 1000) }
+    let verdict: String
+    let color: Color
+    switch probe.status {
+    case "applied":
+      verdict = String(localized: "Formatted", comment: "Formatting test verdict")
+      color = .green
+    case "unchanged":
+      verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
+      color = .green
+    case "skipped":
+      verdict = String(
+        localized: "Not sent: formatting is off or runs on the Agent",
+        comment: "Formatting test verdict")
+      color = .secondary
+    case "timed_out":
+      verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
+      color = .orange
+    default:
+      verdict = String(localized: "Failed; see the log", comment: "Formatting test verdict")
+      color = .red
+    }
+    let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
+    return VStack(alignment: .leading, spacing: CSSpace.xs) {
+      HStack(spacing: CSSpace.sm) {
+        Circle().fill(color.opacity(0.85)).frame(width: 7, height: 7)
+        Text(verdict)
+        Text(
+          "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"
+        )
+        .foregroundStyle(Color.secondary)
+      }
+      .font(SettingsScale.helper)
+      if !probe.output.isEmpty, probe.status != "skipped" {
+        Text(probe.output)
+          .font(SettingsScale.helper)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("formatting-test-result")
   }
 
   /// The model-list state for this lane: where the list came from, a refresh,
