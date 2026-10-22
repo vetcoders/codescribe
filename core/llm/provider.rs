@@ -739,36 +739,67 @@ pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolic
     }
 }
 
-/// Reasoning effort the formatting lane asks its provider for, in the
-/// Responses API's own words. `None` is the default and the higher levels are
-/// opt-in (Maciej, 2026-10-22): formatting transforms text it already has.
+/// Reasoning effort a lane asks its provider for, in the Responses API's own
+/// words, lowest first. The ladder follows oh-my-pi's thinking levels
+/// (`catalog/src/effort.ts`), with `none` for its `off`. Formatting defaults to
+/// `none` and the higher levels are opt-in (Maciej, 2026-10-22): formatting
+/// transforms text it already has. The Agent lane has no default: unset keeps
+/// the model's own reasoning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningEffort {
     #[default]
     None,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
 }
 
 impl ReasoningEffort {
-    pub const ALL: [ReasoningEffort; 4] = [Self::None, Self::Low, Self::Medium, Self::High];
+    pub const ALL: [ReasoningEffort; 6] = [
+        Self::None,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
         }
     }
 
-    /// A stored or typed level; anything else is not a level.
+    /// A stored or typed level; `off` is oh-my-pi's word for `none`. Anything
+    /// else is not a level.
     pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("off") {
+            return Some(Self::None);
+        }
         Self::ALL
             .into_iter()
-            .find(|effort| effort.as_str().eq_ignore_ascii_case(value.trim()))
+            .find(|effort| effort.as_str().eq_ignore_ascii_case(value))
     }
+}
+
+/// A provider error that refuses the request's reasoning parameter by name:
+/// an HTTP 400 from the formatter (`HTTP 400 - {body}`) or the Agent
+/// (`Agent SSE HTTP 400 Bad Request: {summary}`), or an in-stream
+/// `bad_request`, whose text mentions reasoning. A server that does not know
+/// the level sent answers this way.
+pub fn is_reasoning_param_rejection(message: &str) -> bool {
+    (message.starts_with("HTTP 400")
+        || message.starts_with("Agent SSE HTTP 400")
+        || message.contains("SSE error bad_request"))
+        && message.to_ascii_lowercase().contains("reasoning")
 }
 
 /// Which formatting/assistive lane a provider value is being resolved for.
@@ -802,6 +833,26 @@ impl LlmMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused reasoning parameter reads the same from the formatter, the
+    /// Agent and the stream; other 400s and other errors do not.
+    #[test]
+    fn reasoning_rejection_is_recognized_in_every_error_shape() {
+        for refused in [
+            "HTTP 400 - {\"error\":\"reasoning.effort: unsupported value none\"}",
+            "Agent SSE HTTP 400 Bad Request: reasoning_effort must be one of: auto, low",
+            "SSE error bad_request: Unsupported reasoning effort",
+        ] {
+            assert!(is_reasoning_param_rejection(refused), "{refused}");
+        }
+        for other in [
+            "Agent SSE HTTP 400 Bad Request: input must not be empty",
+            "Agent SSE HTTP 404 Not Found: reasoning model gpt-x does not exist",
+            "HTTP 500 - reasoning backend crashed",
+        ] {
+            assert!(!is_reasoning_param_rejection(other), "{other}");
+        }
+    }
 
     /// OpenAI Responses is the default vendor and the default reference.
     #[test]

@@ -592,9 +592,11 @@ fn reasoning_ladder(lane: &RuntimeLlmLane) -> &'static [Option<&'static str>] {
     match lane.reasoning() {
         None => &[None],
         Some(ReasoningEffort::None) => &[Some("none"), Some("low"), None],
+        Some(ReasoningEffort::Minimal) => &[Some("minimal"), None],
         Some(ReasoningEffort::Low) => &[Some("low"), None],
         Some(ReasoningEffort::Medium) => &[Some("medium"), None],
         Some(ReasoningEffort::High) => &[Some("high"), None],
+        Some(ReasoningEffort::XHigh) => &[Some("xhigh"), None],
     }
 }
 
@@ -631,9 +633,7 @@ fn remember_reasoning_rung(lane: &RuntimeLlmLane, rung: usize) {
 /// model that does not reason. Both come back as a 400 naming the field
 /// before any stream opens, so the same attempt can be sent again.
 fn is_reasoning_param_rejected(error: &anyhow::Error) -> bool {
-    let message = error.to_string();
-    (message.starts_with("HTTP 400") || message.contains("SSE error bad_request"))
-        && message.to_ascii_lowercase().contains("reasoning")
+    super::provider::is_reasoning_param_rejection(&error.to_string())
 }
 
 /// Instructions for a Responses request: the `instructions` PARAM goes only on
@@ -2461,7 +2461,9 @@ mod tests {
     #[serial]
     /// The timeout wraps body download, not just the response headers. The mock
     /// answers `200` immediately and then trickles the body; a timeout applied
-    /// only to the header phase would let this call run past its budget.
+    /// only to the header phase would let this call run past its budget. The
+    /// budget leaves a loaded host time to connect: at 100 ms, half the runs on
+    /// a build machine timed out before the request arrived.
     async fn thread_title_timeout_covers_response_body() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -2471,8 +2473,10 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_chunked_body(|writer| {
-                std::thread::sleep(Duration::from_millis(300));
-                writer.write_all(br#"{"id":"late","output":[]}"#)
+                // Beats, not one sleep: see `trickle_until_the_client_leaves`.
+                writer.write_all(br#"{"id":"late","#)?;
+                trickle_until_the_client_leaves(writer, b" ", Duration::from_millis(1500))?;
+                writer.write_all(br#""output":[]}"#)
             })
             .create_async()
             .await;
@@ -2484,7 +2488,7 @@ mod tests {
         );
 
         let error =
-            generate_thread_title_with_provider("Raw input", &provider, Duration::from_millis(100))
+            generate_thread_title_with_provider("Raw input", &provider, Duration::from_millis(500))
                 .await
                 .expect_err("slow response body must be covered by the whole-call timeout");
         assert!(error.to_string().contains("timed out"));
@@ -3209,12 +3213,41 @@ mod tests {
         }
     }
 
+    /// A slow mock body: writes `beat` every 50 ms for `span`. Dropping a
+    /// mockito chunked stream joins its writer thread on the server's own
+    /// runtime, so one long sleep after the client gave up froze that pooled
+    /// server for the rest of the sleep, and the next test handed it saw no
+    /// response at all. A beat fails as soon as the client is gone.
+    fn trickle_until_the_client_leaves(
+        writer: &mut dyn std::io::Write,
+        beat: &[u8],
+        span: Duration,
+    ) -> std::io::Result<()> {
+        let started = std::time::Instant::now();
+        while started.elapsed() < span {
+            std::thread::sleep(Duration::from_millis(50));
+            writer.write_all(beat)?;
+        }
+        Ok(())
+    }
+
     /// Both lanes on one custom Responses provider at `endpoint`.
     fn custom_lanes(endpoint: &str) -> RuntimeSettingsSnapshot {
         custom_lanes_reasoning(endpoint, None)
     }
 
     fn custom_lanes_reasoning(endpoint: &str, reasoning: Option<&str>) -> RuntimeSettingsSnapshot {
+        custom_lanes_with(endpoint, "mtplx-9b", reasoning)
+    }
+
+    /// The refused rung is remembered per endpoint, model and level for the
+    /// whole process, and mockito hands a later test the same port, so a test
+    /// that teaches a refusal names its own model.
+    fn custom_lanes_with(
+        endpoint: &str,
+        model: &str,
+        reasoning: Option<&str>,
+    ) -> RuntimeSettingsSnapshot {
         let provider = crate::llm::provider::CustomProvider::new(
             "test-mtplx",
             crate::llm::provider::WireFamily::OpenAiResponses,
@@ -3223,11 +3256,11 @@ mod tests {
         .unwrap();
         crate::config::UserSettings {
             llm_formatting_provider: Some(format!("custom:{}", provider.id)),
-            llm_formatting_model: Some("mtplx-9b".into()),
+            llm_formatting_model: Some(model.into()),
             llm_formatting_reasoning: reasoning.map(str::to_string),
             formatting_level: Some("smart".into()),
             llm_assistive_provider: Some(format!("custom:{}", provider.id)),
-            llm_assistive_model: Some("mtplx-9b".into()),
+            llm_assistive_model: Some(model.into()),
             llm_custom_providers: vec![provider],
             ..Default::default()
         }
@@ -3236,8 +3269,8 @@ mod tests {
         Config::load_runtime_snapshot_without_keychain().unwrap()
     }
 
-    /// Buddy's MTPLX build refuses effort `none` and accepts `low`. The
-    /// formatter asks again one rung lower, and the next request starts there.
+    /// A server that refuses effort `none` and accepts `low`. The formatter
+    /// asks again one rung lower, and the next request starts there.
     #[tokio::test]
     #[serial]
     async fn formatting_steps_down_the_reasoning_ladder_once_per_provider() {
@@ -3274,7 +3307,8 @@ mod tests {
             .expect(2)
             .create_async()
             .await;
-        let settings = custom_lanes(&format!("{}/v1/responses", server.url()));
+        let settings =
+            custom_lanes_with(&format!("{}/v1/responses", server.url()), "ladder-9b", None);
         for _ in 0..2 {
             crate::state::conversation::reset_conversation_for_mode(
                 crate::state::conversation::AiMode::Formatting,
@@ -3420,9 +3454,11 @@ mod tests {
                 writer.write_all(
                     b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"t\"}}\n\n",
                 )?;
-                writer.flush()?;
-                std::thread::sleep(Duration::from_secs(4));
-                Ok(())
+                trickle_until_the_client_leaves(
+                    writer,
+                    b"data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"t\"}}\n\n",
+                    Duration::from_secs(4),
+                )
             })
             .create_async()
             .await;
