@@ -20,10 +20,8 @@ use codescribe_core::pipeline::replay_card::{self, ReplayBuild};
 use serde::Serialize;
 
 use crate::controller::production_replay::{RecordedTakeRun, replay_recorded_take};
-use crate::os::permissions::{PermissionStatus, check_speech_recognition};
 
 pub const REPLAY_RECEIPT_SCHEMA: &str = "codescribe.replay-receipt.v1";
-pub const SPEECH_RECOGNITION_PERMISSION_ERROR: &str = "This terminal has no permissions to use `Speech recognition`. Please check the permissions or run it in another terminal emulator app.";
 
 #[derive(clap::Args, Debug)]
 pub struct ReplayArgs {
@@ -184,20 +182,14 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
-/// Production replay spawns the live Apple STT bridge, which requests Speech
-/// Recognition TCC if the responsible terminal has not already been authorized
-/// and aborts when that terminal lacks `NSSpeechRecognitionUsageDescription`.
-/// Preflight `SFSpeechRecognizer.authorizationStatus` so replay fails cleanly
-/// before spawning the bridge.
+/// Production replay runs the take through the live Apple STT bridge, which
+/// the CLI spawns disclaimed (`bin/codescribe.rs`): Speech Recognition is the
+/// bridge's own grant, not the terminal's. So the preflight asks the bridge,
+/// and the bridge raises the system prompt once while that grant is still
+/// undetermined. Asking this process instead asked the terminal, a grant
+/// replay never uses, and refused every terminal without a Speech string.
 fn check_replay_speech_recognition_permission() -> Result<()> {
-    ensure_speech_recognition_permission(check_speech_recognition())
-}
-
-fn ensure_speech_recognition_permission(status: PermissionStatus) -> Result<()> {
-    if status != PermissionStatus::Granted {
-        bail!("{SPEECH_RECOGNITION_PERMISSION_ERROR}");
-    }
-    Ok(())
+    codescribe_core::stt::preflight_apple_live_ready()
 }
 
 /// A take is named by its session id or by a retained audio file. A file is
@@ -247,14 +239,5 @@ mod tests {
         assert!(resolve_take(root, "../escape").is_err());
         let missing = resolve_take(root, "0123456789abcdef").unwrap_err();
         assert!(missing.to_string().contains("no retained audio"));
-    }
-
-    #[test]
-    fn replay_requires_speech_recognition_permission() {
-        assert!(ensure_speech_recognition_permission(PermissionStatus::Granted).is_ok());
-        for denied in [PermissionStatus::Denied, PermissionStatus::NotDetermined] {
-            let err = ensure_speech_recognition_permission(denied).unwrap_err();
-            assert_eq!(err.to_string(), SPEECH_RECOGNITION_PERMISSION_ERROR);
-        }
     }
 }
