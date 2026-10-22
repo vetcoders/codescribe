@@ -150,6 +150,17 @@ PLAYBACK_SCAN_SECONDS = 0.5
 # A scan cut short by its budget proved nothing either way. Playback resumes the
 # cursor on the next tick and stops only after this many in a row.
 PLAYBACK_INCOMPLETE_SCANS_LIMIT = 3
+#: Half-duplex on this Mac (Maciej, 2026-10-22: "ktoś z nas użył afplaya ... ja
+#: nie używam afplaya, jak mówię"). While a reply plays, the speaking process
+#: announces itself here and the app drops its channel microphone feed.
+PLAYBACK_NOW_FILENAME = "agent-playback-now.json"
+PLAYBACK_NOW_SCHEMA = "codescribe.agent-playback-now.v1"
+#: Room tail added to the announced end of a reply.
+PLAYBACK_NOW_SLACK_SECONDS = 1.0
+#: The app's measured speech phase for one open channel, one file per channel.
+CHANNEL_SPEECH_NOW_SCHEMA = "codescribe.channel-speech-now.v1"
+#: Measured quiet an open channel needs before a reply may start into it.
+PLAYBACK_QUIET_SECONDS = 1.0
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -399,6 +410,7 @@ def installation_idle(
     cursor: dict[str, Any] | None = None,
     bridge_root: Path | None = None,
     deadline: float | None = None,
+    channel_released: Callable[[str, str], bool] | None = None,
 ) -> bool:
     """True when no current take is in flight.
 
@@ -426,6 +438,8 @@ def installation_idle(
     A supplied monotonic deadline limits each scan to one bounded scan slice.
     Budget expiry retains the processed prefix and refuses idle; the caller
     can resume that cursor without skipping any unread lifecycle rows.
+    ``channel_released(channel, session_id)`` lets playback treat an open
+    channel as idle; installation never passes it.
     """
     scan_started = time.monotonic()
     scan_deadline = (
@@ -676,7 +690,8 @@ def installation_idle(
         ]
         live_channels = any(
             not _cli_session_abandoned(activity, now)
-            for _, activity in open_channels.values()
+            and not (channel_released is not None and channel_released(channel, session_id))
+            for session_id, (channel, activity) in open_channels.items()
         )
         if live_app is not None or live_cli or live_channels:
             idle = False
@@ -6126,9 +6141,141 @@ def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
     return installation_idle(bus, bridge_root=bridge_root)
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def channel_speech_now(runtime: Path, channel: str, session_id: str) -> dict[str, Any] | None:
+    """The app's speech phase for this open channel session, or None.
+
+    A missing, foreign, malformed or orphaned file proves nothing: the open
+    channel then holds playback exactly as before this file existed.
+    """
+    if not channel.isdigit():
+        return None
+    try:
+        raw = (runtime / f"channel-speech-{channel}.json").read_bytes()[:4097]
+        if len(raw) > 4096:
+            return None
+        row = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(row, dict)
+        or row.get("schema") != CHANNEL_SPEECH_NOW_SCHEMA
+        or row.get("session_id") != session_id
+        or row.get("phase") not in ("fresh", "speaking", "quiet", "unmeasured")
+        or not isinstance(row.get("since_ms"), int)
+        or not _pid_alive(row.get("pid"))
+    ):
+        return None
+    return row
+
+
+def channel_quiet_for_playback(runtime: Path) -> Callable[[str, str], bool]:
+    """An open channel admits a reply after measured quiet.
+
+    ``fresh`` is a session whose voice detector has reported no speech since
+    it opened (the reopen after a silence seal); ``unmeasured`` is a broken
+    edge chain and never counts as quiet.
+    """
+    def released(channel: str, session_id: str) -> bool:
+        row = channel_speech_now(runtime, channel, session_id)
+        if row is None or row["phase"] not in ("fresh", "quiet"):
+            return False
+        # The channel heard nothing while the previous reply played, so quiet
+        # is measured again from that reply's end.
+        quiet_from = max(row["since_ms"], _last_playback_end_ms(runtime))
+        return time.time() * 1000 - quiet_from >= PLAYBACK_QUIET_SECONDS * 1000
+    return released
+
+
+def _open_channels(cursor: dict[str, Any]) -> set[str]:
+    states = [cursor, *cursor.get("channel_buses", {}).values()]
+    return {
+        channel
+        for state in states
+        for channel, _ in state.get("open_channels", {}).values()
+    }
+
+
+def channel_keeps_playback(runtime: Path, playing_into: set[str]) -> Callable[[str, str], bool]:
+    """During a reply only a human take stops it.
+
+    Our own voice cannot open speech in the app (its channel feed is dropped
+    while the reply plays), so a channel that was open when the reply started
+    may seal and reopen under it. A channel opened during the reply is a Fn
+    press, and measured speech on any channel is a person: both stop it.
+    """
+    def kept(channel: str, session_id: str) -> bool:
+        if channel not in playing_into:
+            return False
+        row = channel_speech_now(runtime, channel, session_id)
+        return row is None or row["phase"] != "speaking"
+    return kept
+
+
+def _cursor_holds_take(cursor: dict[str, Any], channel_released: Callable[[str, str], bool]) -> bool:
+    """Whether the scanned rows themselves show a take.
+
+    ``installation_idle`` also refuses when a bus grew between its read and
+    its verification pass; that is an unfinished scan, not a person.
+    """
+    now = time.time()
+    for state in (cursor, *cursor.get("channel_buses", {}).values()):
+        if state.get("live_app") is not None:
+            return True
+        if any(not _cli_session_abandoned(at, now) for at in state.get("open_cli", {}).values()):
+            return True
+        for session_id, (channel, activity) in state.get("open_channels", {}).items():
+            if not _cli_session_abandoned(activity, now) and not channel_released(channel, session_id):
+                return True
+    return False
+
+
+def _announce_playback(runtime: Path, seconds: float) -> Path:
+    marker = runtime / PLAYBACK_NOW_FILENAME
+    atomic_json(marker, {
+        "schema": PLAYBACK_NOW_SCHEMA,
+        "pid": os.getpid(),
+        "until_ms": int((time.time() + seconds + PLAYBACK_NOW_SLACK_SECONDS) * 1000),
+    })
+    return marker
+
+
+def _withdraw_playback(marker: Path) -> None:
+    """End the announcement; its end stays as the start of measured quiet."""
+    try:
+        row = json.loads(marker.read_bytes()[:4096])
+        if isinstance(row, dict) and row.get("pid") == os.getpid():
+            atomic_json(marker, {**row, "until_ms": int(time.time() * 1000), "ended": True})
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+
+
+def _last_playback_end_ms(runtime: Path) -> int:
+    try:
+        row = json.loads((runtime / PLAYBACK_NOW_FILENAME).read_bytes()[:4096])
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return 0
+    if not isinstance(row, dict) or row.get("schema") != PLAYBACK_NOW_SCHEMA:
+        return 0
+    until = row.get("until_ms")
+    return until if isinstance(until, int) and not isinstance(until, bool) else 0
+
+
 def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
     control: ReplyPlaybackControl | None = None,
+    channel_released: Callable[[str, str], bool] | None = None,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
@@ -6143,7 +6290,7 @@ def _wait_for_take_end(
         })
         idle = installation_idle(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-            deadline=deadline,
+            deadline=deadline, channel_released=channel_released,
         )
         _save_lifecycle_cursor(bus, root, cursor)
         remaining = deadline - time.monotonic()
@@ -6189,6 +6336,7 @@ def _play_pcm_24k(
     wav_path = None
     lock_descriptor = None
     player = None
+    marker = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name
@@ -6207,15 +6355,23 @@ def _play_pcm_24k(
         )
         if not _acquire_playback_lock(lock_descriptor, control):
             return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
-        # A take may have started during synthesis or the lock wait.
+        # A take may have started during synthesis or the lock wait. An open
+        # channel admits the reply once the app measures quiet on it.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root, control=control):
+        if not _wait_for_take_end(
+            speech_bus, cursor, bridge_root=root, control=control,
+            channel_released=channel_quiet_for_playback(runtime),
+        ):
             return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
         if control is not None:
             if control.stopped():
                 return False, "playback stopped", "stopped"
             control.publish("playing")
+        kept = channel_keeps_playback(runtime, _open_channels(cursor))
+        # Announced before the first sample: the app drops the channel feed
+        # from now on, and the pid lets it ignore a marker this process left.
+        marker = _announce_playback(runtime, len(pcm) / 48000)
         player = subprocess.Popen(
             ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -6227,18 +6383,19 @@ def _play_pcm_24k(
             scan_deadline = time.monotonic() + PLAYBACK_SCAN_SECONDS
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-                deadline=scan_deadline,
+                deadline=scan_deadline, channel_released=kept,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
             if idle:
                 incomplete_scans = 0
-            elif time.monotonic() < scan_deadline:
+            elif time.monotonic() < scan_deadline and _cursor_holds_take(cursor, kept):
                 # The scan finished inside its budget and found a live take.
                 _stop_playback(player)
                 return False, "take started during playback", "take_started"
             else:
-                # A loaded machine, not a take: the retained cursor resumes
-                # next tick. Only a run of unfinished scans stops the voice.
+                # A loaded machine or a bus that grew mid-scan, not a take:
+                # the retained cursor resumes next tick. Only a run of
+                # unfinished scans stops the voice.
                 incomplete_scans += 1
                 if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
                     _stop_playback(player)
@@ -6254,6 +6411,8 @@ def _play_pcm_24k(
     finally:
         if player is not None and player.poll() is None:
             _stop_playback(player)
+        if marker is not None:
+            _withdraw_playback(marker)
         if lock_descriptor is not None:
             os.close(lock_descriptor)
         if wav_path:
