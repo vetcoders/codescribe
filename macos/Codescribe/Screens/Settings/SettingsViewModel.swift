@@ -830,6 +830,22 @@ final class SettingsDeepLink {
   }
 }
 
+/// Reasoning levels a lane can ask for, lowest first; the ids are the core's
+/// `ReasoningEffort` words (oh-my-pi's thinking levels, `none` for its `off`).
+struct ReasoningLevel: Identifiable, Hashable {
+  let id: String
+  let title: String
+
+  static let all: [ReasoningLevel] = [
+    ReasoningLevel(id: "none", title: String(localized: "None", comment: "Reasoning level")),
+    ReasoningLevel(id: "minimal", title: String(localized: "Minimal", comment: "Reasoning level")),
+    ReasoningLevel(id: "low", title: String(localized: "Low", comment: "Reasoning level")),
+    ReasoningLevel(id: "medium", title: String(localized: "Medium", comment: "Reasoning level")),
+    ReasoningLevel(id: "high", title: String(localized: "High", comment: "Reasoning level")),
+    ReasoningLevel(id: "xhigh", title: String(localized: "Extra high", comment: "Reasoning level")),
+  ]
+}
+
 /// The two request lanes (D4: no Main fallback lane). A lane binds a provider
 /// reference (`vendor id` | `custom:<id>`) and a model; the endpoint is the
 /// provider's, never the lane's.
@@ -1269,6 +1285,9 @@ final class SettingsViewModel: ObservableObject {
   )
   @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
   @Published private(set) var keyProbePending: Set<String> = []
+  /// Settings › Formatting › Test: the last measured request, and whether one runs.
+  @Published private(set) var formattingProbe: CsFormattingProbe?
+  @Published private(set) var formattingProbePending = false
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
   /// Every saved correction, not just the page `refreshVoiceLab()` loads:
@@ -2536,6 +2555,19 @@ final class SettingsViewModel: ObservableObject {
     refreshAgentStatus()
   }
 
+  /// Persist the formatting lane's reasoning level. `none` is the default
+  /// and the core stores it as unset; higher levels are opt-in.
+  func setFormattingReasoning(_ level: String) {
+    settings.llmFormattingReasoning = level
+    persist("LLM_FORMATTING_REASONING", level)
+  }
+
+  /// Persist the Agent's reasoning level; `default` returns it to the model's.
+  func setAgentReasoning(_ level: String) {
+    settings.llmAssistiveReasoning = level
+    persist("LLM_ASSISTIVE_REASONING", level)
+  }
+
   /// Persist a model for one LLM lane. Empty clears the JSON override.
   func setLLMModel(_ value: String, for lane: LLMLane) {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3731,6 +3763,25 @@ final class SettingsViewModel: ObservableObject {
           message: error.userFacingMessage,
           probedEndpoint: nil
         )
+        self.lastError = error.userFacingMessage
+      }
+    }
+  }
+
+  /// Send one formatting request through the live formatter path. Errors
+  /// before the request (bridge, runtime) land in `lastError`; a provider
+  /// failure or a missed deadline comes back as the probe's status.
+  func testFormatting(sample: String) {
+    guard let engine, !formattingProbePending else { return }
+    formattingProbePending = true
+    let sample = sample.trimmingCharacters(in: .whitespacesAndNewlines)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.formattingProbePending = false }
+      do {
+        self.formattingProbe = try await engine.testFormattingAsync(sample: sample)
+      } catch {
+        self.formattingProbe = nil
         self.lastError = error.userFacingMessage
       }
     }
