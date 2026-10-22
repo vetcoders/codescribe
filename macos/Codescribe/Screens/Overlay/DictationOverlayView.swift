@@ -1079,7 +1079,8 @@ struct DictationOverlayView: View {
     let mini = density == .mini
     // Mini's row gaps are half the 8 pt between its trailing controls, so the
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
-    let mapEnabled = state.channelMapEnabled
+    let mapEnabled = state.channelMapInHeader
+    let horizontalMap = density == .midi && channelMap != nil
     return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
@@ -1109,7 +1110,9 @@ struct DictationOverlayView: View {
       // The flexible centre keeps one identity in every density; in mini it
       // collapses to a spacer so the recording controls stay trailing.
       chromeWaveform(barCount: density.waveformBars)
-        .frame(minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth, maxWidth: .infinity)
+        .frame(
+          minWidth: mini && !mapEnabled ? 4 : density.waveformMinWidth,
+          maxWidth: horizontalMap ? 120 : .infinity)
         .layoutPriority(-1)
         .opacity(mini ? 0 : 1)
         .allowsHitTesting(!mini)
@@ -1139,6 +1142,14 @@ struct DictationOverlayView: View {
             refreshingChordModifier(map)
           }
         }
+        // Names and their separate actions take useful width before the
+        // audio meter expands. The map itself degrades when the window is
+        // genuinely narrow; global controls retain their fixed width.
+        .layoutPriority(horizontalMap ? 1 : 0)
+      }
+      if horizontalMap {
+        Spacer(minLength: 0)
+          .layoutPriority(-2)
       }
 
       HStack(spacing: 8) {
@@ -1156,11 +1167,10 @@ struct DictationOverlayView: View {
           OverlayPinButton(state: state, palette: palette)
         } else {
           // Maciej, 2026-10-20: mini always carries the agents button beside
-          // the ordinary microphone, whether or not an agent records; this
-          // replaces the 2026-10-19 09:09 rule that gave it to agent capture
-          // alone. The megaphone it shows while a channel records faces left,
-          // toward the brand. While any channel records, a press here is that
-          // capture's stop, never channel 0 or the monitor.
+          // the ordinary microphone, whether or not an agent records. Single-agent
+          // capture uses a microphone; only All uses the left-facing megaphone
+          // (Founder, 2026-10-22). While any channel records, a press here is
+          // that capture's stop, never channel 0 or the monitor.
           channelStatusView
         }
         recordingControls(compact: false)
@@ -1201,19 +1211,58 @@ struct DictationOverlayView: View {
   /// channel 0 is closed. Mini shows its counter, compact its chips. A chip
   /// selects its conversation through the roster, as a rail pill does; the
   /// counter switches mini to compact, or returns a narrowed compact strip to
-  /// its natural width (spec §13.4). No popover: the hover hint lists the
-  /// agents. Internal so a test can drive the same values the header renders.
+  /// its natural width (spec §13.4). Wide named chips have separate audio and
+  /// panel controls. Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    guard state.channelMapEnabled else { return nil }
+    guard state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
+    var controls: [String: OverlayChannelMapControls] = [:]
+    for channel in roster.channels {
+      let digit = channel.channel
+      let focusState = roster.panelFocusStates[digit]
+      let showsFocus = roster.showsPanelFocusButton(for: channel)
+      controls[digit] = OverlayChannelMapControls(
+        microphoneEnabled: !roster.unavailable && roster.onToggleChannel != nil
+          && !roster.pendingToggleChannels.contains(digit)
+          && OverlayChannelStatusView.toggleDigit(for: digit) != nil
+          && !roster.hasDeadFollower(channel),
+        muted: roster.mutedChannels[digit],
+        playbackEnabled: roster.onTogglePlayback != nil
+          && !roster.pendingMuteChannels.contains(digit),
+        speaking: roster.conversation(for: channel)?.replySpeaking == true,
+        focusSymbol: showsFocus
+          ? roster.panelFocusSymbol(
+            focusState, target: roster.panelFocusTarget(for: channel)
+              ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil)) : nil,
+        focusLabel: showsFocus ? roster.panelFocusHelp(for: channel, state: focusState) : "",
+        focusEnabled: !roster.panelFocusUnreachable(channel),
+        focusPending: focusState?.isRequesting == true,
+        focusSucceeded: focusState?.isSucceeded == true,
+        focusFailed: focusState?.isFailed == true)
+    }
     return OverlayChannelMapView(
       model: model, placement: state.presentationMode == .mini ? .mini : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
-      onCounter: { state.activateChannelMapCounter() })
+      onCounter: { state.activateChannelMapCounter() },
+      controls: controls,
+      onToggleMicrophone: { digit in
+        guard let channel = roster.channels.first(where: { $0.channel == digit }) else { return }
+        roster.toggle(channel)
+      },
+      onTogglePlayback: { roster.onTogglePlayback?($0) },
+      onFocusChannel: { digit in
+        guard let channel = roster.channels.first(where: { $0.channel == digit }),
+          roster.showsPanelFocusButton(for: channel),
+          !roster.panelFocusUnreachable(channel),
+          roster.panelFocusStates[digit]?.isRequesting != true,
+          let owner = roster.archiveCandidates[digit]
+        else { return }
+        roster.onFocusAgentPanel?(owner)
+      })
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
