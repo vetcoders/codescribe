@@ -2731,23 +2731,23 @@ mod tests {
     #[test]
     fn an_ordinary_hold_shares_the_channel_modifier_only_on_the_same_key() {
         use crate::config::{ChannelModifier, ShortcutBinding};
-        assert!(ordinary_hold_shares_channel_modifier(
+        assert!(RecordingController::ordinary_hold_shares_channel_modifier(
             ShortcutBinding::HoldFn,
             ChannelModifier::Fn
         ));
-        assert!(ordinary_hold_shares_channel_modifier(
+        assert!(RecordingController::ordinary_hold_shares_channel_modifier(
             ShortcutBinding::HoldCtrl,
             ChannelModifier::Ctrl
         ));
-        assert!(!ordinary_hold_shares_channel_modifier(
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
             ShortcutBinding::HoldFn,
             ChannelModifier::Ctrl
         ));
-        assert!(!ordinary_hold_shares_channel_modifier(
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
             ShortcutBinding::HoldCtrlShift,
             ChannelModifier::Ctrl
         ));
-        assert!(!ordinary_hold_shares_channel_modifier(
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
             ShortcutBinding::DoubleCtrl,
             ChannelModifier::Ctrl
         ));
