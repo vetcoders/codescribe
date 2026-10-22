@@ -828,13 +828,16 @@ struct OverlayChannelStatusView: View {
     self.searchModel = searchModel
   }
 
-  /// Common immutable roster projection for the overlay and floating intercom
-  /// pills. The optional reveal callback presents the existing conversation
-  /// window; it does not create a per-agent detached chat.
+  /// Common roster and command projection. A floating card can override only
+  /// conversation presentation; the execution and broadcast policy stay shared.
   static func intercomRoster(
     state: OverlayState, palette: OverlayAppearancePalette, animates: Bool,
-    onRevealConversation: (() -> Void)? = nil
+    onRevealConversation: (() -> Void)? = nil,
+    onOpenConversation: ((String) -> Void)? = nil
   ) -> OverlayChannelStatusView {
+    let ownedConversations = Self.currentConversations(
+      conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
+      hudStates: state.channelHudStates)
     var view = OverlayChannelStatusView(
       channels: state.visibleChannelRows.filter { $0.channel != "0" },
       unavailable: state.channelStatusUnavailable,
@@ -842,7 +845,12 @@ struct OverlayChannelStatusView: View {
       hudStates: state.channelHudStates,
       agentDescriptors: state.channelAgentDescriptors,
       onToggleChannel: { digit in
-        Task { await state.toggleAgentChannel(digit, keepsAgentList: true) }
+        guard let conversation = ownedConversations.first(where: { $0.channel == String(digit) })
+        else { return }
+        Task {
+          await state.toggleConversationMicrophone(
+            conversation, keepsAgentList: true, preservesPresentation: onOpenConversation != nil)
+        }
       },
       toggleError: state.channelToggleError,
       pendingToggleChannels: state.pendingChannelToggles,
@@ -855,8 +863,12 @@ struct OverlayChannelStatusView: View {
       // A row or a rail pill: in the agents view the conversation slides out.
       onSelectConversation: { id in
         if let id {
-          state.chooseConversation(id)
-          onRevealConversation?()
+          if let onOpenConversation {
+            onOpenConversation(id)
+          } else {
+            state.chooseConversation(id)
+            onRevealConversation?()
+          }
         } else {
           state.selectConversation(nil)
         }
@@ -874,7 +886,12 @@ struct OverlayChannelStatusView: View {
       !state.isCollapsed && state.windowContentSurface == .agents
     view.agentMicrophoneStops = state.agentsButtonStopsRecording
     view.pendingMuteChannels = state.pendingPlaybackChannels
-    view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
+    view.onTogglePlayback = { channel in
+      guard let conversation = ownedConversations.first(where: { $0.channel == channel }) else {
+        return
+      }
+      Task { await state.toggleConversationPlayback(conversation) }
+    }
     view.playbackError = state.playbackPreferenceError
     view.archiveCandidates = Dictionary(
       uniqueKeysWithValues: state.visibleChannelRows.compactMap {
@@ -1249,7 +1266,9 @@ struct OverlayChannelStatusView: View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
-      scrollTargetID: gestureFocusID
+      scrollTargetID: gestureFocusID.flatMap { id in
+        currentConversations.first(where: { $0.channel == "0" })?.id == id ? nil : id
+      }
     ) {
       HStack(spacing: 6) {
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
@@ -1266,67 +1285,67 @@ struct OverlayChannelStatusView: View {
             textScale: textScale, action: sidebarControls.onFoldList)
         }
       }
+    } pinned: { rowFocus in
+      if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
+        onSelectConversation != nil
+      {
+        rowGlassContainer(
+          VStack(alignment: .leading, spacing: 2) {
+            broadcastRow(broadcast, rowFocus: rowFocus)
+            // The pair sits beside the preview, not in the Agents header
+            // and not in the agent-row footer. Three lines belong to All.
+            HStack(alignment: .center, spacing: 8) {
+              if let last = broadcast.messages.last {
+                let unread = unreadCounts[broadcast.id] ?? 0
+                Text(verbatim: Self.drawerPreview(message: last))
+                  .font(.system(size: 12.5 * textScale))
+                  .foregroundStyle(
+                    unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                  )
+                  .lineLimit(3)
+                  .fixedSize(horizontal: false, vertical: true)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .accessibilityIdentifier("overlay-all-preview")
+              } else {
+                Spacer(minLength: 0)
+              }
+              OverlayAgentAudioControls(
+                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                microphoneEnabled: !unavailable && hudStates["0"] != nil
+                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                palette: palette, onMicrophone: { onToggleChannel?(0) },
+                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                speaking: broadcast.replySpeaking
+              )
+              .fixedSize()
+              .accessibilityIdentifier("overlay-channel-toggle-0")
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        )
+        // The shared channel is a roster row: the same padding, the same
+        // selection mark and the same hover as the agents under it.
+        .padding(.vertical, 3)
+        .padding(.horizontal, 5)
+        .modifier(
+          OverlayRosterRowSelection(
+            palette: palette, selected: selectedConversationID == broadcast.id)
+        )
+        .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
+        .modifier(
+          OverlayGestureFocusRing(
+            focused: broadcast.id == gestureFocusID,
+            shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+            targetID: broadcast.id, onHover: onGestureHover)
+        )
+        .id(broadcast.id)
+        .modifier(
+          OverlayBroadcastPolicyMenu(
+            members: broadcastMembers, palette: palette, enabled: !unavailable))
+      }
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
-        if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
-          onSelectConversation != nil
-        {
-          rowGlassContainer(
-            VStack(alignment: .leading, spacing: 2) {
-              broadcastRow(broadcast, rowFocus: rowFocus)
-              // The pair sits beside the preview, not in the Agents header
-              // and not in the agent-row footer. Three lines belong to All.
-              HStack(alignment: .center, spacing: 8) {
-                if let last = broadcast.messages.last {
-                  let unread = unreadCounts[broadcast.id] ?? 0
-                  Text(verbatim: Self.drawerPreview(message: last))
-                    .font(.system(size: 12.5 * textScale))
-                    .foregroundStyle(
-                      unread > 0 ? palette.bodyText.color : palette.mutedText.color
-                    )
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("overlay-all-preview")
-                } else {
-                  Spacer(minLength: 0)
-                }
-                OverlayAgentAudioControls(
-                  open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
-                  microphoneEnabled: !unavailable && hudStates["0"] != nil
-                    && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
-                  playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
-                  palette: palette, onMicrophone: { onToggleChannel?(0) },
-                  onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                  speaking: broadcast.replySpeaking
-                )
-                .fixedSize()
-                .accessibilityIdentifier("overlay-channel-toggle-0")
-              }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-          )
-          // The shared channel is a roster row: the same padding, the same
-          // selection mark and the same hover as the agents under it.
-          .padding(.vertical, 3)
-          .padding(.horizontal, 5)
-          .modifier(
-            OverlayRosterRowSelection(
-              palette: palette, selected: selectedConversationID == broadcast.id)
-          )
-          .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
-          .modifier(
-            OverlayGestureFocusRing(
-              focused: broadcast.id == gestureFocusID,
-              shape: RoundedRectangle(cornerRadius: 10), palette: palette,
-              targetID: broadcast.id, onHover: onGestureHover)
-          )
-          .id(broadcast.id)
-          .modifier(
-            OverlayBroadcastPolicyMenu(
-              members: broadcastMembers, palette: palette, enabled: !unavailable))
-        }
-        Divider()
         detailsContent(rowFocus: rowFocus)
           .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.primaryText.color)
@@ -1484,7 +1503,6 @@ struct OverlayChannelStatusView: View {
           }
         }
         .foregroundStyle(palette.primaryText.color)
-        .overlayFastHint(tooltip, palette: palette)
         .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
         .accessibilityValue(Text(verbatim: tooltip))
         .accessibilityHint(Text(verbatim: identityHint))
@@ -1606,7 +1624,6 @@ struct OverlayChannelStatusView: View {
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
-    .modifier(agentPillMenu(for: channel.channel))
   }
 
   /// Compose display values here; the visual shell never reads state or
@@ -2352,7 +2369,7 @@ struct ChannelRosterContent<Content: View>: View {
 /// visible. The focus state is the docked column's name-pill channel: bumping
 /// `focusRevision` moves keyboard focus to the selected conversation's row.
 /// `scrollTargetID` is the middle-click chooser's focus, kept in view.
-private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
+private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let maximumHeight: CGFloat
   let palette: OverlayAppearancePalette
@@ -2360,15 +2377,18 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
   var focusedRowID: String? = nil
   var scrollTargetID: String? = nil
   @State private var headerHeight: CGFloat = 22
+  @State private var pinnedHeight: CGFloat = 0
   @State private var contentHeight: CGFloat?
   @FocusState private var rowFocus: String?
   @ViewBuilder let header: Header
+  let pinnedBuilder: (FocusState<String?>.Binding) -> Pinned
   let contentBuilder: (FocusState<String?>.Binding) -> Content
 
   init(
     maximumHeight: CGFloat, palette: OverlayAppearancePalette,
     focusRevision: UInt64 = 0, focusedRowID: String? = nil, scrollTargetID: String? = nil,
     @ViewBuilder header: () -> Header,
+    @ViewBuilder pinned: @escaping (FocusState<String?>.Binding) -> Pinned,
     @ViewBuilder content: @escaping (FocusState<String?>.Binding) -> Content
   ) {
     self.maximumHeight = maximumHeight
@@ -2377,12 +2397,14 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
     self.focusedRowID = focusedRowID
     self.scrollTargetID = scrollTargetID
     self.header = header()
+    pinnedBuilder = pinned
     contentBuilder = content
   }
 
   private var viewportHeight: CGFloat {
-    let available = max(0, maximumHeight - headerHeight - 8 - 16)
-    return min(contentHeight ?? available, available)
+    OverlayAgentMonitorLayout.viewportHeight(
+      maximumHeight: maximumHeight, headerHeight: headerHeight, pinnedHeight: pinnedHeight,
+      contentHeight: contentHeight)
   }
 
   var body: some View {
@@ -2395,6 +2417,14 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
           } action: {
             headerHeight = $0
           }
+        pinnedBuilder($rowFocus)
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            pinnedHeight = $0
+          }
+          .accessibilityIdentifier("overlay-agent-monitor-pinned-all")
         ScrollViewReader { proxy in
           ScrollView(.vertical) {
             contentBuilder($rowFocus)
@@ -2408,6 +2438,7 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
           }
           .frame(height: viewportHeight)
           .clipped()
+          .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
@@ -2430,5 +2461,15 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
     .onChange(of: focusedRowID) { _, id in
       if rowFocus != nil, let id { rowFocus = id }
     }
+  }
+}
+
+/// Measured header and pinned All consume space before the scrolling agents.
+enum OverlayAgentMonitorLayout {
+  static func viewportHeight(
+    maximumHeight: CGFloat, headerHeight: CGFloat, pinnedHeight: CGFloat, contentHeight: CGFloat?
+  ) -> CGFloat {
+    let available = max(0, maximumHeight - headerHeight - pinnedHeight - 16 - 16)
+    return min(contentHeight ?? available, available)
   }
 }

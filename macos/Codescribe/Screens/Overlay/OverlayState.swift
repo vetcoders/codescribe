@@ -1917,6 +1917,7 @@ final class OverlayState {
       return !channelStatusUnavailable && channelHudStates["0"] != nil
     }
     guard !channelStatusUnavailable, let owner = conversation.owner,
+      conversations.contains(where: { $0.id == conversation.id && $0.owner?.id == owner.id }),
       !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
       let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
@@ -1933,11 +1934,15 @@ final class OverlayState {
       && channelHudStates[conversation.channel]?.open == true
   }
 
-  func toggleConversationMicrophone(_ conversation: OverlayConversation) async {
+  func toggleConversationMicrophone(
+    _ conversation: OverlayConversation, keepsAgentList: Bool = false,
+    preservesPresentation: Bool = false
+  ) async {
     guard canToggleConversationMicrophone(conversation),
       let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
     else { return }
-    await toggleAgentChannel(digit)
+    await toggleAgentChannel(
+      digit, keepsAgentList: keepsAgentList, preservesPresentation: preservesPresentation)
   }
 
   func toggleConversationPlayback(_ conversation: OverlayConversation) async {
@@ -3052,18 +3057,25 @@ final class OverlayState {
   /// docked roster); while that list is shown, opening stays in it. A click
   /// here is the hand's: it disarms the middle click that would close a
   /// gesture-opened microphone (Maciej, 2026-10-17 12:19Z).
-  func toggleAgentChannel(_ digit: UInt8, keepsAgentList: Bool = false) async {
+  func toggleAgentChannel(
+    _ digit: UInt8, keepsAgentList: Bool = false, preservesPresentation: Bool = false
+  ) async {
     if case .talking = agentGesturePhase { agentGesturePhase = .idle }
-    await performAgentChannelToggle(digit, keepsAgentList: keepsAgentList)
+    await performAgentChannelToggle(
+      digit, keepsAgentList: keepsAgentList, preservesPresentation: preservesPresentation)
   }
 
-  private func performAgentChannelToggle(_ digit: UInt8, keepsAgentList: Bool) async {
+  private func performAgentChannelToggle(
+    _ digit: UInt8, keepsAgentList: Bool, preservesPresentation: Bool = false
+  ) async {
     let channel = String(digit)
     guard (0...9).contains(digit), let engine,
       !pendingChannelToggles.contains(channel)
     else { return }
     pendingChannelToggles.insert(channel)
-    if keepsAgentList, showsAgentMonitor { agentListHeldOpens.insert(channel) }
+    if preservesPresentation || (keepsAgentList && showsAgentMonitor) {
+      agentListHeldOpens.insert(channel)
+    }
     defer {
       pendingChannelToggles.remove(channel)
       agentListHeldOpens.remove(channel)

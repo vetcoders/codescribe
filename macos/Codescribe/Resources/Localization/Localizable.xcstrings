@@ -1,6 +1,42 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Conversation unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozmowa niedostępna" } }
+      }
+    },
+    "Next agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Następni agenci" } }
+      }
+    },
+    "Previous agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Poprzedni agenci" } }
+      }
+    },
+    "Expand Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozwiń interkom" } }
+      }
+    },
+    "Collapse Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Zwiń interkom" } }
+      }
+    },
+    "Detach conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Odepnij rozmowę" } }
+      }
+    },
     "Write / Forward…" : {
       "extractionState": "manual",
       "localizations": {

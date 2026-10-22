@@ -98,6 +98,22 @@ iTerm2 or Terminal tab. The button appears only when Codescribe knows where the
 agent runs. If macOS asks whether the terminal may be controlled, allow it, or
 turn it on later in System Settings › Privacy & Security › Automation.
 
+In the full **Agents** list, **0 · All** stays just below the header while the
+other channels scroll underneath. Its recording and playback buttons stay
+available when you scroll to the last agent.
+
+In Settings → Creator → **Intercom layout**, choose **Vertical** for the small
+desktop Intercom. It remains available when the main overlay is closed. Point
+at one agent to see information; click the name to expand that card into a
+conversation with a draft, pasted attachments and Send. Drag its top grip to
+detach it; the rest of the group folds into the Intercom header. Click the
+header to unfold the group. On a short screen with large text, scroll over a
+pill or use the header arrows to reach the remaining agents. Resize a
+conversation from its left edge or bottom
+corners. Closing a card or switching layouts keeps its draft. The separate
+audio slot shows a speaker while that named agent is speaking and a microphone
+otherwise. Right-click a floating pill for the agent's other actions.
+
 For a Codex agent with neither, the same button opens the agent's thread in the
 Codex app (ChatGPT). This works even when the row shows the agent as
 disconnected, which Codex agents often are between replies. A Codex Cloud

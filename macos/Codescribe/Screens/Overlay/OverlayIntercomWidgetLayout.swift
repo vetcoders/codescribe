@@ -1,81 +1,187 @@
 import AppKit
 
-/// Geometry only. Every pill has its own compact window, so the desktop owns
-/// the gaps between pills; there is no transparent window covering the column.
+/// Geometry only. Each card owns a native window; desktop gaps never intercept clicks.
 enum OverlayIntercomWidgetLayout {
   static let headerHeight: CGFloat = 30
-  static let rowHeight: CGFloat = 44
+  static let rowHeight: CGFloat = 30
   static let gap: CGFloat = 8
-  static let previewSize = CGSize(width: 320, height: 188)
 
-  static func height(count: Int) -> CGFloat {
-    headerHeight + CGFloat(count) * (rowHeight + gap)
+  static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
+
+  static func height(count: Int, scale: CGFloat = 1) -> CGFloat {
+    controlHeight(scale: scale) * CGFloat(count + 1) + CGFloat(count) * gap
   }
 
-  static func clampedHeader(_ frame: CGRect, count: Int, visibleFrame: CGRect) -> CGRect {
+  /// Full-size controls remain reachable on short displays by paging only the
+  /// visible native capsules, rather than shrinking names or covering desktop gaps.
+  static func visibleRange(
+    count: Int, offset: Int, visibleHeight: CGFloat, scale: CGFloat
+  ) -> Range<Int> {
+    let row = controlHeight(scale: scale)
+    let capacity = max(1, Int(max(0, visibleHeight - row) / (row + gap)))
+    let shown = min(max(0, count), capacity)
+    let start = min(max(0, offset), max(0, count - shown))
+    return start..<(start + shown)
+  }
+
+  /// Content measurements include only the text; the rest mirrors the drawn controls.
+  static func restingWidth(headerText: CGFloat, agentText: CGFloat, scale: CGFloat) -> CGFloat {
+    let unit = max(1, scale)
+    return max(headerText + 26 * unit + 60, agentText + 30 * unit + 47)
+  }
+
+  static func clampedHeader(
+    _ frame: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1
+  ) -> CGRect {
     var result = frame
     result.size.width = min(frame.width, visibleFrame.width)
+    result.size.height = min(controlHeight(scale: scale), visibleFrame.height)
     result.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - result.width)
-    let totalHeight = min(height(count: count), visibleFrame.height)
+    let totalHeight = min(height(count: count, scale: scale), visibleFrame.height)
     result.origin.y = min(
-      max(frame.minY, visibleFrame.minY + totalHeight - headerHeight),
-      visibleFrame.maxY - headerHeight)
+      max(frame.minY, visibleFrame.minY + totalHeight - result.height),
+      visibleFrame.maxY - result.height)
     return result
   }
 
-  static func rowFrame(index: Int, header: CGRect, count: Int, visibleFrame: CGRect) -> CGRect {
-    // Nine owners fit a normal desktop. On a shorter screen, reduce only the
-    // gaps, preserving the controls' readable geometry.
+  static func rowFrame(
+    index: Int, header: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1
+  ) -> CGRect {
+    let row = controlHeight(scale: scale)
     let availableGap =
       count > 0
-      ? (visibleFrame.height - headerHeight - CGFloat(count) * rowHeight) / CGFloat(count) : gap
+      ? (visibleFrame.height - header.height - CGFloat(count) * row) / CGFloat(count) : gap
     let spacing = min(gap, max(0, availableGap))
     return CGRect(
-      x: header.minX,
-      y: header.minY - CGFloat(index + 1) * (rowHeight + spacing),
-      width: header.width, height: rowHeight)
+      x: header.minX, y: header.minY - CGFloat(index + 1) * (row + spacing),
+      width: header.width, height: row)
   }
 
-  static func previewFrame(beside row: CGRect, visibleFrame: CGRect) -> CGRect {
-    let width = min(previewSize.width, visibleFrame.width)
-    let height = min(previewSize.height, visibleFrame.height)
-    let left = row.minX - width - gap
-    let x = left >= visibleFrame.minX ? left : row.maxX + gap
+  /// The right edge stays anchored. Hover widens only this card, never its neighbours.
+  static func previewFrame(
+    beside row: CGRect, visibleFrame: CGRect, scale: CGFloat = 1
+  ) -> CGRect {
+    cardFrame(
+      below: row, size: CGSize(width: max(row.width, 360 * max(1, scale)), height: row.height),
+      visibleFrame: visibleFrame)
+  }
+
+  static func conversationSize(scale: CGFloat) -> CGSize {
+    CGSize(width: 380 * max(1, scale), height: 360 * max(1, scale))
+  }
+
+  static func minimumConversationSize(scale: CGFloat) -> CGSize {
+    CGSize(width: 320 * max(1, scale), height: 240 * max(1, scale))
+  }
+
+  static func conversationFrame(
+    below row: CGRect, size: CGSize, visibleFrame: CGRect, scale: CGFloat
+  ) -> CGRect {
+    let minimum = minimumConversationSize(scale: scale)
+    return cardFrame(
+      below: row,
+      size: CGSize(width: max(size.width, minimum.width), height: max(size.height, minimum.height)),
+      visibleFrame: visibleFrame)
+  }
+
+  static func cardFrame(below row: CGRect, size: CGSize, visibleFrame: CGRect) -> CGRect {
+    let width = min(size.width, visibleFrame.width)
+    let height = min(size.height, visibleFrame.height)
     return CGRect(
-      x: min(max(x, visibleFrame.minX), visibleFrame.maxX - width),
+      x: min(max(row.maxX - width, visibleFrame.minX), visibleFrame.maxX - width),
       y: min(max(row.maxY - height, visibleFrame.minY), visibleFrame.maxY - height),
       width: width, height: height)
   }
+
+  enum ResizeEdge: Equatable { case left, bottomLeft, bottomRight }
+
+  static func resizedFrame(
+    _ frame: CGRect, delta: CGSize, edge: ResizeEdge, minimum: CGSize, visibleFrame: CGRect
+  ) -> CGRect {
+    let minWidth = min(minimum.width, visibleFrame.width)
+    let minHeight = min(minimum.height, visibleFrame.height)
+    var result = frame
+    switch edge {
+    case .left, .bottomLeft:
+      result.origin.x = min(max(frame.minX + delta.width, visibleFrame.minX), frame.maxX - minWidth)
+      result.size.width = frame.maxX - result.minX
+    case .bottomRight:
+      result.size.width = min(
+        max(frame.width + delta.width, minWidth), visibleFrame.maxX - frame.minX)
+    }
+    if edge != .left {
+      result.origin.y = min(
+        max(frame.minY + delta.height, visibleFrame.minY), frame.maxY - minHeight)
+      result.size.height = frame.maxY - result.minY
+    }
+    return result
+  }
 }
 
-/// Only transient preview selection lives here. The conversation and capture
-/// remain owned by OverlayState; a capsule click does not select either.
-enum OverlayIntercomPreviewChoice: Equatable {
-  case hidden
-  case transient(String)
-  case pinned(String)
+/// Exact conversation identity, including the provider/session/lease owner. A
+/// digit-only placeholder can paint a roster entry but cannot open a composer.
+struct OverlayIntercomCardIdentity: Hashable {
+  let digit: String
+  let conversationID: String?
+  let ownerID: String?
+  let name: String
 
-  var digit: String? {
-    switch self {
-    case .hidden: nil
-    case .transient(let digit), .pinned(let digit): digit
-    }
+  init(digit: String, conversation: OverlayConversation?, name: String? = nil) {
+    self.digit = digit
+    conversationID = conversation?.id
+    ownerID = conversation?.owner?.id
+    self.name = name ?? conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? digit
   }
 
-  var isPinned: Bool {
-    if case .pinned = self { return true }
-    return false
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.digit == rhs.digit && lhs.conversationID == rhs.conversationID && lhs.ownerID == rhs.ownerID
   }
 
-  func entering(_ digit: String) -> Self {
-    isPinned ? self : .transient(digit)
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(digit)
+    hasher.combine(conversationID)
+    hasher.combine(ownerID)
   }
 
-  func clicking(_ digit: String) -> Self {
-    self == .pinned(digit) ? .hidden : .pinned(digit)
+  func matches(_ conversation: OverlayConversation) -> Bool {
+    conversationID == conversation.id && ownerID == conversation.owner?.id
+      && digit == conversation.channel
+  }
+}
+
+/// Hover is independent of expanded conversations. Neither gesture selects a
+/// capture destination; all durable drafts remain in OverlayState.
+struct OverlayIntercomPresentation: Equatable {
+  var hovered: OverlayIntercomCardIdentity?
+  var expanded: Set<OverlayIntercomCardIdentity> = []
+  var detached: Set<OverlayIntercomCardIdentity> = []
+  var folded = false
+
+  mutating func enter(_ identity: OverlayIntercomCardIdentity) {
+    hovered = expanded.contains(identity) ? nil : identity
   }
 
-  func leaving(_ digit: String) -> Self {
-    self.digit == digit && !isPinned ? .hidden : self
+  mutating func leave(_ identity: OverlayIntercomCardIdentity) {
+    if hovered == identity { hovered = nil }
+  }
+
+  mutating func expand(_ identity: OverlayIntercomCardIdentity) {
+    guard identity.conversationID != nil, identity.ownerID != nil else { return }
+    expanded.formIntersection(detached)
+    expanded.insert(identity)
+    hovered = nil
+  }
+
+  mutating func detach(_ identity: OverlayIntercomCardIdentity) {
+    guard expanded.contains(identity) else { return }
+    detached.insert(identity)
+    hovered = nil
+    folded = true
+  }
+
+  mutating func close(_ identity: OverlayIntercomCardIdentity) {
+    expanded.remove(identity)
+    detached.remove(identity)
+    leave(identity)
   }
 }
