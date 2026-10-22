@@ -98,13 +98,24 @@
         }
       }
     },
-    "Choose the horizontal strip or floating vertical agent pills.": {
+    "Classic": {
       "extractionState": "manual",
       "localizations": {
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Wybierz poziomy pasek lub pionowe, lewitujące pigułki agentów."
+            "value": "Klasyczny"
+          }
+        }
+      }
+    },
+    "Classic overlay, the horizontal agent strip, or floating vertical agent pills.": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki."
           }
         }
       }
@@ -215,28 +226,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Otwórz rozmowę"
-          }
-        }
-      }
-    },
-    "Show agent channels in mini and compact views." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
-          }
-        }
-      }
-    },
-    "Channel map in the overlay" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mapa kanałów w nakładce"
           }
         }
       }

@@ -31,6 +31,33 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).layout, .horizontal)
   }
 
+  /// Maciej, 2026-10-22: Settings offers three peer states. Classic is the
+  /// map turned off, and it remembers the previously chosen layout.
+  func testModeExposesClassicAsAPeerAndRemembersTheLayout() throws {
+    let name = "CodescribeTests.intercom-mode.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    XCTAssertEqual(preference.mode, .classic, "a fresh installation keeps the classic overlay")
+
+    preference.selectMode(.vertical)
+    XCTAssertTrue(preference.enabled)
+    XCTAssertEqual(preference.layout, .vertical)
+    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .vertical)
+
+    preference.selectMode(.classic)
+    XCTAssertFalse(preference.enabled)
+    XCTAssertEqual(preference.mode, .classic)
+    XCTAssertEqual(
+      preference.layout, .vertical, "classic does not forget which layout was chosen")
+
+    preference.selectMode(.horizontal)
+    XCTAssertEqual(OverlayChannelMapPreference(defaults: defaults).mode, .horizontal)
+    XCTAssertEqual(
+      OverlayIntercomPresentationMode(enabled: false, layout: .horizontal), .classic,
+      "a disabled map is the classic overlay regardless of the stored layout")
+  }
+
   func testSwitchingLayoutKeepsCaptureSelectionAndDraft() throws {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)

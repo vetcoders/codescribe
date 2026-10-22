@@ -247,6 +247,32 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         maximumHeight: 300, headerHeight: 22, pinnedHeight: 400, contentHeight: nil), 0)
   }
 
+  /// Olga's P1, 2026-10-22: dictating into a visible card's draft keeps the
+  /// main overlay closed. Every other draft capture keeps the existing show.
+  func testDraftCaptureInAVisibleCardKeepsTheMainOverlayClosed() {
+    typealias Presentation = OverlayIntercomPresentation
+    XCTAssertFalse(
+      Presentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: true, mainPanelVisible: false,
+        conversationPresentedInIntercom: true),
+      "the card already presents this draft; no second window")
+    XCTAssertTrue(
+      Presentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: false, mainPanelVisible: false,
+        conversationPresentedInIntercom: false),
+      "the horizontal strip keeps today's behaviour")
+    XCTAssertTrue(
+      Presentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: true, mainPanelVisible: true,
+        conversationPresentedInIntercom: true),
+      "an already visible main overlay keeps showing its own composer")
+    XCTAssertTrue(
+      Presentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: true, mainPanelVisible: false,
+        conversationPresentedInIntercom: false),
+      "a draft with no visible card still gets a window to speak into")
+  }
+
   /// The All row sits in the pinned builder, outside the agents' ScrollView,
   /// and appears exactly once.
   func testAllRowIsBuiltOnceOutsideTheAgentsScroll() throws {
