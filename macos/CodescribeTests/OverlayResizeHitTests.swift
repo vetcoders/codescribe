@@ -239,6 +239,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   private func makeMidiMapPanel(key: String) throws -> (OverlayState, FloatingOverlayPanel) {
     let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(state: state, textScale: TextScaleController(key: key))
         as? FloatingOverlayPanel)
@@ -345,6 +346,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testMiniFollowsItsCounterAtTheUpperRightPin() throws {
     let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Resize.miniCounter"))

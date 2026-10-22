@@ -1279,6 +1279,14 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
+  @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
+  var channelMapEnabled: Bool { channelMapPreference.enabled }
+
+  /// The view observes the same presentation preference as Creator. Refitting
+  /// changes chrome only: no channel selection, microphone or document event.
+  func channelMapPreferenceChanged() {
+    onChannelMapLayoutChanged?()
+  }
   /// The Agent channel chord's modifier, named in the compact channel map's
   /// shortcut hints. Settings own it in `settings.json`; no change event
   /// reaches the overlay, so the map re-reads it when it appears and when the

@@ -89,6 +89,7 @@ final class OverlayChannelMapTests: XCTestCase {
     let lena = try ownerConversation("lena", channel: "2", session: "lena-session", lease: "a")
     let astra = try ownerConversation("astra", channel: "3", session: "astra-session", lease: "b")
     let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
     state.applyConversationSnapshot(
       .init(
         deliveries: [
@@ -552,6 +553,7 @@ final class OverlayChannelMapTests: XCTestCase {
 
   func testNoMapBeforeTheRosterNamesAChannel() {
     let state = OverlayState.previewFormatted()
+    optIntoChannelMap(state)
     XCTAssertNil(DictationOverlayView(state: state).channelMap)
   }
 

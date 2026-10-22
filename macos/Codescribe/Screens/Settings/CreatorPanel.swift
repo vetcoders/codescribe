@@ -51,6 +51,20 @@ struct CreatorPanel: View {
       VStack(spacing: 8) {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
+        SettingsControlRow(
+          title: String(localized: "Channel map in the overlay"),
+          subtitle: String(localized: "Show agent channels in mini and compact views.")
+        ) {
+          Toggle(
+            "Channel map in the overlay",
+            isOn: Binding(
+              get: { model.overlayChannelMapEnabled },
+              set: { model.selectOverlayChannelMap($0) })
+          )
+          .labelsHidden()
+          .toggleStyle(.switch)
+          .accessibilityIdentifier("settings-overlay-channel-map")
+        }
       }
       .padding(.top, SettingsScale.sectionGap)
 

@@ -18,7 +18,14 @@ Use the preview control to cycle through mini, compact and expanded forms, or
 choose a form from its context menu. The upper-right corner stays pinned while
 expanding; moving the window changes that pin.
 
-Mini is as wide as its content: the brand dot, the channel counter and its
+The channel map is optional. In Settings → Creator, enable **Channel map in the
+overlay** to show its counter in mini and its chips in compact. It is off until
+you opt in. Switching it updates open overlays immediately without selecting a
+conversation or changing the microphone. With it off, mini keeps the `cs` wordmark
+and the earlier 200 pt width (164 pt during agent recording); compact returns to
+its 410 pt natural width. A width you explicitly resized is still yours.
+
+With the channel map enabled, mini is as wide as its content: the brand dot, the channel counter and its
 controls, with no empty space between them, so it narrows or widens a little
 when the counter changes. Compact supports horizontal resizing. Expanded
 supports edge and corner resizing. The minimum visible sizes are 130 × 46,

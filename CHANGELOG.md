@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Creator: the collapsed overlay channel map is opt-in, with a live **Channel map in the overlay** switch. With it off, mini restores the `cs` wordmark and its earlier widths; compact no longer grows for agent chips. The choice never changes microphone routing.
+
 - Agent window: the "Conversation width" submenu under "More actions" marks the active mode with the system check mark (native picker); before, the mark never rendered and the choice looked ignored.
 - Agent window: one bar, the same height as Settings. The conversation title, live status and "Agent · model" sit in the window bar beside the wordmark; the separate header row under the bar is gone, and its controls (Voice Lab mark, width, **Context**) join **Always on top** and the menu on the trailing side.
 - Agent window: a one-click conversation width button sits beside **Context** in the window bar (Standard → Wide → Full width); the submenu under "More actions" still names the modes.
