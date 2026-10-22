@@ -12960,17 +12960,6 @@
         }
       }
     },
-    "Pin" : {
-      "comment" : "Overlay header menu: keep the overlay visible between takes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przypnij"
-          }
-        }
-      }
-    },
     "Pin overlay" : {
       "comment" : "Tooltip on the overlay pin while the overlay leaves after each take",
       "localizations" : {
@@ -19293,17 +19282,6 @@
         }
       }
     },
-    "Unpin" : {
-      "comment" : "Overlay header menu: stop keeping the overlay between takes",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odepnij"
-          }
-        }
-      }
-    },
     "Unpin overlay" : {
       "comment" : "Tooltip on the overlay pin while it keeps the overlay between takes",
       "localizations" : {
@@ -19749,16 +19727,6 @@
         }
       }
     },
-    "Wait for the spoken message, then retry these attachments." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Poczekaj na tekst wypowiedzi, a następnie ponów dołączenie załączników."
-          }
-        }
-      }
-    },
     "Wait for this response to finish." : {
       "localizations" : {
         "pl" : {
@@ -19841,17 +19809,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Oczekiwanie na zakończenie tego nagrania."
-          }
-        }
-      }
-    },
-    "Wake the agent" : {
-      "comment" : "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Budź agenta"
           }
         }
       }
