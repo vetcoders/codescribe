@@ -389,6 +389,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.isRichText = false
     editor.isEditable = true
     editor.isSelectable = true
+    // Without this, Cmd+Z has nothing recorded to undo in the overlay's
+    // composer (the chat window's ComposerTextView already allows undo).
+    editor.allowsUndo = true
     editor.drawsBackground = false
     let font = NSFont.systemFont(ofSize: fontSize)
     editor.font = font
@@ -712,17 +715,40 @@ private struct ConversationMessageField: NSViewRepresentable {
       return super.validateUserInterfaceItem(item)
     }
 
-    private func performComposerPaste(with event: NSEvent) -> Bool {
+    /// Every standard Cmd edit shortcut lives here: a nonactivating
+    /// borderless panel has no menu-bar routing, so only shortcuts handled
+    /// in the view work at all. Paste alone was handled, and Maciej found
+    /// the gap by hand (P1!, 2026-10-22): Cmd+V worked while Cmd+C, Cmd+X,
+    /// Cmd+A, Cmd+Z and Cmd+Shift+Z did nothing.
+    private func performComposerEditCommand(with event: NSEvent) -> Bool {
       guard event.type == .keyDown, window?.firstResponder === self,
-        event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-        event.charactersIgnoringModifiers?.lowercased() == "v"
+        let key = event.charactersIgnoringModifiers?.lowercased()
       else { return false }
-      paste(nil)
+      let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+      switch (modifiers, key) {
+      case (.command, "v"):
+        paste(nil)
+      case (.command, "c"):
+        copy(nil)
+      case (.command, "x"):
+        cut(nil)
+        onTypingActivity()
+      case (.command, "a"):
+        selectAll(nil)
+      case (.command, "z"):
+        undoManager?.undo()
+        onTypingActivity()
+      case ([.command, .shift], "z"):
+        undoManager?.redo()
+        onTypingActivity()
+      default:
+        return false
+      }
       return true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-      if performComposerPaste(with: event) { return true }
+      if performComposerEditCommand(with: event) { return true }
       return super.performKeyEquivalent(with: event)
     }
 
@@ -747,7 +773,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     override func keyDown(with event: NSEvent) {
-      if performComposerPaste(with: event) { return }
+      if performComposerEditCommand(with: event) { return }
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
       if event.keyCode == 53, alternate.isEmpty, !hasMarkedText(), let onCancel {
         onCancel()
