@@ -158,6 +158,9 @@ type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>
 pub trait CsAppActionListener: Send + Sync {
     /// Bring the Agent surface forward. UI-only — must not touch the mic.
     fn on_show_agent(&self);
+    /// Show the collapsed overlay widget, or hide it while nothing records.
+    /// UI-only — the overlay decides between show, front and hide.
+    fn on_toggle_widget(&self);
     /// Pending Max permission state changed; re-read its authoritative snapshot.
     fn on_max_approvals_changed(&self);
     /// Pointer input for the overlay's agent chooser. UI-only: the overlay
@@ -296,6 +299,12 @@ fn route_hotkey_event<F, G>(
             tracing::info!("Agent summon command: dispatching UI-only app action");
             if let Some(listener) = app_action_listener {
                 listener.on_show_agent();
+            }
+        }
+        HotkeyEvent::ToggleWidget => {
+            tracing::info!("Widget toggle command: dispatching UI-only app action");
+            if let Some(listener) = app_action_listener {
+                listener.on_toggle_widget();
             }
         }
         HotkeyEvent::InsertHere => dispatch_deferred_insert(),
@@ -2209,7 +2218,10 @@ async fn dispatch_recording_hotkey_event(
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
-        HotkeyEvent::ShowAgent | HotkeyEvent::InsertHere | HotkeyEvent::AgentGesture(_) => {
+        HotkeyEvent::ShowAgent
+        | HotkeyEvent::ToggleWidget
+        | HotkeyEvent::InsertHere
+        | HotkeyEvent::AgentGesture(_) => {
             unreachable!("UI-only commands must be routed before recording dispatch")
         }
         HotkeyEvent::Hold { action, mode } => {
@@ -2528,6 +2540,7 @@ mod app_action_tests {
     /// Test double that counts UI-only Agent summons.
     struct CountingAppActionListener {
         show_agent_calls: AtomicUsize,
+        toggle_widget_calls: AtomicUsize,
         agent_gestures: Mutex<Vec<CsAgentGestureInput>>,
     }
 
@@ -2535,6 +2548,7 @@ mod app_action_tests {
         fn new() -> Self {
             Self {
                 show_agent_calls: AtomicUsize::new(0),
+                toggle_widget_calls: AtomicUsize::new(0),
                 agent_gestures: Mutex::new(Vec::new()),
             }
         }
@@ -2545,6 +2559,9 @@ mod app_action_tests {
         /// Count ShowAgent UI callbacks (no recording side effects).
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_toggle_widget(&self) {
+            self.toggle_widget_calls.fetch_add(1, Ordering::SeqCst);
         }
         fn on_agent_gesture(&self, input: CsAgentGestureInput) {
             self.agent_gestures
@@ -2666,6 +2683,16 @@ mod app_action_tests {
         );
         assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 2);
+
+        route_hotkey_event(
+            HotkeyEvent::ToggleWidget,
+            Some(listener.clone()),
+            |_| panic!("widget toggle must not enter recording dispatch"),
+            || panic!("widget toggle must not dispatch deferred insert"),
+        );
+        assert_eq!(listener.toggle_widget_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

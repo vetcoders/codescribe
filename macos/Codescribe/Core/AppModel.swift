@@ -365,6 +365,22 @@ final class OverlayController: ObservableObject {
     show()
   }
 
+  /// The global widget chord (⌃⇧B, `HotkeyEvent::ToggleWidget`): a hidden
+  /// panel shows as the Tray entry does; a visible idle panel hides through
+  /// the human Close intent; a panel that is recording or holds an open
+  /// channel only comes forward, so the chord can never hide live capture.
+  func toggleWidget() {
+    guard let panel, panel.isVisible else {
+      showWidget()
+      return
+    }
+    if state.recording || state.hasOpenChannel {
+      show(preserveVisiblePosition: true)
+      return
+    }
+    dismiss()
+  }
+
   /// Show the overlay for a dictation session, honouring the "Transcription
   /// Overlay" toggle. When disabled, dictation runs headless — hold the hotkey,
   /// dictate, and the text lands at the cursor (+ clipboard) with no window.

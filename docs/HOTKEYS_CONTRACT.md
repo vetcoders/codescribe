@@ -191,6 +191,20 @@ repeat cannot emit duplicate commands.
 This fixed MVP chord is intentionally outside the configurable
 `WorkMode -> ShortcutBinding` contract.
 
+`Control+Shift+B` emits one `HotkeyEvent::ToggleWidget` per physical B press
+(Founder, 2026-10-23: "B jak bus"). The bridge delivers it to
+`CsAppActionListener::on_toggle_widget`; the overlay decides what it means: a
+hidden panel shows as the Tray's **Show widget** does, a visible idle panel
+hides through the human Close intent, and a panel that is recording or holds an
+open channel only comes forward — the chord never hides live capture. Like
+`ShowAgent` it touches no `RecordingController`, no lifecycle callback and no
+Idle state, and key-up re-arms it against key repeat. The tap does not claim
+the event, so Cocoa's own `^⇧B` (extend selection one character back) still
+reaches a focused text view; the hold presets that use Ctrl+Shift as their
+base are unaffected because the chord needs the B key, which any hold start
+already treats as a key press during the modifier. Settings › Shortcuts lists
+the chord read-only under Extra shortcuts.
+
 Assistive bindings notify the same app-action plane to front/focus the Agent
 window, then deliver the recording event to the same `RecordingController` as
 Dictation. Agent, Assistive, and Dictation therefore share microphone, VAD, STT,
