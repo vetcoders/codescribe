@@ -4,6 +4,22 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
+  func testHoverIsTransientAndClickPinsOnlyTheSmallPreview() {
+    var choice = OverlayIntercomPreviewChoice.hidden
+    choice = choice.entering("3")
+    XCTAssertEqual(choice, .transient("3"))
+    XCTAssertEqual(
+      choice.leaving("1"), .transient("3"), "an old preview exit cannot dismiss another agent")
+    XCTAssertEqual(choice.leaving("3"), .hidden)
+    choice = choice.clicking("3")
+    XCTAssertEqual(choice, .pinned("3"))
+    XCTAssertEqual(choice.entering("1"), .pinned("3"))
+    XCTAssertEqual(choice.leaving("3"), .pinned("3"))
+    choice = choice.clicking("1")
+    XCTAssertEqual(choice, .pinned("1"))
+    XCTAssertEqual(choice.clicking("1"), .hidden)
+  }
+
   func testWholeColumnAndPreviewStayOnEveryNormalDesktopWithRealGaps() {
     for visible in [
       CGRect(x: 0, y: 0, width: 1440, height: 900),

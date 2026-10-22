@@ -47,3 +47,35 @@ enum OverlayIntercomWidgetLayout {
       width: width, height: height)
   }
 }
+
+/// Only transient preview selection lives here. The conversation and capture
+/// remain owned by OverlayState; a capsule click does not select either.
+enum OverlayIntercomPreviewChoice: Equatable {
+  case hidden
+  case transient(String)
+  case pinned(String)
+
+  var digit: String? {
+    switch self {
+    case .hidden: nil
+    case .transient(let digit), .pinned(let digit): digit
+    }
+  }
+
+  var isPinned: Bool {
+    if case .pinned = self { return true }
+    return false
+  }
+
+  func entering(_ digit: String) -> Self {
+    isPinned ? self : .transient(digit)
+  }
+
+  func clicking(_ digit: String) -> Self {
+    self == .pinned(digit) ? .hidden : .pinned(digit)
+  }
+
+  func leaving(_ digit: String) -> Self {
+    self.digit == digit && !isPinned ? .hidden : self
+  }
+}

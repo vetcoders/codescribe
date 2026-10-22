@@ -210,8 +210,11 @@ Creator's channel-map opt-in also offers **Intercom layout**. Horizontal keeps
 Monika's strip and gives names and separate microphone/playback/focus controls
 priority over the waveform at wide widths. Vertical shows independently movable,
 nonactivating desktop capsules. Native capsule windows leave the gaps to the
-desktop; only one hovered agent opens a message preview. A name selects and
-reveals the existing conversation, while an explicit microphone changes capture.
+desktop; only one hovered agent opens a transient message preview. Clicking a
+capsule pins that small preview; clicking it again, or Close, dismisses it.
+Hovering another agent does not replace a pinned preview. The preview's explicit
+Open conversation action selects and reveals the existing conversation, while
+the capsule's independent microphone changes capture.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.
