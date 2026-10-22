@@ -7,7 +7,7 @@ import XCTest
 /// Falsifiers for the collapsed overlay's channel map (bus intercom spec §5.1,
 /// §5.5, §13, decision D1): one chip per bound agent, channel 0 only while it
 /// broadcasts, named chips, then digit-only chips, then a counter as the room
-/// shrinks, the microphone badge on an open channel, capitalised names, hints
+/// shrinks, the violet dot on an open channel's digit, capitalised names, hints
 /// that follow the Agent channel modifier, a counter whose click changes the
 /// form or the width and nothing else, and one pill view shared with the
 /// Agents rail.
@@ -235,9 +235,9 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(state.channelRosterNames["3"], "igor", "the lease keeps its name")
   }
 
-  // MARK: - Microphone badge (§13.3)
+  // MARK: - Open-channel dot (§13.3, §14)
 
-  func testOpenChannelCarriesTheBadgeInPlace() {
+  func testOpenChannelCarriesTheDotInPlace() {
     let map = scenario(open: ["5"])
     XCTAssertEqual(map.chips.map(\.digit), ["2", "3", "5"], "no second row, no reorder")
     XCTAssertEqual(map.chips.map(\.microphoneOpen), [false, false, true])
@@ -251,7 +251,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       map.rowWidth(for: .chips, scale: 1, spacing: OverlayChannelMapView.chipSpacing),
       scenario().rowWidth(for: .chips, scale: 1, spacing: OverlayChannelMapView.chipSpacing),
-      "the badge overlaps the circle and adds no width")
+      "the dot overlaps the circle and adds no width")
   }
 
   func testClosedChannelReturnsThePlainChipAndCounter() {
@@ -731,9 +731,20 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertEqual(
       pill.components(separatedBy: "Text(verbatim: text)").count - 1, 1,
       "one drawing of the digit")
+    // Spec §14: the open channel's digit carries one violet dot, drawn once,
+    // and no symbol; the microphone and megaphone signs live on the Agents
+    // button only.
     XCTAssertEqual(
-      pill.components(separatedBy: "Image(systemName: \"mic.fill\")").count - 1, 1,
-      "one drawing of the microphone badge")
+      pill.components(separatedBy: "Circle()\n      .fill(palette.agentAccent.color)").count - 1, 1,
+      "one drawing of the open-channel dot")
+    let pillView = try section(
+      of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
+    XCTAssertFalse(pillView.contains("Image(systemName:"), "no symbol on the digit or the pill")
+    XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
+    XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
+    XCTAssertTrue(
+      pillView.contains("if display.animates && !reduceMotion"),
+      "the dot pulses only while the pill animates and Reduce Motion is off")
     for forbidden in [
       "OverlayState", "onToggleChannel", "toggleAgentChannel", "OverlayConversation",
       "onSelectConversation",

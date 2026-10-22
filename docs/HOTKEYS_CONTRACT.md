@@ -35,7 +35,7 @@ reads "cs". Mini is as wide as its content (`DictationOverlayWindow.miniNaturalW
 its 130 pt floor (32 pt padding, the 9 pt dot, two 4 pt gaps around the closed
 centre, 81 pt of trailing controls) plus, with a channel on the map, 6 pt and
 the counter as drawn, the agent count with `▾` or the open channel's digit with
-the microphone badge. It resizes in one step at its upper-right pin when the
+the violet open-channel dot. It resizes in one step at its upper-right pin when the
 counter changes, opening and closing a microphone included; there is no
 separate width while an agent records. No two neighbouring controls stand
 further apart than the 8 pt between the trailing controls.

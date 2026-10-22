@@ -11,7 +11,7 @@ alternative arrangements; this document does not select one as the final UI.
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |
 | Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
-| Numbered channel pill: rail pills, map chips, counter, microphone badge | `OverlayChannelPill.swift`                                                              |
+| Numbered channel pill: rail pills, map chips, counter, open-channel dot | `OverlayChannelPill.swift`                                                              |
 | Channel map in mini and compact: tiers, counter, its click              | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
 | Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
 | List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
@@ -74,7 +74,10 @@ no map popover; the counter's hint lists the agents.
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from
 immutable display values and one action, and an open channel's digit carries
-the microphone badge in the agent accent there, never `MIC →` text. It receives
+a small dot in the agent accent there (spec §14: a dot, no symbol, never
+`MIC →` text; the microphone and megaphone signs belong to the Agents header
+button). The dot overlaps the digit's circle, so it adds no width, and pulses
+only while the pill animates and Reduce Motion is off. It receives
 no `OverlayState`, conversation or command. Compact's strip picks the first
 tier that fits its width: named chips, digit-only chips (the selected
 conversation's chip keeps its name), the counter, nothing. Every threshold is

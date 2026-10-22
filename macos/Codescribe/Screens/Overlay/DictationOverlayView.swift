@@ -1042,7 +1042,7 @@ struct DictationOverlayView: View {
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
       // brand dot leads, and the channel counter takes the word's place: the
       // agent count, the agents on hover, the open channel's digit with the
-      // microphone badge. This replaces Maciej's 2026-10-20 rule that mini
+      // violet open-channel dot (spec §14). This replaces Maciej's 2026-10-20 rule that mini
       // always reads "cs"; his agents button and its stop meaning stay.
       HStack(spacing: DictationOverlayWindow.miniBrandGap) {
         Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini || !mapEnabled) {

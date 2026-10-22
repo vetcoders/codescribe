@@ -1121,7 +1121,7 @@ enum DictationOverlayWindow {
 
   /// Mini's natural width (spec §13.4): its floor plus, while the map holds a
   /// channel, the brand gap and the channel counter as it is drawn, the agent
-  /// count with `▾` or the open digits with the microphone badge. No fixed
+  /// count with `▾` or the open digits with the open-channel dot. No fixed
   /// width and no hole: the capsule hugs its content, and the recording form
   /// is the same rule with the recording counter, measured.
   @MainActor
@@ -1144,7 +1144,7 @@ enum DictationOverlayWindow {
   /// microphone broadcasts, so the chord changes neither the width nor the
   /// tier, and the row of the first tier that fits the 820 pt budget: the
   /// named chips, else the digit-only chips with room for the longest name,
-  /// which the selected conversation's chip keeps. The microphone badge adds
+  /// which the selected conversation's chip keeps. The open-channel dot adds
   /// no width. With no agent it is the floor; it never exceeds the budget or
   /// the screen's visible width, and never goes below the floor.
   @MainActor
