@@ -333,6 +333,10 @@ pub(crate) fn channel_session_line(line: &ChannelSessionLine<'_>) -> Value {
         "utterance_silence_sec": line.utterance_silence_sec,
         "provider": line.provider,
         "provider_session_id": line.provider_session_id,
+        // This controller publishes each take's closing decision (a closing
+        // seal or a publication refusal) before its non-open row. Followers
+        // must not turn a draft into a delivery for a session that says so.
+        "publication": "controller",
     })
 }
 

@@ -2278,7 +2278,13 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if !writer.started || writer.channel_seal_published {
+        // A live channel opens with its recipients receipt and never writes
+        // `session_started`. Requiring `started` here meant no channel closing
+        // decision was ever published (refusal, hold, refused coverage), and
+        // the follower's lifecycle flush delivered the last draft instead:
+        // take f32ff617, 2026-10-22, a 224 ms unwitnessed "Dziękuję.".
+        let opened = writer.started || writer.channel_recipients.is_some();
+        if !opened || writer.channel_seal_published {
             return Ok(());
         }
         // A small measured sound cannot publish an entirely unwitnessed label.
@@ -2373,6 +2379,8 @@ impl TranscriptBus {
         projection.terminal = true;
         let mut evidence = serde_json::to_value(&projection).map_err(io::Error::other)?;
         evidence["status"] = serde_json::json!("transcript_sealed");
+        // The one row that authorizes delivery under `publication: controller`.
+        evidence["closing_decision"] = serde_json::json!("publish");
         if !certified {
             evidence["coverage"] = serde_json::json!(if direct { "direct" } else { "refused" });
         }
@@ -3931,6 +3939,90 @@ mod tests {
                 ended,
                 "closing is idempotent"
             );
+        }
+    }
+
+    /// The live channel opens its bus the way `agent_channel` does: a
+    /// recipients receipt and a capture epoch, never `publish_started`.
+    /// Every other channel test starts the bus by hand, which hid that no
+    /// production take ever reached the closing decision (take f32ff617).
+    #[test]
+    fn live_channel_close_decides_without_a_session_started_row() {
+        use codescribe_core::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
+
+        // Measured speech at 48 kHz: absent, 224 ms (f32ff617), 400 ms.
+        for speech_samples in [None, Some(10_752), Some(19_200)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("live-channel.jsonl");
+            let id = "agent-channel-1-live";
+            let mut channel = session(id);
+            channel.audience = Some("Leon".into());
+            channel.badge_only = true;
+            let bus = TranscriptBus::open_at(channel, path.clone(), None).unwrap();
+            bus.record_channel_receipt(&serde_json::json!({
+                "schema": "codescribe.channel-recipients.v1",
+                "kind": "channel_recipients",
+                "session_id": id,
+                "channel": "1",
+                "audience": "Leon",
+                "recipients": ["leon"],
+            }));
+            bus.observe_capture_opened(id, 7);
+            let (mut ledger, _, revision) = committed_fixture(id);
+            bus.publish_revision(&revision, &ledger);
+            if let Some(speech_samples) = speech_samples {
+                assert!(ledger.record_seal_coverage(SealCoverageReceipt {
+                    sample_rate_hz: Some(48_000),
+                    session_id: id.into(),
+                    capture_epoch: 7,
+                    speech_samples,
+                    covered_samples: 0,
+                    uncovered_speech_ranges: Vec::new(),
+                    max_uncovered_samples: speech_samples,
+                    incomplete_threshold_samples: 4_000,
+                    status: SealCoverageStatus::Incomplete,
+                    speech_producer: "silero_boundaries".into(),
+                    availability: "observed".into(),
+                    observed_samples: Some(124_928),
+                }));
+            }
+            bus.observe_channel_publication_evidence(&ledger);
+            bus.publish_channel_closed(10).unwrap();
+
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let rows = crate::durable_bus_oracle::rows(&raw).unwrap();
+            assert!(
+                rows.iter().all(|row| row["status"] != "session_started"),
+                "the live channel shape writes no session_started row: {raw}"
+            );
+            let sealed = rows
+                .iter()
+                .filter(|row| row["status"] == "transcript_sealed")
+                .collect::<Vec<_>>();
+            let refused = rows
+                .iter()
+                .filter(|row| row["status"] == "channel_publication_refused")
+                .collect::<Vec<_>>();
+            if speech_samples == Some(10_752) {
+                assert!(sealed.is_empty(), "sub-floor unwitnessed text: {raw}");
+                assert_eq!(refused.len(), 1, "{raw}");
+                assert_eq!(refused[0]["reason"], "sound_without_speech");
+                assert_eq!(refused[0]["capture_epoch"], 7);
+                let ended = rows.last().unwrap();
+                assert_eq!(ended["status"], "session_ended");
+                assert_eq!(ended["phase"], "no_speech");
+            } else {
+                assert!(refused.is_empty(), "{raw}");
+                assert_eq!(sealed.len(), 2, "evidence and clean closing twins: {raw}");
+                assert!(sealed.iter().all(|row| row["coverage"] == "refused"));
+                assert!(sealed.iter().all(|row| row.get("hold_until").is_some()));
+                assert!(sealed.iter().all(|row| row["channel"] == "1"));
+                assert!(
+                    sealed
+                        .iter()
+                        .all(|row| row["closing_decision"] == "publish")
+                );
+            }
         }
     }
 
