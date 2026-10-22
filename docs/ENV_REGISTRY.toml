@@ -1156,6 +1156,13 @@ reload = "restart"
 category = "hotkeys"
 description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
 
+[vars.WIDGET_SHORTCUT]
+default = "ctrl+shift+b"
+type = "string"
+reload = "hot"
+category = "hotkeys"
+description = "The user's chord that shows or hides the collapsed widget: any of ctrl/option/cmd/shift joined by + and ending with one letter or space, at least one of ctrl/option/cmd. cmd+shift+space stays the Agent summon. Default ctrl+shift+b"
+
 [vars.AGENT_CHANNEL_MODIFIER]
 default = "ctrl"
 type = "string"

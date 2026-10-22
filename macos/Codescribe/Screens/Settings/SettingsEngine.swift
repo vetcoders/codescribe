@@ -1014,6 +1014,8 @@ extension CsSettings {
     ledgerSensitivity: 0,
     deferredInsertShortcut: "disabled",
     channelModifier: "ctrl",
+    widgetShortcut: "ctrl+shift+b",
+    widgetShortcutLabel: "⌃⇧B",
     fnTapTogglesDictation: false,
     middleMouseActsAsFn: false,
     middleMouseAgentGesture: false,

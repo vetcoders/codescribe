@@ -201,6 +201,8 @@ pub struct UserSettings {
     /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget_shortcut: Option<String>,
     /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fn_tap_toggles_dictation: Option<bool>,
@@ -1522,6 +1524,8 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     channel_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    widget_shortcut: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fn_tap_toggles_dictation: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     middle_mouse_acts_as_fn: Option<bool>,
@@ -1824,6 +1828,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "RESTORE_CLIPBOARD",
     "RESTORE_CLIPBOARD_DELAY_MS",
     "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
+    "WIDGET_SHORTCUT",
     // LLM lanes: provider reference + model per lane. Endpoints are not
     // settings — vendors pin them in code, custom rows carry their own.
     "LLM_FORMATTING_PROVIDER",
@@ -1982,6 +1987,7 @@ impl UserSettings {
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 channel_modifier: self.channel_modifier.clone(),
+                widget_shortcut: self.widget_shortcut.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
                 middle_mouse_agent_gesture: self.middle_mouse_agent_gesture,
@@ -2144,6 +2150,7 @@ impl UserSettings {
             hold_exclusive: copy!(v2.interaction, hold, exclusive),
             hold_arm_modifier: cloned!(v2.interaction, hold, arm_modifier),
             channel_modifier: cloned!(v2.interaction, channel_modifier),
+            widget_shortcut: cloned!(v2.interaction, widget_shortcut),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
             middle_mouse_agent_gesture: copy!(v2.interaction, middle_mouse_agent_gesture),
@@ -3370,6 +3377,12 @@ impl UserSettings {
                 Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
                 Err(error) => {
                     return reject(format!("Rejected hold arm modifier write: {error}"), false);
+                }
+            },
+            "WIDGET_SHORTCUT" => match value.parse::<crate::config::WidgetShortcut>() {
+                Ok(shortcut) => self.widget_shortcut = Some(shortcut.wire_id()),
+                Err(error) => {
+                    return reject(format!("Rejected widget shortcut write: {error}"), false);
                 }
             },
             "AGENT_CHANNEL_MODIFIER" => match value.parse::<crate::config::ChannelModifier>() {

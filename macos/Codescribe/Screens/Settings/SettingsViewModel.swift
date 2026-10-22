@@ -3370,6 +3370,22 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// The widget chord from the canonical settings snapshot (`WIDGET_SHORTCUT`).
+  var widgetShortcut: WidgetShortcutChord {
+    WidgetShortcutChord(wireId: settings.widgetShortcut) ?? .default
+  }
+
+  /// Persists a recorded widget chord and live-reloads the detector. The core
+  /// validates the chord again and a refusal surfaces in `lastError`; the
+  /// snapshot keeps the previous chord in that case.
+  func setWidgetShortcut(_ chord: WidgetShortcutChord) {
+    settings.widgetShortcut = chord.wireId
+    settings.widgetShortcutLabel = chord.label
+    writeHotkeySurface("WIDGET_SHORTCUT", chord.wireId) {
+      try hotkeys?.setWidgetShortcut(chord.wireId)
+    }
+  }
+
   /// Quick Fn press toggles dictation. Off until the Founder turns it on.
   var fnTapTogglesDictation: Bool { settings.fnTapTogglesDictation }
 

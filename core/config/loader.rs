@@ -1201,6 +1201,7 @@ impl Config {
         env_flag!("HOLD_EXCLUSIVE", self.hold_exclusive);
         env_parse!("HOLD_ARM_MODIFIER", self.hold_arm_modifier);
         env_parse!("AGENT_CHANNEL_MODIFIER", self.channel_modifier);
+        env_parse!("WIDGET_SHORTCUT", self.widget_shortcut);
         env_flag!("FN_TAP_TOGGLES_DICTATION", self.fn_tap_toggles_dictation);
         env_flag!("MIDDLE_MOUSE_ACTS_AS_FN", self.middle_mouse_acts_as_fn);
         env_flag!(
@@ -1549,6 +1550,14 @@ impl Config {
             && let Ok(shortcut) = raw.parse::<DeferredInsertShortcut>()
         {
             self.deferred_insert_shortcut = shortcut;
+        }
+        if Self::config_runtime_env_var("WIDGET_SHORTCUT").is_err()
+            && let Some(raw) = settings.widget_shortcut.as_deref()
+        {
+            match raw.parse::<super::types::WidgetShortcut>() {
+                Ok(shortcut) => self.widget_shortcut = shortcut,
+                Err(error) => warn!("Ignoring invalid persisted widget shortcut: {error}"),
+            }
         }
         if Self::config_runtime_env_var("TRAY_START_ASSISTIVE").is_err()
             && let Some(v) = settings.tray_start_assistive

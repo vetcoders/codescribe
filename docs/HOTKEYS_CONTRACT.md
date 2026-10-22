@@ -191,19 +191,32 @@ repeat cannot emit duplicate commands.
 This fixed MVP chord is intentionally outside the configurable
 `WorkMode -> ShortcutBinding` contract.
 
-`Control+Shift+B` emits one `HotkeyEvent::ToggleWidget` per physical B press
-(Founder, 2026-10-23: "B jak bus"). The bridge delivers it to
+The widget chord (`WIDGET_SHORTCUT`, default `ctrl+shift+b`; Founder,
+2026-10-23: "B jak bus", and the user names their own) emits one
+`HotkeyEvent::ToggleWidget` per physical press of its key. The chord is any
+combination of Control, Option, Command and Shift plus one letter or Space,
+with at least one of Control, Option or Command (a plain or Shift-only letter
+types) and never `Command+Shift+Space` (the Agent summon above). Digits stay
+channel chords and Fn stays dictation, so neither can end the chord. The core
+(`WidgetShortcut`, core/config/types.rs) parses, validates and labels it; the
+detector matches the key with exactly those modifiers held and Fn up; the
+runtime atomics live-reload it on every settings write like the channel
+modifier. The bridge delivers the event to
 `CsAppActionListener::on_toggle_widget`; the overlay decides what it means: a
 hidden panel shows as the Tray's **Show widget** does, a visible idle panel
 hides through the human Close intent, and a panel that is recording or holds an
 open channel only comes forward — the chord never hides live capture. Like
 `ShowAgent` it touches no `RecordingController`, no lifecycle callback and no
 Idle state, and key-up re-arms it against key repeat. The tap does not claim
-the event, so Cocoa's own `^⇧B` (extend selection one character back) still
-reaches a focused text view; the hold presets that use Ctrl+Shift as their
-base are unaffected because the chord needs the B key, which any hold start
-already treats as a key press during the modifier. Settings › Shortcuts lists
-the chord read-only under Extra shortcuts.
+the event, so a host app or Cocoa binding on the same chord (the default's
+`^⇧B` extends a text selection one character back) still sees it; the hold
+presets whose base is Ctrl+Shift are unaffected because the chord needs its
+key, which any hold start already treats as a key press during the modifier.
+Settings › Shortcuts › Extra shortcuts shows the chord as a pill: a click arms
+the recorder, the next key press becomes the chord, Escape keeps the old one,
+and a refused press keeps it and says why. The recorder mirrors the core's
+rules (`WidgetShortcutChord`, WidgetShortcutRecorder.swift) and the core
+refuses the write again on its own.
 
 Assistive bindings notify the same app-action plane to front/focus the Agent
 window, then deliver the recording event to the same `RecordingController` as
