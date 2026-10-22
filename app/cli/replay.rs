@@ -25,10 +25,13 @@ pub const REPLAY_RECEIPT_SCHEMA: &str = "codescribe.replay-receipt.v1";
 
 /// Raw-argv test for `codescribe replay`, used before Clap has run.
 ///
-/// Replay never runs the cloud Layer 1 or the live formatter, so it needs no
-/// credential, yet probing those lanes asked the Keychain for the LLM key. A
-/// replay started outside a GUI session then hung on a Keychain prompt nobody
-/// could click. Like the corpus lane, it accepts only an exact `replay` first.
+/// Replay measures the recorded take without credentials. The live formatter
+/// still runs: the CLI registers no host formatter, so it takes the cloud
+/// lane, finds no key, and returns the cleaned text after its retries. Every
+/// replay measurement is taken in that state. With the Keychain reachable, a
+/// replay started outside a GUI session hung on a Keychain prompt nobody
+/// could click, and one started from a GUI terminal formatted through the
+/// cloud. Like the corpus lane, it accepts only an exact `replay` first.
 pub fn replay_argv_requested() -> bool {
     replay_argv_requested_in(std::env::args_os())
 }
