@@ -917,9 +917,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       visual.contains("overlay-agent-descriptor-"),
       "wide rows must show the same provider/model identity as narrow pills")
-    XCTAssertTrue(
+    // Astra's revised full-view contract (2026-10-22): the row's descriptor
+    // and status carry NO metadata hint — the information is inline. Action
+    // labels (like the archive control's help) keep their hints.
+    XCTAssertFalse(
       row.contains(".overlayFastHint(tooltip"),
-      "descriptor and status use the same immediate hint as the header")
+      "a metadata fast hint would duplicate the inline descriptor/status")
     XCTAssertTrue(
       visual.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
