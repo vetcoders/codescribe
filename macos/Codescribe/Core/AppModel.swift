@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import OSLog
+import Observation
 import SwiftUI
 
 /// Agent-surface performance breadcrumbs (app bootstrap, first agent open,
@@ -81,6 +82,7 @@ final class AppModel: ObservableObject {
         guard edge == .settingsWritten else { return }
         overlay.state.canonicalConfigurationDidChange()
       }
+    overlay.startIntercomPresentation()
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
@@ -96,6 +98,8 @@ final class OverlayController: ObservableObject {
   /// up-close chat can be tuned independently.
   let textScale = TextScaleController(key: "DictationOverlayPanel.textScale.v1")
   private var panel: NSPanel?
+  private var intercomWidget: OverlayIntercomWidgetController?
+  private var intercomPresentationStarted = false
   private let overlayEnabledProvider: () -> Bool
   private let assistiveStatusProvider: () -> Bool
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
@@ -306,6 +310,39 @@ final class OverlayController: ObservableObject {
       state?.presentationInteractionDidChange()
     }
     state.attach()
+  }
+
+  /// Only the production composition root starts desktop presentation; state
+  /// fixtures and standalone overlay controllers do not create widget windows.
+  func startIntercomPresentation() {
+    guard !intercomPresentationStarted else { return }
+    intercomPresentationStarted = true
+    syncIntercomPresentation()
+  }
+
+  func stopIntercomPresentation() {
+    intercomPresentationStarted = false
+    intercomWidget?.invalidate()
+    intercomWidget = nil
+  }
+
+  private func syncIntercomPresentation() {
+    guard intercomPresentationStarted else { return }
+    let preference = state.channelMapPreference
+    // Track only the presentation choice. Roster updates are projected by the
+    // widget's SwiftUI view; no second inventory, timer or event reader lives here.
+    let wantsWidget = withObservationTracking {
+      preference.enabled && preference.layout == .vertical
+    } onChange: { [weak self] in
+      Task { @MainActor [weak self] in self?.syncIntercomPresentation() }
+    }
+    if wantsWidget, intercomWidget == nil {
+      intercomWidget = OverlayIntercomWidgetController(
+        state: state, textScale: textScale,
+        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
+    }
+    intercomWidget?.setVisible(wantsWidget, relativeTo: panel)
+    state.channelMapPreferenceChanged()
   }
 
   /// Window-side interactions the state cannot see: a hidden panel, an edge

@@ -128,14 +128,16 @@ struct OverlayChannelMapView: View {
   /// and fixed action frames are used here and by the rendered row.
   private func rowWidth(actions: Actions, scale: CGFloat) -> CGFloat {
     let widths = model.chips.map { chip in
-      let named = OverlayChannelPill.chipWidth(name: chip.isBroadcast ? nil : chip.name, scale: scale)
+      let named = OverlayChannelPill.chipWidth(
+        name: chip.isBroadcast ? nil : chip.name, scale: scale)
       guard !chip.isBroadcast, let control = controls[chip.digit] else { return named }
       var count = onToggleMicrophone == nil ? 0 : 1
       if actions == .all {
         if onTogglePlayback != nil, control.muted != nil { count += 1 }
         if onFocusChannel != nil, control.focusSymbol != nil { count += 1 }
       }
-      return named + CGFloat(count) * (OverlayChannelPill.actionWidth + OverlayChannelPill.actionGap)
+      return named + CGFloat(count)
+        * (OverlayChannelPill.actionWidth + OverlayChannelPill.actionGap)
     }
     return OverlayChannelMapModel.rowWidth(chipWidths: widths, spacing: Self.chipSpacing)
   }
@@ -148,9 +150,11 @@ struct OverlayChannelMapView: View {
     if let onToggleMicrophone {
       OverlayChannelMapActionButton(
         symbol: chip.microphoneOpen ? "mic.fill" : "mic",
-        label: chip.name + ": " + (chip.microphoneOpen
-          ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")),
-        value: chip.microphoneOpen ? String(localized: "Microphone active")
+        label: chip.name + ": "
+          + (chip.microphoneOpen
+            ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")),
+        value: chip.microphoneOpen
+          ? String(localized: "Microphone active")
           : String(localized: "Microphone off"),
         identifier: "overlay-channel-map-microphone-\(chip.digit)", palette: palette, scale: scale,
         enabled: control.microphoneEnabled, active: chip.microphoneOpen,
@@ -160,12 +164,17 @@ struct OverlayChannelMapView: View {
     if actions == .all {
       if let onTogglePlayback, let muted = control.muted {
         OverlayChannelMapActionButton(
-          symbol: muted ? "speaker.slash.fill"
+          symbol: muted
+            ? "speaker.slash.fill"
             : control.speaking ? "speaker.wave.3.fill" : "speaker.wave.2",
-          label: chip.name + ": " + (muted ? String(localized: "Unmute agent replies")
-            : String(localized: "Mute agent replies")),
-          value: control.speaking && !muted ? String(localized: "Speaking")
-            : muted ? String(localized: "Automatic playback muted")
+          label: chip.name + ": "
+            + (muted
+              ? String(localized: "Unmute agent replies")
+              : String(localized: "Mute agent replies")),
+          value: control.speaking && !muted
+            ? String(localized: "Speaking")
+            : muted
+              ? String(localized: "Automatic playback muted")
               : String(localized: "Automatic playback on"),
           identifier: "overlay-channel-map-playback-\(chip.digit)", palette: palette, scale: scale,
           enabled: control.playbackEnabled, active: control.speaking && !muted,

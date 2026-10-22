@@ -634,7 +634,7 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertFalse(label.contains("OverlayState"))
   }
 
-  func testMapLivesInTheCollapsedHeaderAndNeverOpensAMicrophone() throws {
+  func testMapSelectionStaysSeparateFromExplicitMicrophoneControls() throws {
     let overlay = try overlaySource("DictationOverlayView.swift")
     let header = try section(
       of: overlay, from: "private func justifiedHeader(density: OverlayHeaderDensity)",
@@ -650,7 +650,11 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(map.contains("state.activateChannelMapCounter()"))
     XCTAssertFalse(map.contains("showAgentMonitor"), "the W1 seam is gone")
     XCTAssertFalse(map.contains("toggleAgentChannel"))
-    XCTAssertFalse(map.contains("onToggleChannel"))
+    let selection = try section(of: map, from: "onSelectChannel:", to: "controls: controls")
+    XCTAssertFalse(selection.contains("toggle"), "name and counter do not change capture")
+    XCTAssertTrue(map.contains("onToggleMicrophone:"))
+    XCTAssertTrue(
+      map.contains("roster.toggle(channel)"), "only the dedicated microphone owns this action")
     // The intent rail stays as it is.
     XCTAssertFalse(header.contains("OverlayIntentRail("))
   }

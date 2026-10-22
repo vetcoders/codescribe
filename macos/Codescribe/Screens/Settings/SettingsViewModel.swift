@@ -1214,6 +1214,7 @@ final class SettingsViewModel: ObservableObject {
   private let sheetShadePreference: SheetShadePreference
   private let channelMapPreference: OverlayChannelMapPreference
   var overlayChannelMapEnabled: Bool { channelMapPreference.enabled }
+  var overlayIntercomLayout: OverlayIntercomLayout { channelMapPreference.layout }
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   /// Called only after the Rust owner accepts a fresh consultation.
@@ -2674,6 +2675,11 @@ final class SettingsViewModel: ObservableObject {
   func selectOverlayChannelMap(_ enabled: Bool) {
     objectWillChange.send()
     channelMapPreference.select(enabled)
+  }
+
+  func selectOverlayIntercomLayout(_ layout: OverlayIntercomLayout) {
+    objectWillChange.send()
+    channelMapPreference.selectLayout(layout)
   }
 
   func beginNewMaxConsultation() async {

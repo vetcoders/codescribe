@@ -26,7 +26,8 @@ enum OverlayIntercomWidgetLayout {
   static func rowFrame(index: Int, header: CGRect, count: Int, visibleFrame: CGRect) -> CGRect {
     // Nine owners fit a normal desktop. On a shorter screen, reduce only the
     // gaps, preserving the controls' readable geometry.
-    let availableGap = count > 0
+    let availableGap =
+      count > 0
       ? (visibleFrame.height - headerHeight - CGFloat(count) * rowHeight) / CGFloat(count) : gap
     let spacing = min(gap, max(0, availableGap))
     return CGRect(

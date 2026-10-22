@@ -8,6 +8,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private static let positionKey = "codescribe.overlay.intercom.vertical.origin"
   private let state: OverlayState
   private let textScale: TextScaleController
+  private let revealConversation: () -> Void
   private var header: OverlayIntercomPanel?
   private var rows: [String: OverlayIntercomPanel] = [:]
   private var digits: [String] = []
@@ -18,9 +19,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private var positioning = false
   private var invalidated = false
 
-  init(state: OverlayState, textScale: TextScaleController) {
+  init(
+    state: OverlayState, textScale: TextScaleController,
+    revealConversation: @escaping () -> Void = {}
+  ) {
     self.state = state
     self.textScale = textScale
+    self.revealConversation = revealConversation
     super.init()
   }
 
@@ -29,7 +34,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     self.visible = visible
     guard visible else {
       dismissPreview()
-      rows.values.forEach { $0.contentView = nil; $0.close() }
+      for row in rows.values {
+        row.contentView = nil
+        row.close()
+      }
       rows.removeAll()
       header?.orderOut(nil)
       return
@@ -38,9 +46,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
       panel.isMovableByWindowBackground = true
-      panel.contentView = NSHostingView(rootView: TextScaleRoot(controller: textScale) {
-        OverlayIntercomHeader(state: state, controller: self)
-      })
+      panel.contentView = NSHostingView(
+        rootView: TextScaleRoot(controller: textScale) {
+          OverlayIntercomHeader(state: state, controller: self)
+        })
       let fallback = anchor?.frame ?? NSScreen.main?.visibleFrame ?? .zero
       let stored = UserDefaults.standard.array(forKey: Self.positionKey) as? [Double]
       let origin: CGPoint
@@ -64,7 +73,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     invalidated = true
     header?.delegate = nil
     header?.contentView = nil
-    rows.values.forEach { $0.contentView = nil; $0.close() }
+    for row in rows.values {
+      row.contentView = nil
+      row.close()
+    }
     rows.removeAll()
     header?.close()
     header = nil
@@ -79,26 +91,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     digits = nextDigits
     let font = NSFont.systemFont(ofSize: 13 * min(scale, 1.3), weight: .semibold)
-    let longest = chips.map { ($0.name as NSString).size(withAttributes: [.font: font]).width }.max() ?? 120
+    let longest =
+      chips.map { ($0.name as NSString).size(withAttributes: [.font: font]).width }.max() ?? 120
     let width = min(420, max(250, longest + 140))
     var frame = header.frame
     frame.size.width = width
     positioning = true
-    header.setFrame(
-      OverlayIntercomWidgetLayout.clampedHeader(frame, count: digits.count, visibleFrame: screenFrame),
-      display: true)
+    let fitted = OverlayIntercomWidgetLayout.clampedHeader(
+      frame, count: digits.count, visibleFrame: screenFrame)
+    if header.frame != fitted { header.setFrame(fitted, display: true) }
     positioning = false
     for (index, digit) in digits.enumerated() where rows[digit] == nil {
       let panel = OverlayIntercomPanel()
-      panel.contentView = NSHostingView(rootView: TextScaleRoot(controller: textScale) {
-        OverlayIntercomRow(
-          state: state, digit: digit, index: index,
-          onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
-      })
+      panel.contentView = NSHostingView(
+        rootView: TextScaleRoot(controller: textScale) {
+          OverlayIntercomRow(
+            state: state, digit: digit, index: index,
+            onOpenConversation: { [weak self] id in self?.openConversation(id) },
+            onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
+        })
       rows[digit] = panel
     }
     positionRows()
-    if visible { rows.values.forEach { $0.orderFrontRegardless() } }
+    if visible {
+      for row in rows.values { row.orderFrontRegardless() }
+    }
   }
 
   private var screenFrame: CGRect {
@@ -113,15 +130,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let header else { return }
     let screen = screenFrame
     for (index, digit) in digits.enumerated() {
-      rows[digit]?.setFrame(
-        OverlayIntercomWidgetLayout.rowFrame(
-          index: index, header: header.frame, count: digits.count, visibleFrame: screen),
-        display: true)
+      let frame = OverlayIntercomWidgetLayout.rowFrame(
+        index: index, header: header.frame, count: digits.count, visibleFrame: screen)
+      if let row = rows[digit], row.frame != frame { row.setFrame(frame, display: true) }
     }
     if let previewDigit, let row = rows[previewDigit] {
-      preview?.setFrame(
-        OverlayIntercomWidgetLayout.previewFrame(beside: row.frame, visibleFrame: screen),
-        display: true)
+      let frame = OverlayIntercomWidgetLayout.previewFrame(beside: row.frame, visibleFrame: screen)
+      if let preview, preview.frame != frame { preview.setFrame(frame, display: true) }
     }
   }
 
@@ -137,6 +152,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
   }
 
+  private func openConversation(_ id: String) {
+    state.chooseConversation(id)
+    revealConversation()
+  }
+
   fileprivate func hover(digit: String, inside: Bool) {
     previewDismissal?.cancel()
     previewDismissal = nil
@@ -145,11 +165,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       if previewDigit == digit { return }
       dismissPreview()
       let panel = OverlayIntercomPanel()
-      panel.contentView = NSHostingView(rootView: TextScaleRoot(controller: textScale) {
-        OverlayIntercomPreview(
-          state: state, digit: digit,
-          onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
-      })
+      panel.contentView = NSHostingView(
+        rootView: TextScaleRoot(controller: textScale) {
+          OverlayIntercomPreview(
+            state: state, digit: digit,
+            onOpenConversation: { [weak self] id in self?.openConversation(id) },
+            onHover: { [weak self] inside in self?.hover(digit: digit, inside: inside) })
+        })
       panel.setFrame(
         OverlayIntercomWidgetLayout.previewFrame(beside: row.frame, visibleFrame: screenFrame),
         display: true)
@@ -259,25 +281,35 @@ private struct OverlayIntercomRow: View {
   let state: OverlayState
   let digit: String
   let index: Int
+  let onOpenConversation: (String) -> Void
   let onHover: (Bool) -> Void
 
-  private var chip: OverlayChannelMapChip? { state.channelMapLayoutModel.agents.first { $0.digit == digit } }
-  private var conversation: OverlayConversation? { intercomConversation(state: state, digit: digit) }
+  private var chip: OverlayChannelMapChip? {
+    state.channelMapLayoutModel.agents.first { $0.digit == digit }
+  }
+  private var conversation: OverlayConversation? {
+    intercomConversation(state: state, digit: digit)
+  }
 
   var body: some View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let open = state.channelHudStates[digit]?.open == true
     let disconnected = state.channelHudStates[digit]?.followerAlive == false
-    let reachable = !state.channelStatusUnavailable && state.channelHudStates[digit]?.followerAlive == true
+    let reachable =
+      !state.channelStatusUnavailable && state.channelHudStates[digit]?.followerAlive == true
     HStack(spacing: 3) {
       Button {
-        if let conversation { state.chooseConversation(conversation.id) }
+        if let conversation { onOpenConversation(conversation.id) }
       } label: {
         HStack(spacing: 7) {
           Circle()
             .fill(reachable ? palette.successStatus.color : palette.mutedText.color)
             .frame(width: 7, height: 7)
-            .accessibilityLabel(reachable ? String(localized: "Ready") : (disconnected ? String(localized: "Disconnected") : String(localized: "Status unavailable")))
+            .accessibilityLabel(
+              reachable
+                ? String(localized: "Ready")
+                : (disconnected
+                  ? String(localized: "Disconnected") : String(localized: "Status unavailable")))
           Text(digit).csMono(10).foregroundStyle(palette.mutedText.color)
           Text(chip?.name ?? digit).csFont(13, .semibold).lineLimit(1)
             .minimumScaleFactor(0.8)
@@ -294,7 +326,8 @@ private struct OverlayIntercomRow: View {
       .disabled(conversation == nil)
       .accessibilityLabel(String(localized: "Open conversation") + ": " + (chip?.name ?? digit))
       .accessibilityIdentifier("overlay-intercom-name-\(digit)")
-      .help(disconnected ? String(localized: "Disconnected") : String(localized: "Open conversation"))
+      .help(
+        disconnected ? String(localized: "Disconnected") : String(localized: "Open conversation"))
 
       Button {
         guard let number = UInt8(digit) else { return }
@@ -302,19 +335,26 @@ private struct OverlayIntercomRow: View {
       } label: {
         Image(systemName: open ? "mic.fill" : "mic")
           .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(open ? palette.agentAccent.color : palette.bodyText.color)
+          .symbolEffect(.pulse, options: .repeating, isActive: open && !reduceMotion)
           .frame(width: 32, height: 32)
           .background(open ? palette.agentAccent.color.opacity(0.18) : Color.clear, in: Circle())
           .contentShape(Circle())
       }
       .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: palette.agentAccent.color.opacity(0.8), hoverColor: palette.agentAccent.color
+      )
       .disabled(
         state.pendingChannelToggles.contains(digit) || state.channelStatusUnavailable
-          || (!open && disconnected))
+          || (!open && disconnected)
+      )
       .accessibilityLabel(
         (open ? String(localized: "Stop recording") : String(localized: "Start recording"))
-          + ": " + (chip?.name ?? digit))
-      .accessibilityValue(open ? String(localized: "Microphone open") : String(localized: "Microphone closed"))
+          + ": " + (chip?.name ?? digit)
+      )
+      .accessibilityValue(
+        open ? String(localized: "Microphone open") : String(localized: "Microphone closed")
+      )
       .accessibilityIdentifier("overlay-intercom-microphone-\(digit)")
       .padding(.trailing, 5)
     }
@@ -326,14 +366,18 @@ private struct OverlayIntercomRow: View {
     }
     .overlay {
       Capsule().strokeBorder(
-        open ? palette.agentAccent.color.opacity(0.7) : palette.border.color, lineWidth: 1)
-        .allowsHitTesting(false)
+        open ? palette.agentAccent.color.opacity(0.7) : palette.border.color, lineWidth: 1
+      )
+      .allowsHitTesting(false)
     }
     .opacity(entered ? 1 : 0)
     .offset(y: entered || reduceMotion ? 0 : -6)
     .scaleEffect(entered || reduceMotion ? 1 : 0.98)
     .onAppear {
-      withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86).delay(Double(index) * 0.025)) {
+      withAnimation(
+        reduceMotion
+          ? nil : .spring(response: 0.28, dampingFraction: 0.86).delay(Double(index) * 0.025)
+      ) {
         entered = true
       }
     }
@@ -348,6 +392,7 @@ private struct OverlayIntercomPreview: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   let state: OverlayState
   let digit: String
+  let onOpenConversation: (String) -> Void
   let onHover: (Bool) -> Void
 
   var body: some View {
@@ -368,7 +413,7 @@ private struct OverlayIntercomPreview: View {
       Spacer(minLength: 0)
       HStack(spacing: 12) {
         if let conversation {
-          Button("Open conversation") { state.chooseConversation(conversation.id) }
+          Button("Open conversation") { onOpenConversation(conversation.id) }
             .buttonStyle(.plain).csFont(11, .semibold)
         }
         Spacer(minLength: 0)
@@ -386,7 +431,9 @@ private struct OverlayIntercomPreview: View {
           .accessibilityIdentifier("overlay-intercom-playback-\(digit)")
         }
         if let owner = state.archiveCandidate(for: digit), state.canFocusAgentPanel(owner) {
-          Button { state.focusAgentPanel(owner) } label: {
+          Button {
+            state.focusAgentPanel(owner)
+          } label: {
             Image(systemName: "arrow.up.forward.app").frame(width: 26, height: 26)
           }
           .buttonStyle(.plain)
@@ -415,5 +462,6 @@ private struct OverlayIntercomPreview: View {
 private func intercomConversation(state: OverlayState, digit: String) -> OverlayConversation? {
   OverlayChannelStatusView.currentConversations(
     conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
-    hudStates: state.channelHudStates).first { $0.channel == digit }
+    hudStates: state.channelHudStates
+  ).first { $0.channel == digit }
 }

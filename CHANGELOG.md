@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Creator offers horizontal intercom or floating vertical agent capsules. The vertical widget shares the current roster, opens one message preview on hover, and keeps conversation selection separate from its microphone controls. A wide horizontal strip gives agent names and audio/panel controls priority over the waveform.
 - Agent list: for a Codex agent outside Frame and a terminal, the per-agent button opens the agent's thread in the Codex app (ChatGPT), even while the agent shows as disconnected between replies. A Codex Cloud thread, which the app cannot open from this Mac, keeps the button greyed with "Codex Cloud thread: open it in ChatGPT".
 - Collapsed overlay: a channel map shows each bound agent by digit, so the channel chord's target is readable without unfolding the Agents canvas. In compact it sits between the clock and the header buttons as chips (`2 Miksa · 3 Igor · 5 Kuba`, lease names with a capital first letter); in mini a counter (`3 ▾`) replaces the "cs" wordmark beside the brand dot, and mini is as wide as its content, with no empty space before its controls. Channel 0 appears only while you broadcast on it. A chip's hint names the chord with the modifier from Settings (`5 · Kuba · Ctrl+5`), the counter's hint lists the agents; a chip click opens that agent's conversation, as its rail pill does, and never touches the microphone. The channel the microphone feeds carries a microphone badge on its digit and the agent violet, on its chip or, folded, on the counter. Compact opens wide enough for its named chips up to 820 pt, then shows digits only (the selected conversation's chip keeps its name), and a strip you narrow by hand keeps your width for the session, falling back to digits and then to the counter. Clicking the counter switches mini to compact, or gives a narrowed compact strip its natural width back. The rail's numbered pills and the map share one pill view.
 - Agent list: the per-agent button also opens the agent's iTerm2 or Terminal tab, not only its Frame pane. A known Frame pane still wins; otherwise the agent's own reader selects its tab and Codescribe brings the terminal forward. The row says when the tab is not found, when macOS does not allow controlling the terminal (System Settings › Privacy & Security › Automation) or when no terminal is known for the agent.
 
 ### Changed
 
+- Agent and conversation pane buttons stay with their own panels. Showing the agent list opens a side column at every width; hiding it stays hidden until an explicit reveal. Individual-agent capture shows a microphone; channel-zero broadcast shows an outlined megaphone.
 - Message bubble actions brighten their icon and label together on hover, without redundant tooltips or button chrome. The composer microphone and Send share that feedback; Send keeps its filled paper plane in softer, adaptive terracotta.
 - Creator: the collapsed overlay channel map is opt-in, with a live **Channel map in the overlay** switch. With it off, mini restores the `cs` wordmark and its earlier widths; compact no longer grows for agent chips. The choice never changes microphone routing.
 
@@ -36,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The conversation composer's editor, clip view and scroll view keep explicit synchronous drawing boundaries, preventing ancestor layer flattening from sending TextKit drawing into the worker/main-thread lock inversion captured during editor resize. Native runtime acceptance remains separate from the source repair.
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
 
 ## [0.18.0] - 2026-10-20

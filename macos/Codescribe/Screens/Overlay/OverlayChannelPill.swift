@@ -331,8 +331,11 @@ struct OverlayChannelMapActionButton: View {
       .frame(width: OverlayChannelPill.actionWidth, height: OverlayChannelPill.headerHeight)
       .background(
         Capsule(style: .continuous)
-          .fill(active ? palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
-            : CSColor.hairline(0.06)))
+          .fill(
+            active
+              ? palette.agentAccent.color.opacity(OverlayAgentAudioControls.litGlassOpacity)
+              : CSColor.hairline(0.06))
+      )
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)

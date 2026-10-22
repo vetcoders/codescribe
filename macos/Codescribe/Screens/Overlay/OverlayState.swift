@@ -1281,6 +1281,9 @@ final class OverlayState {
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
+  var channelMapInHeader: Bool {
+    channelMapEnabled && channelMapPreference.layout == .horizontal
+  }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
