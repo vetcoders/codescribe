@@ -1218,6 +1218,24 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertFalse(reply["spoken"])
         self.assertEqual(reply["reason"], "take_started")
 
+    def test_late_seal_of_the_predecessor_keeps_the_reopened_channel_live(self):
+        # 2026-10-22 20:23: the app reopened channel 2 before the previous
+        # session's seal landed, and a reply played into the live microphone.
+        channel = self.home / "buses" / "channel-2.jsonl"
+        self.channel_row(channel, "agent-channel-2-first", "open")
+        self.channel_row(channel, "agent-channel-2-second", "open")
+        self.channel_row(channel, "agent-channel-2-first", "sealed")
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set(), "the reopened session still owns the microphone")
+        (reply,) = self.outcomes()
+        self.assertEqual(reply["reason"], "take_live")
+        self.channel_row(channel, "agent-channel-2-second", "sealed")
+        child, (_, _, playing) = self.start_say("filip")
+        self.join(child)
+        self.assertTrue(playing.is_set(), "its own seal releases it")
+
     def test_sealed_channel_lets_speech_play(self):
         channel = self.home / "buses" / "channel-2.jsonl"
         self.channel_row(channel, "agent-channel-2-done", "open")
