@@ -1765,6 +1765,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func testApiKey(account: String) throws  -> CsApiKeyProbeResult
 
     /**
+     * Settings › Formatting › Test: format `sample` once through the live
+     * formatter path (empty `sample` sends the built-in raw transcript).
+     * Blocks for up to the live deadline; Swift calls it off MainActor.
+     */
+    func testFormatting(sample: String) throws  -> CsFormattingProbe
+
+    /**
      * Lightweight tray-only settings read uses files, env and cached credentials.
      * It never prompts just because the user opened the menu. Projects from one
      * keychain-free runtime snapshot.
@@ -2571,6 +2578,20 @@ open func testApiKey(account: String)throws  -> CsApiKeyProbeResult  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_test_api_key(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(account),$0
+    )
+})
+}
+
+    /**
+     * Settings › Formatting › Test: format `sample` once through the live
+     * formatter path (empty `sample` sends the built-in raw transcript).
+     * Blocks for up to the live deadline; Swift calls it off MainActor.
+     */
+open func testFormatting(sample: String)throws  -> CsFormattingProbe  {
+    return try  FfiConverterTypeCsFormattingProbe_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_test_formatting(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sample),$0
     )
 })
 }
@@ -10672,6 +10693,98 @@ public func FfiConverterTypeCsEnergyCalibrationReport_lower(_ value: CsEnergyCal
 
 
 /**
+ * One Settings › Formatting › Test request, measured. `status` is one of
+ * `applied`, `unchanged`, `skipped`, `failed`, `timed_out`. Never a secret.
+ */
+public struct CsFormattingProbe: Equatable, Hashable {
+    public var status: String
+    public var input: String
+    public var output: String
+    public var elapsedMs: UInt64
+    /**
+     * The live formatter job's deadline the request had to meet.
+     */
+    public var deadlineMs: UInt64
+    public var provider: String
+    public var model: String
+    /**
+     * The reasoning effort sent; `None` when the request carried no field.
+     */
+    public var reasoning: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(status: String, input: String, output: String, elapsedMs: UInt64,
+        /**
+         * The live formatter job's deadline the request had to meet.
+         */deadlineMs: UInt64, provider: String, model: String,
+        /**
+         * The reasoning effort sent; `None` when the request carried no field.
+         */reasoning: String?) {
+        self.status = status
+        self.input = input
+        self.output = output
+        self.elapsedMs = elapsedMs
+        self.deadlineMs = deadlineMs
+        self.provider = provider
+        self.model = model
+        self.reasoning = reasoning
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsFormattingProbe: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsFormattingProbe {
+        return
+            try CsFormattingProbe(
+                status: FfiConverterString.read(from: &buf),
+                input: FfiConverterString.read(from: &buf),
+                output: FfiConverterString.read(from: &buf),
+                elapsedMs: FfiConverterUInt64.read(from: &buf),
+                deadlineMs: FfiConverterUInt64.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                reasoning: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsFormattingProbe, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterString.write(value.input, into: &buf)
+        FfiConverterString.write(value.output, into: &buf)
+        FfiConverterUInt64.write(value.elapsedMs, into: &buf)
+        FfiConverterUInt64.write(value.deadlineMs, into: &buf)
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterOptionString.write(value.reasoning, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsFormattingProbe_lift(_ buf: RustBuffer) throws -> CsFormattingProbe {
+    return try FfiConverterTypeCsFormattingProbe.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsFormattingProbe_lower(_ value: CsFormattingProbe) -> RustBuffer {
+    return FfiConverterTypeCsFormattingProbe.lower(value)
+}
+
+
+/**
  * One on-disk transcript artifact. Mirrors `HistoryEntry`
  * (`state/history.rs:20`); `path` is the absolute file path as a String and
  * `timestamp_ms` is epoch-millis from the entry's local timestamp.
@@ -13771,8 +13884,16 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var llmFormattingProvider: String?
     public var llmFormattingModel: String?
+    /**
+     * Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+     */
+    public var llmFormattingReasoning: String
     public var llmAssistiveProvider: String?
     public var llmAssistiveModel: String?
+    /**
+     * Agent reasoning level: `default` (the model's own) or a chosen level.
+     */
+    public var llmAssistiveReasoning: String
     public var formattingLevel: String?
     public var whisperModel: String?
     /**
@@ -13877,7 +13998,13 @@ public struct CsSettings: Equatable, Hashable {
          */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
-         */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
+         */llmFormattingProvider: String?, llmFormattingModel: String?,
+        /**
+         * Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+         */llmFormattingReasoning: String, llmAssistiveProvider: String?, llmAssistiveModel: String?,
+        /**
+         * Agent reasoning level: `default` (the model's own) or a chosen level.
+         */llmAssistiveReasoning: String, formattingLevel: String?, whisperModel: String?,
         /**
          * Read-only diagnostic env override captured by the runtime snapshot.
          * ASR mode owns the default; Settings never writes this value.
@@ -13964,8 +14091,10 @@ public struct CsSettings: Equatable, Hashable {
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
+        self.llmFormattingReasoning = llmFormattingReasoning
         self.llmAssistiveProvider = llmAssistiveProvider
         self.llmAssistiveModel = llmAssistiveModel
+        self.llmAssistiveReasoning = llmAssistiveReasoning
         self.formattingLevel = formattingLevel
         self.whisperModel = whisperModel
         self.layeredTranscription = layeredTranscription
@@ -14051,8 +14180,10 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
+                llmFormattingReasoning: FfiConverterString.read(from: &buf),
                 llmAssistiveProvider: FfiConverterOptionString.read(from: &buf),
                 llmAssistiveModel: FfiConverterOptionString.read(from: &buf),
+                llmAssistiveReasoning: FfiConverterString.read(from: &buf),
                 formattingLevel: FfiConverterOptionString.read(from: &buf),
                 whisperModel: FfiConverterOptionString.read(from: &buf),
                 layeredTranscription: FfiConverterOptionString.read(from: &buf),
@@ -14126,8 +14257,10 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
+        FfiConverterString.write(value.llmFormattingReasoning, into: &buf)
         FfiConverterOptionString.write(value.llmAssistiveProvider, into: &buf)
         FfiConverterOptionString.write(value.llmAssistiveModel, into: &buf)
+        FfiConverterString.write(value.llmAssistiveReasoning, into: &buf)
         FfiConverterOptionString.write(value.formattingLevel, into: &buf)
         FfiConverterOptionString.write(value.whisperModel, into: &buf)
         FfiConverterOptionString.write(value.layeredTranscription, into: &buf)
@@ -21625,6 +21758,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 41767) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_formatting() != 61038) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33194) {
