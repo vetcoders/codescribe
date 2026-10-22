@@ -20,13 +20,14 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
       OverlayResizeHit.band, "the resize band is the only strip past the controls")
   }
 
-  func testExpandedMinimumHeightFitsTheWholeFixedActionColumn() {
-    // 12 controls × 28 + inner spacing 14 + 4 separators + outer spacing 64
-    // + vertical padding 8. The window floor pays the 54 pt header clearance
-    // once (the column's top padding below the floating header), the whole
-    // column and its 12 pt bottom padding: 54 + 426 + 12.
+  func testExpandedMinimumHeightFitsSevenSlotsAndKeepsTheFullInventory() {
+    // All twelve commands remain in the scroll content. The viewport ends
+    // after the seventh, without revealing a clipped eighth control. Header
+    // clearance and bottom padding are paid once: 54 + 242 + 12.
     XCTAssertEqual(OverlayTranscriptActionsLayout.columnHeight, 426)
-    XCTAssertEqual(OverlayTranscriptActionsLayout.minimumExpandedHeight, 492)
+    XCTAssertEqual(OverlayTranscriptActionsLayout.visibleSlotBudget, 7)
+    XCTAssertEqual(OverlayTranscriptActionsLayout.viewportHeight, 242)
+    XCTAssertEqual(OverlayTranscriptActionsLayout.minimumExpandedHeight, 308)
     XCTAssertEqual(
       DictationOverlayWindow.minSize.height,
       OverlayTranscriptActionsLayout.minimumExpandedHeight)
@@ -38,6 +39,43 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         height: DictationOverlayWindow.collapsedHeight))
     XCTAssertEqual(
       DictationOverlayWindow.minimumSize(for: .midi), DictationOverlayWindow.midiSize)
+  }
+
+  func testSevenSlotViewportScrollsTheRemainingCommandsWithoutPresentingAWindow() throws {
+    let height = OverlayTranscriptActionsLayout.viewportHeight
+    let host = NSHostingView(
+      rootView: OverlayIntentRail(
+        phase: "formatted", intents: [.copy, .retranscribe, .format, .sendToAgent],
+        palette: .dark, onIntent: { _ in }
+      )
+      .frame(width: OverlayTranscriptActionsLayout.contentWidth, height: height))
+    host.sizingOptions = []
+    host.frame = NSRect(
+      x: 0, y: 0, width: OverlayTranscriptActionsLayout.contentWidth, height: height)
+    // A window supplies AppKit's layout context, but is never ordered on
+    // screen, made key, or admitted to the person's input surface.
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    func descendants(_ view: NSView) -> [NSView] {
+      view.subviews.flatMap { [$0] + descendants($0) }
+    }
+    let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? NSScrollView }.first)
+    let document = try XCTUnwrap(scroll.documentView)
+    XCTAssertFalse(window.isVisible, "this fixture must never present a native window")
+    XCTAssertFalse(window.isKeyWindow)
+    XCTAssertEqual(scroll.contentView.bounds.height, height, accuracy: 1)
+    XCTAssertEqual(document.bounds.height, OverlayTranscriptActionsLayout.columnHeight, accuracy: 1)
+    let bottom = document.bounds.height - scroll.contentView.bounds.height
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    XCTAssertEqual(scroll.contentView.bounds.minY, bottom, accuracy: 1)
+    XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
   }
 
   func testConversationInventoryCannotChooseTheTranscriptionCanvas() {

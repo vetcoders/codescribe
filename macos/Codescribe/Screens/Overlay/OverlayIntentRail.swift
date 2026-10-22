@@ -112,8 +112,9 @@ enum OverlayDockVisuals {
   }
 }
 
-/// Permanent transcript-action column. Hover hints float over the document.
-/// The same control is the only render of each command.
+/// Stable transcript-action inventory in a seven-slot scrolling palette.
+/// Hover hints stay over the document, inside its window. The same control
+/// remains the only render of each command, including those below the fold.
 @MainActor
 struct OverlayIntentRail: View {
   @State private var presented: String?
@@ -215,7 +216,9 @@ struct OverlayIntentRail: View {
       }
       .frame(maxWidth: .infinity)
       .padding(.vertical, OverlayTranscriptActionsLayout.contentVerticalPadding)
+      .csAutohidingScrollers()
     }
+    .scrollIndicators(.visible)
     .focusable(false)
     .onChange(of: presented) { _, value in
       onPresentationChange(value != nil)
@@ -245,6 +248,7 @@ struct OverlayIntentRail: View {
       id: "overlay-history-menu", title: String(localized: "Transcription history"),
       palette: palette,
       presented: $presented,
+      keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
       Image(systemName: OverlayControlSymbols.history).frame(width: 24, height: 24)
@@ -267,6 +271,7 @@ struct OverlayIntentRail: View {
       palette: palette,
       presented: $presented,
       isEnabled: enabled,
+      keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
       Image(systemName: OverlayControlSymbols.versions).frame(width: 24, height: 24)
@@ -288,6 +293,7 @@ struct OverlayIntentRail: View {
       palette: palette,
       presented: $presented,
       isEnabled: enabled,
+      keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
       Image(systemName: OverlayControlSymbols.previousTake).frame(width: 24, height: 24)
@@ -317,6 +323,7 @@ struct OverlayIntentRail: View {
       palette: palette, presented: $presented,
       action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) },
       isEnabled: enabled,
+      keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)
@@ -486,6 +493,7 @@ struct OverlayIntentRail: View {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: title, palette: palette,
       presented: $presented, action: { dispatch(intent) }, isEnabled: enabled,
+      keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
       Image(systemName: intent.systemImage).frame(width: 24, height: 24)

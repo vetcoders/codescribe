@@ -10,11 +10,13 @@ struct OverlayMiniTooltip: ViewModifier {
   let palette: OverlayAppearancePalette
   var enabled = true
   var floating = false
+  var withinWindow = false
 
   func body(content: Content) -> some View {
     content.modifier(
       OverlayHeaderControlChrome(
         title: title, accent: nil, palette: palette, hintLeading: floating,
+        hintWithinWindow: withinWindow,
         showsHint: enabled && !title.isEmpty))
   }
 }
@@ -97,6 +99,9 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   /// opacity, and neither fires its action nor opens its detail. Its tooltip
   /// still names it, so the reason it cannot run stays one hover away.
   var isEnabled = true
+  /// Transcript actions hint over their document, inside the owning window.
+  /// Header and footer controls keep their existing compact hint placement.
+  var keepsHintInsideWindow = false
   /// The transcript column sits on the trailing edge, so its menus open over
   /// the document. Other chrome keeps the menu below the control.
   var popoverArrow: Edge = .top
@@ -133,7 +138,7 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .modifier(
       OverlayMiniTooltip(
         title: title, palette: palette, enabled: showsTooltip && presented == nil,
-        floating: popoverArrow == .trailing)
+        floating: popoverArrow == .trailing, withinWindow: keepsHintInsideWindow)
     )
     .popover(
       isPresented: Binding(

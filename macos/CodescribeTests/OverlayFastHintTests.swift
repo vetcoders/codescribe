@@ -6,6 +6,19 @@ import XCTest
 
 @MainActor
 final class OverlayFastHintTests: XCTestCase {
+  func testTranscriptHintFitsInsideTheOwningWindowAtEveryEdge() {
+    let window = NSRect(x: 300, y: 200, width: 360, height: 308)
+    let safe = window.insetBy(dx: OverlayHintPanel.screenInset, dy: OverlayHintPanel.screenInset)
+    for x in [window.minX, window.maxX - 28] {
+      for y in [window.minY, window.maxY - 28] {
+        let anchor = NSRect(x: x, y: y, width: 28, height: 28)
+        let frame = OverlayHintPanel.frame(
+          size: CGSize(width: 260, height: 54), leading: anchor, within: window)
+        XCTAssertTrue(safe.contains(frame), "hint escaped its transcript window: \(frame)")
+      }
+    }
+  }
+
   /// A hint must not enlarge a compact button, cover its click target, or
   /// create a window when its control has no visible owning window.
   func testHoverPreservesControlGeometryAndClickThroughTracking() throws {

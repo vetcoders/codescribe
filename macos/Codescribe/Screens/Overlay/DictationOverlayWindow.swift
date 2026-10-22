@@ -1199,9 +1199,9 @@ enum DictationOverlayWindow {
   /// sizing via `clamp(_:to:)`. A live edge gesture records fold intent below
   /// this floor, but paints the current form at its floor until release.
   /// Height is the transcript-action column's floor, not a transcript-lines
-  /// guess: the expanded form always shows the full fixed action column, so
-  /// its minimum fits the header, the column's whole stack and its padding at
-  /// once (`OverlayTranscriptActionsLayout.minimumExpandedHeight`). Mini and
+  /// guess: the expanded form shows seven action slots, with the rest in the
+  /// column's scroll view. Its minimum fits the header, that viewport and its
+  /// padding (`OverlayTranscriptActionsLayout.minimumExpandedHeight`). Mini and
   /// MIDI keep their own sizes and never see this height.
   ///
   /// Width 320 → 360 (Founder, 2026-10-18: at 320 the session counter broke
@@ -1218,8 +1218,8 @@ enum DictationOverlayWindow {
     width: 360, height: OverlayTranscriptActionsLayout.minimumExpandedHeight)
   /// First-launch content size (no persisted value yet). The width keeps the
   /// landscape proportion of the old 470 × 280 bar, but the height sits on
-  /// the expanded floor: the fixed transcript action column must fit in full
-  /// from the first frame, and a default below `minSize` could never be the
+  /// the expanded floor: seven transcript action slots fit from the first
+  /// frame, and a default below `minSize` could never be the
   /// frame the window actually takes. Resizing persists, so users who prefer
   /// a taller panel drag it once and keep it.
   static let defaultSize = NSSize(
