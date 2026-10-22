@@ -80,6 +80,12 @@ iTerm2 or Terminal tab. The button appears only when Codescribe knows where the
 agent runs. If macOS asks whether the terminal may be controlled, allow it, or
 turn it on later in System Settings › Privacy & Security › Automation.
 
+For a Codex agent with neither, the same button opens the agent's thread in the
+Codex app (ChatGPT). This works even when the row shows the agent as
+disconnected, which Codex agents often are between replies. A Codex Cloud
+thread cannot be opened from your Mac: its button stays greyed, and you open
+that thread in ChatGPT yourself.
+
 Channel replies appear as selectable messages. Scrolling back pauses following
 the live edge; use the return-to-current control to see the latest messages
 again. Selecting a conversation does not replay old speech.

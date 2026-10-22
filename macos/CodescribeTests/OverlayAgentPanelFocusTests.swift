@@ -27,13 +27,15 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     error: Found argument 'focus-pane-id' which wasn't expected, or isn't valid in this context
     """
 
-  private func makeOwner(channel: String = "5", name: String = "stanislaw")
+  private func makeOwner(
+    channel: String = "5", name: String = "stanislaw", provider: String = "claude-code"
+  )
     -> OverlayConversationOwner
   {
     let leaseID = AgentPlaybackIdentity.leaseIdentifier(
-      provider: "claude-code", session: "session-\(channel)")
+      provider: provider, session: "session-\(channel)")
     return OverlayConversationOwner(row: [
-      "provider": "claude-code",
+      "provider": provider,
       "provider_session_id": "session-\(channel)",
       "channel": channel,
       "name": name,
@@ -59,7 +61,10 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     owner: OverlayConversationOwner,
     panelFocusAvailable: Bool = true,
     frameDetected: Bool? = true,
-    terminalDetected: Bool? = nil
+    terminalDetected: Bool? = nil,
+    followerAlive: Bool? = true,
+    codexThreadUrl: String? = nil,
+    codexThreadLocal: Bool? = nil
   ) {
     state.applyChannelRoster([
       CsChannelRosterState(
@@ -68,8 +73,9 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       CsChannelRosterState(
         channel: owner.channel, audience: owner.name, provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: true, frameDetected: frameDetected,
-        terminalDetected: terminalDetected, unreadSinceUnixMs: nil),
+        autosealDeadlineUnixMs: nil, followerAlive: followerAlive, frameDetected: frameDetected,
+        terminalDetected: terminalDetected, codexThreadUrl: codexThreadUrl,
+        codexThreadLocal: codexThreadLocal, unreadSinceUnixMs: nil),
     ])
     if panelFocusAvailable {
       state.setAgentPanelFocusAvailable(true)
@@ -1054,5 +1060,150 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
       OverlayState.panelFocusStatusReason(for: try result("error"), requested: .frame),
       String(localized: "Could not focus panel in Frame"))
     XCTAssertNil(try result("focused", target: "kitty").target, "an unknown target is dropped")
+  }
+
+  // MARK: Codex thread in the Codex app (UI-70)
+
+  private static let codexThreadLink = "codex://threads/c0ffee01-0000-7000-8000-000000000001"
+
+  private func codexStatusView(
+    owner: OverlayConversationOwner, row: OverlayChannelDelivery,
+    followerAlive: Bool?, terminalDetected: Bool?, codexThreadLocal: Bool?
+  ) -> OverlayChannelStatusView {
+    var view = OverlayChannelStatusView(
+      channels: [row], unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        row.channel: OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: followerAlive,
+          provider: owner.provider, providerSessionID: owner.providerSessionID,
+          frameDetected: nil, terminalDetected: terminalDetected,
+          codexThreadUrl: Self.codexThreadLink, codexThreadLocal: codexThreadLocal)
+      ])
+    view.archiveCandidates = [row.channel: owner]
+    view.panelFocusAvailable = true
+    view.onFocusAgentPanel = { _ in }
+    return view
+  }
+
+  func testACodexThreadComesAfterAPaneAndATerminalTab() {
+    let local = OverlayChannelHudProjection(
+      open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+      frameDetected: true, terminalDetected: true,
+      codexThreadUrl: Self.codexThreadLink, codexThreadLocal: true)
+    XCTAssertEqual(OverlayAgentPanelFocusTarget.resolve(local, frameFocusAvailable: true), .frame)
+    var tabOnly = local
+    tabOnly.frameDetected = false
+    XCTAssertEqual(
+      OverlayAgentPanelFocusTarget.resolve(tabOnly, frameFocusAvailable: true), .terminal)
+    var threadOnly = tabOnly
+    threadOnly.terminalDetected = nil
+    XCTAssertEqual(
+      OverlayAgentPanelFocusTarget.resolve(threadOnly, frameFocusAvailable: true), .codexThread)
+    XCTAssertFalse(
+      OverlayAgentPanelFocusTarget.isCodexCloudThread(threadOnly, frameFocusAvailable: true))
+
+    var cloud = threadOnly
+    cloud.codexThreadLocal = false
+    XCTAssertNil(OverlayAgentPanelFocusTarget.resolve(cloud, frameFocusAvailable: true))
+    XCTAssertTrue(
+      OverlayAgentPanelFocusTarget.isCodexCloudThread(cloud, frameFocusAvailable: true))
+    var cloudInTerminal = cloud
+    cloudInTerminal.terminalDetected = true
+    XCTAssertEqual(
+      OverlayAgentPanelFocusTarget.resolve(cloudInTerminal, frameFocusAvailable: true), .terminal)
+    XCTAssertFalse(
+      OverlayAgentPanelFocusTarget.isCodexCloudThread(cloudInTerminal, frameFocusAvailable: true))
+    XCTAssertFalse(OverlayAgentPanelFocusTarget.codexThread.needsLiveFollower)
+    XCTAssertTrue(OverlayAgentPanelFocusTarget.terminal.needsLiveFollower)
+  }
+
+  func testADisconnectedCodexFollowerStillOpensItsLocalThread() throws {
+    let owner = makeOwner(provider: "codex")
+    let row = OverlayChannelDelivery(
+      channel: owner.channel, agent: owner.name, deliveryID: nil, stage: nil, isOpen: false)
+    let view = codexStatusView(
+      owner: owner, row: row, followerAlive: false, terminalDetected: nil,
+      codexThreadLocal: true)
+    XCTAssertTrue(view.hasDeadFollower(row))
+    XCTAssertEqual(view.panelFocusTarget(for: row), .codexThread)
+    XCTAssertTrue(view.showsPanelFocusButton(for: row))
+    XCTAssertFalse(view.panelFocusUnreachable(row))
+    XCTAssertEqual(
+      view.panelFocusHelp(for: row, state: nil),
+      String(localized: "Show the agent's Codex thread"))
+    XCTAssertEqual(
+      view.panelFocusSymbol(nil, target: .codexThread), "bubble.left.and.text.bubble.right")
+
+    let state = OverlayState.previewFormatted()
+    armRoster(
+      on: state, owner: owner, panelFocusAvailable: false, frameDetected: nil,
+      followerAlive: false, codexThreadUrl: Self.codexThreadLink, codexThreadLocal: true)
+    state.panelFocusSuccessHoldDuration = .seconds(30)
+    XCTAssertTrue(state.canFocusAgentPanel(owner))
+    XCTAssertEqual(
+      state.agentPanelFocusHelp(owner), String(localized: "Show the agent's Codex thread"))
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { issuedRequests.append($0) }
+    var openedLinks: [URL] = []
+    state.openCodexThreadLink = { url in
+      openedLinks.append(url)
+      return true
+    }
+    state.focusAgentPanel(owner)
+    XCTAssertEqual(openedLinks, [URL(string: Self.codexThreadLink)!])
+    XCTAssertTrue(issuedRequests.isEmpty, "the app opens the link; no follower is asked")
+    let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
+    XCTAssertEqual(focusState.phase, .succeeded)
+    XCTAssertEqual(focusState.target, .codexThread)
+    XCTAssertEqual(focusState.statusText, String(localized: "Codex thread opened"))
+  }
+
+  func testACodexThreadTheSystemCannotOpenReportsAFailure() throws {
+    let owner = makeOwner(provider: "codex")
+    let state = OverlayState.previewFormatted()
+    armRoster(
+      on: state, owner: owner, panelFocusAvailable: false, frameDetected: nil,
+      followerAlive: true, codexThreadUrl: Self.codexThreadLink, codexThreadLocal: true)
+    state.openCodexThreadLink = { _ in false }
+    state.focusAgentPanel(owner)
+    let focusState = try XCTUnwrap(state.agentPanelFocusStates[owner.channel])
+    XCTAssertEqual(focusState.phase, .failed)
+    XCTAssertEqual(
+      focusState.statusText, String(localized: "Could not open the agent's Codex thread"))
+  }
+
+  func testACodexCloudThreadIsGreyedAndNamesWhereItLives() throws {
+    let owner = makeOwner(provider: "codex")
+    let row = OverlayChannelDelivery(
+      channel: owner.channel, agent: owner.name, deliveryID: nil, stage: nil, isOpen: false)
+    for followerAlive in [true, false] {
+      let view = codexStatusView(
+        owner: owner, row: row, followerAlive: followerAlive, terminalDetected: false,
+        codexThreadLocal: false)
+      XCTAssertNil(view.panelFocusTarget(for: row))
+      XCTAssertTrue(view.hasCodexCloudThread(row))
+      XCTAssertTrue(view.showsPanelFocusButton(for: row), "the button rests greyed")
+      XCTAssertTrue(view.panelFocusUnreachable(row))
+      XCTAssertEqual(
+        view.panelFocusHelp(for: row, state: nil),
+        String(localized: "Codex Cloud thread: open it in ChatGPT"))
+    }
+
+    let state = OverlayState.previewFormatted()
+    armRoster(
+      on: state, owner: owner, panelFocusAvailable: false, frameDetected: nil,
+      followerAlive: true, codexThreadUrl: Self.codexThreadLink, codexThreadLocal: false)
+    var openedLinks: [URL] = []
+    state.openCodexThreadLink = { url in
+      openedLinks.append(url)
+      return true
+    }
+    var issuedRequests: [OverlayAgentPanelFocusRequest] = []
+    state.requestAgentPanelFocusCommand = { issuedRequests.append($0) }
+    XCTAssertFalse(state.canFocusAgentPanel(owner))
+    state.focusAgentPanel(owner)
+    XCTAssertTrue(openedLinks.isEmpty, "a cloud link would end in the app's error")
+    XCTAssertTrue(issuedRequests.isEmpty)
+    XCTAssertNil(state.agentPanelFocusStates[owner.channel])
   }
 }

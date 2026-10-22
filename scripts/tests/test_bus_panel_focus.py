@@ -1,5 +1,6 @@
 """A click on an agent row brings that agent's own vc-frame pane, or its
-iTerm2 or Terminal.app tab, to focus."""
+iTerm2 or Terminal.app tab, to focus; a Codex follower's lease also names
+the Codex app thread the overlay can open itself."""
 import contextlib
 import importlib.util
 import io
@@ -405,6 +406,122 @@ class TerminalLeaseTests(unittest.TestCase):
         with mock.patch.object(DEMUX, "inherited_terminal_context", return_value=None):
             lease = self.lease("codex")
         self.assertIsNone(json.loads(lease.path.read_text())["terminal"])
+
+
+CODEX_THREAD = "c0ffee01-0000-7000-8000-000000000001"
+CLOUD_EXEC_SERVER = ("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+                     " -c forced_login_method=\"chatgpt\" exec-server"
+                     " --remote https://codex-cloud-environments.chatgpt.com/api --environment-id ccarenv_x")
+
+
+class CodexContextTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.codex = Path(temp.name).resolve() / ".codex"
+
+    def write_rollout(self, relative):
+        path = self.codex / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        return path
+
+    def test_a_dated_session_rollout_names_the_local_thread(self):
+        self.write_rollout("sessions/2026/10/20/rollout-2026-10-20T23-00-00-other-thread-0000.jsonl")
+        rollout = self.write_rollout(f"sessions/2026/10/21/rollout-2026-10-21T00-27-41-{CODEX_THREAD}.jsonl")
+        self.assertEqual(DEMUX.codex_rollout_path(self.codex, CODEX_THREAD), rollout)
+
+    def test_an_archived_rollout_counts_compressed_or_not(self):
+        archived = self.write_rollout(f"archived_sessions/rollout-2026-05-26T18-05-24-{CODEX_THREAD}.jsonl.zst")
+        self.assertEqual(DEMUX.codex_rollout_path(self.codex, CODEX_THREAD), archived)
+
+    def test_a_cloud_thread_has_no_rollout_and_ids_are_never_globs(self):
+        self.write_rollout("sessions/2026/10/21/rollout-2026-10-21T00-27-41-someone-else.jsonl")
+        self.assertIsNone(DEMUX.codex_rollout_path(self.codex, CODEX_THREAD))
+        self.assertIsNone(DEMUX.codex_rollout_path(self.codex, "*"))
+        self.assertIsNone(DEMUX.codex_rollout_path(self.codex / "missing", CODEX_THREAD))
+
+    def test_codex_home_honours_the_environment(self):
+        self.assertEqual(DEMUX.codex_home({"CODEX_HOME": "/srv/codex"}), Path("/srv/codex"))
+        self.assertEqual(DEMUX.codex_home({}), Path.home() / ".codex")
+
+    def test_a_cloud_exec_server_in_the_ancestry_marks_the_thread_remote(self):
+        procs = {700: {"pid": 700, "ppid": 650, "tty": "??", "command": "python3 bus-demux.py"},
+                 650: {"pid": 650, "ppid": 600, "tty": "??", "command": "/bin/zsh -lc codescribe"},
+                 600: {"pid": 600, "ppid": 1, "tty": "??", "command": CLOUD_EXEC_SERVER}}
+        self.assertTrue(DEMUX.codex_remote_ancestor(procs, 700))
+        procs[600]["command"] = "/opt/codex exec-server --listen stdio"
+        self.assertFalse(DEMUX.codex_remote_ancestor(procs, 700))
+        procs[600]["command"] = "/opt/other-tool exec-server --remote https://example.invalid"
+        self.assertFalse(DEMUX.codex_remote_ancestor(procs, 700))
+
+    def test_only_a_codex_session_names_a_thread(self):
+        self.assertEqual(DEMUX.codex_context("codex", CODEX_THREAD, rollout=True, remote=False),
+                         {"thread_id": CODEX_THREAD, "app_bundle_id": "com.openai.codex",
+                          "rollout": True, "remote": False})
+        self.assertIsNone(DEMUX.codex_context("claude-code", CODEX_THREAD, rollout=True, remote=False))
+        self.assertIsNone(DEMUX.codex_context("codex", "", rollout=False, remote=False))
+
+
+class CodexLeaseTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name).resolve()
+        self.root = self.home / "bridge"
+        self.bus = self.home / "channel-6.jsonl"
+        self.bus.touch()
+        for target, value in (("NativeProviderModelReader", None), ("frame_context", None),
+                              ("inherited_terminal_context", None), ("process_table", {})):
+            patcher = mock.patch.object(DEMUX, target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def lease(self, provider, session=CODEX_THREAD):
+        lease = DEMUX.SessionLease(
+            root=self.root, provider=provider, provider_session_id=session,
+            name="igor", bus=self.bus, requested_id=None, ttl_seconds=120,
+            follow_from_end=False, provider_metadata_home=self.home)
+        self.addCleanup(lease.close)
+        return lease
+
+    def state(self, lease):
+        return json.loads(lease.path.read_text())
+
+    def test_a_codex_lease_names_its_thread_and_a_later_rollout_becomes_openable(self):
+        lease = self.lease("codex")
+        self.assertEqual(self.state(lease)["codex"],
+                         {"thread_id": CODEX_THREAD, "app_bundle_id": "com.openai.codex",
+                          "rollout": False, "remote": False})
+        rollout = self.home / ".codex" / "sessions" / "2026" / "10" / "21" / \
+            f"rollout-2026-10-21T00-27-41-{CODEX_THREAD}.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("{}\n")
+        lease._next_codex_rollout_scan = 0.0
+        lease.refresh_provider_model()
+        lease.persist(active=True)
+        self.assertTrue(self.state(lease)["codex"]["rollout"])
+        # Archiving moves the file; the next heartbeat looks again at once.
+        archived = self.home / ".codex" / "archived_sessions" / rollout.name
+        archived.parent.mkdir(parents=True)
+        rollout.rename(archived)
+        lease.refresh_provider_model()
+        lease.persist(active=True)
+        self.assertTrue(self.state(lease)["codex"]["rollout"])
+
+    def test_a_cloud_follower_is_marked_remote(self):
+        procs = {os.getpid(): {"pid": os.getpid(), "ppid": 600, "tty": "??", "command": "python3"},
+                 600: {"pid": 600, "ppid": 1, "tty": "??", "command": CLOUD_EXEC_SERVER}}
+        with mock.patch.object(DEMUX, "process_table", return_value=procs):
+            lease = self.lease("codex")
+        self.assertEqual((self.state(lease)["codex"]["remote"], self.state(lease)["codex"]["rollout"]),
+                         (True, False))
+
+    def test_other_providers_name_no_codex_thread(self):
+        with mock.patch.object(DEMUX, "resolve_claude_frame_context", return_value=None), \
+                mock.patch.object(DEMUX, "resolve_claude_terminal_context", return_value=None):
+            lease = self.lease("claude-code", "claude-session")
+        self.assertIsNone(self.state(lease)["codex"])
 
 
 class VcFrameOnPathTests(unittest.TestCase):

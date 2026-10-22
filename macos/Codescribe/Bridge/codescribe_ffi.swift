@@ -9767,6 +9767,17 @@ public struct CsChannelRosterState: Equatable, Hashable {
      */
     public var terminalDetected: Bool?
     /**
+     * `codex://threads/<id>` of a Codex follower's thread in the Codex app,
+     * known from its lease whether or not the follower is alive; the app
+     * opens it itself. `None` = no thread known.
+     */
+    public var codexThreadUrl: String?
+    /**
+     * Whether the local Codex store holds that thread, so the link opens;
+     * `Some(false)` is a Codex Cloud thread. `None` with no thread.
+     */
+    public var codexThreadLocal: Bool?
+    /**
      * Milliseconds since the Unix epoch of the live follower's oldest
      * unacknowledged delivery; `None` = no backlog or no follower. The
      * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9796,6 +9807,15 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * control is idle.
          */terminalDetected: Bool? = nil,
         /**
+         * `codex://threads/<id>` of a Codex follower's thread in the Codex app,
+         * known from its lease whether or not the follower is alive; the app
+         * opens it itself. `None` = no thread known.
+         */codexThreadUrl: String? = nil,
+        /**
+         * Whether the local Codex store holds that thread, so the link opens;
+         * `Some(false)` is a Codex Cloud thread. `None` with no thread.
+         */codexThreadLocal: Bool? = nil,
+        /**
          * Milliseconds since the Unix epoch of the live follower's oldest
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9811,6 +9831,8 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.followerAlive = followerAlive
         self.frameDetected = frameDetected
         self.terminalDetected = terminalDetected
+        self.codexThreadUrl = codexThreadUrl
+        self.codexThreadLocal = codexThreadLocal
         self.unreadSinceUnixMs = unreadSinceUnixMs
     }
 
@@ -9838,6 +9860,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 followerAlive: FfiConverterOptionBool.read(from: &buf),
                 frameDetected: FfiConverterOptionBool.read(from: &buf),
                 terminalDetected: FfiConverterOptionBool.read(from: &buf),
+                codexThreadUrl: FfiConverterOptionString.read(from: &buf),
+                codexThreadLocal: FfiConverterOptionBool.read(from: &buf),
                 unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
@@ -9853,6 +9877,8 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterOptionBool.write(value.followerAlive, into: &buf)
         FfiConverterOptionBool.write(value.frameDetected, into: &buf)
         FfiConverterOptionBool.write(value.terminalDetected, into: &buf)
+        FfiConverterOptionString.write(value.codexThreadUrl, into: &buf)
+        FfiConverterOptionBool.write(value.codexThreadLocal, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
     }
 }
