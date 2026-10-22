@@ -131,6 +131,17 @@
         }
       }
     },
+    "Another recording is still running.": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inne nagranie jeszcze trwa."
+          }
+        }
+      }
+    },
     "Classic": {
       "extractionState": "manual",
       "localizations": {

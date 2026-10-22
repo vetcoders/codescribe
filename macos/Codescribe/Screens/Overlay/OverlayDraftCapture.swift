@@ -67,10 +67,28 @@ final class OverlayDraftCapture {
       errorCaptureID = error == nil ? nil : owned.captureId
       return
     }
-    guard !busy else { return }
+    guard !busy else {
+      error = String(localized: "Another recording is still running.")
+      errorConversationID = destination
+      return
+    }
     transitioning = true
     defer { transitioning = false }
-    guard !(await captureController.isRecording()) else { return }
+    // The previous take's teardown can outlive its Stop by a breath, and a
+    // click in that window used to vanish without a word (Maciej,
+    // 2026-10-22: the bus field's microphone "races"). The shared
+    // controller gets a short grace; when it stays busy the person is told,
+    // instead of a silently dead button.
+    var grace = 10
+    while await captureController.isRecording() {
+      grace -= 1
+      guard grace >= 0 else {
+        error = String(localized: "Another recording is still running.")
+        errorConversationID = destination
+        return
+      }
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
     // Install the destination before the asynchronous start: projections may
     // beat the start reply, but cannot nominate themselves as the owner.
     conversationID = destination
