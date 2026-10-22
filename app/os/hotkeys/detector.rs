@@ -1425,6 +1425,7 @@ mod tests {
             double_tap_interval_ms: 200,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
             channel_modifier: ChannelModifier::Ctrl,
+            widget_shortcut: crate::config::WidgetShortcut::default(),
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
             middle_mouse_agent_gesture: false,
