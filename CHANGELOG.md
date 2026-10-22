@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent window: the "Conversation width" submenu under "More actions" marks the active mode with the system check mark (native picker); before, the mark never rendered and the choice looked ignored.
 - Agent window: one bar, the same height as Settings. The conversation title, live status and "Agent · model" sit in the window bar beside the wordmark; the separate header row under the bar is gone, and its controls (Voice Lab mark, width, **Context**) join **Always on top** and the menu on the trailing side.
 - Agent window: a one-click conversation width button sits beside **Context** in the window bar (Standard → Wide → Full width); the submenu under "More actions" still names the modes.
 - **Restart now** in Settings (interface language, sheet shade) brings Codescribe back with Settings open on the section you were in and in front, instead of relaunching into the background under the previous app.
