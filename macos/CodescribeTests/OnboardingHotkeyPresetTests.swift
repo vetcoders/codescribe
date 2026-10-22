@@ -24,6 +24,7 @@ final class OnboardingHotkeyPresetTests: XCTestCase {
     func rearmAfterPermissionGrant() {}
     func channelModifier() -> String { "ctrl" }
     func setChannelModifier(_ value: String) throws {}
+    func setWidgetShortcut(_ wireId: String) throws {}
     func fnTapTogglesDictation() -> Bool { false }
     func setFnTapTogglesDictation(_ enabled: Bool) throws {}
     func middleMouseActsAsFn() -> Bool { false }
