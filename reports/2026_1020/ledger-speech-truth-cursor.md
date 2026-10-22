@@ -23,14 +23,14 @@ Worker source is on the branch. Nothing here was compiled, tested, or replayed. 
 
 ## Where this is
 
-| | |
-| --- | --- |
-| Worktree | `/Users/polyversai/.vibecrafted/worktrees/vetcoders/codescribe/2026_1020/cursor-work-261020-151729-10556` |
-| Branch | `cut/cursor-work-261020-151729-10556` |
-| Baseline | `d5bd051b2199413c905960f5ac715690deb7254c` |
-| Code tip | `0428e994f33e99853125d3b186d235213aefe496` |
-| This narrative | the commit whose parent is that tip |
-| Run | `work-261020-151729-10556` |
+|                |                                                                                                           |
+| -------------- | --------------------------------------------------------------------------------------------------------- |
+| Worktree       | `/Users/polyversai/.vibecrafted/worktrees/vetcoders/codescribe/2026_1020/cursor-work-261020-151729-10556` |
+| Branch         | `cut/cursor-work-261020-151729-10556`                                                                     |
+| Baseline       | `d5bd051b2199413c905960f5ac715690deb7254c`                                                                |
+| Code tip       | `0428e994f33e99853125d3b186d235213aefe496`                                                                |
+| This narrative | the commit whose parent is that tip                                                                       |
+| Run            | `work-261020-151729-10556`                                                                                |
 
 Not pushed. Not merged.
 
@@ -64,26 +64,26 @@ Receipt line on every checkpoint:
 
 ## Commits
 
-| SHA | Subject |
-| --- | --- |
+| SHA                                        | Subject                                                  |
+| ------------------------------------------ | -------------------------------------------------------- |
 | `083e197606198b88527e3b2efecc33ba5ee7ada1` | ledger: require Silero intersection before a word insert |
-| `9f1b079aa003d1353d21cb24691497fafb65b9ee` | ledger: skip Whisper windows with no Silero speech |
-| `e2c3d17f0d845c4d5925fe7c5f8c41c4e0f1a8a2` | ledger: witness a second engine on the same range |
-| `37811d905b1a4c72549306aba001c1d9200679e4` | ledger: omission is not evidence a word was unspoken |
+| `9f1b079aa003d1353d21cb24691497fafb65b9ee` | ledger: skip Whisper windows with no Silero speech       |
+| `e2c3d17f0d845c4d5925fe7c5f8c41c4e0f1a8a2` | ledger: witness a second engine on the same range        |
+| `37811d905b1a4c72549306aba001c1d9200679e4` | ledger: omission is not evidence a word was unspoken     |
 | `c1308bcb95b44c1674d6c1358f3869451b6a64d2` | ledger: collapse repeated labels without a Silero valley |
 | `400af772a3ed110efe3e34e17f761227ff9a3d61` | ledger: withhold unwitnessed channel epochs under 400 ms |
-| `d564466882daa811daca4ac1823f1fbc1fb71c2a` | settings: move word pins into Lab |
-| `0428e994f33e99853125d3b186d235213aefe496` | settings: localize the Lab pin picker label |
+| `d564466882daa811daca4ac1823f1fbc1fb71c2a` | settings: move word pins into Lab                        |
+| `0428e994f33e99853125d3b186d235213aefe496` | settings: localize the Lab pin picker label              |
 
 ## Pause-then-sound trails, read before D5
 
 Hypothesis was: a later window's missing labels erase the previous sentence. Three local trails with a long gap and then a short island:
 
-| Take | Gap | Previous island | Short island | Final words still in the prior region | Last verdicts | Token shrink |
-| --- | --- | --- | --- | --- | --- | --- |
-| `agent-channel-1-85a5ce16` | 4.32 s | 25 words, end 47.62 s | 0.26 s, 1 word at 51.94 s | 25 | KeepVisibleUnanchored 16, Refuse 48, Insert 0 | 0 |
-| `126d661b-c73b-4c1b-9ed7-1f07995c1a1e` | 5.12 s | 20 words, end 307.97 s | 0.74 s, 1 word at 313.09 s | 565 of 1409 | Refuse 666, KeepVisibleUnanchored 392, Correct 2, Insert 1 | 0 |
-| `agent-channel-0-eec11489` | 5.34 s | 13 words, end 19.30 s | 0.42 s, 1 word at 24.64 s | 37 | Insert 3, Refuse 80, KeepVisibleUnanchored 9 | 0 |
+| Take                                   | Gap    | Previous island        | Short island               | Final words still in the prior region | Last verdicts                                              | Token shrink |
+| -------------------------------------- | ------ | ---------------------- | -------------------------- | ------------------------------------- | ---------------------------------------------------------- | ------------ |
+| `agent-channel-1-85a5ce16`             | 4.32 s | 25 words, end 47.62 s  | 0.26 s, 1 word at 51.94 s  | 25                                    | KeepVisibleUnanchored 16, Refuse 48, Insert 0              | 0            |
+| `126d661b-c73b-4c1b-9ed7-1f07995c1a1e` | 5.12 s | 20 words, end 307.97 s | 0.74 s, 1 word at 313.09 s | 565 of 1409                           | Refuse 666, KeepVisibleUnanchored 392, Correct 2, Insert 1 | 0            |
+| `agent-channel-0-eec11489`             | 5.34 s | 13 words, end 19.30 s  | 0.42 s, 1 word at 24.64 s  | 37                                    | Insert 3, Refuse 80, KeepVisibleUnanchored 9               | 0            |
 
 The prior sentence was still in the final word list. The user-visible loss matches `KeepVisibleUnanchored` words that never became `Insert` and vanish at Stop. D5 still guards resegmentation, because absence in a later decode is not acoustic evidence.
 
