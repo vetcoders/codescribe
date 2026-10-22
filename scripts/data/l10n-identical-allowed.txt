@@ -46,6 +46,10 @@ Argument
 
 # Key names as the keyboard prints them.
 hotkeys.binding.doubleCtrl
+Command
+Control
+Option
+Shift
 
 # Formatting levels: a named family (Light+ / Smart / Max), not description.
 overlay.versions.source.lightPlus

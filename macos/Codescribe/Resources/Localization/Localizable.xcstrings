@@ -2168,6 +2168,16 @@
         }
       }
     },
+    "Activate, then press the chord you want." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uruchom, a potem naciśnij wybrany skrót."
+          }
+        }
+      }
+    },
     "Active" : {
       "comment" : "License status: active",
       "localizations" : {
@@ -2199,6 +2209,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dodaj"
+          }
+        }
+      }
+    },
+    "Add Control, Option or Command: a plain or Shift-only key would type." : {
+      "comment" : "Widget shortcut recorder refusal",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj Control, Option albo Command: sam klawisz lub Shift z klawiszem by pisał."
           }
         }
       }
@@ -5335,12 +5356,34 @@
         }
       }
     },
+    "Command" : {
+      "comment" : "Modifier key name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Command"
+          }
+        }
+      }
+    },
     "Command arguments" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Argumenty polecenia"
+          }
+        }
+      }
+    },
+    "Command+Shift+Space already opens the Agent window." : {
+      "comment" : "Widget shortcut recorder refusal",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Command+Shift+Spacja już otwiera okno Agenta."
           }
         }
       }
@@ -5730,6 +5773,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kontynuuj konsultację lub rozpocznij nową. Historia zostaje."
+          }
+        }
+      }
+    },
+    "Control" : {
+      "comment" : "Modifier key name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Control"
           }
         }
       }
@@ -7533,6 +7587,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włącz ten serwer"
+          }
+        }
+      }
+    },
+    "End the chord with a letter or Space." : {
+      "comment" : "Widget shortcut recorder refusal",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zakończ skrót literą albo Spacją."
           }
         }
       }
@@ -12700,6 +12765,17 @@
         }
       }
     },
+    "Option" : {
+      "comment" : "Modifier key name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Option"
+          }
+        }
+      }
+    },
     "Optional" : {
       "comment" : "Optional scope skipped in setup\nScreen Recording and Full Disk Access never block setup completion\nStatus chip",
       "localizations" : {
@@ -13316,6 +13392,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Naciśnij %@ albo kliknij „Rozpocznij nagrywanie”."
+          }
+        }
+      }
+    },
+    "Press keys…" : {
+      "comment" : "Widget shortcut recorder is waiting for a chord",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naciśnij klawisze…"
           }
         }
       }
@@ -16234,6 +16321,17 @@
         }
       }
     },
+    "Shift" : {
+      "comment" : "Modifier key name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Shift"
+          }
+        }
+      }
+    },
     "Shortcuts & control" : {
       "localizations" : {
         "pl" : {
@@ -16390,6 +16488,16 @@
         }
       }
     },
+    "Show or hide the widget" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż lub schowaj widżet"
+          }
+        }
+      }
+    },
     "Show overlay" : {
       "comment" : "Tray toggle: enable the transcription overlay",
       "localizations" : {
@@ -16510,6 +16618,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuje zakres zmian dotyczących tylko Agenta i wymaga wpisania %@ przed kontynuowaniem."
+          }
+        }
+      }
+    },
+    "Shows the collapsed widget anywhere; hides it again while nothing is recording. Click the chord and press your own: Control, Option or Command plus a letter or Space." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuje zwinięty widżet z dowolnego miejsca; chowa go, gdy nic nie nagrywa. Kliknij skrót i naciśnij własny: Control, Option albo Command plus litera lub Spacja."
           }
         }
       }
@@ -16840,6 +16958,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Źródło: Własny prompt"
+          }
+        }
+      }
+    },
+    "Space" : {
+      "comment" : "Key name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spacja"
           }
         }
       }
@@ -20395,6 +20524,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szeroka"
+          }
+        }
+      }
+    },
+    "Widget shortcut" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skrót widżetu"
           }
         }
       }
