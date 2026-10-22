@@ -2769,6 +2769,114 @@ def inherited_terminal_context(environ: Any) -> dict[str, Any] | None:
     return terminal
 
 
+CODEX_APP_BUNDLE_ID = "com.openai.codex"
+_CODEX_THREAD_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
+#: Upper bound on directory entries one rollout lookup may visit.
+CODEX_ROLLOUT_SCAN_ENTRIES = 20_000
+
+
+class _CodexScanBound(Exception):
+    """A rollout lookup visited more entries than it may."""
+
+
+def codex_home(environ: Any) -> Path:
+    """`$CODEX_HOME`, else `~/.codex`: the root of Codex's local thread store."""
+    configured = str(environ.get("CODEX_HOME") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".codex"
+
+
+def codex_rollout_path(codex_root: Path, thread_id: str) -> Path | None:
+    """The rollout file of a Codex thread in the local store, or None.
+
+    Codex writes a live thread to `sessions/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl`
+    and moves an archived one to `archived_sessions/` (sometimes compressed
+    as `.jsonl.zst`). The Codex app opens `codex://threads/<id>` only for a
+    thread found here; a Codex Cloud thread has no local rollout. Newest
+    date directories are visited first and the walk is bounded.
+    """
+    if not isinstance(thread_id, str) or not _CODEX_THREAD_RE.fullmatch(thread_id):
+        return None
+    suffixes = (f"-{thread_id}.jsonl", f"-{thread_id}.jsonl.zst")
+    visited = 0
+
+    def entries(directory: Path) -> list[os.DirEntry[str]]:
+        nonlocal visited
+        try:
+            with os.scandir(directory) as scan:
+                found = list(scan)
+        except OSError:
+            return []
+        visited += len(found)
+        if visited > CODEX_ROLLOUT_SCAN_ENTRIES:
+            raise _CodexScanBound
+        return found
+
+    def dated(directory: Path, pattern: str) -> list[Path]:
+        newest_first = sorted(entries(directory), key=lambda entry: entry.name, reverse=True)
+        return [Path(entry.path) for entry in newest_first
+                if re.fullmatch(pattern, entry.name) and entry.is_dir(follow_symlinks=False)]
+
+    def rollout(directory: Path) -> Path | None:
+        for entry in entries(directory):
+            if (entry.name.startswith("rollout-") and entry.name.endswith(suffixes)
+                    and entry.is_file(follow_symlinks=False)):
+                return Path(entry.path)
+        return None
+
+    try:
+        for year in dated(codex_root / "sessions", r"\d{4}"):
+            for month in dated(year, r"\d{2}"):
+                for day in dated(month, r"\d{2}"):
+                    found = rollout(day)
+                    if found is not None:
+                        return found
+        return rollout(codex_root / "archived_sessions")
+    except _CodexScanBound:
+        return None
+
+
+def codex_remote_ancestor(procs: dict[int, dict[str, Any]], pid: int) -> bool:
+    """Whether a process in `pid`'s ancestry is a Codex Cloud exec-server.
+
+    The Codex app runs a cloud thread's tools through
+    `codex … exec-server --remote <url> …`; a local thread's tools never pass
+    through such a process.
+    """
+    current = pid
+    seen: set[int] = set()
+    for _ in range(16):
+        info = procs.get(current)
+        if info is None or current in seen:
+            break
+        seen.add(current)
+        tokens = str(info.get("command") or "").split()
+        if "exec-server" in tokens:
+            server = tokens.index("exec-server")
+            if (any(Path(token).name == "codex" for token in tokens[:server])
+                    and any(token == "--remote" or token.startswith("--remote=")
+                            for token in tokens[server + 1:])):
+                return True
+        current = info.get("ppid")
+    return False
+
+
+def codex_context(provider: str, thread_id: Any, *, rollout: bool, remote: bool) -> dict[str, Any] | None:
+    """Name the Codex app thread of a Codex follower, or None for other providers.
+
+    The thread id is the provider session id the lease already records;
+    `rollout` says whether the local store can open it, `remote` whether the
+    follower runs under a Codex Cloud exec-server.
+    """
+    if provider != "codex" or not isinstance(thread_id, str) or not _CODEX_THREAD_RE.fullmatch(thread_id):
+        return None
+    return {
+        "thread_id": thread_id,
+        "app_bundle_id": CODEX_APP_BUNDLE_ID,
+        "rollout": bool(rollout),
+        "remote": bool(remote),
+    }
+
+
 def process_environ(pid: int) -> dict[str, str]:
     """Extract vc-frame and terminal-host environment variables from a live process via `ps eww`."""
     import subprocess
@@ -3242,6 +3350,7 @@ class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
 
     FRAME_DISCOVERY_INTERVAL = 5.0
+    CODEX_ROLLOUT_RESCAN_INTERVAL = 30.0
 
     def __init__(
         self,
@@ -3276,6 +3385,17 @@ class SessionLease:
         )
         self.terminal = self._inherited_terminal
         self._next_frame_discovery = 0.0
+        # A Codex follower's thread opens in the Codex app from its local store.
+        self._codex_root = (
+            provider_metadata_home / ".codex" if provider_metadata_home is not None
+            else codex_home(os.environ)
+        )
+        self._codex_remote = (
+            codex_remote_ancestor(process_table(), os.getpid()) if self.provider == "codex" else False
+        )
+        self._codex_rollout: Path | None = None
+        self._next_codex_rollout_scan = 0.0
+        self.codex: dict[str, Any] | None = None
         self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
@@ -3509,6 +3629,7 @@ class SessionLease:
                 "updated_at": utc_now(),
                 "frame": self.frame,
                 "terminal": self.terminal,
+                "codex": self.codex,
                 **self.repository_context,
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
                 **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
@@ -3539,10 +3660,33 @@ class SessionLease:
         self.terminal = terminal
         return changed
 
+    def refresh_codex_context(self) -> None:
+        """Re-check whether Codex's local store holds this thread's rollout.
+
+        A found rollout is re-checked by path on every heartbeat; a missing
+        one is searched again at most every CODEX_ROLLOUT_RESCAN_INTERVAL, so
+        a thread whose rollout appears later becomes openable.
+        """
+        if self.provider != "codex":
+            return
+        if self._codex_rollout is not None and not self._codex_rollout.is_file():
+            # Archiving moves the rollout; look for it again right away.
+            self._codex_rollout = None
+            self._next_codex_rollout_scan = 0.0
+        now = time.monotonic()
+        if self._codex_rollout is None and now >= self._next_codex_rollout_scan:
+            self._next_codex_rollout_scan = now + self.CODEX_ROLLOUT_RESCAN_INTERVAL
+            self._codex_rollout = codex_rollout_path(self._codex_root, self.provider_session_id)
+        self.codex = codex_context(
+            self.provider, self.provider_session_id,
+            rollout=self._codex_rollout is not None, remote=self._codex_remote,
+        )
+
     def refresh_provider_model(self) -> None:
         if self._provider_model_reader is not None:
             self._provider_model_reader.refresh()
         self.refresh_frame_context()
+        self.refresh_codex_context()
 
     def focus_panel(self, request: dict[str, Any]) -> dict[str, Any] | None:
         """Answer one click on this agent's row; None for another lease or a repeat.

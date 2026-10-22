@@ -425,6 +425,14 @@ pub struct ChannelHudState {
     /// tab the follower can bring to front. `None` = no live follower or no
     /// claim.
     pub terminal_detected: Option<bool>,
+    /// `codex://threads/<thread_id>` for a Codex follower whose lease names
+    /// its Codex app thread, live or not: the app opens that link itself, so
+    /// it needs no follower. `None` = no thread known or no claim.
+    pub codex_thread_url: Option<String>,
+    /// Whether the local Codex store holds that thread's rollout, so the
+    /// Codex app can open the link. `Some(false)` is a Codex Cloud thread.
+    /// `None` together with `codex_thread_url`.
+    pub codex_thread_local: Option<bool>,
     /// When the live follower's oldest unacknowledged delivery was emitted.
     /// A heartbeat proves the reader process, not the conversation behind
     /// it; a backlog that only grows is the overlay's "alive but not
@@ -1746,6 +1754,8 @@ impl RecordingController {
                     follower_alive: None,
                     frame_detected: None,
                     terminal_detected: None,
+                    codex_thread_url: None,
+                    codex_thread_local: None,
                     unread_since: None,
                 })
             })
@@ -1783,6 +1793,7 @@ impl RecordingController {
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
         );
+        let codex_threads = codescribe_core::stt::active_names::codex_threads_at(bridge_home);
         let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
             match (provider.as_deref(), session.as_deref()) {
                 (Some(provider), Some(session)) => {
@@ -1805,6 +1816,21 @@ impl RecordingController {
             live.get(&(provider.to_lowercase(), session.to_string()))
                 .map(|hosts| hosts.terminal_tab)
         };
+        let codex_thread = |provider: &Option<String>,
+                            session: &Option<String>|
+         -> (Option<String>, Option<bool>) {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return (None, None);
+            };
+            codex_threads
+                .get(&(provider.to_lowercase(), session.to_string()))
+                .map_or((None, None), |thread| {
+                    (
+                        Some(format!("codex://threads/{}", thread.thread_id)),
+                        Some(thread.rollout),
+                    )
+                })
+        };
         let unread_since = |provider: &Option<String>,
                             session: &Option<String>|
          -> Option<SystemTime> {
@@ -1820,6 +1846,8 @@ impl RecordingController {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
             state.frame_detected = framed(&state.provider, &state.provider_session_id);
             state.terminal_detected = terminal(&state.provider, &state.provider_session_id);
+            (state.codex_thread_url, state.codex_thread_local) =
+                codex_thread(&state.provider, &state.provider_session_id);
             state.unread_since = unread_since(&state.provider, &state.provider_session_id);
         }
         if !states.iter().any(|state| state.channel == "0") {
@@ -1839,6 +1867,8 @@ impl RecordingController {
                 follower_alive: None,
                 frame_detected: None,
                 terminal_detected: None,
+                codex_thread_url: None,
+                codex_thread_local: None,
                 unread_since: None,
             });
         }
@@ -1856,6 +1886,7 @@ impl RecordingController {
             let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
             let session =
                 Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+            let (codex_thread_url, codex_thread_local) = codex_thread(&provider, &session);
             states.push(ChannelHudState {
                 open: false,
                 loud: false,
@@ -1870,6 +1901,8 @@ impl RecordingController {
                 follower_alive: alive(&provider, &session),
                 frame_detected: framed(&provider, &session),
                 terminal_detected: terminal(&provider, &session),
+                codex_thread_url,
+                codex_thread_local,
                 unread_since: unread_since(&provider, &session),
                 provider,
                 provider_session_id: session,
@@ -3183,6 +3216,46 @@ mod tests {
             roster[2].unread_since, None,
             "a dead follower has no live backlog"
         );
+    }
+
+    /// A Codex app follower is usually dead between turns; its row still
+    /// carries the thread link the app opens itself, built here once.
+    #[tokio::test]
+    async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
+        const THREAD: &str = "01a15b6d-70f7-7e91-8424-9a2abfc21f6b";
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        std::fs::write(
+            &binding,
+            format!(
+                r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"1":{{"audience":"Ada","provider":"claude-code","provider_session_id":"ada-session"}},"3":{{"audience":"Leon","provider":"codex","provider_session_id":"{THREAD}"}}}}}}"#,
+            ),
+        )
+        .expect("binding");
+        let bridge = dir.path().join("bridge");
+        std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        std::fs::write(
+            bridge.join("leases/leon.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+            ),
+        )
+        .expect("lease");
+
+        let controller = RecordingController::new_without_keychain();
+        let roster = controller.channel_roster_states_at(&binding, &bridge).await;
+
+        assert_eq!(roster.len(), 3, "{roster:?}");
+        assert_eq!(roster[2].channel, "3");
+        assert_eq!(roster[2].follower_alive, Some(false));
+        assert_eq!(
+            roster[2].codex_thread_url.as_deref(),
+            Some(format!("codex://threads/{THREAD}").as_str())
+        );
+        assert_eq!(roster[2].codex_thread_local, Some(true));
+        assert_eq!(roster[1].codex_thread_url, None, "no lease, no thread");
+        assert_eq!(roster[1].codex_thread_local, None);
+        assert_eq!(roster[0].codex_thread_url, None);
     }
 
     #[test]

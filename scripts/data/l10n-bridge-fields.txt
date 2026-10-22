@@ -63,6 +63,7 @@ data  CsChannelRosterState.channel
 data  CsChannelRosterState.audience
 data  CsChannelRosterState.provider
 data  CsChannelRosterState.providerSessionId
+data  CsChannelRosterState.codexThreadUrl
 data  CsCompactProjection.sessionId
 data  CsCompactProjection.text
 data  CsConfigEntry.key
