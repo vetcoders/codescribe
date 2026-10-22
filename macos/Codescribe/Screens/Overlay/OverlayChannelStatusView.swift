@@ -585,6 +585,25 @@ struct OverlayAgentAudioControls: View {
   }
 }
 
+/// A rendered command carries its real availability and existing owner callback.
+/// It never owns a second conversation, recorder or preference.
+struct OverlayAgentPillMenuAction {
+  let title: String
+  let symbol: String
+  let identifier: String
+  let enabled: Bool
+  let perform: () -> Void
+}
+
+struct OverlayAgentPillMenuActions {
+  let write: OverlayAgentPillMenuAction
+  let microphone: OverlayAgentPillMenuAction?
+  let playback: OverlayAgentPillMenuAction?
+  let showInAgents: OverlayAgentPillMenuAction?
+  let focus: OverlayAgentPillMenuAction?
+  let archive: OverlayAgentPillMenuAction?
+}
+
 /// Wake policy lives on the agent's own row (Maciej, 2026-10-17, "Słowo"):
 /// a right-click context menu with a checkmark replaces the disclosure list
 /// that used to hang under 0 · All. A single member gives the row its own
@@ -595,6 +614,8 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   let palette: OverlayAppearancePalette
   let enabled: Bool
   var errorAlignment: HorizontalAlignment = .leading
+  var agentActions: OverlayAgentPillMenuActions? = nil
+  var showsInlineError = true
   @State private var pending: Set<AgentPlaybackIdentity> = []
   @State private var commandError: String?
 
@@ -613,8 +634,20 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     } else {
       VStack(alignment: errorAlignment, spacing: 2) {
         content.contextMenu {
+          if let commandError, !showsInlineError {
+            Text(verbatim: commandError)
+            Divider()
+          }
           if members.count == 1, let member = members.first {
+            if let agentActions {
+              agentCommands(agentActions)
+              Divider()
+            }
             policyActions(for: member)
+            if let archive = agentActions?.archive {
+              Divider()
+              agentCommand(archive, role: .destructive)
+            }
           } else {
             ForEach(members) { member in
               Menu {
@@ -629,7 +662,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             }
           }
         }
-        if let commandError {
+        if let commandError, showsInlineError {
           Text(verbatim: commandError)
             .foregroundStyle(palette.errorStatus.color)
             .accessibilityIdentifier("overlay-broadcast-policy-error")
@@ -639,12 +672,29 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   }
 
   @ViewBuilder
+  private func agentCommands(_ actions: OverlayAgentPillMenuActions) -> some View {
+    agentCommand(actions.write)
+    if let microphone = actions.microphone { agentCommand(microphone) }
+    if let playback = actions.playback { agentCommand(playback) }
+    if let showInAgents = actions.showInAgents { agentCommand(showInAgents) }
+    if let focus = actions.focus { agentCommand(focus) }
+  }
+
+  private func agentCommand(
+    _ command: OverlayAgentPillMenuAction, role: ButtonRole? = nil
+  ) -> some View {
+    Button(role: role, action: command.perform) {
+      Label(command.title, systemImage: command.symbol)
+    }
+    .disabled(!command.enabled)
+    .accessibilityIdentifier(command.identifier)
+  }
+
+  @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
-    // Two STATE checkboxes in the menu's native state column (Maciej,
-    // 2026-10-17): "Channel 0" is membership in the zero broadcasts, "Steer"
-    // is wake-versus-queue — and since the soft-queue decision, Steer governs
-    // every delivery, direct and peer included. (channel0, steer) maps onto
-    // the wire policy: (on, on) = on, (on, off) = quiet, (off, _) = off.
+    // Channel 0 controls broadcast membership. Do not disturb is the existing
+    // quiet policy: all deliveries queue without waking the agent. The wire
+    // has no off+quiet state, so DND is off and disabled outside Channel 0.
     let locked =
       !enabled || channel.broadcastIdentity == nil
       || channel.broadcastIdentity.map { pending.contains($0) } == true
@@ -659,19 +709,14 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     .disabled(locked)
     Toggle(
       isOn: Binding(
-        // Off keeps directs waking (the wire has no off+quiet state), so the
-        // disabled Steer box must still read ticked — an unticked box over
-        // deliveries that ring would lie (stasiu's falsifier, 2026-10-17).
-        get: { channel.broadcastPolicy != .quiet },
-        set: { steer in apply(steer ? .on : .quiet, to: channel) }
+        get: { channel.broadcastPolicy == .quiet },
+        set: { quiet in apply(quiet ? .quiet : .on, to: channel) }
       )
     ) {
-      // The user-facing label is "Wake the agent" (Founder, 2026-10-18); the
-      // wire policy and the code keep the `steer` name.
       Text(
-        "Wake the agent",
+        "Do not disturb",
         comment:
-          "Pill context menu: ticked, deliveries wake the agent; unticked, they wait in its mailbox"
+          "Agent pill menu: ticked, deliveries wait in the mailbox without waking the agent"
       )
     }
     .disabled(locked || channel.broadcastPolicy == .off)
@@ -721,6 +766,9 @@ struct OverlayChannelStatusView: View {
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
   let onShowMonitor: (() -> Void)?
+  /// Explicitly show this agent in the list. Unlike the header toggle, this
+  /// callback never closes a panel or stops a recording.
+  var onShowAgentInMonitor: ((String) -> Void)? = nil
   var headerSelected = false
   /// The recording agent is on screen: a press stops its capture.
   var agentMicrophoneStops = false
@@ -778,6 +826,81 @@ struct OverlayChannelStatusView: View {
     self.onSelectConversation = onSelectConversation
     self.onShowMonitor = onShowMonitor
     self.searchModel = searchModel
+  }
+
+  /// Common immutable roster projection for the overlay and floating intercom
+  /// pills. The optional reveal callback presents the existing conversation
+  /// window; it does not create a per-agent detached chat.
+  static func intercomRoster(
+    state: OverlayState, palette: OverlayAppearancePalette, animates: Bool,
+    onRevealConversation: (() -> Void)? = nil
+  ) -> OverlayChannelStatusView {
+    var view = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      unavailable: state.channelStatusUnavailable,
+      palette: palette, animates: animates,
+      hudStates: state.channelHudStates,
+      agentDescriptors: state.channelAgentDescriptors,
+      onToggleChannel: { digit in
+        Task { await state.toggleAgentChannel(digit, keepsAgentList: true) }
+      },
+      toggleError: state.channelToggleError,
+      pendingToggleChannels: state.pendingChannelToggles,
+      conversations: state.conversations,
+      selectedConversationID: state.selectedConversationID,
+      unreadCounts: Dictionary(
+        uniqueKeysWithValues: state.conversations.map {
+          ($0.id, state.unreadReplies(in: $0))
+        }),
+      // A row or a rail pill: in the agents view the conversation slides out.
+      onSelectConversation: { id in
+        if let id {
+          state.chooseConversation(id)
+          onRevealConversation?()
+        } else {
+          state.selectConversation(nil)
+        }
+      },
+      onShowMonitor: state.toggleAgentSidebar,
+      // The drawer value is rebuilt on every body pass and only its
+      // `monitorBody(...)` is installed, so a `@State` on it never persists:
+      // each HUD tick handed the drawer a fresh, empty search model and the
+      // query vanished mid-typing. The overlay state owns the model.
+      searchModel: state.savedConversationSearch,
+      rosterReady: state.hasLoadedChannelRoster
+    )
+    view.mutedChannels = state.channelPlaybackMuted
+    view.headerSelected =
+      !state.isCollapsed && state.windowContentSurface == .agents
+    view.agentMicrophoneStops = state.agentsButtonStopsRecording
+    view.pendingMuteChannels = state.pendingPlaybackChannels
+    view.onTogglePlayback = { channel in Task { await state.toggleChannelPlayback(channel) } }
+    view.playbackError = state.playbackPreferenceError
+    view.archiveCandidates = Dictionary(
+      uniqueKeysWithValues: state.visibleChannelRows.compactMap {
+        state.archiveCandidate(for: $0.channel).map { ($0.channel, $0) }
+      })
+    view.pendingArchives = state.pendingAgentArchives
+    view.archivedOwners = state.archivedAgentOwners
+    view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
+    view.archiveError = state.agentArchiveError
+    view.panelFocusStates = state.agentPanelFocusStates
+    view.panelFocusAvailable = state.agentPanelFocusAvailable
+    // The view resolves the destination per row; `vc-frame` gates only Frame.
+    view.onFocusAgentPanel = { state.focusAgentPanel($0) }
+    view.gestureFocusID = state.agentGestureFocusID
+    view.onGestureHover = { state.hoverAgentGestureTarget($0) }
+    view.onShowAgentInMonitor = { [view] digit in
+      if let channel = view.channels.first(where: { $0.channel == digit }),
+        let conversation = view.conversation(for: channel)
+      {
+        state.chooseConversation(conversation.id)
+      }
+      state.showAgentMonitor()
+      state.focusAgentRoster()
+      onRevealConversation?()
+    }
+    return view
   }
 
   static func toggleDigit(for channel: String) -> UInt8? {
@@ -994,6 +1117,7 @@ struct OverlayChannelStatusView: View {
       if let conversation { onSelectConversation?(conversation.id) }
     }
     .accessibilityHint(Text(verbatim: hint))
+    .modifier(agentPillMenu(for: digit))
   }
 
   /// The collapsed overlay's channel map: another surface of this roster's
@@ -1019,6 +1143,106 @@ struct OverlayChannelStatusView: View {
       return
     }
     onSelectConversation?(conversation.id)
+  }
+
+  /// Write/Forward opens this owner's existing composer even when its
+  /// conversation is already selected; it never turns into panel focus.
+  func writeToAgent(_ channel: OverlayChannelDelivery) {
+    guard let conversation = conversation(for: channel) else { return }
+    onSelectConversation?(conversation.id)
+  }
+
+  func showAgentInMonitor(_ channel: OverlayChannelDelivery) {
+    onShowAgentInMonitor?(channel.channel)
+  }
+
+  func focusAgentPanel(_ channel: OverlayChannelDelivery) {
+    guard showsPanelFocusButton(for: channel), !panelFocusUnreachable(channel),
+      panelFocusStates[channel.channel]?.isRequesting != true,
+      let owner = archiveCandidates[channel.channel]
+    else { return }
+    onFocusAgentPanel?(owner)
+  }
+
+  func archiveAgent(_ channel: OverlayChannelDelivery) {
+    guard !isOpen(channel), let owner = archiveCandidates[channel.channel],
+      !pendingArchives.contains(owner)
+    else { return }
+    onArchiveAgent?(owner)
+  }
+
+  /// One menu projection for the header, folded rail, list and floating
+  /// intercom. Broadcast policy execution remains in its existing modifier.
+  func agentPillMenu(
+    for digit: String, showsInlineError: Bool = true
+  ) -> OverlayBroadcastPolicyMenu {
+    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
+      return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+    }
+    let microphoneEnabled =
+      !unavailable && onToggleChannel != nil
+      && !pendingToggleChannels.contains(digit)
+      && Self.toggleDigit(for: digit) != nil && !hasDeadFollower(channel)
+    let muted = mutedChannels[digit]
+    let focusState = panelFocusStates[digit]
+    let owner = archiveCandidates[digit]
+    let actions = OverlayAgentPillMenuActions(
+      write: OverlayAgentPillMenuAction(
+        title: String(localized: "Write / Forward…"), symbol: "square.and.pencil",
+        identifier: "overlay-agent-menu-write-\(digit)",
+        enabled: conversation(for: channel) != nil && onSelectConversation != nil,
+        perform: { writeToAgent(channel) }),
+      microphone: onToggleChannel == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: isOpen(channel)
+            ? String(localized: "Stop speaking to agent")
+            : String(localized: "Speak to agent"),
+          symbol: isOpen(channel) ? "mic.fill" : "mic",
+          identifier: "overlay-agent-menu-microphone-\(digit)", enabled: microphoneEnabled,
+          perform: { if microphoneEnabled { toggle(channel) } }),
+      playback: onTogglePlayback == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: muted == nil
+            ? String(localized: "Playback status unavailable")
+            : muted == true
+              ? String(localized: "Unmute agent replies")
+              : String(localized: "Mute agent replies"),
+          symbol: muted == true ? "speaker.slash" : "speaker.wave.2",
+          identifier: "overlay-agent-menu-playback-\(digit)",
+          enabled: muted != nil && !pendingMuteChannels.contains(digit),
+          perform: {
+            if muted != nil, !pendingMuteChannels.contains(digit) { onTogglePlayback?(digit) }
+          }),
+      showInAgents: onShowAgentInMonitor == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: String(localized: "Show in Agents"), symbol: "person.2",
+          identifier: "overlay-agent-menu-show-\(digit)", enabled: true,
+          perform: { showAgentInMonitor(channel) }),
+      focus: !showsPanelFocusButton(for: channel)
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: panelFocusTarget(for: channel)?.help
+            ?? panelFocusHelp(for: channel, state: nil),
+          symbol: panelFocusSymbol(nil, target: panelFocusTarget(for: channel)),
+          identifier: "overlay-agent-menu-focus-\(digit)",
+          enabled: !panelFocusUnreachable(channel) && focusState?.isRequesting != true,
+          perform: { focusAgentPanel(channel) }),
+      archive: owner == nil || onArchiveAgent == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: hasDeadFollower(channel)
+            ? String(localized: "Remove from list and move to archive")
+            : String(localized: "Disconnect and archive agent"),
+          symbol: "archivebox",
+          identifier: "overlay-agent-menu-archive-\(digit)",
+          enabled: !isOpen(channel) && owner.map { !pendingArchives.contains($0) } == true,
+          perform: { archiveAgent(channel) }))
+    return OverlayBroadcastPolicyMenu(
+      members: [channel], palette: palette, enabled: !unavailable,
+      agentActions: actions, showsInlineError: showsInlineError)
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
@@ -1382,10 +1606,7 @@ struct OverlayChannelStatusView: View {
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
-    .modifier(
-      OverlayBroadcastPolicyMenu(
-        members: broadcastMembers.filter { $0.channel == channel.channel },
-        palette: palette, enabled: !unavailable))
+    .modifier(agentPillMenu(for: channel.channel))
   }
 
   /// Compose display values here; the visual shell never reads state or

@@ -53,9 +53,8 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
           .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"),
         encoding: .utf8)) ?? ""
     XCTAssertTrue(source.contains("\"Channel 0\""), "membership checkbox")
-    // The steer box speaks plainly: ticked, a delivery wakes the agent
-    // (Founder, 2026-10-18).
-    XCTAssertTrue(source.contains("\"Wake the agent\""), "steer checkbox")
+    // DND reverses the former wake checkbox: ticked means quiet.
+    XCTAssertTrue(source.contains("\"Do not disturb\""), "quiet checkbox")
     XCTAssertFalse(source.contains("\"Steer (otherwise queued)\""), "no jargon label")
   }
 

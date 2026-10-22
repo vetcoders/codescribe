@@ -1,6 +1,50 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Write / Forward…" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Napisz / Prześlij…"
+          }
+        }
+      }
+    },
+    "Show in Agents" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż w Agents"
+          }
+        }
+      }
+    },
+    "Do not disturb" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie przeszkadzać"
+          }
+        }
+      }
+    },
+    "Disconnect and archive agent" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rozłącz i zarchiwizuj agenta"
+          }
+        }
+      }
+    },
     "Preview message" : {
       "extractionState" : "manual",
       "localizations" : {
