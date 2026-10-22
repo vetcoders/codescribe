@@ -117,6 +117,10 @@ pub struct CsSettings {
     /// Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
     /// Command is not a value.
     pub channel_modifier: String,
+    /// The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+    pub widget_shortcut: String,
+    /// The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+    pub widget_shortcut_label: String,
     /// Quick Fn press below the hold delay toggles dictation. Default off.
     pub fn_tap_toggles_dictation: bool,
     /// Middle mouse button follows Fn press/release. Default off.
@@ -251,6 +255,8 @@ impl CsSettings {
             ledger_sensitivity: config.ledger_sensitivity,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
+            widget_shortcut: config.widget_shortcut.wire_id(),
+            widget_shortcut_label: config.widget_shortcut.label(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,

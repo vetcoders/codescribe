@@ -31,6 +31,10 @@ protocol HotkeysEngine {
   func channelModifier() -> String
   /// Persist the channel modifier and live-reload the detector. `"cmd"` is rejected.
   func setChannelModifier(_ value: String) throws
+  /// Persist the widget chord (`WIDGET_SHORTCUT` wire id) and live-reload the
+  /// detector. The core refuses a chord without Control, Option or Command and
+  /// the Agent summon `cmd+shift+space`.
+  func setWidgetShortcut(_ wireId: String) throws
   /// Whether a quick Fn press below the hold delay toggles dictation. Default off.
   func fnTapTogglesDictation() -> Bool
   /// Persist the Fn-tap dictation toggle and live-reload the detector.
@@ -81,6 +85,10 @@ final class RealHotkeysEngine: HotkeysEngine {
       key: "AGENT_CHANNEL_MODIFIER", value: normalizeChannelModifier(value))
   }
 
+  func setWidgetShortcut(_ wireId: String) throws {
+    try config.updateConfig(key: "WIDGET_SHORTCUT", value: wireId)
+  }
+
   func fnTapTogglesDictation() -> Bool { config.loadSettings().fnTapTogglesDictation }
 
   func setFnTapTogglesDictation(_ enabled: Bool) throws {
@@ -119,6 +127,7 @@ struct MockHotkeysEngine: HotkeysEngine {
   func rearmAfterPermissionGrant() {}
   func channelModifier() -> String { "ctrl" }
   func setChannelModifier(_ value: String) throws {}
+  func setWidgetShortcut(_ wireId: String) throws {}
   func fnTapTogglesDictation() -> Bool { false }
   func setFnTapTogglesDictation(_ enabled: Bool) throws {}
   func middleMouseActsAsFn() -> Bool { false }

@@ -219,7 +219,6 @@ mod macos {
     const K_VK_SPACE: i64 = 49;
     /// V — half of the Insert-Here chord.
     const K_VK_V: i64 = 9;
-    const K_VK_B: i64 = 11;
     /// Escape — leaves the agent chooser while it holds the capture.
     const K_VK_ESCAPE: i64 = 53;
 
@@ -673,8 +672,12 @@ mod macos {
             K_VK_FUNCTION => HotkeyPhysicalKey::Fn,
             K_VK_SPACE => HotkeyPhysicalKey::Space,
             K_VK_V => HotkeyPhysicalKey::V,
-            K_VK_B => HotkeyPhysicalKey::B,
-            _ => HotkeyPhysicalKey::Other,
+            _ => match crate::config::WidgetShortcutKey::from_keycode(keycode) {
+                Some(crate::config::WidgetShortcutKey::Letter(letter)) => {
+                    HotkeyPhysicalKey::Letter(letter)
+                }
+                _ => HotkeyPhysicalKey::Other,
+            },
         }
     }
 
@@ -1364,8 +1367,8 @@ mod stop_preemption_tests {
         };
         assert!(!claims.claim(&down(Default::default()), config));
         let modifiers = match config.channel_modifier {
-            codescribe_core::config::ChannelModifier::Ctrl => ctrl,
-            codescribe_core::config::ChannelModifier::Fn => HotkeyModifierSnapshot {
+            crate::config::ChannelModifier::Ctrl => ctrl,
+            crate::config::ChannelModifier::Fn => HotkeyModifierSnapshot {
                 fn_key: true,
                 ..Default::default()
             },
