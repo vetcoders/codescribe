@@ -322,7 +322,10 @@ enum OverlayHeaderDensity: Equatable {
   }
   var waveformMinWidth: CGFloat {
     switch self {
-    case .mini: return 4
+    // Mini is as wide as its content (spec §13.4): its centre closes, so the
+    // counter sits as close to the agents button as the trailing controls
+    // sit to one another.
+    case .mini: return 0
     case .midi: return 56
     case .expanded: return 12
     }
@@ -1071,27 +1074,32 @@ struct DictationOverlayView: View {
 
   private func justifiedHeader(density: OverlayHeaderDensity) -> some View {
     let mini = density == .mini
-    return HStack(spacing: mini ? 6 : 10) {
+    // Mini's row gaps are half the 8 pt between its trailing controls, so the
+    // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
+    return HStack(spacing: mini ? DictationOverlayWindow.miniRowSpacing : 10) {
       // The shared lockup, with the close button in the brand dot's place.
       // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
       // brand dot leads, and the channel counter takes the word's place: the
       // agent count, the agents on hover, the open channel's digit with the
       // microphone badge. This replaces Maciej's 2026-10-20 rule that mini
       // always reads "cs"; his agents button and its stop meaning stay.
-      Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini) {
-        closeButton
-      }
-      .fixedSize()
-      .accessibilityElement(children: .contain)
-      .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
-      // The brand block sits on an inert drag region, so the dot answers
-      // clicks and the word moves the window.
-      .background {
-        OverlayWindowDragRegion(
-          identifier: mini ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
-      }
-      if mini, let map = channelMap {
-        refreshingChordModifier(map)
+      HStack(spacing: DictationOverlayWindow.miniBrandGap) {
+        Wordmark(size: density.brandSize, spacing: 5, showsWord: !mini) {
+          closeButton
+        }
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(mini ? "" : "overlay-header-leading")
+        // The brand block sits on an inert drag region, so the dot answers
+        // clicks and the word moves the window.
+        .background {
+          OverlayWindowDragRegion(
+            identifier: mini
+              ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
+        }
+        if mini, let map = channelMap {
+          refreshingChordModifier(map)
+        }
       }
 
       // The flexible centre keeps one identity in every density; in mini it

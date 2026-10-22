@@ -82,8 +82,12 @@ measured from the same text metrics the pill draws with, and the window owner
 sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
 receives `DictationOverlayWindow.midiNaturalWidth`, bounded by the 820 pt
 `midiChannelMapBudget`, whenever `OverlayState.onChannelMapLayoutChanged`
-reports new agents or names. Mini draws the counter at scale 1, as its fixed
-200 and 164 pt widths are measured there.
+reports new agents or names. The same hook, which also fires when the open
+digits change, feeds `FloatingOverlayPanel.setMiniNaturalWidth` with
+`DictationOverlayWindow.miniNaturalWidth`: mini is as wide as its content, its
+130 pt floor of controls plus the counter as drawn, at the same header scale
+as compact. Placement and the saved position still describe the 200 pt
+`miniPlacementSize` strip, with mini drawn at its trailing edge.
 
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A folded rail pill already selects that conversation,
