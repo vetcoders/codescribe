@@ -1248,6 +1248,9 @@ final class OverlayState {
   /// The window owner refits compact to the channel map (see
   /// `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
+  /// The window owner returns compact to its natural width, forgetting a
+  /// width the user gave it (see `activateChannelMapCounter`).
+  @ObservationIgnored var onRestoreMidiNaturalWidth: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
@@ -2795,21 +2798,35 @@ final class OverlayState {
   }
 
   /// The compact channel map as the window owner sizes it: the projection
-  /// the strip renders, without click targets or unread marks, which do not
-  /// change a chip's width.
+  /// the strip renders, without selection, click targets or unread marks,
+  /// which do not change the width the window reserves.
   var channelMapLayoutModel: OverlayChannelMapModel {
     OverlayChannelMapModel(
-      channels: visibleChannelRows, hudStates: channelHudStates,
-      broadcastName: String(localized: "All"), selectableDigits: [], unreadDigits: [])
+      channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
+      unreadDigits: [])
   }
 
-  /// Reports a change of the map's channels or names, never a capture that
-  /// opens or closes, so compact's width follows the roster and not the chord.
+  /// Reports a change of the map's agents or names, never a capture that
+  /// opens or closes (channel 0's chip included), so compact's width follows
+  /// the roster and not the chord.
   private func noteChannelMapLayout() {
-    let key = channelMapLayoutModel.chips.map { $0.digit + "\u{1F}" + $0.name }
+    let key = channelMapLayoutModel.agents.map { $0.digit + "\u{1F}" + $0.name }
     guard key != channelMapLayoutKey else { return }
     channelMapLayoutKey = key
     onChannelMapLayoutChanged?()
+  }
+
+  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
+  /// compact, where the chips are clickable, as the form toggle's "Expand to
+  /// compact widget" does. Compact shows the counter when the user narrowed
+  /// it, so there the click returns the strip to its natural width and the
+  /// chips come back. Neither selects a conversation nor touches capture.
+  func activateChannelMapCounter() {
+    switch presentationMode {
+    case .mini: setPresentationMode(.midi)
+    case .midi: onRestoreMidiNaturalWidth?()
+    case .expanded: break
+    }
   }
 
   func refreshAgentChannelModifier() {

@@ -1073,10 +1073,12 @@ struct DictationOverlayView: View {
     let mini = density == .mini
     return HStack(spacing: mini ? 6 : 10) {
       // The shared lockup, with the close button in the brand dot's place.
-      Wordmark(
-        size: density.brandSize, spacing: mini ? 6 : 5,
-        textIdentifier: mini ? "overlay-mini-brand" : "", short: mini
-      ) {
+      // Monika, 2026-10-22 (bus intercom spec §13.4): "cs" leaves mini. Its
+      // brand dot leads, and the channel counter takes the word's place: the
+      // agent count, the agents on hover, the open channel's digit with the
+      // microphone badge. This replaces Maciej's 2026-10-20 rule that mini
+      // always reads "cs"; his agents button and its stop meaning stay.
+      Wordmark(size: density.brandSize, spacing: mini ? 6 : 5, showsWord: !mini) {
         closeButton
       }
       .fixedSize()
@@ -1087,6 +1089,9 @@ struct DictationOverlayView: View {
       .background {
         OverlayWindowDragRegion(
           identifier: mini ? "overlay-mini-brand-drag-region" : "overlay-header-inert-drag-region")
+      }
+      if mini, let map = channelMap {
+        refreshingChordModifier(map)
       }
 
       // The flexible centre keeps one identity in every density; in mini it
@@ -1119,11 +1124,7 @@ struct DictationOverlayView: View {
           sessionTimer
             .allowsHitTesting(false)
           if density == .midi, let map = channelMap {
-            map
-              .onAppear { state.refreshAgentChannelModifier() }
-              .onHover { inside in
-                if inside { state.refreshAgentChannelModifier() }
-              }
+            refreshingChordModifier(map)
           }
         }
       }
@@ -1142,12 +1143,12 @@ struct DictationOverlayView: View {
           channelStatusView
           OverlayPinButton(state: state, palette: palette)
         } else {
-          // Maciej, 2026-10-20: mini always reads "cs" and always carries the
-          // agents button beside the ordinary microphone, whether or not an
-          // agent records; this replaces the 2026-10-19 09:09 rule that gave
-          // it to agent capture alone. The megaphone it shows while a channel
-          // records faces left, toward the wordmark. While any channel records,
-          // a press here is that capture's stop, never channel 0 or the monitor.
+          // Maciej, 2026-10-20: mini always carries the agents button beside
+          // the ordinary microphone, whether or not an agent records; this
+          // replaces the 2026-10-19 09:09 rule that gave it to agent capture
+          // alone. The megaphone it shows while a channel records faces left,
+          // toward the brand. While any channel records, a press here is that
+          // capture's stop, never channel 0 or the monitor.
           channelStatusView
         }
         recordingControls(compact: false)
@@ -1184,19 +1185,32 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-transcription-preview")
   }
 
-  /// The compact strip's channel map, or nil before the roster names a
-  /// channel. A chip selects its conversation through the roster, as a rail
-  /// pill does; the counter is the map's entry point (W2: the map popover).
-  /// Internal so a test can drive the same values the strip renders.
+  /// The collapsed header's channel map, or nil while no agent is bound and
+  /// channel 0 is closed. Mini shows its counter, compact its chips. A chip
+  /// selects its conversation through the roster, as a rail pill does; the
+  /// counter switches mini to compact, or returns a narrowed compact strip to
+  /// its natural width (spec §13.4). No popover: the hover hint lists the
+  /// agents. Internal so a test can drive the same values the header renders.
   var channelMap: OverlayChannelMapView? {
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
     return OverlayChannelMapView(
-      model: model, modifier: state.agentChannelModifier, palette: palette,
+      model: model, placement: state.presentationMode == .mini ? .mini : .strip,
+      modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
-      onOpenMap: { state.showAgentMonitor() })
+      onCounter: { state.activateChannelMapCounter() })
+  }
+
+  /// Hints name the chord with the stored modifier, which no settings event
+  /// brings to the overlay: the map re-reads it when it appears or is hovered.
+  private func refreshingChordModifier(_ map: OverlayChannelMapView) -> some View {
+    map
+      .onAppear { state.refreshAgentChannelModifier() }
+      .onHover { inside in
+        if inside { state.refreshAgentChannelModifier() }
+      }
   }
 
   /// Internal so a test can assert that two body passes share one search model.

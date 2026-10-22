@@ -991,14 +991,17 @@ struct OverlayChannelStatusView: View {
     .accessibilityHint(Text(verbatim: hint))
   }
 
-  /// The compact overlay's channel map: another surface of this roster's
+  /// The collapsed overlay's channel map: another surface of this roster's
   /// projections. Bound digits come from the roster snapshot (`hudStates`),
   /// names from the same rows the list shows, unread marks from the same
-  /// counts, and a chip is clickable only where a rail pill would be.
+  /// counts, the selected chip from the same selection as a rail pill's, and
+  /// a chip is clickable only where a rail pill would be.
   var channelMapModel: OverlayChannelMapModel {
     let current = onSelectConversation == nil ? [] : currentConversations
     return OverlayChannelMapModel(
-      channels: channels, hudStates: hudStates, broadcastName: String(localized: "All"),
+      channels: channels, hudStates: hudStates,
+      selectedDigit: currentConversations.first(where: { $0.id == selectedConversationID })?
+        .channel,
       selectableDigits: Set(current.map(\.channel)),
       unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)))
   }

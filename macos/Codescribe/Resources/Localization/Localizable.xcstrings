@@ -4270,6 +4270,23 @@
         }
       }
     },
+    "Channel %@, shortcut %@, microphone open" : {
+      "comment" : "Collapsed overlay channel 0 chip while broadcasting: digit, the channel chord (e.g. Ctrl 0)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, shortcut %2$@, microphone open"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, skrót %2$@, mikrofon otwarty"
+          }
+        }
+      }
+    },
     "Channel 0" : {
       "comment" : "Pill context menu: membership in channel-zero broadcasts",
       "localizations" : {
