@@ -44,6 +44,8 @@ Argument
 
 # A sample raw Polish transcript used as a placeholder; the source is already Polish.
 
+# Loanwords and sample text Polish spells the same way.
+
 # Key names as the keyboard prints them.
 hotkeys.binding.doubleCtrl
 Command

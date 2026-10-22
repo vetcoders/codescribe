@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings › Agent › MCP (Polish): the add-server form's launch-command hint, its argument buttons and the command placeholder are translated, the command placeholder no longer repeats the server-name example, the field reads „Polecenie”, and the Technical details group aligns left instead of centring under the form.
 - Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier, holding it past the start delay before the digit no longer hangs up the open channel and starts a phantom dictation that the digit then reopened; while a channel is open that hold admits nothing and the digit chord alone closes the channel.
 
 ### Added
