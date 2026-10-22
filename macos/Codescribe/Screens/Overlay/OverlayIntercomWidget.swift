@@ -1103,12 +1103,12 @@ private struct OverlayIntercomInstanceCard: View {
       OverlayIntercomAudioSlot(
         state: state, conversation: conversation, name: instance.name, digit: instance.digit,
         palette: palette, speaking: speaking, open: open)
-      if !mini || hovering {
-        Button(
-          mini ? "Restore" : "Minimize",
-          systemImage: mini ? "arrow.up.left.and.arrow.down.right" : "minus"
-        ) {
-          controller.setInstanceMinimized(instanceID, !mini)
+      // Mini rests with the name, activity and the one audio slot (Astra):
+      // clicking the fiszka itself restores it, so no extra Restore button;
+      // hover reveals only the X.
+      if !mini {
+        Button("Minimize", systemImage: "minus") {
+          controller.setInstanceMinimized(instanceID, true)
         }
         .labelStyle(.iconOnly).buttonStyle(.plain)
         .frame(width: 22 * max(1, scale), height: 30 * max(1, scale))
@@ -1116,6 +1116,8 @@ private struct OverlayIntercomInstanceCard: View {
           restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
         )
         .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
+      }
+      if !mini || hovering {
         Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
           .labelStyle(.iconOnly).buttonStyle(.plain)
           .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
