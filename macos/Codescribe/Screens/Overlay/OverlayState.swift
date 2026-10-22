@@ -2356,7 +2356,18 @@ final class OverlayState {
   private func followChannelConversation(_ row: CsChannelRosterState) {
     pendingChannelConversation = row
     resolveChannelConversation()
-    if expandedByDefault { expandAgentSurface(cause: .automatic) }
+    if channelOpenExpandsSurface { expandAgentSurface(cause: .automatic) }
+  }
+
+  /// Whether a channel the controller just opened unfolds the overlay onto the
+  /// Agents canvas. With the channel map on, mini and compact keep their form:
+  /// the strip's chip or counter already shows the open digit, and the chord
+  /// is meant to be readable without unfolding (bus intercom spec §1, §14 W3).
+  /// With the map off, or when the overlay is already expanded, the canvas
+  /// follows the open channel as before. Replies, dictation and the preferred
+  /// expansion keep their own paths.
+  private var channelOpenExpandsSurface: Bool {
+    expandedByDefault && !(channelMapEnabled && isCollapsed)
   }
 
   private func resolveChannelConversation() {
@@ -3020,7 +3031,7 @@ final class OverlayState {
       followChannelConversation(row)
     } else if followed.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
-      let expansion: OverlayPresentationCause? = expandedByDefault ? .automatic : nil
+      let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
       selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
       if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
     }

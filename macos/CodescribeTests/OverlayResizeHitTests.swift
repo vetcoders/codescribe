@@ -310,8 +310,8 @@ final class OverlayResizeHitTests: XCTestCase {
 
     // An open microphone does not resize the strip: the badge adds no width,
     // and the natural width already holds channel 0's chip, which leads the
-    // row while the microphone broadcasts. (Opening a channel in the live
-    // overlay also unfolds it, so the width is compared on the projection.)
+    // row while the microphone broadcasts. The width is compared on the
+    // projection.
     func map(open: Bool, broadcast: Bool = false) -> OverlayChannelMapModel {
       OverlayChannelMapModel(
         channels: [
@@ -381,10 +381,10 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
     XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
 
-    // Opening the channel turns the counter into its digit; the live overlay
-    // may unfold for the conversation, so mini is re-entered first.
+    // Opening the channel turns the counter into its digit. With the map on,
+    // the chord keeps mini (bus intercom spec §14 W3).
     state.applyChannelRoster(roster(open: true))
-    state.setPresentationMode(.mini)
+    XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
     panel.settleFrameTransition()
     XCTAssertLessThan(natural(), counting)
     XCTAssertEqual(panel.frame.width, natural(), accuracy: 0.5, "mini narrows to the digit")

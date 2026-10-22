@@ -557,6 +557,75 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertNil(DictationOverlayView(state: state).channelMap)
   }
 
+  // MARK: - The chord keeps the collapsed form (§1, §14 W3)
+
+  /// The controller's roster after a chord: the conversations' channels, with
+  /// `open` naming the channels the microphone feeds.
+  private func chordRoster(
+    _ conversations: [OverlayConversation], open: Set<String>
+  ) -> [CsChannelRosterState] {
+    conversations.map {
+      CsChannelRosterState(
+        channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+        providerSessionId: $0.owner?.providerSessionID, open: open.contains($0.channel),
+        loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    }
+  }
+
+  /// With the map on, a chord in mini or compact keeps the form: the strip's
+  /// chip or counter shows the open digit, so the chord is readable without
+  /// unfolding. The selection follows the open channel as before.
+  func testChordKeepsMiniAndCompactWhileTheMapIsOn() throws {
+    for form in [OverlayPresentationMode.mini, .midi] {
+      let (state, broadcast, lena, astra) = try armedState()
+      let conversations = [broadcast, lena, astra]
+      XCTAssertTrue(state.channelMapEnabled)
+      state.setPresentationMode(form)
+      XCTAssertEqual(state.presentationMode, form)
+
+      state.applyChannelRoster(chordRoster(conversations, open: ["3"]))
+      XCTAssertEqual(state.presentationMode, form, "\(form): the chord keeps the form")
+      let map = state.channelMapLayoutModel
+      XCTAssertEqual(map.openDigits, ["3"], "\(form): the strip shows the open digit")
+      XCTAssertEqual(map.counterFigure, "3", "\(form): the counter shows the open digit")
+      XCTAssertEqual(map.chips.first { $0.digit == "3" }?.microphoneOpen, true)
+      XCTAssertEqual(state.selectedConversationID, astra.id, "the selection follows the chord")
+
+      state.applyChannelRoster(chordRoster(conversations, open: []))
+      XCTAssertEqual(state.presentationMode, form, "\(form): closing keeps the form")
+      let closed = state.channelMapLayoutModel
+      XCTAssertFalse(closed.microphoneOpen)
+      XCTAssertEqual(closed.counterFigure, String(closed.count), "the agent count returns")
+
+      // A broadcast on 0 by chord keeps the form as well.
+      state.applyChannelRoster(chordRoster(conversations, open: ["0"]))
+      XCTAssertEqual(state.presentationMode, form, "\(form): broadcasting keeps the form")
+      XCTAssertEqual(state.channelMapLayoutModel.openDigits, ["0"])
+    }
+  }
+
+  /// With the map off, the chord unfolds mini and compact onto the Agents
+  /// canvas, as before the map; an expanded overlay stays expanded either way.
+  func testChordExpandsAsBeforeWithTheMapOffOrWhenAlreadyExpanded() throws {
+    for form in [OverlayPresentationMode.mini, .midi] {
+      let (state, broadcast, lena, astra) = try armedState()
+      state.channelMapPreference.select(false)
+      XCTAssertFalse(state.channelMapEnabled)
+      state.setPresentationMode(form)
+      state.applyChannelRoster(chordRoster([broadcast, lena, astra], open: ["3"]))
+      XCTAssertEqual(state.presentationMode, .expanded, "\(form): the map is off")
+      XCTAssertEqual(state.windowContentSurface, .agents)
+      XCTAssertEqual(state.selectedConversationID, astra.id)
+    }
+    let (state, broadcast, lena, astra) = try armedState()
+    XCTAssertTrue(state.channelMapEnabled)
+    state.setPresentationMode(.expanded)
+    state.applyChannelRoster(chordRoster([broadcast, lena, astra], open: ["3"]))
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+  }
+
   // MARK: - Hosted compact strip
 
   func testWideCompactStripShowsChipsAndAChipClickSelects() throws {

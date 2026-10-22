@@ -69,7 +69,11 @@ while the microphone broadcasts on it. A chip calls
 `OverlayState.activateChannelMapCounter`: in mini it selects compact, in
 compact it asks the window owner, through `onRestoreMidiNaturalWidth`, to drop
 a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). There is
-no map popover; the counter's hint lists the agents.
+no map popover; the counter's hint lists the agents. While the map is
+enabled, a channel the controller opens in mini or compact keeps that form
+(`OverlayState.channelOpenExpandsSurface`): the selection follows the open
+channel and the strip shows its digit, and the Agents canvas unfolds for it
+only with the map off or when the overlay is already expanded.
 
 `OverlayChannelPill` is the single owner of the numbered pill visual: the rail
 pill, the map's chips and its counter render the digit through it, from
