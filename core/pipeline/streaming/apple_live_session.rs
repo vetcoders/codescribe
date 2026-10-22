@@ -5779,7 +5779,10 @@ impl AppleSealState {
                     );
                 }
             }
-            if !is_open {
+            // A return parked behind the in-flight witness is already settled;
+            // the witness answer resumes it. Returning it again on every tick
+            // re-logged it thousands of times per second until Stop.
+            if !is_open || self.dictation_witness_waiting.contains(&owner) {
                 continue;
             }
             self.refinement_receipt(&owner, "admission_horizon_closed");
@@ -22366,7 +22369,7 @@ mod live_refinement_admission_tests {
         }
     }
 
-    fn refinement_log(run: impl FnOnce()) -> String {
+    pub(super) fn refinement_log(run: impl FnOnce()) -> String {
         let buffer = Arc::new(Mutex::new(String::new()));
         let capture = RefinementCapture {
             buffer: Arc::clone(&buffer),
@@ -32909,6 +32912,60 @@ mod tc2_window_contract_tests {
             assert_eq!(ledger.text_of(&f.occurrence), Some("alpha"));
             ledger.assert_slot_labels();
         }
+    }
+
+    /// A return parked behind the in-flight live witness stays parked until
+    /// the witness answers. Returning it again on every horizon tick logged
+    /// 483 745 `admission_horizon_closed` lines in one take (13467366).
+    #[test]
+    fn horizon_leaves_a_return_parked_behind_the_live_witness() {
+        let mut f = fixture();
+        while let Ok(request) = f.requests.try_recv() {
+            f.state.complete_whisper_window(
+                &f.events,
+                completion(&request, vec![pin("alpha", 246_464, 262_784)]),
+                10.7,
+            );
+        }
+        advance_live_horizon(&mut f);
+        let (id, owner) = f
+            .state
+            .unsealed_word_owners()
+            .into_iter()
+            .find(|(_, owner)| *owner == f.occurrence)
+            .unwrap();
+        // The live witness is out; the window's return parks behind it.
+        f.state.dictation_witness_inflight = true;
+        f.state.return_whisper_without_label(&f.events, id, &owner);
+        assert_eq!(f.state.dictation_witness_waiting, vec![owner.clone()]);
+        let logged = super::live_refinement_admission_tests::refinement_log(|| {
+            for _ in 0..3 {
+                f.state.close_admission_horizon(&f.events, owner.sample_end);
+            }
+        });
+        assert!(
+            !logged.contains("disposition=admission_horizon_closed"),
+            "{logged}"
+        );
+        assert_eq!(f.state.dictation_witness_waiting, vec![owner.clone()]);
+        assert!(
+            !f.state.acoustic_ledger.lock().unwrap().is_sealed(&owner),
+            "the witness has not answered yet"
+        );
+        f.state.dictation_witness_inflight = false;
+        resume_witness_waiting_closures(&mut f.state, &f.events);
+        assert!(f.state.dictation_witness_waiting.is_empty());
+        assert!(
+            !f.state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .frontier_of(&owner)
+                .is_some_and(|frontier| frontier
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)),
+            "the answer resumes the parked return"
+        );
     }
 
     #[test]
