@@ -246,9 +246,8 @@ struct OverlayDisconnectedRowDim: ViewModifier {
   }
 }
 
-/// What the list header's corner buttons act on (Maciej, 2026-10-19:
-/// `sidebar.left` and `sidebar.right`). The overlay supplies it where it
-/// installs the list.
+/// The two pane actions. The canvas edge mounts its own control; the roster
+/// header mounts only its own fold. Both use the same state commands.
 struct OverlayAgentsSidebarControls {
   /// The conversation, or the transcription, is on screen beside the list.
   var canvasShown: Bool
@@ -284,10 +283,9 @@ struct OverlaySidebarToggleButton: View {
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .csFocusOutline(cornerRadius: 6)
+    .focusable(false)
     .foregroundStyle(palette.mutedText.color)
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
-    .overlayFastHint(title, palette: palette, leading: true)
     .accessibilityLabel(Text(verbatim: title))
     .accessibilityHint(Text(verbatim: title))
     .accessibilityIdentifier(identifier)
@@ -825,9 +823,8 @@ struct OverlayChannelStatusView: View {
     return title + " (" + String(count) + ")"
   }
 
-  /// An open channel records for its agent; the button then is that agent's
-  /// microphone, violet and pulsing (Maciej, 2026-10-19 08:52), drawn as a
-  /// megaphone so it never reads as a second dictation microphone (09:36).
+  /// Open agent capture is violet and pulsing. Its glyph distinguishes an
+  /// individual microphone from an explicit channel-zero broadcast.
   var agentCaptureOpen: Bool {
     hudStates.values.contains(where: \.open)
   }
@@ -842,8 +839,10 @@ struct OverlayChannelStatusView: View {
   @ViewBuilder
   private var headerGlyph: some View {
     if agentCaptureOpen {
+      let broadcasting = hudStates["0"]?.open == true
       OverlayMicrophoneGlyph(
-        symbol: "megaphone.fill", tint: OverlayRecordingLight.agent.color, mirrored: true
+        symbol: broadcasting ? "megaphone" : "mic.fill",
+        tint: OverlayRecordingLight.agent.color, mirrored: broadcasting
       )
       .symbolEffect(.pulse, isActive: animates && !reduceMotion)
     } else {
@@ -1029,12 +1028,6 @@ struct OverlayChannelStatusView: View {
       scrollTargetID: gestureFocusID
     ) {
       HStack(spacing: 6) {
-        if let sidebarControls {
-          OverlaySidebarToggleButton(
-            symbol: "sidebar.left", title: sidebarControls.canvasTitle,
-            identifier: "overlay-agent-sidebar-toggle-canvas", palette: palette,
-            textScale: textScale, action: sidebarControls.onToggleCanvas)
-        }
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
         Spacer()
         Text(verbatim: String(channels.count))
