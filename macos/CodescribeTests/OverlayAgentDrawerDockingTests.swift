@@ -953,9 +953,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     view.mutedChannels = ["2": false, "3": false]
     view.onTogglePlayback = { _ in }
     view.onShowAgentInMonitor = { _ in }
-    if let lenaOwner = lena.owner, let astraOwner = astra.owner {
-      view.archiveCandidates = ["2": lenaOwner, "3": astraOwner]
-    }
+    view.archiveCandidates = [
+      "2": try XCTUnwrap(lena.owner), "3": try XCTUnwrap(astra.owner),
+    ]
     view.onArchiveAgent = { _ in }
     view.onFocusAgentPanel = { _ in }
     view.panelFocusAvailable = true
@@ -1103,8 +1103,15 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     for region in probeRegions {
       let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
       region.updateHover(at: center)
-      if OverlayHintPanel.shared.presentedTitle == "probe-hint" { sawProbeHint = true }
-      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+      if OverlayHintPanel.shared.presentedTitle == "probe-hint" {
+        sawProbeHint = true
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+        XCTAssertNil(
+          OverlayHintPanel.shared.presentedTitle,
+          "leaving the control must withdraw its hint")
+      } else {
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+      }
     }
     XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
 
@@ -1122,6 +1129,52 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       }
       region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
     }
+  }
+
+  /// Olga's chosen execution proof (2026-10-22): a real AX press on the
+  /// composed roster's inline microphone reaches exactly its agent, exactly
+  /// once. One agent and no All row keeps the shared identifier unique.
+  /// Runs only in the isolated GUI window (make test-swift), through the
+  /// independent AX client — never a self-query on the main thread.
+  func testInlineMicrophonePressReachesItsAgentOnce() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (_, lena, _) = try rosterFixture()
+    var toggles: [UInt8] = []
+    var view = OverlayChannelStatusView(
+      channels: [
+        OverlayChannelDelivery(
+          channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false)
+      ],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session")],
+      onToggleChannel: { toggles.append($0) },
+      conversations: [lena], selectedConversationID: lena.id,
+      onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false]
+    view.onTogglePlayback = { _ in }
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 800).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    try BackgroundTestWindow.takeKeyboard(window)
+    host.layoutSubtreeIfNeeded()
+
+    let elements = try NativeAccessibilityProbe.waitForElements("overlay-agent-microphone")
+    XCTAssertEqual(
+      elements.elements.count, 1,
+      "one agent and no All row leave exactly one microphone: \(elements.elements)")
+    let pressed = try NativeAccessibilityProbe.query("overlay-agent-microphone", press: true)
+    XCTAssertEqual(pressed.pressStatus, 0, "the AX press must land: \(pressed.trace)")
+    let deadline = Date().addingTimeInterval(2)
+    while toggles.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(toggles, [2], "the press reaches its exact agent, exactly once")
   }
 
   /// ⌘+ grew the docked column and the conversation, but the roster's own text
