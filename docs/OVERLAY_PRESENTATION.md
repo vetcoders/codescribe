@@ -7,17 +7,17 @@ alternative arrangements; this document does not select one as the final UI.
 
 ## Start with the visual owner
 
-| Change                                                               | Existing owner                                                                          |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Agent name, clock, descriptor and message preview                    | `OverlayAgentRosterLabel.swift`                                                         |
-| Row footer, action grouping, broadcast row and compact channel pills | `OverlayChannelStatusView.swift`                                                        |
-| Numbered channel pill: rail pills, compact map chips and counter     | `OverlayChannelPill.swift`                                                              |
-| Compact channel map: chips, collapse to a counter, `MIC →`           | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
-| Header, waveform placement, embedded list/rail and hover region      | `DictationOverlayView.swift`                                                            |
-| List width, docking threshold and rail/pill dimensions               | `OverlayAgentDrawerLayout.swift`                                                        |
-| Native mini/midi/expanded window size, position and morph            | `DictationOverlayWindow.swift`                                                          |
-| Overlay colors                                                       | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
-| Shared microphone/speaker symbols, glass and hit areas               | `OverlayAgentAudioControls` in `OverlayChannelStatusView.swift`                         |
+| Change                                                                  | Existing owner                                                                          |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |
+| Row footer, action grouping, broadcast row and compact channel pills    | `OverlayChannelStatusView.swift`                                                        |
+| Numbered channel pill: rail pills, map chips, counter, microphone badge | `OverlayChannelPill.swift`                                                              |
+| Channel map in mini and compact: tiers, counter, its click              | `OverlayChannelMapModel.swift`, `OverlayChannelMapView.swift`                           |
+| Header, waveform placement, embedded list/rail and hover region         | `DictationOverlayView.swift`                                                            |
+| List width, docking threshold and rail/pill dimensions                  | `OverlayAgentDrawerLayout.swift`                                                        |
+| Native mini/midi/expanded window size, position and morph               | `DictationOverlayWindow.swift`                                                          |
+| Overlay colors                                                          | `OverlayAppearancePalette.swift`, projecting `CSPalette` in `DesignSystem/Tokens.swift` |
+| Shared microphone/speaker symbols, glass and hit areas                  | `OverlayAgentAudioControls` in `OverlayChannelStatusView.swift`                         |
 
 Swift source paths above are relative to
 `macos/Codescribe/Screens/Overlay/`, except `DesignSystem/Tokens.swift`.
@@ -59,19 +59,31 @@ menu lists the frozen recipient set of a broadcast. A speaker who is not the
 open conversation stays a button that opens their conversation; the arrow and
 the audience are text.
 
-The compact strip's channel map is another surface of the same projections.
-`OverlayChannelStatusView.channelMapModel` builds `OverlayChannelMapModel` from
-the roster's rows, `hudStates`, current conversations and unread counts; a chip
-calls `selectChannelConversation`, the rail pill's selection path, and the
-counter's single `onOpenMap` entry point opens the Agents list (W2 replaces it
-with the map popover). `OverlayChannelPill` is the single owner of the
-numbered pill visual: the rail pill, the map's chips and its counter render the
-digit through it, from immutable display values and one action. It receives no
-`OverlayState`, conversation or command. The map's collapse threshold is
+The channel map in mini and compact is another surface of the same
+projections. `OverlayChannelStatusView.channelMapModel` builds
+`OverlayChannelMapModel` from the roster's rows, `hudStates`, current
+conversations, the selection and unread counts. It lists the bound agents
+1–9, with lease names capitalised for display only; channel 0 joins it only
+while the microphone broadcasts on it. A chip calls
+`selectChannelConversation`, the rail pill's selection path. The counter calls
+`OverlayState.activateChannelMapCounter`: in mini it selects compact, in
+compact it asks the window owner, through `onRestoreMidiNaturalWidth`, to drop
+a width the user set (`FloatingOverlayPanel.restoreMidiNaturalWidth`). There is
+no map popover; the counter's hint lists the agents.
+
+`OverlayChannelPill` is the single owner of the numbered pill visual: the rail
+pill, the map's chips and its counter render the digit through it, from
+immutable display values and one action, and an open channel's digit carries
+the microphone badge in the agent accent there, never `MIC →` text. It receives
+no `OverlayState`, conversation or command. Compact's strip picks the first
+tier that fits its width: named chips, digit-only chips (the selected
+conversation's chip keeps its name), the counter, nothing. Every threshold is
 measured from the same text metrics the pill draws with, and the window owner
 sizes compact from them too: `FloatingOverlayPanel.setMidiNaturalWidth`
-receives `DictationOverlayWindow.midiNaturalWidth` whenever
-`OverlayState.onChannelMapLayoutChanged` reports new channels or names.
+receives `DictationOverlayWindow.midiNaturalWidth`, bounded by the 820 pt
+`midiChannelMapBudget`, whenever `OverlayState.onChannelMapLayoutChanged`
+reports new agents or names. Mini draws the counter at scale 1, as its fixed
+200 and 164 pt widths are measured there.
 
 Moving controls must not turn a whole row into one button or nest buttons
 inside another button. A folded rail pill already selects that conversation,

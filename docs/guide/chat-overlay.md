@@ -21,11 +21,14 @@ expanding; moving the window changes that pin.
 Mini is a fixed strip. Compact supports horizontal resizing. Expanded supports
 edge and corner resizing. The minimum visible sizes are 200 × 46, 410 × 46 and
 320 × 260 points respectively. Compact's own width follows its channel map: with
-agents on the bus it opens wide enough for every chip, and it grows or shrinks
-at its upper-right corner when a channel is added or archived. Narrow it by
-hand and it keeps your width for the rest of the session, with the chips folded
-into the counter; widen it and it keeps your width, growing only when the map
-needs more. During dragging the current form keeps its
+agents on the bus it opens wide enough for every named chip, up to 820 points,
+and it grows or shrinks at its upper-right corner when a channel is added or
+archived. Past 820 points the chips drop their names instead of widening the
+strip. Narrow it by hand and it keeps your width for the rest of the session,
+with the chips showing digits only or folded into the counter; clicking the
+counter gives the strip its natural width back. Widen it and it keeps your
+width, growing only when the map needs more. During dragging the current form
+keeps its
 readable floor. A sufficiently small requested drag can select a compact form
 when released; it does not squeeze an expanded transcript into a tiny frame
 while the gesture is still in progress.
@@ -94,38 +97,54 @@ again. Selecting a conversation does not replay old speech.
 It does not mean they completed the work, accepted the transcript's acoustic
 coverage or answered aloud.
 
-## Channel map in the compact overlay
+## Channel map in the collapsed overlay
 
-The compact form carries a map of the bus between the clock and the header
-buttons: one chip per channel bound to an agent, in digit order, with
-**0 · All** first. A chip shows the digit in a circle and the agent's name, for
-example `0 All · 2 Miksa · 3 Igor · 5 Kuba`. Only channels the roster binds
-appear; delivery history alone does not add one. A chip whose agent has
-disconnected is dimmed like its row in the **Agents** list; the digit stays,
-because the channel chord still reaches the channel. A dot marks unread replies.
+Mini and compact carry a map of the bus, so you can see which agent answers
+which channel chord without unfolding the **Agents** canvas.
+
+In compact the map sits between the clock and the header buttons: one chip per
+channel bound to an agent, in digit order. A chip shows the digit in a circle
+and the agent's name, written with a capital first letter, for example
+`2 Miksa · 3 Igor · 5 Kuba`. Only agents appear: channel 0 broadcasts to
+everyone and has no chip of its own, except while the microphone is open on it
+(see below). Only channels the roster binds appear; delivery history alone does
+not add one. A chip whose agent has disconnected is dimmed like its row in the
+**Agents** list; the digit stays, because the channel chord still reaches the
+channel. A dot marks unread replies.
+
+In mini the brand dot is followed by a counter, `3 ▾`, the number of agents,
+then the agents button, the microphone and the form control. Mini no longer
+shows the "cs" wordmark.
 
 Pointing at a chip names the channel, the agent and the chord, for example
-`5 · Kuba · Ctrl+5`. The modifier is the one chosen in Settings › Shortcuts ›
-Extra shortcuts › **Agent channel** (Ctrl or Fn); the map reads it when it
-appears and when you point at it.
+`5 · Kuba · Ctrl+5`. Pointing at the counter lists the agents, for example
+`3 Igor · 4 Hania · 6 Konfig`. The modifier is the one chosen in Settings ›
+Shortcuts › Extra shortcuts › **Agent channel** (Ctrl or Fn); the map reads it
+when it appears and when you point at it.
 
 Clicking a chip opens that agent's conversation on the **Agents** canvas, as its
-numbered pill in the folded **Agents** list does. It does not open or close the
-microphone and does not change the destination of a recording in progress; use
-the channel chord or a microphone control to speak.
+numbered pill in the folded **Agents** list does. Clicking the counter in mini
+switches the overlay to compact, where the chips are; clicking it in a compact
+strip you narrowed gives the strip its natural width back, and the chips
+return; the counter never selects a conversation. Neither a chip nor the
+counter opens or closes the microphone or changes the destination of a
+recording in progress; use the channel chord or a microphone control to speak.
 
-While the microphone feeds a channel, its chip reads `MIC → 5 Kuba` in the
-agent violet, in its usual place. Channel 0 shows the left-facing megaphone
-instead of the microphone. When the channel closes, the plain chip returns. The
-indicator says where your voice goes; it is not a receipt.
+While the microphone feeds a channel, that channel's digit carries a small
+microphone badge in the agent violet, and its chip takes the same tint, in its
+usual place. While you broadcast on channel 0, a `0` chip with the badge leads
+the row. In mini, and in a compact strip folded to its counter, the counter
+shows the open channel's digit with the badge instead of the count. When the
+channel closes, the plain chip and the count return. The badge says where your
+voice goes; it is not a receipt.
 
-When the strip is too narrow for every chip, the chips collapse into one
-counter: `4 ▾`, the number of mapped channels with channel 0 included, or
-`MIC → 5` while a channel records. Pointing at the counter lists the whole map;
-clicking it opens the **Agents** list. If even the counter does not fit, the map
-steps aside so the header buttons and the fold control keep their place. By
-default the strip is as wide as its chips need, so the counter appears only
-after you narrow it. The strip stays 46 points tall, and larger
+When compact has no room for the names, the chips show digits only; the chip of
+the conversation you have selected keeps its name, and pointing at a chip still
+names it. When even the digits do not fit the width you set by hand, the chips
+collapse into the counter. If even the counter does not fit, the map steps
+aside so the header buttons and the fold control keep their place. By default
+the strip is as wide as its chips need, up to 820 points, so the counter
+appears only after you narrow it. The strip stays 46 points tall, and larger
 text grows the chips only as far as that height allows.
 
 ## Type a message and attach clipboard content
