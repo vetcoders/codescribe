@@ -20,10 +20,26 @@ use codescribe_core::pipeline::replay_card::{self, ReplayBuild};
 use serde::Serialize;
 
 use crate::controller::production_replay::{RecordedTakeRun, replay_recorded_take};
-use crate::os::permissions::{PermissionStatus, check_speech_recognition};
 
 pub const REPLAY_RECEIPT_SCHEMA: &str = "codescribe.replay-receipt.v1";
-pub const SPEECH_RECOGNITION_PERMISSION_ERROR: &str = "This terminal has no permissions to use `Speech recognition`. Please check the permissions or run it in another terminal emulator app.";
+
+/// Raw-argv test for `codescribe replay`, used before Clap has run.
+///
+/// Replay measures the recorded take without credentials. The live formatter
+/// still runs: the CLI registers no host formatter, so it takes the cloud
+/// lane, finds no key, and returns the cleaned text after its retries. Every
+/// replay measurement is taken in that state. With the Keychain reachable, a
+/// replay started outside a GUI session hung on a Keychain prompt nobody
+/// could click, and one started from a GUI terminal formatted through the
+/// cloud. Like the corpus lane, it accepts only an exact `replay` first.
+pub fn replay_argv_requested() -> bool {
+    replay_argv_requested_in(std::env::args_os())
+}
+
+/// The decision above over an explicit argv, so the guard can be tested.
+pub fn replay_argv_requested_in(argv: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    argv.into_iter().nth(1).is_some_and(|word| word == "replay")
+}
 
 #[derive(clap::Args, Debug)]
 pub struct ReplayArgs {
@@ -184,20 +200,14 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
-/// Production replay spawns the live Apple STT bridge, which requests Speech
-/// Recognition TCC if the responsible terminal has not already been authorized
-/// and aborts when that terminal lacks `NSSpeechRecognitionUsageDescription`.
-/// Preflight `SFSpeechRecognizer.authorizationStatus` so replay fails cleanly
-/// before spawning the bridge.
+/// Production replay runs the take through the live Apple STT bridge, which
+/// the CLI spawns disclaimed (`bin/codescribe.rs`): Speech Recognition is the
+/// bridge's own grant, not the terminal's. So the preflight asks the bridge,
+/// and the bridge raises the system prompt once while that grant is still
+/// undetermined. Asking this process instead asked the terminal, a grant
+/// replay never uses, and refused every terminal without a Speech string.
 fn check_replay_speech_recognition_permission() -> Result<()> {
-    ensure_speech_recognition_permission(check_speech_recognition())
-}
-
-fn ensure_speech_recognition_permission(status: PermissionStatus) -> Result<()> {
-    if status != PermissionStatus::Granted {
-        bail!("{SPEECH_RECOGNITION_PERMISSION_ERROR}");
-    }
-    Ok(())
+    codescribe_core::stt::preflight_apple_live_ready()
 }
 
 /// A take is named by its session id or by a retained audio file. A file is
@@ -234,6 +244,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_an_exact_replay_command_locks_the_keychain() {
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        };
+        assert!(replay_argv_requested_in(argv(&[
+            "codescribe",
+            "replay",
+            "take"
+        ])));
+        assert!(!replay_argv_requested_in(argv(&[
+            "codescribe",
+            "transcribe",
+            "replay"
+        ])));
+        assert!(!replay_argv_requested_in(argv(&["codescribe", "--replay"])));
+        assert!(!replay_argv_requested_in(argv(&["codescribe"])));
+    }
+
+    #[test]
     fn short_commits_of_one_build_match_across_lengths() {
         assert!(same_commit("b2557e401", "b2557e40"));
         assert!(same_commit("b2557e401-dirty", "b2557e401"));
@@ -247,14 +279,5 @@ mod tests {
         assert!(resolve_take(root, "../escape").is_err());
         let missing = resolve_take(root, "0123456789abcdef").unwrap_err();
         assert!(missing.to_string().contains("no retained audio"));
-    }
-
-    #[test]
-    fn replay_requires_speech_recognition_permission() {
-        assert!(ensure_speech_recognition_permission(PermissionStatus::Granted).is_ok());
-        for denied in [PermissionStatus::Denied, PermissionStatus::NotDetermined] {
-            let err = ensure_speech_recognition_permission(denied).unwrap_err();
-            assert_eq!(err.to_string(), SPEECH_RECOGNITION_PERMISSION_ERROR);
-        }
     }
 }
