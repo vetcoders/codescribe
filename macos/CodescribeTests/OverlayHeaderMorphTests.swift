@@ -293,7 +293,9 @@ final class OverlayHeaderMorphTests: XCTestCase {
   /// out in that form's own density. No clock involved.
   func testHeaderControlsFitEverySettledWindowWidth() {
     let modes: [(OverlayPresentationMode, CGFloat)] = [
-      (.mini, DictationOverlayWindow.collapsedSize.width),
+      // Mini is as wide as its content (bus intercom spec §13.4) and not
+      // resizable; this rig binds no agent, so its one width is the floor.
+      (.mini, DictationOverlayWindow.miniFloorWidth),
       (.midi, DictationOverlayWindow.midiSize.width),
       (.expanded, DictationOverlayWindow.defaultSize.width),
     ]

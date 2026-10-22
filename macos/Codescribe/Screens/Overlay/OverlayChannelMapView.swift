@@ -16,7 +16,7 @@ struct OverlayChannelMapView: View {
   enum Placement: Equatable {
     /// Compact's header: named chips, digit-only chips, the counter or nothing.
     case strip
-    /// Mini's header: the counter only, at the fixed scale mini is measured in.
+    /// Mini's header: the counter only; mini's width follows it.
     case mini
   }
 
@@ -40,7 +40,7 @@ struct OverlayChannelMapView: View {
   var body: some View {
     switch placement {
     case .mini:
-      counterPill(scale: 1)
+      counterPill(scale: OverlayChannelPill.headerScale(textScale))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overlay-channel-map")
     case .strip:

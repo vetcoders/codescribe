@@ -30,8 +30,12 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
     XCTAssertEqual(
       DictationOverlayWindow.minSize.height,
       OverlayTranscriptActionsLayout.minimumExpandedHeight)
+    // Mini is content-sized (bus intercom spec §13.4); its floor is its controls.
     XCTAssertEqual(
-      DictationOverlayWindow.minimumSize(for: .mini), DictationOverlayWindow.collapsedSize)
+      DictationOverlayWindow.minimumSize(for: .mini),
+      NSSize(
+        width: DictationOverlayWindow.miniFloorWidth,
+        height: DictationOverlayWindow.collapsedHeight))
     XCTAssertEqual(
       DictationOverlayWindow.minimumSize(for: .midi), DictationOverlayWindow.midiSize)
   }

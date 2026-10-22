@@ -261,27 +261,70 @@ final class OverlayChannelMapTests: XCTestCase {
       map.chips[2].accessibilityLabel(modifier: .control), "Channel 5, Kuba, shortcut Ctrl 5")
   }
 
-  /// Mini's row around the counter, as `DictationOverlayWindow.agentMiniSize`
-  /// adds it up: outer padding, the close dot, three row gaps, the collapsed
-  /// waveform's minimum and the trailing controls.
-  private func miniRow(counter: CGFloat) -> CGFloat {
-    32 + 9 + 3 * 6 + 4 + 81 + counter
-  }
-
-  func testRecordingCounterHugsItsDigitInTheRoomOfCs() {
+  func testRecordingCounterHugsItsCircledDigit() {
     let one = OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 1, scale: 1)
     XCTAssertEqual(
       one,
       ceil(2 * OverlayChannelPill.counterRecordingPadding + OverlayChannelPill.digitCircle))
-    XCTAssertLessThanOrEqual(
-      miniRow(counter: one), DictationOverlayWindow.agentMiniSize.width,
-      "the open digit with its badge fits the 164 pt mini")
     XCTAssertGreaterThan(
       OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 2, scale: 1), one)
-    let resting = OverlayChannelPill.counterWidth(figure: "9", openDigitCount: 0, scale: 1)
-    XCTAssertLessThanOrEqual(
-      miniRow(counter: resting), DictationOverlayWindow.collapsedSize.width,
-      "9 ▾ fits the 200 pt mini")
+    XCTAssertLessThan(
+      one, OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 0, scale: 1),
+      "the open digit is narrower than 3 ▾")
+  }
+
+  // MARK: - Mini width (§13.4)
+
+  /// Mini is as wide as its content: no fixed 200 or 164 pt. The floor is its
+  /// controls; the counter adds its brand gap and its own measured width.
+  func testMiniWidthIsItsControlsPlusTheCounterAsDrawn() {
+    let floor = DictationOverlayWindow.miniFloorWidth
+    XCTAssertEqual(
+      floor,
+      DictationOverlayWindow.miniOuterPadding + DictationOverlayWindow.miniBrandDot
+        + 2 * DictationOverlayWindow.miniRowSpacing + DictationOverlayWindow.miniTrailingControls)
+    XCTAssertEqual(floor, 130, "32 padding + 9 dot + 2 × 4 gaps + 81 trailing controls")
+    XCTAssertEqual(
+      2 * DictationOverlayWindow.miniRowSpacing, 8,
+      "across the closed centre, the gap the trailing controls keep")
+    XCTAssertEqual(
+      DictationOverlayWindow.miniNaturalWidth(
+        map: model(channels: [], hudStates: [:]), textScale: 1),
+      floor, "no channel: mini is its controls")
+
+    let resting = scenario()
+    XCTAssertEqual(
+      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1),
+      ceil(
+        floor + DictationOverlayWindow.miniBrandGap
+          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 0, scale: 1)))
+    let recording = scenario(open: ["5"])
+    XCTAssertEqual(
+      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
+      ceil(
+        floor + DictationOverlayWindow.miniBrandGap
+          + OverlayChannelPill.counterWidth(figure: "3", openDigitCount: 1, scale: 1)),
+      "the recording variant is the same rule with the recording counter")
+    XCTAssertLessThan(
+      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
+      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
+    XCTAssertGreaterThan(
+      DictationOverlayWindow.miniNaturalWidth(map: scenario(open: ["2", "5"]), textScale: 1),
+      DictationOverlayWindow.miniNaturalWidth(map: recording, textScale: 1),
+      "two open digits widen the capsule instead of clipping it")
+    // Broadcasting with no agent bound still shows the open 0.
+    XCTAssertGreaterThan(
+      DictationOverlayWindow.miniNaturalWidth(
+        map: model(channels: [], hudStates: ["0": hud(open: true, alive: nil)]), textScale: 1),
+      floor)
+    // Larger text grows the counter, and the capsule with it, up to the
+    // strip's scale ceiling.
+    XCTAssertGreaterThan(
+      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1.2),
+      DictationOverlayWindow.miniNaturalWidth(map: resting, textScale: 1))
+    XCTAssertEqual(
+      DictationOverlayWindow.minimumSize(for: .mini).width, floor,
+      "mini's floor is its controls")
   }
 
   // MARK: - Tiers (§13.1)
