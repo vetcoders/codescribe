@@ -1077,14 +1077,16 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
       "the sentinel agent menu must trip the matcher, or absence proves nothing: \(probeTitles)")
-    if let probeMenu,
-      let writeIndex = probeMenu.items.firstIndex(where: {
+    // Required, never conditional (Astra and Olga on bdadd84fc): another
+    // forbidden command could satisfy the matcher while a missing Write
+    // silently skipped the spy.
+    let requiredMenu = try XCTUnwrap(probeMenu, "the sentinel resolves a real menu")
+    let writeIndex = try XCTUnwrap(
+      requiredMenu.items.firstIndex(where: {
         $0.title.contains(String(localized: "Write / Forward…"))
-      })
-    {
-      probeMenu.performActionForItem(at: writeIndex)
-      XCTAssertEqual(sentinelSelected, lena.id, "the write command reaches its exact conversation")
-    }
+      }), "the sentinel menu must carry the Write command: \(probeTitles)")
+    requiredMenu.performActionForItem(at: writeIndex)
+    XCTAssertEqual(sentinelSelected, lena.id, "the write command reaches its exact conversation")
 
     // The custom hint panel is the other tooltip owner (overlayFastHint →
     // OverlayHintPanel). The probe proves hover really presents a readable
