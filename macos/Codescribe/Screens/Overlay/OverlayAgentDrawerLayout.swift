@@ -1,68 +1,58 @@
 import SwiftUI
 
-/// What the expanded agents surface shows, chosen with the corner buttons of
-/// the list and remembered between reveals (Maciej, 2026-10-19: the agents
-/// list as the main view with the messages sliding out on the left; folded,
-/// the list leaves its agents as pills). The window width decides only
-/// whether the list fits beside the conversation.
+/// The user's explicit choice of visible panes. Geometry never changes it.
 enum OverlayAgentsLayout: String {
-  /// The conversation on the left and the list beside it where the window is
-  /// wide enough; below the threshold the list comes when asked for.
+  /// Conversation and roster, side by side at every window width.
   case split
-  /// The list alone, at any width: the agents view. A row chosen in it
-  /// slides the conversation out.
+  /// Roster with the conversation folded to its own reveal edge.
   case agents
-  /// The conversation, with the list folded to a rail of agent pills.
+  /// Conversation with the roster folded to its rail of agent pills.
   case rail
 }
 
-/// Wide/narrow hosting decision for the agents roster: a docked column beside
-/// the conversation, or the same list over the whole window below the
-/// threshold. One threshold in one text scale, so ⌘+ moves both surfaces
-/// together (mockup `szuflada-agentow.html`, Founder 2026-10-16).
+/// Geometry for the roster column. An ordinary reveal always leaves the
+/// conversation beside it; only an explicit pane fold chooses the agents view.
 enum OverlayAgentDrawerLayout {
   static let widthDefaultsKey = "Overlay.agentDrawerWidth.v1"
 
-  /// Docking needs the drawer and a conversation that still reads well side by
-  /// side: 300 + 420 points in the overlay's text scale. 520 for the
-  /// conversation kept a 900-point window at text 1.2 on pills with room to
-  /// spare, while the same column docked on dragon at text 0.8 (Maciej,
-  /// 2026-10-19: "Breaking point dla trybu rozwiniętego jest zbyt szeroko").
-  /// At very large text a medium window still falls back to the full-width list.
-  static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
-    windowWidth >= (300 + 420) * textScale
+  /// The host can grow to this floor when a side column is requested. During
+  /// a smaller frame's transition both panes still receive a positive width.
+  static func minimumSplitWindowWidth(textScale: CGFloat) -> CGFloat {
+    (240 + 320) * textScale
   }
 
-  /// The list stays on screen beside, or over, a conversation without being
-  /// asked for. The transcription keeps its full width (OverlayChromeV3Tests)
-  /// and shows the list only while it is asked for.
+  static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
+    windowWidth > 0
+  }
+
+  /// A selected conversation keeps the explicit pane choice, independently
+  /// of the current width. Transcription reveals the roster only on request.
   static func listPinned(
     layout: OverlayAgentsLayout, docked: Bool, conversationSelected: Bool
   ) -> Bool {
     guard conversationSelected else { return false }
-    switch layout {
-    case .split: return docked
-    case .agents: return true
-    case .rail: return false
-    }
+    return layout != .rail
   }
 
-  /// The preference is in unscaled points and has no upper bound (Maciej,
-  /// 2026-10-18: "Jeśli przesunę sobie resizing całkiem do lewej, to okno
-  /// stanowi tylko i wyłącznie widok agentów"). A conversation narrower than
-  /// `minimumConversationWidth` is unusable, so the roster then takes the
-  /// whole window; a drag that ends there chooses the agents view.
+  /// Clamp a remembered width to the current split instead of replacing the
+  /// conversation with a full-width roster when the window becomes narrower.
   static func drawerWidth(
     textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity
   ) -> CGFloat {
     let preferred = preferredWidth.isFinite ? preferredWidth : 300
-    let width = max(min(240 * textScale, max(0, windowWidth)), preferred * textScale)
+    let width = max(240 * textScale, preferred * textScale)
     guard windowWidth.isFinite else { return width }
-    return windowWidth - width < minimumConversationWidth(textScale: textScale)
-      ? max(0, windowWidth) : width
+    let available = max(0, windowWidth)
+    let conversation =
+      available >= minimumSplitWindowWidth(textScale: textScale)
+      ? minimumConversationWidth(textScale: textScale) : available * 0.55
+    return min(width, max(0, available - conversation))
   }
 
   static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
+
+  /// A folded conversation keeps a real edge column for its reveal control.
+  static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
 
   /// The roster covers the window: the conversation beside it is hidden.
   static func fillsWindow(drawerWidth: CGFloat, windowWidth: CGFloat) -> Bool {
@@ -73,22 +63,23 @@ enum OverlayAgentDrawerLayout {
   /// the window, stored as this oversized width. Read once, to migrate it.
   static let legacyFillsWindowWidth: CGFloat = 100_000
 
-  /// The preference to store for a width the user drew. Nil when the drawn
-  /// roster covers the window: that chooses the agents view, and the width
-  /// remembered before the drag stays for the way back.
+  /// Only an explicit resize crossing the conversation floor chooses the
+  /// agents view. A narrow window or an oversized saved width never does.
   static func rememberedWidth(
     textScale: CGFloat, preferredWidth: CGFloat, windowWidth: CGFloat
   ) -> CGFloat? {
-    let shown = drawerWidth(
-      textScale: textScale, preferredWidth: preferredWidth, windowWidth: windowWidth)
-    return fillsWindow(drawerWidth: shown, windowWidth: windowWidth) ? nil : shown / textScale
+    guard preferredWidth.isFinite, textScale > 0 else { return nil }
+    if windowWidth >= minimumSplitWindowWidth(textScale: textScale),
+      preferredWidth * textScale > windowWidth - minimumConversationWidth(textScale: textScale)
+    {
+      return nil
+    }
+    return drawerWidth(
+      textScale: textScale, preferredWidth: preferredWidth, windowWidth: windowWidth) / textScale
   }
 
-  /// The widest roster, unscaled, that still leaves the conversation its
-  /// minimum: where the conversation slides out to when the remembered width
-  /// leaves it no room in this window.
   static func widestSplitWidth(textScale: CGFloat, windowWidth: CGFloat) -> CGFloat {
-    (windowWidth - minimumConversationWidth(textScale: textScale)) / textScale
+    max(0, windowWidth - minimumConversationWidth(textScale: textScale)) / textScale
   }
 
   /// The widest pill sets the column: the broadcast glyph (12), one
