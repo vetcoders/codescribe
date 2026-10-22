@@ -1228,6 +1228,126 @@ class PlaybackQueueTests(unittest.TestCase):
         (reply,) = self.outcomes()
         self.assertTrue(reply["spoken"])
 
+    # Maciej 2026-10-22 17:44: a reply waits while someone speaks, not while
+    # the microphone is merely open. The app publishes the measured phase.
+    def speech_now(self, session, phase, *, age=5.0, pid=None):
+        channel = session.split("-")[2]
+        path = self.home / "runtime" / f"channel-speech-{channel}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "schema": "codescribe.channel-speech-now.v1",
+            "channel": channel,
+            "session_id": session,
+            "phase": phase,
+            "since_ms": int((time.time() - age) * 1000),
+            "pid": os.getpid() if pid is None else pid,
+        }))
+
+    def last_outcome(self):
+        return self.outcomes()[-1]
+
+    def test_quiet_open_channel_admits_the_reply(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-live", "open")
+        marker = self.home / "runtime" / "agent-playback-now.json"
+        for phase in ("quiet", "fresh"):
+            with self.subTest(phase=phase):
+                # Each reply starts clean; back-to-back is its own test.
+                marker.unlink(missing_ok=True)
+                self.speech_now("agent-channel-1-live", phase)
+                child, (_, _, playing) = self.start_say("filip")
+                self.join(child)
+                self.assertTrue(playing.is_set())
+                self.assertTrue(self.last_outcome()["spoken"])
+
+    def test_speech_or_an_unproven_phase_holds_the_reply(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-live", "open")
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        cases = {
+            "speaking": dict(phase="speaking"),
+            "broken edge chain": dict(phase="unmeasured"),
+            "quiet too short": dict(phase="quiet", age=0.2),
+            "app gone": dict(phase="quiet", pid=gone.pid),
+        }
+        for label, case in cases.items():
+            with self.subTest(label):
+                self.speech_now("agent-channel-1-live", **case)
+                child, (_, waiting, playing) = self.start_say("filip")
+                self.assertTrue(waiting.wait(5))
+                self.join(child)
+                self.assertFalse(playing.is_set())
+                self.assertEqual(self.last_outcome()["reason"], "take_live")
+        with self.subTest("another session's file"):
+            self.speech_now("agent-channel-1-older", "quiet")
+            child, (_, _, playing) = self.start_say("filip")
+            self.join(child)
+            self.assertFalse(playing.is_set())
+
+    def test_reply_survives_the_seal_and_reopen_of_its_quiet_channel(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-first", "open")
+        self.speech_now("agent-channel-1-first", "quiet")
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say("filip", release)
+        self.assertTrue(playing.wait(5))
+        marker = json.loads((self.home / "runtime" / "agent-playback-now.json").read_text())
+        self.assertEqual(marker["schema"], "codescribe.agent-playback-now.v1")
+        self.assertEqual(marker["pid"], child.pid)
+        self.channel_row(channel, "agent-channel-1-first", "sealed")
+        self.speech_now("agent-channel-1-second", "fresh", age=0.0)
+        self.channel_row(channel, "agent-channel-1-second", "open")
+        time.sleep(0.2)
+        release.set()
+        self.join(child)
+        self.assertTrue(self.last_outcome()["spoken"], self.last_outcome())
+        self.assert_playback_ended()
+
+    def assert_playback_ended(self):
+        marker = json.loads((self.home / "runtime" / "agent-playback-now.json").read_text())
+        self.assertTrue(marker["ended"])
+        self.assertLessEqual(marker["until_ms"], time.time() * 1000)
+
+    def test_quiet_restarts_when_the_previous_reply_ends(self):
+        # Back-to-back replies: the channel heard nothing under the first one.
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-live", "open")
+        self.speech_now("agent-channel-1-live", "quiet", age=30.0)
+        marker = self.home / "runtime" / "agent-playback-now.json"
+        marker.write_text(json.dumps({
+            "schema": "codescribe.agent-playback-now.v1", "pid": os.getpid(),
+            "until_ms": int(time.time() * 1000), "ended": True,
+        }))
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set(), "a reply that just ended is not quiet")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
+
+    def test_a_person_stops_a_reply_by_key_or_by_measured_speech(self):
+        channel = self.home / "buses" / "channel-1.jsonl"
+        self.channel_row(channel, "agent-channel-1-live", "open")
+        for how in ("key take", "speech"):
+            with self.subTest(how):
+                self.speech_now("agent-channel-1-live", "quiet")
+                release = self.context.Event()
+                child, (_, _, playing) = self.start_say("filip", release)
+                self.assertTrue(playing.wait(5))
+                if how == "key take":
+                    with self.bus.open("a") as stream:
+                        stream.write(json.dumps(
+                            {"status": "session_started", "session_id": "key-take"}) + "\n")
+                else:
+                    self.speech_now("agent-channel-1-live", "speaking", age=0.0)
+                self.join(child)
+                self.assertEqual(self.last_outcome()["reason"], "take_started")
+                self.assert_playback_ended()
+                (self.home / "runtime" / "agent-playback-now.json").unlink()
+                with self.bus.open("a") as stream:
+                    stream.write(json.dumps(
+                        {"status": "session_ended", "session_id": "key-take"}) + "\n")
+
     def test_assert_install_idle_refuses_while_a_channel_is_open(self):
         channel = self.home / "buses" / "channel-3.jsonl"
         self.channel_row(channel, "agent-channel-3-live", "open")
