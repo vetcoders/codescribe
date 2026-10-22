@@ -966,7 +966,8 @@ struct OverlayChannelStatusView: View {
   }
 
   /// Status dot and channel number; the open conversation in the agent
-  /// accent, unread replies as the row badge's colour.
+  /// accent, unread replies as the row badge's colour. The pill itself is the
+  /// shared `OverlayChannelPill`, the one drawing of a channel's digit.
   private func railPill(
     _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
   ) -> some View {
@@ -982,45 +983,45 @@ struct OverlayChannelStatusView: View {
       : String(
         localized: "No conversation on this channel",
         comment: "Disabled mini-rail channel pill")
-    return Button {
+    return OverlayChannelPill(
+      form: .rail,
+      display: OverlayChannelPill.Display(
+        figure: digit, dot: channel.map { statusDotKind(for: $0) } ?? .broadcast,
+        disconnected: channel.map { hasDeadFollower($0) } ?? false, unread: unread > 0,
+        selected: selected, enabled: canOpen),
+      hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
+      palette: palette, textScale: textScale
+    ) {
       if let conversation { onSelectConversation?(conversation.id) }
-    } label: {
-      HStack(spacing: 3) {
-        OverlayAgentStatusDot(
-          kind: channel.map { statusDotKind(for: $0) } ?? .broadcast, palette: palette)
-        Text(verbatim: digit)
-          .font(.system(size: 12 * textScale, weight: .semibold))
-          .monospacedDigit()
-      }
-      .foregroundStyle(palette.primaryText.color)
-      .padding(.horizontal, 6 * textScale)
-      .frame(height: 24 * textScale)
-      .background(
-        Capsule(style: .continuous)
-          .fill(selected ? palette.agentAccent.color.opacity(0.22) : CSColor.hairline(0.06))
-      )
-      .overlay(alignment: .topTrailing) {
-        if unread > 0 {
-          Circle()
-            .fill(palette.processingStatus.color)
-            .frame(width: 6 * textScale, height: 6 * textScale)
-            .offset(x: 1, y: -1)
-            .accessibilityHidden(true)
-        }
-      }
-      .contentShape(Capsule(style: .continuous))
     }
-    .buttonStyle(.plain)
-    .csFocusOutline(cornerRadius: 12 * textScale)
-    .disabled(!canOpen)
-    .opacity(canOpen ? 1 : 0.35)
-    .modifier(OverlayDisconnectedRowDim(disconnected: channel.map { hasDeadFollower($0) } ?? false))
-    .overlayFastHint(hint, palette: palette, leading: true)
-    .accessibilityLabel(Text(verbatim: title))
     .accessibilityHint(Text(verbatim: hint))
-    .accessibilityAddTraits(selected ? .isSelected : [])
-    .accessibilityIdentifier("overlay-agent-rail-\(digit)")
   }
+
+  /// The collapsed overlay's channel map: another surface of this roster's
+  /// projections. Bound digits come from the roster snapshot (`hudStates`),
+  /// names from the same rows the list shows, unread marks from the same
+  /// counts, the selected chip from the same selection as a rail pill's, and
+  /// a chip is clickable only where a rail pill would be.
+  var channelMapModel: OverlayChannelMapModel {
+    let current = onSelectConversation == nil ? [] : currentConversations
+    return OverlayChannelMapModel(
+      channels: channels, hudStates: hudStates,
+      selectedDigit: currentConversations.first(where: { $0.id == selectedConversationID })?
+        .channel,
+      selectableDigits: Set(current.map(\.channel)),
+      unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)))
+  }
+
+  /// A map chip's click: the digit's current conversation, through the same
+  /// selection path and the same owner match as its rail pill. A digit with
+  /// no current conversation selects nothing; capture is never touched.
+  func selectChannelConversation(_ digit: String) {
+    guard let conversation = currentConversations.first(where: { $0.channel == digit }) else {
+      return
+    }
+    onSelectConversation?(conversation.id)
+  }
+
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
