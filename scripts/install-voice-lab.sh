@@ -245,7 +245,9 @@ restart_server() {
     lsof -tnP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1 || break
     sleep 0.2
   done
-  (cd "$RUNTIME" && VOICE_LAB_REMOTE_HOST=off nohup /usr/bin/python3 ./server.py --port "$port" >/dev/null 2>&1 </dev/null &)
+  # exec, and the redirects on the whole subshell: nothing but the server stays,
+  # and nothing holds the installer's stdout, so `make install-lab | …` ends.
+  (cd "$RUNTIME" && VOICE_LAB_REMOTE_HOST=off exec nohup /usr/bin/python3 ./server.py --port "$port") >/dev/null 2>&1 </dev/null &
   for i in $(seq 1 50); do
     pid="$(lsof -tnP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
     [[ -n "$pid" ]] && { echo "==> Lab server restarted on :${port} (pid ${pid})"; return; }
