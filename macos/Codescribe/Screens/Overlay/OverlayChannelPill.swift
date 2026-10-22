@@ -164,7 +164,7 @@ struct OverlayChannelPill: View {
 
   /// A chip's or the recording counter's digit in its circle, with the
   /// violet dot while the microphone feeds the channel (spec §14: a dot, no
-  /// glyph; the Agents button carries the microphone or megaphone sign). The
+  /// glyph; the Agents button carries the speaking and broadcast signs). The
   /// dot overlaps the circle, so it adds no width.
   private func circledDigit(_ digit: String) -> some View {
     figure(digit, size: Self.digitSize)
