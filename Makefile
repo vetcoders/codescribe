@@ -226,9 +226,17 @@ verify-install-bus:
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
+# Restart the installed app at its first idle moment, only when the running
+# process did not load the installed binaries, then say "Zrobione". The
+# waiter runs in the background; install-app arms it too (Maciej, 2026-10-22).
+RESTART_IDLE_WAIT ?= 21600
+RESTART_IDLE_INTERVAL ?= 30
+RESTART_AFTER_INSTALL ?= 1
+RESTART_IF_IDLE = ./scripts/restart-if-idle --newer-only --wait $(RESTART_IDLE_WAIT) --interval $(RESTART_IDLE_INTERVAL) --announce --detach
+
 .PHONY: restart-if-idle
 restart-if-idle:
-	@./scripts/restart-if-idle
+	@$(RESTART_IF_IDLE)
 
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
@@ -275,6 +283,11 @@ install-app: install-voice-lab
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
 	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
+	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \
+		$(RESTART_IF_IDLE) || echo "Restart not armed; run 'make restart-if-idle' at an idle moment."; \
+	else \
+		echo "Restart not armed (RESTART_AFTER_INSTALL=$(RESTART_AFTER_INSTALL)); the running app keeps its build."; \
+	fi
 
 # ============================================================================
 # Run
@@ -1180,6 +1193,7 @@ verify:
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
+	python3 -m unittest scripts/tests/test_restart_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
 	python3 -m unittest scripts/tests/test_bus_listener_recovery.py; \
 	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
