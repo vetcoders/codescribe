@@ -253,12 +253,28 @@ fn main() -> std::process::ExitCode {
     // lock has to be in place before ANY parsing — so the decision is made
     // from raw argv, exactly as the standalone binary made it from its first
     // statement. See `cli::corpus` for why this cannot be a typed check.
+    // Replay measures without credentials too (`cli::replay`).
     //
     // SAFETY: first executable statement of the process, before Clap, before
     // the tracing subscriber, before any thread or runtime exists.
-    if codescribe::cli::corpus::corpus_argv_requested() {
+    if codescribe::cli::corpus::corpus_argv_requested()
+        || codescribe::cli::replay::replay_argv_requested()
+    {
         unsafe {
             std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        }
+    }
+    // The CLI runs under a terminal, and TCC answers the bridge's Speech
+    // Recognition request for that terminal: a terminal without the Speech
+    // purpose string gets the bridge killed, one that has it gets a prompt in
+    // its own name. Every bridge the CLI spawns answers for itself instead,
+    // with the grant `make engine-auth` and the replay preflight ask for. An
+    // explicit value wins; anything but "1" keeps the inherited grant.
+    //
+    // SAFETY: still before Clap, tracing, threads or any runtime.
+    if std::env::var_os("CODESCRIBE_BRIDGE_DISCLAIM").is_none() {
+        unsafe {
+            std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
         }
     }
     // Rust starts with SIGPIPE ignored, so a `println!` into a closed pipe
