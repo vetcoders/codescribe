@@ -248,6 +248,9 @@ pub struct UserSettings {
     /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
+    /// Agent reasoning level; unset keeps the model's own reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_assistive_reasoning: Option<String>,
     /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
@@ -685,7 +688,8 @@ pub struct RuntimeLlmLane {
     /// credential part of `unavailable_reason`, a later Keychain save cannot
     /// repair it without a new settings generation.
     configuration_fault: Option<String>,
-    /// Formatting only; the Agent lane keeps its model's own reasoning.
+    /// The level requests on this lane ask for. Formatting always carries one
+    /// (default `none`); the Agent lane carries one only when the user chose it.
     reasoning: Option<crate::llm::provider::ReasoningEffort>,
 }
 
@@ -1643,6 +1647,8 @@ struct AssistiveV2 {
     provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_reasoning: Option<String>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -1825,6 +1831,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_FORMATTING_REASONING",
     "LLM_ASSISTIVE_PROVIDER",
     "LLM_ASSISTIVE_MODEL",
+    "LLM_ASSISTIVE_REASONING",
     // Account-login OAuth client ids — non-secret app identities, so they live
     // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
@@ -2033,6 +2040,7 @@ impl UserSettings {
                 assistive: Some(AssistiveV2 {
                     provider: self.llm_assistive_provider.clone(),
                     llm_model: self.llm_assistive_model.clone(),
+                    llm_reasoning: self.llm_assistive_reasoning.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -2173,6 +2181,7 @@ impl UserSettings {
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            llm_assistive_reasoning: cloned!(v2.speech, assistive, llm_reasoning),
             llm_assistive_provider: cloned!(v2.speech, assistive, provider),
             chat_zoom: copy!(v2.ui, chat_zoom),
             show_dock_icon: copy!(v2.ui, show_dock_icon),
