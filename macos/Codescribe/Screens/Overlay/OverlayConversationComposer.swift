@@ -362,6 +362,16 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = MessageScrollView()
+    // This editor mutates TextKit geometry during main-thread layout. Give it
+    // explicit backing layers so an ancestor's flattened layer cannot draw it
+    // on a Core Animation worker while layout holds the view-hierarchy lock.
+    // The reverse order (TextKit draw -> insertion-indicator reparent) deadlocks.
+    scroll.wantsLayer = true
+    scroll.canDrawConcurrently = false
+    scroll.layer?.drawsAsynchronously = false
+    scroll.contentView.wantsLayer = true
+    scroll.contentView.canDrawConcurrently = false
+    scroll.contentView.layer?.drawsAsynchronously = false
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
     // The scroller policy lives in `CSScrollerPin` (Founder, 2026-10-18); the
@@ -369,6 +379,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     context.coordinator.scrollerPin.attach(to: scroll)
     scroll.borderType = .noBorder
     let editor = MessageTextView()
+    editor.wantsLayer = true
+    editor.canDrawConcurrently = false
+    editor.layer?.drawsAsynchronously = false
     editor.isRichText = false
     editor.isEditable = true
     editor.isSelectable = true
