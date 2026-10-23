@@ -285,6 +285,34 @@ fn witness_attempts_charge_full_targets_and_only_the_leading_oversized_one() {
     assert_eq!(attempts, vec![((0, 90), 1), ((100, 110), 1)]);
 }
 
+// 2026-10-22, the DT lock split on 26 replays: a target clipped at the growing
+// seal minted a new range on every seal, so one owner was asked again about
+// every 0.35 s. An owner is asked once, whole, after its PCM closes.
+#[test]
+fn live_witness_asks_each_whole_owner_once_as_the_seal_grows() {
+    let owners = [(0, 100), (100, 250)];
+    let ask = |attempts: &[((u64, u64), u8)], sealed_end: u64| {
+        owners
+            .iter()
+            .copied()
+            .filter(|&owner| super::live_witness_may_ask(owner, sealed_end, 1_000, attempts))
+            .collect::<Vec<_>>()
+    };
+    let mut attempts = Vec::new();
+    assert_eq!(ask(&attempts, 200), vec![(0, 100)]);
+    super::record_dictation_witness_attempts(&mut attempts, &[(0, 100)], 0, 200, 1_000);
+    assert_eq!(ask(&attempts, 230), Vec::<(u64, u64)>::new());
+    assert_eq!(ask(&attempts, 250), vec![(100, 250)]);
+    super::record_dictation_witness_attempts(&mut attempts, &[(100, 250)], 97, 250, 1_000);
+    assert_eq!(ask(&attempts, 400), Vec::<(u64, u64)>::new());
+}
+
+#[test]
+fn live_witness_never_asks_an_owner_longer_than_one_window() {
+    assert!(!super::live_witness_may_ask((0, 1_001), 2_000, 1_000, &[]));
+    assert!(super::live_witness_may_ask((0, 1_000), 2_000, 1_000, &[]));
+}
+
 // div0 2026-10-15..17: 130 live witness lookups failed on only 7 windows, the
 // 0..30 s window 85 times. The oldest debt had left the 120 s buffer, the
 // window stayed anchored on it, and newer gaps were never asked.
