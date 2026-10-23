@@ -49,6 +49,11 @@ Correct unknown names or remove unused entries deliberately; the warning itself
 does not modify the file. A `FORMATTING_LEVEL` precedence note can also mean an
 explicit process override differs from the saved setting: review the launch
 environment as well as `.env`, then restart after correcting the source.
+Codescribe never writes `FORMATTING_LEVEL` into its own environment, so the note
+always points at a source outside the app. Builds before this fix copied the
+saved level into the process environment and passed it to a self-relaunch; such
+a process keeps the stale override until Codescribe is started again from
+Finder, Spotlight or `open`.
 
 ## Operator pack
 
