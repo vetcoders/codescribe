@@ -327,6 +327,7 @@ final class OverlayController: ObservableObject {
   func stopIntercomPresentation() {
     intercomPresentationStarted = false
     state.onRevealIntercom = nil
+    state.agentChooserHost = nil
     intercomWidget?.invalidate()
     intercomWidget = nil
   }
@@ -348,6 +349,15 @@ final class OverlayController: ObservableObject {
       // Mini's stacked counter leads here in the vertical layout.
       state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
     }
+    // The middle-click chooser lives where the agents do: on the Intercom
+    // while it stands, on the big overlay's list otherwise.
+    state.agentChooserHost =
+      wantsWidget
+      ? intercomWidget.map { widget in
+        OverlayState.AgentChooserHost(
+          targets: { [weak widget] in widget?.chooserTargets() ?? [] },
+          open: { [weak widget] id in widget?.openChosenConversation(id) })
+      } : nil
     intercomWidget?.setVisible(wantsWidget, relativeTo: panel)
     state.channelMapPreferenceChanged()
   }
@@ -677,10 +687,16 @@ final class OverlayController: ObservableObject {
 
   /// The middle-click agent chooser is a summons by hand: it brings the panel
   /// on screen as fresh channel evidence does, without re-anchoring a visible
-  /// one. Every other gesture input only moves state.
+  /// one. Every other gesture input only moves state. In the vertical layout
+  /// the Intercom is summoned instead and the big overlay stays as it was.
   func handleAgentGesture(_ input: CsAgentGestureInput) {
+    let wasChoosing = state.agentChooserOpen
     state.handleAgentGesture(input)
     guard state.agentChooserOpen else { return }
+    if state.agentChooserHost != nil, let intercomWidget {
+      if !wasChoosing { intercomWidget.presentChooser() }
+      return
+    }
     if let panel, panel.isVisible {
       panel.alphaValue = 1
       orderPanelFront(panel)

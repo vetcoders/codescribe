@@ -8461,4 +8461,76 @@ final class OverlayAgentGestureTests: XCTestCase {
     XCTAssertFalse(f.state.showsAgentMonitor)
     XCTAssertEqual(f.captures.calls, [false, false])
   }
+
+  // MARK: The vertical Intercom hosts the chooser (Maciej, 2026-10-23 seal)
+
+  private final class OpenLog { var ids: [String] = [] }
+
+  /// The widget's order, not the roster's: Olek's row stands above Lena's.
+  private func host(_ f: Fixture, order: [OverlayConversation]) -> OpenLog {
+    let log = OpenLog()
+    f.state.agentChooserHost = .init(targets: { order }, open: { log.ids.append($0) })
+    return log
+  }
+
+  func testAHostedChooserWalksTheWidgetRowsAndLeavesTheBigOverlayAlone() throws {
+    let f = try fixture()
+    let opened = host(f, order: [f.all, f.olek, f.lena])
+
+    f.state.handleAgentGesture(.middleClick)
+    XCTAssertFalse(f.state.showsAgentMonitor, "the big overlay's list stays closed")
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.all.id))
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.olek.id, "the wheel follows the widget")
+    XCTAssertFalse(f.state.showsAgentMonitor, "the wheel does not summon the list either")
+
+    f.state.handleAgentGesture(.leftClick)
+
+    XCTAssertEqual(opened.ids, [f.olek.id], "the widget opens the row")
+    XCTAssertNil(f.state.selectedConversationID, "the big overlay selects nothing")
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.captures.calls, [true, true, false])
+  }
+
+  func testEscapeOnAHostedChooserOnlyGivesTheWheelBack() throws {
+    let f = try fixture()
+    f.state.selectConversation(f.lena.id)
+    let opened = host(f, order: [f.all, f.lena, f.olek])
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.handleAgentGesture(.cancel)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.state.selectedConversationID, f.lena.id, "the big overlay keeps its form")
+    XCTAssertTrue(opened.ids.isEmpty)
+    XCTAssertEqual(f.captures.calls, [true, false])
+  }
+
+  func testAHostedChooserSurvivesTheBigOverlayCollapsing() throws {
+    let f = try fixture()
+    _ = host(f, order: [f.all, f.lena])
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.setPresentationMode(.mini)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.all.id))
+  }
+
+  func testAHostedTakeKeepsTheBigOverlayOffTheAgent() async throws {
+    let f = try fixture()
+    _ = host(f, order: [f.all, f.lena, f.olek])
+    f.engine.rosterSnapshot = [
+      roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek"),
+    ]
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .talking(channel: "2"))
+    await settle { f.state.channelHudStates["2"]?.open == true }
+    XCTAssertEqual(f.engine.toggledDigits, [2])
+    XCTAssertNil(f.state.selectedConversationID, "the take stays on the Intercom row")
+    XCTAssertFalse(f.state.showsAgentMonitor)
+  }
 }
