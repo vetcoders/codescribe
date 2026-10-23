@@ -150,6 +150,8 @@ DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
+# A hold control must reach the follower before the row's deadline releases it.
+HOLD_CONTROL_MARGIN_SECONDS = 0.5
 PLAYBACK_SCAN_SECONDS = 0.5
 # A scan cut short by its budget proved nothing either way. Playback resumes the
 # cursor on the next tick and stops only after this many in a row.
@@ -8098,21 +8100,30 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             if not text.strip():
                 raise ValueError("empty revision")
         control_id = os.urandom(12).hex()
-        receipts = []
+        plans = []
         for owner in owners:
             target = {}
             source_identity = identity
             voice_sessions: set[str] = set()
+            deadline: float | None = None
+            released = False
             storage = ChunkDecoder()
             for raw in replay(Path(owner["bus"])):
                 source = parse_line(raw)
                 source = storage.feed(source) if source is not None else None
+                if source and source.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                    # A release already handed the message over; nothing is held any more.
+                    released = released or (
+                        source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]
+                        and str(source.get("identity", "")) in (identity, source_identity))
+                    continue
                 if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
                     key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
                     if str(source.get(key, "")) == identity or (key == "utterance_id" and source.get("session_id") == identity):
+                        deadline = hold_timestamp(source.get("hold_until")) or deadline
                         if key == "message_id":
                             target = {key: source[key]}
-                            break
+                            continue
                         if source.get("session_id"):
                             target["session_id"] = source["session_id"]
                             voice_sessions.add(source["session_id"])
@@ -8121,6 +8132,15 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                             source_identity = str(source[key])
             if len(voice_sessions) > 1:
                 raise ValueError("voice identity is ambiguous; select its capture session")
+            # The follower hands a held row over at its deadline without waiting
+            # for controls; a control written after that would report a withdraw
+            # or revision the agent never sees. Refuse it while it can still be said.
+            if kind != "release" and (released or deadline is not None
+                    and time.time() >= deadline - HOLD_CONTROL_MARGIN_SECONDS):
+                raise ValueError("message already delivered; it can no longer be changed")
+            plans.append((owner, target, source_identity))
+        receipts = []
+        for owner, target, source_identity in plans:
             event = {"schema": DELIVERY_CONTROL_SCHEMA, "kind": kind, **owner, **target,
                      "identity": source_identity, "control_id": control_id, "emitted_at": utc_now()}
             if broadcast:

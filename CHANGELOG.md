@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Held agent messages: Cancel/Edit pressed after the hold has run out no longer pulls the text back into the composer while the agent already has the message. The app checks the clock at the tap, and `cs-bus --withdraw` / `--revise` refuse with “message already delivered” within half a second of the deadline or after Send now, instead of reporting success.
 - Agents list: a click on the All row's message preview opens the broadcast conversation, as an agent row's preview does; before, only the title line above it reacted.
 - Settings › Shortcuts: the Fn tap switch no longer reads as if holding Fn needed it. It is now „Tap Fn to toggle dictation” (PL „Stuknięcie Fn włącza i wyłącza dyktowanie”), and its note says a short tap starts or stops a take while holding Fn always records.
 - Settings › formatting level: choosing Off, Correction or Smart takes effect again after Codescribe has restarted itself (interface-language change, setup-wizard resume, clearing defaults). The app no longer copies the saved level into its own process environment, where a self-relaunch inherited it as a `FORMATTING_LEVEL` launch override that outranked every later Settings choice and showed as a configuration warning in About. A `FORMATTING_LEVEL` exported before launch still overrides Settings and is still reported.
