@@ -24,10 +24,13 @@ enum OverlayIntercomWidgetLayout {
     return start..<(start + shown)
   }
 
-  /// Content measurements include only the text; the rest mirrors the drawn controls.
+  /// Content measurements include only the text; the rest mirrors the drawn
+  /// controls. The header reserves its channel-0 audio slot (controlHeight)
+  /// plus the HStack gap it introduced (Maciej, 2026-10-23: the first row is
+  /// the broadcast's microphone), so a short roster never compresses the row.
   static func restingWidth(headerText: CGFloat, agentText: CGFloat, scale: CGFloat) -> CGFloat {
     let unit = max(1, scale)
-    return max(headerText + 26 * unit + 60, agentText + 30 * unit + 47)
+    return max(headerText + 56 * unit + 68, agentText + 30 * unit + 47)
   }
 
   static func clampedHeader(
