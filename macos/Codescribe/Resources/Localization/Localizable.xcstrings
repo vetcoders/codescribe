@@ -1994,6 +1994,16 @@
         }
       }
     },
+    "A short tap starts or stops a take. Holding Fn always records." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Krótkie stuknięcie zaczyna lub kończy nagranie. Przytrzymanie Fn nagrywa zawsze."
+          }
+        }
+      }
+    },
     "A transcript revision cannot be empty" : {
       "localizations" : {
         "pl" : {
@@ -18129,22 +18139,12 @@
         }
       }
     },
-    "Tap Fn to dictate" : {
+    "Tap Fn to toggle dictation" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dyktowanie jednym naciśnięciem Fn"
-          }
-        }
-      }
-    },
-    "Tap to start or stop. Hold to record while held." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Naciśnij, by rozpocząć lub zakończyć. Przytrzymaj, by nagrywać."
+            "value" : "Stuknięcie Fn włącza i wyłącza dyktowanie"
           }
         }
       }
