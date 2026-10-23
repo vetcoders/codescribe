@@ -4,6 +4,21 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
 }
 
+/// What a one-line row shows beside its digit, dot and name, counted from its
+/// right edge as on the agents list (Maciej, 2026-10-23 seal: in a narrow row
+/// the microphone comes first, then the speaker that mutes an agent talking
+/// to us; the antenna and moon stay, "ale dopiero po poszerzaniu"; and later:
+/// "od prawej jak w oryginale … może być na jednym miejscu z mikrofonem, ale
+/// niech się mieści").
+struct IntercomRowControls: Equatable {
+  /// 0: none. 1: one place the microphone and speaker share. 2: the speaker
+  /// and the microphone. 3: the panel focus too.
+  let slots: Int
+  let marks: Bool
+
+  static let all = IntercomRowControls(slots: 3, marks: true)
+}
+
 /// Measures the same fonts and slots painted by cardHeader. Resizing selects
 /// content; only the text-scale preference changes these typography metrics.
 struct IntercomContentMetrics: Equatable {
@@ -44,6 +59,20 @@ struct IntercomContentMetrics: Equatable {
     // The focus, speaker and microphone are three row-height slots. Their
     // fixed gaps already belong to the name row's 45pt chrome budget.
     actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+  }
+
+  /// The antenna and moon: two 14 pt marks 3 pt apart, plus the row's 6 pt
+  /// spacing. The name budgets above include them.
+  var marksWidth: CGFloat { ceil(31 * nameFontSize / 11 + 6) }
+
+  /// The name truncates before a control drops; the marks drop first and
+  /// return only when the whole name, the marks and all three controls fit.
+  func rowControls(width: CGFloat) -> IntercomRowControls {
+    if width >= actionsWidth { return .all }
+    let slot = OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
+    let free = width - (minimumNameWidth - marksWidth)
+    return IntercomRowControls(
+      slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
   }
 
   func tier(width: CGFloat, cardHeight: CGFloat) -> IntercomContentTier {

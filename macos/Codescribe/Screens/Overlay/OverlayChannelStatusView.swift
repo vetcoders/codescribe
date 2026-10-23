@@ -487,8 +487,23 @@ struct OverlayAgentAudioControls: View {
   /// The conversation header supplies its measured base height; All scales
   /// both controls together from that base.
   var diameter: CGFloat? = nil
+  /// A narrow Intercom row has one place for the pair (Maciej, 2026-10-23:
+  /// "może być na jednym miejscu z mikrofonem"): the microphone, which
+  /// yields to the speaker while the agent talks so it can be muted.
+  var shared = false
 
   private var speakingNow: Bool { speaking && muted == false }
+
+  /// An open microphone keeps the shared place: that take is still running.
+  static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
+    speaking && muted == false && !open
+  }
+  private var showsSpeaker: Bool {
+    !shared || Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
+  private var showsMicrophone: Bool {
+    !shared || !Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
 
   static let broadcastScale: CGFloat = 1.33
   static let controlFrame: CGFloat = 16
@@ -578,58 +593,62 @@ struct OverlayAgentAudioControls: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Button(action: onPlayback) {
-        Image(
-          systemName: muted == nil
-            ? "speaker.badge.exclamationmark"
-            : muted == true
-              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
-        )
-        .font(.system(size: glyphSize, weight: .semibold))
-        .foregroundStyle(glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
-        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-        .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
-      }
-      .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
-      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-      .csFocusOutline()
-      .disabled(!playbackEnabled || muted == nil)
-      .overlayFastHint(speakerHint, palette: palette)
-      .accessibilityLabel(Text(verbatim: playbackLabel))
-      .accessibilityValue(Text(verbatim: playbackValue))
-      .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
-      .accessibilityIdentifier("overlay-agent-speaker")
-
-      Button(action: onMicrophone) {
-        Image(systemName: microphoneSymbol)
-          .overlayMirrored(broadcast)
+      if showsSpeaker {
+        Button(action: onPlayback) {
+          Image(
+            systemName: muted == nil
+              ? "speaker.badge.exclamationmark"
+              : muted == true
+                ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+          )
           .font(.system(size: glyphSize, weight: .semibold))
-          .foregroundStyle(glyphInk(lit: open ? recordingAccent : nil))
-          .symbolEffect(.pulse, isActive: open && !reduceMotion)
-          .frame(
-            width: Self.controlFrame * controlScale,
-            height: Self.controlFrame * controlScale)
+          .foregroundStyle(glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
+          .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+          .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
+        .csFocusOutline()
+        .disabled(!playbackEnabled || muted == nil)
+        .overlayFastHint(speakerHint, palette: palette)
+        .accessibilityLabel(Text(verbatim: playbackLabel))
+        .accessibilityValue(Text(verbatim: playbackValue))
+        .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
+        .accessibilityIdentifier("overlay-agent-speaker")
       }
-      .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
-      .tint(Self.litGlass(open ? recordingAccent : nil))
-      .csFocusOutline()
-      .disabled(!microphoneEnabled)
-      .overlayFastHint(microphoneLabel, palette: palette)
-      .accessibilityLabel(Text(verbatim: microphoneLabel))
-      .accessibilityValue(
-        Text(
-          verbatim: open
-            ? String(localized: "Microphone active") : String(localized: "Microphone off"))
-      )
-      .accessibilityHint(
-        Text(
-          verbatim: microphoneEnabled
-            ? microphoneLabel
-            : String(
-              localized: "Microphone unavailable",
-              comment: "Disabled agent microphone control"))
-      )
-      .accessibilityIdentifier("overlay-agent-microphone")
+
+      if showsMicrophone {
+        Button(action: onMicrophone) {
+          Image(systemName: microphoneSymbol)
+            .overlayMirrored(broadcast)
+            .font(.system(size: glyphSize, weight: .semibold))
+            .foregroundStyle(glyphInk(lit: open ? recordingAccent : nil))
+            .symbolEffect(.pulse, isActive: open && !reduceMotion)
+            .frame(
+              width: Self.controlFrame * controlScale,
+              height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(open ? recordingAccent : nil))
+        .csFocusOutline()
+        .disabled(!microphoneEnabled)
+        .overlayFastHint(microphoneLabel, palette: palette)
+        .accessibilityLabel(Text(verbatim: microphoneLabel))
+        .accessibilityValue(
+          Text(
+            verbatim: open
+              ? String(localized: "Microphone active") : String(localized: "Microphone off"))
+        )
+        .accessibilityHint(
+          Text(
+            verbatim: microphoneEnabled
+              ? microphoneLabel
+              : String(
+                localized: "Microphone unavailable",
+                comment: "Disabled agent microphone control"))
+        )
+        .accessibilityIdentifier("overlay-agent-microphone")
+      }
     }
     .modifier(
       OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }, chrome: chrome)
@@ -683,7 +702,8 @@ final class OverlayBroadcastPolicyLedger {
     @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy?
 
   init(
-    write: @escaping @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws ->
+    write:
+      @escaping @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws ->
       Void = { policy, identity in
         try await OverlayBroadcastPolicyMenu.setPolicy(policy, for: identity)
       },

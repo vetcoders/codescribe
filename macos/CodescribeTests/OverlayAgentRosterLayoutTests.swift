@@ -52,7 +52,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     try assertOrder(
       [
         "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
-        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(conversation,",
+        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
@@ -145,6 +145,18 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(header.contains("state.agentGestureFocusID == broadcast?.id"))
     XCTAssertTrue(header.contains("controller.revealChooserFocus(focus)"))
 
+    // An agent in its own window stays on the wheel's path (Maciej, seal
+    // 2026-10-23 20:31Z: "pomija — to bardzo źle") and wears the same ring.
+    let targets = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "func chooserTargets()", to: "func presentChooser()")
+    XCTAssertTrue(targets.contains("identities.compactMap"))
+    XCTAssertFalse(targets.contains("groupIdentities"))
+    let detached = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func headerRow(",
+      to: "private func instanceLayout(")
+    XCTAssertTrue(
+      detached.contains("focused: state.agentGestureFocusID == instance.conversationID"))
+
     let app = try sourceSection(
       "../../Core/AppModel.swift", from: "private func syncIntercomPresentation(",
       to: "func handleAgentGesture(")
@@ -157,6 +169,28 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       "../../Core/AppModel.swift", from: "func handleAgentGesture(",
       to: "if let panel, panel.isVisible")
     XCTAssertTrue(gesture.contains("intercomWidget.presentChooser()"))
+  }
+
+  /// The small conversation shrinks on its own (Maciej, 2026-10-23: "czy ten
+  /// tekst zawsze będzie taki wielki"): ⌘+/-/0 in an Intercom window adjusts
+  /// the Intercom's scale, not the overlay's.
+  func testTheIntercomHasItsOwnTextScale() throws {
+    let model = try sourceSection(
+      "../../Core/AppModel.swift", from: "final class OverlayController",
+      to: "private func syncIntercomPresentation(")
+    XCTAssertTrue(
+      model.contains(
+        "let intercomTextScale = TextScaleController(key: \"IntercomPanel.textScale.v1\")"))
+    let sync = try sourceSection(
+      "../../Core/AppModel.swift", from: "private func syncIntercomPresentation(",
+      to: "func handleAgentGesture(")
+    XCTAssertTrue(sync.contains("state: state, textScale: intercomTextScale,"))
+    let shortcuts = try sourceSection(
+      "../../App.swift", from: "private func textScaleController(for window: NSWindow?)",
+      to: "func applicationShouldTerminateAfterLastWindowClosed(")
+    XCTAssertTrue(
+      shortcuts.contains(
+        "if window is OverlayIntercomPanel { return model.overlay.intercomTextScale }"))
   }
 
   func testDeadRowsDimAndDisableAudioWhileReceptionRemainsActionable() throws {
@@ -184,6 +218,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(
       card.contains(
         "OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)"))
+    // A narrow row keeps the microphone and speaker at its right edge; the
+    // antenna and moon wait for the width (Maciej, 2026-10-23 seal).
+    XCTAssertTrue(card.contains("if let channelRow, row.marks {"))
+    XCTAssertTrue(card.contains("shared: row.slots == 1)"))
     // Hover moves no row out of the column and adds no preview line; the
     // icon square names its agent in the hint panel instead.
     XCTAssertFalse(card.contains("hovered"))

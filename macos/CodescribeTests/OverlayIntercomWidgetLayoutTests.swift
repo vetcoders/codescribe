@@ -44,6 +44,44 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-10-23 seal: digit, antenna, moon, dot and a sliver of the
+  /// name is a bad narrow row; the microphone comes first, then the speaker,
+  /// and the antenna and moon only once the row is much wider.
+  func testNarrowRowsKeepTheMicrophoneBeforeTheAntennaAndMoon() {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(
+        names: ["Lena", "Klaudiusz-div0"], digits: ["2", "9"], scale: scale)
+      let narrowest = metrics.rowControls(width: metrics.minimumNameWidth)
+      XCTAssertGreaterThanOrEqual(narrowest.slots, 1, "the narrowest name row has a microphone")
+      XCTAssertFalse(narrowest.marks)
+      XCTAssertFalse(metrics.rowControls(width: metrics.nameWidth).marks)
+      XCTAssertFalse(metrics.rowControls(width: metrics.actionsWidth - 0.1).marks)
+      XCTAssertEqual(metrics.rowControls(width: metrics.actionsWidth), .all)
+      var previous = 0
+      for width in stride(from: metrics.minimumNameWidth, to: metrics.actionsWidth, by: 1) {
+        let row = metrics.rowControls(width: width)
+        XCTAssertGreaterThanOrEqual(row.slots, previous, "widening never drops a control")
+        previous = row.slots
+        let used =
+          metrics.minimumNameWidth - metrics.marksWidth
+          + CGFloat(row.slots) * Layout.controlHeight(scale: scale)
+        XCTAssertLessThanOrEqual(used, width, "every shown control fits beside the shortest name")
+      }
+      XCTAssertEqual(previous, 3, "the speaker and focus return before the marks")
+    }
+  }
+
+  func testOneSharedPlaceIsTheMicrophoneUntilTheAgentTalks() {
+    typealias Audio = OverlayAgentAudioControls
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: false, muted: false, open: false))
+    XCTAssertTrue(Audio.sharedShowsSpeaker(speaking: true, muted: false, open: false))
+    XCTAssertFalse(
+      Audio.sharedShowsSpeaker(speaking: true, muted: false, open: true),
+      "a running take keeps its microphone")
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: true, open: false))
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: nil, open: false))
+  }
+
   func testCardHeightIsOneRowOrTwoNeverAnEmptyBottom() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)

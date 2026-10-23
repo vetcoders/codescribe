@@ -97,6 +97,12 @@ final class OverlayController: ObservableObject {
   /// key). Separate from the chat scale so a distance-readable transcript and an
   /// up-close chat can be tuned independently.
   let textScale = TextScaleController(key: "DictationOverlayPanel.textScale.v1")
+  /// The Intercom's own scale, ⌘+/-/0 while one of its windows is key. It
+  /// shared the overlay's, so a distance-readable overlay made the small
+  /// conversation as large with no way to shrink it (Maciej, 2026-10-23: "czy
+  /// ten tekst zawsze będzie taki wielki … na małej rozmowie. I w normalnym
+  /// rozmiarze"). It starts at the normal size.
+  let intercomTextScale = TextScaleController(key: "IntercomPanel.textScale.v1")
   private var panel: NSPanel?
   private var intercomWidget: OverlayIntercomWidgetController?
   private var intercomPresentationStarted = false
@@ -344,7 +350,7 @@ final class OverlayController: ObservableObject {
     }
     if wantsWidget, intercomWidget == nil {
       intercomWidget = OverlayIntercomWidgetController(
-        state: state, textScale: textScale,
+        state: state, textScale: intercomTextScale,
         revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
       // Mini's stacked counter leads here in the vertical layout.
       state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
