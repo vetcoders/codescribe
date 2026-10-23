@@ -1432,6 +1432,8 @@ final class OverlayState {
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
   /// Read-only paint from the helper's policy receipts; never persisted here.
   private var broadcastPolicies: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  /// Every reception change goes through this one owner; tests inject their own.
+  @ObservationIgnored var broadcastLedger = OverlayBroadcastPolicyLedger.shared
   private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
@@ -2025,6 +2027,7 @@ final class OverlayState {
 
   private func refreshPlaybackMutes() async {
     let revision = playbackPreferenceRevision
+    let broadcastRevision = broadcastLedger.revision
     let roster = channelRoster
     var candidates: [String: AgentPlaybackIdentity] = [:]
     for (channel, hud) in channelHudStates {
@@ -2047,7 +2050,11 @@ final class OverlayState {
     }
     setAgentPanelFocusAvailable(panelFocusAvailable)
     channelPlaybackAgents = bound
-    broadcastPolicies = broadcastSnapshot
+    // A reception change during this poll makes its receipts older than the
+    // change's read-back; the next poll paints them instead.
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision) {
+      broadcastPolicies = broadcastSnapshot
+    }
     if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
@@ -2877,7 +2884,8 @@ final class OverlayState {
       var projected = row
       if let identity = playbackIdentity(for: row.channel) {
         projected.broadcastIdentity = identity
-        projected.broadcastPolicy = broadcastPolicies[identity] ?? .on
+        projected.broadcastPolicy = broadcastLedger.policy(
+          for: identity, polled: broadcastPolicies[identity] ?? .on)
       }
       return projected
     }.sorted { $0.channel < $1.channel }

@@ -157,6 +157,20 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       "OverlayIntercomWidget.swift", from: "private func instanceFrame(",
       to: "fileprivate func setInstanceMinimized(")
     XCTAssertTrue(miniFrame.contains("text: nameWidth + digitWidth"))
+    // A saved fiszka controls only its exact owner (Copilot on #183): once the
+    // digit is reassigned, its row belongs to the replacement agent.
+    let instanceHeader = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func headerRow(",
+      to: "private func instanceLayout(")
+    XCTAssertTrue(
+      instanceHeader.contains(
+        "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
+    let instanceControls = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func instanceControls(",
+      to: "private struct OverlayIntercomResizeHandle")
+    XCTAssertTrue(
+      instanceControls.contains(
+        "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
       to: "struct OverlayAgentsSidebarControls {")

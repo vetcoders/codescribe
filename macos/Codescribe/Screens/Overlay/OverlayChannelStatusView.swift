@@ -660,6 +660,84 @@ struct OverlayAgentPillMenuActions {
   let archive: OverlayAgentPillMenuAction?
 }
 
+/// The one owner of reception changes (Copilot on #183). The marks, the pill
+/// menu and the Intercom each kept their own pending flag and built the next
+/// policy from the roster's cached receipt, which the poll refreshes only
+/// every 500 ms: the moon and then the antenna inside that window wrote `.off`
+/// over the lit moon. A change now starts from the latest read-back, holds
+/// every surface for that agent until the helper's new receipt is read back,
+/// and a poll that began before the write cannot paint the old receipt over it.
+@MainActor
+@Observable
+final class OverlayBroadcastPolicyLedger {
+  static let shared = OverlayBroadcastPolicyLedger()
+
+  private(set) var pending: Set<AgentPlaybackIdentity> = []
+  /// Receipts read back after this app's own writes, shown until a poll that
+  /// started after the last write reports.
+  private(set) var readBacks: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  @ObservationIgnored private(set) var revision: UInt64 = 0
+  @ObservationIgnored private let write:
+    @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws -> Void
+  @ObservationIgnored private let readBack:
+    @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy?
+
+  init(
+    write: @escaping @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws ->
+      Void = { policy, identity in
+        try await OverlayBroadcastPolicyMenu.setPolicy(policy, for: identity)
+      },
+    readBack: @escaping @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy? = {
+      identity in
+      await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: [identity])[identity]
+    }
+  ) {
+    self.write = write
+    self.readBack = readBack
+  }
+
+  func policy(for identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy)
+    -> AgentBroadcastPolicy
+  {
+    readBacks[identity] ?? polled
+  }
+
+  func isPending(_ identity: AgentPlaybackIdentity?) -> Bool {
+    identity.map { pending.contains($0) } ?? false
+  }
+
+  /// Edits one axis of the latest policy. A second change while one is in
+  /// flight for the same agent, or an edit that changes nothing, writes
+  /// nothing.
+  func change(
+    _ identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy,
+    _ edit: (inout AgentBroadcastPolicy) -> Void
+  ) async throws {
+    guard !pending.contains(identity) else { return }
+    let base = policy(for: identity, polled: polled)
+    var next = base
+    edit(&next)
+    guard next != base else { return }
+    pending.insert(identity)
+    revision &+= 1
+    defer {
+      pending.remove(identity)
+      revision &+= 1
+    }
+    try await write(next, identity)
+    // Published before the hold lifts, so the next click starts from it.
+    readBacks[identity] = await readBack(identity) ?? next
+  }
+
+  /// A poll that started at `revision` may paint its receipts only when no
+  /// change began or ended meanwhile; it is then newer than every read-back.
+  func admitsPoll(startedAt revision: UInt64) -> Bool {
+    guard revision == self.revision, pending.isEmpty else { return false }
+    if !readBacks.isEmpty { readBacks = [:] }
+    return true
+  }
+}
+
 /// Wake policy lives on the agent's own row (Maciej, 2026-10-17, "Słowo"):
 /// a right-click context menu with a checkmark replaces the disclosure list
 /// that used to hang under 0 · All. A single member gives the row its own
@@ -672,7 +750,6 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var errorAlignment: HorizontalAlignment = .leading
   var agentActions: OverlayAgentPillMenuActions? = nil
   var showsInlineError = true
-  @State private var pending: Set<AgentPlaybackIdentity> = []
   @State private var commandError: String?
 
   @MainActor
@@ -753,15 +830,11 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     // light "w dowolnym momencie, nie tylko jeśli kanał 0 jest wyłączony").
     let locked =
       !enabled || channel.broadcastIdentity == nil
-      || channel.broadcastIdentity.map { pending.contains($0) } == true
+      || OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
     Toggle(
       isOn: Binding(
         get: { channel.broadcastPolicy.member },
-        set: { member in
-          var next = channel.broadcastPolicy
-          next.member = member
-          apply(next, to: channel)
-        }
+        set: { member in apply(to: channel) { $0.member = member } }
       )
     ) {
       Text("Channel 0", comment: "Pill context menu: membership in channel-zero broadcasts")
@@ -770,11 +843,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     Toggle(
       isOn: Binding(
         get: { channel.broadcastPolicy.moon },
-        set: { moon in
-          var next = channel.broadcastPolicy
-          next.moon = moon
-          apply(next, to: channel)
-        }
+        set: { moon in apply(to: channel) { $0.moon = moon } }
       )
     ) {
       Text(
@@ -786,16 +855,16 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     .disabled(locked)
   }
 
-  private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
-    guard policy != channel.broadcastPolicy, let identity = channel.broadcastIdentity,
-      !pending.contains(identity)
-    else { return }
-    pending.insert(identity)
+  private func apply(
+    to channel: OverlayChannelDelivery, _ edit: @escaping (inout AgentBroadcastPolicy) -> Void
+  ) {
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    guard let identity = channel.broadcastIdentity, !ledger.isPending(identity) else { return }
+    let polled = channel.broadcastPolicy
     commandError = nil
     Task { @MainActor in
-      defer { pending.remove(identity) }
       do {
-        try await Self.setPolicy(policy, for: identity)
+        try await ledger.change(identity, polled: polled, edit)
       } catch {
         commandError = String(localized: "Couldn't change broadcast reception.")
       }
@@ -813,9 +882,12 @@ struct OverlayReceptionMarks: View {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
   var enabled = true
-  @State private var pending = false
 
   private var policy: AgentBroadcastPolicy { channel.broadcastPolicy }
+  /// Any surface's change in flight holds these marks too.
+  private var pending: Bool {
+    OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
+  }
 
   var body: some View {
     HStack(spacing: 3) {
@@ -823,9 +895,7 @@ struct OverlayReceptionMarks: View {
         symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
       ) {
-        var next = policy
-        next.member.toggle()
-        apply(next)
+        apply { $0.member.toggle() }
       }
       // The moon speaks through its shape alone: a dimmed outline when clear,
       // a filled moon in the row's own text colour when lit. The amber of
@@ -836,9 +906,7 @@ struct OverlayReceptionMarks: View {
         unlitOpacity: 0.45,
         help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
       ) {
-        var next = policy
-        next.moon.toggle()
-        apply(next)
+        apply { $0.moon.toggle() }
       }
     }
     .accessibilityIdentifier("overlay-reception-marks-\(channel.channel)")
@@ -863,14 +931,13 @@ struct OverlayReceptionMarks: View {
     .accessibilityIdentifier(identifier)
   }
 
-  private func apply(_ next: AgentBroadcastPolicy) {
+  private func apply(_ edit: @escaping (inout AgentBroadcastPolicy) -> Void) {
     guard let identity = channel.broadcastIdentity, !pending else { return }
-    pending = true
+    let polled = policy
     Task { @MainActor in
-      defer { pending = false }
       // A refused command leaves the mark as the receipt still says; the pill
       // menu's inline error is the place that names the refusal.
-      try? await OverlayBroadcastPolicyMenu.setPolicy(next, for: identity)
+      try? await OverlayBroadcastPolicyLedger.shared.change(identity, polled: polled, edit)
     }
   }
 }

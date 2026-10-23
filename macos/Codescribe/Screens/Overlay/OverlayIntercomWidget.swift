@@ -1537,7 +1537,10 @@ private struct OverlayIntercomInstanceCard: View {
       onOpenConversation: { id in
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
-    let channelRow = intercomChannelRow(state: state, digit: instance.digit)
+    // A digit whose owner changed belongs to the replacement agent: its marks
+    // and focus would act on that agent under this fiszka's name (Copilot on
+    // #183). Only the exact owner's row is this window's to control.
+    let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
     let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -1661,7 +1664,10 @@ private struct OverlayIntercomInstanceCard: View {
       onOpenConversation: { id in
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
-    let channel = intercomChannelRow(state: state, digit: instance.digit)
+    let current =
+      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
+      == true
+    let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     return HStack(spacing: 3) {
       OverlayIntercomFocusButton(
         roster: roster, channel: channel, palette: palette,

@@ -144,6 +144,69 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     XCTAssertEqual(invalidJSON, .on)
   }
 
+  /// Copilot on #183: from `.on`, the moon and then the antenna before the
+  /// next 500 ms poll wrote `.off`, because the second click started from the
+  /// cached receipt. Each change now starts from the previous read-back.
+  func testQuickMoonThenAntennaComposeOnTheReadBack() async throws {
+    let helper = PolicyHelper()
+    let ledger = helper.ledger()
+    let identity = PolicyHelper.identity
+    // The roster still paints the old receipt: no poll has run in between.
+    try await ledger.change(identity, polled: .on) { $0.moon.toggle() }
+    try await ledger.change(identity, polled: .on) { $0.member.toggle() }
+    XCTAssertEqual(helper.written, [.quiet, .offQuiet])
+    XCTAssertEqual(ledger.policy(for: identity, polled: .on), .offQuiet)
+    // The reverse order cannot rejoin channel 0 either.
+    let reverse = PolicyHelper(stored: .off)
+    let other = reverse.ledger()
+    try await other.change(identity, polled: .off) { $0.member.toggle() }
+    try await other.change(identity, polled: .off) { $0.moon.toggle() }
+    XCTAssertEqual(reverse.written, [.on, .quiet])
+  }
+
+  /// One change in flight holds every surface for that agent: the marks, the
+  /// pill menu and the Intercom share this ledger, not three pending flags.
+  func testASecondChangeWhileOneIsInFlightWritesNothing() async throws {
+    let helper = PolicyHelper()
+    let ledger = helper.ledger()
+    let identity = PolicyHelper.identity
+    helper.duringWrite = {
+      XCTAssertTrue(ledger.isPending(identity))
+      try await ledger.change(identity, polled: .on) { $0.member = false }
+    }
+    try await ledger.change(identity, polled: .on) { $0.moon = true }
+    XCTAssertEqual(helper.written, [.quiet])
+    XCTAssertFalse(ledger.isPending(identity))
+  }
+
+  /// A poll that began before a write carries the old receipt; it must not
+  /// paint over the read-back. The next poll, started after, is the truth.
+  func testAPollStartedBeforeTheWriteCannotPaintTheOldReceipt() async throws {
+    let helper = PolicyHelper()
+    let ledger = helper.ledger()
+    let identity = PolicyHelper.identity
+    let before = ledger.revision
+    try await ledger.change(identity, polled: .on) { $0.moon = true }
+    XCTAssertFalse(ledger.admitsPoll(startedAt: before))
+    XCTAssertEqual(ledger.policy(for: identity, polled: .on), .quiet)
+    XCTAssertTrue(ledger.admitsPoll(startedAt: ledger.revision))
+    XCTAssertTrue(ledger.readBacks.isEmpty)
+    XCTAssertEqual(ledger.policy(for: identity, polled: .quiet), .quiet)
+  }
+
+  func testARefusedWriteLeavesTheReceiptAndReleasesTheHold() async {
+    let helper = PolicyHelper()
+    helper.refuses = true
+    let ledger = helper.ledger()
+    let identity = PolicyHelper.identity
+    do {
+      try await ledger.change(identity, polled: .on) { $0.moon = true }
+      XCTFail("the helper's refusal reaches the surface that names it")
+    } catch {}
+    XCTAssertFalse(ledger.isPending(identity))
+    XCTAssertEqual(ledger.policy(for: identity, polled: .on), .on)
+  }
+
   private func channel(_ digit: String, policy: AgentBroadcastPolicy) -> OverlayChannelDelivery {
     var row = OverlayChannelDelivery(
       channel: digit, agent: "agent-\(digit)", deliveryID: nil, stage: nil, isOpen: false)
@@ -211,6 +274,34 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
 
     func receipt() throws -> [String: Any] {
       try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: policy)) as? [String: Any])
+    }
+  }
+
+  /// Stands in for the helper: each write leaves its receipt and the read-back
+  /// returns it, so the ledger's composition shows without a bus.
+  @MainActor
+  private final class PolicyHelper {
+    static let identity = AgentPlaybackIdentity(
+      provider: "junie", session: "ledger-fixture", bus: "/dev/null")
+    var stored: AgentBroadcastPolicy
+    var written: [AgentBroadcastPolicy] = []
+    var refuses = false
+    var duringWrite: (@MainActor () async throws -> Void)?
+
+    init(stored: AgentBroadcastPolicy = .on) { self.stored = stored }
+
+    func ledger() -> OverlayBroadcastPolicyLedger {
+      OverlayBroadcastPolicyLedger(
+        write: { [self] policy, _ in
+          if refuses { throw CocoaError(.featureUnsupported) }
+          written.append(policy)
+          if let hook = duringWrite {
+            duringWrite = nil
+            try await hook()
+          }
+          stored = policy
+        },
+        readBack: { [self] _ in stored })
     }
   }
 }
