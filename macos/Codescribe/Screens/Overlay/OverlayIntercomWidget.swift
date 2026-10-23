@@ -27,6 +27,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// A card's resize that converted it into an instance hands the rest of
   /// that same gesture to the instance.
   @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
+  /// The pending hover-leave grace period; a fresh enter cancels it.
+  @ObservationIgnored private var hoverLeaveTask: Task<Void, Never>?
   fileprivate private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
@@ -422,13 +424,28 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate func hover(_ identity: OverlayIntercomCardIdentity, inside: Bool) {
     guard visible, !presentation.folded else { return }
-    let before = presentation.hovered
-    if inside { presentation.enter(identity) } else { presentation.leave(identity) }
-    // Repeated enter/leave events for the same state move no windows: every
-    // positionCards here is a geometry transition, and echoed events must
-    // not replay one (the "dance", Maciej, 2026-10-23).
-    guard presentation.hovered != before else { return }
-    positionCards()
+    // Enter lands immediately; leave waits a grace period. A cursor resting
+    // on a card's edge flips the hit test on every animated frame change and
+    // the card oscillates several times a second (Maciej's recording,
+    // 2026-10-23 08:50). Edge jitter shorter than the grace changes nothing,
+    // and a crossing leaves a soft tail of cards easing back.
+    if inside {
+      hoverLeaveTask?.cancel()
+      hoverLeaveTask = nil
+      let before = presentation.hovered
+      presentation.enter(identity)
+      guard presentation.hovered != before else { return }
+      positionCards()
+    } else {
+      guard presentation.hovered == identity else { return }
+      hoverLeaveTask?.cancel()
+      hoverLeaveTask = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: 220_000_000)
+        guard let self, !Task.isCancelled, self.presentation.hovered == identity else { return }
+        self.presentation.leave(identity)
+        self.positionCards()
+      }
+    }
   }
 
   fileprivate func expand(_ identity: OverlayIntercomCardIdentity) {
