@@ -4382,8 +4382,7 @@ final class OverlayState {
       } else {
         clearCaptureClock()
       }
-      selectDictationSurfaceIfNeeded()
-      applyTakeExpansionIfNeeded()
+      applyTakeStartPresentation()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -4404,8 +4403,7 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      selectDictationSurfaceIfNeeded()
-      applyTakeExpansionIfNeeded()
+      applyTakeStartPresentation()
     }
     recording = true
     if !captureDidStart {
@@ -5979,12 +5977,14 @@ final class OverlayState {
     onTranscriptPresentationChanged?()
   }
 
-  /// A composer-mic take dictates into the draft on screen. Folding to the
-  /// take-start form closed the conversation around that draft and its Stop
-  /// (Maciej, 2026-10-23, dragon 17:17:25: `expanded→midi automatic` 40 ms
-  /// before the composer take started).
-  private func applyTakeExpansionIfNeeded() {
+  /// A new ordinary capture shows its own canvas in the preferred take-start
+  /// form. A take the composer owns starts where its microphone was pressed:
+  /// the conversation and its composer stay on screen. The preferred form
+  /// used to apply anyway and folded an expanded Agents canvas to the strip
+  /// (Maciej, 2026-10-23, take 0250cc19: "zamyka mi widok agenta").
+  private func applyTakeStartPresentation() {
     guard !draftCapture.hasRequest else { return }
+    selectDictationSurfaceIfNeeded()
     applyPreferredExpansion(forTake: true)
   }
 
