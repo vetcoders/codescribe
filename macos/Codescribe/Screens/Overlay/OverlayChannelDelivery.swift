@@ -921,8 +921,13 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       var message = OverlayConversationMessage(
         id: key, kind: .user,
         text: text, order: order,
+        // A take is stamped when its first words land, not when its channel
+        // session opened: the next session opens as the previous one seals,
+        // so the open time can precede the speech by the whole pause, and
+        // Maciej's take then sat above a reply he had already read
+        // (2026-10-23, 08:02:19 open, 08:02:29 first words, 08:02:30 reply).
         emittedAt: channelMessage != nil
-          ? messages[key]?.emittedAt ?? sessionOpenedAt[session] ?? row["emitted_at"] as? String
+          ? messages[key]?.emittedAt ?? row["emitted_at"] as? String ?? sessionOpenedAt[session]
             ?? ""
           : row["emitted_at"] as? String ?? "", owner: nil, recipients: recipients,
         deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
