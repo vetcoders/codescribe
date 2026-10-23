@@ -150,6 +150,16 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(
       card.contains(
         "OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)"))
+    // Hover moves no row out of the column and adds no preview line; the
+    // icon square names its agent in the hint panel instead.
+    XCTAssertFalse(card.contains("hovered"))
+    XCTAssertTrue(card.contains(".overlayFastHint(name, palette: palette, leading: true)"))
+    let cardBody = try sourceSection(
+      "OverlayIntercomWidget.swift",
+      from: "let expanded = controller.presentation.expanded.contains(identity)",
+      to: "private func cardHeader(")
+    XCTAssertFalse(cardBody.contains(".onHover"))
+    XCTAssertTrue(cardBody.contains("OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)"))
 
     let miniFrame = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func instanceFrame(",

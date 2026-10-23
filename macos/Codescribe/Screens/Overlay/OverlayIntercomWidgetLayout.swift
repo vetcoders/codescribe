@@ -2,8 +2,6 @@ import AppKit
 
 enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
-
-  var hoverPreviewEnabled: Bool { self == .icon || self == .name }
 }
 
 /// Measures the same fonts and slots painted by cardHeader. Resizing selects
@@ -102,9 +100,16 @@ struct IntercomContentMetrics: Equatable {
 enum OverlayIntercomWidgetLayout {
   static let headerHeight: CGFloat = 30
   static let rowHeight: CGFloat = 30
-  static let gap: CGFloat = 8
+  /// Tight enough that the stack reads as one list, not a column of buttons.
+  static let gap: CGFloat = 4
 
   static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
+
+  /// One corner for the header, every row and a mini fiszka. A radius of half
+  /// the row turned a two-line card into a stadium (Maciej, 2026-10-23:
+  /// "przaśnie", then "strasznie dupne"); the open conversation keeps 16.
+  static func rowCornerRadius(scale: CGFloat) -> CGFloat { 10 * max(1, scale) }
+  static let conversationCornerRadius: CGFloat = 16
 
   static func height(count: Int, scale: CGFloat = 1) -> CGFloat {
     controlHeight(scale: scale) * CGFloat(count + 1) + CGFloat(count) * gap
@@ -192,15 +197,6 @@ enum OverlayIntercomWidgetLayout {
       width: header.width, height: row)
   }
 
-  /// The right edge stays anchored. Hover widens only this card, never its neighbours.
-  static func previewFrame(
-    beside row: CGRect, visibleFrame: CGRect, scale: CGFloat = 1
-  ) -> CGRect {
-    cardFrame(
-      below: row, size: CGSize(width: max(row.width, 360 * max(1, scale)), height: row.height),
-      visibleFrame: visibleFrame)
-  }
-
   static func conversationSize(scale: CGFloat) -> CGSize {
     CGSize(width: 380 * max(1, scale), height: 360 * max(1, scale))
   }
@@ -284,8 +280,11 @@ struct OverlayIntercomCardIdentity: Hashable {
   }
 }
 
-/// Hover is independent of expanded conversations. Neither gesture selects a
-/// capture destination; all durable drafts remain in OverlayState.
+/// Which conversation the group opened and whether it is folded. Hover moves
+/// no window: a row that grew under the pointer jutted out of the column and
+/// danced on its own edge; the preview is the click (Maciej, 2026-10-22
+/// 14:27Z, as Olga and the journal relay it: "podgląd dopiero na klik").
+/// Opening selects no capture destination; durable drafts stay in OverlayState.
 struct OverlayIntercomPresentation: Equatable {
   /// A visible card already presents its own draft capture. A main-overlay
   /// composer, or a draft with no visible card, keeps the existing show path.
@@ -295,17 +294,8 @@ struct OverlayIntercomPresentation: Equatable {
     !verticalIntercomActive || mainPanelVisible || !conversationPresentedInIntercom
   }
 
-  var hovered: OverlayIntercomCardIdentity?
   var expanded: Set<OverlayIntercomCardIdentity> = []
   var folded = false
-
-  mutating func enter(_ identity: OverlayIntercomCardIdentity) {
-    hovered = expanded.contains(identity) ? nil : identity
-  }
-
-  mutating func leave(_ identity: OverlayIntercomCardIdentity) {
-    if hovered == identity { hovered = nil }
-  }
 
   /// One conversation opens inside the group at a time. A second place for
   /// the same or another agent is a durable detached instance, not a second
@@ -313,11 +303,9 @@ struct OverlayIntercomPresentation: Equatable {
   mutating func expand(_ identity: OverlayIntercomCardIdentity) {
     guard identity.conversationID != nil, identity.ownerID != nil else { return }
     expanded = [identity]
-    hovered = nil
   }
 
   mutating func close(_ identity: OverlayIntercomCardIdentity) {
     expanded.remove(identity)
-    leave(identity)
   }
 }
