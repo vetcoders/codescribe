@@ -399,14 +399,20 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         frame = row
       }
       if panel.frame != frame {
-        // Hover transitions land instantly: an animated setFrame moves the
-        // window under a resting cursor, whose tracking churn fires fresh
-        // enter/leave pairs and the stack "dances" once per crossing
-        // (Maciej, 2026-10-23). Only the explicit expand animates.
-        panel.setFrame(
-          frame, display: true,
-          animate: expanded && panel.isVisible
-            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        // Hover slides stay smooth, but they must CONVERGE: a new target
+        // retargets the running animation instead of queueing another, and
+        // the duration is fixed instead of distance-scaled. setFrame(animate:)
+        // did neither, so a fast crossing left the stack dancing long after
+        // the mouse stopped (Maciej, 2026-10-23).
+        if panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+          NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(frame, display: true)
+          }
+        } else {
+          panel.setFrame(frame, display: true)
+        }
       }
       panel.setPresented(true, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
