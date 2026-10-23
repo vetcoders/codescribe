@@ -790,8 +790,12 @@ private struct OverlayIntercomHeader: View {
           Text("No saved fiszki")
         } else {
           ForEach(closed) { instance in
-            Button("\(instance.digit) · \(instance.name)") {
+            // A digit and a name are not a phrase to translate: verbatim keeps
+            // `%@ · %@` out of the catalog (the l10n gate refused it).
+            Button {
               controller.reopenInstance(instance.id)
+            } label: {
+              Text(verbatim: "\(instance.digit) · \(instance.name)")
             }
           }
         }
