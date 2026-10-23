@@ -1109,22 +1109,22 @@ impl RecordingController {
         mode: ChannelOpenMode,
     ) -> Result<bool> {
         let _serial = Arc::clone(&self.serial_lock).lock_owned().await;
-        match self.current_state().await {
-            super::State::Idle => {
-                self.cancel_pending_hold_start().await;
-            }
-            // An ordinary hold already admitted on the channel modifier was
-            // this chord's prefix: it ends here, delivering nothing, before
-            // the channel opens.
-            super::State::RecHold => {
-                self.abandon_chord_prefix_hold().await;
-            }
-            _ => {}
+        let state = self.current_state().await;
+        if state == super::State::Idle {
+            self.cancel_pending_hold_start().await;
         }
-        let opened = match self
+        let dispatched = self
             .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
-            .await
-        {
+            .await;
+        // An ordinary hold already admitted on the channel modifier was this
+        // chord's prefix: it ends delivering nothing. It ends after the channel
+        // opened beside it, so the channel shares the live capture instead of
+        // waiting out the hold's stop grace and recognizer drain (about two
+        // seconds of the first words to the agent).
+        if state == super::State::RecHold {
+            self.abandon_chord_prefix_hold().await;
+        }
+        let opened = match dispatched {
             Ok(opened) => opened,
             Err(error) => {
                 self.answer_channel_refusal(digit, &error, mode).await;
@@ -2836,6 +2836,137 @@ mod tests {
         );
         assert_eq!(state_after_release, State::Idle);
         assert!(rows.is_empty(), "no hang-up receipt: {rows:?}");
+    }
+
+    async fn admit_hold_then_chord(
+        dictation: crate::config::ShortcutBinding,
+        modifier: crate::config::ChannelModifier,
+    ) -> ChordOutcome {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::os::hotkeys::{
+            ModeHotkeyBindings, get_channel_modifier, get_mode_hotkey_bindings,
+            set_channel_modifier, set_mode_hotkey_bindings,
+        };
+
+        let previous_bindings = get_mode_hotkey_bindings();
+        let previous_modifier = get_channel_modifier();
+        set_mode_hotkey_bindings(ModeHotkeyBindings {
+            dictation,
+            ..previous_bindings
+        });
+        set_channel_modifier(modifier);
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, _channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        let admitted = tokio::time::timeout(Duration::from_secs(5), async {
+            while controller.current_state().await != State::RecHold {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        let opened = controller
+            .toggle_agent_channel_at(3, &binding, &shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("the chord opens the channel");
+        let outcome = ChordOutcome {
+            admitted,
+            opened,
+            state_after_chord: controller.current_state().await,
+            session_after_chord: controller.session_id.read().await.clone(),
+            channel_open: controller.agent_channel_snapshot(3).await.is_some(),
+            state_after_release: State::Idle,
+            session_after_release: None,
+        };
+        let outcome = if outcome.state_after_chord == State::Idle {
+            controller
+                .handle_hotkey_event(event(HotkeyAction::Up))
+                .await
+                .expect("release");
+            ChordOutcome {
+                state_after_release: controller.current_state().await,
+                session_after_release: controller.session_id.read().await.clone(),
+                ..outcome
+            }
+        } else {
+            outcome
+        };
+        controller.reset().await;
+        set_mode_hotkey_bindings(previous_bindings);
+        set_channel_modifier(previous_modifier);
+        outcome
+    }
+
+    struct ChordOutcome {
+        admitted: bool,
+        opened: bool,
+        state_after_chord: super::super::State,
+        session_after_chord: Option<String>,
+        channel_open: bool,
+        state_after_release: super::super::State,
+        session_after_release: Option<String>,
+    }
+
+    /// Founder, 2026-10-23 01:14Z: with Fn as the channel modifier and no
+    /// channel open, a slow Fn+digit admitted a hold before the digit, and the
+    /// Fn release pasted a stray word into the terminal. The digit now opens
+    /// the channel beside the hold and ends the hold as the chord's prefix:
+    /// Idle with no session, the channel open, and the release a no-op.
+    #[tokio::test]
+    #[serial]
+    async fn fn_modifier_hold_admitted_before_the_digit_ends_as_the_chords_prefix() {
+        use super::super::State;
+        use crate::config::{ChannelModifier, ShortcutBinding};
+
+        let outcome = admit_hold_then_chord(ShortcutBinding::HoldFn, ChannelModifier::Fn).await;
+
+        assert!(
+            outcome.admitted,
+            "the hold is admitted past the delay with no channel open"
+        );
+        assert!(outcome.opened);
+        assert_eq!(
+            outcome.state_after_chord,
+            State::Idle,
+            "the hold ended as the chord's prefix"
+        );
+        assert_eq!(outcome.session_after_chord, None);
+        assert!(outcome.channel_open);
+        assert_eq!(outcome.state_after_release, State::Idle);
+        assert_eq!(
+            outcome.session_after_release, None,
+            "the release starts nothing"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_hold_on_another_key_keeps_running_beside_the_opened_channel() {
+        use super::super::State;
+        use crate::config::{ChannelModifier, ShortcutBinding};
+
+        let outcome = admit_hold_then_chord(ShortcutBinding::HoldFn, ChannelModifier::Ctrl).await;
+
+        assert!(outcome.admitted);
+        assert!(outcome.opened);
+        assert_eq!(outcome.state_after_chord, State::RecHold);
+        assert!(outcome.session_after_chord.is_some());
+        assert!(outcome.channel_open);
     }
 
     #[tokio::test]

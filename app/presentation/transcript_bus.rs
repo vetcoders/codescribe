@@ -5122,6 +5122,44 @@ mod tests {
         }
     }
 
+    /// Founder, 2026-10-23: a hold that turned out to prefix a channel chord
+    /// ends with `chord_prefix`; nothing it heard is offered for delivery.
+    #[test]
+    fn a_chord_prefix_end_offers_nothing_even_with_committed_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("chord-prefix.jsonl");
+        let bus = TranscriptBus::open_at(session("chord-prefix"), path.clone(), None).unwrap();
+        bus.publish_started();
+        let (ledger, _, base) = committed_fixture("chord-prefix");
+        assert!(!bus.publish_revision(&base, &ledger).is_empty());
+
+        let terminal = bus
+            .publish_ended(
+                TranscriptSessionEndReason::ChordPrefix,
+                true,
+                TranscriptDelivery::Unattempted,
+            )
+            .expect("a started session ends once");
+        assert_eq!(terminal.phase, TranscriptProjectionPhase::NoSpeech);
+        assert!(terminal.terminal);
+        assert!(!terminal.can_paste);
+        assert!(!terminal.can_insert);
+        assert!(!terminal.can_copy);
+        assert!(!terminal.can_retranscribe);
+        assert!(!terminal.can_send_to_agent);
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let last_line = written.lines().last().unwrap();
+        let last: CleanTranscriptEvent = serde_json::from_str(last_line).unwrap();
+        assert_eq!(last.status, "session_ended");
+        assert_eq!(
+            last.end_reason,
+            Some(TranscriptSessionEndReason::ChordPrefix)
+        );
+        let raw: serde_json::Value = serde_json::from_str(last_line).unwrap();
+        assert_eq!(raw["end_reason"], "chord_prefix");
+    }
+
     /// `session_ended` is the text-free terminal lifecycle line: written once,
     /// only after `session_started`, never for a session that never started.
     #[test]

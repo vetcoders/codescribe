@@ -4820,7 +4820,14 @@ impl RecordingController {
         self.reset_session_fields(TranscriptSessionEndReason::ChordPrefix)
             .await;
         set_assistive_session(false);
-        settle_failed_start_chrome();
+        // The chord's channel normally opened beside the hold and shows the
+        // pointer badge; only the tray settles, and it stays Listening while
+        // a channel listens.
+        if self.has_open_agent_channels().await {
+            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Idle);
+        } else {
+            settle_failed_start_chrome();
+        }
         true
     }
 
