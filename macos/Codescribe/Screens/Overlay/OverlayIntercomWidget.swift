@@ -753,6 +753,14 @@ private struct OverlayIntercomHeader: View {
         controller.toggleGroup()
       } label: {
         HStack(spacing: 8) {
+          // Channel 0's listening status, the roster's own dot, in the
+          // roster's place: before the figure (Maciej, 2026-10-23).
+          OverlayAgentStatusDot(
+            kind: intercomStatusDot(
+              OverlayChannelStatusView.intercomRoster(
+                state: state, palette: palette, animates: false),
+              state: state, digit: "0"),
+            palette: palette)
           Image(systemName: "circle.grid.2x2.fill").font(.system(size: 10 * scale))
           Text("Intercom").csFont(11, .semibold)
         }
@@ -792,11 +800,9 @@ private struct OverlayIntercomHeader: View {
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasNext)
           .frame(width: 16 * max(1, scale))
       }
-      OverlayIntercomAudioSlot(
-        state: state, conversation: broadcast, name: "All", digit: "0", palette: palette,
-        open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false)
-      OverlayIntercomSpeakerSlot(
-        state: state, conversation: broadcast, name: "All", digit: "0", palette: palette,
+      OverlayIntercomAudioControls(
+        state: state, conversation: broadcast, digit: "0", palette: palette,
+        open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false,
         speaking: broadcast?.replySpeaking == true)
     }
     .foregroundStyle(palette.mutedText.color)
@@ -980,7 +986,6 @@ private struct OverlayIntercomCard: View {
     let open = conversation.map { state.conversationMicrophoneOpen($0) } ?? false
     let current =
       intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
-    let reachable = current && state.channelHudStates[identity.digit]?.followerAlive == true
     let info = current ? state.channelAgentDescriptors[identity.digit] : nil
     // The conversation stands in its own window: the row stays in the group,
     // greyed, and its click shows that window (Maciej, 2026-10-23).
@@ -1011,24 +1016,17 @@ private struct OverlayIntercomCard: View {
         }
       } label: {
         HStack(spacing: 6) {
+          // One dot, the roster's, before the figure as in the agents list
+          // (Maciej, 2026-10-23); an open microphone is its `.listening`.
+          OverlayAgentStatusDot(
+            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+            palette: palette)
           Text(identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
-            .overlay(alignment: .topTrailing) {
-              if open {
-                Circle().fill(palette.agentAccent.color).frame(width: 4, height: 4)
-                  .offset(x: 4, y: -1)
-              }
-            }
           VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
               Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
               if detached != nil {
                 Image(systemName: "macwindow").font(.system(size: 9 * scale))
-              } else {
-                Circle().fill(reachable ? palette.successStatus.color : palette.mutedText.color)
-                  .frame(width: 5, height: 5)
-                if let conversation, state.unreadReplies(in: conversation) > 0 {
-                  Circle().fill(palette.agentAccent.color).frame(width: 5, height: 5)
-                }
               }
             }
             if hovered && !expanded && detached == nil {
@@ -1091,14 +1089,9 @@ private struct OverlayIntercomCard: View {
     _ conversation: OverlayConversation?, palette: OverlayAppearancePalette,
     speaking: Bool, open: Bool
   ) -> some View {
-    HStack(spacing: 0) {
-      OverlayIntercomAudioSlot(
-        state: state, conversation: conversation, name: name, digit: identity.digit,
-        palette: palette, open: open)
-      OverlayIntercomSpeakerSlot(
-        state: state, conversation: conversation, name: name, digit: identity.digit,
-        palette: palette, speaking: speaking)
-    }
+    OverlayIntercomAudioControls(
+      state: state, conversation: conversation, digit: identity.digit, palette: palette,
+      open: open, speaking: speaking)
   }
 
   private func conversationBody(
@@ -1114,115 +1107,69 @@ private struct OverlayIntercomCard: View {
 /// speaks through the left-facing megaphone of the main overlay's All row
 /// (Maciej, 2026-10-23: the Intercom is where one talks to channel zero).
 /// The header, group cards and durable instances paint the same control.
-private struct OverlayIntercomAudioSlot: View {
+/// The fiszka's audio pair is the roster's pair: the same glyphs, monochrome
+/// at rest and violet with a pulse when lit, the same glass and hints
+/// (Maciej, 2026-10-23: "ustaw te przyciski na interkomie tak samo, żeby było
+/// spójnie z główną listą"). Channel 0 keeps the roster's megaphone but not
+/// its larger tarcza: the bar has one control height.
+private struct OverlayIntercomAudioControls: View {
   @Environment(\.csTextScale) private var scale
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let state: OverlayState
   let conversation: OverlayConversation?
-  let name: String
   let digit: String
   let palette: OverlayAppearancePalette
   let open: Bool
-
-  private var broadcast: Bool { digit == "0" }
+  let speaking: Bool
 
   var body: some View {
-    Button {
-      guard let conversation else { return }
-      Task { await state.toggleConversationMicrophone(conversation, preservesPresentation: true) }
-    } label: {
-      Image(systemName: broadcast ? "megaphone" : OverlayAgentAudioControls.liveSpeechSymbol)
-        .overlayMirrored(broadcast)
-        .font(.system(size: 13 * scale, weight: .semibold))
-        .symbolEffect(.pulse, options: .repeating, isActive: open && !reduceMotion)
-        .frame(
-          width: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
-          height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-        )
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .conversationActionHover(
-      restingColor: palette.agentAccent.color.opacity(open ? 1 : 0.8),
-      hoverColor: palette.agentAccent.color
+    let muted = conversation.flatMap { state.conversationPlaybackMuted($0) }
+    OverlayAgentAudioControls(
+      open: open, muted: muted,
+      microphoneEnabled: microphoneEnabled,
+      playbackEnabled: muted != nil && playbackEnabled,
+      palette: palette,
+      onMicrophone: {
+        guard let conversation else { return }
+        Task {
+          await state.toggleConversationMicrophone(conversation, preservesPresentation: true)
+        }
+      },
+      onPlayback: {
+        guard let conversation else { return }
+        Task { await state.toggleConversationPlayback(conversation) }
+      },
+      broadcast: digit == "0", speaking: speaking, broadcastEmphasis: false,
+      diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     )
-    .disabled(microphoneDisabled)
-    .accessibilityLabel(
-      (open ? String(localized: "Stop recording") : String(localized: "Start recording"))
-        + ": " + name
-    )
+    .fixedSize()
     .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
   }
 
-  private var microphoneDisabled: Bool {
-    guard let conversation else { return true }
-    return !state.canToggleConversationMicrophone(conversation)
-      || state.pendingChannelToggles.contains(conversation.channel)
-      || (!state.conversationMicrophoneOpen(conversation)
-        && state.channelHudStates[conversation.channel]?.followerAlive == false)
+  private var microphoneEnabled: Bool {
+    guard let conversation else { return false }
+    return state.canToggleConversationMicrophone(conversation)
+      && !state.pendingChannelToggles.contains(conversation.channel)
+      && (state.conversationMicrophoneOpen(conversation)
+        || state.channelHudStates[conversation.channel]?.followerAlive != false)
+  }
+
+  private var playbackEnabled: Bool {
+    guard let conversation else { return false }
+    return !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? "")
   }
 }
 
-/// The speaker beside the microphone: the conversation's automatic-playback
-/// mute, lit while its reply speaks (Maciej, 2026-10-23: "wyciszenia Ciebie,
-/// jak mówisz"). Muting mid-reply stops it. Reading a reply on demand is the
-/// Play control on the message, which lifts the mute for that one reply.
-/// Channel 0 switches the master mute, like All in the main overlay.
-private struct OverlayIntercomSpeakerSlot: View {
-  @Environment(\.csTextScale) private var scale
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  let state: OverlayState
-  let conversation: OverlayConversation?
-  let name: String
-  let digit: String
-  let palette: OverlayAppearancePalette
-  let speaking: Bool
-
-  private var muted: Bool? { conversation.flatMap { state.conversationPlaybackMuted($0) } }
-  private var speakingNow: Bool { speaking && muted == false }
-  private var symbol: String {
-    if muted == true { return "speaker.slash" }
-    return speakingNow ? "speaker.wave.2.fill" : "speaker.wave.2"
+/// The roster's own status dot for one channel, so a fiszka and the agents
+/// list never disagree (Maciej, 2026-10-23: "kropka pojedyncza, niosąca ten
+/// sam status co na liście w pełnym widoku").
+@MainActor
+private func intercomStatusDot(
+  _ roster: OverlayChannelStatusView, state: OverlayState, digit: String
+) -> OverlayAgentDotKind {
+  guard let channel = state.visibleChannelRows.first(where: { $0.channel == digit }) else {
+    return digit == "0" ? .broadcast : .idle
   }
-
-  var body: some View {
-    Button {
-      guard let conversation else { return }
-      Task { await state.toggleConversationPlayback(conversation) }
-    } label: {
-      Image(systemName: symbol)
-        .font(.system(size: 13 * scale, weight: .semibold))
-        .symbolEffect(.pulse, options: .repeating, isActive: speakingNow && !reduceMotion)
-        .frame(
-          width: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
-          height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-        )
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .conversationActionHover(
-      restingColor: muted == true
-        ? palette.mutedText.color : palette.agentAccent.color.opacity(speakingNow ? 1 : 0.8),
-      hoverColor: palette.agentAccent.color
-    )
-    .disabled(
-      conversation == nil || muted == nil
-        || state.pendingPlaybackOwners.contains(conversation?.owner?.id ?? "")
-    )
-    .accessibilityLabel(label + ": " + name)
-    .accessibilityIdentifier("overlay-intercom-speaker-\(digit)")
-  }
-
-  private var label: String {
-    if muted == nil { return String(localized: "Playback status unavailable") }
-    if digit == "0" {
-      return muted == true
-        ? String(localized: "Unmute replies on all channels")
-        : String(localized: "Mute replies on all channels")
-    }
-    return muted == true
-      ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
-  }
+  return roster.statusDotKind(for: channel)
 }
 
 /// The one shared conversation surface a card or an instance unrolls: the
@@ -1399,7 +1346,6 @@ private struct OverlayIntercomInstanceCard: View {
     let current =
       intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
       == true
-    let reachable = current && state.channelHudStates[instance.digit]?.followerAlive == true
     let mini = instance.minimized
     let roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: !reduceMotion,
@@ -1408,12 +1354,9 @@ private struct OverlayIntercomInstanceCard: View {
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
     let nameRow = HStack(spacing: 5) {
+      OverlayAgentStatusDot(
+        kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-      Circle().fill(reachable ? palette.successStatus.color : palette.mutedText.color)
-        .frame(width: 5, height: 5)
-      if let conversation, state.unreadReplies(in: conversation) > 0 {
-        Circle().fill(palette.agentAccent.color).frame(width: 5, height: 5)
-      }
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1441,12 +1384,9 @@ private struct OverlayIntercomInstanceCard: View {
           .allowsHitTesting(false)
           .accessibilityLabel(Text(verbatim: instance.name))
       }
-      OverlayIntercomAudioSlot(
-        state: state, conversation: conversation, name: instance.name, digit: instance.digit,
-        palette: palette, open: open)
-      OverlayIntercomSpeakerSlot(
-        state: state, conversation: conversation, name: instance.name, digit: instance.digit,
-        palette: palette, speaking: speaking)
+      OverlayIntercomAudioControls(
+        state: state, conversation: conversation, digit: instance.digit, palette: palette,
+        open: open, speaking: speaking)
       // Mini rests with the name, activity and the audio pair (Astra):
       // clicking the fiszka itself restores it, so no extra Restore button.
       if !mini {

@@ -127,9 +127,11 @@ fiszka from its left edge or bottom corners; the edge lights up when the
 pointer is on it. Dragging a resting pill's left
 edge or bottom corners (or the header's left edge) zooms the whole attached
 group proportionally. Closing a card or switching layouts keeps its draft.
-Every row carries a microphone and a speaker: the speaker mutes that agent's
-automatic replies and lights while the agent speaks, and the Intercom bar's
-megaphone and speaker are channel 0 and the master mute. Press Play on a
+Every row carries the same microphone and speaker pair as the agents list:
+grey at rest, violet with a pulse while recording or speaking; the speaker
+mutes that agent's automatic replies, and the Intercom bar's megaphone and
+speaker are channel 0 and the master mute. Each row shows one status dot
+before its figure, the roster's own, and the bar shows channel 0's. Press Play on a
 message to hear it even while muted. Agent pills and the agent list wear the
 microphone with a waveform, the glyph of speaking to an agent live; the
 composer's dictation control keeps the plain microphone, since dictating a

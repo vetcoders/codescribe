@@ -194,8 +194,10 @@ struct OverlayConversationComposer: View {
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle()).buttonStyle(.plain)
+        // A pastel at rest (Maciej, 2026-10-23: "daj bardziej pastelowy");
+        // hover and recording bring the whole violet back.
         .conversationActionHover(
-          restingColor: palette.agentAccent.color.opacity(0.8),
+          restingColor: palette.agentAccent.color.opacity(draftMicrophoneRecording ? 1 : 0.5),
           hoverColor: palette.agentAccent.color
         )
         .disabled(draftMicrophoneBusy)

@@ -442,16 +442,18 @@ struct OverlayAgentAudioControls: View {
   /// indikator na głośniku." The speaker of the agent whose reply is playing
   /// turns violet and animates its waves.
   var speaking = false
+  /// All keeps a matched pair, one third more prominent than agent controls;
+  /// a surface with one control height (the Intercom bar) opts out.
+  var broadcastEmphasis = true
   /// The conversation header supplies its measured base height; All scales
   /// both controls together from that base.
   var diameter: CGFloat? = nil
 
   private var speakingNow: Bool { speaking && muted == false }
 
-  /// All keeps a matched pair, one third more prominent than agent controls.
   static let broadcastScale: CGFloat = 1.33
   static let controlFrame: CGFloat = 16
-  private var controlScale: CGFloat { broadcast ? Self.broadcastScale : 1 }
+  private var controlScale: CGFloat { broadcast && broadcastEmphasis ? Self.broadcastScale : 1 }
   private var glyphSize: CGFloat {
     (diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12) * controlScale
   }

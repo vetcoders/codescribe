@@ -269,7 +269,12 @@ to its own compact width at the stored window's top-right corner; clicking the
 fiszka restores it, and hover reveals the close control in its fixed place, so
 the audio pair never moves. Closing records the fiszka as closed and the group
 row returns to its live state; detaching the same conversation again reopens
-that saved window instead of minting a duplicate. The Intercom header's
+that saved window instead of minting a duplicate. A fiszka's audio pair is
+`OverlayAgentAudioControls`, the roster's: monochrome at rest, the accent and
+a pulse when lit, one control height (channel 0 keeps the megaphone without
+the roster's larger tarcza); its status is one `OverlayAgentStatusDot` from
+`statusDotKind`, before the figure, with channel 0's on the bar (Maciej,
+2026-10-23). The Intercom header's
 context menu lists the saved closed fiszki, the explicit road back when the
 channel's owner is no longer in the group. Resizing an expanded group card is
 an explicit independent placement and turns it into a fiszka with its own
