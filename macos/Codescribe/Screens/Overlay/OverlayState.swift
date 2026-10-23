@@ -2647,8 +2647,18 @@ final class OverlayState {
     let reply = conversationReplies[conversation.id]
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
+    // Files pasted after the words, while the capture still waited for a
+    // segment that never came, ride with the message the Founder sends now
+    // instead of waiting for a take that is not coming (Maciej, 2026-10-23:
+    // "wyślę załącznik, to już nie trafia nigdy, nawet na Enter").
+    let adopted = adoptWaitingCaptureAttachments(in: conversation.id)
+    let parts = ConversationDraft.split(draft)
+    let outgoing =
+      adopted.isEmpty
+      ? draft
+      : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     do {
-      try await publishConversationText(conversation.owner, draft, reply)
+      try await publishConversationText(conversation.owner, outgoing, reply)
       // A newer draft belongs to the Founder, even if publication finishes late.
       if conversationDrafts[conversation.id] == draft {
         conversationDrafts[conversation.id] = ""
@@ -2740,6 +2750,18 @@ final class OverlayState {
       captureAttachmentErrors.removeValue(forKey: id)
       Task { await sendCaptureAttachments(in: id) }
     }
+  }
+
+  /// Take the files a capture never claimed. A staged draft with a target is
+  /// already on its way to that take and stays; one still waiting for a first
+  /// segment hands its paths to the caller and is withdrawn.
+  private func adoptWaitingCaptureAttachments(in conversationID: String) -> [String] {
+    guard let staged = captureAttachmentDrafts[conversationID], staged.target == nil,
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return [] }
+    captureAttachmentDrafts.removeValue(forKey: conversationID)
+    captureAttachmentErrors.removeValue(forKey: conversationID)
+    return staged.paths
   }
 
   func sendCaptureAttachments(in conversationID: String) async {
