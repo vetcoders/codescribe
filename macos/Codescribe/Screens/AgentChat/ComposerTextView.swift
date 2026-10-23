@@ -206,6 +206,7 @@ struct ComposerTextView: NSViewRepresentable {
 
   static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
     coordinator.scrollerPin.detach()
+    coordinator.undoHistory.removeAllActions()
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -246,12 +247,18 @@ struct ComposerTextView: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ComposerTextView
     let scrollerPin = CSScrollerPin()
+    /// Typing undo lives with this text view, not with its window: the window's
+    /// undo manager outlives the composer, and Cmd+Z then sent a recorded
+    /// action to a freed target (crash 2026-10-23, `-[_NSUndoStack popAndInvoke]`).
+    let undoHistory = UndoManager()
     private var historyState = ComposerDraftHistoryState()
     private var applyingHistory = false
 
     init(parent: ComposerTextView) {
       self.parent = parent
     }
+
+    func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
 
     func updateParent(_ parent: ComposerTextView) {
       if self.parent.history != parent.history { historyState.reset() }
