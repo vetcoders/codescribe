@@ -2049,17 +2049,26 @@ final class OverlayState {
       return
     }
     setAgentPanelFocusAvailable(panelFocusAvailable)
-    channelPlaybackAgents = bound
+    // This runs every 500 ms. An Observation write invalidates every reader
+    // even when the value is equal, and the open conversation reads its
+    // playback mute, so an unchanged poll re-evaluated it twice a second
+    // (UI-88, hania on Silver 23 X: 37% of a core at rest, 16% in mini).
+    if channelPlaybackAgents != bound { channelPlaybackAgents = bound }
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
-    if broadcastLedger.admitsPoll(startedAt: broadcastRevision) {
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
+      broadcastPolicies != broadcastSnapshot
+    {
       broadcastPolicies = broadcastSnapshot
     }
-    if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
+    if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
+      globalPlaybackMuted = globalSnapshot
+    }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
-    playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
+    let mutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
       .merging(retained, uniquingKeysWith: { _, current in current })
+    if playbackMutes != mutes { playbackMutes = mutes }
   }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
