@@ -3178,6 +3178,69 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.archiveOpenRefusal, "history opens after an agent take")
   }
 
+  /// Founder, 2026-10-23: a Fn press the controller never turned into a take
+  /// (released inside the hold delay, or a hold declined beside an open
+  /// channel) left a disabled stop at 00:00 until the next take. The bridge
+  /// answers such a preparing with a bare stop.
+  func testAnOrphanedPreparingLeavesTheHeaderReadyToRecord() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    clock.now = 100
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+
+    XCTAssertFalse(state.isFinalizingDictation, "no capture started, so no dictation awaits text")
+    XCTAssertFalse(state.showsSessionTimer, "no capture started, so there is no length to show")
+    XCTAssertNil(state.archiveOpenRefusal, "history opens after an orphaned preparing")
+  }
+
+  func testAnOrphanedPreparingAfterAFinishedDictationLeavesTheHeaderReady() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    clock.now = 100
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    clock.now = 110
+    state.finishControllerRecording()
+    projectText("gotowe", to: state, terminal: true)
+    XCTAssertFalse(state.isFinalizingDictation)
+
+    clock.now = 200
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+    XCTAssertFalse(state.isFinalizingDictation, "the earlier take's clock does not reopen it")
+    XCTAssertNil(state.archiveOpenRefusal)
+
+    clock.now = 300
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    clock.now = 304
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 4, "the next take counts from its own start")
+  }
+
+  func testAnOrphanedPreparingDuringAChannelTakeKeepsItsClockRunning() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 100
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    clock.now = 110
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+
+    clock.now = 130
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 30, "the channel take keeps counting")
+    XCTAssertFalse(state.sessionTimerPaused)
+    XCTAssertFalse(state.isFinalizingDictation, "an open agent take is not a dictation")
+
+    clock.now = 140
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 150
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 40, "the last channel closing freezes it")
+    XCTAssertFalse(state.isFinalizingDictation)
+  }
+
   func testAStoppedDictationAwaitsItsTerminalTextEvenAfterAnAgentTake() {
     let clock = OverlayStateTestClock()
     let state = OverlayState(nowProvider: { clock.now })

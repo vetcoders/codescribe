@@ -3376,6 +3376,12 @@ final class OverlayState {
     captureEndedAtUptime = nowProvider()
   }
 
+  private func clearCaptureClock() {
+    captureStartedAtUptime = nil
+    captureEndedAtUptime = nil
+    captureClockIsDictation = false
+  }
+
   /// Stop the mic and flip to the finalized transcript returned by the core.
   /// Ignored while already transcribing so a second Finish tap during the
   /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
@@ -4300,7 +4306,14 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      beginCaptureClock()
+      // The dictation clock is evidence of capture and starts at `started`.
+      // A preparing the controller never turns into a take (Fn released
+      // inside the hold delay, a hold declined beside an open channel) is
+      // answered with a bare stop; a clock opened here froze at 00:00 and,
+      // with no terminal ever coming, held the header on a disabled stop
+      // until the next take (Founder, 2026-10-23). The previous take's frozen
+      // clock ends with its document; a live channel keeps its own.
+      if !channelAudioCaptureActive { clearCaptureClock() }
       selectDictationSurfaceIfNeeded()
       applyPreferredExpansion(forTake: true)
     }
@@ -4323,15 +4336,12 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      beginCaptureClock()
       selectDictationSurfaceIfNeeded()
       applyPreferredExpansion(forTake: true)
     }
-    if captureStartedAtUptime == nil {
-      beginCaptureClock()
-    }
     recording = true
     if !captureDidStart {
+      beginCaptureClock()
       followDictationCapturePresentation()
     }
     captureDidStart = true
@@ -4350,8 +4360,10 @@ final class OverlayState {
     audioReady = false
     vadActive = false
     isFinalPass = false
-    freezeCaptureClock()
+    // A live channel's clock is frozen by the roster when its last channel
+    // closes; an orphaned preparing during that take must not stop it early.
     if !channelAudioCaptureActive {
+      freezeCaptureClock()
       levelMeter.reset()
       hasMeasuredAudioLevel = false
     }
