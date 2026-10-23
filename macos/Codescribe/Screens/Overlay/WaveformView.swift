@@ -226,18 +226,14 @@ struct WaveformView: View {
 
   /// The moving waveform's geometry, timing and colours, handed to Core Animation.
   private func motion(count: Int) -> WaveformMotionStrip.Configuration {
-    let sources = max(1, barCount)
-    let silhouette = Self.resampledLevels(
-      (0..<sources).map { transcribingScale(index: $0, now: 0, reducedMotion: true) },
-      count: count)
-    return WaveformMotionStrip.Configuration(
+    // Per-bar timing from the bar's own index (the mock's formula), so a bar
+    // keeps its motion when the window widens and new bars join at the end.
+    WaveformMotionStrip.Configuration(
       bars: (0..<count).map { index in
-        let position = count > 1 ? CGFloat(index) / CGFloat(count - 1) * CGFloat(sources - 1) : 0
-        let source = Int(position.rounded())
-        return WaveformMotionStrip.Bar(
-          sweepDuration: 0.7 + Double((source * 7) % 9) / 10.0,
-          sweepDelay: Double((source * 13) % 11) / 14.0,
-          silhouette: silhouette[index],
+        WaveformMotionStrip.Bar(
+          sweepDuration: 0.7 + Double((index * 7) % 9) / 10.0,
+          sweepDelay: Double((index * 13) % 11) / 14.0,
+          silhouette: transcribingScale(index: index, now: 0, reducedMotion: true),
           color: transcribing ? CSColor.modeProcessing.opacity(0.55) : liveColor(for: index))
       },
       barWidth: barWidth, gap: gap, maxBarHeight: maxBarHeight, minScale: minScale,
@@ -379,6 +375,11 @@ final class WaveformMotionView: NSView {
   /// Bars that sweep; their container's `sublayerTransform` carries the gain.
   let movers = CALayer()
   private(set) var configuration: WaveformMotionStrip.Configuration?
+  /// Sweep animations attached since creation; a resize adds only new bars'.
+  private(set) var sweepsAdded = 0
+  private var builtBars: [WaveformMotionStrip.Bar] = []
+  private var builtTranscribing: Bool?
+  private var laidOutSize: CGSize?
   private var shownGain: Double?
   private var hasShownGain = false
   private var gainTimer: Timer?
@@ -400,13 +401,14 @@ final class WaveformMotionView: NSView {
   func apply(_ next: WaveformMotionStrip.Configuration) {
     if let configuration, configuration.drawsLike(next) { return }
     configuration = next
-    rebuild()
+    sync()
     updateGainPolling()
   }
 
   override func layout() {
     super.layout()
-    rebuild()
+    guard bounds.size != laidOutSize else { return }
+    sync()
   }
 
   override func viewDidMoveToWindow() {
@@ -416,50 +418,86 @@ final class WaveformMotionView: NSView {
 
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()
-    rebuild()
+    paint()
   }
 
-  /// Lay the bars out and attach their motion. Runs on configuration, size
-  /// and appearance changes only, never per frame.
-  func rebuild() {
+  /// Bring the bar layers in line with the configuration and size. A bar that
+  /// already exists keeps its layer and its running animation: a window that
+  /// grows or shrinks only adds or removes bars at the end (Silver 23 X, the
+  /// expand animation rebuilt every bar each frame and flooded the render
+  /// server). A switch between live and transcribing motion starts over.
+  func sync() {
     guard let configuration, let host = layer else { return }
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     defer { CATransaction.commit() }
-    cores.frame = host.bounds
-    movers.frame = host.bounds
-    cores.sublayers = nil
-    movers.sublayers = nil
-    movers.removeAllAnimations()
-    movers.sublayerTransform = CATransform3DIdentity
-    let height = host.bounds.height
+    if builtTranscribing != configuration.transcribing {
+      cores.sublayers = nil
+      movers.sublayers = nil
+      movers.removeAllAnimations()
+      movers.sublayerTransform = CATransform3DIdentity
+      builtBars = []
+      builtTranscribing = configuration.transcribing
+      if configuration.transcribing { movers.add(breath(), forKey: "breath") }
+      hasShownGain = false
+    }
+    laidOutSize = host.bounds.size
+    if cores.frame != host.bounds { cores.frame = host.bounds }
+    if movers.frame != host.bounds { movers.frame = host.bounds }
+    let bars = configuration.bars
+    while (movers.sublayers?.count ?? 0) > bars.count {
+      movers.sublayers?.last?.removeFromSuperlayer()
+    }
+    while (cores.sublayers?.count ?? 0) > (configuration.transcribing ? 0 : bars.count) {
+      cores.sublayers?.last?.removeFromSuperlayer()
+    }
     let radius = min(2, configuration.barWidth / 2)
-    for (index, bar) in configuration.bars.enumerated() {
+    var recolor = builtBars.count != bars.count
+    for (index, bar) in bars.enumerated() {
       let x = CGFloat(index) * (configuration.barWidth + configuration.gap)
       let full = CGRect(
-        x: x, y: (height - configuration.maxBarHeight) / 2,
+        x: x, y: (host.bounds.height - configuration.maxBarHeight) / 2,
         width: configuration.barWidth, height: configuration.maxBarHeight)
-      let mover = CALayer()
-      mover.frame = full
+      let built = index < builtBars.count ? builtBars[index] : nil
+      let mover: CALayer
+      if let existing = movers.sublayers?[safe: index] {
+        mover = existing
+      } else {
+        mover = CALayer()
+        movers.addSublayer(mover)
+        sweepsAdded += 1
+      }
+      if mover.bounds.size != full.size { mover.bounds = CGRect(origin: .zero, size: full.size) }
+      let center = CGPoint(x: full.midX, y: full.midY)
+      if mover.position != center { mover.position = center }
       mover.cornerRadius = radius
-      movers.addSublayer(mover)
+      if built?.color != bar.color { recolor = true }
       if configuration.transcribing {
         mover.transform = CATransform3DMakeScale(1, bar.silhouette, 1)
         continue
       }
       mover.transform = CATransform3DMakeScale(1, configuration.minScale, 1)
-      mover.add(sweep(for: bar, minScale: configuration.minScale), forKey: "sweep")
-      let core = CALayer()
-      core.frame = full.insetBy(dx: 0, dy: full.height * (1 - configuration.minScale) / 2)
+      if built?.sweepDuration != bar.sweepDuration || built?.sweepDelay != bar.sweepDelay
+        || mover.animation(forKey: "sweep") == nil
+      {
+        mover.add(sweep(for: bar, minScale: configuration.minScale), forKey: "sweep")
+      }
+      let core: CALayer
+      if let existing = cores.sublayers?[safe: index] {
+        core = existing
+      } else {
+        core = CALayer()
+        cores.addSublayer(core)
+      }
+      let rest = full.insetBy(dx: 0, dy: full.height * (1 - configuration.minScale) / 2)
+      if core.frame != rest { core.frame = rest }
       core.cornerRadius = radius
-      cores.addSublayer(core)
     }
-    if configuration.transcribing {
-      movers.add(breath(), forKey: "breath")
+    builtBars = bars
+    if recolor || !hasShownGain { paint() }
+    if !hasShownGain {
+      showGain(configuration.transcribing ? nil : configuration.meter?.gain, animated: false)
     }
-    hasShownGain = false
-    paint()
-    showGain(configuration.transcribing ? nil : configuration.meter?.gain, animated: false)
   }
 
   private func sweep(for bar: WaveformMotionStrip.Bar, minScale: CGFloat) -> CAAnimation {

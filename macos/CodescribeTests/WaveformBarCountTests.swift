@@ -60,6 +60,19 @@ final class WaveformBarCountTests: XCTestCase {
 /// UI-88: the moving waveform runs on Core Animation, not a per-frame SwiftUI timeline.
 @MainActor
 final class WaveformMotionTests: XCTestCase {
+  private func configuration(
+    bars count: Int = 12, transcribing: Bool = false, meter: AudioLevelMeter?
+  ) -> WaveformMotionStrip.Configuration {
+    WaveformMotionStrip.Configuration(
+      bars: (0..<count).map {
+        WaveformMotionStrip.Bar(
+          sweepDuration: 0.7 + Double(($0 * 7) % 9) / 10, sweepDelay: Double($0) / 14,
+          silhouette: 0.3 + CGFloat($0) / 40, color: .red)
+      },
+      barWidth: 1.5, gap: 2, maxBarHeight: 18, minScale: 0.35, transcribing: transcribing,
+      inactiveColor: .gray, meter: meter)
+  }
+
   private func strip(
     transcribing: Bool = false, meter: AudioLevelMeter?
   ) -> WaveformMotionView {
@@ -120,5 +133,30 @@ final class WaveformMotionTests: XCTestCase {
     XCTAssertEqual(movers[3].transform.m22, 0.3 + 3.0 / 40, accuracy: 1e-6)
     XCTAssertNil(movers[3].animation(forKey: "sweep"))
     XCTAssertEqual(view.cores.sublayers?.count ?? 0, 0)
+  }
+
+  func testAWideningStripKeepsItsBarsAndTheirRunningSweeps() throws {
+    let meter = AudioLevelMeter()
+    meter.push(rms: 0.05)
+    let view = WaveformMotionView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+    view.apply(configuration(bars: 12, meter: meter))
+    XCTAssertEqual(view.sweepsAdded, 12)
+    let bars = try XCTUnwrap(view.movers.sublayers).map(ObjectIdentifier.init)
+
+    view.setFrameSize(NSSize(width: 70, height: 22))
+    view.layoutSubtreeIfNeeded()
+    view.apply(configuration(bars: 14, meter: meter))
+    XCTAssertEqual(view.sweepsAdded, 14, "Only the two new bars get a sweep")
+    let widened = try XCTUnwrap(view.movers.sublayers)
+    XCTAssertEqual(widened.count, 14)
+    XCTAssertEqual(Array(widened.prefix(12)).map(ObjectIdentifier.init), bars)
+    XCTAssertEqual(view.cores.sublayers?.count, 14)
+
+    view.apply(configuration(bars: 10, meter: meter))
+    view.needsLayout = true
+    view.layoutSubtreeIfNeeded()
+    XCTAssertEqual(view.sweepsAdded, 14, "Narrowing and a same-size layout attach nothing")
+    XCTAssertEqual(view.movers.sublayers?.map(ObjectIdentifier.init), Array(bars.prefix(10)))
+    XCTAssertEqual(view.cores.sublayers?.count, 10)
   }
 }
