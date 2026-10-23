@@ -1,8 +1,12 @@
+import AppKit
 import Foundation
 import Observation
+import QuartzCore
 import SwiftUI
 
-// Width-adaptive listening waveform — Canvas + per-bar `eq` animation with staggered delays.
+// Width-adaptive listening waveform — per-bar `eq` animation with staggered delays.
+// While it moves, Core Animation runs the motion (`WaveformMotionStrip`); a still
+// waveform draws once in a Canvas.
 //
 // AMPLITUDE-DRIVEN when the engine provides it: `on_audio_level` streams the
 // capture RMS per audio block into `AudioLevelMeter`, and the bars scale with the
@@ -208,20 +212,36 @@ struct WaveformView: View {
             waveform(
               at: timeline.date.timeIntervalSinceReferenceDate, reducedMotion: true, count: count)
           }
-        } else if reduceMotion {
-          waveform(at: 0, reducedMotion: true, count: count)
+        } else if reduceMotion || !(active || transcribing) {
+          waveform(at: 0, reducedMotion: reduceMotion, count: count)
         } else {
-          TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !(active || transcribing))) {
-            timeline in
-            waveform(
-              at: timeline.date.timeIntervalSinceReferenceDate, reducedMotion: false, count: count)
-          }
+          WaveformMotionStrip(configuration: motion(count: count))
         }
       }
     }
     .frame(idealWidth: contentWidth, maxWidth: stretches ? .infinity : nil)
     .frame(height: trackHeight)
     .clipped()
+  }
+
+  /// The moving waveform's geometry, timing and colours, handed to Core Animation.
+  private func motion(count: Int) -> WaveformMotionStrip.Configuration {
+    let sources = max(1, barCount)
+    let silhouette = Self.resampledLevels(
+      (0..<sources).map { transcribingScale(index: $0, now: 0, reducedMotion: true) },
+      count: count)
+    return WaveformMotionStrip.Configuration(
+      bars: (0..<count).map { index in
+        let position = count > 1 ? CGFloat(index) / CGFloat(count - 1) * CGFloat(sources - 1) : 0
+        let source = Int(position.rounded())
+        return WaveformMotionStrip.Bar(
+          sweepDuration: 0.7 + Double((source * 7) % 9) / 10.0,
+          sweepDelay: Double((source * 13) % 11) / 14.0,
+          silhouette: silhouette[index],
+          color: transcribing ? CSColor.modeProcessing.opacity(0.55) : liveColor(for: index))
+      },
+      barWidth: barWidth, gap: gap, maxBarHeight: maxBarHeight, minScale: minScale,
+      transcribing: transcribing, inactiveColor: inactiveColor, meter: meter)
   }
 
   private func waveform(at now: TimeInterval, reducedMotion: Bool, count: Int) -> some View {
@@ -288,10 +308,255 @@ struct WaveformView: View {
     // dimmer than the live-capture bars.
     if transcribing { return CSColor.modeProcessing.opacity(0.55) }
     guard active, meter?.gain != nil else { return inactiveColor }
+    return liveColor(for: i)
+  }
+
+  /// A bar's colour while measured audio moves it.
+  private func liveColor(for i: Int) -> Color {
     if agentRouted || indicatorMode == .assistive {
       return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
     }
     return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording
+  }
+}
+
+/// The moving waveform on the render server (UI-88). Silver samples showed a
+/// 60 fps `TimelineView` re-laying out the whole overlay every display frame
+/// through a take. Here the per-bar sweep and the transcribing breath are
+/// repeating Core Animation animations: the main thread only writes the
+/// measured gain, at most `gainPollInterval` apart, onto one container layer.
+struct WaveformMotionStrip: NSViewRepresentable {
+  struct Bar: Equatable {
+    var sweepDuration: Double
+    var sweepDelay: Double
+    /// Resting height while transcribing, as a share of the full bar.
+    var silhouette: CGFloat
+    var color: Color
+  }
+
+  struct Configuration {
+    var bars: [Bar]
+    var barWidth: CGFloat
+    var gap: CGFloat
+    var maxBarHeight: CGFloat
+    var minScale: CGFloat
+    var transcribing: Bool
+    var inactiveColor: Color
+    var meter: AudioLevelMeter?
+
+    func drawsLike(_ other: Configuration) -> Bool {
+      bars == other.bars && barWidth == other.barWidth && gap == other.gap
+        && maxBarHeight == other.maxBarHeight && minScale == other.minScale
+        && transcribing == other.transcribing && inactiveColor == other.inactiveColor
+        && meter === other.meter
+    }
+  }
+
+  var configuration: Configuration
+
+  func makeNSView(context: Context) -> WaveformMotionView {
+    WaveformMotionView()
+  }
+
+  func updateNSView(_ view: WaveformMotionView, context: Context) {
+    view.apply(configuration)
+  }
+
+  static func dismantleNSView(_ view: WaveformMotionView, coordinator: ()) {
+    view.stopGainPolling()
+  }
+}
+
+final class WaveformMotionView: NSView {
+  static let gainPollInterval: TimeInterval = 1.0 / 20.0
+  /// One clock for every bar, so a rebuilt strip keeps its phase.
+  private static let epoch: CFTimeInterval = 1
+  /// Sine ease: an autoreversing tween with it is the mock's raised cosine.
+  private static let sine = CAMediaTimingFunction(controlPoints: 0.37, 0, 0.63, 1)
+
+  /// Bars at the resting height, never animated.
+  let cores = CALayer()
+  /// Bars that sweep; their container's `sublayerTransform` carries the gain.
+  let movers = CALayer()
+  private(set) var configuration: WaveformMotionStrip.Configuration?
+  private var shownGain: Double?
+  private var hasShownGain = false
+  private var gainTimer: Timer?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.masksToBounds = true
+    layer?.addSublayer(cores)
+    layer?.addSublayer(movers)
+    setAccessibilityElement(false)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  func apply(_ next: WaveformMotionStrip.Configuration) {
+    if let configuration, configuration.drawsLike(next) { return }
+    configuration = next
+    rebuild()
+    updateGainPolling()
+  }
+
+  override func layout() {
+    super.layout()
+    rebuild()
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    updateGainPolling()
+  }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    rebuild()
+  }
+
+  /// Lay the bars out and attach their motion. Runs on configuration, size
+  /// and appearance changes only, never per frame.
+  func rebuild() {
+    guard let configuration, let host = layer else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    defer { CATransaction.commit() }
+    cores.frame = host.bounds
+    movers.frame = host.bounds
+    cores.sublayers = nil
+    movers.sublayers = nil
+    movers.removeAllAnimations()
+    movers.sublayerTransform = CATransform3DIdentity
+    let height = host.bounds.height
+    let radius = min(2, configuration.barWidth / 2)
+    for (index, bar) in configuration.bars.enumerated() {
+      let x = CGFloat(index) * (configuration.barWidth + configuration.gap)
+      let full = CGRect(
+        x: x, y: (height - configuration.maxBarHeight) / 2,
+        width: configuration.barWidth, height: configuration.maxBarHeight)
+      let mover = CALayer()
+      mover.frame = full
+      mover.cornerRadius = radius
+      movers.addSublayer(mover)
+      if configuration.transcribing {
+        mover.transform = CATransform3DMakeScale(1, bar.silhouette, 1)
+        continue
+      }
+      mover.transform = CATransform3DMakeScale(1, configuration.minScale, 1)
+      mover.add(sweep(for: bar, minScale: configuration.minScale), forKey: "sweep")
+      let core = CALayer()
+      core.frame = full.insetBy(dx: 0, dy: full.height * (1 - configuration.minScale) / 2)
+      core.cornerRadius = radius
+      cores.addSublayer(core)
+    }
+    if configuration.transcribing {
+      movers.add(breath(), forKey: "breath")
+    }
+    hasShownGain = false
+    paint()
+    showGain(configuration.transcribing ? nil : configuration.meter?.gain, animated: false)
+  }
+
+  private func sweep(for bar: WaveformMotionStrip.Bar, minScale: CGFloat) -> CAAnimation {
+    let sweep = CABasicAnimation(keyPath: "transform.scale.y")
+    sweep.fromValue = minScale
+    sweep.toValue = 1
+    sweep.duration = bar.sweepDuration / 2
+    sweep.autoreverses = true
+    sweep.repeatCount = .infinity
+    sweep.timingFunction = Self.sine
+    sweep.beginTime = Self.epoch
+    sweep.timeOffset = bar.sweepDelay
+    sweep.isRemovedOnCompletion = false
+    return sweep
+  }
+
+  /// One slow synchronous breath, ~0.86–1.0 over 1.7 s, for the whole strip.
+  private func breath() -> CAAnimation {
+    let breath = CABasicAnimation(keyPath: "sublayerTransform.scale.y")
+    breath.fromValue = 0.86
+    breath.toValue = 1
+    breath.duration = 0.85
+    breath.autoreverses = true
+    breath.repeatCount = .infinity
+    breath.timingFunction = Self.sine
+    breath.beginTime = Self.epoch
+    breath.isRemovedOnCompletion = false
+    return breath
+  }
+
+  private func paint() {
+    guard let configuration else { return }
+    let measured = configuration.transcribing || shownGain != nil
+    effectiveAppearance.performAsCurrentDrawingAppearance {
+      let inactive = NSColor(configuration.inactiveColor).cgColor
+      for (index, bar) in configuration.bars.enumerated() {
+        let color = measured ? NSColor(bar.color).cgColor : inactive
+        if let mover = movers.sublayers?[safe: index] { mover.backgroundColor = color }
+        if let core = cores.sublayers?[safe: index] { core.backgroundColor = color }
+      }
+    }
+  }
+
+  /// Read the meter and scale the sweep: a bar peaks at the measured level and
+  /// never drops below the resting core, so silence stays a flat line.
+  func refreshGain() {
+    guard let configuration, !configuration.transcribing else { return }
+    showGain(configuration.meter?.gain, animated: true)
+  }
+
+  private func showGain(_ gain: Double?, animated: Bool) {
+    guard let configuration, !configuration.transcribing else {
+      movers.isHidden = false
+      return
+    }
+    if hasShownGain, let gain, let shownGain, abs(gain - shownGain) < 0.005 { return }
+    if hasShownGain, gain == nil, shownGain == nil { return }
+    let recolor = !hasShownGain || (gain == nil) != (shownGain == nil)
+    shownGain = gain
+    hasShownGain = true
+    CATransaction.begin()
+    CATransaction.setDisableActions(!animated)
+    CATransaction.setAnimationDuration(Self.gainPollInterval)
+    CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
+    let level = CGFloat(gain ?? 0)
+    let peak = configuration.minScale + level * (1 - configuration.minScale)
+    movers.sublayerTransform = CATransform3DMakeScale(1, peak, 1)
+    movers.isHidden = gain == nil
+    CATransaction.commit()
+    if recolor { paint() }
+  }
+
+  private func updateGainPolling() {
+    let polls =
+      window != nil && configuration?.meter != nil && configuration?.transcribing == false
+    guard polls != (gainTimer != nil) else { return }
+    if !polls {
+      stopGainPolling()
+      return
+    }
+    let timer = Timer(timeInterval: Self.gainPollInterval, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.refreshGain() }
+    }
+    timer.tolerance = Self.gainPollInterval / 4
+    RunLoop.main.add(timer, forMode: .common)
+    gainTimer = timer
+  }
+
+  func stopGainPolling() {
+    gainTimer?.invalidate()
+    gainTimer = nil
+  }
+}
+
+extension Array {
+  fileprivate subscript(safe index: Int) -> Element? {
+    indices.contains(index) ? self[index] : nil
   }
 }
 
