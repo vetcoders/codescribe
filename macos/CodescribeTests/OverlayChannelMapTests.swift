@@ -530,6 +530,44 @@ final class OverlayChannelMapTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty, "the counter is not a microphone")
   }
 
+  func testVerticalMiniCounterOpensTheIntercomAndNothingElse() throws {
+    let (state, _, _, _) = try armedState()
+    state.channelMapPreference.selectLayout(.vertical)
+    state.setPresentationMode(.mini)
+    let surface = state.windowContentSurface
+    let generation = state.captureGeneration
+    var revealed = 0
+    var restored = 0
+    state.onRevealIntercom = { revealed += 1 }
+    state.onRestoreMidiNaturalWidth = { restored += 1 }
+    let map = try XCTUnwrap(DictationOverlayView(state: state).channelMap)
+    XCTAssertEqual(map.placement, .mini)
+    XCTAssertTrue(map.stacked)
+    XCTAssertEqual(map.model.counterFigure, "2", "the badge carries the same agent count")
+    map.onCounter()
+    XCTAssertEqual(revealed, 1, "the counter leads to the Intercom group")
+    XCTAssertEqual(state.presentationMode, .mini, "mini stays mini")
+    XCTAssertEqual(restored, 0)
+    XCTAssertNil(state.selectedConversationID)
+    XCTAssertEqual(state.windowContentSurface, surface)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+  }
+
+  @MainActor
+  func testMiniIsAsWideInBothLayoutsUpToTheCounter() throws {
+    let (state, _, _, _) = try armedState()
+    let map = state.channelMapLayoutModel
+    let strip = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1)
+    let stacked = DictationOverlayWindow.miniNaturalWidth(map: map, textScale: 1, stacked: true)
+    XCTAssertEqual(
+      stacked,
+      ceil(
+        DictationOverlayWindow.miniFloorWidth + DictationOverlayWindow.miniBrandGap
+          + OverlayChannelPill.headerHeight))
+    XCTAssertLessThanOrEqual(abs(stacked - strip), 12, "one mini, one counter slot")
+  }
+
   func testCompactCounterRestoresTheNaturalWidthAndNothingElse() throws {
     let (state, _, _, _) = try armedState()
     state.setPresentationMode(.midi)
@@ -808,7 +846,12 @@ final class OverlayChannelMapTests: XCTestCase {
       "one drawing of the open-channel dot")
     let pillView = try section(
       of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
-    XCTAssertFalse(pillView.contains("Image(systemName:"), "no symbol on the digit or the pill")
+    // The one symbol is the vertical counter's stacked cards, which replace
+    // the figure (Maciej, 2026-10-23); none sits on a digit.
+    XCTAssertEqual(
+      pillView.components(separatedBy: "Image(systemName:").count - 1, 1,
+      "no symbol on the digit or the pill beyond the stacked counter")
+    XCTAssertTrue(pillView.contains("Image(systemName: Self.stackedCardsSymbol)"))
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")
     XCTAssertTrue(
