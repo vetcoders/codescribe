@@ -730,6 +730,133 @@ print("reopened_cached_reply")
         self.assertEqual(row["tts_error"], "tts request failed (403)")
 
 
+class SystemSayTests(unittest.TestCase):
+    """System replies use the durable owner and the same live-take guard."""
+
+    setUp = SayReplyTests.setUp
+    global_mute = SayReplyTests.global_mute
+
+    def say_system(self, *, mock_speaker=True, flags=(), bus_override=True):
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {
+                "CS_SAY_VOICE": "", "CS_SAY_SPEED": "", "CS_SAY_TTS_VENDOR": "",
+            }))
+            stack.enter_context(patch.object(sys, "argv", [
+                "cs-bus", "--say", "Zrobione", "--bridge-home", str(self.home),
+                *(["--bus", str(self.bus)] if bus_override else []), *flags,
+            ]))
+            stack.enter_context(patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            spoken = (stack.enter_context(patch.object(DEMUX, "_speak_xai",
+                      return_value=(True, None, None))) if mock_speaker else None)
+            code = DEMUX.main()
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.outcome = rows[-1]
+        return code, next(row for row in rows if row["kind"] == "agent_reply"), spoken
+
+    def test_system_reply_is_durable_and_plays_under_mute_all_without_unmuting_agents(self):
+        self.global_mute()
+        mute = self.home / "runtime/playback-mutes/global.json"
+        before = mute.read_bytes()
+        code, reply, spoken = self.say_system()
+        self.assertEqual(code, 0)
+        self.assertEqual((reply["provider"], reply["provider_session_id"], reply["name"]),
+                         ("codescribe", "system", "Codescribe"))
+        self.assertEqual((reply["system"], reply["association"], reply["voice"],
+                          reply["speed"], reply["tts_vendor"]),
+                         (True, "unsolicited", "carina", 1.0, "xai"))
+        spoken.assert_called_once_with("Zrobione", "carina", 1.0,
+                                       playback_root=self.home, bus=self.bus, control=ANY)
+        self.assertEqual(self.outcome["state"], "spoken")
+        self.assertEqual(mute.read_bytes(), before)
+        source = json.loads((self.home / "runtime/reply-sources" / f"{reply['reply_id']}.json").read_text())
+        raw = self.bus.read_bytes()
+        offset, length = source["source"]["offset"], source["source"]["length"]
+        self.assertEqual(json.loads(raw[offset:offset + length]), reply)
+        self.assertEqual(source["bus"], str(self.bus.resolve()))
+
+    def test_default_system_bus_cannot_be_redirected_by_an_agent_lease(self):
+        other = self.root / "other-channel.jsonl"
+        lease_id = DEMUX.lease_identifier("codescribe", "system")
+        DEMUX.atomic_json(self.home / "leases" / f"{lease_id}.json", {
+            "schema": DEMUX.LEASE_SCHEMA, "provider": "codescribe",
+            "provider_session_id": "system", "lease_id": lease_id,
+            "bus": str(other.resolve()), "pending": [],
+        })
+        code, _, _ = self.say_system(bus_override=False)
+        self.assertEqual(code, 0)
+        self.assertFalse(other.exists())
+        self.assertEqual(json.loads(self.bus.read_text().splitlines()[0])["kind"], "agent_reply")
+
+    def test_addressed_reply_still_requires_an_explicit_agent_identity(self):
+        with self.assertRaises(SystemExit) as refused, contextlib.redirect_stderr(io.StringIO()):
+            self.say_system(flags=("--reply-to", "a" * 24))
+        self.assertEqual(refused.exception.code, 2)
+        self.assertEqual(self.bus.read_text(), "")
+
+    def test_muted_system_reply_reaches_the_serialized_player_and_keeps_cached_audio(self):
+        self.global_mute()
+        player = MagicMock()
+        player.poll.return_value = 0
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch("subprocess.Popen", return_value=player) as play,
+        ):
+            code, reply, _ = self.say_system(mock_speaker=False)
+        self.assertEqual((code, self.outcome["state"]), (0, "spoken"))
+        self.assertEqual(play.call_args.args[0][0], "afplay")
+        sidecar, = (self.home / "speech").glob("*.json")
+        self.assertEqual(json.loads(sidecar.read_text())["reply_id"], reply["reply_id"])
+
+    def test_system_marker_bypasses_mute_flips_but_keeps_its_stop_ticket(self):
+        _, reply, _ = self.say_system()
+        control = DEMUX.ReplyPlaybackControl(
+            DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply,
+            "e" * 24, automatic=True)
+        try:
+            self.global_mute()
+            self.assertFalse(control.stopped())
+            self.assertFalse(control.mute_snapshot()["effective_muted"])
+            DEMUX.atomic_json(control.stop_path, {"schema": DEMUX.REPLY_CONTROL_SCHEMA,
+                              **control.owner(), "playback_ticket": control.ticket})
+            self.assertTrue(control.stopped())
+        finally:
+            control.close()
+
+    def test_system_reply_refuses_a_live_take_even_when_agents_are_muted(self):
+        self.global_mute()
+        self.bus.write_text(json.dumps({"status": "session_started", "session_id": "live-take"}) + "\n")
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch.object(DEMUX, "TAKE_WAIT_SECONDS", 0.05),
+            patch("subprocess.Popen") as player,
+        ):
+            code, reply, _ = self.say_system(mock_speaker=False)
+        self.assertEqual(code, 5)
+        self.assertTrue(reply["system"])
+        self.assertEqual((self.outcome["state"], self.outcome["reason"], self.outcome["spoken"]),
+                         ("refused", "take_live", False))
+        player.assert_not_called()
+        self.assertTrue((self.home / "runtime/reply-sources" / f"{reply['reply_id']}.json").exists())
+
+    def test_system_reply_with_private_bus_still_observes_the_app_capture_bus(self):
+        canonical = self.root / "app-bus.jsonl"
+        canonical.write_text(json.dumps({"status": "session_started", "session_id": "app-take"}) + "\n")
+        with (
+            patch.object(DEMUX, "bus_path", return_value=canonical),
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch.object(DEMUX, "TAKE_WAIT_SECONDS", 0.05),
+            patch("subprocess.Popen") as player,
+        ):
+            code, _, _ = self.say_system(mock_speaker=False)
+        self.assertEqual((code, self.outcome["reason"]), (5, "take_live"))
+        player.assert_not_called()
+
+
 def queued_say(
     home,
     bus,

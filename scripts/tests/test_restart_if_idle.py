@@ -61,8 +61,8 @@ class RestartIfIdleTests(unittest.TestCase):
             output = str(self.root / "agent-turn.lock")
         elif executable == "afplay":
             pass
-        elif executable == "say":
-            self.spoken.append(arguments[-1])
+        elif executable == "cs-say":
+            self.spoken.append(arguments[1])
         elif executable == "codesign":
             pass
         elif executable == "open" and "-a" in arguments:
@@ -233,9 +233,42 @@ class RestartIfIdleTests(unittest.TestCase):
 
     def test_announce_says_done_after_a_verified_restart(self):
         self.stale_pids = {123}
-        code, result, _ = self.invoke_main("--newer-only", "--announce")
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": ""}):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
         self.assertEqual((code, result["status"]), (0, "restarted"))
         self.assertEqual(self.spoken, ["Zrobione"])
+        self.assertEqual(Path(self.calls[-1][0]).name, "cs-say")
+        self.assertEqual(self.calls[-1][1:], ["Zrobione"])
+        self.assertEqual(Path(self.calls[-2][0]).name, "afplay")
+        self.assertNotIn("say", [Path(call[0]).name for call in self.calls])
+
+    def test_announce_passes_an_explicit_voice_override(self):
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": "TestVoice"}):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(self.calls[-1][1:], ["Zrobione", "--voice", "TestVoice"])
+
+    def test_announce_uses_local_bin_when_cs_say_is_not_on_path(self):
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": ""}), \
+                patch.object(restart.shutil, "which", return_value=None):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(
+            self.calls[-1], [str(Path.home() / ".local/bin/cs-say"), "Zrobione"]
+        )
+
+    def test_announce_speaks_failure_after_a_refused_restart(self):
+        self.stale_pids = {123}
+        self.outcome = "wrong-owner"
+        code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (75, "refused"))
+        self.assertEqual(self.spoken, ["Restart się nie udał"])
+        self.assertEqual(Path(self.calls[-2][0]).name, "afplay")
+        self.assertEqual(self.calls[-2][1], "/System/Library/Sounds/Basso.aiff")
+        self.assertEqual(self.calls[-1][1], "Restart się nie udał")
+        self.assertNotIn("say", [Path(call[0]).name for call in self.calls])
 
     def test_announce_stays_silent_when_nothing_newer_is_installed(self):
         code, result, _ = self.invoke_main("--newer-only", "--announce")

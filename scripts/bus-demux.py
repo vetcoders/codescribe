@@ -47,6 +47,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import select
@@ -6583,6 +6584,10 @@ def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path |
 
 
 def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, Any] | None]:
+    # The system speaker has no agent mailbox. Use the app's default bus (or
+    # the explicit private bus), never a same-named agent lease's destination.
+    if getattr(args, "system_reply", False):
+        return args.bus.expanduser().resolve(strict=False), None
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = args.bridge_home / "leases" / f"{lease_id}.json"
     state = read_reply_json(lease_path) if lease_path.exists() else {}
@@ -6965,6 +6970,10 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
+        # System announcements are independent of agent chatter switches.
+        # Their Stop ticket and the player's live-take guard still apply.
+        if self.reply.get("system") is True:
+            return False
         if self.mute_snapshot()["effective_muted"]:
             return True
         if self.automatic:
@@ -6976,7 +6985,8 @@ class ReplyPlaybackControl:
 
     def mute_snapshot(self) -> dict[str, Any]:
         return playback_mute_snapshot(self.root, self.reply["provider"],
-                                      self.reply["provider_session_id"], self.bus, automatic=self.automatic)
+                                      self.reply["provider_session_id"], self.bus,
+                                      automatic=self.automatic and self.reply.get("system") is not True)
 
     def publish(self, state: str, *, error: str | None = None, reason: str | None = None,
                 playback: dict[str, Any] | None = None) -> None:
@@ -7116,7 +7126,9 @@ def say_reply(args: argparse.Namespace) -> int:
     historical_name = ((owner.get("name") or owner.get("audience")) if owner
                        else envelope.get("audience")) if envelope else None
     name = historical_name if historical_name and historical_name != "*" else args.name
-    profile = voice_profile(args.bridge_home, name)
+    system = getattr(args, "system_reply", False)
+    profile = ({"voice": "carina", "speed": 1.0, "provider": "xai"} if system
+               else voice_profile(args.bridge_home, name))
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
@@ -7130,6 +7142,8 @@ def say_reply(args: argparse.Namespace) -> int:
         "association": "addressed" if envelope else "unsolicited",
         "delivery_id": args.reply_to,
     }
+    if system:
+        reply["system"] = True
     if envelope:
         if owner:
             reply["channel"] = owner.get("channel")
@@ -9197,6 +9211,7 @@ def main() -> int:
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
                "  cs-bus --history --since 1d > bus-history.md\n"
+               "  cs-say 'Gotowe.'  # Codescribe system voice (Carina, xAI)\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
                "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
@@ -9384,8 +9399,9 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through "
-        "vendor TTS; --name defaults to the name on this session's lease",
+        help="publish and speak through vendor TTS; without --provider/--session "
+        "uses Codescribe system voice (Carina, xAI, speed 1.0); agent --name "
+        "defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
@@ -9398,7 +9414,7 @@ def main() -> int:
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
-    mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
+    mute.add_argument("--mute-all", action="store_true", help="mute automatic agent reply playback on every channel; system announcements remain audible")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
     parser.add_argument("--broadcast", choices=("on", "quiet", "off"),
                         help="change this lease's channel-zero membership at any time (quiet: legacy spelling of on plus --quiet on)")
@@ -9794,7 +9810,25 @@ def main() -> int:
         receipt = read_json(args.bridge_home / "wakeups" / lease_id / f"{args.retry_wakeup}.json") or {}
         emit(receipt)
         return 0 if receipt.get("disposition") == "provider_accepted" else 3
-    if args.speed is not None and args.speed <= 0:
+    if args.say is not None:
+        args.system_reply = not args.provider and not args.session
+        if args.system_reply:
+            if args.reply_to:
+                parser.error("--reply-to requires an explicit --provider/--session")
+            args.provider, args.session = "codescribe", "system"
+            args.name = args.name or "Codescribe"
+            if args.voice is None:
+                args.voice = os.environ.get("CS_SAY_VOICE") or None
+            if args.speed is None and os.environ.get("CS_SAY_SPEED"):
+                try:
+                    args.speed = float(os.environ["CS_SAY_SPEED"])
+                except ValueError:
+                    parser.error("CS_SAY_SPEED must be a positive number")
+            if args.tts_vendor is None:
+                args.tts_vendor = os.environ.get("CS_SAY_TTS_VENDOR") or None
+            if args.tts_vendor not in (None, "xai", "openai"):
+                parser.error("CS_SAY_TTS_VENDOR must be xai or openai")
+    if args.speed is not None and (not math.isfinite(args.speed) or args.speed <= 0):
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
         parser.error("--voice needs a voice id")
@@ -9862,8 +9896,6 @@ def main() -> int:
             parser.error("--status combines with no other command")
         return status_command(args)
     if args.say is not None:
-        if not args.provider:
-            parser.error("--say requires --provider/--session")
         if args.follow or args.once or args.from_start or args.all or args.become:
             parser.error("--say takes no read mode")
         if not args.say.strip():
