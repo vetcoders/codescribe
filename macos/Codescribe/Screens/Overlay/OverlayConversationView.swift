@@ -611,7 +611,9 @@ struct OverlayConversationView: View {
   /// composer. The draft changes only after withdraw returns; a failure leaves
   /// the typing where it was and names the error on the bubble.
   private func edit(_ message: OverlayConversationMessage) {
-    guard message.holdSecondsRemaining != nil else { return }
+    // The painted countdown is a poll-time projection; a tap after the deadline
+    // must not pull back text the follower has already handed to the agent.
+    guard message.holdingSeconds(at: Date()) != nil else { return }
     let returning = message.text
     performDeliveryControl(.withdraw, message: message) {
       draft = draft.isEmpty ? returning : draft + "\n\n" + returning
