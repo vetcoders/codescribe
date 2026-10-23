@@ -1157,7 +1157,7 @@ private struct OverlayIntercomCard: View {
         if id == identity.conversationID { controller.expand(identity) }
       })
     let channelRow = intercomChannelRow(state: state, digit: identity.digit)
-    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
+    let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
     // The icon square names its agent in the hint panel, beside the column;
@@ -1167,18 +1167,22 @@ private struct OverlayIntercomCard: View {
         controller.expand(identity)
       } label: {
         HStack(spacing: 4) {
-          OverlayAgentStatusDot(
-            kind: intercomStatusDot(roster, state: state, digit: identity.digit), palette: palette
-          )
+          OverlayIntercomStatusMark(
+            roster: roster, channel: channelRow,
+            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+            palette: palette, hints: false)
           Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .overlayFastHint(name, palette: palette, leading: true)
+      .overlayFastHint(
+        channelRow.flatMap { inactive ? name + " · " + roster.detail(for: $0) : nil } ?? name,
+        palette: palette, leading: true
+      )
       .simultaneousGesture(tearOffGesture)
-      .modifier(OverlayDisconnectedRowDim(disconnected: dead))
+      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .accessibilityLabel(Text(verbatim: identity.digit + " · " + name))
       .accessibilityAction(named: Text("Detach conversation")) { controller.tearOff(identity) }
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
@@ -1199,7 +1203,8 @@ private struct OverlayIntercomCard: View {
           if let channelRow, row.marks {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
           }
-          OverlayAgentStatusDot(
+          OverlayIntercomStatusMark(
+            roster: roster, channel: channelRow,
             kind: intercomStatusDot(roster, state: state, digit: identity.digit),
             palette: palette)
           Button {
@@ -1211,11 +1216,14 @@ private struct OverlayIntercomCard: View {
           }
           .buttonStyle(.plain)
           .simultaneousGesture(tearOffGesture, including: expanded ? .subviews : .all)
+          // Names rest lightly smoked; the agent talking brightens instead of
+          // turning violet (Maciej, 2026-10-23: "można by się tego fioletu
+          // pozbyć … na rzecz rozjaśnienia").
           .conversationActionHover(
-            restingColor: dead
+            restingColor: inactive
               ? palette.mutedText.color
-              : speaking ? palette.agentAccent.color : palette.primaryText.color,
-            hoverColor: dead ? palette.mutedText.color : palette.agentAccent.color
+              : speaking ? palette.primaryText.color : palette.bodyText.color,
+            hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
           .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
@@ -1256,7 +1264,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
         }
       }
-      .modifier(OverlayDisconnectedRowDim(disconnected: dead))
+      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .modifier(
         current
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
@@ -1272,7 +1280,7 @@ private struct OverlayIntercomCard: View {
         if id == identity.conversationID { controller.expand(identity) }
       })
     let channel = intercomChannelRow(state: state, digit: identity.digit)
-    let dead = channel.map { roster.hasDeadFollower($0) } ?? false
+    let inactive = channel.map { roster.isInactive($0) } ?? false
     return HStack(spacing: 3) {
       OverlayIntercomFocusButton(
         roster: roster, channel: channel, palette: palette,
@@ -1281,7 +1289,7 @@ private struct OverlayIntercomCard: View {
         conversation, palette: palette, speaking: conversation?.replySpeaking == true,
         open: conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
     }
-    .modifier(OverlayDisconnectedRowDim(disconnected: dead))
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
   }
 
   private func audioSlot(
@@ -1382,6 +1390,38 @@ private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayCh
 /// The list's focus button, drawn flat on the fiszka from the pill menu's
 /// own `focus` action: the same destination, availability and callback. The
 /// slot is reserved even without a button so the audio pair never moves.
+/// The row's state mark: the activity dot while someone reads the channel,
+/// an explicit glyph once nobody does — the follower gone, or alive with a
+/// backlog nobody read past the stall horizon (Maciej, 2026-10-23: inactive
+/// agents "powinny mieć jawne disconnected"). The glyphs are the roster's
+/// own, so the overlay list and the Intercom say one thing.
+private struct OverlayIntercomStatusMark: View {
+  @Environment(\.csTextScale) private var textScale
+  let roster: OverlayChannelStatusView
+  let channel: OverlayChannelDelivery?
+  let kind: OverlayAgentDotKind
+  let palette: OverlayAppearancePalette
+  var hints = true
+
+  var body: some View {
+    if let channel, roster.isInactive(channel) {
+      let glyph = Image(systemName: roster.statusSymbol(for: channel))
+        .font(.system(size: 9 * textScale, weight: .semibold))
+        .foregroundStyle(palette.mutedText.color)
+        .frame(width: 12 * textScale, height: 10 * textScale)
+        .accessibilityLabel(Text(verbatim: roster.detail(for: channel)))
+        .accessibilityIdentifier("overlay-intercom-inactive-\(channel.channel)")
+      if hints {
+        glyph.overlayFastHint(roster.detail(for: channel), palette: palette)
+      } else {
+        glyph
+      }
+    } else {
+      OverlayAgentStatusDot(kind: kind, palette: palette)
+    }
+  }
+}
+
 private struct OverlayIntercomFocusButton: View {
   let roster: OverlayChannelStatusView
   let channel: OverlayChannelDelivery?
@@ -1403,18 +1443,23 @@ private struct OverlayIntercomFocusButton: View {
                   ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil))
             )
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(
-              focusState?.isSucceeded == true
-                ? palette.successStatus.color
-                : focusState?.isFailed == true
-                  ? palette.errorStatus.color
-                  : action.enabled ? palette.primaryText.color : palette.mutedText.color)
+            .modifier(
+              OverlayGlyphInk(
+                ink: focusState?.isSucceeded == true
+                  ? AnyShapeStyle(palette.successStatus.color)
+                  : focusState?.isFailed == true
+                    ? AnyShapeStyle(palette.errorStatus.color) : nil))
           }
         }
         .frame(width: diameter, height: diameter)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      // Smoked at rest like the wordmark and the audio pair, brighter under
+      // the pointer (Maciej, 2026-10-23: "nie tylko w pierwszym").
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
       .csFocusOutline()
       .disabled(!action.enabled)
       .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
@@ -1610,7 +1655,7 @@ private struct OverlayIntercomInstanceCard: View {
     // and focus would act on that agent under this fiszka's name (Copilot on
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
-    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
+    let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
@@ -1619,7 +1664,8 @@ private struct OverlayIntercomInstanceCard: View {
       if layout.tier != .icon, layout.controls.marks, let channelRow {
         OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
-      OverlayAgentStatusDot(
+      OverlayIntercomStatusMark(
+        roster: roster, channel: channelRow,
         kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       // Mini restores on its name; an open window is already key under the
       // click, so its name is plain text and part of the drag surface.
@@ -1632,15 +1678,15 @@ private struct OverlayIntercomInstanceCard: View {
           }
           .buttonStyle(.plain)
           .conversationActionHover(
-            restingColor: speaking ? palette.agentAccent.color : palette.primaryText.color,
-            hoverColor: palette.agentAccent.color
+            restingColor: speaking ? palette.primaryText.color : palette.bodyText.color,
+            hoverColor: palette.primaryText.color
           )
           .accessibilityLabel(String(localized: "Restore fiszka") + ": " + instance.name)
         } else {
           // Glyphs would otherwise take the hit from the drag surface below:
           // the hosting view hands only text and buttons to SwiftUI.
           nameRow
-            .foregroundStyle(speaking ? palette.agentAccent.color : palette.primaryText.color)
+            .foregroundStyle(speaking ? palette.primaryText.color : palette.bodyText.color)
             .allowsHitTesting(false)
             .accessibilityLabel(Text(verbatim: instance.name))
         }
@@ -1689,7 +1735,7 @@ private struct OverlayIntercomInstanceCard: View {
       .allowsHitTesting(!mini || hovering)
       .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
-    .modifier(OverlayDisconnectedRowDim(disconnected: dead))
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
     .padding(.leading, 12)
     .padding(.trailing, 4)
     // Any free spot on the header moves the fiszka, not one grip on one side
@@ -1770,7 +1816,7 @@ private struct OverlayIntercomInstanceCard: View {
         speaking: conversation?.replySpeaking == true)
     }
     .modifier(
-      OverlayDisconnectedRowDim(disconnected: channel.map { roster.hasDeadFollower($0) } ?? false))
+      OverlayDisconnectedRowDim(disconnected: channel.map { roster.isInactive($0) } ?? false))
   }
 
 }

@@ -433,6 +433,15 @@ private struct OverlaySizedAudioButtonStyle: ButtonStyle {
   }
 }
 
+/// Sets a glyph's ink only when it has one of its own; nil inherits.
+struct OverlayGlyphInk: ViewModifier {
+  let ink: AnyShapeStyle?
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let ink { content.foregroundStyle(ink) } else { content }
+  }
+}
+
 /// Flat on an Intercom fiszka the audio pair rests in the muted ink of the
 /// glyphs beside it (minimise, dock, the bar's count) and brightens under the
 /// pointer as they do. Semibold primary ink read hyper-white there (Maciej,
@@ -537,11 +546,14 @@ struct OverlayAgentAudioControls: View {
   }
 
   /// A lit glyph keeps its whole colour. At rest a glass circle keeps the
-  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph takes
-  /// the ink around it, which `OverlayFlatAudioInk` sets.
-  private func glyphInk(lit: Color?) -> AnyShapeStyle {
+  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph sets
+  /// no ink and takes the one `OverlayFlatAudioInk` puts around it. An
+  /// explicit `.foreground` resolved to the full primary instead, so every
+  /// flat control read hyper-white beside the smoked wordmark (Maciej,
+  /// 2026-10-23: "przydym też troszkę te hiperbiałe przyciski").
+  private func glyphInk(lit: Color?) -> AnyShapeStyle? {
     if let lit { return AnyShapeStyle(lit) }
-    return chrome ? AnyShapeStyle(palette.primaryText.color) : AnyShapeStyle(.foreground)
+    return chrome ? AnyShapeStyle(palette.primaryText.color) : nil
   }
 
   private var microphoneLabel: String {
@@ -602,7 +614,7 @@ struct OverlayAgentAudioControls: View {
                 ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
           )
           .font(.system(size: glyphSize, weight: .semibold))
-          .foregroundStyle(glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
+          .modifier(OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil)))
           .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
           .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
         }
@@ -622,7 +634,7 @@ struct OverlayAgentAudioControls: View {
           Image(systemName: microphoneSymbol)
             .overlayMirrored(broadcast)
             .font(.system(size: glyphSize, weight: .semibold))
-            .foregroundStyle(glyphInk(lit: open ? recordingAccent : nil))
+            .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
             .symbolEffect(.pulse, isActive: open && !reduceMotion)
             .frame(
               width: Self.controlFrame * controlScale,
@@ -1159,6 +1171,12 @@ struct OverlayChannelStatusView: View {
 
   func hasDeadFollower(_ channel: OverlayChannelDelivery) -> Bool {
     hudStates[channel.channel]?.followerAlive == false
+  }
+
+  /// Nobody reads this channel: its follower is gone, or alive with a backlog
+  /// unread past the stall horizon.
+  func isInactive(_ channel: OverlayChannelDelivery) -> Bool {
+    hasDeadFollower(channel) || hasStalledFollower(channel)
   }
 
   func hasStalledFollower(_ channel: OverlayChannelDelivery) -> Bool {

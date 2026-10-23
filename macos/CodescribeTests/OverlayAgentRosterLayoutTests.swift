@@ -51,7 +51,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
+        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
         "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
@@ -61,7 +61,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let drawn = try XCTUnwrap(instance.range(of: "return HStack(spacing: 3) {"))
     try assertOrder(
       [
-        "Text(verbatim: instance.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
+        "Text(verbatim: instance.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
         "if mini {", "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
       ], in: String(instance[drawn.lowerBound...]))
   }
@@ -193,6 +193,64 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "if window is OverlayIntercomPanel { return model.overlay.intercomTextScale }"))
   }
 
+  /// Maciej, 2026-10-23: Igor, Wiktoria and Olga read white while nobody read
+  /// their channels; an inactive agent shows it explicitly. A follower that
+  /// heartbeats over a backlog nobody read counts like a dead one.
+  func testInactiveAgentsDimAndWearAnExplicitMark() throws {
+    let channel = OverlayChannelDelivery(
+      channel: "8", agent: "olga", deliveryID: "d8", stage: .received, isOpen: false)
+    func roster(alive: Bool?, unreadSince: Date? = nil) -> OverlayChannelStatusView {
+      OverlayChannelStatusView(
+        channels: [channel], unavailable: false, palette: .dark, animates: false,
+        hudStates: [
+          "8": OverlayChannelHudProjection(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: alive,
+            unreadSince: unreadSince)
+        ])
+    }
+    let stale = Date().addingTimeInterval(-(OverlayState.followerStallHorizon + 60))
+    XCTAssertTrue(roster(alive: false).isInactive(channel), "a gone follower")
+    XCTAssertTrue(roster(alive: true, unreadSince: stale).isInactive(channel), "nobody reads")
+    XCTAssertEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
+    XCTAssertFalse(roster(alive: true).isInactive(channel), "a reading agent")
+    XCTAssertFalse(
+      roster(alive: true, unreadSince: Date()).isInactive(channel), "a fresh unread message")
+    XCTAssertFalse(roster(alive: nil).isInactive(channel), "no claim is not a claim of death")
+
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("roster.hasDeadFollower("), "every Intercom dim reads both")
+    XCTAssertEqual(
+      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: inactive)").count
+        - 1, 4)
+    XCTAssertEqual(widget.components(separatedBy: "OverlayIntercomStatusMark(").count - 1, 3)
+    XCTAssertFalse(widget.contains("OverlayAgentStatusDot( kind: intercomStatusDot("))
+  }
+
+  /// "Przydym też troszkę te hiperbiałe przyciski … nie tylko w pierwszym"
+  /// and "można by się tego fioletu pozbyć … na rzecz rozjaśnienia" (Maciej,
+  /// 2026-10-23): flat controls rest in the wordmark's muted ink, names rest
+  /// smoked and brighten instead of turning violet.
+  func testIntercomControlsRestSmokedAndNamesBrightenInsteadOfViolet() throws {
+    let roster = try overlaySource("OverlayChannelStatusView.swift")
+    XCTAssertFalse(roster.contains("AnyShapeStyle(.foreground)"), "an explicit ink is primary")
+    XCTAssertTrue(roster.contains("return chrome ? AnyShapeStyle(palette.primaryText.color) : nil"))
+    let focus = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomFocusButton: View {",
+      to: "private struct OverlayIntercomConversationBody: View {")
+    XCTAssertFalse(focus.contains("action.enabled ? palette.primaryText.color"))
+    XCTAssertTrue(
+      focus.contains(
+        "restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color"))
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("speaking ? palette.agentAccent.color"))
+    XCTAssertFalse(widget.contains("hoverColor: palette.agentAccent.color"))
+    XCTAssertEqual(
+      widget.components(
+        separatedBy: "speaking ? palette.primaryText.color : palette.bodyText.color"
+      )
+      .count - 1, 3)
+  }
+
   func testDeadRowsDimAndDisableAudioWhileReceptionRemainsActionable() throws {
     let row = try sourceSection(
       "OverlayChannelStatusView.swift", from: "func channelRow(",
@@ -211,7 +269,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       to: "private func audioSlot(")
     // An agent in its own window leaves the stack (Maciej 17:48Z): no row
     // dims for a detached window, and the row carries no window glyph.
-    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: dead)"))
+    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: inactive)"))
     XCTAssertFalse(card.contains("detachedInstance"))
     XCTAssertFalse(card.contains("Image(systemName: \"macwindow\")"))
     XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(tearOffGesture").count - 1, 2)
@@ -225,7 +283,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     // Hover moves no row out of the column and adds no preview line; the
     // icon square names its agent in the hint panel instead.
     XCTAssertFalse(card.contains("hovered"))
-    XCTAssertTrue(card.contains(".overlayFastHint(name, palette: palette, leading: true)"))
+    XCTAssertTrue(
+      card.contains(
+        "inactive ? name + \" · \" + roster.detail(for: $0) : nil } ?? name, palette: palette, leading: true"
+      ))
     let cardBody = try sourceSection(
       "OverlayIntercomWidget.swift",
       from: "let expanded = controller.presentation.expanded.contains(identity)",
@@ -351,6 +412,13 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
       XCTAssertNil(state.selectedConversationID)
     }
+  }
+
+  private func overlaySource(_ file: String) throws -> String {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay/\(file)")
+    return try String(contentsOf: url, encoding: .utf8).split(whereSeparator: \.isWhitespace)
+      .joined(separator: " ")
   }
 
   private func sourceSection(_ file: String, from start: String, to end: String) throws -> String {
