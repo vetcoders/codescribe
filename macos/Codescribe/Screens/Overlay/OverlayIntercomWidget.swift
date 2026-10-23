@@ -913,6 +913,7 @@ private struct OverlayIntercomCard: View {
         Image(systemName: "hand.draw").font(.system(size: 10 * scale))
           .frame(width: 24 * max(1, scale))
           .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
+          .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
           .accessibilityLabel("Detach conversation")
       }
       Button {
@@ -960,13 +961,19 @@ private struct OverlayIntercomCard: View {
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       audioSlot(conversation, palette: palette, speaking: speaking, open: open)
       if expanded {
-        Button("Close", systemImage: "xmark") { controller.close(identity) }
-          .labelStyle(.iconOnly).buttonStyle(.plain)
-          .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
-          .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-          )
-          .accessibilityIdentifier("overlay-intercom-close-\(identity.digit)")
+        // This folds the conversation back into its one-row fiszka. An X
+        // here read as the agent pill's X, which archives the agent
+        // (Maciej, 2026-10-23); the ↗ is the overlay's return-to-mini glyph.
+        Button("Collapse", systemImage: OverlayControlSymbols.returnToMini) {
+          controller.close(identity)
+        }
+        .labelStyle(.iconOnly).buttonStyle(.plain)
+        .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
+        .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
+        .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
       }
     }
     .modifier(

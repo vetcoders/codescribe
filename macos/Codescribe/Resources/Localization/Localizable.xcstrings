@@ -7,6 +7,18 @@
         "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozmowa niedostępna" } }
       }
     },
+    "Collapse into the group" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Zwiń do grupy" } }
+      }
+    },
+    "Drag to detach" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Przeciągnij, aby odpiąć" } }
+      }
+    },
     "Next agents" : {
       "extractionState" : "manual",
       "localizations" : {
