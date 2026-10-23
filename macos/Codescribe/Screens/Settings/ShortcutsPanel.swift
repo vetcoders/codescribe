@@ -330,10 +330,10 @@ struct ShortcutsPanel: View {
       SettingsSectionLabel(String(localized: "Dictation control"))
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
-          title: "Tap Fn to dictate",
-          detail: "Tap to start or stop. Hold to record while held."
+          title: "Tap Fn to toggle dictation",
+          detail: "A short tap starts or stops a take. Holding Fn always records."
         ) {
-          Toggle("Tap Fn to dictate", isOn: fnTapBinding)
+          Toggle("Tap Fn to toggle dictation", isOn: fnTapBinding)
             .settingsSwitch()
         }
         divider

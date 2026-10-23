@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Settings › Shortcuts: the Fn tap switch no longer reads as if holding Fn needed it. It is now „Tap Fn to toggle dictation” (PL „Stuknięcie Fn włącza i wyłącza dyktowanie”), and its note says a short tap starts or stops a take while holding Fn always records.
 - Settings › Agent › MCP (Polish): the add-server form's launch-command hint, its argument buttons and the command placeholder are translated, the command placeholder no longer repeats the server-name example, the field reads „Polecenie”, and the Technical details group aligns left instead of centring under the form.
 - Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier, holding it past the start delay before the digit no longer hangs up the open channel and starts a phantom dictation that the digit then reopened; while a channel is open that hold admits nothing and the digit chord alone closes the channel.
 - Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier and no channel open, a slow chord (the key held past the start delay, then the digit) no longer pastes a stray word when the key is released. The hold that had already started was only the chord's prefix: it ends without delivering, copying or archiving anything, the overlay closes the take, and the channel opens as usual.
