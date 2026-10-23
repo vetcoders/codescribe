@@ -565,7 +565,8 @@ struct ResponsesRequest {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-    /// `Some(false)` only on an account backend that keeps no server chain.
+    /// `Some(true)` on a key route, `Some(false)` on an account backend that
+    /// keeps no server chain, omitted only by the stateless title request.
     #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
     /// Formatting only; see [`reasoning_ladder`].
@@ -656,22 +657,145 @@ fn chained_instructions(system_prompt: &str, previous_response_id: Option<&str>)
     }
 }
 
+/// Earlier turns a take replays when no stored predecessor carries them. A
+/// bound, not a measured optimum: enough for a sentence spread over several
+/// silence-delimited fragments, without resending a long take on every one.
+const TAKE_CHAIN_REPLAY_TURNS: usize = 8;
+
+/// One take's formatter conversation (repair points 3–4 of Olga's 2026-10-22
+/// report, `2026_1022/olga-responses-chain`): fragments go one after another,
+/// each with what came before in the same take, and nothing crosses into
+/// another take or the Formatting Test.
+///
+/// A key route chains to this take's own completed predecessor
+/// (`previous_response_id`, `store: true`). The signed-in account backend keeps
+/// no responses, so it replays this take's earlier turns in `input`; a key route
+/// whose predecessor is refused or missing reseeds the same way instead of
+/// sending the fragment bare.
+#[derive(Debug, Default)]
+pub struct TakeFormatterChain {
+    turn: tokio::sync::Mutex<()>,
+    state: std::sync::Mutex<TakeChainState>,
+}
+
+#[derive(Debug, Default)]
+struct TakeChainState {
+    previous_response_id: Option<String>,
+    turns: std::collections::VecDeque<(String, String)>,
+}
+
+tokio::task_local! {
+    static TAKE_CHAIN: Arc<TakeFormatterChain>;
+}
+
+impl TakeFormatterChain {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Run one formatter call as this take's next turn: it starts after the
+    /// previous turn has finished, so it reads that turn's reply.
+    pub async fn next_turn<F: std::future::Future>(self: &Arc<Self>, call: F) -> F::Output {
+        let _turn = self.turn.lock().await;
+        TAKE_CHAIN.scope(Arc::clone(self), call).await
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, TakeChainState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn previous_response_id(&self) -> Option<String> {
+        self.state().previous_response_id.clone()
+    }
+
+    fn replay_turns(&self) -> Vec<(String, String)> {
+        self.state().turns.iter().cloned().collect()
+    }
+
+    /// A completed turn joins the replay; its id becomes the predecessor, and a
+    /// turn without one (account backend, or a reply that named none) makes the
+    /// next turn replay instead of chaining past it.
+    fn record(&self, user_message: &str, assistant_text: &str, response_id: Option<String>) {
+        let mut state = self.state();
+        state
+            .turns
+            .push_back((user_message.to_string(), assistant_text.to_string()));
+        while state.turns.len() > TAKE_CHAIN_REPLAY_TURNS {
+            state.turns.pop_front();
+        }
+        state.previous_response_id = response_id.filter(|id| !id.is_empty());
+    }
+
+    fn forget_predecessor(&self) {
+        self.state().previous_response_id = None;
+    }
+}
+
+/// The take that owns this formatting call, if any. Only the live formatter
+/// lane runs inside one; every other caller keeps the process-wide chain.
+fn take_chain(ai_mode: crate::state::conversation::AiMode) -> Option<Arc<TakeFormatterChain>> {
+    if ai_mode != crate::state::conversation::AiMode::Formatting {
+        return None;
+    }
+    TAKE_CHAIN.try_with(Arc::clone).ok()
+}
+
+/// Record a completed reply where this call's chain lives.
+fn remember_completed_turn(
+    ai_mode: crate::state::conversation::AiMode,
+    user_message: &str,
+    assistant_text: &str,
+    response_id: Option<String>,
+) {
+    if let Some(take) = take_chain(ai_mode) {
+        take.record(user_message, assistant_text, response_id);
+    } else if let Some(response_id) = response_id {
+        crate::state::conversation::set_response_id_for_mode(ai_mode, response_id);
+    }
+}
+
+/// Drop a predecessor the server refused, so the retry reseeds from the take's
+/// own turns (or, outside a take, starts unchained as before).
+fn forget_rejected_predecessor(ai_mode: crate::state::conversation::AiMode) {
+    if let Some(take) = take_chain(ai_mode) {
+        take.forget_predecessor();
+    } else {
+        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+    }
+}
+
 /// Build the `input` items for a Responses request. On chained turns the
 /// system prompt rides as a leading `developer` item, because the
 /// `instructions` param is absent there (see [`chained_instructions`]) and the
 /// chain does not carry it server-side. First turns carry the prompt via
-/// `instructions` only — no duplicate developer item.
+/// `instructions` only — no duplicate developer item. Replayed turns of the
+/// same take go before the new fragment as the user/assistant pairs they were.
 fn build_responses_input(
     system_prompt: &str,
     previous_response_id: Option<&str>,
+    replay: &[(String, String)],
     user_content: Vec<InputContent>,
 ) -> Vec<InputItem> {
-    let mut input = Vec::with_capacity(2);
+    let mut input = Vec::with_capacity(2 + replay.len() * 2);
     if previous_response_id.is_some() {
         input.push(InputItem {
             role: "developer",
             content: vec![InputContent::Text {
                 text: system_prompt.to_string(),
+            }],
+        });
+    }
+    for (user, assistant) in replay {
+        input.push(InputItem {
+            role: "user",
+            content: vec![InputContent::Text { text: user.clone() }],
+        });
+        input.push(InputItem {
+            role: "assistant",
+            content: vec![InputContent::Output {
+                text: assistant.clone(),
             }],
         });
     }
@@ -695,6 +819,9 @@ struct InputItem {
 enum InputContent {
     #[serde(rename = "input_text")]
     Text { text: String },
+    /// An earlier assistant reply replayed into `input`.
+    #[serde(rename = "output_text")]
+    Output { text: String },
 }
 
 /// Anthropic Messages request format (/v1/messages)
@@ -1817,11 +1944,19 @@ fn responses_chain_request(
         crate::state::conversation::AiMode::Formatting
     };
     // An account backend stores nothing: each request carries its own prompt
-    // and no chain id, mirroring the Agent provider's body on that route.
+    // and no chain id, mirroring the Agent provider's body on that route. A
+    // take's own turns ride in `input` whenever no predecessor carries them.
+    let take = take_chain(ai_mode);
     let previous_response_id = if account_backend {
         None
+    } else if let Some(take) = &take {
+        take.previous_response_id()
     } else {
         crate::state::conversation::get_previous_response_id_for_mode(ai_mode)
+    };
+    let replay = match &take {
+        Some(take) if previous_response_id.is_none() => take.replay_turns(),
+        _ => Vec::new(),
     };
     let temperature = if account_backend {
         None
@@ -1833,6 +1968,7 @@ fn responses_chain_request(
         input: build_responses_input(
             system_prompt,
             previous_response_id.as_deref(),
+            &replay,
             vec![InputContent::Text {
                 text: user_message.to_string(),
             }],
@@ -1841,7 +1977,10 @@ fn responses_chain_request(
         previous_response_id: previous_response_id.clone(),
         max_output_tokens: None,
         temperature,
-        store: account_backend.then_some(false),
+        // A key route asks the server to keep the response explicitly: an
+        // omitted `store` is `true` on OpenAI but `false` on mtplx, where every
+        // chained request then came back 404 and fell back to a bare fragment.
+        store: Some(!account_backend),
         reasoning: reasoning.map(|effort| ReasoningParam { effort }),
         stream,
     };
@@ -1923,7 +2062,7 @@ async fn call_llm_endpoint(
                 "Clearing rejected previous_response_id for {:?} and retrying unchained",
                 ai_mode
             );
-            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            forget_rejected_predecessor(ai_mode);
             let (_, _, unchained) = responses_chain_request(
                 user_message,
                 system_prompt,
@@ -1961,7 +2100,12 @@ async fn call_llm_endpoint(
     }
 
     // Store response_id for this mode's conversation chain (separate streams)
-    crate::state::conversation::set_response_id_for_mode(ai_mode, responses_result.id.clone());
+    remember_completed_turn(
+        ai_mode,
+        user_message,
+        &output.assistant_text,
+        Some(responses_result.id.clone()),
+    );
     debug!(
         "Response id ({}): {}",
         if assistive { "assistive" } else { "formatting" },
@@ -2098,7 +2242,7 @@ async fn call_llm_endpoint_streaming(
                 "Clearing rejected previous_response_id for {:?} and retrying SSE unchained",
                 ai_mode
             );
-            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            forget_rejected_predecessor(ai_mode);
             let (_, _, unchained) = responses_chain_request(
                 user_message,
                 system_prompt,
@@ -2127,31 +2271,43 @@ async fn call_llm_endpoint_streaming(
         reasoning_text: streamed.reasoning_text,
     };
     if account_backend {
-        // `store: false`: the id names nothing a later request may chain to.
+        // `store: false`: the id names nothing a later request may chain to;
+        // a take keeps the turn itself and replays it.
+        remember_completed_turn(ai_mode, user_message, &output.assistant_text, None);
         debug!(
             "SSE complete on the account backend for {}; no chain id retained",
             if assistive { "assistive" } else { "formatting" }
         );
     } else if let Some(response_id) = streamed.response_id.filter(|id| !id.is_empty()) {
-        crate::state::conversation::set_response_id_for_mode(ai_mode, response_id.clone());
+        remember_completed_turn(
+            ai_mode,
+            user_message,
+            &output.assistant_text,
+            Some(response_id.clone()),
+        );
         debug!(
             "SSE complete, response_id ({}): {}",
             if assistive { "assistive" } else { "formatting" },
             response_id
         );
-    } else if let Some(prev_id) = previous_response_id.as_deref()
-        && !prev_id.is_empty()
-    {
-        warn!(
-            "SSE complete without response_id for {}; keeping previous_response_id={}",
-            if assistive { "assistive" } else { "formatting" },
-            prev_id
-        );
     } else {
-        warn!(
-            "SSE complete without response_id for {}; no previous_response_id to keep",
-            if assistive { "assistive" } else { "formatting" }
-        );
+        // A take keeps this turn and replays it next time, since no id chains
+        // past it; outside a take the previous id is kept as before.
+        remember_completed_turn(ai_mode, user_message, &output.assistant_text, None);
+        if let Some(prev_id) = previous_response_id.as_deref()
+            && !prev_id.is_empty()
+        {
+            warn!(
+                "SSE complete without response_id for {}; keeping previous_response_id={}",
+                if assistive { "assistive" } else { "formatting" },
+                prev_id
+            );
+        } else {
+            warn!(
+                "SSE complete without response_id for {}; no previous_response_id to keep",
+                if assistive { "assistive" } else { "formatting" }
+            );
+        }
     }
     Ok(output)
 }
@@ -2254,15 +2410,21 @@ mod tests {
     #[test]
     fn chained_turn_recarries_system_prompt_as_developer_input() {
         let user = vec![InputContent::Text { text: "RAW".into() }];
-        let chained = build_responses_input("SYS", Some("resp_123"), user);
+        let chained = build_responses_input("SYS", Some("resp_123"), &[], user);
         assert_eq!(chained.len(), 2);
         assert_eq!(chained[0].role, "developer");
-        let InputContent::Text { text } = &chained[0].content[0];
+        let InputContent::Text { text } = &chained[0].content[0] else {
+            panic!("the re-carried prompt is input text");
+        };
         assert_eq!(text, "SYS");
         assert_eq!(chained[1].role, "user");
 
-        let first =
-            build_responses_input("SYS", None, vec![InputContent::Text { text: "RAW".into() }]);
+        let first = build_responses_input(
+            "SYS",
+            None,
+            &[],
+            vec![InputContent::Text { text: "RAW".into() }],
+        );
         assert_eq!(
             first.len(),
             1,
@@ -3472,5 +3634,283 @@ mod tests {
         assert_eq!(probe.status, FormattingProbeStatus::TimedOut, "{probe:?}");
         assert_eq!(probe.input, "własny tekst do sformatowania przez model");
         assert!(probe.elapsed >= Duration::from_millis(1500));
+    }
+
+    fn sse_answer_with_id(id: &str, text: &str) -> String {
+        format!(
+            "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"{id}\"}}}}\n\n\
+             data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{text}\"}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{id}\",\"status\":\"completed\"}}}}\n\n"
+        )
+    }
+
+    fn request_json(request: &mockito::Request) -> serde_json::Value {
+        serde_json::from_slice(request.body().expect("request body")).expect("JSON body")
+    }
+
+    fn input_texts(body: &serde_json::Value) -> Vec<(String, String, String)> {
+        body["input"]
+            .as_array()
+            .expect("input items")
+            .iter()
+            .map(|item| {
+                let part = &item["content"][0];
+                (
+                    item["role"].as_str().unwrap_or_default().to_string(),
+                    part["type"].as_str().unwrap_or_default().to_string(),
+                    part["text"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// A key route asks the server to keep its reply: mtplx keeps nothing when
+    /// `store` is omitted, so every chained fragment came back 404 (2026-10-23).
+    /// The account backend still sends `store: false` and no predecessor.
+    #[test]
+    #[serial]
+    fn a_key_route_asks_the_server_to_keep_the_reply_it_chains_to() {
+        use crate::state::conversation::{
+            AiMode, reset_conversation_for_mode, set_response_id_for_mode,
+        };
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "resp_prev".into());
+        let (_, previous, key) =
+            responses_chain_request("kawałek", "SYS", false, "m".into(), true, false, None);
+        let key = serde_json::to_value(&key).unwrap();
+        assert_eq!(previous.as_deref(), Some("resp_prev"));
+        assert_eq!(key["store"], json!(true));
+        assert_eq!(key["previous_response_id"], json!("resp_prev"));
+        let (_, previous, account) =
+            responses_chain_request("kawałek", "SYS", false, "m".into(), true, true, None);
+        let account = serde_json::to_value(&account).unwrap();
+        assert_eq!(previous, None);
+        assert_eq!(account["store"], json!(false));
+        assert!(account.get("previous_response_id").is_none());
+        reset_conversation_for_mode(AiMode::Formatting);
+    }
+
+    /// The account backend keeps no responses, so a take replays its own
+    /// earlier turns in `input`: user fragments and the assistant's replies.
+    #[tokio::test]
+    #[serial]
+    async fn an_account_backend_take_replays_its_own_turns() {
+        use crate::state::conversation::AiMode;
+        let take = TakeFormatterChain::new();
+        take.next_turn(async {
+            remember_completed_turn(AiMode::Formatting, "żyje i się", "Żyje i się", None);
+        })
+        .await;
+        let body = take
+            .next_turn(async {
+                let (_, previous, request) =
+                    responses_chain_request("obudziła", "SYS", false, "m".into(), true, true, None);
+                assert_eq!(previous, None);
+                serde_json::to_value(&request).unwrap()
+            })
+            .await;
+        assert_eq!(body["store"], json!(false));
+        assert_eq!(body["instructions"], json!("SYS"));
+        assert_eq!(
+            input_texts(&body),
+            vec![
+                ("user".into(), "input_text".into(), "żyje i się".into()),
+                (
+                    "assistant".into(),
+                    "output_text".into(),
+                    "Żyje i się".into()
+                ),
+                ("user".into(), "input_text".into(), "obudziła".into()),
+            ]
+        );
+    }
+
+    /// One take over the real Responses path: the second fragment chains to the
+    /// first one's reply, a refused predecessor reseeds from the take's own
+    /// turns instead of going bare, and a new take starts clean even though
+    /// the process-wide chain holds an id from elsewhere.
+    #[tokio::test]
+    #[serial]
+    async fn a_take_chains_its_own_fragments_and_never_another_take() {
+        use crate::state::conversation::{
+            AiMode, get_previous_response_id_for_mode, reset_conversation_for_mode,
+            set_response_id_for_mode,
+        };
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        reset_conversation_for_mode(AiMode::Formatting);
+        set_response_id_for_mode(AiMode::Formatting, "resp_earlier_take".into());
+        let mut server = mockito::Server::new_async().await;
+        let sse = |id: &str, text: &str| sse_answer_with_id(id, text);
+        let first = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body["store"] == json!(true)
+                    && body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![(
+                            "user".into(),
+                            "input_text".into(),
+                            "pierwszy kawałek".into(),
+                        )]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_1", "Pierwszy kawałek"))
+            .expect(1)
+            .create_async()
+            .await;
+        let second = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body["store"] == json!(true)
+                    && body["previous_response_id"] == json!("resp_take_1")
+                    && input_texts(&body).last().map(|item| item.2.as_str())
+                        == Some("drugi kawałek")
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_2", "drugi kawałek."))
+            .expect(1)
+            .create_async()
+            .await;
+        let refused = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                request_json(request)["previous_response_id"] == json!("resp_take_2")
+            })
+            .with_status(404)
+            .with_body(
+                json!({"error": {
+                    "message": "Previous response with id 'resp_take_2' not found.",
+                    "param": "previous_response_id",
+                    "code": "previous_response_not_found"
+                }})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let reseeded = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![
+                            (
+                                "user".into(),
+                                "input_text".into(),
+                                "pierwszy kawałek".into(),
+                            ),
+                            (
+                                "assistant".into(),
+                                "output_text".into(),
+                                "Pierwszy kawałek".into(),
+                            ),
+                            ("user".into(), "input_text".into(), "drugi kawałek".into()),
+                            (
+                                "assistant".into(),
+                                "output_text".into(),
+                                "drugi kawałek.".into(),
+                            ),
+                            ("user".into(), "input_text".into(), "trzeci kawałek".into()),
+                        ]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_take_3", "Trzeci kawałek."))
+            .expect(1)
+            .create_async()
+            .await;
+        let fresh = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body = request_json(request);
+                body.get("previous_response_id").is_none()
+                    && input_texts(&body)
+                        == vec![("user".into(), "input_text".into(), "nowe nagranie".into())]
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse("resp_next_take", "Nowe nagranie."))
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "take-chain-9b",
+            None,
+        );
+        let lane = settings.llm_lanes().formatting();
+        let call = |message: &'static str| {
+            call_provider_once(
+                WireFamily::OpenAiResponses,
+                message,
+                "format only",
+                false,
+                lane,
+                true,
+                quick_stream(),
+            )
+        };
+
+        let take = TakeFormatterChain::new();
+        for message in ["pierwszy kawałek", "drugi kawałek", "trzeci kawałek"] {
+            take.next_turn(call(message))
+                .await
+                .unwrap_or_else(|error| panic!("{message}: {error}"));
+        }
+        let next_take = TakeFormatterChain::new();
+        let output = next_take
+            .next_turn(call("nowe nagranie"))
+            .await
+            .expect("a new take formats");
+        assert_eq!(output.assistant_text, "Nowe nagranie.");
+
+        for mock in [first, second, refused, reseeded, fresh] {
+            mock.assert_async().await;
+        }
+        assert_eq!(
+            get_previous_response_id_for_mode(AiMode::Formatting).as_deref(),
+            Some("resp_earlier_take"),
+            "a take's replies never move the process-wide chain"
+        );
+        reset_conversation_for_mode(AiMode::Formatting);
+    }
+
+    /// The next fragment of a take starts only after the previous one has
+    /// finished, so it can read that reply.
+    #[tokio::test]
+    async fn a_take_runs_its_fragments_one_after_another() {
+        let take = TakeFormatterChain::new();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = {
+            let (take, order) = (Arc::clone(&take), Arc::clone(&order));
+            tokio::spawn(async move {
+                take.next_turn(async {
+                    order.lock().unwrap().push("first started");
+                    held.await.unwrap();
+                    order.lock().unwrap().push("first finished");
+                })
+                .await
+            })
+        };
+        tokio::task::yield_now().await;
+        let second = {
+            let (take, order) = (Arc::clone(&take), Arc::clone(&order));
+            tokio::spawn(async move {
+                take.next_turn(async { order.lock().unwrap().push("second started") })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(*order.lock().unwrap(), vec!["first started"]);
+        release.send(()).unwrap();
+        first.await.unwrap();
+        second.await.unwrap();
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["first started", "first finished", "second started"]
+        );
     }
 }
