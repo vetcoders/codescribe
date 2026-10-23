@@ -821,6 +821,7 @@ final class LiveTranscriptNativeTextView: NSTextView {
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     if performSelectedCopy(with: event) { return true }
+    if isEditable, performUndoChord(with: event) { return true }
     return super.performKeyEquivalent(with: event)
   }
 

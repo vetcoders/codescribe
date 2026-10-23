@@ -68,6 +68,16 @@ final class ComposerTextViewTests: XCTestCase {
     text.insertText("hello", replacementRange: NSRange(location: 0, length: 0))
     XCTAssertTrue(undo.canUndo)
     XCTAssertFalse(window.undoManager?.canUndo ?? false)
+
+    // Cmd+Z reaches the composer's own history before any menu item does.
+    XCTAssertTrue(window.makeFirstResponder(text))
+    let chord = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+        windowNumber: window.windowNumber, context: nil, characters: "z",
+        charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
+    XCTAssertTrue(text.performKeyEquivalent(with: chord))
+    XCTAssertEqual(text.string, "")
   }
 
   func testHeightGrowsFromOneLineAndClampsAtEight() {
