@@ -378,6 +378,43 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       "a longer name widens the group")
   }
 
+  /// A row torn off the group becomes a mini under the hand holding it, and
+  /// the conversation it unfolds to keeps the mini's top-right corner, so the
+  /// window that shows the mini puts it exactly where the hand let go.
+  func testATornOffRowLandsUnderThePointerAndRestoresAroundIt() {
+    let row = CGRect(x: 1000, y: 600, width: 260, height: 48)
+    let size = CGSize(width: 180, height: 30)
+    let pointer = CGPoint(x: 1040, y: 620)
+    let tile = Layout.tornOffTile(row: row, pointer: pointer, size: size)
+    XCTAssertEqual(tile.size, size)
+    XCTAssertTrue(tile.contains(pointer), "the pointer holds the tile it tore off")
+    XCTAssertEqual(tile.minX, pointer.x - 16)
+
+    let nearRightEdge = Layout.tornOffTile(
+      row: row, pointer: CGPoint(x: 1255, y: 640), size: size)
+    XCTAssertEqual(nearRightEdge.maxX, row.maxX, "the tile stays inside the row's span")
+    XCTAssertEqual(nearRightEdge.maxY, row.maxY, "and never rises above the row")
+
+    let iconRow = CGRect(x: 1200, y: 600, width: 40, height: 40)
+    let wide = Layout.tornOffTile(row: iconRow, pointer: CGPoint(x: 1220, y: 620), size: size)
+    XCTAssertEqual(wide.maxX, iconRow.maxX, "a mini wider than an icon row grows to the left")
+
+    let beside = Layout.tornOffTile(row: row, pointer: nil, size: size)
+    XCTAssertEqual(beside.maxX, row.minX - Layout.gap, "without a hand it lands beside the group")
+    XCTAssertEqual(beside.maxY, row.maxY)
+
+    let restored = Layout.restoredFrame(forTile: tile, scale: 1)
+    XCTAssertEqual(restored.size, Layout.conversationSize(scale: 1))
+    XCTAssertEqual(restored.maxX, tile.maxX)
+    XCTAssertEqual(restored.maxY, tile.maxY)
+    let screen = CGRect(x: 0, y: 0, width: 1728, height: 1080)
+    XCTAssertEqual(
+      Layout.cardFrame(
+        below: CGRect(x: restored.maxX - size.width, y: restored.maxY, width: size.width, height: 0),
+        size: size, visibleFrame: screen),
+      tile, "the mini drawn from the restored frame is the torn tile")
+  }
+
   /// Maciej, 2026-10-22: channel 0 is pinned on top and channels 1–9 scroll
   /// under it. The pinned row's measured height shrinks the agents' viewport.
   func testPinnedAllShrinksTheAgentsViewportInsteadOfScrollingAway() {

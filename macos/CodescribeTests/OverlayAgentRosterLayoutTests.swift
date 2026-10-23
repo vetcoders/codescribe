@@ -102,12 +102,6 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       XCTAssertEqual(
         OverlayIntercomWidgetLayout.minimizedInstanceWidth(text: measuredText, scale: scale),
         miniExpected, accuracy: 0.001)
-      let detachedWindowMark = 9 * scale + 5
-      XCTAssertEqual(
-        OverlayIntercomWidgetLayout.restingWidth(
-          headerText: 0, agentText: measuredText + detachedWindowMark, scale: scale),
-        expected + detachedWindowMark, accuracy: 0.001,
-        "the detached-window glyph keeps its own measured slot")
     }
   }
 
@@ -147,8 +141,12 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let card = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func cardHeader(",
       to: "private func audioSlot(")
-    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: dead || detached != nil)"))
-    XCTAssertTrue(card.contains("Image(systemName: \"macwindow\")"))
+    // An agent in its own window leaves the stack (Maciej 17:48Z): no row
+    // dims for a detached window, and the row carries no window glyph.
+    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: dead)"))
+    XCTAssertFalse(card.contains("detachedInstance"))
+    XCTAssertFalse(card.contains("Image(systemName: \"macwindow\")"))
+    XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(tearOffGesture").count - 1, 2)
     XCTAssertTrue(
       card.contains(
         "OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)"))

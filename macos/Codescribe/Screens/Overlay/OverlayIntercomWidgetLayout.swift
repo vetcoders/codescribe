@@ -26,7 +26,7 @@ struct IntercomContentMetrics: Equatable {
       3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
   }
 
-  init(names: [String], digits: [String], scale: CGFloat, hasDetached: Bool = false) {
+  init(names: [String], digits: [String], scale: CGFloat) {
     nameFontSize = 11 * scale
     digitFontSize = 10 * scale
     let font = NSFont.systemFont(ofSize: nameFontSize, weight: .semibold)
@@ -40,11 +40,9 @@ struct IntercomContentMetrics: Equatable {
       max(
         OverlayIntercomWidgetLayout.controlHeight(scale: scale), contentHeight + 8,
         digit + 8 + 4 + 8))
-    let windowMark: CGFloat = hasDetached ? 9 * scale + 5 : 0
-    nameWidth = ceil(max(iconSide, name + digit + windowMark + 36 * scale + 45))
+    nameWidth = ceil(max(iconSide, name + digit + 36 * scale + 45))
     let shortName = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
-    minimumNameWidth = min(
-      nameWidth, ceil(max(iconSide, shortName + digit + windowMark + 36 * scale + 45)))
+    minimumNameWidth = min(nameWidth, ceil(max(iconSide, shortName + digit + 36 * scale + 45)))
     // The focus, speaker and microphone are three row-height slots. Their
     // fixed gaps already belong to the name row's 45pt chrome budget.
     actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
@@ -124,7 +122,7 @@ enum OverlayIntercomWidgetLayout {
     return start..<(start + shown)
   }
 
-  /// Agent text is the measured digit, name and optional detached-window mark.
+  /// Agent text is the measured digit and name.
   /// The row adds reception frames (28 scaled + 3 fixed), the 8pt status dot, three 6pt
   /// identity gaps, 12pt leading padding, a focus slot, two audio slots with
   /// their 6pt gap, and two 3pt outer gaps. These match cardHeader exactly.
@@ -137,6 +135,30 @@ enum OverlayIntercomWidgetLayout {
   /// fixed close slot, six outer 3pt gaps and 12 + 4pt horizontal padding.
   static func minimizedInstanceWidth(text: CGFloat, scale: CGFloat) -> CGFloat {
     text + 36 * scale + 116 * max(1, scale) + 43
+  }
+
+  /// A row dragged out of the group becomes a mini tile under the hand that
+  /// holds it: the pointer sits 16 pt into the tile and halfway down, and the
+  /// tile stays within the row's span, extending left from its right edge
+  /// when the row is narrower than the tile. Without a pointer (the
+  /// accessibility action) the tile lands beside the group's leading edge.
+  static func tornOffTile(row: CGRect, pointer: CGPoint?, size: CGSize) -> CGRect {
+    guard let pointer else {
+      return CGRect(
+        x: row.minX - gap - size.width, y: row.maxY - size.height,
+        width: size.width, height: size.height)
+    }
+    let x = min(row.maxX - size.width, max(row.minX, pointer.x - 16))
+    let top = min(row.maxY, pointer.y + size.height / 2)
+    return CGRect(x: x, y: top - size.height, width: size.width, height: size.height)
+  }
+
+  /// The conversation a mini restores to keeps the mini's top-right corner.
+  static func restoredFrame(forTile tile: CGRect, scale: CGFloat) -> CGRect {
+    let size = conversationSize(scale: scale)
+    return CGRect(
+      x: tile.maxX - size.width, y: tile.maxY - size.height,
+      width: size.width, height: size.height)
   }
 
   static func clampedHeader(

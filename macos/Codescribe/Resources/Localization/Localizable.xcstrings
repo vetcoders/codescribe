@@ -6989,17 +6989,6 @@
         }
       }
     },
-    "Detached — click to show its window" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odpięta — kliknij, aby pokazać jej okno"
-          }
-        }
-      }
-    },
     "Detailed settings" : {
       "localizations" : {
         "pl" : {
@@ -16598,17 +16587,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż rozmowę"
-          }
-        }
-      }
-    },
-    "Show detached fiszka" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokaż odpiętą fiszkę"
           }
         }
       }
