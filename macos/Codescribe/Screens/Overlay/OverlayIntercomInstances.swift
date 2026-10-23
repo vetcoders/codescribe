@@ -55,9 +55,12 @@ struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
   }
 
   /// The card identity this instance presents, for the shared conversation
-  /// lookups. Placeholder identities (no owner) are never persisted.
+  /// lookups. Placeholder identities (no owner) are never persisted — except
+  /// the broadcast channel "0", whose conversation legitimately has no owner
+  /// and can never rebind to another agent (Maciej, 2026-10-23: fiszki must
+  /// take channel 0 too).
   func matches(_ conversation: OverlayConversation) -> Bool {
-    conversationID == conversation.id && ownerID == conversation.owner?.id
+    conversationID == conversation.id && ownerID == (conversation.owner?.id ?? "")
       && digit == conversation.channel
   }
 }
@@ -115,8 +118,9 @@ final class OverlayIntercomDesktopStore {
       max(state.groupScale, OverlayIntercomDesktopState.minimumGroupScale),
       OverlayIntercomDesktopState.maximumGroupScale)
     // A persisted instance without its exact conversation identity cannot be
-    // presented or safely rebound; drop it rather than guess an owner.
-    state.instances.removeAll { $0.conversationID.isEmpty || $0.ownerID.isEmpty }
+    // presented or safely rebound; drop it rather than guess an owner. The
+    // broadcast channel "0" is the one identity that owns no agent: it stays.
+    state.instances.removeAll { $0.conversationID.isEmpty || ($0.ownerID.isEmpty && $0.digit != "0") }
     return state
   }
 
