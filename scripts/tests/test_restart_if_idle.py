@@ -145,7 +145,15 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if Path(call[0]).name == "open"]), 1)
 
     def test_exported_codescribe_gates_ride_the_relaunch_process(self):
-        with patch.dict(os.environ, {"CODESCRIBE_APPLE_DICTATION_TRANSCRIBER": "1"}):
+        # The script carries every exported CODESCRIBE_* gate, so the test owns
+        # the whole prefix: `make verify` exports CODESCRIBE_DATA_DIR and CI
+        # exports CODESCRIBE_SKIP_LIVE_THRONE, which would otherwise ride along.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(restart.CARRIED_ENV_PREFIX)
+        }
+        environment["CODESCRIBE_APPLE_DICTATION_TRANSCRIBER"] = "1"
+        with patch.dict(os.environ, environment, clear=True):
             result = self.invoke()
         self.assertEqual(result["status"], "restarted")
         self.assertEqual(
