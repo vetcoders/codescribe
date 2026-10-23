@@ -71,7 +71,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ / %@ · %@ · rozumowanie %@"
+            "value" : "%@ / %@ · %@ · poziom rozumowania: %@"
           }
         }
       }
@@ -229,7 +229,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "rozumowanie %@"
+            "value" : "Poziom rozumowania: %@"
           }
         }
       }
@@ -3098,7 +3098,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odpowiedź przyszła, tekst bez zmian"
+            "value" : "Model odpowiedział, ale tekst pozostał bez zmian"
           }
         }
       }
@@ -4660,7 +4660,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz, jak długo Agent ma myśleć"
+            "value" : "Wybierz poziom rozumowania Agenta"
           }
         }
       }
@@ -7814,7 +7814,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie powiodło się; sprawdź log"
+            "value" : "Test nie powiódł się. Szczegóły w logu"
           }
         }
       }
@@ -8113,7 +8113,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Formatuje surową transkrypcję albo Twój tekst tak samo jak dyktowanie."
+            "value" : "Formatuje surową transkrypcję lub wpisany tekst tak samo jak podczas dyktowania."
           }
         }
       }
@@ -9496,7 +9496,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zostaw puste pole tokenu, aby zachować zapisany token."
+            "value" : "Pozostaw to pole puste, aby zachować zapisany token."
           }
         }
       }
@@ -10568,7 +10568,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Domyślny dla modelu zostawia to, co model robi sam z siebie. W czacie: /effort."
+            "value" : "Przy ustawieniu „Domyślny dla modelu” aplikacja nie narzuca poziomu rozumowania. W czacie możesz go zmienić poleceniem /effort."
           }
         }
       }
@@ -11231,7 +11231,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak odpowiedzi w czasie"
+            "value" : "Przekroczono czas oczekiwania na odpowiedź"
           }
         }
       }
@@ -11397,7 +11397,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez wskazania poziomu; decyduje model"
+            "value" : "Nie przekazano poziomu rozumowania. Model używa własnego ustawienia domyślnego."
           }
         }
       }
@@ -11826,7 +11826,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak odpowiada najszybciej. Wyższe poziomy są wolniejsze; wybierz je tylko wtedy, gdy model tego potrzebuje."
+            "value" : "Poziom „Brak” zwykle pozwala uzyskać odpowiedź najszybciej. Wyższe poziomy mogą wydłużyć czas oczekiwania. Wybierz je, gdy zadanie tego wymaga."
           }
         }
       }
@@ -12040,7 +12040,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nie wysłano: formatowanie jest wyłączone albo działa na Agencie"
+            "value" : "Nie wysłano żądania: formatowanie jest wyłączone albo obsługuje je Agent"
           }
         }
       }
@@ -14064,7 +14064,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rozumowanie"
+            "value" : "Poziom rozumowania"
           }
         }
       }
@@ -18169,7 +18169,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Testuj formatowanie"
+            "value" : "Przetestuj formatowanie"
           }
         }
       }
