@@ -4418,7 +4418,7 @@ final class OverlayState {
         clearCaptureClock()
       }
       selectDictationSurfaceIfNeeded()
-      applyPreferredExpansion(forTake: true)
+      applyTakeExpansionIfNeeded()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -4440,7 +4440,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       selectDictationSurfaceIfNeeded()
-      applyPreferredExpansion(forTake: true)
+      applyTakeExpansionIfNeeded()
     }
     recording = true
     if !captureDidStart {
@@ -6012,6 +6012,15 @@ final class OverlayState {
     userRevisionProvenance = nil
     followDictationCapturePresentation()
     onTranscriptPresentationChanged?()
+  }
+
+  /// A composer-mic take dictates into the draft on screen. Folding to the
+  /// take-start form closed the conversation around that draft and its Stop
+  /// (Maciej, 2026-10-23, dragon 17:17:25: `expanded→midi automatic` 40 ms
+  /// before the composer take started).
+  private func applyTakeExpansionIfNeeded() {
+    guard !draftCapture.hasRequest else { return }
+    applyPreferredExpansion(forTake: true)
   }
 
   /// A new ordinary capture shows its own canvas. The controller's roster

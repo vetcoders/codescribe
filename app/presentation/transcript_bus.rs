@@ -2212,8 +2212,8 @@ impl TranscriptBus {
             || coverage.status.unavailable_reason().is_some()
             || coverage.availability != "observed"
             || coverage.speech_producer != "silero_boundaries"
-            || !coverage.observed_samples.is_some_and(|samples| samples > 0)
-            || !coverage.sample_rate_hz.is_some_and(|rate| rate > 0)
+            || coverage.observed_samples.is_none_or(|samples| samples == 0)
+            || coverage.sample_rate_hz.is_none_or(|rate| rate == 0)
         {
             return;
         }
