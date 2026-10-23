@@ -1297,15 +1297,29 @@ struct OverlayChannelStatusView: View {
             HStack(alignment: .center, spacing: 8) {
               if let last = broadcast.messages.last {
                 let unread = unreadCounts[broadcast.id] ?? 0
-                Text(verbatim: Self.drawerPreview(message: last))
-                  .font(.system(size: 12.5 * textScale))
-                  .foregroundStyle(
-                    unread > 0 ? palette.bodyText.color : palette.mutedText.color
-                  )
-                  .lineLimit(3)
-                  .fixedSize(horizontal: false, vertical: true)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .accessibilityIdentifier("overlay-all-preview")
+                // The preview opens the conversation like an agent row's
+                // preview does; only the All pair beside it keeps its own
+                // actions (Founder, 2026-10-23: a click on it did nothing).
+                Button {
+                  onSelectConversation?(broadcast.id)
+                } label: {
+                  Text(verbatim: Self.drawerPreview(message: last))
+                    .font(.system(size: 12.5 * textScale))
+                    .foregroundStyle(
+                      unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                    )
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(
+                  Text(
+                    verbatim: String(
+                      localized: "View conversation without changing the microphone"))
+                )
+                .accessibilityIdentifier("overlay-all-preview")
               } else {
                 Spacer(minLength: 0)
               }

@@ -301,10 +301,11 @@ that came across the bridge is not shown; the save receipt and the bridge log
 keep it.
 
 **Dictation control** sits directly under the gestures because it shapes the
-same recording gestures; both switches write on change. **Tap Fn to dictate**:
-one tap starts, the next stops, a longer hold records only while held (set the
-macOS Fn key action to _Do Nothing_, otherwise macOS can claim a double press
-for its own dictation). **Middle mouse acts as Fn**: the middle button follows
+same recording gestures; both switches write on change. **Tap Fn to toggle
+dictation**: a short tap (under the hold start delay) starts a take and the next
+tap stops it. Holding Fn records while held whether the switch is on or off;
+the switch only adds the tap (set the macOS Fn key action to _Do Nothing_,
+otherwise macOS can claim a double press for its own dictation). **Middle mouse acts as Fn**: the middle button follows
 the same press, hold and tap rules as Fn; custom mappings in your mouse
 software can block the standard middle-click signal the app listens for.
 **Middle click picks an agent**: middle click opens the list, scrolling chooses,

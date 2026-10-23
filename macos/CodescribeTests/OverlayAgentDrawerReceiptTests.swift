@@ -268,6 +268,38 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     }
   }
 
+  /// Founder, 2026-10-23: a click on the All row's preview did nothing; only
+  /// its title line opened the conversation, unlike an agent row's preview.
+  func testAllRowPreviewOpensTheBroadcastConversation() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    var message = try XCTUnwrap(fixture(read: true).messages.first)
+    message.sourceChannel = "0"
+    let all = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [message])
+    var selections: [String?] = []
+    let drawer = OverlayChannelStatusView(
+      channels: [channel], unavailable: false, palette: .dark, animates: false,
+      hudStates: [:], conversations: [all], unreadCounts: [:],
+      onSelectConversation: { selections.append($0) })
+    let host = NSHostingView(rootView: drawer.monitorBody(maximumHeight: 420).frame(width: 320))
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 420),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    _ = try NativeAccessibilityProbe.waitForElements("overlay-all-preview")
+    let pressed = try NativeAccessibilityProbe.query("overlay-all-preview", press: true)
+    XCTAssertEqual(pressed.pressStatus, 0, "the preview is pressable: \(pressed.trace)")
+    let deadline = Date().addingTimeInterval(2)
+    while selections.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(selections, ["0"], "the preview opens the broadcast conversation")
+  }
+
   func testLongNativeRowFitsFiveTextLinesAtBothTextScales() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     var message = try XCTUnwrap(fixture(read: true).messages.first)

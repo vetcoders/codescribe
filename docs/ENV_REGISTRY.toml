@@ -929,7 +929,7 @@ default = "correction"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Normalized formatting policy and the only formatting on/off switch: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max. Replaces the retired AI_FORMATTING_ENABLED bool (false -> off, migrated once from settings.json and the first .env import)"
+description = "Normalized formatting policy and the only formatting on/off switch: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max. Replaces the retired AI_FORMATTING_ENABLED bool (false -> off, migrated once from settings.json and the first .env import). The persisted choice lives in settings.json speech.formatting.level; this variable is only an operator override from the launch environment, which outranks Settings for that process and raises a FORMATTING_LEVEL precedence note when it differs. Codescribe never copies the saved level into its own process environment, so child processes and self-relaunches do not inherit it"
 
 [vars.CODESCRIBE_FORMAT_ON_DEVICE]
 default = "0"
