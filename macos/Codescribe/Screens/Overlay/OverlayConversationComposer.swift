@@ -27,6 +27,8 @@ struct OverlayConversationComposer: View {
   var onClearReply: () -> Void = {}
   var draftMicrophoneRecording = false
   var draftMicrophoneBusy = false
+  /// The header's exact-owner live take projection; this changes only the glyph.
+  var liveSpeechActive = false
   var onToggleDraftMicrophone: (() -> Void)? = nil
   var onStageCaptureAttachments: (([String]) -> Bool)? = nil
   var pendingCaptureAttachments: [String] = []
@@ -150,6 +152,18 @@ struct OverlayConversationComposer: View {
     .padding(.vertical, ComposerControlMetrics.verticalPadding)
   }
 
+  var draftMicrophoneSymbol: String {
+    liveSpeechActive
+      ? OverlayAgentAudioControls.liveSpeechSymbol
+      : draftMicrophoneRecording ? "mic.fill" : "mic"
+  }
+
+  var draftMicrophoneAccessibilityLabel: String {
+    if liveSpeechActive { return String(localized: "Live speech active") }
+    return draftMicrophoneRecording
+      ? String(localized: "Stop dictation") : String(localized: "Dictate message")
+  }
+
   private var editorRow: some View {
     HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
       ConversationMessageField(
@@ -180,11 +194,10 @@ struct OverlayConversationComposer: View {
         }
       }
       if let onToggleDraftMicrophone {
-        // Dictating into the draft is another act than speaking to the agent
-        // live: the plain microphone is the dictation verb, the waveform
-        // microphone on the pills is live speech (Maciej, 2026-10-23).
+        // The same live take addressed to this conversation lights the
+        // header and gives this draft control its live-speech glyph.
         Button(action: onToggleDraftMicrophone) {
-          Image(systemName: draftMicrophoneRecording ? "mic.fill" : "mic")
+          Image(systemName: draftMicrophoneSymbol)
             .symbolEffect(
               .pulse, options: .repeating,
               isActive: draftMicrophoneRecording && !reduceMotion)
@@ -201,9 +214,7 @@ struct OverlayConversationComposer: View {
           hoverColor: palette.agentAccent.color
         )
         .disabled(draftMicrophoneBusy)
-        .accessibilityLabel(
-          draftMicrophoneRecording ? Text("Stop dictation") : Text("Dictate message")
-        )
+        .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
         .accessibilityIdentifier("overlay-conversation-draft-microphone")
       }
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)

@@ -10108,6 +10108,17 @@
         }
       }
     },
+    "Live speech active" : {
+      "comment" : "Conversation composer microphone while a live take is addressed to this agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mowa na żywo jest aktywna"
+          }
+        }
+      }
+    },
     "Live speech recognition and correction in the background, without sending recordings." : {
       "comment" : "ASR mode description: Local power",
       "localizations" : {
