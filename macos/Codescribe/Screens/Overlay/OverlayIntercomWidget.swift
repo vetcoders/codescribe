@@ -394,12 +394,19 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         frame = OverlayIntercomWidgetLayout.previewFrame(
           beside: row, visibleFrame: screenFrame, scale: effectiveScale)
       } else {
+        // A grouped fiszka inherits the header's size — one row, the column's
+        // width. Only a detached instance owns its geometry (Maciej, 2026-10-23).
         frame = row
       }
       if panel.frame != frame {
+        // Hover transitions land instantly: an animated setFrame moves the
+        // window under a resting cursor, whose tracking churn fires fresh
+        // enter/leave pairs and the stack "dances" once per crossing
+        // (Maciej, 2026-10-23). Only the explicit expand animates.
         panel.setFrame(
           frame, display: true,
-          animate: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+          animate: expanded && panel.isVisible
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
       }
       panel.setPresented(true, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
@@ -409,7 +416,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate func hover(_ identity: OverlayIntercomCardIdentity, inside: Bool) {
     guard visible, !presentation.folded else { return }
+    let before = presentation.hovered
     if inside { presentation.enter(identity) } else { presentation.leave(identity) }
+    // Repeated enter/leave events for the same state move no windows: every
+    // positionCards here is a geometry transition, and echoed events must
+    // not replay one (the "dance", Maciej, 2026-10-23).
+    guard presentation.hovered != before else { return }
     positionCards()
   }
 
