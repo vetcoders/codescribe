@@ -687,6 +687,37 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testDeliveredAttachmentChipShowsItsTakeTimestamp() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(occurrence(0, revision: 1, text: "Spoken words"))
+    let conversation = try lenaConversation(bus)
+    var message = try XCTUnwrap(conversation.messages.first)
+    message.captureState = .finished
+    message.attachments = [
+      OverlayMessageAttachment(
+        name: "image.png", path: "/fixture/image.png", mediaType: "image/png", bytes: 13,
+        attachedAtSample: 3_504_000, attachedAtSeconds: 73)
+    ]
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: .constant(""), sending: false, sendError: nil, onSend: {})
+    let host = NSHostingView(rootView: view.messageBubble(message).frame(width: 400))
+    let window = NSWindow(
+      contentRect: NSRect(x: 800, y: 300, width: 400, height: 180),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    let reception = try NativeAccessibilityProbe.waitForElements(
+      "overlay-attachment-time-\(message.id)-/fixture/image.png")
+    XCTAssertTrue(reception.elements.contains { $0.label == "1:13" || $0.value == "1:13" })
+  }
+
+  @MainActor
   func testReadLabelRequiresCanonicalAcknowledgmentRatherThanQueueAcceptance() throws {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(occurrence(0, revision: 1))

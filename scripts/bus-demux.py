@@ -1246,6 +1246,30 @@ def channel_message_phase_identity(event: dict[str, Any]) -> str:
                       event.get("reducer_revision"), event.get("reducer_action")))
 
 
+def capture_sample_rate(event: dict[str, Any]) -> int | None:
+    """Read the ledger's capture clock; VAD and TTS rates are different clocks."""
+    coverage = event.get("seal_coverage")
+    rate = event.get("sample_rate_hz")
+    if not (type(rate) is int and rate > 0) and isinstance(coverage, dict):
+        rate = coverage.get("sample_rate_hz")
+    return rate if type(rate) is int and rate > 0 else None
+
+
+def capture_attachment_anchor(document: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
+    sources = [row for row in document.get("capture_attachment_sources", [])
+               if row.get("capture_epoch") == stage.get("capture_epoch")]
+    source = next((row for row in sources
+                   if row.get("sequence") == stage.get("source_sequence")), None)
+    if source is None or type(source.get("sample_start")) is not int or source["sample_start"] < 0:
+        return {"attached_at_sample": 0, "attached_at_seconds": 0.0}
+    first_sample = min((row["sample_start"] for row in sources
+                        if type(row.get("sample_start")) is int and row["sample_start"] >= 0),
+                       default=source["sample_start"])
+    rate = capture_sample_rate(source) or capture_sample_rate(document)
+    seconds = (source["sample_start"] - first_sample) / rate if rate else 0.0
+    return {"attached_at_sample": source["sample_start"], "attached_at_seconds": seconds}
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -1420,6 +1444,9 @@ class EvidenceNormalizer:
                 inventory[key] = item
         clean["occurrences"] = list(inventory.values())
         source_rows = event.get("occurrences") or [event]
+        rate = capture_sample_rate(event) or capture_sample_rate(previous or {})
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
         clean["capture_source_sequence"] = event.get("capture_source_sequence")
         if clean["capture_source_sequence"] is None:
             clean["capture_source_sequence"] = source_rows[-1].get("sequence")
@@ -1435,6 +1462,8 @@ class EvidenceNormalizer:
                 "capture_epoch", "sequence", "reducer_revision", "occurrence_session_id",
                 "sample_start", "sample_end", "document_index",
             )}
+            if rate is not None:
+                coordinates["sample_rate_hz"] = rate
             attachment_sources.setdefault(
                 (coordinates["capture_epoch"], coordinates["sequence"]), coordinates)
         clean["capture_attachment_sources"] = list(attachment_sources.values())
@@ -1445,6 +1474,8 @@ class EvidenceNormalizer:
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             return False
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
@@ -1453,6 +1484,8 @@ class EvidenceNormalizer:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_source_sequence"] = clean["capture_source_sequence"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             if event.get("status") == SEALED:
                 for key in ("hold_until", "utterance_id", "closing_decision"):
                     if key in event:
@@ -1504,20 +1537,18 @@ class EvidenceNormalizer:
     def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
         session = str(receipt.get("session_id") or "")
         document = self._session_docs.get(session)
-        source = next((row for row in (document or {}).get("capture_attachment_sources", [])
-                       if row.get("sequence") == receipt.get("source_sequence")
-                       and row.get("capture_epoch") == receipt.get("capture_epoch")), None)
         if (receipt.get("kind") != "capture_attachment" or document is None
                 or session in self._settled_sessions
                 or receipt.get("capture_epoch") != document.get("capture_epoch")
-                or source is None
                 or receipt.get("audience") != document.get("audience")
                 or receipt.get("recipients") != document.get("recipients")):
             return
         attachments = receipt.get("attachments")
         if not isinstance(attachments, list) or not attachments:
             return
-        if any(not isinstance(item, dict) or set(item) != {"name", "path", "media_type", "bytes", "sha256"}
+        pointer_fields = {"name", "path", "media_type", "bytes", "sha256"}
+        anchor_fields = {"attached_at_sample", "attached_at_seconds"}
+        if any(not isinstance(item, dict) or set(item) not in (pointer_fields, pointer_fields | anchor_fields)
                or not all(isinstance(item.get(key), str) for key in ("name", "path", "media_type"))
                or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in attachments):
             return
@@ -1551,8 +1582,9 @@ class EvidenceNormalizer:
                     and stage.get("audience") == clean.get("audience")
                     and capture_attachment_is_committed(stage)):
                 for pointer in stage["attachments"]:
-                    if pointer not in attachments:
-                        attachments.append(pointer)
+                    anchored = {**pointer, **capture_attachment_anchor(clean, stage)}
+                    if anchored not in attachments:
+                        attachments.append(anchored)
         if attachments:
             final["attachments"] = attachments
             final["text"] = final["text"].rstrip() + attachment_pointer_lines(attachments)
@@ -1587,6 +1619,9 @@ class EvidenceNormalizer:
             "sample_end": event.get("sample_end"),
             "document_index": event.get("document_index"),
         }
+        rate = capture_sample_rate(event)
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
@@ -7781,9 +7816,17 @@ def describe_attachment(raw: str) -> dict[str, Any]:
 
 def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
     """Plain-text pointers so a reader without envelope parsing still sees the file."""
-    return "".join(
-        f"\n[attachment] {item['name']} ({item['media_type']}, {item['bytes']} bytes): {item['path']}"
-        for item in attachments)
+    lines = []
+    for item in attachments:
+        anchor = ""
+        if "attached_at_seconds" in item:
+            seconds = item["attached_at_seconds"]
+            seconds = (int(seconds) if type(seconds) in (int, float)
+                       and math.isfinite(seconds) and seconds >= 0 else 0)
+            anchor = f" @ {seconds // 60}:{seconds % 60:02d}"
+        lines.append(f"\n[attachment{anchor}] {item['name']} ({item['media_type']}, "
+                     f"{item['bytes']} bytes): {item['path']}")
+    return "".join(lines)
 
 
 class UserTextPublicationUncertain(RuntimeError):
