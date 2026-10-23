@@ -1,6 +1,8 @@
 import AppKit
+import Observation
 import SwiftUI
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -2505,6 +2507,31 @@ final class OverlayStateTests: XCTestCase {
         consultationPresentations: consultationPresentations
       )
     )
+  }
+
+  /// UI-88: through a take the main thread sat 94-98% busy because every
+  /// transcript tick re-ran the root overlay body, header, channel map and
+  /// intercom included (Silver samples, 23 X). A tick may re-render the scoped
+  /// slots that read the live transcript, never the root body.
+  func testLiveTickDoesNotInvalidateTheOverlayRootBody() {
+    let state = OverlayState()
+    projectText("Dzień", to: state)
+    let root = OSAllocatedUnfairLock(initialState: false)
+    let rail = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = DictationOverlayView(state: state).body
+    } onChange: {
+      root.withLock { $0 = true }
+    }
+    withObservationTracking {
+      _ = state.transcriptVersions
+      _ = OverlayIntentRail.projectedIntents(for: state)
+    } onChange: {
+      rail.withLock { $0 = true }
+    }
+    projectText("Dzień dobry", to: state)
+    XCTAssertTrue(rail.withLock { $0 }, "the tick must reach what reads the transcript")
+    XCTAssertFalse(root.withLock { $0 }, "a live tick re-ran the root overlay body")
   }
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
