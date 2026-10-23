@@ -3382,6 +3382,16 @@ final class OverlayState {
     captureClockIsDictation = false
   }
 
+  /// While a channel is live its take owns the counter. A dictation that was
+  /// recording when the channel opened beside it (the roster leaves an open
+  /// dictation's clock alone) hands the counter over once it stops, so no
+  /// dictation clock outlives it under the channel.
+  private func handCaptureClockToLiveChannel() {
+    if captureClockIsDictation || captureStartedAtUptime == nil {
+      beginCaptureClock(dictation: false)
+    }
+  }
+
   /// Stop the mic and flip to the finalized transcript returned by the core.
   /// Ignored while already transcribing so a second Finish tap during the
   /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
@@ -4312,8 +4322,14 @@ final class OverlayState {
       // answered with a bare stop; a clock opened here froze at 00:00 and,
       // with no terminal ever coming, held the header on a disabled stop
       // until the next take (Founder, 2026-10-23). The previous take's frozen
-      // clock ends with its document; a live channel keeps its own.
-      if !channelAudioCaptureActive { clearCaptureClock() }
+      // clock ends with its document; a live channel keeps the counter, and
+      // a dictation clock still standing under it would reopen this reset
+      // document as "awaiting text" (the hang-up chord's Fn-down did that).
+      if channelAudioCaptureActive {
+        handCaptureClockToLiveChannel()
+      } else {
+        clearCaptureClock()
+      }
       selectDictationSurfaceIfNeeded()
       applyPreferredExpansion(forTake: true)
     }
@@ -4361,8 +4377,11 @@ final class OverlayState {
     vadActive = false
     isFinalPass = false
     // A live channel's clock is frozen by the roster when its last channel
-    // closes; an orphaned preparing during that take must not stop it early.
-    if !channelAudioCaptureActive {
+    // closes; an orphaned preparing during that take must not stop it early,
+    // and a dictation that stopped beside the channel hands the counter over.
+    if channelAudioCaptureActive {
+      handCaptureClockToLiveChannel()
+    } else {
       freezeCaptureClock()
       levelMeter.reset()
       hasMeasuredAudioLevel = false

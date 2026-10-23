@@ -3241,6 +3241,40 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.isFinalizingDictation)
   }
 
+  /// Founder, 2026-10-23 02:11Z: a dictation still recording when the channel
+  /// opened beside it left its clock under the channel; the hang-up chord's
+  /// Fn-down reset the document and, once the channel closed, the header held
+  /// a disabled stop until the next take.
+  func testADictationStoppedBesideAnOpenChannelHandsTheCounterToTheChannel() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    let broadcast = navigationRoster(channel: "0", open: false)
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    clock.now = 100
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    clock.now = 101
+    state.applyChannelRoster([broadcast, navigationRoster(open: true)])
+    clock.now = 102
+    state.finishControllerRecording()
+    clock.now = 110
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 8, "the channel counts from the hand-over")
+    XCTAssertFalse(state.sessionTimerPaused)
+    XCTAssertFalse(state.isFinalizingDictation, "an open agent take is not a dictation")
+
+    // The hang-up chord: its Fn-down paints a preparing the bridge answers
+    // with a bare stop before the digit closes the channel.
+    state.handleRecordingPreparing()
+    state.finishControllerRecording()
+    XCTAssertFalse(state.isFinalizingDictation, "the reset document does not await text")
+    clock.now = 112
+    state.applyChannelRoster([broadcast, navigationRoster(open: false)])
+    XCTAssertFalse(state.isFinalizingDictation)
+    XCTAssertNil(state.archiveOpenRefusal, "history opens once the channel closed")
+    clock.now = 120
+    XCTAssertEqual(state.elapsedCaptureSeconds(), 10, "the last channel closing freezes it")
+  }
+
   func testAStoppedDictationAwaitsItsTerminalTextEvenAfterAnAgentTake() {
     let clock = OverlayStateTestClock()
     let state = OverlayState(nowProvider: { clock.now })
