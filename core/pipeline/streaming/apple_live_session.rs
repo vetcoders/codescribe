@@ -2175,6 +2175,11 @@ struct AppleSealState {
     /// Owners a live witness answer already testified about. The terminal
     /// pass does not decode the same PCM for them a second time at Stop.
     dictation_witness_heard: Vec<OccurrenceIdentity>,
+    /// Set once the terminal witness pass starts. Live questions stay open
+    /// through Stop, so the Stop-pass Whisper return cannot seal an owner
+    /// before DT answered; after this point a question has no one to wait
+    /// for its answer.
+    dictation_witness_live_closed: bool,
     /// Live witness requests mint ids in their own band above the terminal
     /// ordinals, so a return can never pose as a terminal-phase answer.
     dictation_witness_requests: u64,
@@ -2800,6 +2805,7 @@ impl AppleSealState {
             pending_untimed_finals: Vec::new(),
             dictation_witness_attempts: Vec::new(),
             dictation_witness_heard: Vec::new(),
+            dictation_witness_live_closed: false,
             dictation_witness_requests: 0,
             dictation_witness_language: None,
         };
@@ -8511,6 +8517,7 @@ fn witness_recovery_targets(
                     && owner.capture_epoch == state.capture_epoch
                     && !ledger.is_sealed(owner)
                     && (ledger.text_recovery_pending(owner)
+                        || ledger.sparse_label_owner(owner)
                         || ledger.slots_of(owner).is_some_and(|slots| {
                             slots.iter().any(|slot| {
                     matches!(&slot.witness,
@@ -8677,7 +8684,7 @@ fn maybe_spawn_utterance_witness(
     sealed_end: u64,
 ) {
     if !state.dictation_witness_armed
-        || state.capture_stopping
+        || state.dictation_witness_live_closed
         || state.dictation_witness_inflight
         || sealed_end == 0
         || state.dictation_witness_return.is_none()
@@ -8956,6 +8963,7 @@ fn run_terminal_dictation_witness(
     language: Option<&str>,
     witness_done: &std_mpsc::Receiver<DictationWitnessReturn>,
 ) {
+    state.dictation_witness_live_closed = true;
     if !state.dictation_witness_armed {
         return;
     }
