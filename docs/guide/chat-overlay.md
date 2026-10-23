@@ -110,7 +110,10 @@ the main overlay is closed. Point at one agent to see information; click the
 name to expand that card into a conversation with a draft, pasted attachments
 and Send. Drag its window glyph to detach it into a durable fiszka; its row
 stays in the group, greyed with a window glyph, and clicking that row brings
-the window forward. Click **Intercom** to fold or unfold the group, and drag
+the window forward. Each pill carries the agents list's status dot, the
+channel-0 antenna beside the name, the microphone and speaker drawn flat on
+the pill, and the same button that brings the agent's pane or terminal tab
+forward. Click **Intercom** to fold or unfold the group, and drag
 any free spot on that bar to move the whole group. On a short screen with
 large text, scroll over a pill or use the header arrows to reach the
 remaining agents.

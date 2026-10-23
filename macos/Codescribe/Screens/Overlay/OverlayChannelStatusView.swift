@@ -402,11 +402,17 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
 }
 
 /// The system owns button material, contrast and pointer feedback alongside the composer.
+/// `chrome: false` keeps the hit target and drops the glass: the Intercom paints
+/// the same glyphs straight onto its fiszka (Maciej, 2026-10-23: "ta sama
+/// kolejność to nie te same okrągłe pile — robisz to prosto na powierzchni").
 struct OverlayAgentControlStyle: ViewModifier {
   var diameter: CGFloat? = nil
+  var chrome = true
   @ViewBuilder
   func body(content: Content) -> some View {
-    if let diameter {
+    if !chrome {
+      content.buttonStyle(OverlayFlatControlButtonStyle(diameter: diameter ?? 22))
+    } else if let diameter {
       content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter))
     } else if #available(macOS 26.0, *) {
       content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
@@ -424,6 +430,18 @@ private struct OverlaySizedAudioButtonStyle: ButtonStyle {
       .contentShape(Circle())
       .modifier(OverlayControlGlass(cornerRadius: diameter / 2))
       .opacity(configuration.isPressed ? 0.7 : 1)
+  }
+}
+
+/// The same square hit target without a surface of its own: the host's
+/// capsule is the surface.
+private struct OverlayFlatControlButtonStyle: ButtonStyle {
+  let diameter: CGFloat
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(width: diameter, height: diameter)
+      .contentShape(Rectangle())
+      .opacity(configuration.isPressed ? 0.6 : 1)
   }
 }
 
@@ -445,6 +463,9 @@ struct OverlayAgentAudioControls: View {
   /// All keeps a matched pair, one third more prominent than agent controls;
   /// a surface with one control height (the Intercom bar) opts out.
   var broadcastEmphasis = true
+  /// Glass circles in the roster and the conversation header; the Intercom
+  /// fiszka is itself the surface and paints the pair flat on it.
+  var chrome = true
   /// The conversation header supplies its measured base height; All scales
   /// both controls together from that base.
   var diameter: CGFloat? = nil
@@ -582,7 +603,9 @@ struct OverlayAgentAudioControls: View {
       .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
       .accessibilityIdentifier("overlay-agent-speaker")
     }
-    .modifier(OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }))
+    .modifier(
+      OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }, chrome: chrome)
+    )
     // Founder, 2026-10-15: an I-beam showed between and over these buttons.
     // They float above message and transcript text, whose tracking set the
     // text cursor; the pair and its gap claim the arrow like the drawer does.
@@ -1198,8 +1221,22 @@ struct OverlayChannelStatusView: View {
   func agentPillMenu(
     for digit: String, showsInlineError: Bool = true
   ) -> OverlayBroadcastPolicyMenu {
-    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
+    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0",
+      let actions = agentPillMenuActions(for: digit)
+    else {
       return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+    }
+    return OverlayBroadcastPolicyMenu(
+      members: [channel], palette: palette, enabled: !unavailable,
+      agentActions: actions, showsInlineError: showsInlineError)
+  }
+
+  /// The commands behind one agent's pill menu, with their real availability.
+  /// The Intercom draws its focus button from the same `focus` action, so a
+  /// fiszka and the menu never disagree on where the agent can be reached.
+  func agentPillMenuActions(for digit: String) -> OverlayAgentPillMenuActions? {
+    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
+      return nil
     }
     let microphoneEnabled =
       !unavailable && onToggleChannel != nil
@@ -1208,7 +1245,7 @@ struct OverlayChannelStatusView: View {
     let muted = mutedChannels[digit]
     let focusState = panelFocusStates[digit]
     let owner = archiveCandidates[digit]
-    let actions = OverlayAgentPillMenuActions(
+    return OverlayAgentPillMenuActions(
       write: OverlayAgentPillMenuAction(
         title: String(localized: "Write / Forward…"), symbol: "square.and.pencil",
         identifier: "overlay-agent-menu-write-\(digit)",
@@ -1262,9 +1299,6 @@ struct OverlayChannelStatusView: View {
           identifier: "overlay-agent-menu-archive-\(digit)",
           enabled: !isOpen(channel) && owner.map { !pendingArchives.contains($0) } == true,
           perform: { archiveAgent(channel) }))
-    return OverlayBroadcastPolicyMenu(
-      members: [channel], palette: palette, enabled: !unavailable,
-      agentActions: actions, showsInlineError: showsInlineError)
   }
 
   private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {

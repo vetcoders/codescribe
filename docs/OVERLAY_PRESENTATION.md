@@ -272,9 +272,16 @@ row returns to its live state; detaching the same conversation again reopens
 that saved window instead of minting a duplicate. A fiszka's audio pair is
 `OverlayAgentAudioControls`, the roster's: monochrome at rest, the accent and
 a pulse when lit, one control height (channel 0 keeps the megaphone without
-the roster's larger tarcza); its status is one `OverlayAgentStatusDot` from
-`statusDotKind`, before the figure, with channel 0's on the bar (Maciej,
-2026-10-23). The Intercom header's
+the roster's larger tarcza) — painted flat on the fiszka with `chrome: false`,
+since the fiszka is the surface, not in glass circles of its own (Maciej,
+2026-10-23: "robisz to prosto na powierzchni fiszki"). Its status is one
+`OverlayAgentStatusDot` from `statusDotKind`, before the figure; after the
+name sits the agent's channel-0 mark (`broadcastPolicy.statusSymbol`, lit for
+`on`), and after the pair the list's focus button, drawn from the pill menu's
+`focus` action (`agentPillMenuActions`); the archive X stays in the full view
+only. The bar wears the All row's antenna before **Intercom** — a state icon,
+no status verb — and the wordmark keeps one line (the controller measures
+the antenna, the mark and the focus slot into the resting width). The Intercom header's
 context menu lists the saved closed fiszki, the explicit road back when the
 channel's owner is no longer in the group. Resizing an expanded group card is
 an explicit independent placement and turns it into a fiszka with its own

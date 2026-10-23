@@ -153,14 +153,18 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     let nameFont = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
     let digitFont = CSFont.nsMono(10 * scale)
+    // Beside the text each row carries the channel-0 mark after the name and
+    // a focus slot after the audio pair; the header wears the antenna before
+    // its wordmark. Unmeasured, they folded "Intercom" onto two lines.
     let longest =
-      chips.map {
+      (chips.map {
         ($0.name as NSString).size(withAttributes: [.font: nameFont]).width
           + ($0.digit as NSString).size(withAttributes: [.font: digitFont]).width
-      }.max() ?? 0
+      }.max() ?? 0) + (10 + OverlayIntercomWidgetLayout.rowHeight) * scale + 8
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
+      + 12 * scale + 8
       + (hasOverflow && !presentation.folded ? 32 * max(1, scale) + 16 : 0)
     let width = OverlayIntercomWidgetLayout.restingWidth(
       headerText: titleWidth, agentText: longest, scale: scale)
@@ -753,16 +757,12 @@ private struct OverlayIntercomHeader: View {
         controller.toggleGroup()
       } label: {
         HStack(spacing: 8) {
-          // Channel 0's listening status, the roster's own dot, in the
-          // roster's place: before the figure (Maciej, 2026-10-23).
-          OverlayAgentStatusDot(
-            kind: intercomStatusDot(
-              OverlayChannelStatusView.intercomRoster(
-                state: state, palette: palette, animates: false),
-              state: state, digit: "0"),
-            palette: palette)
-          Image(systemName: "circle.grid.2x2.fill").font(.system(size: 10 * scale))
-          Text("Intercom").csFont(11, .semibold)
+          // The shared channel's mark is the antenna the agents list wears on
+          // its All row — a state icon, not a status verb (Maciej,
+          // 2026-10-23: "Intercom też nie potrzebuje verba stanu"). It takes
+          // the place of the grid glyph so the wordmark keeps one line.
+          OverlayAgentStatusDot(kind: .broadcast, palette: palette)
+          Text("Intercom").csFont(11, .semibold).lineLimit(1).fixedSize()
         }
         .contentShape(Capsule())
       }
@@ -1025,6 +1025,9 @@ private struct OverlayIntercomCard: View {
           VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
               Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+              OverlayIntercomBroadcastMark(
+                channel: intercomChannelRow(state: state, digit: identity.digit),
+                palette: palette)
               if detached != nil {
                 Image(systemName: "macwindow").font(.system(size: 9 * scale))
               }
@@ -1063,6 +1066,11 @@ private struct OverlayIntercomCard: View {
       )
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       audioSlot(conversation, palette: palette, speaking: speaking, open: open)
+      // The road to the agent's pane or tab, after the pair as on the list.
+      // The archive X stays in the full view only (Maciej, 2026-10-23).
+      OverlayIntercomFocusButton(
+        roster: roster, channel: intercomChannelRow(state: state, digit: identity.digit),
+        palette: palette, diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       if expanded {
         // This folds the conversation back into its one-row fiszka. An X
         // here read as the agent pill's X, which archives the agent
@@ -1108,10 +1116,11 @@ private struct OverlayIntercomCard: View {
 /// (Maciej, 2026-10-23: the Intercom is where one talks to channel zero).
 /// The header, group cards and durable instances paint the same control.
 /// The fiszka's audio pair is the roster's pair: the same glyphs, monochrome
-/// at rest and violet with a pulse when lit, the same glass and hints
-/// (Maciej, 2026-10-23: "ustaw te przyciski na interkomie tak samo, żeby było
-/// spójnie z główną listą"). Channel 0 keeps the roster's megaphone but not
-/// its larger tarcza: the bar has one control height.
+/// at rest and violet with a pulse when lit, the same hints — painted flat on
+/// the fiszka, which is the surface, not in glass circles of their own
+/// (Maciej, 2026-10-23: "ta sama kolejność to nie te same okrągłe pile").
+/// Channel 0 keeps the roster's megaphone but not its larger tarcza: the bar
+/// has one control height.
 private struct OverlayIntercomAudioControls: View {
   @Environment(\.csTextScale) private var scale
   let state: OverlayState
@@ -1139,6 +1148,7 @@ private struct OverlayIntercomAudioControls: View {
         Task { await state.toggleConversationPlayback(conversation) }
       },
       broadcast: digit == "0", speaking: speaking, broadcastEmphasis: false,
+      chrome: false,
       diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     )
     .fixedSize()
@@ -1166,10 +1176,82 @@ private struct OverlayIntercomAudioControls: View {
 private func intercomStatusDot(
   _ roster: OverlayChannelStatusView, state: OverlayState, digit: String
 ) -> OverlayAgentDotKind {
-  guard let channel = state.visibleChannelRows.first(where: { $0.channel == digit }) else {
-    return digit == "0" ? .broadcast : .idle
-  }
+  guard let channel = intercomChannelRow(state: state, digit: digit) else { return .idle }
   return roster.statusDotKind(for: channel)
+}
+
+/// The roster row behind a fiszka: the bus evidence the list reads.
+@MainActor
+private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayChannelDelivery? {
+  state.visibleChannelRows.first { $0.channel == digit }
+}
+
+/// The agent's channel-0 membership mark, as the agents list draws it beside
+/// the name: lit when deliveries wake the agent, muted otherwise (Maciej,
+/// 2026-10-23: "agenty mają ten znaczek przy swoich kanałach dla active i dla
+/// inactive").
+private struct OverlayIntercomBroadcastMark: View {
+  @Environment(\.csTextScale) private var scale
+  let channel: OverlayChannelDelivery?
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    if let channel {
+      let policy = channel.broadcastPolicy
+      Image(systemName: policy.statusSymbol)
+        .font(.system(size: 10 * scale))
+        .foregroundStyle(policy == .on ? palette.agentAccent.color : palette.mutedText.color)
+        .accessibilityLabel(Text(verbatim: policy.statusHelp))
+        .accessibilityIdentifier("overlay-intercom-broadcast-policy-\(channel.channel)")
+    }
+  }
+}
+
+/// The list's focus button, drawn flat on the fiszka from the pill menu's
+/// own `focus` action: the same destination, availability and callback. The
+/// slot is reserved even without a button so the audio pair never moves.
+private struct OverlayIntercomFocusButton: View {
+  let roster: OverlayChannelStatusView
+  let channel: OverlayChannelDelivery?
+  let palette: OverlayAppearancePalette
+  let diameter: CGFloat
+
+  var body: some View {
+    if let channel, let action = roster.agentPillMenuActions(for: channel.channel)?.focus {
+      let focusState = roster.panelFocusStates[channel.channel]
+      Button(action: action.perform) {
+        Group {
+          if focusState?.isRequesting == true {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(
+              systemName: roster.panelFocusSymbol(
+                focusState,
+                target: roster.panelFocusTarget(for: channel)
+                  ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil))
+            )
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(
+              focusState?.isSucceeded == true
+                ? palette.successStatus.color
+                : focusState?.isFailed == true
+                  ? palette.errorStatus.color
+                  : action.enabled ? palette.primaryText.color : palette.mutedText.color)
+          }
+        }
+        .frame(width: diameter, height: diameter)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .disabled(!action.enabled)
+      .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
+      .accessibilityLabel(Text(verbatim: action.title))
+      .accessibilityIdentifier("overlay-intercom-focus-\(channel.channel)")
+    } else {
+      Color.clear.frame(width: diameter, height: diameter)
+    }
+  }
 }
 
 /// The one shared conversation surface a card or an instance unrolls: the
@@ -1353,10 +1435,12 @@ private struct OverlayIntercomInstanceCard: View {
       onOpenConversation: { id in
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
+    let channelRow = intercomChannelRow(state: state, digit: instance.digit)
     let nameRow = HStack(spacing: 5) {
       OverlayAgentStatusDot(
         kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
+      OverlayIntercomBroadcastMark(channel: channelRow, palette: palette)
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1387,6 +1471,9 @@ private struct OverlayIntercomInstanceCard: View {
       OverlayIntercomAudioControls(
         state: state, conversation: conversation, digit: instance.digit, palette: palette,
         open: open, speaking: speaking)
+      OverlayIntercomFocusButton(
+        roster: roster, channel: channelRow, palette: palette,
+        diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       // Mini rests with the name, activity and the audio pair (Astra):
       // clicking the fiszka itself restores it, so no extra Restore button.
       if !mini {
