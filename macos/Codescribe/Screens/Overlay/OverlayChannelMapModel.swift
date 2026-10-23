@@ -167,6 +167,17 @@ struct OverlayChannelMapModel: Equatable, Sendable {
           unread: unreadDigits.contains(digit), selectable: selectableDigits.contains(digit),
           selected: digit == selectedDigit))
     }
+    // The Intercom pins "0 · All" permanently (Maciej, 2026-10-23: fiszki must
+    // take channel 0); the strip keeps showing the bare digit only while the
+    // broadcast microphone is open.
+    intercomChips =
+      [
+        OverlayChannelMapChip(
+          digit: "0", name: "All", disconnected: false,
+          microphoneOpen: hudStates["0"]?.open == true,
+          unread: unreadDigits.contains("0"), selectable: selectableDigits.contains("0"),
+          selected: selectedDigit == "0")
+      ] + agents
     guard hudStates["0"]?.open == true else {
       chips = agents
       return
@@ -177,6 +188,10 @@ struct OverlayChannelMapModel: Equatable, Sendable {
       selected: selectedDigit == "0")
     chips = [broadcast] + agents
   }
+
+  /// The Intercom's pills: the broadcast "0 · All" pinned first, then the
+  /// bound agents. The strip's `chips` stay gated on the open microphone.
+  let intercomChips: [OverlayChannelMapChip]
 
   /// The bound agents, without channel 0's broadcast chip.
   var agents: [OverlayChannelMapChip] { chips.filter { !$0.isBroadcast } }
