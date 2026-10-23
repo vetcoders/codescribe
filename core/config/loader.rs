@@ -2459,6 +2459,79 @@ mod tests {
         assert!(!refused.seal_lane_armed());
     }
 
+    /// Founder, 2026-10-22 (UI-79): the level stayed on Max after Settings chose
+    /// another. The bootstrap copied the persisted level into process env, a
+    /// self-relaunch inherited it, and there it outranked every later Settings
+    /// write as if the operator had exported it.
+    #[test]
+    #[serial]
+    fn formatting_level_is_not_seeded_and_follows_settings_after_reload() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _format = TestEnvGuard::unset("FORMATTING_LEVEL");
+        let dir = tempfile::tempdir().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        remove_env_for_test("FORMATTING_LEVEL");
+        fs::write(dir.path().join(".env"), "").unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":3,"speech":{"formatting":{"level":"max"}}}"#,
+        )
+        .unwrap();
+
+        let first = Config::load_runtime_snapshot().unwrap();
+        assert_eq!(first.formatting_policy(), FormattingPolicy::Max);
+        assert!(
+            std::env::var("FORMATTING_LEVEL").is_err(),
+            "the persisted level never reaches process env, so no child inherits it"
+        );
+
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":3,"speech":{"formatting":{"level":"smart"}}}"#,
+        )
+        .unwrap();
+        let second = Config::load_runtime_snapshot().unwrap();
+        assert_eq!(second.formatting_policy(), FormattingPolicy::Smart);
+        let receipt = serde_json::to_string(second.repair_receipt()).unwrap();
+        assert!(
+            !receipt.contains("FORMATTING_LEVEL"),
+            "no precedence note without an operator override: {receipt}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_exported_formatting_level_still_outranks_settings() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _format = TestEnvGuard::unset("FORMATTING_LEVEL");
+        let dir = tempfile::tempdir().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        set_env_for_test("FORMATTING_LEVEL", "off");
+        fs::write(dir.path().join(".env"), "").unwrap();
+        for level in ["max", "smart"] {
+            fs::write(
+                dir.path().join("settings.json"),
+                format!(
+                    r#"{{"schema_version":3,"speech":{{"formatting":{{"level":"{level}"}}}}}}"#
+                ),
+            )
+            .unwrap();
+            let snapshot = Config::load_runtime_snapshot().unwrap();
+            assert_eq!(
+                snapshot.formatting_policy(),
+                FormattingPolicy::Off,
+                "{level}"
+            );
+            let receipt = serde_json::to_string(snapshot.repair_receipt()).unwrap();
+            assert!(receipt.contains("FORMATTING_LEVEL"), "{level}: {receipt}");
+            assert_eq!(std::env::var("FORMATTING_LEVEL").as_deref(), Ok("off"));
+        }
+    }
+
     /// Set a var for the current test case.
     fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
         // SAFETY: these tests are marked `serial` and do not start background workers,
