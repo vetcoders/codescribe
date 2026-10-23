@@ -67,13 +67,13 @@ class BusHistoryTests(unittest.TestCase):
         (self.root / "buses").mkdir(parents=True)
         take = channel_take("agent-channel-0-take", 10, "Dobra, słuchajcie.\n## not a heading")
         broadcast = {"channel": "0", "mode": "broadcast", "recipients": [
-            {"channel": "1", "name": "klaudiusz"}, {"channel": "2", "name": "stasiu"}]}
+            {"channel": "1", "name": "ada"}, {"channel": "2", "name": "stasiu"}]}
         self.write("1", [
             *take,
-            typed("a" * 24, "klaudiusz", "1", 20, "zaciągnij"),
-            reply("c" * 24, "explorek", 40, "lista gotowa", peer_to="klaudiusz", target=broadcast),
-            reply("d" * 24, "stasiu", 50, "biorę sample", peer_to="klaudiusz",
-                  target={"mode": "direct", "recipients": [{"channel": "1", "name": "klaudiusz"}]}),
+            typed("a" * 24, "ada", "1", 20, "zaciągnij"),
+            reply("c" * 24, "explorek", 40, "lista gotowa", peer_to="ada", target=broadcast),
+            reply("d" * 24, "stasiu", 50, "biorę sample", peer_to="ada",
+                  target={"mode": "direct", "recipients": [{"channel": "1", "name": "ada"}]}),
             {"schema": "codescribe.agent-ack.v1", "kind": "agent_ack", "delivery_id": "f" * 24,
              "emitted_at": stamp(55)},
         ])
@@ -88,7 +88,7 @@ class BusHistoryTests(unittest.TestCase):
             reply("c" * 24, "explorek", 40, "lista gotowa", peer_to="stasiu", target=broadcast),
             reply("9" * 24, "stasiu", 51, "biorę sample", peer_to="explorek",
                   target={"mode": "direct", "recipients": [{"channel": "3", "name": "explorek"}]}),
-            reply("8" * 24, "klaudiusz", 60, "zainstalowane"),
+            reply("8" * 24, "ada", 60, "zainstalowane"),
         ])
 
     def write(self, channel, rows):
@@ -113,8 +113,8 @@ class BusHistoryTests(unittest.TestCase):
             "Founder (typed) → all",
             "Founder (typed) → stasiu (revised before delivery)",
             "explorek → all",
-            "stasiu → klaudiusz, explorek",
-            "klaudiusz → Founder",
+            "stasiu → ada, explorek",
+            "ada → Founder",
         ])
         self.assertIn("- Messages: 6 (Founder voice 1, Founder typed 2, agents 3)", markdown)
         self.assertIn("- Withdrawn before delivery, not shown: 1 (whole history)", markdown)
@@ -133,11 +133,11 @@ class BusHistoryTests(unittest.TestCase):
     def test_window_and_channel_filters(self):
         since = (START + datetime.timedelta(seconds=35)).isoformat()
         self.assertEqual(self.headings(self.history(since=since)),
-                         ["explorek → all", "stasiu → klaudiusz, explorek", "klaudiusz → Founder"])
+                         ["explorek → all", "stasiu → ada, explorek", "ada → Founder"])
         self.assertEqual(self.headings(self.history(channel="0")),
                          ["Founder (voice) → all", "Founder (typed) → all", "explorek → all"])
         self.assertEqual(self.headings(self.history(channel="1")), [
-            "Founder (voice) → all", "Founder (typed) → all", "explorek → all", "stasiu → klaudiusz, explorek"])
+            "Founder (voice) → all", "Founder (typed) → all", "explorek → all", "stasiu → ada, explorek"])
 
     def test_relative_and_local_moments(self):
         now = datetime.datetime(2026, 10, 19, 6, 0, tzinfo=datetime.timezone.utc)

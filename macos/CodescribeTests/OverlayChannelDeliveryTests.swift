@@ -523,7 +523,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var projection = OverlayChannelDelivery.Bus()
     let sender: [String: Any] = [
       "provider": "claude-code", "provider_session_id": "peer-session",
-      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "klaudiusz", "channel": "2",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "ada", "channel": "2",
     ]
     var row: [String: Any] = [
       "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
@@ -552,7 +552,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let conversations = projection.conversations(busPath: fixture.bus.path)
     let james = try XCTUnwrap(conversations.first { $0.owner?.leaseID == Fixture.leaseID })
     XCTAssertEqual(james.messages.map(\.text), ["Spec for james"])
-    XCTAssertEqual(james.messages.first?.owner?.name, "klaudiusz")
+    XCTAssertEqual(james.messages.first?.owner?.name, "ada")
     // `_identity` in scripts/bus-demux.py for a peer message, which carries no audience.
     let delivery = "131d4e4cd70bef347dab33e7"
     XCTAssertEqual(
@@ -563,10 +563,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(
       conversations.first { $0.owner?.leaseID == laterLease }?.messages.isEmpty ?? false,
       "A later lease of the same name inherits neither the row nor a delivery")
-    let klaudiusz = try XCTUnwrap(
+    let ada = try XCTUnwrap(
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
     XCTAssertEqual(
-      klaudiusz.messages.map(\.text), ["Spec for james"],
+      ada.messages.map(\.text), ["Spec for james"],
       "A direct peer message stays visible in both participants' conversations")
     XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
     XCTAssertEqual(
@@ -606,7 +606,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var projection = OverlayChannelDelivery.Bus()
     let sender: [String: Any] = [
       "provider": "claude-code", "provider_session_id": "peer-session",
-      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "klaudiusz", "channel": "1",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "ada", "channel": "1",
     ]
     projection.consume([
       "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
@@ -616,13 +616,13 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "sender": sender, "recipients": [],
     ])
     let conversations = projection.conversations(busPath: fixture.bus.path)
-    let klaudiusz = try XCTUnwrap(
+    let ada = try XCTUnwrap(
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
-    XCTAssertEqual(klaudiusz.messages.map(\.text), ["Raport na skrzynkę 10"])
-    let message = try XCTUnwrap(klaudiusz.messages.first)
+    XCTAssertEqual(ada.messages.map(\.text), ["Raport na skrzynkę 10"])
+    let message = try XCTUnwrap(ada.messages.first)
     XCTAssertEqual(
       OverlayChannelStatusView.drawerPreview(message: message),
-      "klaudiusz → You: Raport na skrzynkę 10")
+      "ada → You: Raport na skrzynkę 10")
     XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
   }
 
@@ -2099,7 +2099,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       channels: [], unavailable: false, palette: .dark, animates: false,
       onToggleChannel: { calls.append($0) })
     let closed = OverlayChannelDelivery(
-      channel: "1", agent: "klaudiusz", deliveryID: nil, stage: nil, isOpen: false)
+      channel: "1", agent: "ada", deliveryID: nil, stage: nil, isOpen: false)
     let open = OverlayChannelDelivery(
       channel: "3", agent: "roman", deliveryID: nil, stage: nil, isOpen: true)
     view.toggle(closed)
@@ -2407,7 +2407,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   func testLiveAndUnknownFollowerKeepTheExistingDeliveryCopy() {
     let channel = OverlayChannelDelivery(
-      channel: "1", agent: "klaudiusz", deliveryID: "delivery-1", stage: .received,
+      channel: "1", agent: "ada", deliveryID: "delivery-1", stage: .received,
       isOpen: false)
     let live = OverlayChannelStatusView(
       channels: [channel], unavailable: false, palette: .light, animates: false,

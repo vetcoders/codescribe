@@ -6,7 +6,7 @@ agent panel. The tab must name the agent the way the bus does, so the two
 surfaces agree: **name, then repository, then harness**, separated by `·`.
 
 ```
-Ada · codescribe · claude-code
+Agent · codescribe · claude-code
 Lena · codescribe · cursor
 Roman · vibecrafted · omp
 ```

@@ -3688,7 +3688,7 @@ mod tests {
         let edge_cases = [
             "192322_nie-zmienia-to_raw.wav",
             "133135_no-dobra-teraz_raw.wav",
-            "182340_klaudiusz-zacznijmy-od_raw.wav",
+            "182340_ada-zacznijmy-od_raw.wav",
             "001615_dziekuje---dziekuje_raw.wav",
             "184818_dzien-dobry-chcialem_raw.wav",
         ];

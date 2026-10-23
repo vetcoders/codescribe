@@ -12,7 +12,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       for scale in [CGFloat(1), 1.5, 2] {
         let host = NSHostingView(
           rootView: OverlayAgentRosterLabel(
-            title: "3 · Ada", channel: "3", conversationID: "fixture",
+            title: "3 · Assistant", channel: "3", conversationID: "fixture",
             descriptor: "Codex · model · repository",
             preview: "Founder → Astra: a message preview that can wrap onto two lines.",
             timestamp: Date(timeIntervalSince1970: 1_792_512_000), unreadCount: 8,

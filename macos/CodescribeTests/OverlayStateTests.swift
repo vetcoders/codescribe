@@ -2223,8 +2223,8 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.applyChannelRoster([
       .init(
-        channel: "1", audience: "klaudiusz", provider: "claude",
-        providerSessionId: "klaudiusz-session", open: false, loud: false,
+        channel: "1", audience: "ada", provider: "claude",
+        providerSessionId: "ada-session", open: false, loud: false,
         autosealDeadlineUnixMs: 1_700_000_000_000, followerAlive: false, unreadSinceUnixMs: nil),
       .init(
         channel: "2", audience: "miron", provider: "codex", providerSessionId: "miron-session",
@@ -2240,7 +2240,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.channelHudStates["2"]?.autosealDeadline)
     XCTAssertTrue(state.channelDelivery.isEmpty, "there is no lease-backed mailbox row")
     XCTAssertEqual(state.visibleChannelRows.map(\.channel), ["1", "2"])
-    XCTAssertEqual(state.visibleChannelRows.first?.agent, "klaudiusz")
+    XCTAssertEqual(state.visibleChannelRows.first?.agent, "ada")
     XCTAssertNil(
       state.visibleChannelRows.first?.stage, "the roster must not invent delivery evidence")
     let view = OverlayChannelStatusView(

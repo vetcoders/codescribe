@@ -663,12 +663,12 @@ class ClaudeDaemonFrameTests(unittest.TestCase):
     def test_pty_coupled_claude_agents_panes_resolve_only_attached_workers(self):
         stasiu_sid = "c0ffee02-0000-4000-8000-000000000002"
         claudit_sid = "c0ffee03-0000-4000-8000-000000000003"
-        klaudiusz_sid = "c0ffee04-0000-4000-8000-000000000004"
+        ada_sid = "c0ffee04-0000-4000-8000-000000000004"
         explorek_sid = "c0ffee05-0000-4000-8000-000000000005"
 
         self.write_session(29034, stasiu_sid, "stasiu")
         self.write_session(38260, claudit_sid, "claudit")
-        self.write_session(5560, klaudiusz_sid, "klaudiusz")
+        self.write_session(5560, ada_sid, "ada")
         self.write_session(96531, explorek_sid, "explorek")
 
         procs = {
@@ -677,7 +677,7 @@ class ClaudeDaemonFrameTests(unittest.TestCase):
             38250: {"pid": 38250, "ppid": 1, "tty": "ttys010", "command": "claude --bg-pty-host /tmp/b.sock"},
             38260: {"pid": 38260, "ppid": 38250, "tty": "ttys010", "command": f"claude --resume {claudit_sid}"},
             5549: {"pid": 5549, "ppid": 1, "tty": "ttys003", "command": "claude --bg-pty-host /tmp/c.sock"},
-            5560: {"pid": 5560, "ppid": 5549, "tty": "ttys003", "command": f"claude --resume {klaudiusz_sid}"},
+            5560: {"pid": 5560, "ppid": 5549, "tty": "ttys003", "command": f"claude --resume {ada_sid}"},
             96428: {"pid": 96428, "ppid": 1, "tty": "ttys001", "command": "claude --bg-pty-host /tmp/d.sock"},
             96531: {"pid": 96531, "ppid": 96428, "tty": "ttys001", "command": f"claude --resume {explorek_sid}"},
             38226: {"pid": 38226, "ppid": 73198, "tty": "ttys008", "command": "claude agents"},
@@ -713,14 +713,14 @@ class ClaudeDaemonFrameTests(unittest.TestCase):
                 mock.patch.object(DEMUX, "tty_window_and_access", side_effect=lambda tty: ttys.get(tty)):
             claudit_frame = DEMUX.resolve_claude_frame_context(claudit_sid, home=self.home)
             stasiu_frame = DEMUX.resolve_claude_frame_context(stasiu_sid, home=self.home)
-            klaudiusz_frame = DEMUX.resolve_claude_frame_context(klaudiusz_sid, home=self.home)
+            ada_frame = DEMUX.resolve_claude_frame_context(ada_sid, home=self.home)
             explorek_frame = DEMUX.resolve_claude_frame_context(explorek_sid, home=self.home)
 
         self.assertEqual(claudit_frame["pane_id"], 3)
         self.assertEqual(claudit_frame["session"], "codescribe")
         self.assertEqual(stasiu_frame["pane_id"], 4)
         self.assertEqual(stasiu_frame["session"], "codescribe")
-        self.assertIsNone(klaudiusz_frame)
+        self.assertIsNone(ada_frame)
         self.assertIsNone(explorek_frame)
 
     def test_focus_panel_refreshes_frame_when_daemon_worker_attaches_later(self):

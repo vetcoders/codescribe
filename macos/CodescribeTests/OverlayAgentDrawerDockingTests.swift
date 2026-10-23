@@ -386,7 +386,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(recorder.frame, .zero, "back on the transcription the column is gone")
   }
 
-  // MARK: - The keyboard follows the list (Ada, 2026-10-19)
+  // MARK: - The keyboard follows the list (2026-10-19)
 
   func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
     let (broadcast, lena, astra) = try rosterFixture()

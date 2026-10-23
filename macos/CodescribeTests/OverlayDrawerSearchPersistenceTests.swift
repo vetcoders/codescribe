@@ -18,7 +18,7 @@ final class OverlayDrawerSearchPersistenceTests: XCTestCase {
         deliveries: [],
         conversations: [
           OverlayConversation(
-            id: "saved-1", channel: "1", name: "klaudiusz", owner: nil,
+            id: "saved-1", channel: "1", name: "ada", owner: nil,
             messages: [
               OverlayConversationMessage(
                 id: "reply:saved-1-0", kind: .reply, text: "Zapisane jako dwa punkty.",
