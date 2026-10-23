@@ -17,8 +17,8 @@ import XCTest
 /// does expose: the native hierarchy and window drag hit-testing.
 @MainActor
 final class OverlayChromeFounderCutTests: XCTestCase {
-  /// Maciej, 2026-10-19: "na co mi te 5000+ jako informacja, jak ja sobie
-  /// moge odpalić voice lab i mieć czytelniejsze i lepsze". The uncommitted
+  /// Maciej, 2026-10-19: the "5000+" count in the bar tells him nothing when
+  /// Voice Lab shows the same evidence more clearly. The uncommitted
   /// words are read in Voice Lab; the bar keeps only the actions capsule and
   /// the transcript never shows them either.
   func testBottomBarCarriesNoUncommittedEvidenceChip() throws {
