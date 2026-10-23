@@ -378,27 +378,30 @@ struct DictationOverlayView: View {
 
   var body: some View {
     OverlayCanvasSurface(palette: palette) {
+      // The rail reads the live transcript (intents, versions, history
+      // refusal). Scoped, a capture tick re-renders the rail, not the root.
       canvasStack(
-        OverlayIntentRail(
-          phase: state.statusText,
-          intents: railIntents,
-          palette: palette,
-          formatLevel: state.autoFormatLevel,
-          cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
-          retranscribeUnavailableReason: state.retranscribeUnavailableReason,
-          historyOpenRefusal: state.archiveOpenRefusal,
-          recoverSupersededLabel: state.supersededRecoveryActionLabel,
-          admitHistoryOpen: { state.admitHistoryOpen() },
-          onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
-          onHistoryDismiss: { state.invalidateHistoryOpens() },
-          versions: state.transcriptVersions,
-          onVersionsOpened: { state.refreshTranscriptVersions() },
-          onSelectVersion: { state.selectDocumentVersion($0) },
-          onIntent: state.relayIntent,
-          onRetranscribe: { state.retranscribe(pass: $0) },
-          onFormatOnce: { state.formatTranscript(at: $0) }
-        )
-      )
+        OverlayObservationScope {
+          OverlayIntentRail(
+            phase: state.statusText,
+            intents: railIntents,
+            palette: palette,
+            formatLevel: state.autoFormatLevel,
+            cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
+            retranscribeUnavailableReason: state.retranscribeUnavailableReason,
+            historyOpenRefusal: state.archiveOpenRefusal,
+            recoverSupersededLabel: state.supersededRecoveryActionLabel,
+            admitHistoryOpen: { state.admitHistoryOpen() },
+            onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
+            onHistoryDismiss: { state.invalidateHistoryOpens() },
+            versions: state.transcriptVersions,
+            onVersionsOpened: { state.refreshTranscriptVersions() },
+            onSelectVersion: { state.selectDocumentVersion($0) },
+            onIntent: state.relayIntent,
+            onRetranscribe: { state.retranscribe(pass: $0) },
+            onFormatOnce: { state.formatTranscript(at: $0) }
+          )
+        })
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
@@ -655,10 +658,14 @@ struct DictationOverlayView: View {
               .padding(.vertical, 2)
               .accessibilityIdentifier("overlay-continue-max-chat")
             }
-            if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
-              footerMessageRow
-                .frame(height: 18)
-                .padding(.horizontal, 20)
+            // The footer reads the draft's dirty state, which moves with
+            // every capture tick; scoped, only this slot re-renders.
+            OverlayObservationScope {
+              if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
+                footerMessageRow
+                  .frame(height: 18)
+                  .padding(.horizontal, 20)
+              }
             }
 
           }
@@ -1784,3 +1791,14 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     }
   }
 #endif
+
+/// Evaluates its content in a body of its own. Observation attributes the
+/// content's reads to this node, so a value that moves with every capture tick
+/// re-renders this slot instead of the whole overlay. Unscoped, each tick re-ran
+/// the root body, header, channel map and intercom included: the main thread
+/// sat 94-98% busy through a take (UI-88, Silver samples, 23 X).
+struct OverlayObservationScope<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+
+  var body: some View { content() }
+}
