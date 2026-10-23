@@ -97,6 +97,18 @@ only way to close it (Founder, 2026-10-22: a Fn held past the delay before the
 digit hung up the channel, the digit reopened it, and the reopened microphone
 fed Whisper silence). Dictation on that key starts only once no channel is
 open; the toggle gestures and the other hold presets are unaffected.
+With no channel open, the same hold can already be admitted (`RecHold`) when
+the digit arrives. An explicit channel gesture then ends that take as the
+chord's prefix before the channel opens (Founder, 2026-10-23: the key-up after
+such a chord pasted a stray word into the terminal). The rule covers only a
+non-assistive Raw hold whose base key is the channel modifier, the same pairs
+as above. The recorder's discard stop releases the take's capture under the
+serial transition lock; nothing is pasted, copied, routed or sent to an agent,
+no session archive is written, and the Bus session ends with
+`end_reason: chord_prefix` (phase `no_speech`, every overlay action off), which
+the overlay receives as its lifecycle terminal. The controller is Idle again,
+so the later key-up is a no-op. Holds on another key, assistive holds and
+toggle takes keep running beside the opened channel as before.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
