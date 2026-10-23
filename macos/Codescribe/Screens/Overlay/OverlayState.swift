@@ -4384,6 +4384,10 @@ final class OverlayState {
     cancelWarmupWatchdog()
     warmingUp = false
     transcribing = true
+    // Finalising proves a capture ran even when its `started` was lost (a
+    // lagged broadcast is repainted from controller truth). That take still
+    // owes its terminal text, so it keeps a dictation clock to await it.
+    if !captureDidStart { beginCaptureClock() }
     freezeCaptureClock()
     if !channelAudioCaptureActive {
       levelMeter.reset()

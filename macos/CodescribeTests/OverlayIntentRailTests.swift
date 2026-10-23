@@ -155,9 +155,13 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(engine.startModes.isEmpty)
     XCTAssertFalse(finalizing.recording)
 
+    // A take whose `started` was lost still passes through finalising; a
+    // preparing answered by a bare stop never captured and is covered by
+    // OverlayStateTests.testAnOrphanedPreparingLeavesTheHeaderReadyToRecord.
     let awaitingProjection = OverlayState.previewListening()
     awaitingProjection.engine = engine
     awaitingProjection.handleRecordingPreparing()
+    awaitingProjection.handleRecordingFinalising()
     awaitingProjection.finishControllerRecording()
     awaitingProjection.relayIntent(.startRecording)
     XCTAssertTrue(engine.startModes.isEmpty)
