@@ -450,7 +450,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private func detachIntoInstance(
     _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil
   ) -> UUID? {
-    guard identity.conversationID != nil, identity.ownerID != nil else {
+    // The broadcast channel "0" has a conversation but no owner; it is the
+    // one ownerless identity a fiszka may carry (Maciej, 2026-10-23).
+    guard identity.conversationID != nil, identity.ownerID != nil || identity.digit == "0" else {
       presentation.close(identity)
       return nil
     }
@@ -461,7 +463,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         size: OverlayIntercomWidgetLayout.conversationSize(scale: textScale.scale))
     let id: UUID
     if let index = desktop.instances.firstIndex(where: {
-      $0.conversationID == identity.conversationID && $0.ownerID == identity.ownerID && $0.closed
+      $0.conversationID == identity.conversationID && $0.ownerID == (identity.ownerID ?? "")
+        && $0.closed
     }) {
       // The reopened fiszka lands under the gesture that summoned it; its
       // saved placement is superseded by where the person is holding it now.
@@ -655,6 +658,10 @@ private struct OverlayIntercomHeader: View {
   var body: some View {
     let chips = state.channelMapLayoutModel.agents
     let palette = OverlayAppearancePalette.resolve(colorScheme)
+    // The header's first row IS channel 0 (Maciej, 2026-10-23 05:18Z): the
+    // broadcast keeps its microphone and reply control here, nothing more —
+    // no pill of its own and no detach.
+    let broadcast = intercomConversation(state: state, digit: "0")
     HStack(spacing: 8) {
       Button {
         controller.toggleGroup()
@@ -682,6 +689,10 @@ private struct OverlayIntercomHeader: View {
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasNext)
           .frame(width: 16 * max(1, scale))
       }
+      OverlayIntercomAudioSlot(
+        state: state, conversation: broadcast, name: "All", digit: "0", palette: palette,
+        speaking: broadcast?.replySpeaking == true,
+        open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false)
       Image(systemName: "hand.draw").font(.system(size: 10 * scale))
         .frame(width: 16 * max(1, scale))
         .overlay(OverlayIntercomDragHandle())
@@ -909,7 +920,7 @@ private struct OverlayIntercomCard: View {
         restingColor: speaking ? palette.agentAccent.color : palette.primaryText.color,
         hoverColor: palette.agentAccent.color
       )
-      .disabled(conversation?.owner == nil)
+      .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
       .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       audioSlot(conversation, palette: palette, speaking: speaking, open: open)

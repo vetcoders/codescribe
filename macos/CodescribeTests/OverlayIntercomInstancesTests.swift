@@ -101,6 +101,42 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertEqual(OverlayIntercomDesktopStore(defaults: defaults).load().groupScale, 2.5)
   }
 
+  /// Maciej, 2026-10-23: fiszki must take channel 0 too. The broadcast
+  /// conversation is the one legitimate ownerless identity: its instance
+  /// persists across a reload and matches the live "0 · All" conversation,
+  /// while an ownerless instance of any other digit still drops on load.
+  func testBroadcastChannelZeroInstancePersistsAndMatchesWithoutAnOwner() throws {
+    let name = "CodescribeTests.intercom-desktop.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let identity = OverlayIntercomCardIdentity(digit: "0", conversation: broadcast)
+    XCTAssertNil(identity.ownerID, "the broadcast conversation has no owner")
+
+    var desktop = OverlayIntercomDesktopState()
+    desktop.upsert(
+      OverlayIntercomInstance(
+        identity: identity, frame: CGRect(x: 10, y: 20, width: 360, height: 300)))
+    OverlayIntercomDesktopStore(defaults: defaults).save(desktop)
+
+    let restored = OverlayIntercomDesktopStore(defaults: defaults).load()
+    let back = try XCTUnwrap(restored.instances.first, "channel 0 survives the reload")
+    XCTAssertTrue(back.matches(broadcast))
+    XCTAssertEqual(back.digit, "0")
+
+    let agentConversation = OverlayConversation(
+      id: "0", channel: "0", name: "All",
+      owner: OverlayConversationOwner(
+        row: [
+          "provider": "codex", "provider_session_id": "x-session",
+          "lease_id": String(repeating: "c", count: 32), "channel": "0", "name": "x",
+        ]), messages: [])
+    XCTAssertFalse(
+      back.matches(agentConversation), "an owned conversation is not the broadcast instance")
+  }
+
   /// The group resizes like a window: the drag ratio becomes the shared
   /// proportional scale, clamped to the sane range.
   func testGroupScaleFollowsTheDragRatioAndStaysInRange() {
