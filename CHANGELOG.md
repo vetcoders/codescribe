@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Another agent's spoken reply no longer starts in a pause of a message you are recording for a different agent. A reply still speaks into the silence of its own channel after one second; a reply from another channel now waits until your take seals. Before, an agent on channel 3 began speaking one second into a pause on channel 4, and the microphone stayed deaf until he finished.
 - The conversation composer's editor, clip view and scroll view keep explicit synchronous drawing boundaries, preventing ancestor layer flattening from sending TextKit drawing into the worker/main-thread lock inversion captured during editor resize. Native runtime acceptance remains separate from the source repair.
 - Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
 
