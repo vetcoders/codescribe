@@ -154,7 +154,7 @@ struct OverlayChannelMapView: View {
   ) -> some View {
     if let onToggleMicrophone {
       OverlayChannelMapActionButton(
-        symbol: chip.microphoneOpen ? "mic.fill" : "mic",
+        symbol: OverlayAgentAudioControls.liveSpeechSymbol,
         label: chip.name + ": "
           + (chip.microphoneOpen
             ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")),

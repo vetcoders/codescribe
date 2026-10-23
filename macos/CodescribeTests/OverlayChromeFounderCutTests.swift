@@ -1580,8 +1580,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
     XCTAssertEqual(controls(open: false, broadcast: true).microphoneSymbol, "megaphone")
     XCTAssertEqual(controls(open: true, broadcast: true).microphoneSymbol, "megaphone")
-    XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "mic")
-    XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "mic.fill")
+    XCTAssertEqual(controls(open: false, broadcast: false).microphoneSymbol, "waveform.badge.mic")
+    XCTAssertEqual(controls(open: true, broadcast: false).microphoneSymbol, "waveform.badge.mic")
     XCTAssertEqual(OverlayAgentAudioControls.broadcastScale, 1.33)
     XCTAssertEqual(OverlayAgentAudioControls.controlFrame, 16)
     let roster = try source(at: "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")

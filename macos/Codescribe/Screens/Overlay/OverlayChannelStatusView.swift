@@ -457,11 +457,14 @@ struct OverlayAgentAudioControls: View {
   }
 
   /// The broadcast row speaks through a left-facing outline megaphone; agent
-  /// rows keep the microphone. Open state keeps its pulse on both and takes
-  /// the same violet as a speaker that is playing a reply.
+  /// rows wear the live-speech glyph, a microphone with a waveform (Maciej,
+  /// 2026-10-23: "to jest ewidentnie symbol dyktowania live"). The plain
+  /// microphone is the composer's dictation verb. Open state keeps its pulse
+  /// and takes the same violet as a speaker that is playing a reply.
+  static let liveSpeechSymbol = "waveform.badge.mic"
+
   var microphoneSymbol: String {
-    if broadcast { return "megaphone" }
-    return open ? "mic.fill" : "mic"
+    broadcast ? "megaphone" : Self.liveSpeechSymbol
   }
 
   /// Recording shares the active-speaker accent. The pulse is unchanged.
@@ -981,7 +984,7 @@ struct OverlayChannelStatusView: View {
     if agentCaptureOpen {
       let broadcasting = hudStates["0"]?.open == true
       OverlayMicrophoneGlyph(
-        symbol: broadcasting ? "megaphone" : "mic.fill",
+        symbol: broadcasting ? "megaphone" : OverlayAgentAudioControls.liveSpeechSymbol,
         tint: OverlayRecordingLight.agent.color, mirrored: broadcasting
       )
       .symbolEffect(.pulse, isActive: animates && !reduceMotion)
@@ -1215,7 +1218,7 @@ struct OverlayChannelStatusView: View {
           title: isOpen(channel)
             ? String(localized: "Stop speaking to agent")
             : String(localized: "Speak to agent"),
-          symbol: isOpen(channel) ? "mic.fill" : "mic",
+          symbol: OverlayAgentAudioControls.liveSpeechSymbol,
           identifier: "overlay-agent-menu-microphone-\(digit)", enabled: microphoneEnabled,
           perform: { if microphoneEnabled { toggle(channel) } }),
       playback: onTogglePlayback == nil
@@ -2112,7 +2115,7 @@ struct OverlayChannelStatusView: View {
     if unavailable { return "exclamationmark.triangle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
     if hasStalledFollower(channel) { return "zzz" }
-    if isOpen(channel) { return "mic.fill" }
+    if isOpen(channel) { return OverlayAgentAudioControls.liveSpeechSymbol }
     switch channel.stage {
     case nil: return "circle"
     case .held: return "hourglass"

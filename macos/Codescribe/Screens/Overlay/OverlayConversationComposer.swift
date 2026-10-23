@@ -180,6 +180,9 @@ struct OverlayConversationComposer: View {
         }
       }
       if let onToggleDraftMicrophone {
+        // Dictating into the draft is another act than speaking to the agent
+        // live: the plain microphone is the dictation verb, the waveform
+        // microphone on the pills is live speech (Maciej, 2026-10-23).
         Button(action: onToggleDraftMicrophone) {
           Image(systemName: draftMicrophoneRecording ? "mic.fill" : "mic")
             .symbolEffect(

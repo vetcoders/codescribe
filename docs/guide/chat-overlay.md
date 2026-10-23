@@ -108,22 +108,33 @@ the **floating agent pills**. Classic remembers which of the two layouts you
 used last. With the pills, the small desktop Intercom remains available when
 the main overlay is closed. Point at one agent to see information; click the
 name to expand that card into a conversation with a draft, pasted attachments
-and Send. Drag its top grip to detach it into a durable fiszka; the rest of
-the group folds into the Intercom header. Click the header to unfold the
-group. On a short screen with large text, scroll over a pill or use the header
-arrows to reach the remaining agents.
+and Send. Drag its window glyph to detach it into a durable fiszka; its row
+stays in the group, greyed with a window glyph, and clicking that row brings
+the window forward. Click **Intercom** to fold or unfold the group, and drag
+any free spot on that bar to move the whole group. On a short screen with
+large text, scroll over a pill or use the header arrows to reach the
+remaining agents.
 
-A detached fiszka keeps its place, size and mini state across app restarts,
-and the same agent can stand in several places at once — detach again for
-another copy. Minimize shrinks a fiszka to its name, activity and audio slot;
+A detached fiszka keeps its place, size and mini state across app restarts.
+One agent keeps one fiszka: detaching again shows the one already open. Drag
+it by any free spot on its header; right-click the header for the agent's
+actions, including **Show in Agents**, the road back to the main overlay.
+Minimize shrinks a fiszka to its name, activity, microphone and speaker;
 click it to restore, hover it to reveal its close button. Closing a fiszka only hides that window: detach the same conversation again —
-or right-click the Intercom header and pick it from the saved list — and it
+or right-click **Intercom** and pick it from the saved list — and it
 comes back where you left it. Resize a
-fiszka from its left edge or bottom corners. Dragging a resting pill's left
+fiszka from its left edge or bottom corners; the edge lights up when the
+pointer is on it. Dragging a resting pill's left
 edge or bottom corners (or the header's left edge) zooms the whole attached
-group proportionally. Closing a card or switching layouts keeps its draft. The separate
-audio slot shows a speaker while that named agent is speaking and a microphone
-otherwise. Right-click a floating pill for the agent's other actions.
+group proportionally. Closing a card or switching layouts keeps its draft.
+Every row carries a microphone and a speaker: the speaker mutes that agent's
+automatic replies and lights while the agent speaks, and the Intercom bar's
+megaphone and speaker are channel 0 and the master mute. Press Play on a
+message to hear it even while muted. Agent pills and the agent list wear the
+microphone with a waveform, the glyph of speaking to an agent live; the
+composer's dictation control keeps the plain microphone, since dictating a
+draft is another act.
+Right-click a floating pill for the agent's other actions.
 
 For a Codex agent with neither, the same button opens the agent's thread in the
 Codex app (ChatGPT). This works even when the row shows the agent as
