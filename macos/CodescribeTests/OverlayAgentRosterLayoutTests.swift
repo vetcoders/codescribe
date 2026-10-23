@@ -125,6 +125,40 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
+  /// The middle-click chooser lives on the vertical Intercom (Maciej,
+  /// 2026-10-23 seal): its rows and its header carry the wheel's ring, and
+  /// the app hosts the chooser there instead of summoning the big overlay.
+  func testTheVerticalIntercomHostsTheMiddleClickChooser() throws {
+    let cardBody = try sourceSection(
+      "OverlayIntercomWidget.swift",
+      from: "let expanded = controller.presentation.expanded.contains(identity)",
+      to: "private func cardHeader(")
+    XCTAssertTrue(
+      cardBody.contains(
+        "focused: identity.conversationID != nil && state.agentGestureFocusID == identity.conversationID"
+      ))
+    XCTAssertTrue(cardBody.contains("onHover: { state.hoverAgentGestureTarget($0) }"))
+
+    let header = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
+      to: "private struct OverlayIntercomWindowProjection")
+    XCTAssertTrue(header.contains("state.agentGestureFocusID == broadcast?.id"))
+    XCTAssertTrue(header.contains("controller.revealChooserFocus(focus)"))
+
+    let app = try sourceSection(
+      "../../Core/AppModel.swift", from: "private func syncIntercomPresentation(",
+      to: "func handleAgentGesture(")
+    XCTAssertTrue(app.contains("state.agentChooserHost = wantsWidget"))
+    let stop = try sourceSection(
+      "../../Core/AppModel.swift", from: "func stopIntercomPresentation()",
+      to: "private func syncIntercomPresentation(")
+    XCTAssertTrue(stop.contains("state.agentChooserHost = nil"))
+    let gesture = try sourceSection(
+      "../../Core/AppModel.swift", from: "func handleAgentGesture(",
+      to: "if let panel, panel.isVisible")
+    XCTAssertTrue(gesture.contains("intercomWidget.presentChooser()"))
+  }
+
   func testDeadRowsDimAndDisableAudioWhileReceptionRemainsActionable() throws {
     let row = try sourceSection(
       "OverlayChannelStatusView.swift", from: "func channelRow(",

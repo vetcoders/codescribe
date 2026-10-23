@@ -496,6 +496,47 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
+  // MARK: Middle-click chooser host
+
+  /// The chooser's rows: the header's channel 0 first, as the agents list
+  /// leads with 0 · All, then the group in its order. An agent standing in
+  /// its own window is not in the stack, so the wheel passes it by.
+  func chooserTargets() -> [OverlayConversation] {
+    let agents = groupIdentities.compactMap { identity in
+      state.conversations.first { identity.matches($0) }
+    }
+    return (intercomConversation(state: state, digit: "0").map { [$0] } ?? []) + agents
+  }
+
+  /// The middle click summons the group: unfolded, in front, and with no
+  /// conversation unrolled over the rows the wheel walks.
+  func presentChooser() {
+    for identity in presentation.expanded { close(identity) }
+    revealGroup()
+  }
+
+  /// A left click on the chooser's focus opens that row's conversation here.
+  /// Channel 0 has no card to unroll: the group in front is the answer.
+  func openChosenConversation(_ conversationID: String) {
+    revealGroup()
+    if let identity = identities.first(where: { $0.conversationID == conversationID }) {
+      expand(identity)
+    }
+  }
+
+  /// The focused row stays on screen: the group pages to it.
+  fileprivate func revealChooserFocus(_ conversationID: String?) {
+    let group = groupIdentities
+    guard visible, !presentation.folded, let conversationID,
+      let index = group.firstIndex(where: { $0.conversationID == conversationID })
+    else { return }
+    let range = visibleRows
+    guard !range.contains(index) else { return }
+    let start = index < range.lowerBound ? index : index - range.count + 1
+    rowOffset = min(max(0, start), max(0, group.count - range.count))
+    positionCards()
+  }
+
   /// The main overlay's mini counter in the vertical layout: the group
   /// unfolds and stands in front, its detached windows still above it.
   func revealGroup() {
@@ -876,6 +917,16 @@ private struct OverlayIntercomHeader: View {
             cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
             style: .continuous))
     }
+    // The chooser's channel 0 is this bar: its ring lands here.
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: broadcast != nil && state.agentGestureFocusID == broadcast?.id,
+        shape: RoundedRectangle(
+          cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+          style: .continuous),
+        palette: palette, targetID: broadcast?.id,
+        onHover: { state.hoverAgentGestureTarget($0) })
+    )
     .background(
       OverlayIntercomWindowProjection(
         chips: chips,
@@ -892,6 +943,11 @@ private struct OverlayIntercomHeader: View {
       OverlayIntercomResizeHandles(corners: false) { frame, delta, edge, gesture in
         controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
       }
+    }
+    // The header is always on screen while the group is: it pages the stack
+    // to the row the wheel focused.
+    .onChange(of: state.agentGestureFocusID) { _, focus in
+      controller.revealChooserFocus(focus)
     }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
   }
@@ -1035,6 +1091,16 @@ private struct OverlayIntercomCard: View {
       RoundedRectangle(cornerRadius: corner, style: .continuous)
         .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
     }
+    // The middle-click chooser's focus, as on the agents list's rows; the
+    // pointer entering a row moves it there.
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: identity.conversationID != nil
+          && state.agentGestureFocusID == identity.conversationID,
+        shape: RoundedRectangle(cornerRadius: corner, style: .continuous), palette: palette,
+        targetID: identity.conversationID,
+        onHover: { state.hoverAgentGestureTarget($0) })
+    )
     .overlay {
       if expanded {
         OverlayIntercomResizeHandles { frame, delta, edge, gesture in
