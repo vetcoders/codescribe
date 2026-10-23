@@ -658,6 +658,10 @@ private struct OverlayIntercomHeader: View {
   var body: some View {
     let chips = state.channelMapLayoutModel.agents
     let palette = OverlayAppearancePalette.resolve(colorScheme)
+    // The header's first row IS channel 0 (Maciej, 2026-10-23 05:18Z): the
+    // broadcast keeps its microphone and reply control here, nothing more —
+    // no pill of its own and no detach.
+    let broadcast = intercomConversation(state: state, digit: "0")
     HStack(spacing: 8) {
       Button {
         controller.toggleGroup()
@@ -685,6 +689,10 @@ private struct OverlayIntercomHeader: View {
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasNext)
           .frame(width: 16 * max(1, scale))
       }
+      OverlayIntercomAudioSlot(
+        state: state, conversation: broadcast, name: "All", digit: "0", palette: palette,
+        speaking: broadcast?.replySpeaking == true,
+        open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false)
       Image(systemName: "hand.draw").font(.system(size: 10 * scale))
         .frame(width: 16 * max(1, scale))
         .overlay(OverlayIntercomDragHandle())
