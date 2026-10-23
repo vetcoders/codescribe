@@ -1818,5 +1818,189 @@ class InstallCheckpointTests(unittest.TestCase):
         self.assertTrue(self.idle())
 
 
+
+class StreamingSpeechTests(unittest.TestCase):
+    def test_sentence_chunks_preserve_polish_abbreviations_numbers_and_code(self):
+        first = 'Sprawdziliśmy np. lek. wet. wynik 1.25 oraz 23.10.2026 w opisie.'
+        second = 'Następne zdanie zawiera `x = 1. A. B.` i kończy się tutaj.'
+        third = 'Ostatnie zdanie jest wystarczająco długie do osobnej porcji.'
+        self.assertEqual(DEMUX.speech_sentence_chunks(' '.join((first, second, third))),
+                         [first, second, third])
+        self.assertEqual(DEMUX.speech_sentence_chunks('Krótko.'), ['Krótko.'])
+        self.assertEqual(DEMUX.speech_sentence_chunks('To tj. objaśnienie np. liczby.'),
+                         ['To tj. objaśnienie np. liczby.'])
+        fenced = 'Przykład kodu:\n```python\nx = "Pierwsze. Drugie."\n```\nTo jest jego wyjaśnienie.'
+        self.assertEqual(DEMUX.speech_sentence_chunks(fenced), [fenced])
+        self.assertTrue(all(len(chunk) >= 40 for chunk in DEMUX.speech_sentence_chunks(
+            'Tak. ' + first + ' Koniec.')))
+
+    def test_http_pcm_is_delivered_before_eof_and_handles_split_samples(self):
+        import urllib.request
+        response = MagicMock(status=200)
+        response.read1.side_effect = [b'\x01', b'\x02\x03', b'\x04', b'']
+        seen = []
+        def receive(pcm):
+            seen.append((pcm, response.read1.call_count))
+        with patch('urllib.request.OpenerDirector') as factory:
+            factory.return_value.open.return_value.__enter__.return_value = response
+            pcm, error, reason = DEMUX._tts_exchange(
+                urllib.request.Request('https://api.x.ai/v1/tts'), receive)
+        self.assertEqual((pcm, error, reason), (b'\x01\x02\x03\x04', None, None))
+        self.assertEqual(seen, [(b'\x01\x02', 2), (b'\x03\x04', 3)])
+        self.assertTrue(all(call.args == (16384,) for call in response.read1.call_args_list))
+
+    def test_stream_failure_does_not_write_partial_cache(self):
+        import urllib.request
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            emitted = []
+            fields = {'text': 'incomplete'}
+            def synthesize():
+                emitted.append(b'\x00\x00')
+                return None, 'connection lost', 'network'
+            result = DEMUX._cached_speech(root, fields, synthesize)
+            self.assertEqual(result, (None, 'connection lost', 'network'))
+            self.assertEqual(list((root / 'speech').glob('*.wav')), [])
+
+    def exercise_pipeline(self, *, stop_after_first=False, fail_second=False, take_after_first=False):
+        import threading
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        bus = root / 'bus.jsonl'
+        bus.touch()
+        first = 'Pierwsze zdanie ma wystarczająco wiele znaków, by zacząć mówić od razu.'
+        second = 'Drugie zdanie będzie generowane jeszcze podczas odtwarzania pierwszego.'
+        text = first + ' ' + second
+        started = threading.Event()
+        finished = threading.Event()
+        stopped = threading.Event()
+        order, audio, states, requests = [], [], [], []
+        class Player:
+            def __init__(self):
+                order.append('player')
+                self.returncode = None
+                self.eof = False
+            def enqueue(self, pcm):
+                audio.append(pcm)
+                started.set()
+                order.append('audio')
+                if stop_after_first:
+                    stopped.set()
+            def can_enqueue(self):
+                return True
+            def finish(self):
+                self.eof = True
+            def poll(self):
+                return 0 if self.eof else self.returncode
+            def terminate(self):
+                self.returncode = -15
+            def kill(self):
+                self.returncode = -9
+            def wait(self, timeout=None):
+                return self.returncode
+        def exchange(request, on_pcm=None):
+            chunk = json.loads(request.data)['text']
+            requests.append(chunk)
+            order.append('synthesize')
+            if fail_second and len(requests) == 2:
+                return None, 'fixture failure', 'network'
+            if on_pcm:
+                on_pcm(b'\x01\x00')
+                # The first PCM must play while the first HTTP response is open.
+                if len(requests) == 1:
+                    if not started.wait(3):
+                        raise AssertionError('player waited for response EOF')
+            finished.set()
+            order.append('synthesized')
+            return b'\x01\x00', None, None
+        reply = {'reply_id': 'a' * 24, 'provider': 'codex', 'provider_session_id': 'fixture',
+                 'lease_id': DEMUX.lease_identifier('codex', 'fixture'), 'tts_vendor': 'xai',
+                 'text': text, 'voice': 'carina', 'speed': 1.0}
+        original_stopped = DEMUX.ReplyPlaybackControl.stopped
+        def should_stop(control):
+            return stopped.is_set() or original_stopped(control)
+        with (patch.object(DEMUX, 'PCMStreamPlayer', Player),
+              patch.object(DEMUX, '_xai_speech_key', return_value='test-only-key'),
+              patch.object(DEMUX, '_tts_exchange', side_effect=exchange),
+              patch.object(DEMUX, 'bus_path', return_value=bus),
+              patch.object(DEMUX, '_wait_for_take_end', return_value=True),
+              patch.object(DEMUX, 'installation_idle', side_effect=lambda *a, **k:
+                           not (take_after_first and started.is_set())),
+              patch.object(DEMUX, '_cursor_holds_take', return_value=True),
+              patch.object(DEMUX, '_acquire_playback_lock', return_value=True) as lock,
+              patch.object(DEMUX.ReplyPlaybackControl, 'stopped', should_stop),
+              patch.object(DEMUX, 'publish_reply_event', side_effect=fixture_publish),
+              patch.object(DEMUX, 'emit', side_effect=lambda event: states.append(event)),
+              patch.object(DEMUX, 'PLAYBACK_POLL_SECONDS', 0.005)):
+            code = DEMUX.speak_published_reply(DEMUX.argparse.Namespace(bridge_home=root),
+                                              bus, reply, 'b' * 24)
+        self.assertEqual(lock.call_count, 1)
+        self.assertEqual(order.count('player'), 1)
+        self.assertLess(order.index('audio'), order.index('synthesized'))
+        self.assertEqual([event['state'] for event in states[:2]], ['waiting', 'playing'])
+        self.assertEqual(sum(event['state'] not in ('waiting', 'playing') for event in states), 1)
+        self.assertEqual(len({event['playback_ticket'] for event in states}), 1)
+        self.assertTrue(finished.is_set())
+        return code, audio, states[-1], requests, root
+
+    def test_pipeline_streams_and_prefetches_under_one_ticket_and_lock(self):
+        code, audio, terminal, requests, root = self.exercise_pipeline()
+        self.assertEqual((code, terminal['state']), (0, 'spoken'))
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(audio), 2)
+        self.assertEqual(len(list((root / 'speech').glob('*.wav'))), 2)
+
+    def test_sentence_cache_replay_needs_no_network_or_credential(self):
+        _, _, _, chunks, root = self.exercise_pipeline()
+        received = []
+        def consume(stream, **kwargs):
+            stream.start()
+            try:
+                while True:
+                    event = stream.queue.get(timeout=2)
+                    if event[0] == 'done':
+                        return event[1]
+                    received.append(event[1])
+            finally:
+                stream.close()
+        with (patch.object(DEMUX, '_play_pcm_24k', side_effect=consume),
+              patch.object(DEMUX, '_xai_speech_key', side_effect=AssertionError('credential on hit')),
+              patch.object(DEMUX, '_tts_exchange', side_effect=AssertionError('network on hit'))):
+            self.assertEqual(DEMUX._speak_xai(' '.join(chunks), 'carina', 1.0,
+                                            playback_root=root), (True, None, None))
+        self.assertEqual(received, [b'\x01\x00', b'\x01\x00'])
+
+    def test_stream_cancel_interrupts_active_https_read_and_cache_lock_wait(self):
+        import socket
+        stream = DEMUX.SpeechPCMStream([], lambda *args: None)
+        response = MagicMock()
+        stream._response_opened(response)
+        stream.close()
+        response.fp.raw._sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = DEMUX._cached_speech(root, {'text': 'cancelled'},
+                                          lambda: self.fail('cancelled synthesis started'),
+                                          cancelled=lambda: True)
+            self.assertEqual(result, (None, 'playback stopped', 'stopped'))
+
+    def test_stop_between_chunks_has_one_stopped_terminal(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(stop_after_first=True)
+        self.assertEqual((code, terminal['state'], terminal['reason']), (5, 'stopped', 'stopped'))
+        self.assertEqual(len(audio), 1)
+
+    def test_take_started_between_chunks_refuses_without_more_audio(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(take_after_first=True)
+        self.assertEqual((code, terminal['state'], terminal['reason']), (5, 'refused', 'take_started'))
+        self.assertEqual(len(audio), 1)
+
+    def test_second_chunk_failure_never_claims_spoken(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(fail_second=True)
+        self.assertEqual((code, terminal['state']), (5, 'failed'))
+        self.assertFalse(terminal['spoken'])
+        self.assertEqual(len(audio), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

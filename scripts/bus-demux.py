@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import ctypes
 import datetime
 import fcntl
 import hashlib
@@ -51,6 +52,8 @@ import math
 import os
 import re
 import select
+import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -5743,7 +5746,7 @@ def tts_failure_reason(status: int, body: bytes) -> str:
     return f"http_{status}"
 
 
-def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
+def _tts_exchange(request: Any, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
     """POST one TTS request: (pcm, None, None) or (None, error, reason).
 
     Install only TLS transport: no file handler, proxy or redirect handler.
@@ -5761,7 +5764,7 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
         urllib.request.HTTPSHandler(context=ssl.create_default_context())
     )
     try:
-        with opener.open(request, timeout=60) as response:
+        with opener.open(request, timeout=10 if on_pcm is not None else 60) as response:
             if not 200 <= response.status < 300:
                 try:
                     detail = response.read(TTS_ERROR_BODY_BYTES)
@@ -5772,7 +5775,25 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
                     f"tts request failed ({response.status})",
                     tts_failure_reason(response.status, detail),
                 )
-            return response.read(), None, None
+            if on_pcm is None:
+                return response.read(), None, None
+            opened = getattr(on_pcm, "response_opened", None)
+            if opened is not None:
+                opened(response)
+            # read1 returns the currently available transport bytes, rather
+            # than waiting for an entire sentence (or a full read buffer).
+            pcm = bytearray()
+            pending = b""
+            while block := response.read1(16384):
+                pcm.extend(block)
+                pending += block
+                aligned = len(pending) - len(pending) % 2
+                if aligned:
+                    on_pcm(pending[:aligned])
+                    pending = pending[aligned:]
+            if pending or not pcm:
+                return None, "invalid PCM response", "invalid_audio"
+            return bytes(pcm), None, None
     except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         return None, f"tts request failed ({error.__class__.__name__})", "network"
 
@@ -5816,7 +5837,7 @@ def _write_speech_atomically(path: Path, write: Any) -> None:
         raise
 
 
-def _speech_lock(directory: Path, key: str) -> int | None:
+def _speech_lock(directory: Path, key: str, cancelled: Any = None) -> int | None:
     """Single flight per key: a held flock on `<speech>/<sha256>.lock`, or None.
 
     Bounded like the playback lock. None after the wait or on any OS error
@@ -5829,6 +5850,9 @@ def _speech_lock(directory: Path, key: str) -> int | None:
         return None
     deadline = time.monotonic() + SPEECH_LOCK_WAIT_SECONDS
     while True:
+        if cancelled is not None and cancelled():
+            os.close(descriptor)
+            return None
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return descriptor
@@ -5848,6 +5872,7 @@ def _cached_speech(
     synthesize: Any,
     *,
     reply_id: str | None = None,
+    cancelled: Any = None,
 ) -> tuple[bytes | None, str | None, str | None]:
     """Every synthesis stays on disk; the same words in the same voice never call the API twice.
 
@@ -5866,8 +5891,11 @@ def _cached_speech(
         return cached, None, None
     # Two callers missing the same key at once pay once: the second waits for
     # the first and reads its recording.
-    lock = _speech_lock(directory, key)
+    lock = (_speech_lock(directory, key, cancelled) if cancelled is not None
+            else _speech_lock(directory, key))
     try:
+        if cancelled is not None and cancelled():
+            return None, "playback stopped", "stopped"
         if lock is not None:
             cached = _read_cached_speech(audio)
             if cached is not None:
@@ -5927,6 +5955,379 @@ def _control_reply_id(control: ReplyPlaybackControl | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def speech_sentence_chunks(text: str, minimum: int = 40) -> list[str]:
+    """Sentence boundaries outside code, decimals, initials and Polish abbreviations.
+
+    Small sentences join the next one; a small final tail joins its predecessor.
+    Nothing inside a backtick span/fence is a sentence boundary.
+    """
+    abbreviations = {"np", "tj", "itd", "itp", "m.in", "tzn", "dr", "prof", "mgr",
+                     "lek", "wet", "ul", "al", "nr", "godz", "r", "str", "ok", "św"}
+    boundaries = []
+    code_ticks = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "`":
+            end = index
+            while end < len(text) and text[end] == "`":
+                end += 1
+            count = end - index
+            if code_ticks == 0:
+                code_ticks = count
+            elif code_ticks == count:
+                code_ticks = 0
+            index = end
+            continue
+        if not code_ticks and character in ".!?…":
+            end = index + 1
+            while end < len(text) and text[end] in '.!?…\"”’»)]':
+                end += 1
+            token = re.search(r"([\w.]+)$", text[:index], re.UNICODE)
+            word = token.group(1) if token else ""
+            abbreviation = character == "." and (word.casefold() in abbreviations or word.isdigit()
+                or (len(word) == 1 and word.isalpha()))
+            if not abbreviation and (end == len(text) or text[end].isspace()):
+                boundaries.append(end)
+        index += 1
+    chunks, start = [], 0
+    for end in boundaries:
+        piece = text[start:end].strip()
+        if len(piece) >= minimum:
+            chunks.append(piece)
+            start = end
+    tail = text[start:].strip()
+    if tail:
+        if chunks and len(tail) < minimum:
+            chunks[-1] += " " + tail
+        else:
+            chunks.append(tail)
+    return chunks
+
+
+class _PCMStreamDescription(ctypes.Structure):
+    _fields_ = [
+        ("sample_rate", ctypes.c_double),
+        ("format_id", ctypes.c_uint32),
+        ("format_flags", ctypes.c_uint32),
+        ("bytes_per_packet", ctypes.c_uint32),
+        ("frames_per_packet", ctypes.c_uint32),
+        ("bytes_per_frame", ctypes.c_uint32),
+        ("channels_per_frame", ctypes.c_uint32),
+        ("bits_per_channel", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
+class _PCMQueueBuffer(ctypes.Structure):
+    _fields_ = [
+        ("capacity", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+        ("byte_size", ctypes.c_uint32),
+        ("user_data", ctypes.c_void_p),
+        ("packet_capacity", ctypes.c_uint32),
+        ("packet_descriptions", ctypes.c_void_p),
+        ("packet_count", ctypes.c_uint32),
+    ]
+
+
+_PCMQueueBufferRef = ctypes.POINTER(_PCMQueueBuffer)
+_PCMQueueCallback = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_void_p, _PCMQueueBufferRef
+)
+
+
+class PCMStreamPlayer:
+    """Small process-shaped AudioQueue owner; enqueue never waits for capacity.
+
+    Each enqueue accepts up to BLOCK_BYTES. Call can_enqueue() before enqueue;
+    a full queue raises BufferError instead of delaying a Stop/take-start check.
+    finish() means all input has arrived. poll() returns 0 only after the native
+    queue has stopped, not merely after its last buffer became reusable.
+    """
+
+    BLOCK_BYTES = 16384
+    MAX_PENDING = 8
+    _IS_RUNNING = 0x6171726E  # AudioQueue.h: kAudioQueueProperty_IsRunning ('aqrn').
+
+    def __init__(self, *, _library: Any = None) -> None:
+        if _library is None:
+            if sys.platform != "darwin":
+                raise OSError("PCM streaming playback requires macOS")
+            _library = ctypes.CDLL(
+                "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
+            )
+        self._api = _library
+        self._condition = threading.Condition()
+        # Public native operations serialize independently of the callback's
+        # condition, so Dispose/Stop can invoke callbacks without deadlocking.
+        self._operations = threading.RLock()
+        self._queue = ctypes.c_void_p()
+        self._pending: dict[int, Any] = {}
+        self._available: list[Any] = []
+        self._tail = b""
+        self._started = False
+        self._eof = False
+        self._closed = False
+        self.returncode: int | None = None
+        self.error: str | None = None
+        self._callback = _PCMQueueCallback(self._buffer_consumed)
+        signatures = {
+            "AudioQueueNewOutput": [ctypes.POINTER(_PCMStreamDescription),
+                                    _PCMQueueCallback, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+            "AudioQueueAllocateBuffer": [ctypes.c_void_p, ctypes.c_uint32,
+                                         ctypes.POINTER(_PCMQueueBufferRef)],
+            "AudioQueueEnqueueBuffer": [ctypes.c_void_p, _PCMQueueBufferRef,
+                                        ctypes.c_uint32, ctypes.c_void_p],
+            "AudioQueueStart": [ctypes.c_void_p, ctypes.c_void_p],
+            "AudioQueueStop": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueDispose": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueGetProperty": [ctypes.c_void_p, ctypes.c_uint32,
+                                      ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)],
+        }
+        for name, arguments in signatures.items():
+            function = getattr(self._api, name)
+            function.argtypes = arguments
+            function.restype = ctypes.c_int32
+        # lpcm, signed integer + packed, native little endian, one 16-bit sample
+        # per mono frame. The framework supplies its own callback thread.
+        description = _PCMStreamDescription(
+            24000.0, 0x6C70636D, (1 << 2) | (1 << 3), 2, 1, 2, 1, 16, 0
+        )
+        self._check(self._api.AudioQueueNewOutput(
+            ctypes.byref(description), self._callback, None, None, None, 0,
+            ctypes.byref(self._queue),
+        ), "create")
+
+    @staticmethod
+    def _check(status: int, operation: str) -> None:
+        if status:
+            raise OSError(f"AudioQueue {operation} failed ({int(status)})")
+
+    def _buffer_consumed(self, _context: Any, _queue: Any, buffer: Any) -> None:
+        # AudioQueueFreeBuffer is illegal while the queue is running. Reuse
+        # completed buffers; AudioQueueDispose releases all allocations later.
+        address = ctypes.cast(buffer, ctypes.c_void_p).value
+        with self._condition:
+            owned = self._pending.pop(address, None)
+            if owned is not None and not self._closed:
+                self._available.append(owned)
+            self._condition.notify_all()
+
+    @property
+    def pending(self) -> int:
+        with self._condition:
+            return len(self._pending)
+
+    def can_enqueue(self) -> bool:
+        with self._condition:
+            return (not self._closed and not self._eof
+                    and len(self._pending) < self.MAX_PENDING)
+
+    def enqueue(self, pcm: bytes) -> None:
+        if len(pcm) > self.BLOCK_BYTES:
+            raise ValueError("PCM block exceeds streaming buffer capacity")
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    raise OSError("PCM stream is closed")
+                if len(self._pending) >= self.MAX_PENDING:
+                    raise BufferError("PCM streaming queue is full")
+                data = self._tail + pcm
+                self._tail = data[-1:] if len(data) % 2 else b""
+                data = data[:len(data) - len(self._tail)]
+                if not data:
+                    return
+                buffer = self._available.pop() if self._available else None
+            if buffer is None:
+                buffer = _PCMQueueBufferRef()
+                self._check(self._api.AudioQueueAllocateBuffer(
+                    self._queue, self.BLOCK_BYTES, ctypes.byref(buffer)
+                ), "allocate")
+            ctypes.memmove(buffer.contents.data, data, len(data))
+            buffer.contents.byte_size = len(data)
+            address = ctypes.cast(buffer, ctypes.c_void_p).value
+            with self._condition:
+                self._pending[address] = buffer
+            status = self._api.AudioQueueEnqueueBuffer(self._queue, buffer, 0, None)
+            if status:
+                with self._condition:
+                    owned = self._pending.pop(address, None)
+                    if owned is not None:
+                        self._available.append(owned)
+                self._check(status, "enqueue")
+            if not self._started:
+                self._check(self._api.AudioQueueStart(self._queue, None), "start")
+                self._started = True
+
+    def finish(self) -> None:
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    return
+                if self._tail:
+                    raise ValueError("PCM stream ended inside a 16-bit sample")
+                self._eof = True
+            if self._started:
+                # Asynchronous drain. poll also checks IsRunning, since a buffer
+                # can become reusable before its last sample reaches hardware.
+                self._check(self._api.AudioQueueStop(self._queue, False), "drain")
+
+    def _dispose(self, result: int) -> None:
+        # Caller holds _operations, never _condition during the native call.
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            queue = self._queue
+            self._queue = ctypes.c_void_p()
+        status = self._api.AudioQueueDispose(queue, True)
+        with self._condition:
+            self._pending.clear()
+            self._available.clear()
+            self._tail = b""
+            self.returncode = result if not status else 1
+            if status:
+                self.error = f"AudioQueue dispose failed ({int(status)})"
+            self._condition.notify_all()
+        # Dispose has returned, so the SDK guarantees no further callbacks.
+        # Keep the CFUNCTYPE callback alive for the complete native lifetime.
+
+    def poll(self) -> int | None:
+        with self._operations:
+            with self._condition:
+                if self.returncode is not None:
+                    return self.returncode
+                if not self._eof or self._pending:
+                    return None
+            if self._started:
+                running = ctypes.c_uint32()
+                size = ctypes.c_uint32(ctypes.sizeof(running))
+                status = self._api.AudioQueueGetProperty(
+                    self._queue, self._IS_RUNNING, ctypes.byref(running), ctypes.byref(size)
+                )
+                if status:
+                    self.error = f"AudioQueue status failed ({int(status)})"
+                    self._dispose(1)
+                    return self.returncode
+                if running.value:
+                    return None
+            self._dispose(0)
+            return self.returncode
+
+    def terminate(self) -> None:
+        with self._operations:
+            self._dispose(-15)
+
+    def kill(self) -> None:
+        with self._operations:
+            self._dispose(-9)
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("AudioQueue", timeout)
+            with self._condition:
+                self._condition.wait(0.02)
+
+
+class SpeechPCMStream:
+    """Bounded synthesis ahead of playback, with one cache entry per sentence."""
+    def __init__(self, chunks: list[str], synthesize: Any, stopped: Any = None):
+        import queue
+        import threading
+
+        self.chunks, self.synthesize = chunks, synthesize
+        self.stopped = stopped or (lambda: False)
+        self.queue = queue.Queue(maxsize=8)
+        self.cancelled = threading.Event()
+        self.active_response: Any = None
+        self.thread = threading.Thread(target=self._produce, name="reply-synthesis", daemon=True)
+
+    def _put(self, event: Any) -> None:
+        import queue
+
+        while not self.cancelled.is_set():
+            try:
+                self.queue.put(event, timeout=0.05)
+                return
+            except queue.Full:
+                pass
+        raise OSError("speech cancelled")
+
+    def _produce(self) -> None:
+        try:
+            for chunk in self.chunks:
+                if self.cancelled.is_set():
+                    return
+                if self.stopped():
+                    self._put(("done", (False, "playback stopped", "stopped")))
+                    return
+                emitted = 0
+
+                def emit_pcm(pcm: bytes) -> None:
+                    nonlocal emitted
+                    for offset in range(0, len(pcm), 16384):
+                        self._put(("pcm", pcm[offset:offset + 16384]))
+                    emitted += len(pcm)
+
+                emit_pcm.response_opened = self._response_opened
+                pcm, error, reason = self.synthesize(chunk, emit_pcm)
+                self.active_response = None
+                if pcm is None:
+                    self._put(("done", (False, error, reason)))
+                    return
+                # Cache hits (and hermetic whole-response transports) do not
+                # invoke the streaming callback. Feed their complete PCM here.
+                if not emitted:
+                    emit_pcm(pcm)
+            self._put(("done", (True, None, None)))
+        except Exception as error:
+            if not self.cancelled.is_set():
+                self._put(("done", (False, f"synthesis failed ({error.__class__.__name__})", "network")))
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _response_opened(self, response: Any) -> None:
+        self.active_response = response
+        if self.cancelled.is_set():
+            self._interrupt_response()
+
+    def _interrupt_response(self) -> None:
+        import socket
+
+        # Closing BufferedReader from another thread can wait for its read
+        # lock. Shut down the underlying HTTPS socket first to unblock read1.
+        response = self.active_response
+        try:
+            response.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+        except (AttributeError, OSError):
+            pass
+
+    def poll_audio(self) -> Any:
+        import queue
+
+        try:
+            return self.queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self.cancelled.set()
+        self._interrupt_response()
+        if self.thread.ident is not None:
+            # Streaming connection/header waits are bounded at 10 s. Join so
+            # no synthesis survives the request's terminal playback receipt.
+            self.thread.join()
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -5939,7 +6340,7 @@ def _speak_xai(
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         try:
             key = _xai_speech_key()
         except SpeechCredentialError as error:
@@ -5952,7 +6353,7 @@ def _speak_xai(
             )
         body = json.dumps(
             {
-                "text": text,
+                "text": chunk,
                 "voice_id": voice,
                 "language": "auto",
                 "output_format": {"codec": "pcm", "sample_rate": 24000},
@@ -5968,9 +6369,15 @@ def _speak_xai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
@@ -6323,6 +6730,8 @@ def _wait_for_take_end(
 def _stop_playback(player: Any) -> None:
     import subprocess
 
+    if player is None:
+        return
     player.terminate()
     try:
         player.wait(timeout=2)
@@ -6332,7 +6741,7 @@ def _stop_playback(player: Any) -> None:
 
 
 def _play_pcm_24k(
-    pcm: bytes,
+    pcm: bytes | SpeechPCMStream,
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
@@ -6347,14 +6756,18 @@ def _play_pcm_24k(
     lock_descriptor = None
     player = None
     marker = None
+    streaming = isinstance(pcm, SpeechPCMStream)
+    stream_finished = False
+    marker_renewed = 0.0
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
-            wav_path = handle.name
-            with wave.open(handle, "wb") as sink:
-                sink.setnchannels(1)
-                sink.setsampwidth(2)
-                sink.setframerate(24000)
-                sink.writeframes(pcm)
+        if not streaming:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                wav_path = handle.name
+                with wave.open(handle, "wb") as sink:
+                    sink.setnchannels(1)
+                    sink.setsampwidth(2)
+                    sink.setframerate(24000)
+                    sink.writeframes(pcm)
         root = playback_root if playback_root is not None else bridge_home()
         runtime = root / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
@@ -6374,17 +6787,20 @@ def _play_pcm_24k(
             channel_released=channel_quiet_for_playback(runtime),
         ):
             return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
-        if control is not None:
-            if control.stopped():
-                return False, "playback stopped", "stopped"
-            control.publish("playing")
+        if control is not None and control.stopped():
+            return False, "playback stopped", "stopped"
         kept = channel_keeps_playback(runtime, _open_channels(cursor))
         # Announced before the first sample: the app drops the channel feed
         # from now on, and the pid lets it ignore a marker this process left.
-        marker = _announce_playback(runtime, len(pcm) / 48000)
-        player = subprocess.Popen(
-            ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        if streaming:
+            pcm.start()
+        else:
+            if control is not None:
+                control.publish("playing")
+            marker = _announce_playback(runtime, len(pcm) / 48000)
+            player = subprocess.Popen(
+                ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
         incomplete_scans = 0
         while True:
             if control is not None and control.stopped():
@@ -6410,12 +6826,37 @@ def _play_pcm_24k(
                 if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
                     _stop_playback(player)
                     return False, "take started during playback", "take_started"
-            result = player.poll()
+            if streaming and not stream_finished and (player is None or player.can_enqueue()):
+                event = pcm.poll_audio()
+                if event is not None:
+                    kind, value = event
+                    if kind == "pcm":
+                        if player is None:
+                            player = PCMStreamPlayer()
+                            if control is not None:
+                                control.publish("playing")
+                            marker = _announce_playback(runtime, 10)
+                            marker_renewed = time.monotonic()
+                        player.enqueue(value)
+                    else:
+                        stream_finished = True
+                        if not value[0]:
+                            _stop_playback(player)
+                            return value
+                        if player is None:
+                            return False, "empty PCM response", "invalid_audio"
+                        player.finish()
+            if streaming and marker is not None and time.monotonic() - marker_renewed >= 5:
+                marker = _announce_playback(runtime, 10)
+                marker_renewed = time.monotonic()
+            result = player.poll() if player is not None else None
             if result is not None:
                 if result != 0:
-                    return False, "afplay failed", "playback_failed"
+                    return False, "audio player failed", "playback_failed"
                 break
-            time.sleep(PLAYBACK_POLL_SECONDS)
+            # Streaming must drain small network buffers faster than real
+            # time; the file player's half-second cadence would starve PCM.
+            time.sleep(min(PLAYBACK_POLL_SECONDS, 0.02) if streaming else PLAYBACK_POLL_SECONDS)
     except OSError as error:
         return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
@@ -6425,6 +6866,8 @@ def _play_pcm_24k(
             _withdraw_playback(marker)
         if lock_descriptor is not None:
             os.close(lock_descriptor)
+        if streaming:
+            pcm.close()
         if wav_path:
             try:
                 os.unlink(wav_path)
@@ -6450,7 +6893,7 @@ def _speak_openai(
         or "gpt-4o-mini-tts-2025-12-15"
     )
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         key = _openai_speech_key()
         if not key:
             return (
@@ -6461,7 +6904,7 @@ def _speak_openai(
         body = json.dumps(
             {
                 "model": model,
-                "input": text,
+                "input": chunk,
                 "voice": voice,
                 "response_format": "pcm",
                 "speed": speed,
@@ -6472,10 +6915,16 @@ def _speak_openai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "openai", "model": model, "voice": voice, "speed": float(speed),
               "language": None, "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
