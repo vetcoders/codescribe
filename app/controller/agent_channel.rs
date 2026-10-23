@@ -1087,7 +1087,9 @@ impl RecordingController {
 
     /// Fn+digit toggle. A second press of the same digit hangs up: the
     /// session seals with `reason: hangup` and does not reopen. Dictation
-    /// state is not changed.
+    /// state is not changed, except that a hold admitted on the channel
+    /// modifier ends undelivered as this chord's prefix
+    /// (`abandon_chord_prefix_hold`).
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
         self.toggle_agent_channel_at(
             digit,
@@ -1107,8 +1109,17 @@ impl RecordingController {
         mode: ChannelOpenMode,
     ) -> Result<bool> {
         let _serial = Arc::clone(&self.serial_lock).lock_owned().await;
-        if self.current_state().await == super::State::Idle {
-            self.cancel_pending_hold_start().await;
+        match self.current_state().await {
+            super::State::Idle => {
+                self.cancel_pending_hold_start().await;
+            }
+            // An ordinary hold already admitted on the channel modifier was
+            // this chord's prefix: it ends here, delivering nothing, before
+            // the channel opens.
+            super::State::RecHold => {
+                self.abandon_chord_prefix_hold().await;
+            }
+            _ => {}
         }
         let opened = match self
             .dispatch_agent_channel(digit, binding_file, shared_bus, mode)

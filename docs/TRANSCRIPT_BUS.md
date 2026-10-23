@@ -372,7 +372,11 @@ session lacked an end line.
 `start_superseded` when a key-up or reschedule invalidated a hold start after
 `session_started` and before the take became an active recording, and
 `start_failed` when the recorder could not be started after the session was
-announced. App refusal, stop timeout, and forced recovery use
+announced, and `chord_prefix` when an admitted hold on the agent-channel
+modifier turned out to be the prefix of a channel digit chord (see
+`docs/HOTKEYS_CONTRACT.md`): its capture is discarded, nothing is delivered or
+archived, and the terminal line carries phase `no_speech` with every action
+flag off. App refusal, stop timeout, and forced recovery use
 `transcription_failed`; returning the recorder to Idle does not imply transcript
 success. CLI file sessions use `transcription_failed` when decoding or
 stream output fails after publishing a draft; the partial text is never sealed

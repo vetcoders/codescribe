@@ -816,6 +816,10 @@ pub enum TranscriptSessionEndReason {
     StartFailed,
     /// A CLI file decoder or output sink failed after opening its session.
     TranscriptionFailed,
+    /// An admitted hold on the agent-channel modifier was the prefix of a
+    /// channel digit chord. Its capture was discarded and nothing was
+    /// delivered, archived or offered for delivery.
+    ChordPrefix,
 }
 
 /// Append-only public event contract. `text` is always clean reducer truth;
@@ -2685,8 +2689,15 @@ impl TranscriptBus {
             | TranscriptSessionEndReason::StartSuperseded
             | TranscriptSessionEndReason::StartFailed
             | TranscriptSessionEndReason::TranscriptionFailed => TranscriptProjectionPhase::Error,
+            TranscriptSessionEndReason::ChordPrefix => TranscriptProjectionPhase::NoSpeech,
         };
-        let availability = self.projection_availability(has_text, false, session_wav_exists);
+        // A chord prefix was never dictation: nothing it heard is offered for
+        // paste, insert, copy, retranscription or an agent.
+        let availability = if reason == TranscriptSessionEndReason::ChordPrefix {
+            self.projection_availability(false, false, false)
+        } else {
+            self.projection_availability(has_text, false, session_wav_exists)
+        };
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
