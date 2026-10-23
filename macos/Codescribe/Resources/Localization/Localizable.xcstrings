@@ -1,210 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Write / Forward…" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Napisz / Prześlij…"
-          }
-        }
-      }
-    },
-    "Show in Agents" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pokaż w Agents"
-          }
-        }
-      }
-    },
-    "Do not disturb" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nie przeszkadzać"
-          }
-        }
-      }
-    },
-    "Disconnect and archive agent" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rozłącz i zarchiwizuj agenta"
-          }
-        }
-      }
-    },
-    "Preview message" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Podgląd wiadomości" } }
-      }
-    },
-    "Intercom layout": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Układ interkomu"
-          }
-        }
-      }
-    },
-    "Choose the horizontal strip or floating vertical agent pills.": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wybierz poziomy pasek lub pionowe, lewitujące pigułki agentów."
-          }
-        }
-      }
-    },
-    "Horizontal strip": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Poziomy pasek"
-          }
-        }
-      }
-    },
-    "Floating agent pills": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lewitujące pigułki agentów"
-          }
-        }
-      }
-    },
-    "Intercom": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Interkom"
-          }
-        }
-      }
-    },
-    "Drag to move": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przeciągnij, aby przesunąć"
-          }
-        }
-      }
-    },
-    "Microphone open": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mikrofon otwarty"
-          }
-        }
-      }
-    },
-    "Microphone closed": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mikrofon zamknięty"
-          }
-        }
-      }
-    },
-    "Mute": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wycisz"
-          }
-        }
-      }
-    },
-    "Unmute": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Włącz odsłuch"
-          }
-        }
-      }
-    },
-    "Open agent": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otwórz agenta"
-          }
-        }
-      }
-    },
-    "Open conversation": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otwórz rozmowę"
-          }
-        }
-      }
-    },
-    "Show agent channels in mini and compact views." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
-          }
-        }
-      }
-    },
-    "Channel map in the overlay" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mapa kanałów w nakładce"
-          }
-        }
-      }
-    },
     "" : {
       "shouldTranslate" : false
     },
@@ -2418,6 +2214,16 @@
         }
       }
     },
+    "Add argument" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dodaj argument"
+          }
+        }
+      }
+    },
     "Add custom provider." : {
       "localizations" : {
         "pl" : {
@@ -3440,6 +3246,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdź w przeglądarce…"
+          }
+        }
+      }
+    },
+    "Argument" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Argument"
           }
         }
       }
@@ -4576,6 +4392,17 @@
         }
       }
     },
+    "Channel map in the overlay" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mapa kanałów w nakładce"
+          }
+        }
+      }
+    },
     "Channel status unavailable — last open state retained" : {
       "localizations" : {
         "pl" : {
@@ -4865,6 +4692,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
+          }
+        }
+      }
+    },
+    "Choose the horizontal strip or floating vertical agent pills." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wybierz poziomy pasek lub pionowe, lewitujące pigułki agentów."
           }
         }
       }
@@ -5416,17 +5254,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Codescribe uruchomi się ponownie w tym języku. Najpierw zakończ nagrywanie."
-          }
-        }
-      }
-    },
-    "Codescribe will restart with the new shade. Your recording must finish first." : {
-      "comment" : "Sheet shade restart explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe uruchomi się ponownie z nowym odcieniem. Nagranie musi się najpierw zakończyć."
           }
         }
       }
@@ -7318,6 +7145,17 @@
         }
       }
     },
+    "Disconnect and archive agent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozłącz i zarchiwizuj agenta"
+          }
+        }
+      }
+    },
     "Disconnected" : {
       "localizations" : {
         "pl" : {
@@ -7344,6 +7182,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odrzuć"
+          }
+        }
+      }
+    },
+    "Do not disturb" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie przeszkadzać"
           }
         }
       }
@@ -7529,6 +7378,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szkic · niezatwierdzony"
+          }
+        }
+      }
+    },
+    "Drag to move" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeciągnij, aby przesunąć"
           }
         }
       }
@@ -7755,6 +7615,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wprowadź klucz licencyjny"
+          }
+        }
+      }
+    },
+    "Enter only the executable here. Add each command argument separately below." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wpisz tu tylko plik wykonywalny. Każdy argument polecenia dodaj osobno poniżej."
           }
         }
       }
@@ -8140,6 +8010,17 @@
     "Fixed windows" : {
       "shouldTranslate" : false
     },
+    "Floating agent pills" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lewitujące pigułki agentów"
+          }
+        }
+      }
+    },
     "Focus agent panel in Frame" : {
       "comment" : "Frame focus button help",
       "localizations" : {
@@ -8226,17 +8107,6 @@
         }
       }
     },
-    "Formatted" : {
-      "comment" : "Formatting test verdict",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sformatowano"
-          }
-        }
-      }
-    },
     "Formats a raw transcript, or your text, the way dictation does." : {
       "comment" : "Formatting test row explanation",
       "localizations" : {
@@ -8244,6 +8114,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Formatuje surową transkrypcję albo Twój tekst tak samo jak dyktowanie."
+          }
+        }
+      }
+    },
+    "Formatted" : {
+      "comment" : "Formatting test verdict",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sformatowano"
           }
         }
       }
@@ -8809,6 +8690,17 @@
         }
       }
     },
+    "Horizontal strip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziomy pasek"
+          }
+        }
+      }
+    },
     "Hotkey conflict" : {
       "comment" : "Tray status: a recording shortcut was detected but blocked",
       "localizations" : {
@@ -9184,6 +9076,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Funkcje AI"
+          }
+        }
+      }
+    },
+    "Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Interkom"
+          }
+        }
+      }
+    },
+    "Intercom layout" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Układ interkomu"
           }
         }
       }
@@ -10468,6 +10382,17 @@
         }
       }
     },
+    "Microphone closed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon zamknięty"
+          }
+        }
+      }
+    },
     "Microphone not calibrated yet" : {
       "localizations" : {
         "pl" : {
@@ -10484,6 +10409,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Mikrofon wyłączony"
+          }
+        }
+      }
+    },
+    "Microphone open" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofon otwarty"
           }
         }
       }
@@ -10615,17 +10551,6 @@
         }
       }
     },
-    "Model default keeps what the model does on its own. In the chat: /effort." : {
-      "comment" : "Agent reasoning row explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domyślny dla modelu zostawia to, co model robi sam z siebie. W czacie: /effort."
-          }
-        }
-      }
-    },
     "Model default" : {
       "comment" : "Agent reasoning level: the model's own",
       "localizations" : {
@@ -10633,6 +10558,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Domyślny dla modelu"
+          }
+        }
+      }
+    },
+    "Model default keeps what the model does on its own. In the chat: /effort." : {
+      "comment" : "Agent reasoning row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domyślny dla modelu zostawia to, co model robi sam z siebie. W czacie: /effort."
           }
         }
       }
@@ -10934,6 +10870,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wielojęzyczny automatycznie wykrywa język."
+          }
+        }
+      }
+    },
+    "Mute" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wycisz"
           }
         }
       }
@@ -11862,17 +11809,6 @@
         }
       }
     },
-    "None answers fastest. Higher levels are slower; choose one only if a model needs it." : {
-      "comment" : "Formatting reasoning row explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brak odpowiada najszybciej. Wyższe poziomy są wolniejsze; wybierz je tylko wtedy, gdy model tego potrzebuje."
-          }
-        }
-      }
-    },
     "None" : {
       "comment" : "Reasoning level",
       "localizations" : {
@@ -11880,6 +11816,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak"
+          }
+        }
+      }
+    },
+    "None answers fastest. Higher levels are slower; choose one only if a model needs it." : {
+      "comment" : "Formatting reasoning row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak odpowiada najszybciej. Wyższe poziomy są wolniejsze; wybierz je tylko wtedy, gdy model tego potrzebuje."
           }
         }
       }
@@ -12529,6 +12476,28 @@
     },
     "Open Voice Lab" : {
       "shouldTranslate" : false
+    },
+    "Open agent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz agenta"
+          }
+        }
+      }
+    },
+    "Open conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz rozmowę"
+          }
+        }
+      }
     },
     "Open diagnostics" : {
       "comment" : "Open Agent diagnostics from the Setup global readiness row",
@@ -13378,6 +13347,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Podgląd załącznika (oryginalnego pliku może brakować)"
+          }
+        }
+      }
+    },
+    "Preview message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podgląd wiadomości"
           }
         }
       }
@@ -14583,6 +14563,16 @@
         }
       }
     },
+    "Remove argument" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usuń argument"
+          }
+        }
+      }
+    },
     "Remove attachment" : {
       "localizations" : {
         "pl" : {
@@ -15129,7 +15119,7 @@
       }
     },
     "Restart now" : {
-      "comment" : "Apply the interface language\nApply the sheet shade",
+      "comment" : "Apply the interface language",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15140,7 +15130,7 @@
       }
     },
     "Restarting…" : {
-      "comment" : "Interface language restart in flight\nSheet shade restart in flight",
+      "comment" : "Interface language restart in flight",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16264,6 +16254,17 @@
         }
       }
     },
+    "Show agent channels in mini and compact views." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
+          }
+        }
+      }
+    },
     "Show agents list" : {
       "localizations" : {
         "pl" : {
@@ -16374,6 +16375,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż ikonę"
+          }
+        }
+      }
+    },
+    "Show in Agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż w Agents"
           }
         }
       }
@@ -18132,7 +18144,7 @@
       }
     },
     "Test" : {
-      "comment" : "Button label: run a connection test",
+      "comment" : "Button label: run a connection test\nButton: send one formatting request\nSettings row: send one formatting request now",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19503,6 +19515,17 @@
         }
       }
     },
+    "Unmute" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włącz odsłuch"
+          }
+        }
+      }
+    },
     "Unmute agent replies" : {
       "localizations" : {
         "pl" : {
@@ -20584,6 +20607,17 @@
         }
       }
     },
+    "Write / Forward…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Napisz / Prześlij…"
+          }
+        }
+      }
+    },
     "Write or dictate a message to start the conversation." : {
       "localizations" : {
         "pl" : {
@@ -21540,16 +21574,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "np. Libraxis"
-          }
-        }
-      }
-    },
-    "e.g. mcp" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "np. mcp"
           }
         }
       }
