@@ -490,6 +490,29 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversation?.id, other.id)
   }
 
+  /// Maciej, 2026-10-23: the composer microphone closed the Agent view it was
+  /// dictating into. The take-start form must not fold a draft's conversation.
+  func testComposerMicrophoneTakeKeepsItsConversationExpanded() async throws {
+    let state = OverlayState()
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    await state.toggleDraftMicrophone(in: origin)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertFalse(state.draftMicrophoneBusy(in: origin), "its own Stop stays reachable")
+  }
+
   func testDraftTerminalBeforeStartReplyJoinsOnlyAdmittedCapture() async throws {
     let state = OverlayState()
     let surface = DraftCaptureFixture()
