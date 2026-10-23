@@ -19,6 +19,8 @@ enum OverlayTranscriptActionsLayout {
   static let groupSpacing: CGFloat = 8
   static let separatorHeight: CGFloat = 1
   static let contentVerticalPadding: CGFloat = 4
+  /// The palette shows seven controls at once; its remaining commands scroll.
+  static let visibleSlotBudget = 7
   /// Controls per group, top to bottom, matching the rail's fixed order:
   /// history/versions/undo/redo, previous take, the document commands, the
   /// engine commands and the delivery command.
@@ -34,32 +36,39 @@ enum OverlayTranscriptActionsLayout {
     contentWidth + OverlayResizeHit.band
   }
 
-  /// Height of the whole fixed column: every control, the spacing inside and
-  /// between its groups, its separators and its vertical padding. Nothing in
-  /// it scales with the text size, so it holds at every supported scale.
+  /// The whole command inventory remains mounted, including disabled slots.
   static var columnHeight: CGFloat {
-    let controls = groupControlCounts.reduce(0, +)
-    let innerSpacing = groupControlCounts.map { max(0, $0 - 1) }.reduce(0, +)
-    let separators = groupControlCounts.count - 1
-    let stackItems = groupControlCounts.count + separators
-    return CGFloat(controls) * controlHeight
-      + CGFloat(innerSpacing) * itemSpacing
-      + CGFloat(separators) * separatorHeight
-      + CGFloat(max(0, stackItems - 1)) * groupSpacing
-      + 2 * contentVerticalPadding
+    height(forFirst: groupControlCounts.reduce(0, +))
+  }
+
+  /// Height of the first seven slots, respecting the same group boundaries
+  /// as the full stack. End at the seventh control so the next one cannot
+  /// peek through the full stack's bottom padding.
+  static var viewportHeight: CGFloat {
+    height(forFirst: visibleSlotBudget) - contentVerticalPadding
+  }
+
+  private static func height(forFirst slotCount: Int) -> CGFloat {
+    var remaining = max(0, slotCount)
+    var height = 2 * contentVerticalPadding
+    for (index, count) in groupControlCounts.enumerated() {
+      let visible = min(remaining, count)
+      guard visible > 0 else { break }
+      if index > 0 { height += 2 * groupSpacing + separatorHeight }
+      height += CGFloat(visible) * controlHeight + CGFloat(visible - 1) * itemSpacing
+      remaining -= visible
+    }
+    return height
   }
 
   /// The header the column hangs below: `OverlayHeaderDensity.rowHeight`
   /// plus its 10 pt of vertical padding on each side.
   static var headerHeight: CGFloat { OverlayHeaderDensity.rowHeight + 20 }
 
-  /// Smallest expanded height in which the full action column is visible at
-  /// once: the header clearance `transcriptActionsColumn` pays with its top
-  /// padding (the header floats over the canvas), the whole column and its
-  /// bottom padding. Anything less and the scroll view clips the last
-  /// controls instead of showing them.
+  /// The expanded floor pays for seven visible slots, not the full inventory.
+  /// The scroll view keeps every command available below that viewport.
   static var minimumExpandedHeight: CGFloat {
-    headerHeight + columnTopGap + columnHeight + columnBottomPadding
+    headerHeight + columnTopGap + viewportHeight + columnBottomPadding
   }
 }
 

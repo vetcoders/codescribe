@@ -736,32 +736,27 @@ struct DictationOverlayView: View {
   }
 
   /// Trailing transcript actions. This is the only mount of the rail, so each
-  /// command has one control. The column uses the shared sidebar material and
-  /// stays out of the keyboard chain.
+  /// command has one control. Seven visible slots float over the transcript
+  /// surface, with the rest reachable by scrolling and no extra sidebar fill.
   private func transcriptActionsColumn<Rail: View>(
     maximumHeight: CGFloat, width: CGFloat, rail: Rail
   ) -> some View {
-    rail
-      // The top padding alone clears the header; the frame keeps the whole
-      // height, so the clearance is paid once and the scroller below it is
-      // exactly the height the expanded floor derives from.
-      .padding(.top, headerHeight + 8)
-      .padding(.bottom, 12)
+    let availableHeight = max(
+      0,
+      maximumHeight - headerHeight - OverlayTranscriptActionsLayout.columnTopGap
+        - OverlayTranscriptActionsLayout.columnBottomPadding)
+
+    return
+      rail
+      .frame(height: min(availableHeight, OverlayTranscriptActionsLayout.viewportHeight))
+      .padding(.top, headerHeight + OverlayTranscriptActionsLayout.columnTopGap)
+      .padding(.bottom, OverlayTranscriptActionsLayout.columnBottomPadding)
       // Keep the complete action buttons outside the native resize band.
       .padding(.trailing, OverlayResizeHit.band)
-      .frame(width: width, height: max(0, maximumHeight))
+      .frame(width: width, height: max(0, maximumHeight), alignment: .top)
       .frame(maxHeight: .infinity, alignment: .top)
       .focusable(false)
-      .background { CSSidebarMaterial() }
       .background { OverlayMenuCursorRegion() }
-      .overlay(alignment: .leading) {
-        Rectangle()
-          .fill(palette.border.color)
-          .frame(width: 1 / max(displayScale, 1))
-          .padding(.top, headerHeight)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-transcript-actions")
       .onAppear { state.refreshRetranscriptionAvailability() }
