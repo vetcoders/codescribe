@@ -29,6 +29,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
   /// The pending hover-leave grace period; a fresh enter cancels it.
   @ObservationIgnored private var hoverLeaveTask: Task<Void, Never>?
+  /// The frame each group card was last sent toward. A window animation
+  /// does not move the frame until its first tick, so a fast crossing that
+  /// retargets within that tick sees `panel.frame` still at the old frame;
+  /// a guard on the live frame then skips the retarget and the first
+  /// animation wins — the stack of fiszki left wide after a quick sweep
+  /// (Maciej's recording, 2026-10-23 09:05). Compare against the target.
+  @ObservationIgnored private var cardTargets: [OverlayIntercomCardIdentity: CGRect] = [:]
   fileprivate private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
   fileprivate private(set) var presentation = OverlayIntercomPresentation()
@@ -140,6 +147,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel?.contentView = nil
       panel?.close()
       sizes.removeValue(forKey: identity)
+      cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
       presentation.leave(identity)
     }
@@ -400,7 +408,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         // width. Only a detached instance owns its geometry (Maciej, 2026-10-23).
         frame = row
       }
-      if panel.frame != frame {
+      if cardTargets[identity] != frame {
+        cardTargets[identity] = frame
         // Hover slides stay smooth, but they must CONVERGE: a new target
         // retargets the running animation instead of queueing another, and
         // the duration is fixed instead of distance-scaled. setFrame(animate:)
@@ -524,6 +533,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
             onRevealConversation: revealConversation)
         })
       sizes.removeValue(forKey: identity)
+      cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
       instancePanels[id] = panel
     }
