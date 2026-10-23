@@ -226,6 +226,38 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertFalse(widget.contains("OverlayAgentStatusDot( kind: intercomStatusDot("))
   }
 
+  /// Rows drag the group and resize it by every edge; tear-off is gone
+  /// from rows (Maciej, 2026-10-23 dictation).
+  func testRowsMoveAndResizeTheGroupInsteadOfTearingOff() throws {
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("tearOff"))
+    XCTAssertFalse(widget.contains("tornOffTile"))
+    let move = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "fileprivate func moveGroup(",
+      to: "private func detachIntoInstance(")
+    XCTAssertTrue(move.contains("let pointer = NSEvent.mouseLocation"), "screen points")
+    XCTAssertTrue(move.contains("header.setFrameOrigin("), "the header carries the rows")
+    let body = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomCard: View {",
+      to: "private func cardHeader(")
+    XCTAssertTrue(body.contains(".onChanged { _ in controller.moveGroup() }"))
+    XCTAssertTrue(body.contains(".onEnded { _ in controller.moveGroup(ended: true) }"))
+    XCTAssertTrue(body.contains("sides: true,"))
+    XCTAssertTrue(
+      body.contains("from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)"))
+    XCTAssertTrue(body.contains("alignment: expanded ? .top : .center"), "content in the middle")
+    let handles = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
+      to: "private struct OverlayIntercomInstanceCard: View {")
+    for edge in [".left", ".right", ".top", ".bottom", ".bottomLeft", ".bottomRight"] {
+      XCTAssertTrue(handles.contains("OverlayIntercomResizeHandle(edge: \(edge),"), edge)
+    }
+    let header = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
+      to: "private struct OverlayIntercomWindowProjection:")
+    XCTAssertTrue(header.contains("OverlayIntercomResizeHandles(corners: false, right: true)"))
+  }
+
   /// "Przydym też troszkę te hiperbiałe przyciski … nie tylko w pierwszym"
   /// and "można by się tego fioletu pozbyć … na rzecz rozjaśnienia" (Maciej,
   /// 2026-10-23): flat controls rest in the wordmark's muted ink, names rest
@@ -272,7 +304,13 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: inactive)"))
     XCTAssertFalse(card.contains("detachedInstance"))
     XCTAssertFalse(card.contains("Image(systemName: \"macwindow\")"))
-    XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(tearOffGesture").count - 1, 2)
+    // A collapsed row moves the group; it never tears off (Maciej,
+    // 2026-10-23: only an unrolled card detaches, by its grip).
+    XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(moveGesture").count - 1, 2)
+    XCTAssertFalse(card.contains("tearOff"))
+    XCTAssertTrue(
+      card.contains("if expanded { Button(\"Detach conversation\") { controller.detach(identity) }")
+    )
     XCTAssertTrue(
       card.contains(
         "OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)"))
