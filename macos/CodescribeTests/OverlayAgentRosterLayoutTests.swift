@@ -171,17 +171,20 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertFalse(marks.contains("followerAlive"), "policy writes do not need a live follower")
   }
 
-  func testUnlitMoonRecedesWhileLitMoonKeepsItsFilledAmberMark() throws {
+  func testUnlitMoonRecedesWhileLitMoonFillsInTheTextColour() throws {
     XCTAssertEqual(AgentBroadcastPolicy.on.quietSymbol, "moon")
     XCTAssertEqual(AgentBroadcastPolicy.quiet.quietSymbol, "moon.fill")
     let marks = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayReceptionMarks: View {",
       to: "struct OverlayChannelStatusView: View {")
     try assertOrder(["symbol: policy.statusSymbol", "symbol: policy.quietSymbol"], in: marks)
+    // Shape is the whole signal: no amber, no accent on the lit moon.
     XCTAssertTrue(
       marks.contains(
-        "symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.processingStatus.color, unlitOpacity: 0.45"
+        "symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color, unlitOpacity: 0.45"
       ))
+    XCTAssertFalse(
+      marks.contains("litColor: palette.processingStatus"), "the lit moon is not a warning")
     XCTAssertTrue(marks.contains("unlitOpacity: Double = 1"), "the antenna keeps its existing tone")
     XCTAssertTrue(marks.contains("lit ? litColor : palette.mutedText.color.opacity(unlitOpacity)"))
   }

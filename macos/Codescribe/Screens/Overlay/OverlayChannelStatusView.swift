@@ -799,8 +799,12 @@ struct OverlayReceptionMarks: View {
         next.member.toggle()
         apply(next)
       }
+      // The moon speaks through its shape alone: a dimmed outline when clear,
+      // a filled moon in the row's own text colour when lit. The amber of
+      // `processingStatus` made it a yellow warning beside the name (Maciej,
+      // 2026-10-23: "żółty księżyc zamiast kontur ↔ wypełnienie, brzydko").
       mark(
-        symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.processingStatus.color,
+        symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color,
         unlitOpacity: 0.45,
         help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
       ) {
