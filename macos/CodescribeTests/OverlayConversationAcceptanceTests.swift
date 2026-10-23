@@ -599,7 +599,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     XCTAssertEqual(draft, "Pierwsza linia i druga wypowiedź")
   }
 
-  func testTextReplyDoesNotAcquireSpeechFromItsTextOrPlaybackFailure() throws {
+  func testVoicelessReplyKeepsPlayAfterPlaybackFailure() throws {
     var bus = OverlayChannelDelivery.Bus()
     let id = String(repeating: "d", count: 24)
     var text = reply(id)
@@ -614,7 +614,7 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let message = try XCTUnwrap(lenaConversation(bus).messages.first)
     XCTAssertEqual(message.text, "Odpowiedź")
     XCTAssertEqual(message.playback?.state, "failed")
-    XCTAssertFalse(message.supportsSpeechPlayback)
+    XCTAssertTrue(message.supportsSpeechPlayback)
   }
 
   func testSpeechReplyKeepsPlaybackCapabilityBeforeSynthesisAndAcrossMirrors() throws {
@@ -634,19 +634,56 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
-  func testTextReplyCannotInvokePlaybackEvenThroughAStaleControl() async throws {
-    var bus = OverlayChannelDelivery.Bus()
-    let id = String(repeating: "d", count: 24)
-    var text = reply(id)
-    text.removeValue(forKey: "tts_vendor")
-    text.removeValue(forKey: "voice")
-    bus.consume(text)
-    let message = try XCTUnwrap(lenaConversation(bus).messages.first)
-    let state = OverlayState()
-    await state.controlReply(message, stop: false)
-    await state.controlReply(message, stop: true)
-    XCTAssertTrue(state.pendingReplyControls.isEmpty)
-    XCTAssertTrue(state.replyControlErrors.isEmpty)
+  func testVoicelessReplyAndAgentTextRenderEnabledPlay() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    for schema in ["codescribe.agent-reply.v1", "codescribe.agent-user-message.v1"] {
+      var bus = OverlayChannelDelivery.Bus()
+      let id = String(repeating: "d", count: 24)
+      var text = reply(id)
+      text["schema"] = schema
+      text.removeValue(forKey: "tts_vendor")
+      text.removeValue(forKey: "voice")
+      if schema == "codescribe.agent-user-message.v1" {
+        text["kind"] = "agent_user_message"
+        text["message_id"] = id
+        text["sender"] = owner(leaseA)
+        text["channel"] = "10"
+      }
+      bus.consume(text)
+      let conversation = try lenaConversation(bus)
+      let source = try XCTUnwrap(conversation.messages.first)
+      var message = OverlayConversationMessage(
+        id: source.id, kind: source.kind, text: source.text, order: source.order,
+        emittedAt: source.emittedAt, owner: nil, recipients: source.recipients,
+        deliveryID: source.deliveryID, replyTo: source.replyTo,
+        unsolicited: source.unsolicited, playback: source.playback, busPath: source.busPath)
+      message.supportsSpeechPlayback = source.supportsSpeechPlayback
+      message.provider = source.provider
+      message.providerSessionID = source.providerSessionID
+      var requested = false
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+        pendingControls: [], controlErrors: [:],
+        onControl: { selected, stop in
+          XCTAssertEqual(selected.id, message.id)
+          XCTAssertFalse(stop)
+          requested = true
+        }, draft: .constant(""), sending: false, sendError: nil, onSend: {})
+      let host = NSHostingView(rootView: view.messageFooter(message).frame(width: 400))
+      let window = NSWindow(
+        contentRect: NSRect(x: 800, y: 300, width: 400, height: 120),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      BackgroundTestWindow.present(window)
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      let identifier = "overlay-reply-play-\(message.id)"
+      XCTAssertFalse(try NativeAccessibilityProbe.waitForElements(identifier).elements.isEmpty)
+      let pressed = try NativeAccessibilityProbe.query(identifier, press: true)
+      XCTAssertEqual(pressed.pressStatus, 0, "The Play control must be enabled: \(schema)")
+      XCTAssertTrue(requested)
+    }
   }
 
   @MainActor
@@ -1146,13 +1183,22 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         to: FileManager.default.temporaryDirectory
           .appendingPathComponent("codescribe-conversation-\(scheme).png"))
       var warmCount = 0
-      var warmX: Double = 0
+      var warmBorderCount = 0
+      var warmBorderX: Double = 0
       var neutralCount = 0
       var neutralLeft = 0
       var neutralRight = 0
+      func isWarm(_ x: Int, _ y: Int) -> Bool {
+        guard let color = bitmap.colorAt(x: x, y: y) else { return false }
+        return color.redComponent - color.greenComponent > 0.035
+          && color.greenComponent - color.blueComponent > 0.025
+      }
       // Rendered interiors must match; the user's brand hairline stays sparse and on the right.
+      // Inspect every physical x: a four-pixel grid can see just one rail of
+      // a one-pixel Retina outline. Continuous vertical edges isolate the
+      // bubble border from warm text, metadata and playback controls.
       for y in stride(from: 90, to: bitmap.pixelsHigh - 30, by: 4) {
-        for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) {
+        for x in 0..<bitmap.pixelsWide {
           guard let color = bitmap.colorAt(x: x, y: y) else {
             continue
           }
@@ -1161,7 +1207,10 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           let b = color.blueComponent
           if r - g > 0.035 && g - b > 0.025 {
             warmCount += 1
-            warmX += Double(x)
+            if isWarm(x, y - 4), isWarm(x, y + 4) {
+              warmBorderCount += 1
+              warmBorderX += Double(x)
+            }
           }
           let agentFill = scheme == .dark ? 0.149 : 0.914
           if abs(r - agentFill) < 0.018 && abs(r - g) < 0.03 {
@@ -1175,7 +1224,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertGreaterThan(neutralRight, 100, "human bubble has the same neutral interior")
       XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
       let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
-      XCTAssertGreaterThan(warmX / Double(max(1, warmCount)), viewportMidpoint)
+      XCTAssertGreaterThan(warmBorderCount, 10, "the brand outline has visible vertical edges")
+      XCTAssertGreaterThan(warmBorderX / Double(max(1, warmBorderCount)), viewportMidpoint)
 
     }
   }

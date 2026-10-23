@@ -292,6 +292,42 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     ]
     return (source, stage, commit)
   }
+  func testVoicelessRepliesAndAgentAuthoredTextKeepPlaybackCoordinatesAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    for (index, schema) in ["codescribe.agent-reply.v1", "codescribe.agent-user-message.v1"]
+      .enumerated()
+    {
+      var row = fixture.recipient()
+      let identity = String(repeating: String(index + 1), count: 24)
+      row["schema"] = schema
+      row["kind"] = index == 0 ? "agent_reply" : "agent_user_message"
+      row["reply_id"] = identity
+      row["message_id"] = identity
+      row["text"] = "Agent text \(index)"
+      row["sender"] = fixture.recipient()
+      row["channel"] = "10"
+      row["recipients"] = []
+      bus.consume(row)
+    }
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let messages = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).first {
+          $0.owner?.leaseID == Fixture.leaseID
+        }
+      ).messages
+      XCTAssertEqual(messages.count, 2)
+      XCTAssertEqual(messages.map(\.kind), [.reply, .reply])
+      XCTAssertTrue(messages.allSatisfy(\.supportsSpeechPlayback))
+      XCTAssertEqual(messages.map(\.provider), ["codex", "codex"])
+      XCTAssertEqual(messages.map(\.providerSessionID), ["agent-session", "agent-session"])
+    }
+  }
+
   func testAddressedSpeechBroadcastDoesNotEchoToAuthorAcrossRestore() throws {
     for destination in ["0", "1"] {
       let fixture = try Fixture()
@@ -1536,7 +1572,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       .readSnapshot()
     let replies = try messages(initial)
     XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
-    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, false])
+    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, true])
     let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(try messages(restored), replies)
@@ -1556,8 +1592,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
           with: XCTUnwrap(Data(base64Encoded: encoded))) as? [String: Any])
       var cachedMessages = try XCTUnwrap(projection["messages"] as? [String: [String: Any]])
       for id in Array(cachedMessages.keys) {
-        cachedMessages[id]?.removeValue(forKey: "supportsSpeechPlayback")
+        cachedMessages[id]?["supportsSpeechPlayback"] = false
+        cachedMessages[id]?.removeValue(forKey: "provider")
+        cachedMessages[id]?.removeValue(forKey: "providerSessionID")
       }
+      projection.removeValue(forKey: "speechProjectionVersion")
       projection["messages"] = cachedMessages
       entry["projection"] = try JSONSerialization.data(withJSONObject: projection)
         .base64EncodedString()

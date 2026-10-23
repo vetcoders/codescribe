@@ -6635,8 +6635,118 @@ def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, A
     return bus, envelope
 
 
+def remember_published_reply(root: Path, bus: Path, reply: dict[str, Any],
+                             receipt: dict[str, Any]) -> None:
+    """Keep canonical byte coordinates for speech and text-only agent replies."""
+    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+            for key in ("stream_dev", "stream_inode", "offset", "length"))
+            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+        raise ValueError("canonical reply publication has invalid source coordinates")
+    owner = {key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}
+    path = root / "runtime" / "reply-sources" / f"{reply['reply_id']}.json"
+    previous = read_reply_json(path) if path.exists() else {}
+    copies = []
+    if previous:
+        if (previous.get("schema") != REPLY_SOURCE_SCHEMA
+                or any(previous.get(key) != value for key, value in owner.items())):
+            raise ValueError("published reply source has a different owner")
+        copies = previous.get("copies", [{"bus": previous.get("bus"), "source": previous.get("source")}])
+        if not isinstance(copies, list) or any(not isinstance(copy, dict) for copy in copies):
+            raise ValueError("published reply source has invalid copies")
+    coordinates = {"bus": str(bus.resolve(strict=False)), "source": receipt}
+    copies = [copy for copy in copies if copy.get("bus") != coordinates["bus"]]
+    copies.append(coordinates)
+    atomic_json(path, {"schema": REPLY_SOURCE_SCHEMA, **owner, **copies[0], "copies": copies})
+
+
+def normalize_playable_reply(args: argparse.Namespace, identity: str,
+                             event: dict[str, Any]) -> dict[str, Any] | None:
+    """Only an agent author can supply playback identity; typed rows name recipients."""
+    owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+             "lease_id": lease_identifier(args.provider, args.session)}
+    if event.get("schema") == AGENT_REPLY_SCHEMA and event.get("kind") == "agent_reply":
+        if event.get("reply_id") != identity or any(event.get(key) != value for key, value in owner.items()):
+            return None
+        return event
+    sender = event.get("sender")
+    if (event.get("schema") != AGENT_USER_MESSAGE_SCHEMA or event.get("kind") != "agent_user_message"
+            or event.get("message_id") != identity or event.get("source") == "typed"
+            or not isinstance(sender, dict)
+            or any(sender.get(key) != value for key, value in owner.items())
+            or not isinstance(event.get("text"), str) or not event["text"].strip()):
+        return None
+    return {**event, "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "reply_id": identity,
+            **owner, "name": sender.get("name") or event.get("name")}
+
+
+def recover_published_reply_source(args: argparse.Namespace, identity: str) -> None:
+    """Index an older agent row only in the explicitly selected verified bus."""
+    if not args.bus_overridden:
+        raise ValueError("historical reply playback requires an explicit bus")
+    bus = args.bus.expanduser().resolve(strict=False)
+    with GenerationFile(bus) as handle:
+        manifest = read_reply_json(Path(str(bus) + ".generations.json"), 4 << 20)
+        if (manifest.get("schema") != "codescribe.bus-generations.v1"
+                or manifest.get("root") != str(bus)
+                or not isinstance(manifest.get("stream_id"), str) or not manifest["stream_id"]
+                or (handle.dev, handle.ino) != (manifest.get("stream_dev"), manifest.get("stream_inode"))):
+            raise ValueError("historical reply has no verified stream identity")
+        first = max(0, handle.size - (64 << 20))
+        handle.seek(first)
+        if first:
+            handle.readline()
+        decoder = ChunkDecoder()
+        record_start = handle.tell()
+        while handle.tell() < handle.size:
+            offset = handle.tell()
+            raw = handle.readline()
+            if not raw.endswith(b"\n"):
+                raise ValueError("historical reply journal has an incomplete record")
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                raise ValueError("historical reply journal has an invalid record")
+            # A bounded tail may begin inside a chunked publication. Only its
+            # next complete record can be used as an exact source coordinate.
+            if (not decoder.pending and row.get("schema") == "codescribe.bus-chunk.v1"
+                    and (row.get("part") != 0 or row.get("length", 0) > REPLY_READ_LIMIT)):
+                continue
+            if not decoder.pending:
+                record_start = offset
+            event = decoder.feed(row)
+            if event is None:
+                continue
+            reply = normalize_playable_reply(args, identity, event)
+            if reply is None:
+                continue
+            receipt = {"stream_id": manifest["stream_id"], "stream_dev": handle.dev,
+                       "stream_inode": handle.ino, "offset": record_start,
+                       "length": handle.tell() - record_start}
+            remember_published_reply(args.bridge_home, bus, reply, receipt)
+            return
+    raise ValueError("agent reply was not found in the selected bus history")
+
+
 def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path, dict[str, Any]]:
-    source = read_reply_json(args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json")
+    path = args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json"
+    try:
+        source = read_reply_json(path)
+    except FileNotFoundError:
+        recover_published_reply_source(args, identity)
+        source = read_reply_json(path)
+    copies = source.get("copies", [{"bus": source.get("bus"), "source": source.get("source")}])
+    if not isinstance(copies, list) or not copies or any(not isinstance(copy, dict) for copy in copies):
+        raise ValueError("reply source has invalid copies")
+    selected = copies[0]
+    if args.bus_overridden:
+        requested_bus = str(args.bus.expanduser().resolve(strict=False))
+        selected = next((copy for copy in copies if copy.get("bus") == requested_bus), None)
+        if selected is None:
+            # An old broadcast can acquire its indexed copies one explicit
+            # Play at a time; each copy still comes from the canonical bus.
+            recover_published_reply_source(args, identity)
+            return load_published_reply(args, identity)
+    source = {**source, **selected}
     bus = Path(source.get("bus", ""))
     lease_id = lease_identifier(args.provider, args.session)
     if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
@@ -6669,11 +6779,8 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
             events.append(value)
     if decoder.pending or len(events) != 1:
         raise ValueError("reply source is not one complete event")
-    reply = events[0]
-    if (reply.get("schema") != AGENT_REPLY_SCHEMA or reply.get("kind") != "agent_reply"
-            or reply.get("reply_id") != identity or reply.get("lease_id") != lease_id
-            or reply.get("provider") != args.provider.casefold()
-            or reply.get("provider_session_id") != args.session):
+    reply = normalize_playable_reply(args, identity, events[0])
+    if reply is None:
         raise ValueError("canonical reply does not match its source owner")
     return bus, reply
 
@@ -7036,8 +7143,28 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
         control.close()
 
 
+def resolve_reply_voice(root: Path, reply: dict[str, Any]) -> dict[str, Any]:
+    """Explicit Play gives text-only replies the author's voice, then the system voice."""
+    resolved = dict(reply)
+    if not isinstance(resolved.get("voice"), str) or not resolved["voice"].strip():
+        sender = reply.get("sender")
+        name = reply.get("name") or (sender.get("name") if isinstance(sender, dict) else None)
+        profile, source = voice_profile_with_source(root, name)
+        if source == "default":
+            profile = {"voice": "carina", "speed": 1.0, "provider": "xai"}
+        resolved.update(voice=profile["voice"], speed=profile["speed"],
+                        tts_vendor=profile.get("provider") or "xai")
+    if resolved.get("tts_vendor") not in ("xai", "openai"):
+        resolved["tts_vendor"] = "xai"
+    speed = resolved.get("speed")
+    if type(speed) not in (int, float) or not math.isfinite(speed) or speed <= 0:
+        resolved["speed"] = DEFAULT_SPEECH_SPEED
+    return resolved
+
+
 def play_reply_command(args: argparse.Namespace) -> int:
     bus, reply = load_published_reply(args, args.play_reply)
+    reply = resolve_reply_voice(args.bridge_home, reply)
     return speak_published_reply(args, bus, reply, args.playback_ticket)
 
 
@@ -7153,14 +7280,7 @@ def say_reply(args: argparse.Namespace) -> int:
             if key in envelope:
                 reply[key] = envelope[key]
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
-    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-            for key in ("stream_dev", "stream_inode", "offset", "length"))
-            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-        raise ValueError("canonical reply publication has invalid source coordinates")
-    atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
-                {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
-                 **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
+    remember_published_reply(args.bridge_home, bus, reply, receipt)
     emit(reply)
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
@@ -7590,11 +7710,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "channel": "10", "sender": sender, "recipients": [],
                      "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
-            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                    for key in ("stream_dev", "stream_inode", "offset", "length"))
-                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                raise ValueError("publication has no durable receipt; do not automatically resend")
+            remember_published_reply(root, bus, event, receipt)
             deliveries = [{"peer": "founder", "channel": "10",
                            "follower_live": False, "broadcast": "off",
                            "source": receipt}]
@@ -7662,11 +7778,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "channel": origin, "sender": sender, "recipients": [owner],
                      "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
-            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                    for key in ("stream_dev", "stream_inode", "offset", "length"))
-                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                raise ValueError("publication has no durable receipt; do not automatically resend")
+            remember_published_reply(root, bus, event, receipt)
             deliveries.append({"peer": audience, "channel": channel,
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),

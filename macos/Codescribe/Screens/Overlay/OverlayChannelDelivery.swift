@@ -39,6 +39,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private(set) var destinationVersion: Int? = 1
     /// A pre-hold checkpoint must replay its source rows to recover hold metadata.
     private var holdProjectionVersion: Int = 1
+    /// Synthesized Decodable requires this key. Older checkpoints fail decode
+    /// and the reader replays its bounded source tail to recover Play metadata.
+    private var speechProjectionVersion: Int = 1
     private var receiptCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
@@ -58,7 +61,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
         messageSequence, messageRevisions, deliveryOrigins, captureAttachmentStages,
         captureAttachmentCommits, revision, sessionOpenedAt,
-        destinationVersion, holdProjectionVersion
+        destinationVersion, holdProjectionVersion, speechProjectionVersion
     }
     private static let historyLimit = 256
     private static let historyByteLimit = 16 << 20
@@ -570,6 +573,20 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         consumeDeliveryControl(row)
         return
       }
+      // Agent-authored text shares the reply presentation and playback owner.
+      // Typed Founder messages carry recipient coordinates, never an author.
+      if schema == "codescribe.agent-user-message.v1",
+        row["kind"] as? String == "agent_user_message", row["sender"] is [String: Any],
+        let identity = row["message_id"] as? String, identity.count == 24,
+        identity.allSatisfy({ "0123456789abcdef".contains($0) })
+      {
+        var reply = row
+        reply["schema"] = "codescribe.agent-reply.v1"
+        reply["kind"] = "agent_reply"
+        reply["reply_id"] = identity
+        consumeConversation(reply)
+        return
+      }
       if schema == "codescribe.agent-user-message.v1",
         row["kind"] as? String == "agent_user_message",
         let identity = row["message_id"] as? String, identity.count == 24,
@@ -760,11 +777,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if row["sender"] != nil {
           message.sourceChannel = destination
         }
-        message.supportsSpeechPlayback =
-          messages[key]?.supportsSpeechPlayback == true
-          || (["xai", "openai"].contains(row["tts_vendor"] as? String ?? "")
-            && !(row["voice"] as? String ?? "")
-              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        message.supportsSpeechPlayback = true
+        message.provider = owner.provider
+        message.providerSessionID = owner.providerSessionID
         if addressed, let session = row["session_id"] as? String,
           let messageKey = Self.channelMessageKey(session)
         {
@@ -1524,8 +1539,13 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     result.holdSecondsRemaining = holdingSeconds(at: now)
     return result
   }
-  /// Canonical reply synthesis metadata, independent of playback outcome.
+  /// An agent-authored row can resolve a voice when Play is requested.
   var supportsSpeechPlayback = false
+  /// Durable row coordinates let historical replies play after their lease ends.
+  var provider: String? = nil
+  var providerSessionID: String? = nil
+  var playbackProvider: String? { provider ?? owner?.provider }
+  var playbackProviderSessionID: String? { providerSessionID ?? owner?.providerSessionID }
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
   /// The bubble body. `cs-bus --send-text` appends one generated
   /// `[attachment] name (type, bytes): /path` line per pointer to the published

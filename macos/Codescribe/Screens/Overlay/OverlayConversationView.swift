@@ -940,7 +940,6 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
   private var playHint: String {
     if active { return String(localized: "Stop") }
     if pending { return String(localized: "Requesting playback") }
-    if message.owner == nil { return String(localized: "Playback status unavailable") }
     return String(localized: "Play")
   }
 
@@ -960,7 +959,7 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           .conversationActionHover(
             restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
           )
-          .disabled(!active && (pending || message.owner == nil))
+          .disabled(!active && pending)
           .accessibilityLabel(Text(verbatim: playHint))
           .accessibilityHint(Text(verbatim: playHint))
           .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
