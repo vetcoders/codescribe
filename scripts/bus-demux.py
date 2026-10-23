@@ -6851,13 +6851,15 @@ def global_playback_muted(root: Path) -> bool:
 
 def playback_mute_snapshot(root: Path, provider: str, session: str, bus: Path,
                            *, automatic: bool = True) -> dict[str, Any]:
-    """Project the canonical switches; manual replay bypasses only agent mute."""
+    """Project the canonical switches. Both mutes govern automatic speech only:
+    an explicit Play is the Founder's opt-in for that one reply and lifts the
+    global mute as well as the agent mute (Maciej, 2026-10-23)."""
     global_muted = global_playback_muted(root)
     agent_muted = agent_playback_muted(root, provider, session, bus)
-    effective_muted = global_muted or (automatic and agent_muted)
+    effective_muted = automatic and (global_muted or agent_muted)
     return {"global_muted": global_muted, "agent_muted": agent_muted,
             "effective_muted": effective_muted,
-            "mute_scope": "global" if global_muted else "agent" if effective_muted else None}
+            "mute_scope": ("global" if global_muted else "agent") if effective_muted else None}
 
 
 def set_global_muted(args: argparse.Namespace) -> int:
@@ -6892,6 +6894,11 @@ class ReplyPlaybackControl:
         self.bus, self.reply, self.ticket = bus, reply, ticket
         self.automatic = automatic
         self.root = args.bridge_home
+        # An explicit Play is admitted under a mute, but a mute switched on
+        # while it speaks still stops it: the switches as they stood at
+        # admission are the baseline that a later flip is measured against.
+        self.admitted_mutes = playback_mute_snapshot(
+            self.root, reply["provider"], reply["provider_session_id"], bus, automatic=True)
         self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
         self.stop_path = self.path.with_suffix(".stop.json")
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -6919,7 +6926,14 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
-        return self.mute_snapshot()["effective_muted"]
+        if self.mute_snapshot()["effective_muted"]:
+            return True
+        if self.automatic:
+            return False
+        now = playback_mute_snapshot(self.root, self.reply["provider"],
+                                     self.reply["provider_session_id"], self.bus, automatic=True)
+        return any(now[switch] and not self.admitted_mutes[switch]
+                   for switch in ("global_muted", "agent_muted"))
 
     def mute_snapshot(self) -> dict[str, Any]:
         return playback_mute_snapshot(self.root, self.reply["provider"],

@@ -605,23 +605,32 @@ print("reopened_cached_reply")
                     self.assertEqual(path.read_bytes(), before)
             path.unlink()
 
-    def test_manual_replay_refusal_reports_global_scope_even_with_agent_mute(self):
+    def test_manual_replay_lifts_global_and_agent_mute_for_that_one_reply(self):
+        # Maciej, 2026-10-23: an explicit Play is the opt-in for that reply;
+        # both mutes govern automatic speech only, and the next automatic
+        # reply stays muted.
         self.attach_lease("session-a", "filip")
         self.mute("session-a")
         self.global_mute()
         _, reply, _ = self.say("--session", "session-a")
         out = io.StringIO()
-        with (patch.object(DEMUX, "_speak_xai") as spoken,
+        with (patch.object(DEMUX, "_speak_xai", return_value=(True, None, None)) as spoken,
               patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish),
               contextlib.redirect_stdout(out)):
             self.assertEqual(DEMUX.speak_published_reply(
                 DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply, "c" * 24), 0)
-        spoken.assert_not_called()
+        spoken.assert_called_once()
         result = json.loads(out.getvalue().splitlines()[-1])
-        self.assertEqual(result["reason"], "muted")
-        self.assertEqual(result["mute_scope"], "global")
-        self.assertEqual(result["playback"], {"global_muted": True, "agent_muted": True,
-                                            "effective_muted": True, "mute_scope": "global"})
+        self.assertEqual(result["state"], "spoken")
+        self.assertNotIn("reason", result)
+        self.assertNotIn("mute_scope", result)
+        code, _, automatic = self.say("--session", "session-a")
+        self.assertEqual(code, 0)
+        automatic.assert_not_called()
+        self.assertEqual(self.outcome["reason"], "muted")
+        self.assertEqual(self.outcome["mute_scope"], "global")
+        self.assertEqual(self.outcome["playback"], {"global_muted": True, "agent_muted": True,
+                                                   "effective_muted": True, "mute_scope": "global"})
 
     def test_global_mute_covers_existing_future_and_other_bus_without_changing_individuals(self):
         self.attach_lease("session-a", "filip")
@@ -636,13 +645,15 @@ print("reopened_cached_reply")
             spoken.assert_not_called()
         _, reply, _ = self.say("--session", "session-b")
         args = DEMUX.argparse.Namespace(bridge_home=self.home)
+        # Automatic speech on any bus stays muted; an explicit Play admitted
+        # under the master mute is the opt-in for that reply and runs.
         for automatic in (True, False):
             control = DEMUX.ReplyPlaybackControl(
                 args, self.bus.with_name("other-channel.jsonl"), reply,
                 "a" * 24 if automatic else "b" * 24, automatic=automatic)
             try:
-                self.assertTrue(control.muted())
-                self.assertTrue(control.stopped())
+                self.assertEqual(control.muted(), automatic)
+                self.assertEqual(control.stopped(), automatic)
             finally:
                 control.close()
         self.global_mute(False)
