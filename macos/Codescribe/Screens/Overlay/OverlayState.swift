@@ -1281,9 +1281,17 @@ final class OverlayState {
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
+  /// Compact's chips: the horizontal strip alone carries them in the header.
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
+  /// Mini is one widget in both layouts and keeps its channel counter; only
+  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
+  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
+  var channelMapInMini: Bool { channelMapEnabled }
+  /// The vertical layout's counter wears stacked cards and leads to the
+  /// Intercom group instead of compact.
+  var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
@@ -1301,6 +1309,9 @@ final class OverlayState {
   /// The window owner returns compact to its natural width, forgetting a
   /// width the user gave it (see `activateChannelMapCounter`).
   @ObservationIgnored var onRestoreMidiNaturalWidth: (() -> Void)?
+  /// The composition root brings the vertical layout's Intercom group forward
+  /// (see `activateChannelMapCounter`).
+  @ObservationIgnored var onRevealIntercom: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
@@ -3000,8 +3011,15 @@ final class OverlayState {
   /// compact, where the chips are clickable, as the form toggle's "Expand to
   /// compact widget" does. Compact shows the counter when the user narrowed
   /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. Neither selects a conversation nor touches capture.
+  /// chips come back. In the vertical layout the chips live in the Intercom
+  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
+  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
+  /// conversation or touches capture.
   func activateChannelMapCounter() {
+    if channelMapCounterStacked {
+      onRevealIntercom?()
+      return
+    }
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
     case .midi: onRestoreMidiNaturalWidth?()

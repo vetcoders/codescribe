@@ -326,6 +326,7 @@ final class OverlayController: ObservableObject {
 
   func stopIntercomPresentation() {
     intercomPresentationStarted = false
+    state.onRevealIntercom = nil
     intercomWidget?.invalidate()
     intercomWidget = nil
   }
@@ -344,6 +345,8 @@ final class OverlayController: ObservableObject {
       intercomWidget = OverlayIntercomWidgetController(
         state: state, textScale: textScale,
         revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
+      // Mini's stacked counter leads here in the vertical layout.
+      state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
     }
     intercomWidget?.setVisible(wantsWidget, relativeTo: panel)
     state.channelMapPreferenceChanged()

@@ -1030,7 +1030,8 @@ struct DictationOverlayView: View {
     let mini = density == .mini
     // Mini's row gaps are half the 8 pt between its trailing controls, so the
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
-    let mapEnabled = state.channelMapInHeader
+    // Every use below is mini's: one mini in both layouts.
+    let mapEnabled = state.channelMapInMini
     let horizontalMap = density == .midi && channelMap != nil
     return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
@@ -1164,9 +1165,12 @@ struct DictationOverlayView: View {
   /// selects its conversation through the roster, as a rail pill does; the
   /// counter switches mini to compact, or returns a narrowed compact strip to
   /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. Internal so tests can drive the header's same values.
+  /// panel controls. The vertical layout keeps mini's counter, as stacked
+  /// cards that open the Intercom group, and has no chips in compact.
+  /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    guard state.channelMapInHeader else { return nil }
+    let mini = state.presentationMode == .mini
+    guard mini ? state.channelMapInMini : state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
@@ -1196,7 +1200,7 @@ struct DictationOverlayView: View {
         focusFailed: focusState?.isFailed == true)
     }
     return OverlayChannelMapView(
-      model: model, placement: state.presentationMode == .mini ? .mini : .strip,
+      model: model, placement: mini ? .mini : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
@@ -1216,7 +1220,8 @@ struct DictationOverlayView: View {
         else { return }
         roster.onFocusAgentPanel?(owner)
       },
-      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) })
+      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
+      stacked: state.channelMapCounterStacked)
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
