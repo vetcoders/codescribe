@@ -110,10 +110,16 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testHoverIsAvailableOnlyForIconAndNameTiers() {
-    XCTAssertTrue(IntercomContentTier.icon.hoverPreviewEnabled)
-    XCTAssertTrue(IntercomContentTier.name.hoverPreviewEnabled)
-    XCTAssertFalse(IntercomContentTier.actions.hoverPreviewEnabled)
+  /// One corner for the header, every row and a mini fiszka; never half the
+  /// row, which drew a two-line card as a stadium (Maciej, 2026-10-23).
+  func testRowsAreRoundedCardsNotStadiumsAtEveryScale() {
+    for scale in [CGFloat(1), 1.5, 2] {
+      let radius = Layout.rowCornerRadius(scale: scale)
+      XCTAssertLessThan(radius, Layout.controlHeight(scale: scale) / 2, "a one-line row")
+      XCTAssertLessThan(radius, Layout.controlHeight(scale: scale), "a two-line card")
+    }
+    XCTAssertEqual(Layout.rowCornerRadius(scale: 0.8), Layout.rowCornerRadius(scale: 1))
+    XCTAssertLessThanOrEqual(Layout.gap, 4, "the stack reads as one list")
   }
 
   func testScreenHeightLimitsControlStackingWithoutEnlargingTheGlyphs() {
@@ -179,25 +185,15 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       digit: channel, conversation: try conversation(name, channel: channel, lease: lease))
   }
 
-  /// Astra's brief, 2026-10-22: hover informs about one agent only; a click
+  /// The preview is the click (Maciej, 2026-10-22 14:27Z, relayed): a click
   /// opens that same card as the conversation, without a pinned preview.
-  func testHoverShowsOneCardAndClickExpandsThatSameCard() throws {
+  func testClickExpandsThatSameCard() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
     let astra = try identity("astra", channel: "3", lease: "b")
     var presentation = OverlayIntercomPresentation()
 
-    presentation.enter(lena)
-    XCTAssertEqual(presentation.hovered, lena)
-    presentation.enter(astra)
-    XCTAssertEqual(presentation.hovered, astra, "only one card is hovered at a time")
-    presentation.leave(lena)
-    XCTAssertEqual(presentation.hovered, astra, "an old exit cannot dismiss another agent")
-
     presentation.expand(astra)
     XCTAssertEqual(presentation.expanded, [astra])
-    XCTAssertNil(presentation.hovered, "the click replaces the hover with the conversation")
-    presentation.enter(astra)
-    XCTAssertNil(presentation.hovered, "an expanded card does not hover over itself")
 
     presentation.expand(lena)
     XCTAssertEqual(presentation.expanded, [lena], "one attached conversation at a time")
@@ -289,31 +285,26 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   func testVisibleRangePagesFullSizePillsOnShortDisplays() {
     XCTAssertEqual(
       Layout.visibleRange(count: 9, offset: 0, visibleHeight: 900, scale: 1), 0..<9)
+    // 450 pt minus the 60 pt header holds six 60 pt rows with 4 pt gaps.
     let short = Layout.visibleRange(count: 9, offset: 0, visibleHeight: 450, scale: 2)
-    XCTAssertEqual(short, 0..<5)
+    XCTAssertEqual(short, 0..<6)
     XCTAssertEqual(
-      Layout.visibleRange(count: 9, offset: 7, visibleHeight: 450, scale: 2), 4..<9,
+      Layout.visibleRange(count: 9, offset: 7, visibleHeight: 450, scale: 2), 3..<9,
       "the last agent stays reachable")
     XCTAssertEqual(
-      Layout.visibleRange(count: 9, offset: -3, visibleHeight: 450, scale: 2), 0..<5)
+      Layout.visibleRange(count: 9, offset: -3, visibleHeight: 450, scale: 2), 0..<6)
     XCTAssertEqual(
       Layout.visibleRange(count: 0, offset: 0, visibleHeight: 450, scale: 1), 0..<0)
   }
 
-  /// Hover widens only this card to the left; the right edge is the anchor.
-  /// A click opens the conversation downward from the same card's top edge.
-  func testHoverWidensLeftAndTheConversationOpensDownFromTheSameCard() {
+  /// A click opens the conversation downward from the same card's top edge;
+  /// the right edge is the anchor.
+  func testTheConversationOpensDownFromTheSameCard() {
     let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
     for scale in [CGFloat(1), 1.5, 2] {
       let height = Layout.controlHeight(scale: scale)
       // High on the display, so even the scale-2 card fits below it.
       let row = CGRect(x: 1220, y: 860 - height, width: 212, height: height)
-
-      let hover = Layout.previewFrame(beside: row, visibleFrame: screen, scale: scale)
-      XCTAssertEqual(hover.maxX, row.maxX, accuracy: 0.001)
-      XCTAssertEqual(hover.minY, row.minY, accuracy: 0.001)
-      XCTAssertEqual(hover.height, row.height, accuracy: 0.001, "hover stays one line tall")
-      XCTAssertEqual(hover.width, 360 * scale, accuracy: 0.001)
 
       let card = Layout.conversationFrame(
         below: row, size: Layout.conversationSize(scale: scale), visibleFrame: screen,
@@ -328,11 +319,6 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let clamped = Layout.conversationFrame(
       below: nearBottom, size: Layout.conversationSize(scale: 1), visibleFrame: screen, scale: 1)
     XCTAssertTrue(screen.contains(clamped), "a low card moves up rather than leave the display")
-
-    let leftEdge = CGRect(x: 8, y: 300, width: 212, height: 30)
-    XCTAssertTrue(
-      screen.contains(Layout.previewFrame(beside: leftEdge, visibleFrame: screen)),
-      "a card at the left edge still shows its hover on screen")
   }
 
   /// Left edge and bottom corners resize; the minimum keeps the composer usable.
@@ -410,7 +396,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let screen = CGRect(x: 0, y: 0, width: 1728, height: 1080)
     XCTAssertEqual(
       Layout.cardFrame(
-        below: CGRect(x: restored.maxX - size.width, y: restored.maxY, width: size.width, height: 0),
+        below: CGRect(
+          x: restored.maxX - size.width, y: restored.maxY, width: size.width, height: 0),
         size: size, visibleFrame: screen),
       tile, "the mini drawn from the restored frame is the torn tile")
   }

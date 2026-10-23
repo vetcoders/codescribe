@@ -82,13 +82,19 @@ final class IdleRestartCoordinator {
         return
       }
       let heldLease = try await acquireLease()
-      // The lease wait is a window too: words typed during it count.
-      guard try await reserveCapture(), !founderComposing() else {
+      // The lease wait is a window too: words typed during it count. Check
+      // them before the reservation, which closes capture admission for the
+      // rest of the process and has no release: every refusal comes first.
+      guard !founderComposing() else {
         try? heldLease.close()
         handling = false
-        try receipt(
-          id, status: "refused",
-          reason: founderComposing() ? "founder_composing" : "capture_busy_or_not_ready")
+        try receipt(id, status: "refused", reason: "founder_composing")
+        return
+      }
+      guard try await reserveCapture() else {
+        try? heldLease.close()
+        handling = false
+        try receipt(id, status: "refused", reason: "capture_busy_or_not_ready")
         return
       }
       lease = heldLease

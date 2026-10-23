@@ -175,7 +175,8 @@ Preferences live at `DictationOverlayPanel.contentSize.v7.transcription` and
 only: it may be a full-screen bus. Transcription starts at 470 × 280 until sized
 independently, then restores its own last size. Manual resizing of agents does
 not disable transcript growth. A new ordinary capture selects transcription
-before it unfolds; an agent take retains its channel surface.
+before it unfolds; an agent take retains its channel surface. A composer take
+keeps both the surface and the form (`applyTakeStartPresentation`).
 
 The fold button has the same top/trailing inset and header row height in every
 form. Native morphs, canvas switches and transcript growth preserve that screen

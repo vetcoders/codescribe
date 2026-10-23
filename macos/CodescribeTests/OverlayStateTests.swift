@@ -1,6 +1,8 @@
 import AppKit
+import Observation
 import SwiftUI
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -511,6 +513,63 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversation?.id, origin.id)
     XCTAssertTrue(state.draftCapture.hasRequest)
     XCTAssertFalse(state.draftMicrophoneBusy(in: origin), "its own Stop stays reachable")
+  }
+
+  /// Maciej, 2026-10-23 (take 0250cc19, ElevenLabs): the composer microphone
+  /// "zamyka mi widok agenta". With expand-by-default off, take 89e47c0e folded
+  /// the expanded Agents canvas to the strip at its start, and the composer
+  /// the words were going to left the screen. A composer take keeps the
+  /// conversation and its form; an ordinary take still folds
+  /// (`testTakeStartHonorsOptOutAfterLocalExpansion`).
+  func testComposerTakeStartKeepsTheExpandedConversationOnScreen() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    var modes: [OverlayPresentationMode] = []
+    state.onPresentationModeChanged = { modes.append($0) }
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertTrue(state.recording)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertTrue(modes.isEmpty, "a composer take never morphs the overlay")
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  /// Take 2a350ca4 (2026-10-23 09:36): a composer take started beside a mini
+  /// overlay grew it to the strip. The card owns that take; mini stays mini.
+  func testComposerTakeStartLeavesAMiniOverlayAlone() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    XCTAssertEqual(state.presentationMode, .mini)
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.finishControllerRecording()
   }
 
   func testDraftTerminalBeforeStartReplyJoinsOnlyAdmittedCapture() async throws {
@@ -2528,6 +2587,31 @@ final class OverlayStateTests: XCTestCase {
         consultationPresentations: consultationPresentations
       )
     )
+  }
+
+  /// UI-88: through a take the main thread sat 94-98% busy because every
+  /// transcript tick re-ran the root overlay body, header, channel map and
+  /// intercom included (Silver samples, 23 X). A tick may re-render the scoped
+  /// slots that read the live transcript, never the root body.
+  func testLiveTickDoesNotInvalidateTheOverlayRootBody() {
+    let state = OverlayState()
+    projectText("Dzień", to: state)
+    let root = OSAllocatedUnfairLock(initialState: false)
+    let rail = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = DictationOverlayView(state: state).body
+    } onChange: {
+      root.withLock { $0 = true }
+    }
+    withObservationTracking {
+      _ = state.transcriptVersions
+      _ = OverlayIntentRail.projectedIntents(for: state)
+    } onChange: {
+      rail.withLock { $0 = true }
+    }
+    projectText("Dzień dobry", to: state)
+    XCTAssertTrue(rail.withLock { $0 }, "the tick must reach what reads the transcript")
+    XCTAssertFalse(root.withLock { $0 }, "a live tick re-ran the root overlay body")
   }
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
