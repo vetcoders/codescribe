@@ -1,316 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Conversation unavailable" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozmowa niedostępna" } }
-      }
-    },
-    "Collapse into the group" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Zwiń do grupy" } }
-      }
-    },
-    "Drag to detach" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Przeciągnij, aby odpiąć" } }
-      }
-    },
-    "Detached — click to show its window" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Odpięta — kliknij, aby pokazać jej okno" } }
-      }
-    },
-    "Show detached fiszka" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Pokaż odpiętą fiszkę" } }
-      }
-    },
-    "Horizontal strip (experimental)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Poziomy pasek (eksperymentalny)" } }
-      }
-    },
-    "Floating agent pills (experimental)" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Lewitujące pigułki agentów (eksperymentalne)" } }
-      }
-    },
-    "Next agents" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Następni agenci" } }
-      }
-    },
-    "Previous agents" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Poprzedni agenci" } }
-      }
-    },
-    "Expand Intercom" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozwiń interkom" } }
-      }
-    },
-    "Collapse Intercom" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Zwiń interkom" } }
-      }
-    },
-    "Detach conversation" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Odepnij rozmowę" } }
-      }
-    },
-    "Write / Forward…" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Napisz / Prześlij…"
-          }
-        }
-      }
-    },
-    "Show in Agents" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pokaż w Agents"
-          }
-        }
-      }
-    },
-    "Do not disturb" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Nie przeszkadzać"
-          }
-        }
-      }
-    },
-    "Disconnect and archive agent" : {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rozłącz i zarchiwizuj agenta"
-          }
-        }
-      }
-    },
-    "Preview message" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Podgląd wiadomości" } }
-      }
-    },
-    "Intercom layout": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Układ interkomu"
-          }
-        }
-      }
-    },
-    "No saved fiszki": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Brak zapisanych fiszek"
-          }
-        }
-      }
-    },
-    "Move fiszka": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przenieś fiszkę"
-          }
-        }
-      }
-    },
-    "Restore fiszka": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przywróć fiszkę"
-          }
-        }
-      }
-    },
-    "Another recording is still running.": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inne nagranie jeszcze trwa."
-          }
-        }
-      }
-    },
-    "Classic": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Klasyczny"
-          }
-        }
-      }
-    },
-    "Classic overlay, the horizontal agent strip, or floating vertical agent pills.": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki."
-          }
-        }
-      }
-    },
-    "Horizontal strip": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Poziomy pasek"
-          }
-        }
-      }
-    },
-    "Floating agent pills": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Lewitujące pigułki agentów"
-          }
-        }
-      }
-    },
-    "Intercom": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Interkom"
-          }
-        }
-      }
-    },
-    "Drag to move": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Przeciągnij, aby przesunąć"
-          }
-        }
-      }
-    },
-    "Microphone open": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mikrofon otwarty"
-          }
-        }
-      }
-    },
-    "Microphone closed": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mikrofon zamknięty"
-          }
-        }
-      }
-    },
-    "Mute": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Wycisz"
-          }
-        }
-      }
-    },
-    "Unmute": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Włącz odsłuch"
-          }
-        }
-      }
-    },
-    "Open agent": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otwórz agenta"
-          }
-        }
-      }
-    },
-    "Open conversation": {
-      "extractionState": "manual",
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Otwórz rozmowę"
-          }
-        }
-      }
-    },
-
     "" : {
       "shouldTranslate" : false
     },
@@ -630,6 +320,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Typ API: %@"
+          }
+        }
+      }
+    },
+    "%@ · %@" : {
+      "comment" : "Saved-fiszki menu item: channel digit and agent name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@"
           }
         }
       }
@@ -3423,6 +3124,17 @@
         }
       }
     },
+    "Another recording is still running." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inne nagranie jeszcze trwa."
+          }
+        }
+      }
+    },
     "Another response is being spoken." : {
       "localizations" : {
         "pl" : {
@@ -5080,6 +4792,28 @@
         }
       }
     },
+    "Classic" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klasyczny"
+          }
+        }
+      }
+    },
+    "Classic overlay, the horizontal agent strip, or floating vertical agent pills." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki."
+          }
+        }
+      }
+    },
     "Clear %@" : {
       "localizations" : {
         "pl" : {
@@ -5644,6 +5378,28 @@
         }
       }
     },
+    "Collapse Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwiń interkom"
+          }
+        }
+      }
+    },
+    "Collapse into the group" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwiń do grupy"
+          }
+        }
+      }
+    },
     "Collapse widget" : {
       "localizations" : {
         "pl" : {
@@ -6125,6 +5881,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tytuł rozmowy"
+          }
+        }
+      }
+    },
+    "Conversation unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa niedostępna"
           }
         }
       }
@@ -7233,6 +7000,28 @@
         }
       }
     },
+    "Detach conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odepnij rozmowę"
+          }
+        }
+      }
+    },
+    "Detached — click to show its window" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpięta — kliknij, aby pokazać jej okno"
+          }
+        }
+      }
+    },
     "Detailed settings" : {
       "localizations" : {
         "pl" : {
@@ -7756,6 +7545,17 @@
         }
       }
     },
+    "Drag to detach" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przeciągnij, aby odpiąć"
+          }
+        }
+      }
+    },
     "Drag to move" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -8062,6 +7862,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Rozwiń"
+          }
+        }
+      }
+    },
+    "Expand Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozwiń interkom"
           }
         }
       }
@@ -8402,6 +8213,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lewitujące pigułki agentów"
+          }
+        }
+      }
+    },
+    "Floating agent pills (experimental)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lewitujące pigułki agentów (eksperymentalne)"
           }
         }
       }
@@ -9082,6 +8904,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poziomy pasek"
+          }
+        }
+      }
+    },
+    "Horizontal strip (experimental)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziomy pasek (eksperymentalny)"
           }
         }
       }
@@ -11040,6 +10873,17 @@
         }
       }
     },
+    "Move fiszka" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przenieś fiszkę"
+          }
+        }
+      }
+    },
     "Move mcp.json to Trash" : {
       "localizations" : {
         "pl" : {
@@ -11497,6 +11341,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Następny"
+          }
+        }
+      }
+    },
+    "Next agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Następni agenci"
           }
         }
       }
@@ -12022,6 +11877,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie ma jeszcze reguł. Pojawią się tu poprawki, które zapiszesz, i reguły, których nauczysz słownik."
+          }
+        }
+      }
+    },
+    "No saved fiszki" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak zapisanych fiszek"
           }
         }
       }
@@ -13785,6 +13651,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Poprzedni"
+          }
+        }
+      }
+    },
+    "Previous agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poprzedni agenci"
           }
         }
       }
@@ -15598,6 +15475,17 @@
         }
       }
     },
+    "Restore fiszka" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć fiszkę"
+          }
+        }
+      }
+    },
     "Restore only %@" : {
       "localizations" : {
         "pl" : {
@@ -16699,6 +16587,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokaż rozmowę"
+          }
+        }
+      }
+    },
+    "Show detached fiszka" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż odpiętą fiszkę"
           }
         }
       }
