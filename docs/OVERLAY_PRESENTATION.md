@@ -215,13 +215,74 @@ transcript and explicit resize choice are retained.
 
 Creator's channel-map opt-in also offers **Intercom layout**. Horizontal keeps
 Monika's strip and gives names and separate microphone/playback/focus controls
-priority over the waveform at wide widths. Vertical shows independently movable,
-nonactivating desktop capsules. Native capsule windows leave the gaps to the
-desktop; only one hovered agent opens a transient message preview. Clicking a
-capsule pins that small preview; clicking it again, or Close, dismisses it.
-Hovering another agent does not replace a pinned preview. The preview's explicit
-Open conversation action selects and reveals the existing conversation, while
-the capsule's independent microphone changes capture.
+priority over the waveform at wide widths. Vertical is an independent desktop
+Intercom, available with the main overlay closed or folded. Its header and
+agent pills share a 30 pt base height, 11 pt semibold names and a 30 pt audio
+slot. Text scale grows these metrics. The common resting width is measured from
+the header and the longest name, with numbers and names aligned left and the
+audio slot right. Native capsule windows leave the gaps to the desktop. When
+large text exceeds a short display, the header's previous/next buttons and
+scrolling over a passive capsule move a bounded range of full-size pills.
+Expanded message scrolling stays local to its conversation.
+
+Hover expands only that pill to the left with agent information and a message
+preview. It never acquires keyboard focus or changes capture. Clicking the
+name expands that same card down into `OverlayConversationView`: messages,
+editable draft, attachments and manual Send, without opening the main overlay.
+The expanded card is bound to the exact conversation/provider/session/lease,
+so another hover or a reused channel digit cannot replace its draft or target.
+Close collapses the card and retains the draft. A real drag of its top grip
+detaches the same window; a motionless click never detaches or moves anything.
+Detaching folds the remaining group to its header, and clicking the header
+unfolds it again and refits the visible rows to the screen. The left edge and
+bottom corners of a detached window resize that conversation. The card becomes
+key only after an explicit click.
+
+### Durable fiszki and the group zoom
+
+A detached conversation is a durable **fiszka** (Maciej, 2026-10-22): a view
+instance with its own persistent identity, separate from the conversation it
+presents. The same agent can keep several fiszki in different places at once;
+each one records its own position, size and mini/closed window state, and all
+of them observe the one shared conversation, draft and command state. Restore
+on the next launch is a UI operation: windows come back exactly as left, a
+closed instance stays closed, mini returns as mini, and nothing opens a
+microphone, re-sends a message or changes recipients. An instance follows the
+exact conversation owner; a reused digit or an identical display name never
+rebinds it. When the exact owner is gone the saved words stay readable and the
+live actions withdraw.
+
+Every instance window has minimize and close. Both are window operations: they
+never disconnect, archive or re-address the agent. Mini rests with the name,
+the activity dots and the one audio slot, measured to its own compact width at
+the stored window's top-right corner; clicking the fiszka restores it, and
+hover reveals the close control in its fixed place, so the audio slot never
+moves. Closing records the fiszka as closed, and detaching the same
+conversation from the group reopens that saved window instead of minting a
+duplicate; a second detach while one instance is open deliberately creates
+another copy. The Intercom header's context menu lists the saved closed
+fiszki, the explicit road back when the channel's owner is no longer in the
+group. Resizing
+an expanded group card is an explicit independent placement and turns it into
+a fiszka with its own geometry.
+
+The attached group resizes like one window. The left edge of the header and
+the left edge plus bottom corners of any resting pill scale every attached
+fiszka proportionally; the drag ratio becomes a persisted group zoom between
+1 and 2.5 over the text scale. Detached fiszki keep their own geometry and the
+plain text scale. The persisted desktop (instances plus the group zoom) lives
+with the other chrome preferences in the app domain, never in the engine's
+runtime configuration.
+
+The single audio slot uses the existing microphone command at rest and the
+existing playback command while `conversation.replySpeaking` is true. Actual
+speech also brightens that agent's name, including in the collapsed pill.
+An open nonzero channel has a violet dot on its digit and a violet microphone;
+channel zero alone uses the broadcast megaphone. The slot is independent of
+the conversation click. Channel activity updates an already visible main overlay, but the vertical
+Intercom does not summon a closed main overlay; Show in Agents remains explicit.
+Rich informational hover and agent action menus belong
+to the floating pills; the classic Agents list retains its inline actions.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.
@@ -236,3 +297,13 @@ Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
 
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.
+
+### Pinned All row
+
+The full Agents column renders `0 · All` immediately below its header, outside
+the scroll viewport. Only channels 1–9 and saved conversations scroll below it.
+All retains its three-line preview, recipient counts, microphone/megaphone and
+playback controls. There is one All row and one projection of its state.
+Height and text-scale changes reduce the agents' viewport, leaving All in place;
+the final agent remains reachable by scrolling. Keyboard focus can land on All,
+but scroll-to-selected only targets IDs inside the scrolling content.

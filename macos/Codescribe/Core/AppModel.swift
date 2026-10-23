@@ -274,7 +274,11 @@ final class OverlayController: ObservableObject {
           panel.alphaValue = 1
           self.orderPanelFront(panel)
           self.resizeForProjectedContent()
-        } else {
+        } else if !(self.state.channelMapPreference.enabled
+          && self.state.channelMapPreference.layout == .vertical)
+        {
+          // The independent Intercom already presents channel activity. An
+          // explicit Show in Agents action still opens the main overlay.
           self.show()
         }
       } else {
@@ -394,7 +398,15 @@ final class OverlayController: ObservableObject {
   /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
     if state.draftCapture.hasRequest {
-      show(preserveVisiblePosition: true)
+      let preference = state.channelMapPreference
+      if OverlayIntercomPresentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: preference.enabled && preference.layout == .vertical,
+        mainPanelVisible: panel?.isVisible == true,
+        conversationPresentedInIntercom:
+          intercomWidget?.presentsConversation(state.draftCapture.conversationID) == true)
+      {
+        show(preserveVisiblePosition: true)
+      }
       return
     }
     refreshAssistiveLatch()

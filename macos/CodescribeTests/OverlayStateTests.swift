@@ -417,6 +417,42 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-10-22: the bus field's microphone "raced". A click landing
+  /// in the previous take's teardown window used to vanish silently; the
+  /// capture now waits out a short grace and starts.
+  func testDraftMicrophoneClickSurvivesThePreviousTakesTeardown() async throws {
+    let surface = DraftCaptureFixture()
+    surface.recording = true
+    let capture = OverlayDraftCapture(controller: surface)
+    Task {
+      try? await Task.sleep(nanoseconds: 120_000_000)
+      surface.recording = false
+    }
+    await capture.toggle(conversationID: "bus-draft", busy: false)
+    XCTAssertEqual(surface.starts, 1, "the click waits out the teardown instead of dying")
+    XCTAssertTrue(capture.hasRequest)
+    XCTAssertNil(capture.error)
+  }
+
+  /// A controller that stays busy past the grace answers with words, not a
+  /// silently dead button; an explicitly busy toggle does the same.
+  func testDraftMicrophoneSaysWhyWhenTheControllerStaysBusy() async throws {
+    let surface = DraftCaptureFixture()
+    surface.recording = true
+    let capture = OverlayDraftCapture(controller: surface)
+    await capture.toggle(conversationID: "bus-draft", busy: false)
+    XCTAssertEqual(surface.starts, 0)
+    XCTAssertFalse(capture.hasRequest)
+    XCTAssertNotNil(capture.error)
+    XCTAssertEqual(capture.errorConversationID, "bus-draft")
+
+    let idle = DraftCaptureFixture()
+    let refused = OverlayDraftCapture(controller: idle)
+    await refused.toggle(conversationID: "bus-draft", busy: true)
+    XCTAssertEqual(idle.starts, 0)
+    XCTAssertNotNil(refused.error, "busy is a message, never silence")
+  }
+
   func testDraftMicrophoneDeliversToItsOriginAfterNavigationWithoutSending() async throws {
     let state = OverlayState()
     let surface = DraftCaptureFixture()

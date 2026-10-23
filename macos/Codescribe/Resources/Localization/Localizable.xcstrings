@@ -1,6 +1,280 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Conversation unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozmowa niedostępna" } }
+      }
+    },
+    "Next agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Następni agenci" } }
+      }
+    },
+    "Previous agents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Poprzedni agenci" } }
+      }
+    },
+    "Expand Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Rozwiń interkom" } }
+      }
+    },
+    "Collapse Intercom" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Zwiń interkom" } }
+      }
+    },
+    "Detach conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Odepnij rozmowę" } }
+      }
+    },
+    "Write / Forward…" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Napisz / Prześlij…"
+          }
+        }
+      }
+    },
+    "Show in Agents" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pokaż w Agents"
+          }
+        }
+      }
+    },
+    "Do not disturb" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nie przeszkadzać"
+          }
+        }
+      }
+    },
+    "Disconnect and archive agent" : {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rozłącz i zarchiwizuj agenta"
+          }
+        }
+      }
+    },
+    "Preview message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Podgląd wiadomości" } }
+      }
+    },
+    "Intercom layout": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Układ interkomu"
+          }
+        }
+      }
+    },
+    "No saved fiszki": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brak zapisanych fiszek"
+          }
+        }
+      }
+    },
+    "Move fiszka": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przenieś fiszkę"
+          }
+        }
+      }
+    },
+    "Restore fiszka": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przywróć fiszkę"
+          }
+        }
+      }
+    },
+    "Another recording is still running.": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inne nagranie jeszcze trwa."
+          }
+        }
+      }
+    },
+    "Classic": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klasyczny"
+          }
+        }
+      }
+    },
+    "Classic overlay, the horizontal agent strip, or floating vertical agent pills.": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Klasyczna nakładka, poziomy pasek agentów lub pionowe, lewitujące pigułki."
+          }
+        }
+      }
+    },
+    "Horizontal strip": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Poziomy pasek"
+          }
+        }
+      }
+    },
+    "Floating agent pills": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lewitujące pigułki agentów"
+          }
+        }
+      }
+    },
+    "Intercom": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Interkom"
+          }
+        }
+      }
+    },
+    "Drag to move": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Przeciągnij, aby przesunąć"
+          }
+        }
+      }
+    },
+    "Microphone open": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mikrofon otwarty"
+          }
+        }
+      }
+    },
+    "Microphone closed": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mikrofon zamknięty"
+          }
+        }
+      }
+    },
+    "Mute": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wycisz"
+          }
+        }
+      }
+    },
+    "Unmute": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Włącz odsłuch"
+          }
+        }
+      }
+    },
+    "Open agent": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otwórz agenta"
+          }
+        }
+      }
+    },
+    "Open conversation": {
+      "extractionState": "manual",
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Otwórz rozmowę"
+          }
+        }
+      }
+    },
+
     "" : {
       "shouldTranslate" : false
     },

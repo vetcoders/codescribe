@@ -34,9 +34,13 @@ import AppKit
 enum DockPresence {
   private static var hiders: [ObjectIdentifier: MinimiseHider] = [:]
 
-  /// Apply the tray toggle to the activation policy.
+  /// Apply the tray toggle to the activation policy. A policy flip makes
+  /// AppKit revalidate the traffic lights, and an accessory app's minimise
+  /// button comes back disabled — on an adopted window it must stay the
+  /// hide control (Maciej, 2026-10-22: a dead grey dot on Settings).
   static func apply(showDockIcon: Bool) {
     NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+    for hider in hiders.values { hider.retargetMinimiseButton() }
   }
 
   /// Register a titled window. A window left miniaturised by an earlier build
@@ -124,6 +128,16 @@ private final class MinimiseHider: NSObject {
         queue: .main
       ) { [weak self] _ in
         MainActor.assumeIsolated { self?.invalidate() }
+      },
+      // AppKit and SwiftUI's titlebar bridging revalidate (and can replace)
+      // the standard buttons after adoption; every key moment re-points the
+      // yellow button at hide and re-enables it.
+      center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification,
+        object: window,
+        queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated { self?.retargetMinimiseButton() }
       },
     ]
   }

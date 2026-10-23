@@ -6,6 +6,28 @@ enum OverlayIntercomLayout: String, CaseIterable, Sendable {
   case vertical
 }
 
+/// Settings presents one three-way choice (Maciej, 2026-10-22): the classic
+/// overlay without a channel map is a peer of the two mapped layouts, not a
+/// separate toggle hiding the picker. The stored pair stays `enabled` +
+/// `layout`, so classic remembers the previously chosen layout.
+enum OverlayIntercomPresentationMode: String, CaseIterable, Sendable {
+  case classic
+  case horizontal
+  case vertical
+
+  init(enabled: Bool, layout: OverlayIntercomLayout) {
+    self = enabled ? (layout == .horizontal ? .horizontal : .vertical) : .classic
+  }
+
+  var layout: OverlayIntercomLayout? {
+    switch self {
+    case .classic: nil
+    case .horizontal: .horizontal
+    case .vertical: .vertical
+    }
+  }
+}
+
 /// Application chrome, like AppearancePreference: one persisted choice in the
 /// app domain, with no recording, routing or core runtime configuration.
 @MainActor
@@ -47,5 +69,16 @@ final class OverlayChannelMapPreference {
     withMutation(keyPath: \.enabled) {
       defaults.set(enabled, forKey: Self.key)
     }
+  }
+
+  /// The one Settings control. Classic only disables the map; the stored
+  /// layout survives, so returning to a mapped mode restores the last one.
+  var mode: OverlayIntercomPresentationMode {
+    OverlayIntercomPresentationMode(enabled: enabled, layout: layout)
+  }
+
+  func selectMode(_ mode: OverlayIntercomPresentationMode) {
+    if let layout = mode.layout { selectLayout(layout) }
+    select(mode != .classic)
   }
 }

@@ -56,6 +56,9 @@ struct OverlayConversationView: View {
   let controlErrors: [String: String]
   let onControl: (OverlayConversationMessage, Bool) -> Void
   var focusRevision: UInt64 = 0
+  /// An explicit click in another native presentation can request the same
+  /// editor without selecting or expanding the main overlay.
+  var composerFocusRevision: UInt64 = 0
   var isPresented = true
   /// The agents list covers the conversation. The scroll keeps following it
   /// underneath; only the composer gives the keyboard up.
@@ -307,7 +310,8 @@ struct OverlayConversationView: View {
           palette: palette, draft: $draft,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          focusRevision: revisionFocus, isCovered: isCovered || !isPresented,
+          focusRevision: revisionFocus &+ composerFocusRevision,
+          isCovered: isCovered || !isPresented,
           placeholder: composerPlaceholder,
           replySelection: replySelection, onClearReply: onClearReply,
           draftMicrophoneRecording: draftMicrophoneRecording,

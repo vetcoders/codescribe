@@ -161,6 +161,13 @@ final class OverlayHintPanel {
   /// The window currently presenting a hint, for tests and diagnostics.
   var presentedPanel: NSPanel? { panel?.isVisible == true ? panel : nil }
 
+  /// The title the visible hint carries. The chip's hosting view hangs as a
+  /// child of the effect view, so a test cannot read it off the panel; the
+  /// owner says what it shows (Astra, 2026-10-22).
+  var presentedTitle: String? {
+    presentedPanel == nil ? nil : controller?.rootView.title
+  }
+
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
     owner: OverlayHintAnchor, leading: Bool = false

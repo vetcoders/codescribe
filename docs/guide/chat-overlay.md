@@ -98,6 +98,33 @@ iTerm2 or Terminal tab. The button appears only when Codescribe knows where the
 agent runs. If macOS asks whether the terminal may be controlled, allow it, or
 turn it on later in System Settings › Privacy & Security › Automation.
 
+In the full **Agents** list, **0 · All** stays just below the header while the
+other channels scroll underneath. Its recording and playback buttons stay
+available when you scroll to the last agent.
+
+In Settings → Creator → **Intercom layout**, pick one of three states:
+**Classic** (the overlay without a channel map), the **horizontal strip**, or
+the **floating agent pills**. Classic remembers which of the two layouts you
+used last. With the pills, the small desktop Intercom remains available when
+the main overlay is closed. Point at one agent to see information; click the
+name to expand that card into a conversation with a draft, pasted attachments
+and Send. Drag its top grip to detach it into a durable fiszka; the rest of
+the group folds into the Intercom header. Click the header to unfold the
+group. On a short screen with large text, scroll over a pill or use the header
+arrows to reach the remaining agents.
+
+A detached fiszka keeps its place, size and mini state across app restarts,
+and the same agent can stand in several places at once — detach again for
+another copy. Minimize shrinks a fiszka to its name, activity and audio slot;
+click it to restore, hover it to reveal its close button. Closing a fiszka only hides that window: detach the same conversation again —
+or right-click the Intercom header and pick it from the saved list — and it
+comes back where you left it. Resize a
+fiszka from its left edge or bottom corners. Dragging a resting pill's left
+edge or bottom corners (or the header's left edge) zooms the whole attached
+group proportionally. Closing a card or switching layouts keeps its draft. The separate
+audio slot shows a speaker while that named agent is speaking and a microphone
+otherwise. Right-click a floating pill for the agent's other actions.
+
 For a Codex agent with neither, the same button opens the agent's thread in the
 Codex app (ChatGPT). This works even when the row shows the agent as
 disconnected, which Codex agents often are between replies. A Codex Cloud

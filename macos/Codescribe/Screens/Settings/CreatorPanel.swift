@@ -52,35 +52,22 @@ struct CreatorPanel: View {
         AppearanceRow(model: model)
         SheetShadeRows(model: model)
         SettingsControlRow(
-          title: String(localized: "Channel map in the overlay"),
-          subtitle: String(localized: "Show agent channels in mini and compact views.")
-        ) {
-          Toggle(
-            "Channel map in the overlay",
-            isOn: Binding(
-              get: { model.overlayChannelMapEnabled },
-              set: { model.selectOverlayChannelMap($0) })
-          )
-          .labelsHidden()
-          .toggleStyle(.switch)
-          .accessibilityIdentifier("settings-overlay-channel-map")
-        }
-        SettingsControlRow(
           title: String(localized: "Intercom layout"),
           subtitle: String(
-            localized: "Choose the horizontal strip or floating vertical agent pills.")
+            localized:
+              "Classic overlay, the horizontal agent strip, or floating vertical agent pills.")
         ) {
           Picker(
             "Intercom layout",
             selection: Binding(
-              get: { model.overlayIntercomLayout },
-              set: { model.selectOverlayIntercomLayout($0) })
+              get: { model.overlayIntercomMode },
+              set: { model.selectOverlayIntercomMode($0) })
           ) {
-            Text("Horizontal strip").tag(OverlayIntercomLayout.horizontal)
-            Text("Floating agent pills").tag(OverlayIntercomLayout.vertical)
+            Text("Classic").tag(OverlayIntercomPresentationMode.classic)
+            Text("Horizontal strip").tag(OverlayIntercomPresentationMode.horizontal)
+            Text("Floating agent pills").tag(OverlayIntercomPresentationMode.vertical)
           }
           .labelsHidden()
-          .disabled(!model.overlayChannelMapEnabled)
           .accessibilityIdentifier("settings-overlay-intercom-layout")
         }
       }

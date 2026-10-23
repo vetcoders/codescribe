@@ -917,12 +917,269 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       visual.contains("overlay-agent-descriptor-"),
       "wide rows must show the same provider/model identity as narrow pills")
-    XCTAssertTrue(
+    // Astra's revised full-view contract (2026-10-22): the row's descriptor
+    // and status carry NO metadata hint — the information is inline. Action
+    // labels (like the archive control's help) keep their hints.
+    XCTAssertFalse(
       row.contains(".overlayFastHint(tooltip"),
-      "descriptor and status use the same immediate hint as the header")
+      "a metadata fast hint would duplicate the inline descriptor/status")
     XCTAssertTrue(
       visual.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
+  }
+
+  /// Astra's full-view contract (2026-10-22, brief rev c11709ef): the classic
+  /// full roster carries all actions and information inline. A secondary
+  /// click anywhere on it resolves no big agent menu — "Write / Forward…",
+  /// microphone, playback, Show in Agents and archive never hang off a row —
+  /// and no AppKit tooltip duplicates the inline metadata. The resolved
+  /// policy menu on 0 · All is the positive control that the scan sees real
+  /// menus at all.
+  func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let channels = [
+      OverlayChannelDelivery(
+        channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
+      OverlayChannelDelivery(
+        channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
+    ]
+    // The roster is fully armed (Astra on f105d23f4): every action callback
+    // and owner fixture is present, so the absence of the big menu is proven
+    // against the surface that could actually compose it.
+    var view = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      agentDescriptors: ["2": "codex · gpt-6", "3": "codex · gpt-6"],
+      onToggleChannel: { _ in },
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false, "3": false]
+    view.onTogglePlayback = { _ in }
+    view.onShowAgentInMonitor = { _ in }
+    view.archiveCandidates = [
+      "2": try XCTUnwrap(lena.owner), "3": try XCTUnwrap(astra.owner),
+    ]
+    view.onArchiveAgent = { _ in }
+    view.onFocusAgentPanel = { _ in }
+    view.panelFocusAvailable = true
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 1600).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 900)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    host.layoutSubtreeIfNeeded()
+
+    // The same localization keys the production menu uses, so the markers
+    // survive a Polish (or any) runtime language (Astra, T4).
+    let forbidden = [
+      String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
+      String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
+      String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
+      String(localized: "Disconnect and archive agent"),
+      String(localized: "Remove from list and move to archive"),
+    ]
+    func titles(of menu: NSMenu) -> [String] {
+      menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
+    }
+    var resolvedMenus = 0
+    let step: CGFloat = 12
+    for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
+      for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
+        let point = NSPoint(x: x, y: y)
+        guard
+          let event = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: host.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 9_200,
+            clickCount: 1, pressure: 1)
+        else { continue }
+        var view = host.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        guard let menu else { continue }
+        resolvedMenus += 1
+        menu.delegate?.menuNeedsUpdate?(menu)
+        let resolved = titles(of: menu)
+        for title in resolved {
+          for marker in forbidden {
+            XCTAssertFalse(
+              title.contains(marker),
+              "the big agent menu leaked into the full roster at \(point): \(resolved)")
+          }
+        }
+      }
+    }
+    XCTAssertGreaterThan(
+      resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
+
+    var tooltips: [String] = []
+    func walk(_ view: NSView) {
+      if let tip = view.toolTip, !tip.isEmpty { tooltips.append(tip) }
+      for child in view.subviews { walk(child) }
+    }
+    walk(host)
+    XCTAssertTrue(
+      tooltips.isEmpty,
+      "the full roster shows its information inline, never as system tooltips: \(tooltips)")
+
+    // The matcher itself is proven on a sentinel first: a probe carrying the
+    // REAL agentPillMenu(for: "2") must expose the forbidden commands, and
+    // performing its write item must reach the spied conversation target.
+    var sentinelSelected: String?
+    var sentinel = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      onToggleChannel: { _ in },
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { sentinelSelected = $0 })
+    sentinel.onTogglePlayback = { _ in }
+    sentinel.mutedChannels = ["2": false]
+    let probeHost = NSHostingView(
+      rootView: VStack {
+        Text(verbatim: "menu-probe").frame(width: 180, height: 40)
+          .modifier(sentinel.agentPillMenu(for: "2", showsInlineError: false))
+        Text(verbatim: "hint-probe").frame(width: 180, height: 40)
+          .overlayFastHint("probe-hint", palette: .dark)
+      }
+      .frame(width: 200, height: 120))
+    probeHost.frame = NSRect(x: 0, y: 0, width: 200, height: 120)
+    let probeWindow = NSWindow(
+      contentRect: probeHost.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    probeWindow.isReleasedWhenClosed = false
+    defer { probeWindow.orderOut(nil) }
+    probeWindow.contentView = probeHost
+    BackgroundTestWindow.present(probeWindow)
+    probeHost.layoutSubtreeIfNeeded()
+
+    func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
+      guard
+        let event = NSEvent.mouseEvent(
+          with: .rightMouseDown, location: container.convert(point, to: nil),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: window.windowNumber, context: nil, eventNumber: 9_300,
+          clickCount: 1, pressure: 1)
+      else { return nil }
+      var view = container.hitTest(point)
+      while let current = view {
+        if let menu = current.menu(for: event) { return menu }
+        view = current.superview
+      }
+      return nil
+    }
+    let probeMenu = resolvedMenu(
+      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    let probeTitles = probeMenu.map(titles(of:)) ?? []
+    XCTAssertTrue(
+      forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
+      "the sentinel agent menu must trip the matcher, or absence proves nothing: \(probeTitles)")
+    // Required, never conditional (Astra and Olga on bdadd84fc): another
+    // forbidden command could satisfy the matcher while a missing Write
+    // silently skipped the spy.
+    let requiredMenu = try XCTUnwrap(probeMenu, "the sentinel resolves a real menu")
+    let writeIndex = try XCTUnwrap(
+      requiredMenu.items.firstIndex(where: {
+        $0.title.contains(String(localized: "Write / Forward…"))
+      }), "the sentinel menu must carry the Write command: \(probeTitles)")
+    requiredMenu.performActionForItem(at: writeIndex)
+    XCTAssertEqual(sentinelSelected, lena.id, "the write command reaches its exact conversation")
+
+    // The custom hint panel is the other tooltip owner (overlayFastHint →
+    // OverlayHintPanel). The probe proves hover really presents a readable
+    // hint; then every roster region is hovered, and a hint repeating the
+    // inline metadata — descriptor, preview, session — is the duplicated
+    // tooltip the contract forbids. An action label is not a duplicate.
+    func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
+      var found: [OverlayMenuCursorRegionView] = []
+      if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
+      for child in view.subviews { found.append(contentsOf: regions(in: child)) }
+      return found
+    }
+    let probeRegions = regions(in: probeHost)
+    XCTAssertFalse(probeRegions.isEmpty, "the hint probe composes a hover region")
+    var sawProbeHint = false
+    for region in probeRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if OverlayHintPanel.shared.presentedTitle == "probe-hint" {
+        sawProbeHint = true
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+        XCTAssertNil(
+          OverlayHintPanel.shared.presentedTitle,
+          "leaving the control must withdraw its hint")
+      } else {
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+      }
+    }
+    XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
+
+    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let rosterRegions = regions(in: host)
+    XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
+    for region in rosterRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if let hint = OverlayHintPanel.shared.presentedTitle {
+        for marker in metadata {
+          XCTAssertFalse(
+            hint.contains(marker), "a hover hint duplicates inline roster metadata: \(hint)")
+        }
+      }
+      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+    }
+  }
+
+  /// Olga's chosen execution proof (2026-10-22): a real AX press on the
+  /// composed roster's inline microphone reaches exactly its agent, exactly
+  /// once. One agent and no All row keeps the shared identifier unique.
+  /// Runs only in the isolated GUI window (make test-swift), through the
+  /// independent AX client — never a self-query on the main thread.
+  func testInlineMicrophonePressReachesItsAgentOnce() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (_, lena, _) = try rosterFixture()
+    var toggles: [UInt8] = []
+    var view = OverlayChannelStatusView(
+      channels: [
+        OverlayChannelDelivery(
+          channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false)
+      ],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session")],
+      onToggleChannel: { toggles.append($0) },
+      conversations: [lena], selectedConversationID: lena.id,
+      onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false]
+    view.onTogglePlayback = { _ in }
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 800).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    try BackgroundTestWindow.takeKeyboard(window)
+    host.layoutSubtreeIfNeeded()
+
+    let elements = try NativeAccessibilityProbe.waitForElements("overlay-agent-microphone")
+    XCTAssertEqual(
+      elements.elements.count, 1,
+      "one agent and no All row leave exactly one microphone: \(elements.elements)")
+    let pressed = try NativeAccessibilityProbe.query("overlay-agent-microphone", press: true)
+    XCTAssertEqual(pressed.pressStatus, 0, "the AX press must land: \(pressed.trace)")
+    let deadline = Date().addingTimeInterval(2)
+    while toggles.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(toggles, [2], "the press reaches its exact agent, exactly once")
   }
 
   /// ⌘+ grew the docked column and the conversation, but the roster's own text
