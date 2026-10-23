@@ -256,6 +256,132 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(privateCopy.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
   }
 
+  func testDeliveredCaptureChipsUseSourceSamplesAndLateCaptureRateAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    let rate = 48_000
+    let firstSample = 1_000
+    var beginning = source
+    beginning["sample_start"] = firstSample
+    beginning["sample_end"] = firstSample + 100
+    bus.consume(beginning)
+    for (index, seconds) in [73, 130].enumerated() {
+      let sequence = index + 2
+      let sample = firstSample + rate * seconds
+      var observed = source
+      observed["sequence"] = sequence
+      observed["reducer_revision"] = sequence + 1
+      observed["sample_start"] = sample
+      observed["sample_end"] = sample + 100
+      bus.consume(observed)
+      var pointer = stage
+      pointer["stage_id"] = String(repeating: String(sequence), count: 24)
+      pointer["source_sequence"] = sequence
+      pointer["reducer_revision"] = sequence + 1
+      pointer["sample_start"] = sample
+      pointer["sample_end"] = sample + 100
+      pointer["attachments"] = [
+        [
+          "name": "image\(sequence).png", "path": "/fixture/image\(sequence).png",
+          "media_type": "image/png", "bytes": 13,
+        ]
+      ]
+      bus.consume(pointer)
+      var committed = commit
+      committed["stage_id"] = pointer["stage_id"]
+      committed["source_sequence"] = sequence
+      bus.consume(committed)
+    }
+    // The terminal supplies the capture's actual rate after both stages.
+    bus.consume([
+      "schema": "codescribe.transcript.v1", "session_id": "agent-channel-0-fixture",
+      "status": "session_ended", "sample_rate_hz": rate,
+    ])
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first)
+      XCTAssertEqual(message.captureState, .finished)
+      let pointers = try XCTUnwrap(message.attachments)
+      XCTAssertEqual(pointers.map(\.attachedAtSample), [3_505_000, 6_241_000])
+      XCTAssertEqual(pointers.map(\.attachedAtSeconds), [73, 130])
+      XCTAssertEqual(pointers.map(\.attachmentTimeLabel), ["1:13", "2:10"])
+    }
+  }
+
+  func testCommittedStageWithoutRetainedSourceKeepsZeroTimeAndFrozenAudienceTrust() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    for mismatch in ["none", "uncommitted", "audience", "recipients", "conflicting-source"] {
+      var bus = OverlayChannelDelivery.Bus()
+      bus.consume(source)
+      var missing = stage
+      missing["source_sequence"] = 99
+      if mismatch == "audience" { missing["audience"] = "somebody-else" }
+      if mismatch == "recipients" { missing["recipients"] = [fixture.recipient()] }
+      if mismatch == "conflicting-source" {
+        missing["source_sequence"] = 1
+        missing["sample_start"] = 11
+      }
+      bus.consume(missing)
+      var committed = commit
+      committed["source_sequence"] = missing["source_sequence"]
+      if mismatch != "uncommitted" { bus.consume(committed) }
+      bus.consume([
+        "schema": "codescribe.transcript.v1", "session_id": "agent-channel-0-fixture",
+        "status": "session_ended", "sample_rate_hz": 48_000,
+      ])
+      for projection in [
+        bus,
+        try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+      ] {
+        let message = try XCTUnwrap(
+          projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first)
+        if mismatch == "none" {
+          let pointer = try XCTUnwrap(message.attachments?.first)
+          XCTAssertEqual(pointer.path, "/fixture/image.png")
+          XCTAssertEqual(pointer.attachedAtSample, 0)
+          XCTAssertEqual(pointer.attachedAtSeconds, 0)
+          XCTAssertEqual(pointer.attachmentTimeLabel, "0:00")
+        } else {
+          XCTAssertNil(
+            message.attachments, "A missing source must not bypass \(mismatch) validation")
+        }
+      }
+    }
+  }
+
+  func testAnchoredEnvelopePointersKeepExactPublishedLinesAndZeroFallback() throws {
+    let pointers = try XCTUnwrap(
+      OverlayMessageAttachment.pointers([
+        [
+          "name": "image.png", "path": "/fixture/image.png", "media_type": "image/png", "bytes": 13,
+          "attached_at_sample": 3_504_000, "attached_at_seconds": 73.75,
+        ],
+        [
+          "name": "missing.png", "path": "/fixture/missing.png", "media_type": "image/png",
+          "bytes": 17,
+          "attached_at_sample": 0, "attached_at_seconds": 0,
+        ],
+      ]))
+    XCTAssertEqual(pointers.map(\.attachmentTimeLabel), ["1:13", "0:00"])
+    XCTAssertEqual(
+      pointers[0].publishedLine,
+      "[attachment @ 1:13] image.png (image/png, 13 bytes): /fixture/image.png")
+    var message = OverlayConversationMessage(
+      id: "take", kind: .user,
+      text: "Spoken words\n" + pointers.map(\.publishedLine).joined(separator: "\n"),
+      order: 1, emittedAt: "", owner: nil, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    message.attachments = pointers
+    XCTAssertEqual(message.bodyText, "Spoken words")
+  }
+
   private func captureAttachmentRows(fixture: Fixture, primary: URL) -> (
     [String: Any], [String: Any], [String: Any]
   ) {
@@ -292,6 +418,42 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     ]
     return (source, stage, commit)
   }
+  func testVoicelessRepliesAndAgentAuthoredTextKeepPlaybackCoordinatesAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    for (index, schema) in ["codescribe.agent-reply.v1", "codescribe.agent-user-message.v1"]
+      .enumerated()
+    {
+      var row = fixture.recipient()
+      let identity = String(repeating: String(index + 1), count: 24)
+      row["schema"] = schema
+      row["kind"] = index == 0 ? "agent_reply" : "agent_user_message"
+      row["reply_id"] = identity
+      row["message_id"] = identity
+      row["text"] = "Agent text \(index)"
+      row["sender"] = fixture.recipient()
+      row["channel"] = "10"
+      row["recipients"] = []
+      bus.consume(row)
+    }
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let messages = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).first {
+          $0.owner?.leaseID == Fixture.leaseID
+        }
+      ).messages
+      XCTAssertEqual(messages.count, 2)
+      XCTAssertEqual(messages.map(\.kind), [.reply, .reply])
+      XCTAssertTrue(messages.allSatisfy(\.supportsSpeechPlayback))
+      XCTAssertEqual(messages.map(\.provider), ["codex", "codex"])
+      XCTAssertEqual(messages.map(\.providerSessionID), ["agent-session", "agent-session"])
+    }
+  }
+
   func testAddressedSpeechBroadcastDoesNotEchoToAuthorAcrossRestore() throws {
     for destination in ["0", "1"] {
       let fixture = try Fixture()
@@ -1536,7 +1698,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       .readSnapshot()
     let replies = try messages(initial)
     XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
-    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, false])
+    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, true])
     let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(try messages(restored), replies)
@@ -1556,8 +1718,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
           with: XCTUnwrap(Data(base64Encoded: encoded))) as? [String: Any])
       var cachedMessages = try XCTUnwrap(projection["messages"] as? [String: [String: Any]])
       for id in Array(cachedMessages.keys) {
-        cachedMessages[id]?.removeValue(forKey: "supportsSpeechPlayback")
+        cachedMessages[id]?["supportsSpeechPlayback"] = false
+        cachedMessages[id]?.removeValue(forKey: "provider")
+        cachedMessages[id]?.removeValue(forKey: "providerSessionID")
       }
+      projection.removeValue(forKey: "speechProjectionVersion")
       projection["messages"] = cachedMessages
       entry["projection"] = try JSONSerialization.data(withJSONObject: projection)
         .base64EncodedString()

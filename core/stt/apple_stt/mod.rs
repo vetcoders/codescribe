@@ -1193,6 +1193,22 @@ fn bridge_global_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// DictationTranscriber requests read their WAV through SpeechAnalyzer and
+/// never open AVAudioEngine. Behind the global lock they queued for the whole
+/// live stream, so every live witness answered only after Stop.
+fn dictation_transcriber_bridge_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn bridge_lock_for(request: &BridgeRequest<'_>) -> &'static Mutex<()> {
+    if request.backend == Some(AppleSttBackend::DictationTranscriber.as_str()) {
+        dictation_transcriber_bridge_lock()
+    } else {
+        bridge_global_lock()
+    }
+}
+
 /// Run one request/response bridge command end to end: spawn, write the JSON
 /// request line, close stdin so the child can finish, then parse the single
 /// response line. A bridge-reported error becomes an `Err` carrying the
@@ -1219,8 +1235,9 @@ fn run_bridge_exchange(
     timeout: Option<std::time::Duration>,
 ) -> Result<BridgeResponse> {
     // Hold the lock for the whole spawn→wait so two AVAudioEngine sessions
-    // never race on the same machine (empty/timeout/auth flakes).
-    let _guard = bridge_global_lock()
+    // never race on the same machine (empty/timeout/auth flakes). DT requests
+    // serialize among themselves only.
+    let _guard = bridge_lock_for(request)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
@@ -2245,6 +2262,35 @@ mod tests {
             "DT provenance must stay distinguishable from ST in the verdict"
         );
         assert_eq!(AppleSttBackend::from_bridge("dictation"), None);
+    }
+
+    /// The live stream holds the global lock for the whole take; a DT witness
+    /// queued behind it answered only after Stop (13467366: 160 s).
+    #[test]
+    fn dictation_transcriber_requests_do_not_queue_behind_the_live_stream() {
+        let request = |backend: Option<&'static str>| BridgeRequest {
+            protocol_version: 1,
+            command: "transcribe",
+            locale: "pl-PL",
+            audio_path: None,
+            contextual_strings: None,
+            allow_download: false,
+            deadline_policy: None,
+            backend,
+        };
+        let witness = request(Some(AppleSttBackend::DictationTranscriber.as_str()));
+        assert!(!std::ptr::eq(
+            bridge_lock_for(&witness),
+            bridge_global_lock()
+        ));
+        assert!(std::ptr::eq(
+            bridge_lock_for(&request(None)),
+            bridge_global_lock()
+        ));
+        assert!(std::ptr::eq(
+            bridge_lock_for(&request(Some(AppleSttBackend::SfSpeechRecognizer.as_str()))),
+            bridge_global_lock()
+        ));
     }
 
     /// DT is SpeechAnalyzer family: Speech Recognition TCC is not required (W4-B).

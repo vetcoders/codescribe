@@ -28,22 +28,32 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
     XCTAssertEqual(String(format: format, Int64(1), Int64(2)), "0 · Wszyscy (1 z 2)")
   }
 
-  func testOnQuietAndOffEachWearTheirOwnMark() {
+  func testMembershipAndTheMoonEachWearTheirOwnMark() {
     // Maciej (2026-10-17): channel 0 and channel 0 plus steer could not be
-    // told apart — quiet and off shared the slashed antenna, on wore nothing.
+    // told apart. Maciej (2026-10-23): the moon is its own axis with its own
+    // mark, and "off channel 0 with the moon lit" exists.
     let on = channel("1", policy: .on)
     let quiet = channel("2", policy: .quiet)
     let off = channel("3", policy: .off)
+    let offQuiet = channel("4", policy: .offQuiet)
     XCTAssertEqual(on.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right")
-    XCTAssertEqual(quiet.broadcastPolicy.statusSymbol, "tray.and.arrow.down")
+    XCTAssertEqual(quiet.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right")
     XCTAssertEqual(off.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertEqual(offQuiet.broadcastPolicy.statusSymbol, "antenna.radiowaves.left.and.right.slash")
+    XCTAssertEqual(on.broadcastPolicy.quietSymbol, "moon")
+    XCTAssertEqual(quiet.broadcastPolicy.quietSymbol, "moon.fill")
+    XCTAssertEqual(offQuiet.broadcastPolicy.quietSymbol, "moon.fill")
     XCTAssertEqual(
-      Set(AgentBroadcastPolicy.allCases.map(\.statusSymbol)).count, 3, "three states, three marks")
-    XCTAssertEqual(
-      Set(AgentBroadcastPolicy.allCases.map(\.statusHelp)).count, 3, "three states, three tooltips")
+      Set(AgentBroadcastPolicy.allCases.map { $0.statusSymbol + $0.quietSymbol }).count, 4,
+      "four states, four mark pairs")
+    XCTAssertEqual(Set(AgentBroadcastPolicy.allCases.map(\.statusHelp)).count, 2)
+    XCTAssertEqual(Set(AgentBroadcastPolicy.allCases.map(\.quietHelp)).count, 2)
     XCTAssertTrue(on.broadcastPolicy.receivesWake)
     XCTAssertFalse(quiet.broadcastPolicy.receivesWake)
     XCTAssertFalse(off.broadcastPolicy.receivesWake)
+    XCTAssertFalse(offQuiet.broadcastPolicy.receivesWake)
+    XCTAssertEqual(offQuiet.broadcastPolicy.membershipArgument, "off")
+    XCTAssertEqual(offQuiet.broadcastPolicy.moonArgument, "on")
     // The menu stopped naming three receptions: it is two state checkboxes
     // (Maciej, 2026-10-17), and the wire enum keeps only non-menu duties.
     let source =
@@ -69,19 +79,27 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
       RealAgentBridgeInstaller.broadcastPolicyArguments(
         .quiet, for: identity, root: fixture.installer.bridgeRoot),
       [
-        "--broadcast", "quiet", "--provider", identity.provider,
+        "--broadcast", "on", "--quiet", "on", "--provider", identity.provider,
         "--session", identity.session, "--bus", identity.bus,
         "--bridge-home", fixture.installer.bridgeRoot.path,
       ])
     try await OverlayBroadcastPolicyMenu.setPolicy(
       .quiet, for: identity, installer: fixture.installer)
     let quiet = try fixture.receipt()
-    XCTAssertEqual(quiet["policy"] as? String, "quiet")
+    XCTAssertEqual(quiet["policy"] as? String, "on")
+    XCTAssertEqual(quiet["quiet"] as? Bool, true)
     XCTAssertEqual(quiet["lease_id"] as? String, identity.leaseID)
     XCTAssertEqual(quiet["bus"] as? String, identity.bus)
+    // Off channel 0 with the moon lit: the pair the one-knob wire never had.
+    try await OverlayBroadcastPolicyMenu.setPolicy(
+      .offQuiet, for: identity, installer: fixture.installer)
+    let offQuiet = try fixture.receipt()
+    XCTAssertEqual(offQuiet["policy"] as? String, "off")
+    XCTAssertEqual(offQuiet["quiet"] as? Bool, true)
     try await OverlayBroadcastPolicyMenu.setPolicy(
       .off, for: identity, installer: fixture.installer)
     XCTAssertEqual(try fixture.receipt()["policy"] as? String, "off")
+    XCTAssertEqual(try fixture.receipt()["quiet"] as? Bool, false)
     try await OverlayBroadcastPolicyMenu.setPolicy(
       .on, for: identity, installer: fixture.installer)
     XCTAssertEqual(try fixture.receipt()["policy"] as? String, "on")
@@ -105,6 +123,17 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
       .quiet, for: identity, installer: fixture.installer)
     let quiet = await snapshot()
     XCTAssertEqual(quiet, .quiet)
+    try await RealAgentBridgeInstaller.setBroadcastPolicy(
+      .offQuiet, for: identity, installer: fixture.installer)
+    let offQuiet = await snapshot()
+    XCTAssertEqual(offQuiet, .offQuiet)
+    // A receipt from before the split spells the lit moon as policy "quiet".
+    var legacy = try fixture.receipt()
+    legacy["policy"] = "quiet"
+    legacy.removeValue(forKey: "quiet")
+    try JSONSerialization.data(withJSONObject: legacy).write(to: fixture.policy, options: .atomic)
+    let legacyQuiet = await snapshot()
+    XCTAssertEqual(legacyQuiet, .quiet)
     var foreign = try fixture.receipt()
     foreign["provider_session_id"] = "foreign-session"
     try JSONSerialization.data(withJSONObject: foreign).write(to: fixture.policy, options: .atomic)

@@ -615,8 +615,14 @@ actor OverlayChannelDeliveryReader {
     if let otherAttachments = other.attachments {
       var paths = Set((result.attachments ?? []).map(\.path))
       var attachments = result.attachments ?? []
-      for attachment in otherAttachments where paths.insert(attachment.path).inserted {
-        attachments.append(attachment)
+      for attachment in otherAttachments {
+        if let index = attachments.firstIndex(where: { $0.path == attachment.path }) {
+          if attachments[index].attachedAtSeconds == nil, attachment.attachedAtSeconds != nil {
+            attachments[index] = attachment
+          }
+        } else if paths.insert(attachment.path).inserted {
+          attachments.append(attachment)
+        }
       }
       result.attachments = attachments
     }

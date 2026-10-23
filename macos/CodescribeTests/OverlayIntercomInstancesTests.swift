@@ -59,7 +59,8 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     let lena = try identity("lena", channel: "3", lease: "a")
     let usurper = try identity("lena", channel: "3", lease: "b")
 
-    var desktop = OverlayIntercomDesktopState(groupScale: 1.6)
+    var desktop = OverlayIntercomDesktopState(
+      groupWidth: 520, groupRowHeight: 84, groupTier: .actions)
     let instance = OverlayIntercomInstance(
       identity: lena, frame: CGRect(x: 40, y: 60, width: 400, height: 320), minimized: true)
     desktop.upsert(instance)
@@ -86,7 +87,7 @@ final class OverlayIntercomInstancesTests: XCTestCase {
 
   /// A stored instance that lost its exact conversation identity is dropped
   /// on load instead of being guessed onto a new owner.
-  func testLoadDropsInstancesWithoutACanonicalIdentityAndClampsTheScale() throws {
+  func testLoadDropsInstancesWithoutACanonicalIdentity() throws {
     let name = "CodescribeTests.intercom-desktop.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
     defer { defaults.removePersistentDomain(forName: name) }
@@ -94,14 +95,12 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     let orphan = OverlayIntercomInstance(
       identity: OverlayIntercomCardIdentity(digit: "4", conversation: nil),
       frame: CGRect(x: 0, y: 0, width: 300, height: 240))
-    var desktop = OverlayIntercomDesktopState(groupScale: 9)
+    var desktop = OverlayIntercomDesktopState()
     desktop.upsert(orphan)
     OverlayIntercomDesktopStore(defaults: defaults).save(desktop)
 
     let restored = OverlayIntercomDesktopStore(defaults: defaults).load()
     XCTAssertTrue(restored.instances.isEmpty)
-    XCTAssertEqual(restored.groupScale, OverlayIntercomDesktopState.maximumGroupScale)
-    XCTAssertEqual(OverlayIntercomDesktopStore(defaults: defaults).load().groupScale, 2.5)
   }
 
   /// Maciej, 2026-10-23: fiszki must take channel 0 too. The broadcast
@@ -140,23 +139,84 @@ final class OverlayIntercomInstancesTests: XCTestCase {
       back.matches(agentConversation), "an owned conversation is not the broadcast instance")
   }
 
-  /// The group resizes like a window: the drag ratio becomes the shared
-  /// proportional scale, clamped to the sane range.
-  func testGroupScaleFollowsTheDragRatioAndStaysInRange() {
-    XCTAssertEqual(
-      OverlayIntercomDesktopState.groupScale(current: 1, currentWidth: 200, requestedWidth: 300),
-      1.5)
-    XCTAssertEqual(
-      OverlayIntercomDesktopState.groupScale(current: 1.5, currentWidth: 300, requestedWidth: 200),
-      1.0)
-    XCTAssertEqual(
-      OverlayIntercomDesktopState.groupScale(current: 2, currentWidth: 200, requestedWidth: 2000),
-      OverlayIntercomDesktopState.maximumGroupScale)
-    XCTAssertEqual(
-      OverlayIntercomDesktopState.groupScale(current: 1, currentWidth: 200, requestedWidth: 20),
-      OverlayIntercomDesktopState.minimumGroupScale)
-    XCTAssertEqual(
-      OverlayIntercomDesktopState.groupScale(current: 1, currentWidth: 0, requestedWidth: 300), 1,
-      "a degenerate width changes nothing")
+  func testEveryContentTierAndItsDimensionsSurviveStoreRoundTrip() throws {
+    let name = "CodescribeTests.intercom-desktop.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+
+    for tier in IntercomContentTier.allCases {
+      let desktop = OverlayIntercomDesktopState(
+        groupWidth: 412, groupRowHeight: 72, groupTier: tier)
+      store.save(desktop)
+      XCTAssertEqual(
+        store.load(), desktop, "the selected \(tier) tier restores with its dimensions")
+    }
+  }
+
+  func testDesktopSavedBeforeContentTiersPreservesInstancesAndIgnoresItsScale() throws {
+    let name = "CodescribeTests.intercom-desktop.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let instance = OverlayIntercomInstance(
+      identity: try identity("lena", channel: "2", lease: "a"),
+      frame: CGRect(x: 40, y: 60, width: 400, height: 320), minimized: true)
+    let instances = try JSONSerialization.jsonObject(with: JSONEncoder().encode([instance]))
+    let data = try JSONSerialization.data(withJSONObject: [
+      "groupScale": 2.5, "instances": instances,
+    ])
+    defaults.set(data, forKey: OverlayIntercomDesktopStore.key)
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+
+    let restored = store.load()
+    XCTAssertEqual(restored.instances, [instance])
+    XCTAssertNil(restored.groupWidth)
+    XCTAssertNil(restored.groupRowHeight)
+    XCTAssertEqual(restored.groupTier, .actions)
+
+    store.save(restored)
+    let savedData = try XCTUnwrap(defaults.data(forKey: OverlayIntercomDesktopStore.key))
+    let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: savedData) as? [String: Any])
+    XCTAssertNil(saved["groupScale"], "saving removes the obsolete zoom value")
+    XCTAssertEqual(saved["groupTier"] as? String, "actions")
+  }
+
+  func testInvalidSavedDimensionsDoNotDiscardTheTierOrInstances() throws {
+    let name = "CodescribeTests.intercom-desktop.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    let instance = OverlayIntercomInstance(
+      identity: try identity("lena", channel: "2", lease: "a"),
+      frame: CGRect(x: 40, y: 60, width: 400, height: 320))
+    let instances = try XCTUnwrap(String(data: JSONEncoder().encode([instance]), encoding: .utf8))
+
+    for invalid in ["0", "-12", "1e400", "\"NaN\"", "\"Infinity\"", "\"-Infinity\"", "null"] {
+      let data = Data(
+        """
+        {"groupWidth":\(invalid),"groupRowHeight":\(invalid),"groupTier":"name",\
+        "instances":\(instances)}
+        """.utf8)
+      defaults.set(data, forKey: OverlayIntercomDesktopStore.key)
+      let restored = OverlayIntercomDesktopStore(defaults: defaults).load()
+      XCTAssertNil(restored.groupWidth, invalid)
+      XCTAssertNil(restored.groupRowHeight, invalid)
+      XCTAssertEqual(restored.groupTier, .name, invalid)
+      XCTAssertEqual(restored.instances, [instance], invalid)
+    }
+  }
+
+  func testDecodedNonfiniteDimensionsBecomeUnspecified() throws {
+    let decoder = JSONDecoder()
+    decoder.nonConformingFloatDecodingStrategy = .convertFromString(
+      positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+
+    for invalid in ["NaN", "Infinity", "-Infinity"] {
+      let data = Data("{\"groupWidth\":\"\(invalid)\",\"groupRowHeight\":\"\(invalid)\"}".utf8)
+      let restored = try decoder.decode(OverlayIntercomDesktopState.self, from: data)
+      XCTAssertNil(restored.groupWidth, invalid)
+      XCTAssertNil(restored.groupRowHeight, invalid)
+      XCTAssertEqual(restored.groupTier, .actions)
+      XCTAssertTrue(restored.instances.isEmpty)
+    }
   }
 }

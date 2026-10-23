@@ -2168,10 +2168,13 @@ struct AppleSealState {
     dictation_witness_payload: Option<TailProviderPayload>,
     /// Untimed finals await measured timing on their own phrase/PCM scope.
     pending_untimed_finals: Vec<(u64, String, u64, u64)>,
-    /// Target ranges already asked and their attempt counts. A range is asked
-    /// at most twice per session; persistent debt stays honestly unresolved
+    /// Owner ranges already asked live and their attempt counts. A live owner
+    /// is asked once per session; persistent debt stays honestly unresolved
     /// instead of charging the decoder at every seal.
     dictation_witness_attempts: Vec<((u64, u64), u8)>,
+    /// Owners a live witness answer already testified about. The terminal
+    /// pass does not decode the same PCM for them a second time at Stop.
+    dictation_witness_heard: Vec<OccurrenceIdentity>,
     /// Live witness requests mint ids in their own band above the terminal
     /// ordinals, so a return can never pose as a terminal-phase answer.
     dictation_witness_requests: u64,
@@ -2796,6 +2799,7 @@ impl AppleSealState {
             dictation_witness_payload: None,
             pending_untimed_finals: Vec::new(),
             dictation_witness_attempts: Vec::new(),
+            dictation_witness_heard: Vec::new(),
             dictation_witness_requests: 0,
             dictation_witness_language: None,
         };
@@ -8482,8 +8486,6 @@ const DICTATION_WITNESS_REQUEST_BASE: u64 = 1 << 62;
 /// Live per-utterance witness requests mint ids in their own band, distinct
 /// from the terminal ordinals sharing the witness base.
 const DICTATION_WITNESS_LIVE_REQUEST_BASE: u64 = DICTATION_WITNESS_REQUEST_BASE | (1 << 61);
-/// One target range is re-asked at most this many times per session.
-const DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE: u8 = 2;
 
 /// A witness thread's answer: the request identity on the capture clock and
 /// the decode outcome, stringified on failure. The worker thread admits it.
@@ -8561,6 +8563,21 @@ fn record_dictation_witness_attempts(
 
 /// A witness window and the targets it may debit, as capture sample ranges.
 type WitnessQuestion = ((u64, u64), Vec<(u64, u64)>);
+
+/// A live question names a whole owner that ends on closed PCM, under the
+/// owner's own range, once per session.
+fn live_witness_may_ask(
+    owner: (u64, u64),
+    sealed_end: u64,
+    max_len: u64,
+    attempts: &[((u64, u64), u8)],
+) -> bool {
+    owner.1 <= sealed_end
+        && owner.1.saturating_sub(owner.0) <= max_len
+        && !attempts
+            .iter()
+            .any(|(range, count)| *range == owner && *count > 0)
+}
 
 /// The per-utterance witness question over outstanding targets (sorted,
 /// deduplicated, closed PCM only): the window and the targets it may debit.
@@ -8669,10 +8686,16 @@ fn maybe_spawn_utterance_witness(
     }
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
-    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    let (pending_owners, _gaps) = witness_recovery_targets(state, threshold_samples);
     // A live lexical job must acquire an open frontier exactly once. Retried
     // or oversized questions belong to serialized terminal reconciliation;
     // a returned producer cannot protect another live job from sealing.
+    // Only whole owners on closed PCM are asked, under their own range: a
+    // target clipped at a growing seal minted a new range, so the same owner
+    // was asked again on every seal, about every 0.35 s. Speech no owner
+    // covers yet is the live head Apple has not finalized; a live answer
+    // admitted there landed beside Apple's later final for the same audio
+    // (fe468a53: whole DT phrases doubled). Gaps belong to the terminal pass.
     let pending_owners = {
         let ledger = state
             .acoustic_ledger
@@ -8681,46 +8704,25 @@ fn maybe_spawn_utterance_witness(
         pending_owners
             .into_iter()
             .filter(|owner| {
-                owner.sample_end.saturating_sub(owner.sample_start)
-                    <= u64::from(state.sample_rate)
-                        .saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS)
-                    && ledger
-                        .frontier_of(owner)
-                        .is_some_and(|frontier| !frontier.is_closed())
-                    && !state
-                        .dictation_witness_attempts
-                        .iter()
-                        .any(|(range, attempts)| {
-                            *range == (owner.sample_start, owner.sample_end) && *attempts > 0
-                        })
+                live_witness_may_ask(
+                    (owner.sample_start, owner.sample_end),
+                    sealed_end,
+                    u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS),
+                    &state.dictation_witness_attempts,
+                ) && ledger
+                    .frontier_of(owner)
+                    .is_some_and(|frontier| !frontier.is_closed())
             })
             .collect::<Vec<_>>()
     };
 
-    // Only closed PCM may be asked about: the decoder never reads past the
-    // seal that just landed.
     let mut targets: Vec<(u64, u64)> = pending_owners
         .iter()
         .map(|owner| (owner.sample_start, owner.sample_end))
-        .chain(
-            gaps.iter()
-                .map(|range| (range.sample_start, range.sample_end)),
-        )
-        .filter(|&(start, end)| start < sealed_end && end > start)
-        .map(|(start, end)| (start, end.min(sealed_end)))
+        .filter(|&(start, end)| end > start)
         .collect();
     targets.sort_unstable();
     targets.dedup();
-    // Debt already asked twice stays unresolved rather than re-charging the
-    // decoder on every seal.
-    targets.retain(|target| {
-        !state
-            .dictation_witness_attempts
-            .iter()
-            .any(|(range, attempts)| {
-                *range == *target && *attempts >= DICTATION_WITNESS_MAX_ATTEMPTS_PER_RANGE
-            })
-    });
     if targets.is_empty() {
         return;
     }
@@ -8861,19 +8863,15 @@ fn handle_dictation_witness_return(
     );
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
-    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    // A live answer testifies about the whole owners it heard, never about
+    // speech no owner covers yet: that is Apple's unfinalized head, and the
+    // terminal pass owns real gaps.
+    let (pending_owners, _gaps) = witness_recovery_targets(state, threshold_samples);
     let pending_owners = pending_owners
         .into_iter()
         .filter(|owner| {
-            owner.sample_end > identity.range.sample_start
-                && owner.sample_start < identity.range.sample_end
-        })
-        .collect::<Vec<_>>();
-    let gaps = gaps
-        .into_iter()
-        .filter(|range| {
-            range.sample_end > identity.range.sample_start
-                && range.sample_start < identity.range.sample_end
+            owner.sample_start >= identity.range.sample_start
+                && owner.sample_end <= identity.range.sample_end
         })
         .collect::<Vec<_>>();
     admit_dictation_witness_payload(
@@ -8882,9 +8880,14 @@ fn handle_dictation_witness_return(
         &identity,
         &payload,
         &pending_owners,
-        &gaps,
+        &[],
         threshold_samples,
     );
+    for owner in pending_owners {
+        if !state.dictation_witness_heard.contains(&owner) {
+            state.dictation_witness_heard.push(owner);
+        }
+    }
     finish_dictation_witness_frontier(state, ev_tx);
     state.dictation_witness_inflight = false;
     resume_witness_waiting_closures(state, ev_tx);
@@ -8943,7 +8946,7 @@ fn finish_dictation_witness_frontier(
 ///   sealed occurrence.
 ///
 /// Every request is deduplicated by its acoustic window, executed under the
-/// process-wide bridge lock, bounded per request and in total. An unarmed
+/// DictationTranscriber bridge lock, bounded per request and in total. An unarmed
 /// lane, a missing archive, a bridge error or a timeout leaves the debt
 /// exactly as it was — the coverage receipt recomputed after this pass keeps
 /// reporting the gap.
@@ -8978,7 +8981,10 @@ fn run_terminal_dictation_witness(
     }
     let threshold_samples =
         u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
-    let (pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    let (mut pending_owners, gaps) = witness_recovery_targets(state, threshold_samples);
+    // The same PCM decodes to the same answer: an owner a live answer already
+    // heard is not decoded again on the Stop path.
+    pending_owners.retain(|owner| !state.dictation_witness_heard.contains(owner));
     if pending_owners.is_empty() && gaps.is_empty() {
         return;
     }

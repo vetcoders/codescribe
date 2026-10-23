@@ -60,8 +60,8 @@ Voice evidence `apply_manual_edit` / `apply_user_revision` for the held
 receipts prevent resurrection during cursor replay; original messages and
 controls remain source history. Controls for unknown, already delivered or
 hold-disabled identities are ignored with one stderr line. Broadcast policy
-`off` is evaluated before parking (one skip receipt, no held row); `quiet`
-holds normally and later lands without a wake.
+`off` is evaluated before parking (one skip receipt, no held row); the moon
+(`quiet`) holds normally and later lands without a wake.
 
 Attach, status and `--read-pending` receipts expose only
 `"held": [{"identity": "…", "hold_until": "…"}]` beside `broadcast`, never held
@@ -247,7 +247,8 @@ event publication with the same delivery IDs. The follower and policy-release
 writers serialize each complete NDJSON frame in the follower event sidecar,
 including partial kernel writes. A remote retry requires a bounded source-side read with
 current bus, pending and wakeup-policy admission before client submission:
-quiet suppresses all wakeups, and channel-zero off suppresses broadcasts only.
+the moon (`quiet`) suppresses all wakeups, and channel-zero off suppresses
+broadcasts only; the two are independent.
 Remote status exposes local monitor and queue state; explicit retries
 execute on the client. A missing or interrupted relay leaves the remote mailbox
 intact and requires the existing watch to be resumed.
@@ -1222,25 +1223,36 @@ The receipt schema is `codescribe.broadcast-policy.v1`:
   "provider_session_id": "SESSION_ID",
   "lease_id": "<32 lowercase hex>",
   "bus": "<resolved leased bus path>",
-  "policy": "quiet",
+  "policy": "off",
+  "quiet": true,
   "emitted_at": "<utc>"
 }
 ```
 
-- `on`: queue deliveries and wake normally (the default).
-- `quiet`: queue them in the existing pending mailbox without follower output,
-  native queue submission, seal hook or waiter completion. On the next natural
-  turn, `--read-pending` includes them and the agent ACKs only what it read.
-  Steer is global (Maciej, 2026-10-17): quiet applies to every delivery —
-  channel-zero broadcasts, directs and peer-to-peer alike — so an unticked
-  Steer means "nothing wakes me; everything waits in my mailbox". The overlay
-  menu shows the Steer box as "Wake the agent" (Founder, 2026-10-18).
-- `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
-  row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
-  existing follower events stream. A skip is not an ACK marker and contains no
-  transcript text. There is nothing to acknowledge. Off stays broadcast-only:
-  a direct or peer delivery to an `off` lease queues and wakes as `on`, so
-  leaving channel 0 never cuts the agent off from addressed words.
+The receipt carries two independent axes (Maciej, 2026-10-23: "księżyc niech
+routuje tym, czy może go do ciebie napisać, a broadcast niech routuje tym,
+czy jest ten agent dostępny na kanale 0"):
+
+- `policy` — channel-0 membership, `on` or `off`. `off`: do not queue a new
+  broadcast; append an idempotent `broadcast_skipped` row with delivery
+  identity, `origin_channel: "0"` and `policy: "off"` to the existing follower
+  events stream. A skip is not an ACK marker and contains no transcript text.
+  There is nothing to acknowledge. Off stays broadcast-only: a direct or peer
+  delivery to an `off` lease still queues, so leaving channel 0 never cuts the
+  agent off from addressed words.
+- `quiet` — the moon ("tryb księżyc", do not disturb), `true` or `false`.
+  Lit, every delivery from every channel — broadcasts, the Founder's directs
+  and peer-to-peer alike — queues in the existing pending mailbox without
+  follower output, native queue submission, seal hook or waiter completion.
+  On the next natural turn, `--read-pending` includes them and the agent ACKs
+  only what it read. The moon does not need channel 0: an agent in a meeting
+  lights it and keeps its membership, or sits off channel 0 with the moon lit.
+
+Every combination is legal. Readers that want the one word a broadcast meets
+get `off` (not a member), `quiet` (member, moon lit) or `on`; a direct meets
+`quiet` or `on` from the moon alone. A receipt written before the split
+spelled the lit moon as `"policy": "quiet"` without a `quiet` field; it still
+reads as on channel 0 with the moon lit.
 
 Missing files mean `on`. Invalid, foreign or unreadable receipts log a warning
 and also mean `on`: unlike playback mute's fail-closed silence, policy fails
@@ -1248,16 +1260,21 @@ open so damaged state never silently disconnects an agent. Typed Founder,
 spoken channel-zero and peer broadcasts all use the same policy gate; direct
 channel/name deliveries pass through only quiet, never off. Previously queued
 messages are retained when the policy changes; already submitted provider
-wakeups cannot be recalled by changing this preference. Switching back to `on`
-delivers what queued while quiet: the Claude/OMP waiter's unread poll surfaces
+wakeups cannot be recalled by changing this preference. Clearing the moon
+delivers what queued under it: the Claude/OMP waiter's unread poll surfaces
 the rows by itself, and for a codex lease the policy write resubmits the
 pending seals to the native queue once.
 
-`cs-bus --broadcast on|quiet|off --provider P --session S [--bus B]` validates
-the lease before atomically writing the receipt. The omitted bus is resolved
-from that lease. Followers read the receipt per delivery without restart or
-reattachment. Attach, pending reads and status include `broadcast.policy` next
-to `playback`. Typed and peer publisher receipts report each recipient's
+`cs-bus --broadcast on|off --quiet on|off --provider P --session S [--bus B]`
+validates the lease before atomically writing the receipt; each flag moves its
+own axis and leaves the other as the receipt had it, and the app always sends
+both. `--broadcast on|quiet|off` alone keeps its pre-split one-knob meaning
+(`quiet` = member with the moon lit; `on` and `off` clear the moon) for callers
+that know only that flag. The omitted bus is resolved from that lease.
+Followers read the receipt per delivery without restart or reattachment.
+Attach, pending reads and status include `broadcast.policy` (the word a
+broadcast meets), `broadcast.membership` and `broadcast.quiet` next to
+`playback`. Typed and peer publisher receipts report each recipient's
 `broadcast` policy, but still publish every admitted copy, including `off`;
 the follower is the delivery authority. Sender snapshots are informational,
 not a promise against a policy switch while the publication is in flight.

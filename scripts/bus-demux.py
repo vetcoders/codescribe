@@ -43,13 +43,17 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import ctypes
 import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import select
+import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -1242,6 +1246,30 @@ def channel_message_phase_identity(event: dict[str, Any]) -> str:
                       event.get("reducer_revision"), event.get("reducer_action")))
 
 
+def capture_sample_rate(event: dict[str, Any]) -> int | None:
+    """Read the ledger's capture clock; VAD and TTS rates are different clocks."""
+    coverage = event.get("seal_coverage")
+    rate = event.get("sample_rate_hz")
+    if not (type(rate) is int and rate > 0) and isinstance(coverage, dict):
+        rate = coverage.get("sample_rate_hz")
+    return rate if type(rate) is int and rate > 0 else None
+
+
+def capture_attachment_anchor(document: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
+    sources = [row for row in document.get("capture_attachment_sources", [])
+               if row.get("capture_epoch") == stage.get("capture_epoch")]
+    source = next((row for row in sources
+                   if row.get("sequence") == stage.get("source_sequence")), None)
+    if source is None or type(source.get("sample_start")) is not int or source["sample_start"] < 0:
+        return {"attached_at_sample": 0, "attached_at_seconds": 0.0}
+    first_sample = min((row["sample_start"] for row in sources
+                        if type(row.get("sample_start")) is int and row["sample_start"] >= 0),
+                       default=source["sample_start"])
+    rate = capture_sample_rate(source) or capture_sample_rate(document)
+    seconds = (source["sample_start"] - first_sample) / rate if rate else 0.0
+    return {"attached_at_sample": source["sample_start"], "attached_at_seconds": seconds}
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -1416,6 +1444,9 @@ class EvidenceNormalizer:
                 inventory[key] = item
         clean["occurrences"] = list(inventory.values())
         source_rows = event.get("occurrences") or [event]
+        rate = capture_sample_rate(event) or capture_sample_rate(previous or {})
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
         clean["capture_source_sequence"] = event.get("capture_source_sequence")
         if clean["capture_source_sequence"] is None:
             clean["capture_source_sequence"] = source_rows[-1].get("sequence")
@@ -1431,6 +1462,8 @@ class EvidenceNormalizer:
                 "capture_epoch", "sequence", "reducer_revision", "occurrence_session_id",
                 "sample_start", "sample_end", "document_index",
             )}
+            if rate is not None:
+                coordinates["sample_rate_hz"] = rate
             attachment_sources.setdefault(
                 (coordinates["capture_epoch"], coordinates["sequence"]), coordinates)
         clean["capture_attachment_sources"] = list(attachment_sources.values())
@@ -1441,6 +1474,8 @@ class EvidenceNormalizer:
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             return False
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
@@ -1449,6 +1484,8 @@ class EvidenceNormalizer:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_source_sequence"] = clean["capture_source_sequence"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             if event.get("status") == SEALED:
                 for key in ("hold_until", "utterance_id", "closing_decision"):
                     if key in event:
@@ -1500,20 +1537,18 @@ class EvidenceNormalizer:
     def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
         session = str(receipt.get("session_id") or "")
         document = self._session_docs.get(session)
-        source = next((row for row in (document or {}).get("capture_attachment_sources", [])
-                       if row.get("sequence") == receipt.get("source_sequence")
-                       and row.get("capture_epoch") == receipt.get("capture_epoch")), None)
         if (receipt.get("kind") != "capture_attachment" or document is None
                 or session in self._settled_sessions
                 or receipt.get("capture_epoch") != document.get("capture_epoch")
-                or source is None
                 or receipt.get("audience") != document.get("audience")
                 or receipt.get("recipients") != document.get("recipients")):
             return
         attachments = receipt.get("attachments")
         if not isinstance(attachments, list) or not attachments:
             return
-        if any(not isinstance(item, dict) or set(item) != {"name", "path", "media_type", "bytes", "sha256"}
+        pointer_fields = {"name", "path", "media_type", "bytes", "sha256"}
+        anchor_fields = {"attached_at_sample", "attached_at_seconds"}
+        if any(not isinstance(item, dict) or set(item) not in (pointer_fields, pointer_fields | anchor_fields)
                or not all(isinstance(item.get(key), str) for key in ("name", "path", "media_type"))
                or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in attachments):
             return
@@ -1547,8 +1582,9 @@ class EvidenceNormalizer:
                     and stage.get("audience") == clean.get("audience")
                     and capture_attachment_is_committed(stage)):
                 for pointer in stage["attachments"]:
-                    if pointer not in attachments:
-                        attachments.append(pointer)
+                    anchored = {**pointer, **capture_attachment_anchor(clean, stage)}
+                    if anchored not in attachments:
+                        attachments.append(anchored)
         if attachments:
             final["attachments"] = attachments
             final["text"] = final["text"].rstrip() + attachment_pointer_lines(attachments)
@@ -1583,6 +1619,9 @@ class EvidenceNormalizer:
             "sample_end": event.get("sample_end"),
             "document_index": event.get("document_index"),
         }
+        rate = capture_sample_rate(event)
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
@@ -5742,7 +5781,7 @@ def tts_failure_reason(status: int, body: bytes) -> str:
     return f"http_{status}"
 
 
-def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
+def _tts_exchange(request: Any, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
     """POST one TTS request: (pcm, None, None) or (None, error, reason).
 
     Install only TLS transport: no file handler, proxy or redirect handler.
@@ -5760,7 +5799,7 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
         urllib.request.HTTPSHandler(context=ssl.create_default_context())
     )
     try:
-        with opener.open(request, timeout=60) as response:
+        with opener.open(request, timeout=10 if on_pcm is not None else 60) as response:
             if not 200 <= response.status < 300:
                 try:
                     detail = response.read(TTS_ERROR_BODY_BYTES)
@@ -5771,7 +5810,25 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
                     f"tts request failed ({response.status})",
                     tts_failure_reason(response.status, detail),
                 )
-            return response.read(), None, None
+            if on_pcm is None:
+                return response.read(), None, None
+            opened = getattr(on_pcm, "response_opened", None)
+            if opened is not None:
+                opened(response)
+            # read1 returns the currently available transport bytes, rather
+            # than waiting for an entire sentence (or a full read buffer).
+            pcm = bytearray()
+            pending = b""
+            while block := response.read1(16384):
+                pcm.extend(block)
+                pending += block
+                aligned = len(pending) - len(pending) % 2
+                if aligned:
+                    on_pcm(pending[:aligned])
+                    pending = pending[aligned:]
+            if pending or not pcm:
+                return None, "invalid PCM response", "invalid_audio"
+            return bytes(pcm), None, None
     except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         return None, f"tts request failed ({error.__class__.__name__})", "network"
 
@@ -5815,7 +5872,7 @@ def _write_speech_atomically(path: Path, write: Any) -> None:
         raise
 
 
-def _speech_lock(directory: Path, key: str) -> int | None:
+def _speech_lock(directory: Path, key: str, cancelled: Any = None) -> int | None:
     """Single flight per key: a held flock on `<speech>/<sha256>.lock`, or None.
 
     Bounded like the playback lock. None after the wait or on any OS error
@@ -5828,6 +5885,9 @@ def _speech_lock(directory: Path, key: str) -> int | None:
         return None
     deadline = time.monotonic() + SPEECH_LOCK_WAIT_SECONDS
     while True:
+        if cancelled is not None and cancelled():
+            os.close(descriptor)
+            return None
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return descriptor
@@ -5847,6 +5907,7 @@ def _cached_speech(
     synthesize: Any,
     *,
     reply_id: str | None = None,
+    cancelled: Any = None,
 ) -> tuple[bytes | None, str | None, str | None]:
     """Every synthesis stays on disk; the same words in the same voice never call the API twice.
 
@@ -5865,8 +5926,11 @@ def _cached_speech(
         return cached, None, None
     # Two callers missing the same key at once pay once: the second waits for
     # the first and reads its recording.
-    lock = _speech_lock(directory, key)
+    lock = (_speech_lock(directory, key, cancelled) if cancelled is not None
+            else _speech_lock(directory, key))
     try:
+        if cancelled is not None and cancelled():
+            return None, "playback stopped", "stopped"
         if lock is not None:
             cached = _read_cached_speech(audio)
             if cached is not None:
@@ -5926,6 +5990,379 @@ def _control_reply_id(control: ReplyPlaybackControl | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def speech_sentence_chunks(text: str, minimum: int = 40) -> list[str]:
+    """Sentence boundaries outside code, decimals, initials and Polish abbreviations.
+
+    Small sentences join the next one; a small final tail joins its predecessor.
+    Nothing inside a backtick span/fence is a sentence boundary.
+    """
+    abbreviations = {"np", "tj", "itd", "itp", "m.in", "tzn", "dr", "prof", "mgr",
+                     "lek", "wet", "ul", "al", "nr", "godz", "r", "str", "ok", "św"}
+    boundaries = []
+    code_ticks = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "`":
+            end = index
+            while end < len(text) and text[end] == "`":
+                end += 1
+            count = end - index
+            if code_ticks == 0:
+                code_ticks = count
+            elif code_ticks == count:
+                code_ticks = 0
+            index = end
+            continue
+        if not code_ticks and character in ".!?…":
+            end = index + 1
+            while end < len(text) and text[end] in '.!?…\"”’»)]':
+                end += 1
+            token = re.search(r"([\w.]+)$", text[:index], re.UNICODE)
+            word = token.group(1) if token else ""
+            abbreviation = character == "." and (word.casefold() in abbreviations or word.isdigit()
+                or (len(word) == 1 and word.isalpha()))
+            if not abbreviation and (end == len(text) or text[end].isspace()):
+                boundaries.append(end)
+        index += 1
+    chunks, start = [], 0
+    for end in boundaries:
+        piece = text[start:end].strip()
+        if len(piece) >= minimum:
+            chunks.append(piece)
+            start = end
+    tail = text[start:].strip()
+    if tail:
+        if chunks and len(tail) < minimum:
+            chunks[-1] += " " + tail
+        else:
+            chunks.append(tail)
+    return chunks
+
+
+class _PCMStreamDescription(ctypes.Structure):
+    _fields_ = [
+        ("sample_rate", ctypes.c_double),
+        ("format_id", ctypes.c_uint32),
+        ("format_flags", ctypes.c_uint32),
+        ("bytes_per_packet", ctypes.c_uint32),
+        ("frames_per_packet", ctypes.c_uint32),
+        ("bytes_per_frame", ctypes.c_uint32),
+        ("channels_per_frame", ctypes.c_uint32),
+        ("bits_per_channel", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
+class _PCMQueueBuffer(ctypes.Structure):
+    _fields_ = [
+        ("capacity", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+        ("byte_size", ctypes.c_uint32),
+        ("user_data", ctypes.c_void_p),
+        ("packet_capacity", ctypes.c_uint32),
+        ("packet_descriptions", ctypes.c_void_p),
+        ("packet_count", ctypes.c_uint32),
+    ]
+
+
+_PCMQueueBufferRef = ctypes.POINTER(_PCMQueueBuffer)
+_PCMQueueCallback = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_void_p, _PCMQueueBufferRef
+)
+
+
+class PCMStreamPlayer:
+    """Small process-shaped AudioQueue owner; enqueue never waits for capacity.
+
+    Each enqueue accepts up to BLOCK_BYTES. Call can_enqueue() before enqueue;
+    a full queue raises BufferError instead of delaying a Stop/take-start check.
+    finish() means all input has arrived. poll() returns 0 only after the native
+    queue has stopped, not merely after its last buffer became reusable.
+    """
+
+    BLOCK_BYTES = 16384
+    MAX_PENDING = 8
+    _IS_RUNNING = 0x6171726E  # AudioQueue.h: kAudioQueueProperty_IsRunning ('aqrn').
+
+    def __init__(self, *, _library: Any = None) -> None:
+        if _library is None:
+            if sys.platform != "darwin":
+                raise OSError("PCM streaming playback requires macOS")
+            _library = ctypes.CDLL(
+                "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
+            )
+        self._api = _library
+        self._condition = threading.Condition()
+        # Public native operations serialize independently of the callback's
+        # condition, so Dispose/Stop can invoke callbacks without deadlocking.
+        self._operations = threading.RLock()
+        self._queue = ctypes.c_void_p()
+        self._pending: dict[int, Any] = {}
+        self._available: list[Any] = []
+        self._tail = b""
+        self._started = False
+        self._eof = False
+        self._closed = False
+        self.returncode: int | None = None
+        self.error: str | None = None
+        self._callback = _PCMQueueCallback(self._buffer_consumed)
+        signatures = {
+            "AudioQueueNewOutput": [ctypes.POINTER(_PCMStreamDescription),
+                                    _PCMQueueCallback, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+            "AudioQueueAllocateBuffer": [ctypes.c_void_p, ctypes.c_uint32,
+                                         ctypes.POINTER(_PCMQueueBufferRef)],
+            "AudioQueueEnqueueBuffer": [ctypes.c_void_p, _PCMQueueBufferRef,
+                                        ctypes.c_uint32, ctypes.c_void_p],
+            "AudioQueueStart": [ctypes.c_void_p, ctypes.c_void_p],
+            "AudioQueueStop": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueDispose": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueGetProperty": [ctypes.c_void_p, ctypes.c_uint32,
+                                      ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)],
+        }
+        for name, arguments in signatures.items():
+            function = getattr(self._api, name)
+            function.argtypes = arguments
+            function.restype = ctypes.c_int32
+        # lpcm, signed integer + packed, native little endian, one 16-bit sample
+        # per mono frame. The framework supplies its own callback thread.
+        description = _PCMStreamDescription(
+            24000.0, 0x6C70636D, (1 << 2) | (1 << 3), 2, 1, 2, 1, 16, 0
+        )
+        self._check(self._api.AudioQueueNewOutput(
+            ctypes.byref(description), self._callback, None, None, None, 0,
+            ctypes.byref(self._queue),
+        ), "create")
+
+    @staticmethod
+    def _check(status: int, operation: str) -> None:
+        if status:
+            raise OSError(f"AudioQueue {operation} failed ({int(status)})")
+
+    def _buffer_consumed(self, _context: Any, _queue: Any, buffer: Any) -> None:
+        # AudioQueueFreeBuffer is illegal while the queue is running. Reuse
+        # completed buffers; AudioQueueDispose releases all allocations later.
+        address = ctypes.cast(buffer, ctypes.c_void_p).value
+        with self._condition:
+            owned = self._pending.pop(address, None)
+            if owned is not None and not self._closed:
+                self._available.append(owned)
+            self._condition.notify_all()
+
+    @property
+    def pending(self) -> int:
+        with self._condition:
+            return len(self._pending)
+
+    def can_enqueue(self) -> bool:
+        with self._condition:
+            return (not self._closed and not self._eof
+                    and len(self._pending) < self.MAX_PENDING)
+
+    def enqueue(self, pcm: bytes) -> None:
+        if len(pcm) > self.BLOCK_BYTES:
+            raise ValueError("PCM block exceeds streaming buffer capacity")
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    raise OSError("PCM stream is closed")
+                if len(self._pending) >= self.MAX_PENDING:
+                    raise BufferError("PCM streaming queue is full")
+                data = self._tail + pcm
+                self._tail = data[-1:] if len(data) % 2 else b""
+                data = data[:len(data) - len(self._tail)]
+                if not data:
+                    return
+                buffer = self._available.pop() if self._available else None
+            if buffer is None:
+                buffer = _PCMQueueBufferRef()
+                self._check(self._api.AudioQueueAllocateBuffer(
+                    self._queue, self.BLOCK_BYTES, ctypes.byref(buffer)
+                ), "allocate")
+            ctypes.memmove(buffer.contents.data, data, len(data))
+            buffer.contents.byte_size = len(data)
+            address = ctypes.cast(buffer, ctypes.c_void_p).value
+            with self._condition:
+                self._pending[address] = buffer
+            status = self._api.AudioQueueEnqueueBuffer(self._queue, buffer, 0, None)
+            if status:
+                with self._condition:
+                    owned = self._pending.pop(address, None)
+                    if owned is not None:
+                        self._available.append(owned)
+                self._check(status, "enqueue")
+            if not self._started:
+                self._check(self._api.AudioQueueStart(self._queue, None), "start")
+                self._started = True
+
+    def finish(self) -> None:
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    return
+                if self._tail:
+                    raise ValueError("PCM stream ended inside a 16-bit sample")
+                self._eof = True
+            if self._started:
+                # Asynchronous drain. poll also checks IsRunning, since a buffer
+                # can become reusable before its last sample reaches hardware.
+                self._check(self._api.AudioQueueStop(self._queue, False), "drain")
+
+    def _dispose(self, result: int) -> None:
+        # Caller holds _operations, never _condition during the native call.
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            queue = self._queue
+            self._queue = ctypes.c_void_p()
+        status = self._api.AudioQueueDispose(queue, True)
+        with self._condition:
+            self._pending.clear()
+            self._available.clear()
+            self._tail = b""
+            self.returncode = result if not status else 1
+            if status:
+                self.error = f"AudioQueue dispose failed ({int(status)})"
+            self._condition.notify_all()
+        # Dispose has returned, so the SDK guarantees no further callbacks.
+        # Keep the CFUNCTYPE callback alive for the complete native lifetime.
+
+    def poll(self) -> int | None:
+        with self._operations:
+            with self._condition:
+                if self.returncode is not None:
+                    return self.returncode
+                if not self._eof or self._pending:
+                    return None
+            if self._started:
+                running = ctypes.c_uint32()
+                size = ctypes.c_uint32(ctypes.sizeof(running))
+                status = self._api.AudioQueueGetProperty(
+                    self._queue, self._IS_RUNNING, ctypes.byref(running), ctypes.byref(size)
+                )
+                if status:
+                    self.error = f"AudioQueue status failed ({int(status)})"
+                    self._dispose(1)
+                    return self.returncode
+                if running.value:
+                    return None
+            self._dispose(0)
+            return self.returncode
+
+    def terminate(self) -> None:
+        with self._operations:
+            self._dispose(-15)
+
+    def kill(self) -> None:
+        with self._operations:
+            self._dispose(-9)
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("AudioQueue", timeout)
+            with self._condition:
+                self._condition.wait(0.02)
+
+
+class SpeechPCMStream:
+    """Bounded synthesis ahead of playback, with one cache entry per sentence."""
+    def __init__(self, chunks: list[str], synthesize: Any, stopped: Any = None):
+        import queue
+        import threading
+
+        self.chunks, self.synthesize = chunks, synthesize
+        self.stopped = stopped or (lambda: False)
+        self.queue = queue.Queue(maxsize=8)
+        self.cancelled = threading.Event()
+        self.active_response: Any = None
+        self.thread = threading.Thread(target=self._produce, name="reply-synthesis", daemon=True)
+
+    def _put(self, event: Any) -> None:
+        import queue
+
+        while not self.cancelled.is_set():
+            try:
+                self.queue.put(event, timeout=0.05)
+                return
+            except queue.Full:
+                pass
+        raise OSError("speech cancelled")
+
+    def _produce(self) -> None:
+        try:
+            for chunk in self.chunks:
+                if self.cancelled.is_set():
+                    return
+                if self.stopped():
+                    self._put(("done", (False, "playback stopped", "stopped")))
+                    return
+                emitted = 0
+
+                def emit_pcm(pcm: bytes) -> None:
+                    nonlocal emitted
+                    for offset in range(0, len(pcm), 16384):
+                        self._put(("pcm", pcm[offset:offset + 16384]))
+                    emitted += len(pcm)
+
+                emit_pcm.response_opened = self._response_opened
+                pcm, error, reason = self.synthesize(chunk, emit_pcm)
+                self.active_response = None
+                if pcm is None:
+                    self._put(("done", (False, error, reason)))
+                    return
+                # Cache hits (and hermetic whole-response transports) do not
+                # invoke the streaming callback. Feed their complete PCM here.
+                if not emitted:
+                    emit_pcm(pcm)
+            self._put(("done", (True, None, None)))
+        except Exception as error:
+            if not self.cancelled.is_set():
+                self._put(("done", (False, f"synthesis failed ({error.__class__.__name__})", "network")))
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _response_opened(self, response: Any) -> None:
+        self.active_response = response
+        if self.cancelled.is_set():
+            self._interrupt_response()
+
+    def _interrupt_response(self) -> None:
+        import socket
+
+        # Closing BufferedReader from another thread can wait for its read
+        # lock. Shut down the underlying HTTPS socket first to unblock read1.
+        response = self.active_response
+        try:
+            response.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+        except (AttributeError, OSError):
+            pass
+
+    def poll_audio(self) -> Any:
+        import queue
+
+        try:
+            return self.queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self.cancelled.set()
+        self._interrupt_response()
+        if self.thread.ident is not None:
+            # Streaming connection/header waits are bounded at 10 s. Join so
+            # no synthesis survives the request's terminal playback receipt.
+            self.thread.join()
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -5938,7 +6375,7 @@ def _speak_xai(
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         try:
             key = _xai_speech_key()
         except SpeechCredentialError as error:
@@ -5951,7 +6388,7 @@ def _speak_xai(
             )
         body = json.dumps(
             {
-                "text": text,
+                "text": chunk,
                 "voice_id": voice,
                 "language": "auto",
                 "output_format": {"codec": "pcm", "sample_rate": 24000},
@@ -5967,9 +6404,15 @@ def _speak_xai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
@@ -6322,6 +6765,8 @@ def _wait_for_take_end(
 def _stop_playback(player: Any) -> None:
     import subprocess
 
+    if player is None:
+        return
     player.terminate()
     try:
         player.wait(timeout=2)
@@ -6331,7 +6776,7 @@ def _stop_playback(player: Any) -> None:
 
 
 def _play_pcm_24k(
-    pcm: bytes,
+    pcm: bytes | SpeechPCMStream,
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
@@ -6346,14 +6791,18 @@ def _play_pcm_24k(
     lock_descriptor = None
     player = None
     marker = None
+    streaming = isinstance(pcm, SpeechPCMStream)
+    stream_finished = False
+    marker_renewed = 0.0
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
-            wav_path = handle.name
-            with wave.open(handle, "wb") as sink:
-                sink.setnchannels(1)
-                sink.setsampwidth(2)
-                sink.setframerate(24000)
-                sink.writeframes(pcm)
+        if not streaming:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                wav_path = handle.name
+                with wave.open(handle, "wb") as sink:
+                    sink.setnchannels(1)
+                    sink.setsampwidth(2)
+                    sink.setframerate(24000)
+                    sink.writeframes(pcm)
         root = playback_root if playback_root is not None else bridge_home()
         runtime = root / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
@@ -6373,17 +6822,20 @@ def _play_pcm_24k(
             channel_released=channel_quiet_for_playback(runtime),
         ):
             return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
-        if control is not None:
-            if control.stopped():
-                return False, "playback stopped", "stopped"
-            control.publish("playing")
+        if control is not None and control.stopped():
+            return False, "playback stopped", "stopped"
         kept = channel_keeps_playback(runtime, _open_channels(cursor))
         # Announced before the first sample: the app drops the channel feed
         # from now on, and the pid lets it ignore a marker this process left.
-        marker = _announce_playback(runtime, len(pcm) / 48000)
-        player = subprocess.Popen(
-            ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        if streaming:
+            pcm.start()
+        else:
+            if control is not None:
+                control.publish("playing")
+            marker = _announce_playback(runtime, len(pcm) / 48000)
+            player = subprocess.Popen(
+                ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
         incomplete_scans = 0
         while True:
             if control is not None and control.stopped():
@@ -6409,12 +6861,37 @@ def _play_pcm_24k(
                 if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
                     _stop_playback(player)
                     return False, "take started during playback", "take_started"
-            result = player.poll()
+            if streaming and not stream_finished and (player is None or player.can_enqueue()):
+                event = pcm.poll_audio()
+                if event is not None:
+                    kind, value = event
+                    if kind == "pcm":
+                        if player is None:
+                            player = PCMStreamPlayer()
+                            if control is not None:
+                                control.publish("playing")
+                            marker = _announce_playback(runtime, 10)
+                            marker_renewed = time.monotonic()
+                        player.enqueue(value)
+                    else:
+                        stream_finished = True
+                        if not value[0]:
+                            _stop_playback(player)
+                            return value
+                        if player is None:
+                            return False, "empty PCM response", "invalid_audio"
+                        player.finish()
+            if streaming and marker is not None and time.monotonic() - marker_renewed >= 5:
+                marker = _announce_playback(runtime, 10)
+                marker_renewed = time.monotonic()
+            result = player.poll() if player is not None else None
             if result is not None:
                 if result != 0:
-                    return False, "afplay failed", "playback_failed"
+                    return False, "audio player failed", "playback_failed"
                 break
-            time.sleep(PLAYBACK_POLL_SECONDS)
+            # Streaming must drain small network buffers faster than real
+            # time; the file player's half-second cadence would starve PCM.
+            time.sleep(min(PLAYBACK_POLL_SECONDS, 0.02) if streaming else PLAYBACK_POLL_SECONDS)
     except OSError as error:
         return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
@@ -6424,6 +6901,8 @@ def _play_pcm_24k(
             _withdraw_playback(marker)
         if lock_descriptor is not None:
             os.close(lock_descriptor)
+        if streaming:
+            pcm.close()
         if wav_path:
             try:
                 os.unlink(wav_path)
@@ -6449,7 +6928,7 @@ def _speak_openai(
         or "gpt-4o-mini-tts-2025-12-15"
     )
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         key = _openai_speech_key()
         if not key:
             return (
@@ -6460,7 +6939,7 @@ def _speak_openai(
         body = json.dumps(
             {
                 "model": model,
-                "input": text,
+                "input": chunk,
                 "voice": voice,
                 "response_format": "pcm",
                 "speed": speed,
@@ -6471,10 +6950,16 @@ def _speak_openai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "openai", "model": model, "voice": voice, "speed": float(speed),
               "language": None, "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
@@ -6583,6 +7068,10 @@ def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path |
 
 
 def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, Any] | None]:
+    # The system speaker has no agent mailbox. Use the app's default bus (or
+    # the explicit private bus), never a same-named agent lease's destination.
+    if getattr(args, "system_reply", False):
+        return args.bus.expanduser().resolve(strict=False), None
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = args.bridge_home / "leases" / f"{lease_id}.json"
     state = read_reply_json(lease_path) if lease_path.exists() else {}
@@ -6630,8 +7119,118 @@ def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, A
     return bus, envelope
 
 
+def remember_published_reply(root: Path, bus: Path, reply: dict[str, Any],
+                             receipt: dict[str, Any]) -> None:
+    """Keep canonical byte coordinates for speech and text-only agent replies."""
+    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+            for key in ("stream_dev", "stream_inode", "offset", "length"))
+            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+        raise ValueError("canonical reply publication has invalid source coordinates")
+    owner = {key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}
+    path = root / "runtime" / "reply-sources" / f"{reply['reply_id']}.json"
+    previous = read_reply_json(path) if path.exists() else {}
+    copies = []
+    if previous:
+        if (previous.get("schema") != REPLY_SOURCE_SCHEMA
+                or any(previous.get(key) != value for key, value in owner.items())):
+            raise ValueError("published reply source has a different owner")
+        copies = previous.get("copies", [{"bus": previous.get("bus"), "source": previous.get("source")}])
+        if not isinstance(copies, list) or any(not isinstance(copy, dict) for copy in copies):
+            raise ValueError("published reply source has invalid copies")
+    coordinates = {"bus": str(bus.resolve(strict=False)), "source": receipt}
+    copies = [copy for copy in copies if copy.get("bus") != coordinates["bus"]]
+    copies.append(coordinates)
+    atomic_json(path, {"schema": REPLY_SOURCE_SCHEMA, **owner, **copies[0], "copies": copies})
+
+
+def normalize_playable_reply(args: argparse.Namespace, identity: str,
+                             event: dict[str, Any]) -> dict[str, Any] | None:
+    """Only an agent author can supply playback identity; typed rows name recipients."""
+    owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+             "lease_id": lease_identifier(args.provider, args.session)}
+    if event.get("schema") == AGENT_REPLY_SCHEMA and event.get("kind") == "agent_reply":
+        if event.get("reply_id") != identity or any(event.get(key) != value for key, value in owner.items()):
+            return None
+        return event
+    sender = event.get("sender")
+    if (event.get("schema") != AGENT_USER_MESSAGE_SCHEMA or event.get("kind") != "agent_user_message"
+            or event.get("message_id") != identity or event.get("source") == "typed"
+            or not isinstance(sender, dict)
+            or any(sender.get(key) != value for key, value in owner.items())
+            or not isinstance(event.get("text"), str) or not event["text"].strip()):
+        return None
+    return {**event, "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "reply_id": identity,
+            **owner, "name": sender.get("name") or event.get("name")}
+
+
+def recover_published_reply_source(args: argparse.Namespace, identity: str) -> None:
+    """Index an older agent row only in the explicitly selected verified bus."""
+    if not args.bus_overridden:
+        raise ValueError("historical reply playback requires an explicit bus")
+    bus = args.bus.expanduser().resolve(strict=False)
+    with GenerationFile(bus) as handle:
+        manifest = read_reply_json(Path(str(bus) + ".generations.json"), 4 << 20)
+        if (manifest.get("schema") != "codescribe.bus-generations.v1"
+                or manifest.get("root") != str(bus)
+                or not isinstance(manifest.get("stream_id"), str) or not manifest["stream_id"]
+                or (handle.dev, handle.ino) != (manifest.get("stream_dev"), manifest.get("stream_inode"))):
+            raise ValueError("historical reply has no verified stream identity")
+        first = max(0, handle.size - (64 << 20))
+        handle.seek(first)
+        if first:
+            handle.readline()
+        decoder = ChunkDecoder()
+        record_start = handle.tell()
+        while handle.tell() < handle.size:
+            offset = handle.tell()
+            raw = handle.readline()
+            if not raw.endswith(b"\n"):
+                raise ValueError("historical reply journal has an incomplete record")
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                raise ValueError("historical reply journal has an invalid record")
+            # A bounded tail may begin inside a chunked publication. Only its
+            # next complete record can be used as an exact source coordinate.
+            if (not decoder.pending and row.get("schema") == "codescribe.bus-chunk.v1"
+                    and (row.get("part") != 0 or row.get("length", 0) > REPLY_READ_LIMIT)):
+                continue
+            if not decoder.pending:
+                record_start = offset
+            event = decoder.feed(row)
+            if event is None:
+                continue
+            reply = normalize_playable_reply(args, identity, event)
+            if reply is None:
+                continue
+            receipt = {"stream_id": manifest["stream_id"], "stream_dev": handle.dev,
+                       "stream_inode": handle.ino, "offset": record_start,
+                       "length": handle.tell() - record_start}
+            remember_published_reply(args.bridge_home, bus, reply, receipt)
+            return
+    raise ValueError("agent reply was not found in the selected bus history")
+
+
 def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path, dict[str, Any]]:
-    source = read_reply_json(args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json")
+    path = args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json"
+    try:
+        source = read_reply_json(path)
+    except FileNotFoundError:
+        recover_published_reply_source(args, identity)
+        source = read_reply_json(path)
+    copies = source.get("copies", [{"bus": source.get("bus"), "source": source.get("source")}])
+    if not isinstance(copies, list) or not copies or any(not isinstance(copy, dict) for copy in copies):
+        raise ValueError("reply source has invalid copies")
+    selected = copies[0]
+    if args.bus_overridden:
+        requested_bus = str(args.bus.expanduser().resolve(strict=False))
+        selected = next((copy for copy in copies if copy.get("bus") == requested_bus), None)
+        if selected is None:
+            # An old broadcast can acquire its indexed copies one explicit
+            # Play at a time; each copy still comes from the canonical bus.
+            recover_published_reply_source(args, identity)
+            return load_published_reply(args, identity)
+    source = {**source, **selected}
     bus = Path(source.get("bus", ""))
     lease_id = lease_identifier(args.provider, args.session)
     if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
@@ -6664,11 +7263,8 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
             events.append(value)
     if decoder.pending or len(events) != 1:
         raise ValueError("reply source is not one complete event")
-    reply = events[0]
-    if (reply.get("schema") != AGENT_REPLY_SCHEMA or reply.get("kind") != "agent_reply"
-            or reply.get("reply_id") != identity or reply.get("lease_id") != lease_id
-            or reply.get("provider") != args.provider.casefold()
-            or reply.get("provider_session_id") != args.session):
+    reply = normalize_playable_reply(args, identity, events[0])
+    if reply is None:
         raise ValueError("canonical reply does not match its source owner")
     return bus, reply
 
@@ -6685,7 +7281,17 @@ def broadcast_policy_path(root: Path, provider: str, session: str, bus: Path) ->
     return root / "runtime" / "broadcast-policy" / f"{key}.json"
 
 
-def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+def agent_bus_policy(root: Path, provider: str, session: str, bus: Path) -> tuple[str, bool]:
+    """The two independent axes of one lease's reception (Maciej, 2026-10-23):
+
+    membership ("on"/"off") says whether the agent is on channel 0 at all;
+    quiet — the moon — says whether anything may wake it right now. The moon
+    queues every delivery from every channel, the Founder's included, and it
+    no longer needs channel 0 to be ticked: an agent in a meeting lights the
+    moon and keeps its membership. A receipt written before the split spelled
+    the lit moon as policy "quiet"; it still reads as on channel 0 with the
+    moon lit.
+    """
     try:
         row = read_reply_json(broadcast_policy_path(root, provider, session, bus), 65536)
         if (row.get("schema") != BROADCAST_POLICY_SCHEMA
@@ -6693,20 +7299,34 @@ def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -
                 or row.get("provider_session_id") != session
                 or row.get("lease_id") != lease_identifier(provider, session)
                 or row.get("bus") != str(bus.resolve(strict=False))
-                or row.get("policy") not in ("on", "quiet", "off")):
+                or row.get("policy") not in ("on", "quiet", "off")
+                or not isinstance(row.get("quiet", False), bool)):
             raise ValueError("invalid broadcast policy receipt")
-        return row["policy"]
+        if row["policy"] == "quiet":
+            return "on", True
+        return row["policy"], bool(row.get("quiet", False))
     except FileNotFoundError:
-        return "on"
+        return "on", False
     except (OSError, ValueError, UnicodeError):
         # Mute fails closed to silence; policy fails open to "on": a broken
         # receipt must never silently cut an agent off from the Founder.
         sys.stderr.write("cs-bus: unreadable or invalid broadcast policy; using on\n")
-        return "on"
+        return "on", False
 
 
-def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, str]:
-    return {"policy": agent_broadcast_policy(root, provider, session, bus)}
+def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+    """What a channel-0 broadcast meets: "off" (not a member, skipped), "quiet"
+    (member, queued without a wake) or "on"."""
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    if membership == "off":
+        return "off"
+    return "quiet" if quiet else "on"
+
+
+def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, Any]:
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    return {"policy": agent_broadcast_policy(root, provider, session, bus),
+            "membership": membership, "quiet": quiet}
 
 
 def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
@@ -6719,15 +7339,16 @@ def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
 
 def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
     if not is_broadcast_delivery(payload):
-        # Steer is global (Maciej, 2026-10-17): "quiet" queues every delivery
+        # Steer is global (Maciej, 2026-10-17): the moon queues every delivery
         # without waking — direct and peer-to-peer included — while leaving
         # channel 0 ("off") never blocks a direct; off stays broadcast-only so
         # unticking Channel 0 cannot cut the agent off from addressed words.
+        # The moon is read on its own axis, so it holds off channel 0 too.
         if any(key not in payload for key in ("provider", "provider_session_id", "bus")):
             return "on"
-        policy = agent_broadcast_policy(
+        _, quiet = agent_bus_policy(
             root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
-        return "quiet" if policy == "quiet" else "on"
+        return "quiet" if quiet else "on"
     return agent_broadcast_policy(
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
@@ -6776,14 +7397,28 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     bus = (args.bus if args.bus_overridden else Path(str(lease.get("bus") or ""))).expanduser().resolve(strict=False)
+    moon = getattr(args, "quiet", None)
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
             or lease.get("provider") != args.provider.casefold()
             or lease.get("provider_session_id") != args.session
-            or lease.get("bus") != str(bus) or args.broadcast not in ("on", "quiet", "off")):
+            or lease.get("bus") != str(bus)
+            or args.broadcast not in (None, "on", "quiet", "off") or moon not in (None, "on", "off")
+            or (args.broadcast is None and moon is None)):
         raise ValueError("broadcast policy does not belong to this provider session and bus")
+    # With --quiet present each flag moves its own axis and leaves the other
+    # as the receipt had it. --broadcast alone keeps its pre-split meaning for
+    # callers that know only the one knob: on = member, moon dark; quiet =
+    # member, moon lit; off = not a member, moon dark.
+    membership, quiet = agent_bus_policy(args.bridge_home, args.provider, args.session, bus)
+    if moon is None:
+        membership, quiet = ("on", True) if args.broadcast == "quiet" else (args.broadcast, False)
+    else:
+        quiet = moon == "on"
+        if args.broadcast is not None:
+            membership = "on" if args.broadcast == "quiet" else args.broadcast
     row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider.casefold(),
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
-           "policy": args.broadcast, "emitted_at": utc_now()}
+           "policy": membership, "quiet": quiet, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
     # The follower may persist a quiet row after our first snapshot but before
     # the policy write. Read it after publication; later rows observe the new
@@ -6796,7 +7431,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     # Releasing quiet makes eligible pending rows visible to the existing
     # watch, including direct rows when channel zero remains off. The source
     # follower's explicit wakeup=off still forbids queue submission here.
-    if args.broadcast != "quiet" and lease.get("provider") == "codex":
+    if not quiet and lease.get("provider") == "codex":
         native = (NativeQueueWakeup(args.bridge_home, args.session, None)
                   if (lease.get("wakeup_configuration") or {}).get("wakeup") != "off" else None)
         _, events = follower_paths(args.bridge_home, lease_id)
@@ -6926,6 +7561,10 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
+        # System announcements are independent of agent chatter switches.
+        # Their Stop ticket and the player's live-take guard still apply.
+        if self.reply.get("system") is True:
+            return False
         if self.mute_snapshot()["effective_muted"]:
             return True
         if self.automatic:
@@ -6937,7 +7576,8 @@ class ReplyPlaybackControl:
 
     def mute_snapshot(self) -> dict[str, Any]:
         return playback_mute_snapshot(self.root, self.reply["provider"],
-                                      self.reply["provider_session_id"], self.bus, automatic=self.automatic)
+                                      self.reply["provider_session_id"], self.bus,
+                                      automatic=self.automatic and self.reply.get("system") is not True)
 
     def publish(self, state: str, *, error: str | None = None, reason: str | None = None,
                 playback: dict[str, Any] | None = None) -> None:
@@ -6987,8 +7627,28 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
         control.close()
 
 
+def resolve_reply_voice(root: Path, reply: dict[str, Any]) -> dict[str, Any]:
+    """Explicit Play gives text-only replies the author's voice, then the system voice."""
+    resolved = dict(reply)
+    if not isinstance(resolved.get("voice"), str) or not resolved["voice"].strip():
+        sender = reply.get("sender")
+        name = reply.get("name") or (sender.get("name") if isinstance(sender, dict) else None)
+        profile, source = voice_profile_with_source(root, name)
+        if source == "default":
+            profile = {"voice": "carina", "speed": 1.0, "provider": "xai"}
+        resolved.update(voice=profile["voice"], speed=profile["speed"],
+                        tts_vendor=profile.get("provider") or "xai")
+    if resolved.get("tts_vendor") not in ("xai", "openai"):
+        resolved["tts_vendor"] = "xai"
+    speed = resolved.get("speed")
+    if type(speed) not in (int, float) or not math.isfinite(speed) or speed <= 0:
+        resolved["speed"] = DEFAULT_SPEECH_SPEED
+    return resolved
+
+
 def play_reply_command(args: argparse.Namespace) -> int:
     bus, reply = load_published_reply(args, args.play_reply)
+    reply = resolve_reply_voice(args.bridge_home, reply)
     return speak_published_reply(args, bus, reply, args.playback_ticket)
 
 
@@ -7077,7 +7737,9 @@ def say_reply(args: argparse.Namespace) -> int:
     historical_name = ((owner.get("name") or owner.get("audience")) if owner
                        else envelope.get("audience")) if envelope else None
     name = historical_name if historical_name and historical_name != "*" else args.name
-    profile = voice_profile(args.bridge_home, name)
+    system = getattr(args, "system_reply", False)
+    profile = ({"voice": "carina", "speed": 1.0, "provider": "xai"} if system
+               else voice_profile(args.bridge_home, name))
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
@@ -7091,6 +7753,8 @@ def say_reply(args: argparse.Namespace) -> int:
         "association": "addressed" if envelope else "unsolicited",
         "delivery_id": args.reply_to,
     }
+    if system:
+        reply["system"] = True
     if envelope:
         if owner:
             reply["channel"] = owner.get("channel")
@@ -7100,14 +7764,7 @@ def say_reply(args: argparse.Namespace) -> int:
             if key in envelope:
                 reply[key] = envelope[key]
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
-    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-            for key in ("stream_dev", "stream_inode", "offset", "length"))
-            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-        raise ValueError("canonical reply publication has invalid source coordinates")
-    atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
-                {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
-                 **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
+    remember_published_reply(args.bridge_home, bus, reply, receipt)
     emit(reply)
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
@@ -7159,9 +7816,17 @@ def describe_attachment(raw: str) -> dict[str, Any]:
 
 def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
     """Plain-text pointers so a reader without envelope parsing still sees the file."""
-    return "".join(
-        f"\n[attachment] {item['name']} ({item['media_type']}, {item['bytes']} bytes): {item['path']}"
-        for item in attachments)
+    lines = []
+    for item in attachments:
+        anchor = ""
+        if "attached_at_seconds" in item:
+            seconds = item["attached_at_seconds"]
+            seconds = (int(seconds) if type(seconds) in (int, float)
+                       and math.isfinite(seconds) and seconds >= 0 else 0)
+            anchor = f" @ {seconds // 60}:{seconds % 60:02d}"
+        lines.append(f"\n[attachment{anchor}] {item['name']} ({item['media_type']}, "
+                     f"{item['bytes']} bytes): {item['path']}")
+    return "".join(lines)
 
 
 class UserTextPublicationUncertain(RuntimeError):
@@ -7537,11 +8202,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "channel": "10", "sender": sender, "recipients": [],
                      "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
-            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                    for key in ("stream_dev", "stream_inode", "offset", "length"))
-                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                raise ValueError("publication has no durable receipt; do not automatically resend")
+            remember_published_reply(root, bus, event, receipt)
             deliveries = [{"peer": "founder", "channel": "10",
                            "follower_live": False, "broadcast": "off",
                            "source": receipt}]
@@ -7609,11 +8270,7 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "channel": origin, "sender": sender, "recipients": [owner],
                      "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
-            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                    for key in ("stream_dev", "stream_inode", "offset", "length"))
-                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                raise ValueError("publication has no durable receipt; do not automatically resend")
+            remember_published_reply(root, bus, event, receipt)
             deliveries.append({"peer": audience, "channel": channel,
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
@@ -9158,6 +9815,7 @@ def main() -> int:
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
                "  cs-bus --history --since 1d > bus-history.md\n"
+               "  cs-say 'Gotowe.'  # Codescribe system voice (Carina, xAI)\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
                "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
@@ -9345,8 +10003,9 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through "
-        "vendor TTS; --name defaults to the name on this session's lease",
+        help="publish and speak through vendor TTS; without --provider/--session "
+        "uses Codescribe system voice (Carina, xAI, speed 1.0); agent --name "
+        "defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
@@ -9359,9 +10018,12 @@ def main() -> int:
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
-    mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
+    mute.add_argument("--mute-all", action="store_true", help="mute automatic agent reply playback on every channel; system announcements remain audible")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
-    parser.add_argument("--broadcast", choices=("on", "quiet", "off"), help="change this lease's channel-zero delivery policy at any time")
+    parser.add_argument("--broadcast", choices=("on", "quiet", "off"),
+                        help="change this lease's channel-zero membership at any time (quiet: legacy spelling of on plus --quiet on)")
+    parser.add_argument("--quiet", choices=("on", "off"),
+                        help="light or clear this lease's moon: on queues every delivery from every channel without a wake")
     parser.add_argument("--hold-seconds", type=int, default=None,
                         help="with --send-text: hold delivery for N seconds (0 sends immediately)")
     delivery_controls = parser.add_mutually_exclusive_group()
@@ -9436,11 +10098,11 @@ def main() -> int:
             return 3
     if args.hold_seconds is not None and (not args.send_text or not 0 <= args.hold_seconds <= 4294967295):
         parser.error("--hold-seconds requires --send-text and an unsigned 32-bit integer")
-    if args.broadcast is not None:
-        allowed = {"broadcast", "provider", "session", "bus", "bridge_home", "entrypoint"}
+    if args.broadcast is not None or args.quiet is not None:
+        allowed = {"broadcast", "quiet", "provider", "session", "bus", "bridge_home", "entrypoint"}
         if (not args.provider or not args.session
                 or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
-            parser.error("--broadcast requires only --provider/--session and optional --bus/--bridge-home")
+            parser.error("--broadcast/--quiet require only --provider/--session and optional --bus/--bridge-home")
         args.bus_overridden = args.bus is not None
         args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
@@ -9752,7 +10414,25 @@ def main() -> int:
         receipt = read_json(args.bridge_home / "wakeups" / lease_id / f"{args.retry_wakeup}.json") or {}
         emit(receipt)
         return 0 if receipt.get("disposition") == "provider_accepted" else 3
-    if args.speed is not None and args.speed <= 0:
+    if args.say is not None:
+        args.system_reply = not args.provider and not args.session
+        if args.system_reply:
+            if args.reply_to:
+                parser.error("--reply-to requires an explicit --provider/--session")
+            args.provider, args.session = "codescribe", "system"
+            args.name = args.name or "Codescribe"
+            if args.voice is None:
+                args.voice = os.environ.get("CS_SAY_VOICE") or None
+            if args.speed is None and os.environ.get("CS_SAY_SPEED"):
+                try:
+                    args.speed = float(os.environ["CS_SAY_SPEED"])
+                except ValueError:
+                    parser.error("CS_SAY_SPEED must be a positive number")
+            if args.tts_vendor is None:
+                args.tts_vendor = os.environ.get("CS_SAY_TTS_VENDOR") or None
+            if args.tts_vendor not in (None, "xai", "openai"):
+                parser.error("CS_SAY_TTS_VENDOR must be xai or openai")
+    if args.speed is not None and (not math.isfinite(args.speed) or args.speed <= 0):
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
         parser.error("--voice needs a voice id")
@@ -9820,8 +10500,6 @@ def main() -> int:
             parser.error("--status combines with no other command")
         return status_command(args)
     if args.say is not None:
-        if not args.provider:
-            parser.error("--say requires --provider/--session")
         if args.follow or args.once or args.from_start or args.all or args.become:
             parser.error("--say takes no read mode")
         if not args.say.strip():

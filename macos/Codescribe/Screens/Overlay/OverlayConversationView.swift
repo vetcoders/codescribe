@@ -316,6 +316,7 @@ struct OverlayConversationView: View {
           replySelection: replySelection, onClearReply: onClearReply,
           draftMicrophoneRecording: draftMicrophoneRecording,
           draftMicrophoneBusy: draftMicrophoneBusy,
+          liveSpeechActive: microphoneOpen,
           onToggleDraftMicrophone: onToggleDraftMicrophone,
           onStageCaptureAttachments: onStageCaptureAttachments,
           pendingCaptureAttachments: pendingCaptureAttachments,
@@ -798,12 +799,21 @@ struct OverlayConversationView: View {
       if let attachments = message.attachments, !attachments.isEmpty {
         WrapLayout(spacing: 6) {
           ForEach(attachments, id: \.self) { pointer in
-            AttachmentChip(
-              attachment: MessageAttachment(
-                name: ConversationAttachmentLabel.display(
-                  fileName: pointer.name, bytes: pointer.bytes),
-                url: URL(fileURLWithPath: pointer.path),
-                type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+            HStack(spacing: 4) {
+              AttachmentChip(
+                attachment: MessageAttachment(
+                  name: ConversationAttachmentLabel.display(
+                    fileName: pointer.name, bytes: pointer.bytes),
+                  url: URL(fileURLWithPath: pointer.path),
+                  type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+              if message.captureState != .receiving, let time = pointer.attachmentTimeLabel {
+                Text(verbatim: time)
+                  .font(.system(size: 10 * textScale))
+                  .monospacedDigit()
+                  .foregroundStyle(palette.mutedText.color)
+                  .accessibilityIdentifier("overlay-attachment-time-\(message.id)-\(pointer.path)")
+              }
+            }
           }
         }
         .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
@@ -940,7 +950,6 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
   private var playHint: String {
     if active { return String(localized: "Stop") }
     if pending { return String(localized: "Requesting playback") }
-    if message.owner == nil { return String(localized: "Playback status unavailable") }
     return String(localized: "Play")
   }
 
@@ -960,7 +969,7 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
           .conversationActionHover(
             restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
           )
-          .disabled(!active && (pending || message.owner == nil))
+          .disabled(!active && pending)
           .accessibilityLabel(Text(verbatim: playHint))
           .accessibilityHint(Text(verbatim: playHint))
           .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")

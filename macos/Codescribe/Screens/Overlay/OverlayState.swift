@@ -1429,6 +1429,13 @@ final class OverlayState {
   private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
+  @ObservationIgnored var controlBusReply:
+    @MainActor (String, String, String, String, String, Bool) async throws -> Void = {
+      replyID, ticket, provider, session, busPath, stop in
+      try await RealAgentBridgeInstaller.controlBusReply(
+        replyID: replyID, ticket: ticket, provider: provider,
+        session: session, busPath: busPath, stop: stop)
+    }
   /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
@@ -2815,7 +2822,9 @@ final class OverlayState {
 
   func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {
     guard message.kind == .reply, message.supportsSpeechPlayback,
-      let owner = message.owner, let replyID = message.replyID
+      let provider = message.playbackProvider, !provider.isEmpty,
+      let session = message.playbackProviderSessionID, !session.isEmpty,
+      let replyID = message.replyID
     else { return }
     let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
     guard stop ? active : !active && !pendingReplyControls.contains(message.id) else { return }
@@ -2830,9 +2839,8 @@ final class OverlayState {
     replyControlErrors.removeValue(forKey: message.id)
     defer { pendingReplyControls.remove(message.id) }
     do {
-      try await RealAgentBridgeInstaller.controlBusReply(
-        replyID: replyID, ticket: ticket, provider: owner.provider,
-        session: owner.providerSessionID, busPath: message.busPath, stop: stop)
+      try await controlBusReply(
+        replyID, ticket, provider, session, message.busPath, stop)
     } catch {
       replyControlErrors[message.id] = error.userFacingMessage
     }

@@ -36,6 +36,7 @@ mod asr_settings;
 mod w13_clock;
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "diagnostic harness: needs CODESCRIBE_REPLAY_WAV and a live SFSpeech bridge"]
 async fn replay_operator_take() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
