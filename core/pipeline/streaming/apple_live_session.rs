@@ -77,7 +77,7 @@ use crate::audio::speech_input::{
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
-    AiFormatResult, AiFormatStatus, format_text_with_status_for_policy,
+    AiFormatResult, AiFormatStatus, TakeFormatterChain, format_text_with_status_for_policy,
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 #[cfg(test)]
@@ -691,6 +691,7 @@ fn formatter_job(
     mut request: FormatterRequest,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     language: Option<String>,
+    chain: Arc<TakeFormatterChain>,
 ) -> BoxFuture<'static, FormatterCompletion> {
     request.policy = runtime_settings.formatting_policy();
     Box::pin(async move {
@@ -698,17 +699,20 @@ fn formatter_job(
             .ai_execution()
             .request_timing()
             .attempt_timeout();
-        let result = bound_formatter_reply(
-            &request.existing_label,
-            deadline,
-            format_text_with_status_for_policy(
+        // The deadline starts when this job's turn does, not while it waits
+        // behind the take's earlier fragment.
+        let result = chain
+            .next_turn(bound_formatter_reply(
                 &request.existing_label,
-                language.as_deref(),
-                runtime_settings.as_ref(),
-                None,
-            ),
-        )
-        .await;
+                deadline,
+                format_text_with_status_for_policy(
+                    &request.existing_label,
+                    language.as_deref(),
+                    runtime_settings.as_ref(),
+                    None,
+                ),
+            ))
+            .await;
         FormatterCompletion::from_result(request, result)
     })
 }
@@ -778,6 +782,7 @@ struct RetainedFormatterJobs {
     jobs: FuturesOrdered<BoxFuture<'static, FormatterCompletion>>,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     language: Option<String>,
+    chain: Arc<TakeFormatterChain>,
     event_sink: Arc<dyn EventSink>,
     stream_log_path: Option<PathBuf>,
 }
@@ -816,6 +821,7 @@ impl RetainedFormatterJobs {
                             request,
                             Arc::clone(&self.runtime_settings),
                             self.language.clone(),
+                            Arc::clone(&self.chain),
                         ));
                     }
                     Some(completion) = self.jobs.next() => {
@@ -1325,6 +1331,9 @@ pub(crate) async fn apple_stream_transcription_session(
              silence-delimited fragment can open a paid provider slot"
         );
     }
+    // This take's own formatter conversation: its fragments go in order, each
+    // with the ones before it, and none of it reaches another take.
+    let formatter_chain = TakeFormatterChain::new();
     let mut formatter_jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
     let formatter_runtime_settings = Arc::clone(&runtime_settings);
     let formatter_language = language.clone();
@@ -1757,6 +1766,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     request,
                     Arc::clone(&formatter_runtime_settings),
                     formatter_language.clone(),
+                    Arc::clone(&formatter_chain),
                 ));
                 event_sink.on_formatter_pending(true);
             }
@@ -1816,6 +1826,7 @@ pub(crate) async fn apple_stream_transcription_session(
         jobs: formatter_jobs,
         runtime_settings: Arc::clone(&formatter_runtime_settings),
         language: formatter_language.clone(),
+        chain: formatter_chain,
         event_sink: Arc::clone(&event_sink),
         stream_log_path: stream_log_path.clone(),
     }
@@ -12663,6 +12674,7 @@ mod c13a_lifecycle_tests {
             jobs,
             runtime_settings: settings,
             language: None,
+            chain: TakeFormatterChain::new(),
             event_sink: sink.clone(),
             stream_log_path: None,
         }
@@ -12720,6 +12732,7 @@ mod c13a_lifecycle_tests {
             jobs,
             runtime_settings: settings,
             language: None,
+            chain: TakeFormatterChain::new(),
             event_sink: sink.clone(),
             stream_log_path: None,
         }
