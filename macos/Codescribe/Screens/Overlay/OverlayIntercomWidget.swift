@@ -91,7 +91,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.setFrame(CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
       header = panel
     }
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
     materializeInstances()
     header?.orderFrontRegardless()
   }
@@ -427,13 +427,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate func close(_ identity: OverlayIntercomCardIdentity) {
     cards[identity]?.resignKey()
     presentation.close(identity)
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   fileprivate func toggleGroup() {
     presentation.folded.toggle()
     presentation.hovered = nil
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). A closed saved
@@ -443,7 +443,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard presentation.expanded.contains(identity) else { return }
     detachIntoInstance(identity)
     presentation.folded = true
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   @discardableResult
@@ -522,7 +522,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       resizeHandoff = (gesture: gesture, id: id)
     }
     presentation.folded = true
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   /// The group resizes like one window: the drag ratio becomes the shared
@@ -547,7 +547,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard scaled != desktop.groupScale else { return }
     desktop.groupScale = scaled
     saveDesktop()
-    reconcile(chips: state.channelMapLayoutModel.intercomChips, scale: effectiveScale)
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   func windowDidMove(_ notification: Notification) {
@@ -656,7 +656,7 @@ private struct OverlayIntercomHeader: View {
   let controller: OverlayIntercomWidgetController
 
   var body: some View {
-    let chips = state.channelMapLayoutModel.intercomChips
+    let chips = state.channelMapLayoutModel.agents
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     HStack(spacing: 8) {
       Button {
