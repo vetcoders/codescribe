@@ -1066,9 +1066,9 @@ impl Config {
 
     /// Resolve the effective formatting policy from fresh runtime truth.
     ///
-    /// Explicit process env wins. Values seeded internally during bootstrap are
-    /// ignored after bootstrap so a Settings write takes effect without restart.
-    /// Loader-boundary helper for UI/tests that do not already hold a snapshot.
+    /// An explicit `FORMATTING_LEVEL` in the launch environment wins; config
+    /// never writes that key itself, so a Settings write takes effect without
+    /// restart. Loader-boundary helper for UI/tests that do not already hold a snapshot.
     /// Resolves policy only through the canonical sealed snapshot — never by a
     /// second `UserSettings::load` + process-env reconstruct.
     pub fn formatting_policy() -> anyhow::Result<FormattingPolicy> {
@@ -1504,14 +1504,12 @@ impl Config {
             self.transcript_tag_template,
             settings.transcript_tag_template
         );
-        if Self::config_runtime_env_var("FORMATTING_LEVEL").is_err()
-            && let Some(ref v) = settings.formatting_level
-        {
-            match FormattingPolicy::parse(v) {
-                Ok(policy) => Self::safe_set_env("FORMATTING_LEVEL", policy.as_str()),
-                Err(error) => warn!("Ignoring invalid persisted formatting policy: {error}"),
-            }
-        }
+        // The formatting level is never seeded into process env. The snapshot
+        // resolves it from `settings.formatting_level` plus a genuine launch
+        // override (`FormattingPolicy::resolve`). A copy in this process's env
+        // would be inherited by every child, a self-relaunch included, where
+        // it reads as an operator override and pins the old level over later
+        // Settings changes.
         // Sound
         apply_copy!("BEEP_ON_START", self.beep_on_start, settings.beep_on_start);
         apply_copy!(
