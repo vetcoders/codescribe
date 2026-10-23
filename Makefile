@@ -1208,6 +1208,7 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
 	python3 -m unittest scripts/tests/test_bus_history.py; \
 	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
+	python3 -m unittest scripts/tests/test_bus_moon_policy.py; \
 	python3 -m unittest scripts/tests/test_bus_panel_focus.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \

@@ -85,8 +85,9 @@ exec cell beside `codex-queue`; other output-notifying providers reuse one
 `--watch --bell` monitor. A queue, bare shell or `tail -F` alone proves no wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
 
-Channel 0: `off` skips broadcasts; `quiet` (Steer) queues all messages without waking.
-See [Monitor](references/monitor.md#channel-0-reception).
+Channel 0 (`--broadcast off`) skips broadcasts; the moon (`--quiet on`, do not
+disturb) queues every message from every channel without waking. The two are
+independent. See [Monitor](references/monitor.md#channel-0-reception).
 
 Report `attached_unverified` until a fresh named utterance reaches this chat and
 gets a reply without a typed nudge. Then report `listening_verified` — the only

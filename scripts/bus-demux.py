@@ -6685,7 +6685,17 @@ def broadcast_policy_path(root: Path, provider: str, session: str, bus: Path) ->
     return root / "runtime" / "broadcast-policy" / f"{key}.json"
 
 
-def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+def agent_bus_policy(root: Path, provider: str, session: str, bus: Path) -> tuple[str, bool]:
+    """The two independent axes of one lease's reception (Maciej, 2026-10-23):
+
+    membership ("on"/"off") says whether the agent is on channel 0 at all;
+    quiet — the moon — says whether anything may wake it right now. The moon
+    queues every delivery from every channel, the Founder's included, and it
+    no longer needs channel 0 to be ticked: an agent in a meeting lights the
+    moon and keeps its membership. A receipt written before the split spelled
+    the lit moon as policy "quiet"; it still reads as on channel 0 with the
+    moon lit.
+    """
     try:
         row = read_reply_json(broadcast_policy_path(root, provider, session, bus), 65536)
         if (row.get("schema") != BROADCAST_POLICY_SCHEMA
@@ -6693,20 +6703,34 @@ def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -
                 or row.get("provider_session_id") != session
                 or row.get("lease_id") != lease_identifier(provider, session)
                 or row.get("bus") != str(bus.resolve(strict=False))
-                or row.get("policy") not in ("on", "quiet", "off")):
+                or row.get("policy") not in ("on", "quiet", "off")
+                or not isinstance(row.get("quiet", False), bool)):
             raise ValueError("invalid broadcast policy receipt")
-        return row["policy"]
+        if row["policy"] == "quiet":
+            return "on", True
+        return row["policy"], bool(row.get("quiet", False))
     except FileNotFoundError:
-        return "on"
+        return "on", False
     except (OSError, ValueError, UnicodeError):
         # Mute fails closed to silence; policy fails open to "on": a broken
         # receipt must never silently cut an agent off from the Founder.
         sys.stderr.write("cs-bus: unreadable or invalid broadcast policy; using on\n")
-        return "on"
+        return "on", False
 
 
-def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, str]:
-    return {"policy": agent_broadcast_policy(root, provider, session, bus)}
+def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+    """What a channel-0 broadcast meets: "off" (not a member, skipped), "quiet"
+    (member, queued without a wake) or "on"."""
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    if membership == "off":
+        return "off"
+    return "quiet" if quiet else "on"
+
+
+def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, Any]:
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    return {"policy": agent_broadcast_policy(root, provider, session, bus),
+            "membership": membership, "quiet": quiet}
 
 
 def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
@@ -6719,15 +6743,16 @@ def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
 
 def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
     if not is_broadcast_delivery(payload):
-        # Steer is global (Maciej, 2026-10-17): "quiet" queues every delivery
+        # Steer is global (Maciej, 2026-10-17): the moon queues every delivery
         # without waking — direct and peer-to-peer included — while leaving
         # channel 0 ("off") never blocks a direct; off stays broadcast-only so
         # unticking Channel 0 cannot cut the agent off from addressed words.
+        # The moon is read on its own axis, so it holds off channel 0 too.
         if any(key not in payload for key in ("provider", "provider_session_id", "bus")):
             return "on"
-        policy = agent_broadcast_policy(
+        _, quiet = agent_bus_policy(
             root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
-        return "quiet" if policy == "quiet" else "on"
+        return "quiet" if quiet else "on"
     return agent_broadcast_policy(
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
@@ -6776,14 +6801,28 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     bus = (args.bus if args.bus_overridden else Path(str(lease.get("bus") or ""))).expanduser().resolve(strict=False)
+    moon = getattr(args, "quiet", None)
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
             or lease.get("provider") != args.provider.casefold()
             or lease.get("provider_session_id") != args.session
-            or lease.get("bus") != str(bus) or args.broadcast not in ("on", "quiet", "off")):
+            or lease.get("bus") != str(bus)
+            or args.broadcast not in (None, "on", "quiet", "off") or moon not in (None, "on", "off")
+            or (args.broadcast is None and moon is None)):
         raise ValueError("broadcast policy does not belong to this provider session and bus")
+    # With --quiet present each flag moves its own axis and leaves the other
+    # as the receipt had it. --broadcast alone keeps its pre-split meaning for
+    # callers that know only the one knob: on = member, moon dark; quiet =
+    # member, moon lit; off = not a member, moon dark.
+    membership, quiet = agent_bus_policy(args.bridge_home, args.provider, args.session, bus)
+    if moon is None:
+        membership, quiet = ("on", True) if args.broadcast == "quiet" else (args.broadcast, False)
+    else:
+        quiet = moon == "on"
+        if args.broadcast is not None:
+            membership = "on" if args.broadcast == "quiet" else args.broadcast
     row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider.casefold(),
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
-           "policy": args.broadcast, "emitted_at": utc_now()}
+           "policy": membership, "quiet": quiet, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
     # The follower may persist a quiet row after our first snapshot but before
     # the policy write. Read it after publication; later rows observe the new
@@ -6796,7 +6835,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     # Releasing quiet makes eligible pending rows visible to the existing
     # watch, including direct rows when channel zero remains off. The source
     # follower's explicit wakeup=off still forbids queue submission here.
-    if args.broadcast != "quiet" and lease.get("provider") == "codex":
+    if not quiet and lease.get("provider") == "codex":
         native = (NativeQueueWakeup(args.bridge_home, args.session, None)
                   if (lease.get("wakeup_configuration") or {}).get("wakeup") != "off" else None)
         _, events = follower_paths(args.bridge_home, lease_id)
@@ -9361,7 +9400,10 @@ def main() -> int:
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
     mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
-    parser.add_argument("--broadcast", choices=("on", "quiet", "off"), help="change this lease's channel-zero delivery policy at any time")
+    parser.add_argument("--broadcast", choices=("on", "quiet", "off"),
+                        help="change this lease's channel-zero membership at any time (quiet: legacy spelling of on plus --quiet on)")
+    parser.add_argument("--quiet", choices=("on", "off"),
+                        help="light or clear this lease's moon: on queues every delivery from every channel without a wake")
     parser.add_argument("--hold-seconds", type=int, default=None,
                         help="with --send-text: hold delivery for N seconds (0 sends immediately)")
     delivery_controls = parser.add_mutually_exclusive_group()
@@ -9436,11 +9478,11 @@ def main() -> int:
             return 3
     if args.hold_seconds is not None and (not args.send_text or not 0 <= args.hold_seconds <= 4294967295):
         parser.error("--hold-seconds requires --send-text and an unsigned 32-bit integer")
-    if args.broadcast is not None:
-        allowed = {"broadcast", "provider", "session", "bus", "bridge_home", "entrypoint"}
+    if args.broadcast is not None or args.quiet is not None:
+        allowed = {"broadcast", "quiet", "provider", "session", "bus", "bridge_home", "entrypoint"}
         if (not args.provider or not args.session
                 or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
-            parser.error("--broadcast requires only --provider/--session and optional --bus/--bridge-home")
+            parser.error("--broadcast/--quiet require only --provider/--session and optional --bus/--bridge-home")
         args.bus_overridden = args.bus is not None
         args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
