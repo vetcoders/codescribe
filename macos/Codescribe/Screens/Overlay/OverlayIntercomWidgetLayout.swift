@@ -10,12 +10,20 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
 /// content; only the text-scale preference changes these typography metrics.
 struct IntercomContentMetrics: Equatable {
   let iconSide: CGFloat
+  /// The longest name painted whole.
   let nameWidth: CGFloat
+  /// The narrowest name row: the digit, marks and dot with a few letters and an
+  /// ellipsis. Between this and `nameWidth` names truncate instead of snapping
+  /// the whole group to icons (Maciej, 2026-10-23: the breakpoint locked out
+  /// every width between the stacked cards and the circles).
+  let minimumNameWidth: CGFloat
   let actionsWidth: CGFloat
   let nameFontSize: CGFloat
   let digitFontSize: CGFloat
   var stackedActionsWidth: CGFloat {
-    max(nameWidth, 3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
+    max(
+      minimumNameWidth,
+      3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
   }
 
   init(names: [String], digits: [String], scale: CGFloat, hasDetached: Bool = false) {
@@ -34,6 +42,9 @@ struct IntercomContentMetrics: Equatable {
         digit + 8 + 4 + 8))
     let windowMark: CGFloat = hasDetached ? 9 * scale + 5 : 0
     nameWidth = ceil(max(iconSide, name + digit + windowMark + 36 * scale + 45))
+    let shortName = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
+    minimumNameWidth = min(
+      nameWidth, ceil(max(iconSide, shortName + digit + windowMark + 36 * scale + 45)))
     // The focus, speaker and microphone are three row-height slots. Their
     // fixed gaps already belong to the name row's 45pt chrome budget.
     actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
@@ -43,21 +54,29 @@ struct IntercomContentMetrics: Equatable {
     if width >= actionsWidth || (width >= stackedActionsWidth && cardHeight >= 2 * iconSide) {
       return .actions
     }
-    if width >= nameWidth { return .name }
+    if width >= minimumNameWidth { return .name }
     return .icon
   }
 
   func fittedWidth(_ requested: CGFloat, available: CGFloat) -> CGFloat {
     let width = min(requested, available)
-    return width < nameWidth ? min(iconSide, available) : width
+    return width < minimumNameWidth ? min(iconSide, available) : width
   }
 
-  func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
+  /// A card is as tall as its content: one row, or two when the controls sit
+  /// under the name. Free heights only added an empty bottom (Maciej,
+  /// 2026-10-23: generous upward "ale bez treści"), so the gesture picks the
+  /// nearer of the two and a single row is always reachable.
+  func fittedCardHeight(
+    _ requested: CGFloat, width: CGFloat, count: Int, available: CGFloat
+  ) -> CGFloat {
     guard count > 0 else { return iconSide }
     let maximum =
       (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
       / CGFloat(count) - OverlayIntercomWidgetLayout.gap
-    return max(iconSide, min(requested, maximum))
+    let stacks = width >= stackedActionsWidth && width < actionsWidth
+    return stacks && requested >= 1.5 * iconSide && maximum >= 2 * iconSide
+      ? 2 * iconSide : iconSide
   }
 
   func resizedGroupFrame(

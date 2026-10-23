@@ -171,13 +171,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let width = contentMetrics.fittedWidth(
       CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width)
     groupCardHeight = contentMetrics.fittedCardHeight(
-      CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)), count: visibleRows.count,
-      available: screenFrame.height)
+      CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)), width: width,
+      count: visibleRows.count, available: screenFrame.height)
     headerControlsVisible =
       width
       >= OverlayIntercomWidgetLayout.restingWidth(
         headerText: titleWidth, agentText: 0, scale: scale)
-    if width < contentMetrics.nameWidth { groupCardHeight = contentMetrics.iconSide }
     groupWidth = width
     groupTier = contentMetrics.tier(width: width, cardHeight: groupCardHeight)
     if desktop.groupTier != groupTier {
@@ -277,6 +276,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         instancePanels[instance.id] = panel
       }
       panel.acceptsConversationFocus = !instance.minimized
+      // A detached window stands above the group it came from. On one shared
+      // level every group reconcile re-ordered the rows over it (Maciej,
+      // 2026-10-23: the detached Klaudiusz played hide-and-seek under row 1).
+      panel.level = OverlayIntercomPanel.detachedLevel
       positioning = true
       let fitted = instanceFrame(instance, for: panel)
       if panel.frame != fitted { panel.setFrame(fitted, display: true) }
@@ -536,6 +539,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
+  /// The main overlay's mini counter in the vertical layout: the group
+  /// unfolds and stands in front, its detached windows still above it.
+  func revealGroup() {
+    if presentation.folded { toggleGroup() }
+    header?.orderFrontRegardless()
+    for panel in cards.values { panel.orderFrontRegardless() }
+    for panel in instancePanels.values where panel.isVisible { panel.orderFrontRegardless() }
+  }
+
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). One agent keeps
   /// one open window (Maciej, 2026-10-23): while it stands somewhere, the
   /// gesture shows it instead of minting a copy, and the group row stays in
@@ -716,6 +728,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 /// conversations may become key; nonactivating hover remains passive.
 @MainActor
 private final class OverlayIntercomPanel: NSPanel {
+  /// Group rows float; a detached conversation floats one level higher.
+  static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+
   var acceptsConversationFocus = false
   var onScroll: (CGFloat) -> Void = { _ in }
   private var presented = false
@@ -1582,16 +1597,21 @@ private struct OverlayIntercomInstanceCard: View {
       // The X keeps a fixed place so the audio slot never moves: a hover
       // only changes its visibility, never the row's geometry (Astra, V1 —
       // a reflow let a click aimed at the remembered microphone close the
-      // fiszka).
-      Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
-        .labelStyle(.iconOnly).buttonStyle(.plain)
-        .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
-        .conversationActionHover(
-          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-        )
-        .opacity(!mini || hovering ? 1 : 0)
-        .allowsHitTesting(!mini || hovering)
-        .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
+      // fiszka). Closing hands the conversation back to its group row, so it
+      // wears the overlay's dock glyph, not an X (Maciej, 2026-10-23: "dokładnie
+      // tym samym piktogramem Dock").
+      Button("Collapse", systemImage: OverlayControlSymbols.returnToMini) {
+        controller.closeInstance(instanceID)
+      }
+      .labelStyle(.iconOnly).buttonStyle(.plain)
+      .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
+      .opacity(!mini || hovering ? 1 : 0)
+      .allowsHitTesting(!mini || hovering)
+      .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
     .modifier(OverlayDisconnectedRowDim(disconnected: dead))
     .padding(.leading, 12)

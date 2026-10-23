@@ -433,6 +433,24 @@ private struct OverlaySizedAudioButtonStyle: ButtonStyle {
   }
 }
 
+/// Flat on an Intercom fiszka the audio pair rests in the muted ink of the
+/// glyphs beside it (minimise, dock, the bar's count) and brightens under the
+/// pointer as they do. Semibold primary ink read hyper-white there (Maciej,
+/// 2026-10-23: "Przydym też troszkę te hiperbiałe przyciski").
+private struct OverlayFlatAudioInk: ViewModifier {
+  let flat: Bool
+  let palette: OverlayAppearancePalette
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if flat {
+      content.conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+    } else {
+      content
+    }
+  }
+}
+
 /// The same square hit target without a surface of its own: the host's
 /// capsule is the surface.
 private struct OverlayFlatControlButtonStyle: ButtonStyle {
@@ -503,6 +521,14 @@ struct OverlayAgentAudioControls: View {
     color?.opacity(litGlassOpacity)
   }
 
+  /// A lit glyph keeps its whole colour. At rest a glass circle keeps the
+  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph takes
+  /// the ink around it, which `OverlayFlatAudioInk` sets.
+  private func glyphInk(lit: Color?) -> AnyShapeStyle {
+    if let lit { return AnyShapeStyle(lit) }
+    return chrome ? AnyShapeStyle(palette.primaryText.color) : AnyShapeStyle(.foreground)
+  }
+
   private var microphoneLabel: String {
     if broadcast {
       return open
@@ -560,10 +586,11 @@ struct OverlayAgentAudioControls: View {
               ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
         )
         .font(.system(size: glyphSize, weight: .semibold))
-        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
+        .foregroundStyle(glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
         .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
         .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
       }
+      .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
       .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
       .csFocusOutline()
       .disabled(!playbackEnabled || muted == nil)
@@ -577,12 +604,13 @@ struct OverlayAgentAudioControls: View {
         Image(systemName: microphoneSymbol)
           .overlayMirrored(broadcast)
           .font(.system(size: glyphSize, weight: .semibold))
-          .foregroundStyle(open ? recordingAccent : palette.primaryText.color)
+          .foregroundStyle(glyphInk(lit: open ? recordingAccent : nil))
           .symbolEffect(.pulse, isActive: open && !reduceMotion)
           .frame(
             width: Self.controlFrame * controlScale,
             height: Self.controlFrame * controlScale)
       }
+      .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
       .tint(Self.litGlass(open ? recordingAccent : nil))
       .csFocusOutline()
       .disabled(!microphoneEnabled)
