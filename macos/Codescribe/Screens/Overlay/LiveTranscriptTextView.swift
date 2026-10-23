@@ -402,6 +402,8 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     private var scrollObservers: [NSObjectProtocol] = []
     private let scrollerPin = CSScrollerPin()
 
+    func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
+
     func attach(to scrollView: NSScrollView) {
       guard observedScrollView !== scrollView else { return }
       detach()

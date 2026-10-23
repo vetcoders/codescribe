@@ -14692,6 +14692,16 @@
         }
       }
     },
+    "Redo" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć"
+          }
+        }
+      }
+    },
     "Refresh" : {
       "localizations" : {
         "pl" : {
@@ -19797,6 +19807,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niesklasyfikowane"
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij"
           }
         }
       }

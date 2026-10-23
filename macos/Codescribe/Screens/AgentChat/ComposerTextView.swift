@@ -517,10 +517,10 @@ private final class ComposerNativeTextView: NSTextView {
 }
 
 extension NSTextView {
-  /// Cmd+Z and Cmd+Shift+Z answered by the focused text view itself. SwiftUI's
-  /// Edit › Undo item targets the window's undo manager directly instead of the
-  /// responder chain, so it never reaches a text view that keeps its own undo
-  /// history (Maciej, 2026-10-23: the composer did not answer Cmd+Z at all).
+  /// Cmd+Z and Cmd+Shift+Z answered by the focused text view itself, before
+  /// any menu: a nonactivating panel keeps another app's menu bar, and the
+  /// chord must reach this view's own undo history wherever it is hosted
+  /// (Maciej, 2026-10-23: the composer did not answer Cmd+Z at all).
   func performUndoChord(with event: NSEvent) -> Bool {
     guard event.type == .keyDown, window?.firstResponder === self, allowsUndo,
       event.charactersIgnoringModifiers?.lowercased() == "z",
