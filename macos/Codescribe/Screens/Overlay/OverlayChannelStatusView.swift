@@ -720,16 +720,20 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
 
   @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
-    // Channel 0 controls broadcast membership. Do not disturb is the existing
-    // quiet policy: all deliveries queue without waking the agent. The wire
-    // has no off+quiet state, so DND is off and disabled outside Channel 0.
+    // Channel 0 is membership; Do not disturb is the moon. Two axes, each its
+    // own box, neither greyed by the other (Maciej, 2026-10-23: the moon must
+    // light "w dowolnym momencie, nie tylko jeśli kanał 0 jest wyłączony").
     let locked =
       !enabled || channel.broadcastIdentity == nil
       || channel.broadcastIdentity.map { pending.contains($0) } == true
     Toggle(
       isOn: Binding(
-        get: { channel.broadcastPolicy != .off },
-        set: { member in apply(member ? .on : .off, to: channel) }
+        get: { channel.broadcastPolicy.member },
+        set: { member in
+          var next = channel.broadcastPolicy
+          next.member = member
+          apply(next, to: channel)
+        }
       )
     ) {
       Text("Channel 0", comment: "Pill context menu: membership in channel-zero broadcasts")
@@ -737,8 +741,12 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     .disabled(locked)
     Toggle(
       isOn: Binding(
-        get: { channel.broadcastPolicy == .quiet },
-        set: { quiet in apply(quiet ? .quiet : .on, to: channel) }
+        get: { channel.broadcastPolicy.moon },
+        set: { moon in
+          var next = channel.broadcastPolicy
+          next.moon = moon
+          apply(next, to: channel)
+        }
       )
     ) {
       Text(
@@ -747,7 +755,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
           "Agent pill menu: ticked, deliveries wait in the mailbox without waking the agent"
       )
     }
-    .disabled(locked || channel.broadcastPolicy == .off)
+    .disabled(locked)
   }
 
   private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
@@ -763,6 +771,72 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       } catch {
         commandError = String(localized: "Couldn't change broadcast reception.")
       }
+    }
+  }
+}
+
+/// The agent's two reception marks beside its name, each a one-click switch
+/// (Maciej, 2026-10-23: "symbole broadcastu zrób klikalnymi"): the antenna
+/// joins or leaves channel 0, the moon lights or clears do-not-disturb. They
+/// move independently and neither greys the other. The roster, the Intercom
+/// fiszki and the pill menu all issue the same command through the helper.
+struct OverlayReceptionMarks: View {
+  let channel: OverlayChannelDelivery
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  var enabled = true
+  @State private var pending = false
+
+  private var policy: AgentBroadcastPolicy { channel.broadcastPolicy }
+
+  var body: some View {
+    HStack(spacing: 3) {
+      mark(
+        symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+        help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
+      ) {
+        var next = policy
+        next.member.toggle()
+        apply(next)
+      }
+      mark(
+        symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.processingStatus.color,
+        help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
+      ) {
+        var next = policy
+        next.moon.toggle()
+        apply(next)
+      }
+    }
+    .accessibilityIdentifier("overlay-reception-marks-\(channel.channel)")
+  }
+
+  private func mark(
+    symbol: String, lit: Bool, litColor: Color, help: String, identifier: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(lit ? litColor : palette.mutedText.color)
+        .frame(width: 14 * textScale, height: 14 * textScale)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled || pending || channel.broadcastIdentity == nil)
+    .overlayFastHint(help, palette: palette)
+    .accessibilityLabel(Text(verbatim: help))
+    .accessibilityIdentifier(identifier)
+  }
+
+  private func apply(_ next: AgentBroadcastPolicy) {
+    guard let identity = channel.broadcastIdentity, !pending else { return }
+    pending = true
+    Task { @MainActor in
+      defer { pending = false }
+      // A refused command leaves the mark as the receipt still says; the pill
+      // menu's inline error is the place that names the refusal.
+      try? await OverlayBroadcastPolicyMenu.setPolicy(next, for: identity)
     }
   }
 }
@@ -1696,7 +1770,8 @@ struct OverlayChannelStatusView: View {
       unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
       dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
       statusDetail: statusChannel.map { detail(for: $0) } ?? "",
-      broadcastPolicy: statusChannel?.broadcastPolicy, palette: palette, textScale: textScale)
+      reception: statusChannel, receptionEnabled: !unavailable, palette: palette,
+      textScale: textScale)
   }
 
   private func rosterRowState(

@@ -17,7 +17,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
             preview: "Founder → Astra: a message preview that can wrap onto two lines.",
             timestamp: Date(timeIntervalSince1970: 1_792_512_000), unreadCount: 8,
             dot: .idle, statusLabel: "Attached", statusDetail: "Fixture",
-            broadcastPolicy: nil, palette: .dark, textScale: scale
+            reception: nil, palette: .dark, textScale: scale
           ).frame(width: width))
         let window = show(host, width: width)
         defer { window.close() }

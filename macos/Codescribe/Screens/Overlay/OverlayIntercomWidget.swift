@@ -153,14 +153,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     let nameFont = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
     let digitFont = CSFont.nsMono(10 * scale)
-    // Beside the text each row carries the channel-0 mark after the name and
-    // a focus slot after the audio pair; the header wears the antenna before
-    // its wordmark. Unmeasured, they folded "Intercom" onto two lines.
+    // Beside the text each row carries the two reception marks after the name
+    // (antenna and moon, 14pt frames 3pt apart) and a focus slot after the
+    // audio pair; the header wears the antenna before its wordmark.
+    // Unmeasured, they folded "Intercom" onto two lines.
     let longest =
       (chips.map {
         ($0.name as NSString).size(withAttributes: [.font: nameFont]).width
           + ($0.digit as NSString).size(withAttributes: [.font: digitFont]).width
-      }.max() ?? 0) + (10 + OverlayIntercomWidgetLayout.rowHeight) * scale + 8
+      }.max() ?? 0) + (28 + OverlayIntercomWidgetLayout.rowHeight) * scale + 11
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
@@ -1025,9 +1026,9 @@ private struct OverlayIntercomCard: View {
           VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
               Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-              OverlayIntercomBroadcastMark(
-                channel: intercomChannelRow(state: state, digit: identity.digit),
-                palette: palette)
+              if let channelRow = intercomChannelRow(state: state, digit: identity.digit) {
+                OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
+              }
               if detached != nil {
                 Image(systemName: "macwindow").font(.system(size: 9 * scale))
               }
@@ -1184,27 +1185,6 @@ private func intercomStatusDot(
 @MainActor
 private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayChannelDelivery? {
   state.visibleChannelRows.first { $0.channel == digit }
-}
-
-/// The agent's channel-0 membership mark, as the agents list draws it beside
-/// the name: lit when deliveries wake the agent, muted otherwise (Maciej,
-/// 2026-10-23: "agenty mają ten znaczek przy swoich kanałach dla active i dla
-/// inactive").
-private struct OverlayIntercomBroadcastMark: View {
-  @Environment(\.csTextScale) private var scale
-  let channel: OverlayChannelDelivery?
-  let palette: OverlayAppearancePalette
-
-  var body: some View {
-    if let channel {
-      let policy = channel.broadcastPolicy
-      Image(systemName: policy.statusSymbol)
-        .font(.system(size: 10 * scale))
-        .foregroundStyle(policy == .on ? palette.agentAccent.color : palette.mutedText.color)
-        .accessibilityLabel(Text(verbatim: policy.statusHelp))
-        .accessibilityIdentifier("overlay-intercom-broadcast-policy-\(channel.channel)")
-    }
-  }
 }
 
 /// The list's focus button, drawn flat on the fiszka from the pill menu's
@@ -1440,7 +1420,9 @@ private struct OverlayIntercomInstanceCard: View {
       OverlayAgentStatusDot(
         kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
-      OverlayIntercomBroadcastMark(channel: channelRow, palette: palette)
+      if let channelRow {
+        OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
+      }
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

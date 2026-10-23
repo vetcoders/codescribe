@@ -14,7 +14,10 @@ struct OverlayAgentRosterLabel: View {
   let dot: OverlayAgentDotKind
   let statusLabel: String
   let statusDetail: String
-  let broadcastPolicy: AgentBroadcastPolicy?
+  /// The row whose antenna and moon are drawn, clickable, after the title;
+  /// nil for the All row, which has no reception of its own.
+  let reception: OverlayChannelDelivery?
+  var receptionEnabled = true
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
@@ -35,14 +38,10 @@ struct OverlayAgentRosterLabel: View {
             .truncationMode(.tail)
             .layoutPriority(1)
             .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
-          if let broadcastPolicy, let channel {
-            Image(systemName: broadcastPolicy.statusSymbol)
-              .font(.system(size: 10 * textScale))
-              .foregroundStyle(
-                broadcastPolicy == .on ? palette.agentAccent.color : palette.mutedText.color
-              )
-              .accessibilityLabel(Text(verbatim: broadcastPolicy.statusHelp))
-              .accessibilityIdentifier("overlay-broadcast-policy-\(channel)")
+          if let reception {
+            OverlayReceptionMarks(
+              channel: reception, palette: palette, textScale: textScale,
+              enabled: receptionEnabled)
           }
           Spacer(minLength: 4)
           if unreadCount > 0, let conversationID {

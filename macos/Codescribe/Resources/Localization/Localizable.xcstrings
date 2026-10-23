@@ -4700,24 +4700,35 @@
         }
       }
     },
-    "Channel 0 · queued: deliveries wait, the agent is not woken" : {
-      "comment" : "Agent row mark: member of channel 0, deliveries queue without a wake",
+    "Channel 0: broadcasts reach this agent — click to leave" : {
+      "comment" : "Agent row mark: member of channel 0; the mark is a one-click switch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kanał 0 · kolejka: wiadomości czekają, agent nie jest budzony"
+            "value" : "Kanał 0: rozgłoszenia docierają do agenta — kliknij, aby opuścić"
           }
         }
       }
     },
-    "Channel 0 · steer: deliveries wake the agent" : {
-      "comment" : "Agent row mark: member of channel 0, deliveries start a turn",
+    "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear" : {
+      "comment" : "Agent row mark: the moon is lit; the mark is a one-click switch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kanał 0 · steruj: wiadomości budzą agenta"
+            "value" : "Nie przeszkadzać: nic nie budzi agenta, każda wiadomość czeka w skrzynce — kliknij, aby wyłączyć"
+          }
+        }
+      }
+    },
+    "Messages wake the agent — click for do not disturb" : {
+      "comment" : "Agent row mark: the moon is dark; the mark is a one-click switch",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomości budzą agenta — kliknij, aby nie przeszkadzać"
           }
         }
       }
@@ -12612,13 +12623,13 @@
         }
       }
     },
-    "Off channel 0: broadcasts are skipped, direct messages still arrive" : {
-      "comment" : "Agent row mark: not a member of channel 0",
+    "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join" : {
+      "comment" : "Agent row mark: not a member of channel 0; the mark is a one-click switch",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Poza kanałem 0: rozgłoszenia są pomijane, wiadomości bezpośrednie dochodzą"
+            "value" : "Poza kanałem 0: rozgłoszenia są pomijane, wiadomości bezpośrednie dochodzą — kliknij, aby dołączyć"
           }
         }
       }
