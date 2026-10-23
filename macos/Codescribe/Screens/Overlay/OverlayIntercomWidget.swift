@@ -1678,50 +1678,17 @@ private final class OverlayIntercomResizeView: NSView {
   /// fca13c1c9), and only this identity keys the controller's handoffs.
   private var gesture = UUID()
   private var moved = false
-  private var hovered = false
-  private var hoverArea: NSTrackingArea?
 
+  /// The band paints nothing: the cursor is the whole affordance. Maciej,
+  /// 2026-10-23: the accent line this band used to light along the edge was
+  /// "coś, o co nikt nie prosił" — the panel's frame already shows the size.
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-  override func updateTrackingAreas() {
-    super.updateTrackingAreas()
-    if let hoverArea { removeTrackingArea(hoverArea) }
-    let area = NSTrackingArea(
-      rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
-    addTrackingArea(area)
-    hoverArea = area
-  }
-  override func mouseEntered(with event: NSEvent) {
-    hovered = true
-    needsDisplay = true
-  }
-  override func mouseExited(with event: NSEvent) {
-    hovered = false
-    needsDisplay = true
-  }
-  /// The band's edge lights up under the pointer or during the drag: a 2 pt
-  /// accent line along the left edge, an L along a bottom corner.
-  override func draw(_ dirtyRect: NSRect) {
-    guard hovered || origin != nil else { return }
-    NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
-    let line: CGFloat = 2
-    switch edge {
-    case .left:
-      NSRect(x: 0, y: 0, width: line, height: bounds.height).fill()
-    case .bottomLeft:
-      NSRect(x: 0, y: 0, width: line, height: bounds.height).fill()
-      NSRect(x: 0, y: 0, width: bounds.width, height: line).fill()
-    case .bottomRight:
-      NSRect(x: bounds.width - line, y: 0, width: line, height: bounds.height).fill()
-      NSRect(x: 0, y: 0, width: bounds.width, height: line).fill()
-    }
-  }
   override func mouseDown(with event: NSEvent) {
     origin = NSEvent.mouseLocation
     originalFrame = window?.frame
     gesture = UUID()
     moved = false
-    needsDisplay = true
   }
   override func mouseDragged(with event: NSEvent) {
     guard let origin, let originalFrame else { return }
@@ -1737,7 +1704,6 @@ private final class OverlayIntercomResizeView: NSView {
     origin = nil
     originalFrame = nil
     moved = false
-    needsDisplay = true
   }
   override func resetCursorRects() {
     addCursorRect(bounds, cursor: edge == .left ? .resizeLeftRight : .crosshair)
