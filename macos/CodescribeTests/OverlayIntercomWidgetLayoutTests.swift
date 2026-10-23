@@ -44,24 +44,67 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testCardHeightIsOneRowOrTwoNeverAnEmptyBottom() {
+  /// Maciej, 2026-10-23 seal: digit, antenna, moon, dot and a sliver of the
+  /// name is a bad narrow row; the microphone comes first, then the speaker,
+  /// and the antenna and moon only once the row is much wider.
+  func testNarrowRowsKeepTheMicrophoneBeforeTheAntennaAndMoon() {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(
+        names: ["Lena", "Klaudiusz-div0"], digits: ["2", "9"], scale: scale)
+      let narrowest = metrics.rowControls(width: metrics.minimumNameWidth)
+      XCTAssertGreaterThanOrEqual(narrowest.slots, 1, "the narrowest name row has a microphone")
+      XCTAssertFalse(narrowest.marks)
+      XCTAssertFalse(metrics.rowControls(width: metrics.nameWidth).marks)
+      XCTAssertFalse(metrics.rowControls(width: metrics.actionsWidth - 0.1).marks)
+      XCTAssertEqual(metrics.rowControls(width: metrics.actionsWidth), .all)
+      var previous = 0
+      for width in stride(from: metrics.minimumNameWidth, to: metrics.actionsWidth, by: 1) {
+        let row = metrics.rowControls(width: width)
+        XCTAssertGreaterThanOrEqual(row.slots, previous, "widening never drops a control")
+        previous = row.slots
+        let used =
+          metrics.minimumNameWidth - metrics.marksWidth
+          + CGFloat(row.slots) * Layout.controlHeight(scale: scale)
+        XCTAssertLessThanOrEqual(used, width, "every shown control fits beside the shortest name")
+      }
+      XCTAssertEqual(previous, 3, "the speaker and focus return before the marks")
+    }
+  }
+
+  func testOneSharedPlaceIsTheMicrophoneUntilTheAgentTalks() {
+    typealias Audio = OverlayAgentAudioControls
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: false, muted: false, open: false))
+    XCTAssertTrue(Audio.sharedShowsSpeaker(speaking: true, muted: false, open: false))
+    XCTAssertFalse(
+      Audio.sharedShowsSpeaker(speaking: true, muted: false, open: true),
+      "a running take keeps its microphone")
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: true, open: false))
+    XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: nil, open: false))
+  }
+
+  /// Maciej, 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie
+  /// fajne", the one-or-two-row snap "nie robi nic". A card follows the
+  /// gesture from one row up to its share of the screen.
+  func testCardsStretchWithTheGestureUpToTheirShareOfTheScreen() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
-      let stacked = metrics.stackedActionsWidth
       let icon = metrics.iconSide
-      for requested in [icon, 1.49 * icon, 0] {
+      for requested in [0, icon / 2, icon] {
         XCTAssertEqual(
-          metrics.fittedCardHeight(requested, width: stacked, count: 3, available: 2000), icon)
+          metrics.fittedCardHeight(requested, count: 3, available: 2000), icon,
+          "never shorter than one row")
       }
-      for requested in [1.5 * icon, 2 * icon, 600] {
+      for requested in [1.3 * icon, 1.5 * icon, 2.7 * icon] {
         XCTAssertEqual(
-          metrics.fittedCardHeight(requested, width: stacked, count: 3, available: 2000), 2 * icon)
+          metrics.fittedCardHeight(requested, count: 3, available: 2000), requested,
+          "any height in between, not a snap")
       }
-      for width in [icon, metrics.actionsWidth, 1200] {
-        XCTAssertEqual(
-          metrics.fittedCardHeight(600, width: width, count: 3, available: 2000), icon,
-          "only stacked controls fill a second row")
-      }
+      let share = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
+      XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), share)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 2 * icon), .actions,
+        "two rows' height moves the controls under the name")
+      XCTAssertEqual(metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 1.6 * icon), .name)
     }
   }
 
@@ -125,11 +168,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   func testScreenHeightLimitsControlStackingWithoutEnlargingTheGlyphs() {
     let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
     let minimum = metrics.minimumGroupSize(count: 4)
-    let width = metrics.stackedActionsWidth
-    let row = metrics.fittedCardHeight(200, width: width, count: 4, available: minimum.height)
+    let row = metrics.fittedCardHeight(200, count: 4, available: minimum.height)
     XCTAssertEqual(row, metrics.iconSide)
     XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .name)
-    let tall = metrics.fittedCardHeight(200, width: width, count: 4, available: 700)
+    let tall = metrics.fittedCardHeight(200, count: 4, available: 700)
     XCTAssertGreaterThanOrEqual(tall, 2 * metrics.iconSide)
     let screen = CGRect(x: 0, y: 0, width: 1000, height: 700)
     let header = Layout.clampedHeader(
@@ -164,6 +206,53 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       frame, delta: CGSize(width: 250, height: 0),
       edge: .left, count: 2, visibleFrame: screen)
     XCTAssertEqual(left, again, "absolute deltas never compound across events")
+    let wider = metrics.resizedGroupFrame(
+      frame, delta: CGSize(width: 120, height: 0), edge: .right, count: 2, visibleFrame: screen)
+    XCTAssertEqual(wider.minX, frame.minX, "a row's right edge keeps the left one")
+    XCTAssertEqual(wider.width, 420)
+    XCTAssertEqual(wider.height, frame.height)
+  }
+
+  /// Every row resizes the group by its own edges (Maciej, 2026-10-23: "na
+  /// każdy rząd, w lewo, w prawo, w dół i w górę"), and the edge under the
+  /// pointer follows it: the rows down to a dragged bottom edge share the
+  /// drag, the rows from a dragged top edge down share it.
+  func testARowsEdgeFollowsThePointer() {
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .bottom, index: 0, count: 4), 4)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .bottom, index: 3, count: 4), 1)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .bottomRight, index: 1, count: 4), 2)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .top, index: 0, count: 4), 1)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .top, index: 3, count: 4), 4)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .left, index: 2, count: 4), 1)
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .bottom, index: nil, count: 4), 1, "the header")
+    XCTAssertEqual(Layout.rowEdgeFactor(edge: .bottom, index: 7, count: 4), 1, "a paged-out row")
+
+    // Row 1 of 4 dragged down by 20: rows 0 and 1 grow 10 each, so its bottom
+    // edge lands 20 lower, under the pointer.
+    let metrics = IntercomContentMetrics(names: ["Klaudiusz"], digits: ["1"], scale: 1)
+    let row = metrics.iconSide
+    let header = Layout.controlHeight(scale: 1)
+    let group = CGRect(
+      x: 100, y: 200, width: 300, height: header + 4 * (row + Layout.gap))
+    let screen = CGRect(x: 0, y: 0, width: 1000, height: 900)
+    let factor = Layout.rowEdgeFactor(edge: .bottom, index: 1, count: 4)
+    let down = metrics.resizedGroupFrame(
+      group, delta: CGSize(width: 0, height: -20 * factor), edge: .bottom, count: 4,
+      visibleFrame: screen)
+    let rowHeight = (down.height - header) / 4 - Layout.gap
+    XCTAssertEqual(rowHeight, row + 10, accuracy: 0.001)
+    XCTAssertEqual(down.maxY, group.maxY, "the header stays")
+    let rowOneBottom = down.maxY - header - 2 * (rowHeight + Layout.gap)
+    let before = group.maxY - header - 2 * (row + Layout.gap)
+    XCTAssertEqual(rowOneBottom, before - 20, accuracy: 0.001)
+
+    // Its top dragged up by 30: rows 1–3 share it, the group's bottom stays.
+    let upFactor = Layout.rowEdgeFactor(edge: .top, index: 1, count: 4)
+    let up = metrics.resizedGroupFrame(
+      group, delta: CGSize(width: 0, height: 30 * upFactor), edge: .top, count: 4,
+      visibleFrame: screen)
+    XCTAssertEqual(up.minY, group.minY, "the bottom stays")
+    XCTAssertEqual(up.height - group.height, 40, accuracy: 0.001)
   }
 
   private func conversation(
@@ -321,7 +410,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertTrue(screen.contains(clamped), "a low card moves up rather than leave the display")
   }
 
-  /// Left edge and bottom corners resize; the minimum keeps the composer usable.
+  /// Every edge keeps the opposite one; the minimum keeps the composer usable.
   func testResizeHandlesKeepTheirAnchorsAndTheMinimum() {
     let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
     let frame = CGRect(x: 1000, y: 300, width: 380, height: 360)
@@ -352,6 +441,27 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       visibleFrame: screen)
     XCTAssertEqual(right.minX, frame.minX)
     XCTAssertEqual(right.maxX, screen.maxX, "a corner drag stops at the display edge")
+
+    let side = Layout.resizedFrame(
+      frame, delta: CGSize(width: 40, height: -30), edge: .right, minimum: minimum,
+      visibleFrame: screen)
+    XCTAssertEqual(side, CGRect(x: 1000, y: 300, width: 420, height: 360), "width only")
+    let bottom = Layout.resizedFrame(
+      frame, delta: CGSize(width: 40, height: -30), edge: .bottom, minimum: minimum,
+      visibleFrame: screen)
+    XCTAssertEqual(bottom, CGRect(x: 1000, y: 270, width: 380, height: 390), "height only")
+    let top = Layout.resizedFrame(
+      frame, delta: CGSize(width: 40, height: 30), edge: .top, minimum: minimum,
+      visibleFrame: screen)
+    XCTAssertEqual(top, CGRect(x: 1000, y: 300, width: 380, height: 390), "the bottom stays")
+    let ceiling = Layout.resizedFrame(
+      frame, delta: CGSize(width: 0, height: 900), edge: .top, minimum: minimum,
+      visibleFrame: screen)
+    XCTAssertEqual(ceiling.maxY, screen.maxY, "a top drag stops at the display edge")
+    let floor = Layout.resizedFrame(
+      frame, delta: CGSize(width: 0, height: -900), edge: .top, minimum: minimum,
+      visibleFrame: screen)
+    XCTAssertEqual(floor.height, minimum.height)
   }
 
   /// The resting width follows the measured text, not the old wide minimum.
@@ -362,44 +472,6 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertGreaterThan(
       Layout.restingWidth(headerText: 60, agentText: 200, scale: 1), width,
       "a longer name widens the group")
-  }
-
-  /// A row torn off the group becomes a mini under the hand holding it, and
-  /// the conversation it unfolds to keeps the mini's top-right corner, so the
-  /// window that shows the mini puts it exactly where the hand let go.
-  func testATornOffRowLandsUnderThePointerAndRestoresAroundIt() {
-    let row = CGRect(x: 1000, y: 600, width: 260, height: 48)
-    let size = CGSize(width: 180, height: 30)
-    let pointer = CGPoint(x: 1040, y: 620)
-    let tile = Layout.tornOffTile(row: row, pointer: pointer, size: size)
-    XCTAssertEqual(tile.size, size)
-    XCTAssertTrue(tile.contains(pointer), "the pointer holds the tile it tore off")
-    XCTAssertEqual(tile.minX, pointer.x - 16)
-
-    let nearRightEdge = Layout.tornOffTile(
-      row: row, pointer: CGPoint(x: 1255, y: 640), size: size)
-    XCTAssertEqual(nearRightEdge.maxX, row.maxX, "the tile stays inside the row's span")
-    XCTAssertEqual(nearRightEdge.maxY, row.maxY, "and never rises above the row")
-
-    let iconRow = CGRect(x: 1200, y: 600, width: 40, height: 40)
-    let wide = Layout.tornOffTile(row: iconRow, pointer: CGPoint(x: 1220, y: 620), size: size)
-    XCTAssertEqual(wide.maxX, iconRow.maxX, "a mini wider than an icon row grows to the left")
-
-    let beside = Layout.tornOffTile(row: row, pointer: nil, size: size)
-    XCTAssertEqual(beside.maxX, row.minX - Layout.gap, "without a hand it lands beside the group")
-    XCTAssertEqual(beside.maxY, row.maxY)
-
-    let restored = Layout.restoredFrame(forTile: tile, scale: 1)
-    XCTAssertEqual(restored.size, Layout.conversationSize(scale: 1))
-    XCTAssertEqual(restored.maxX, tile.maxX)
-    XCTAssertEqual(restored.maxY, tile.maxY)
-    let screen = CGRect(x: 0, y: 0, width: 1728, height: 1080)
-    XCTAssertEqual(
-      Layout.cardFrame(
-        below: CGRect(
-          x: restored.maxX - size.width, y: restored.maxY, width: size.width, height: 0),
-        size: size, visibleFrame: screen),
-      tile, "the mini drawn from the restored frame is the torn tile")
   }
 
   /// Maciej, 2026-10-22: channel 0 is pinned on top and channels 1–9 scroll

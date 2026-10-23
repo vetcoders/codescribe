@@ -4,6 +4,21 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
 }
 
+/// What a one-line row shows beside its digit, dot and name, counted from its
+/// right edge as on the agents list (Maciej, 2026-10-23 seal: in a narrow row
+/// the microphone comes first, then the speaker that mutes an agent talking
+/// to us; the antenna and moon stay, "ale dopiero po poszerzaniu"; and later:
+/// "od prawej jak w oryginale … może być na jednym miejscu z mikrofonem, ale
+/// niech się mieści").
+struct IntercomRowControls: Equatable {
+  /// 0: none. 1: one place the microphone and speaker share. 2: the speaker
+  /// and the microphone. 3: the panel focus too.
+  let slots: Int
+  let marks: Bool
+
+  static let all = IntercomRowControls(slots: 3, marks: true)
+}
+
 /// Measures the same fonts and slots painted by cardHeader. Resizing selects
 /// content; only the text-scale preference changes these typography metrics.
 struct IntercomContentMetrics: Equatable {
@@ -46,6 +61,20 @@ struct IntercomContentMetrics: Equatable {
     actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
   }
 
+  /// The antenna and moon: two 14 pt marks 3 pt apart, plus the row's 6 pt
+  /// spacing. The name budgets above include them.
+  var marksWidth: CGFloat { ceil(31 * nameFontSize / 11 + 6) }
+
+  /// The name truncates before a control drops; the marks drop first and
+  /// return only when the whole name, the marks and all three controls fit.
+  func rowControls(width: CGFloat) -> IntercomRowControls {
+    if width >= actionsWidth { return .all }
+    let slot = OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
+    let free = width - (minimumNameWidth - marksWidth)
+    return IntercomRowControls(
+      slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
+  }
+
   func tier(width: CGFloat, cardHeight: CGFloat) -> IntercomContentTier {
     if width >= actionsWidth || (width >= stackedActionsWidth && cardHeight >= 2 * iconSide) {
       return .actions
@@ -59,20 +88,17 @@ struct IntercomContentMetrics: Equatable {
     return width < minimumNameWidth ? min(iconSide, available) : width
   }
 
-  /// A card is as tall as its content: one row, or two when the controls sit
-  /// under the name. Free heights only added an empty bottom (Maciej,
-  /// 2026-10-23: generous upward "ale bez treści"), so the gesture picks the
-  /// nearer of the two and a single row is always reachable.
-  func fittedCardHeight(
-    _ requested: CGFloat, width: CGFloat, count: Int, available: CGFloat
-  ) -> CGFloat {
+  /// A card stretches with the gesture, from one row up to its share of the
+  /// screen, and its content stands in the middle of the larger tile (Maciej,
+  /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
+  /// while the one-or-two-row snap that replaced them "nie robi nic"). Stacked
+  /// controls appear once the card holds two rows.
+  func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
     guard count > 0 else { return iconSide }
     let maximum =
       (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
       / CGFloat(count) - OverlayIntercomWidgetLayout.gap
-    let stacks = width >= stackedActionsWidth && width < actionsWidth
-    return stacks && requested >= 1.5 * iconSide && maximum >= 2 * iconSide
-      ? 2 * iconSide : iconSide
+    return max(iconSide, min(requested, maximum))
   }
 
   func resizedGroupFrame(
@@ -83,7 +109,7 @@ struct IntercomContentMetrics: Equatable {
       frame, delta: delta, edge: edge, minimum: minimumGroupSize(count: count),
       visibleFrame: visibleFrame)
     let width = fittedWidth(result.width, available: visibleFrame.width)
-    if edge != .bottomRight { result.origin.x = result.maxX - width }
+    if !edge.anchorsLeft { result.origin.x = result.maxX - width }
     result.size.width = width
     return result
   }
@@ -140,30 +166,6 @@ enum OverlayIntercomWidgetLayout {
   /// fixed close slot, six outer 3pt gaps and 12 + 4pt horizontal padding.
   static func minimizedInstanceWidth(text: CGFloat, scale: CGFloat) -> CGFloat {
     text + 36 * scale + 116 * max(1, scale) + 43
-  }
-
-  /// A row dragged out of the group becomes a mini tile under the hand that
-  /// holds it: the pointer sits 16 pt into the tile and halfway down, and the
-  /// tile stays within the row's span, extending left from its right edge
-  /// when the row is narrower than the tile. Without a pointer (the
-  /// accessibility action) the tile lands beside the group's leading edge.
-  static func tornOffTile(row: CGRect, pointer: CGPoint?, size: CGSize) -> CGRect {
-    guard let pointer else {
-      return CGRect(
-        x: row.minX - gap - size.width, y: row.maxY - size.height,
-        width: size.width, height: size.height)
-    }
-    let x = min(row.maxX - size.width, max(row.minX, pointer.x - 16))
-    let top = min(row.maxY, pointer.y + size.height / 2)
-    return CGRect(x: x, y: top - size.height, width: size.width, height: size.height)
-  }
-
-  /// The conversation a mini restores to keeps the mini's top-right corner.
-  static func restoredFrame(forTile tile: CGRect, scale: CGFloat) -> CGRect {
-    let size = conversationSize(scale: scale)
-    return CGRect(
-      x: tile.maxX - size.width, y: tile.maxY - size.height,
-      width: size.width, height: size.height)
   }
 
   static func clampedHeader(
@@ -224,7 +226,14 @@ enum OverlayIntercomWidgetLayout {
       width: width, height: height)
   }
 
-  enum ResizeEdge: Equatable { case left, bottomLeft, bottomRight }
+  enum ResizeEdge: Equatable {
+    case left, right, top, bottom, bottomLeft, bottomRight
+
+    /// The left edge stays put while this edge moves.
+    var anchorsLeft: Bool { self == .right || self == .bottomRight }
+    /// The edge changes the height, not only the width.
+    var resizesHeight: Bool { self != .left && self != .right }
+  }
 
   static func resizedFrame(
     _ frame: CGRect, delta: CGSize, edge: ResizeEdge, minimum: CGSize, visibleFrame: CGRect
@@ -236,16 +245,38 @@ enum OverlayIntercomWidgetLayout {
     case .left, .bottomLeft:
       result.origin.x = min(max(frame.minX + delta.width, visibleFrame.minX), frame.maxX - minWidth)
       result.size.width = frame.maxX - result.minX
-    case .bottomRight:
+    case .right, .bottomRight:
       result.size.width = min(
         max(frame.width + delta.width, minWidth), visibleFrame.maxX - frame.minX)
+    case .top, .bottom:
+      break
     }
-    if edge != .left {
+    switch edge {
+    case .bottom, .bottomLeft, .bottomRight:
       result.origin.y = min(
         max(frame.minY + delta.height, visibleFrame.minY), frame.maxY - minHeight)
       result.size.height = frame.maxY - result.minY
+    case .top:
+      result.size.height = min(
+        max(frame.height + delta.height, minHeight), visibleFrame.maxY - frame.minY)
+    case .left, .right:
+      break
     }
     return result
+  }
+
+  /// How far the whole group moves per point a row's edge is dragged, so the
+  /// edge under the pointer follows it: dragging the bottom of row `index`
+  /// stretches it and every row above it, dragging its top stretches it and
+  /// every row below while the group's bottom stays put. Side edges and the
+  /// header's edges move one to one.
+  static func rowEdgeFactor(edge: ResizeEdge, index: Int?, count: Int) -> CGFloat {
+    guard let index, count > 0, (0..<count).contains(index) else { return 1 }
+    switch edge {
+    case .bottom, .bottomLeft, .bottomRight: return CGFloat(count) / CGFloat(index + 1)
+    case .top: return CGFloat(count) / CGFloat(count - index)
+    case .left, .right: return 1
+    }
   }
 }
 
