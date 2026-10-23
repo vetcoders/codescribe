@@ -218,10 +218,9 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertEqual((waits, len(self.dispatches())), ([], 1))
 
     def test_a_second_waiter_defers_to_the_armed_one(self):
-        held = os.open(self.handshakes / "wait.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        self.addCleanup(os.close, held)
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        code, result, _ = self.invoke_main("--newer-only", "--wait", "600")
+        with open(self.handshakes / "wait.lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            code, result, _ = self.invoke_main("--newer-only", "--wait", "600")
         self.assertEqual((code, result["status"]), (0, "deferred_to_active_waiter"))
         self.assertEqual([Path(call[0]).name for call in self.calls], ["cs-bus"])
 

@@ -270,6 +270,7 @@ def main() -> int:
         parser.error("--quit-only belongs to an installer; it takes no --newer-only or --wait")
     unattended = arguments.newer_only or arguments.wait > 0
     helper = Path.home() / ".local/bin/cs-bus"
+    waiter: int | None = None
     try:
         location = run([str(helper), "--print-agent-turn-lease-path"])
         lease_path = Path(location.stdout.strip())
@@ -298,9 +299,16 @@ def main() -> int:
             # A new session survives the shell or make that armed it.
             os.setsid()
             output = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-            os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
-            os.dup2(output, 1)
-            os.dup2(output, 2)
+            try:
+                devnull = os.open(os.devnull, os.O_RDONLY)
+                try:
+                    os.dup2(devnull, 0)
+                finally:
+                    os.close(devnull)
+                os.dup2(output, 1)
+                os.dup2(output, 2)
+            finally:
+                os.close(output)
         deadline = time.monotonic() + arguments.wait
         while True:
             try:
@@ -326,6 +334,11 @@ def main() -> int:
         if arguments.announce:
             announce(refused)
         return 75
+    finally:
+        # The wait lock lives on its open file description: a detached child
+        # keeps holding it through its own inherited descriptor.
+        if waiter is not None:
+            os.close(waiter)
 
 
 def attempt(root: Path, arguments: argparse.Namespace) -> dict:
