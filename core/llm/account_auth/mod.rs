@@ -830,13 +830,25 @@ pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthE
         return Ok(tokens.access_token);
     }
 
-    let _lock = refresh_lock(provider).lock().await;
+    let lock = refresh_lock(provider).lock().await;
     // Re-read under the lock: a concurrent holder may have just refreshed.
     let tokens = credential_io(move || load_account_tokens(provider)).await?;
     if !tokens.expires_within(REFRESH_SKEW) {
         return Ok(tokens.access_token);
     }
-    Ok(refresh_tokens(provider, tokens).await?.access_token)
+    // The refresh and its storage write are one transaction that owns the lock.
+    // A caller's deadline (a formatter timeout) drops only this future: the
+    // provider may already have rotated the refresh token, so releasing the lock
+    // before the write landed would let the next caller refresh with the token
+    // the provider just invalidated.
+    let transaction = tokio::spawn(async move {
+        let _lock = lock;
+        refresh_tokens(provider, tokens).await
+    });
+    let refreshed = transaction.await.map_err(|error| {
+        AccountAuthError::Storage(format!("credential refresh task ended: {error}"))
+    })??;
+    Ok(refreshed.access_token)
 }
 
 /// Run a Keychain operation on the blocking pool. A Keychain call can wait on
