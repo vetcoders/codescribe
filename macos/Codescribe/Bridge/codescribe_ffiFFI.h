@@ -378,7 +378,14 @@ typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod1)(uint64_t, void
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD2
-typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod2)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod2)(uint64_t, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD3
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD3
+typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod3)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -555,8 +562,9 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceCsAppActionListenerMethod0 _Nonnull onShowAgent;
-    UniffiCallbackInterfaceCsAppActionListenerMethod1 _Nonnull onMaxApprovalsChanged;
-    UniffiCallbackInterfaceCsAppActionListenerMethod2 _Nonnull onAgentGesture;
+    UniffiCallbackInterfaceCsAppActionListenerMethod1 _Nonnull onToggleWidget;
+    UniffiCallbackInterfaceCsAppActionListenerMethod2 _Nonnull onMaxApprovalsChanged;
+    UniffiCallbackInterfaceCsAppActionListenerMethod3 _Nonnull onAgentGesture;
 } UniffiVTableCallbackInterfaceCsAppActionListener;
 
 #endif
@@ -1740,6 +1748,11 @@ void uniffi_codescribe_ffi_fn_init_callback_vtable_csappactionlistener(const Uni
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_show_agent(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_TOGGLE_WIDGET
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_TOGGLE_WIDGET
+void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_toggle_widget(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
@@ -3764,6 +3777,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_TOGGLE_WIDGET
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_TOGGLE_WIDGET
+uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_toggle_widget(void
 
 );
 #endif

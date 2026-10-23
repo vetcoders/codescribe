@@ -6462,6 +6462,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
     func onShowAgent()
 
     /**
+     * Show the collapsed overlay widget, or hide it while nothing records.
+     * UI-only — the overlay decides between show, front and hide.
+     */
+    func onToggleWidget()
+
+    /**
      * Pending Max permission state changed; re-read its authoritative snapshot.
      */
     func onMaxApprovalsChanged()
@@ -6537,6 +6543,17 @@ open func onShowAgent()  {try! rustCall() {
 }
 
     /**
+     * Show the collapsed overlay widget, or hide it while nothing records.
+     * UI-only — the overlay decides between show, front and hide.
+     */
+open func onToggleWidget()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_toggle_widget(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+    /**
      * Pending Max permission state changed; re-read its authoritative snapshot.
      */
 open func onMaxApprovalsChanged()  {try! rustCall() {
@@ -6598,6 +6615,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onShowAgent(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onToggleWidget: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onToggleWidget(
                 )
             }
 
@@ -13815,6 +13854,14 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var channelModifier: String
     /**
+     * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+     */
+    public var widgetShortcut: String
+    /**
+     * The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+     */
+    public var widgetShortcutLabel: String
+    /**
      * Quick Fn press below the hold delay toggles dictation. Default off.
      */
     public var fnTapTogglesDictation: Bool
@@ -13971,6 +14018,12 @@ public struct CsSettings: Equatable, Hashable {
          * Command is not a value.
          */channelModifier: String,
         /**
+         * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+         */widgetShortcut: String,
+        /**
+         * The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+         */widgetShortcutLabel: String,
+        /**
          * Quick Fn press below the hold delay toggles dictation. Default off.
          */fnTapTogglesDictation: Bool,
         /**
@@ -14050,6 +14103,8 @@ public struct CsSettings: Equatable, Hashable {
         self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
+        self.widgetShortcut = widgetShortcut
+        self.widgetShortcutLabel = widgetShortcutLabel
         self.fnTapTogglesDictation = fnTapTogglesDictation
         self.middleMouseActsAsFn = middleMouseActsAsFn
         self.middleMouseAgentGesture = middleMouseAgentGesture
@@ -14139,6 +14194,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
+                widgetShortcut: FfiConverterString.read(from: &buf),
+                widgetShortcutLabel: FfiConverterString.read(from: &buf),
                 fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 middleMouseAgentGesture: FfiConverterBool.read(from: &buf),
@@ -14216,6 +14273,8 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterString.write(value.widgetShortcut, into: &buf)
+        FfiConverterString.write(value.widgetShortcutLabel, into: &buf)
         FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterBool.write(value.middleMouseAgentGesture, into: &buf)
@@ -22102,10 +22161,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_toggle_widget() != 24641) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 5950) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 32217) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 52788) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {
