@@ -59,6 +59,15 @@ fn preserved_capture_silero_ingress_keeps_long_speech() {
             .expect("operator home")
             .join(".codescribe/data_assets/silero-regression")
     };
+    if !fixtures.join("long.wav").is_file() {
+        // Operator-local corpus acceptance: the hosted runner carries neither
+        // the workspace fixtures nor data_assets; absence is not a regression.
+        eprintln!(
+            "skipping preserved_capture_silero_ingress_keeps_long_speech: corpus not present at {}",
+            fixtures.display()
+        );
+        return;
+    }
     for (name, minimum) in [("quiet", 2.0), ("long", 80.0), ("silence", 0.0)] {
         let (raw, rate) = load_audio_file(&fixtures.join(format!("{name}.wav"))).unwrap();
         assert_eq!(rate, 48_000);
