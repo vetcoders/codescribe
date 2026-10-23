@@ -6794,6 +6794,17 @@ def _wait_for_take_end(
     return False
 
 
+def _playback_finished(player: Any, streaming: bool, stream_finished: bool) -> bool:
+    """True once the player has exited, so every queued sample was heard.
+
+    A stream counts only after its last chunk arrived; the player's own poll
+    decides, never the elapsed PCM duration.
+    """
+    if player is None or (streaming and not stream_finished):
+        return False
+    return player.poll() is not None
+
+
 def _stop_playback(player: Any) -> None:
     import subprocess
 
@@ -6879,20 +6890,24 @@ def _play_pcm_24k(
                 deadline=scan_deadline, channel_released=kept,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
+            refuse = False
             if idle:
                 incomplete_scans = 0
             elif time.monotonic() < scan_deadline and _cursor_holds_take(cursor, kept):
                 # The scan finished inside its budget and found a live take.
-                _stop_playback(player)
-                return False, "take started during playback", "take_started"
+                refuse = True
             else:
                 # A loaded machine or a bus that grew mid-scan, not a take:
                 # the retained cursor resumes next tick. Only a run of
                 # unfinished scans stops the voice.
                 incomplete_scans += 1
-                if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
-                    _stop_playback(player)
-                    return False, "take started during playback", "take_started"
+                refuse = incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT
+            if refuse and not _playback_finished(player, streaming, stream_finished):
+                _stop_playback(player)
+                return False, "take started during playback", "take_started"
+            # A player that ended before the refusal played every sample: a take
+            # that starts after the last sample cannot unsay the reply, so the
+            # result below reports what the player did (Founder, 2026-10-23).
             if streaming and not stream_finished and (player is None or player.can_enqueue()):
                 event = pcm.poll_audio()
                 if event is not None:
