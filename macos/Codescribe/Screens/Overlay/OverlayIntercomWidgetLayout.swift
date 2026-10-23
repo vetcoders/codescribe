@@ -24,14 +24,19 @@ enum OverlayIntercomWidgetLayout {
     return start..<(start + shown)
   }
 
-  /// Content measurements include only the text; the rest mirrors the drawn
-  /// controls. The header reserves its channel-0 megaphone and speaker (one
-  /// controlHeight each) plus the HStack gaps they introduce (Maciej,
-  /// 2026-10-23: the first row is the broadcast's audio pair), so a short
-  /// roster never compresses the row; every agent row carries the same pair.
+  /// Agent text is the measured digit, name and optional detached-window mark.
+  /// The row adds reception frames (28 scaled + 3 fixed), the 8pt status dot, three 6pt
+  /// identity gaps, 12pt leading padding, a focus slot, two audio slots with
+  /// their 6pt gap, and two 3pt outer gaps. These match cardHeader exactly.
   static func restingWidth(headerText: CGFloat, agentText: CGFloat, scale: CGFloat) -> CGFloat {
     let unit = max(1, scale)
-    return max(headerText + 70 * unit + 68, agentText + 60 * unit + 47)
+    return max(headerText + 70 * unit + 68, agentText + 36 * scale + 90 * unit + 45)
+  }
+
+  /// The detached mini header has the same three control slots plus its
+  /// fixed close slot, six outer 3pt gaps and 12 + 4pt horizontal padding.
+  static func minimizedInstanceWidth(text: CGFloat, scale: CGFloat) -> CGFloat {
+    text + 36 * scale + 116 * max(1, scale) + 43
   }
 
   static func clampedHeader(

@@ -217,7 +217,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   /// The resting width follows the measured text, not the old wide minimum.
   func testRestingWidthFitsTheContentWithoutAWideMinimum() {
     let width = Layout.restingWidth(headerText: 60, agentText: 40, scale: 1)
-    XCTAssertEqual(width, 198, "the header row reserves the channel-0 megaphone, speaker and gaps")
+    XCTAssertEqual(width, 211, "the agent row reserves reception, status, focus, audio and gaps")
     XCTAssertLessThan(width, 250, "no artificial 250 pt floor")
     XCTAssertGreaterThan(
       Layout.restingWidth(headerText: 60, agentText: 200, scale: 1), width,

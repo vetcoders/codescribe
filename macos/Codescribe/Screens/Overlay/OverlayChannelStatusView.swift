@@ -234,7 +234,7 @@ struct OverlayMicrophoneGlyph: View {
 /// A bound channel whose reader process is gone keeps its row, greyed and
 /// faded, so the roster shows at a glance who cannot hear (Maciej,
 /// 2026-10-17: "takie sesje na starcie dawać od razu wyszarzonymi"). The
-/// microphone sleeps; the cross still archives it; recorded replies still play.
+/// audio pair sleeps; the cross and reception policy remain actionable.
 struct OverlayDisconnectedRowDim: ViewModifier {
   static let opacity: Double = 0.45
   let disconnected: Bool
@@ -552,6 +552,27 @@ struct OverlayAgentAudioControls: View {
 
   var body: some View {
     HStack(spacing: 6) {
+      Button(action: onPlayback) {
+        Image(
+          systemName: muted == nil
+            ? "speaker.badge.exclamationmark"
+            : muted == true
+              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+        )
+        .font(.system(size: glyphSize, weight: .semibold))
+        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
+        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+        .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
+      }
+      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
+      .csFocusOutline()
+      .disabled(!playbackEnabled || muted == nil)
+      .overlayFastHint(speakerHint, palette: palette)
+      .accessibilityLabel(Text(verbatim: playbackLabel))
+      .accessibilityValue(Text(verbatim: playbackValue))
+      .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
+      .accessibilityIdentifier("overlay-agent-speaker")
+
       Button(action: onMicrophone) {
         Image(systemName: microphoneSymbol)
           .overlayMirrored(broadcast)
@@ -581,27 +602,6 @@ struct OverlayAgentAudioControls: View {
               comment: "Disabled agent microphone control"))
       )
       .accessibilityIdentifier("overlay-agent-microphone")
-
-      Button(action: onPlayback) {
-        Image(
-          systemName: muted == nil
-            ? "speaker.badge.exclamationmark"
-            : muted == true
-              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
-        )
-        .font(.system(size: glyphSize, weight: .semibold))
-        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
-        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-        .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
-      }
-      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-      .csFocusOutline()
-      .disabled(!playbackEnabled || muted == nil)
-      .overlayFastHint(speakerHint, palette: palette)
-      .accessibilityLabel(Text(verbatim: playbackLabel))
-      .accessibilityValue(Text(verbatim: playbackValue))
-      .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
-      .accessibilityIdentifier("overlay-agent-speaker")
     }
     .modifier(
       OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }, chrome: chrome)
@@ -801,6 +801,7 @@ struct OverlayReceptionMarks: View {
       }
       mark(
         symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.processingStatus.color,
+        unlitOpacity: 0.45,
         help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
       ) {
         var next = policy
@@ -812,13 +813,14 @@ struct OverlayReceptionMarks: View {
   }
 
   private func mark(
-    symbol: String, lit: Bool, litColor: Color, help: String, identifier: String,
+    symbol: String, lit: Bool, litColor: Color, unlitOpacity: Double = 1,
+    help: String, identifier: String,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(.system(size: 10 * textScale))
-        .foregroundStyle(lit ? litColor : palette.mutedText.color)
+        .foregroundStyle(lit ? litColor : palette.mutedText.color.opacity(unlitOpacity))
         .frame(width: 14 * textScale, height: 14 * textScale)
         .contentShape(Rectangle())
     }
@@ -1601,7 +1603,7 @@ struct OverlayChannelStatusView: View {
       ? String(localized: "No messages yet")
       : String(localized: "View conversation without changing the microphone")
     let label = rosterRowLabel(
-      title: "\(channel.channel) · \(conversation?.name ?? channel.agent)",
+      title: conversation?.name ?? channel.agent,
       statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
     return rowGlassContainer(
       VStack(alignment: .leading, spacing: 4) {
@@ -1641,20 +1643,6 @@ struct OverlayChannelStatusView: View {
           rosterRowState(channel, receiptText: receiptText)
           Spacer(minLength: 0)
           HStack(spacing: 6) {
-            OverlayAgentAudioControls(
-              open: open, muted: mutedChannels[channel.channel],
-              microphoneEnabled: !unavailable && onToggleChannel != nil
-                && !pendingToggleChannels.contains(channel.channel)
-                && Self.toggleDigit(for: channel.channel) != nil
-                && !hasDeadFollower(channel),
-              playbackEnabled: onTogglePlayback != nil
-                && !pendingMuteChannels.contains(channel.channel),
-              palette: palette, onMicrophone: { toggle(channel) },
-              onPlayback: { onTogglePlayback?(channel.channel) },
-              speaking: conversation?.replySpeaking == true
-            )
-            .fixedSize()
-            .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
             if showsPanelFocusButton(for: channel),
               let owner = archiveCandidates[channel.channel],
               let onFocusAgentPanel
@@ -1698,6 +1686,21 @@ struct OverlayChannelStatusView: View {
               .accessibilityLabel(Text(verbatim: focusHelp))
               .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
             }
+            OverlayAgentAudioControls(
+              open: open, muted: mutedChannels[channel.channel],
+              microphoneEnabled: !unavailable && onToggleChannel != nil
+                && !pendingToggleChannels.contains(channel.channel)
+                && Self.toggleDigit(for: channel.channel) != nil
+                && !hasDeadFollower(channel),
+              playbackEnabled: onTogglePlayback != nil
+                && !pendingMuteChannels.contains(channel.channel)
+                && !hasDeadFollower(channel),
+              palette: palette, onMicrophone: { toggle(channel) },
+              onPlayback: { onTogglePlayback?(channel.channel) },
+              speaking: conversation?.replySpeaking == true
+            )
+            .fixedSize()
+            .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
             // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
             // tam zawsze"); only an open microphone or an archive in flight
             // disables it, and the help says which.
@@ -2240,8 +2243,9 @@ struct OverlayChannelStatusView: View {
   /// deliveries yet (mockup `.dot`).
   func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
     if unavailable { return .idle }
+    if hasDeadFollower(channel) { return .sleeping }
     if isOpen(channel) { return .listening }
-    if hasDeadFollower(channel) || hasStalledFollower(channel) { return .sleeping }
+    if hasStalledFollower(channel) { return .sleeping }
     if channel.broadcastSkipped { return .idle }
     switch channel.stage {
     case .received: return .received

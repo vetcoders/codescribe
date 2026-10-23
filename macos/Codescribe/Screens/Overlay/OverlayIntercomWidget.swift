@@ -153,15 +153,17 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     let nameFont = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
     let digitFont = CSFont.nsMono(10 * scale)
-    // Beside the text each row carries the two reception marks after the name
-    // (antenna and moon, 14pt frames 3pt apart) and a focus slot after the
-    // audio pair; the header wears the antenna before its wordmark.
-    // Unmeasured, they folded "Intercom" onto two lines.
+    // Fixed slots and gaps are budgeted by restingWidth; measure only the
+    // digit, name and the window glyph retained by a detached group row.
     let longest =
-      (chips.map {
-        ($0.name as NSString).size(withAttributes: [.font: nameFont]).width
-          + ($0.digit as NSString).size(withAttributes: [.font: digitFont]).width
-      }.max() ?? 0) + (28 + OverlayIntercomWidgetLayout.rowHeight) * scale + 11
+      (chips.map { chip in
+        let identity = identities.first { $0.digit == chip.digit }
+        let detached = identity.flatMap { detachedInstance(for: $0) } != nil
+        let windowMark = detached ? 9 * scale + 5 : 0
+        return (chip.name as NSString).size(withAttributes: [.font: nameFont]).width
+          + (chip.digit as NSString).size(withAttributes: [.font: digitFont]).width
+          + windowMark
+      }.max() ?? 0)
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
@@ -291,12 +293,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     // width comes from its own content, never from the expanded conversation
     // (Astra, V3 — a 900 pt conversation must not leave a 900 pt mini). The
     // expanded frame survives untouched for restore.
-    let unit = max(1, textScale.scale)
     let nameFont = NSFont.systemFont(ofSize: 11 * textScale.scale, weight: .semibold)
     let nameWidth = (instance.name as NSString).size(withAttributes: [.font: nameFont]).width
+    let digitFont = CSFont.nsMono(10 * textScale.scale)
+    let digitWidth = (instance.digit as NSString).size(withAttributes: [.font: digitFont]).width
     let height = OverlayIntercomWidgetLayout.controlHeight(scale: textScale.scale)
-    // Leading 12 + dots ~24 + mic 30 + speaker 30 + the X's fixed slot 26 + padding.
-    let width = min(stored.width, nameWidth + (30 + 30 + 26) * unit + 48)
+    let width = min(
+      stored.width,
+      OverlayIntercomWidgetLayout.minimizedInstanceWidth(
+        text: nameWidth + digitWidth, scale: textScale.scale))
     return OverlayIntercomWidgetLayout.cardFrame(
       below: CGRect(x: stored.maxX - width, y: stored.maxY, width: width, height: 0),
       size: CGSize(width: width, height: height), visibleFrame: visibleFrame)
@@ -997,6 +1002,8 @@ private struct OverlayIntercomCard: View {
       onOpenConversation: { id in
         if id == identity.conversationID { controller.expand(identity) }
       })
+    let channelRow = intercomChannelRow(state: state, digit: identity.digit)
+    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
     // Reuse the menu execution, but Write stays in this card. Show in Agents
     // remains the explicit route to the full overlay.
     return HStack(spacing: 3) {
@@ -1009,69 +1016,68 @@ private struct OverlayIntercomCard: View {
           .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
           .accessibilityLabel("Detach conversation")
       }
-      Button {
-        if let detached {
-          controller.showInstance(detached.id)
-        } else {
-          controller.expand(identity)
+      HStack(spacing: 6) {
+        Text(identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
+        if let channelRow {
+          OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
         }
-      } label: {
-        HStack(spacing: 6) {
-          // One dot, the roster's, before the figure as in the agents list
-          // (Maciej, 2026-10-23); an open microphone is its `.listening`.
-          OverlayAgentStatusDot(
-            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
-            palette: palette)
-          Text(identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
-          VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 5) {
+        OverlayAgentStatusDot(
+          kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+          palette: palette)
+        Button {
+          if let detached {
+            controller.showInstance(detached.id)
+          } else {
+            controller.expand(identity)
+          }
+        } label: {
+          HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 0) {
               Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-              if let channelRow = intercomChannelRow(state: state, digit: identity.digit) {
-                OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
-              }
-              if detached != nil {
-                Image(systemName: "macwindow").font(.system(size: 9 * scale))
+              if hovered && !expanded && detached == nil {
+                Text(
+                  verbatim: conversation?.messages.last.map {
+                    OverlayChannelStatusView.drawerPreview(message: $0)
+                  } ?? info ?? String(localized: "No messages yet")
+                )
+                .csFont(9).lineLimit(1).foregroundStyle(palette.mutedText.color)
               }
             }
-            if hovered && !expanded && detached == nil {
-              Text(
-                verbatim: conversation?.messages.last.map {
-                  OverlayChannelStatusView.drawerPreview(message: $0)
-                } ?? info ?? String(localized: "No messages yet")
-              )
-              .csFont(9).lineLimit(1).foregroundStyle(palette.mutedText.color)
+            if detached != nil {
+              Image(systemName: "macwindow").font(.system(size: 9 * scale))
+                .frame(width: 9 * scale)
             }
           }
-          Spacer(minLength: 0)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
         }
-        .padding(.leading, expanded ? 0 : 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .conversationActionHover(
+          restingColor: dead || detached != nil
+            ? palette.mutedText.color
+            : speaking ? palette.agentAccent.color : palette.primaryText.color,
+          hoverColor: dead || detached != nil
+            ? palette.mutedText.color : palette.agentAccent.color
+        )
+        .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
+        .overlayFastHint(
+          String(localized: "Detached — click to show its window"), palette: palette,
+          enabled: detached != nil
+        )
+        .accessibilityLabel(
+          (detached != nil
+            ? String(localized: "Show detached fiszka") : String(localized: "Open conversation"))
+            + ": " + name
+        )
+        .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       }
-      .buttonStyle(.plain)
-      .conversationActionHover(
-        restingColor: detached != nil
-          ? palette.mutedText.color
-          : speaking ? palette.agentAccent.color : palette.primaryText.color,
-        hoverColor: detached != nil ? palette.primaryText.color : palette.agentAccent.color
-      )
-      .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
-      .overlayFastHint(
-        String(localized: "Detached — click to show its window"), palette: palette,
-        enabled: detached != nil
-      )
-      .accessibilityLabel(
-        (detached != nil
-          ? String(localized: "Show detached fiszka") : String(localized: "Open conversation"))
-          + ": " + name
-      )
-      .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
-      audioSlot(conversation, palette: palette, speaking: speaking, open: open)
-      // The road to the agent's pane or tab, after the pair as on the list.
-      // The archive X stays in the full view only (Maciej, 2026-10-23).
+      .padding(.leading, expanded ? 0 : 12)
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      // The road to the pane, then what I hear, then what I say.
       OverlayIntercomFocusButton(
-        roster: roster, channel: intercomChannelRow(state: state, digit: identity.digit),
+        roster: roster, channel: channelRow,
         palette: palette, diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      audioSlot(conversation, palette: palette, speaking: speaking, open: open)
       if expanded {
         // This folds the conversation back into its one-row fiszka. An X
         // here read as the agent pill's X, which archives the agent
@@ -1088,6 +1094,7 @@ private struct OverlayIntercomCard: View {
         .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
       }
     }
+    .modifier(OverlayDisconnectedRowDim(disconnected: dead || detached != nil))
     .modifier(
       current
         ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
@@ -1160,13 +1167,13 @@ private struct OverlayIntercomAudioControls: View {
     guard let conversation else { return false }
     return state.canToggleConversationMicrophone(conversation)
       && !state.pendingChannelToggles.contains(conversation.channel)
-      && (state.conversationMicrophoneOpen(conversation)
-        || state.channelHudStates[conversation.channel]?.followerAlive != false)
+      && state.channelHudStates[conversation.channel]?.followerAlive != false
   }
 
   private var playbackEnabled: Bool {
     guard let conversation else { return false }
     return !state.pendingPlaybackOwners.contains(conversation.owner?.id ?? "")
+      && state.channelHudStates[conversation.channel]?.followerAlive != false
   }
 }
 
@@ -1416,18 +1423,17 @@ private struct OverlayIntercomInstanceCard: View {
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
     let channelRow = intercomChannelRow(state: state, digit: instance.digit)
-    let nameRow = HStack(spacing: 5) {
-      OverlayAgentStatusDot(
-        kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
-      Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
+    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
+    let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    return HStack(spacing: 3) {
+      Text(verbatim: instance.digit).csMono(10).foregroundStyle(palette.mutedText.color)
       if let channelRow {
         OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
-      Spacer(minLength: 0)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .contentShape(Rectangle())
-    return HStack(spacing: 3) {
+      OverlayAgentStatusDot(
+        kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       // Mini restores on its name; an open window is already key under the
       // click, so its name is plain text and part of the drag surface.
       if mini {
@@ -1450,12 +1456,12 @@ private struct OverlayIntercomInstanceCard: View {
           .allowsHitTesting(false)
           .accessibilityLabel(Text(verbatim: instance.name))
       }
-      OverlayIntercomAudioControls(
-        state: state, conversation: conversation, digit: instance.digit, palette: palette,
-        open: open, speaking: speaking)
       OverlayIntercomFocusButton(
         roster: roster, channel: channelRow, palette: palette,
         diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      OverlayIntercomAudioControls(
+        state: state, conversation: conversation, digit: instance.digit, palette: palette,
+        open: open, speaking: speaking)
       // Mini rests with the name, activity and the audio pair (Astra):
       // clicking the fiszka itself restores it, so no extra Restore button.
       if !mini {
@@ -1483,6 +1489,7 @@ private struct OverlayIntercomInstanceCard: View {
         .allowsHitTesting(!mini || hovering)
         .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
+    .modifier(OverlayDisconnectedRowDim(disconnected: dead))
     .padding(.leading, 12)
     .padding(.trailing, 4)
     // Any free spot on the header moves the fiszka, not one grip on one side
