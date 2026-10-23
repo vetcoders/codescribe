@@ -689,6 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
         reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
           RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
         })

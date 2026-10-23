@@ -2541,6 +2541,16 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
+  /// The Founder is writing to an agent: the composer is active, keys fell
+  /// within the typing horizon, or a draft waits unsent. An idle restart must
+  /// not quit the app under it (Maciej, 2026-10-23).
+  var founderComposing: Bool {
+    composerRetainsAutomaticReplyFocus
+      || conversationDrafts.values.contains {
+        !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      }
+  }
+
   /// Bring one newly admitted reply's owner into the existing surface.
   /// History, a repeated id, playback or ACK of a known id, and an owner that
   /// is not unique stay where the user already is. Channel number, display

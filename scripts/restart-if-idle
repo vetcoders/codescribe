@@ -20,10 +20,12 @@ class Refusal(Exception):
 
 
 #: Refusals that end once the application is idle again: a take is active or
-#: settling, an agent turn holds the runtime lease, or the request itself went
-#: stale. `--wait` retries only these; every other refusal is final.
+#: settling, the Founder is writing to an agent, an agent turn holds the
+#: runtime lease, or the request itself went stale. `--wait` retries only
+#: these; every other refusal is final.
 RETRYABLE = frozenset({
     "capture_busy_or_not_ready",
+    "founder_composing",
     "idle_lease_unavailable",
     "restart_in_progress",
     "expired_request",
