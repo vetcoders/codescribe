@@ -1,5 +1,86 @@
 import AppKit
 
+enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
+  case icon, name, actions
+
+  var hoverPreviewEnabled: Bool { self == .icon || self == .name }
+}
+
+/// Measures the same fonts and slots painted by cardHeader. Resizing selects
+/// content; only the text-scale preference changes these typography metrics.
+struct IntercomContentMetrics: Equatable {
+  let iconSide: CGFloat
+  let nameWidth: CGFloat
+  let actionsWidth: CGFloat
+  let nameFontSize: CGFloat
+  let digitFontSize: CGFloat
+  var stackedActionsWidth: CGFloat {
+    max(nameWidth, 3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
+  }
+
+  init(names: [String], digits: [String], scale: CGFloat, hasDetached: Bool = false) {
+    nameFontSize = 11 * scale
+    digitFontSize = 10 * scale
+    let font = NSFont.systemFont(ofSize: nameFontSize, weight: .semibold)
+    let digitFont = CSFont.nsMono(digitFontSize)
+    let name = names.map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+    let digit =
+      digits.map { ($0 as NSString).size(withAttributes: [.font: digitFont]).width }.max() ?? 0
+    let contentHeight = max(
+      font.ascender - font.descender, digitFont.ascender - digitFont.descender)
+    iconSide = ceil(
+      max(
+        OverlayIntercomWidgetLayout.controlHeight(scale: scale), contentHeight + 8,
+        digit + 8 + 4 + 8))
+    let windowMark: CGFloat = hasDetached ? 9 * scale + 5 : 0
+    nameWidth = ceil(max(iconSide, name + digit + windowMark + 36 * scale + 45))
+    // The focus, speaker and microphone are three row-height slots. Their
+    // fixed gaps already belong to the name row's 45pt chrome budget.
+    actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+  }
+
+  func tier(width: CGFloat, cardHeight: CGFloat) -> IntercomContentTier {
+    if width >= actionsWidth || (width >= stackedActionsWidth && cardHeight >= 2 * iconSide) {
+      return .actions
+    }
+    if width >= nameWidth { return .name }
+    return .icon
+  }
+
+  func fittedWidth(_ requested: CGFloat, available: CGFloat) -> CGFloat {
+    let width = min(requested, available)
+    return width < nameWidth ? min(iconSide, available) : width
+  }
+
+  func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
+    guard count > 0 else { return iconSide }
+    let maximum =
+      (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
+      / CGFloat(count) - OverlayIntercomWidgetLayout.gap
+    return max(iconSide, min(requested, maximum))
+  }
+
+  func resizedGroupFrame(
+    _ frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge,
+    count: Int, visibleFrame: CGRect
+  ) -> CGRect {
+    var result = OverlayIntercomWidgetLayout.resizedFrame(
+      frame, delta: delta, edge: edge, minimum: minimumGroupSize(count: count),
+      visibleFrame: visibleFrame)
+    let width = fittedWidth(result.width, available: visibleFrame.width)
+    if edge != .bottomRight { result.origin.x = result.maxX - width }
+    result.size.width = width
+    return result
+  }
+
+  func minimumGroupSize(count: Int) -> CGSize {
+    CGSize(
+      width: iconSide,
+      height: OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
+        + CGFloat(count) * (iconSide + OverlayIntercomWidgetLayout.gap))
+  }
+}
+
 /// Geometry only. Each card owns a native window; desktop gaps never intercept clicks.
 enum OverlayIntercomWidgetLayout {
   static let headerHeight: CGFloat = 30
@@ -40,13 +121,16 @@ enum OverlayIntercomWidgetLayout {
   }
 
   static func clampedHeader(
-    _ frame: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1
+    _ frame: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1,
+    cardHeight: CGFloat? = nil
   ) -> CGRect {
     var result = frame
     result.size.width = min(frame.width, visibleFrame.width)
     result.size.height = min(controlHeight(scale: scale), visibleFrame.height)
     result.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - result.width)
-    let totalHeight = min(height(count: count, scale: scale), visibleFrame.height)
+    let totalHeight = min(
+      result.height + CGFloat(count) * ((cardHeight ?? controlHeight(scale: scale)) + gap),
+      visibleFrame.height)
     result.origin.y = min(
       max(frame.minY, visibleFrame.minY + totalHeight - result.height),
       visibleFrame.maxY - result.height)
@@ -54,9 +138,10 @@ enum OverlayIntercomWidgetLayout {
   }
 
   static func rowFrame(
-    index: Int, header: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1
+    index: Int, header: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1,
+    cardHeight: CGFloat? = nil
   ) -> CGRect {
-    let row = controlHeight(scale: scale)
+    let row = cardHeight ?? controlHeight(scale: scale)
     let availableGap =
       count > 0
       ? (visibleFrame.height - header.height - CGFloat(count) * row) / CGFloat(count) : gap

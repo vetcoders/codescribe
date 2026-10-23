@@ -6,6 +6,120 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  func testMeasuredWidthSelectsTheWholeGroupsContentAtThreeTextScales() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(
+        names: ["A", "Klaudiusz"], digits: ["1", "9"], scale: scale)
+      let short = IntercomContentMetrics(names: ["A"], digits: ["1"], scale: scale)
+      XCTAssertGreaterThan(metrics.nameWidth, short.nameWidth)
+      XCTAssertEqual(metrics.tier(width: metrics.iconSide, cardHeight: metrics.iconSide), .icon)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.nameWidth - 0.1, cardHeight: metrics.iconSide), .icon)
+      XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: metrics.iconSide), .name)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth - 0.1, cardHeight: metrics.iconSide), .name)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
+      XCTAssertEqual(
+        metrics.fittedWidth(metrics.nameWidth - 1, available: 2000), metrics.iconSide,
+        "compact cards snap to a square instead of stretching an empty digit row")
+    }
+  }
+
+  func testTallNarrowCardsMoveTheSameControlsBelowTheName() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(names: ["A"], digits: ["1"], scale: scale)
+      let width = metrics.stackedActionsWidth
+      XCTAssertLessThan(width, metrics.actionsWidth)
+      XCTAssertGreaterThanOrEqual(width, 3 * Layout.controlHeight(scale: scale) + 9)
+      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide - 0.1), .name)
+      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide), .actions)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon,
+        "height alone cannot reveal a name or controls that do not fit")
+      if metrics.nameWidth < width {
+        XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: 500), .name)
+      }
+    }
+  }
+
+  func testGroupMinimumUsesTheWidestAndTallestIconContent() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let group = IntercomContentMetrics(names: ["A", "B"], digits: ["1", "123456"], scale: scale)
+      let single = IntercomContentMetrics(names: ["B"], digits: ["123456"], scale: scale)
+      let small = IntercomContentMetrics(names: ["A"], digits: ["1"], scale: scale)
+      XCTAssertEqual(group.iconSide, max(single.iconSide, small.iconSide))
+      XCTAssertEqual(group.minimumGroupSize(count: 2).width, group.iconSide)
+      XCTAssertEqual(
+        group.minimumGroupSize(count: 2).height,
+        Layout.controlHeight(scale: scale) + 2 * (group.iconSide + Layout.gap))
+    }
+  }
+
+  func testTextAndControlMetricsAreIndependentOfTheSelectedTier() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
+      let before = metrics
+      for width in [metrics.iconSide, metrics.nameWidth, metrics.actionsWidth, 1200] {
+        _ = metrics.tier(width: width, cardHeight: metrics.iconSide)
+        XCTAssertEqual(metrics, before)
+        XCTAssertEqual(metrics.nameFontSize, 11 * scale)
+        XCTAssertEqual(metrics.digitFontSize, 10 * scale)
+        XCTAssertEqual(
+          metrics.actionsWidth - metrics.nameWidth, 3 * Layout.controlHeight(scale: scale))
+      }
+    }
+  }
+
+  func testHoverIsAvailableOnlyForIconAndNameTiers() {
+    XCTAssertTrue(IntercomContentTier.icon.hoverPreviewEnabled)
+    XCTAssertTrue(IntercomContentTier.name.hoverPreviewEnabled)
+    XCTAssertFalse(IntercomContentTier.actions.hoverPreviewEnabled)
+  }
+
+  func testScreenHeightLimitsControlStackingWithoutEnlargingTheGlyphs() {
+    let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
+    let minimum = metrics.minimumGroupSize(count: 4)
+    let row = metrics.fittedCardHeight(200, count: 4, available: minimum.height)
+    XCTAssertEqual(row, metrics.iconSide)
+    XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .name)
+    let tall = metrics.fittedCardHeight(200, count: 4, available: 700)
+    XCTAssertGreaterThanOrEqual(tall, 2 * metrics.iconSide)
+    let screen = CGRect(x: 0, y: 0, width: 1000, height: 700)
+    let header = Layout.clampedHeader(
+      CGRect(x: 900, y: 10, width: 200, height: 30),
+      count: 4, visibleFrame: screen, cardHeight: tall)
+    for index in 0..<4 {
+      let frame = Layout.rowFrame(
+        index: index, header: header, count: 4,
+        visibleFrame: screen, cardHeight: tall)
+      XCTAssertTrue(screen.contains(frame))
+      XCTAssertEqual(frame.height, tall)
+    }
+  }
+
+  func testGroupResizeSnappingKeepsTheDraggedEdgesAnchor() {
+    let metrics = IntercomContentMetrics(names: ["Klaudiusz"], digits: ["1"], scale: 1)
+    let frame = CGRect(x: 100, y: 300, width: 300, height: 200)
+    let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+    let right = metrics.resizedGroupFrame(
+      frame, delta: CGSize(width: -250, height: -40),
+      edge: .bottomRight, count: 2, visibleFrame: screen)
+    XCTAssertEqual(right.minX, frame.minX)
+    XCTAssertEqual(right.width, metrics.iconSide)
+    XCTAssertEqual(right.maxY, frame.maxY)
+    let left = metrics.resizedGroupFrame(
+      frame, delta: CGSize(width: 250, height: 0),
+      edge: .left, count: 2, visibleFrame: screen)
+    XCTAssertEqual(left.maxX, frame.maxX)
+    XCTAssertEqual(left.width, metrics.iconSide)
+    XCTAssertEqual(left.height, frame.height)
+    let again = metrics.resizedGroupFrame(
+      frame, delta: CGSize(width: 250, height: 0),
+      edge: .left, count: 2, visibleFrame: screen)
+    XCTAssertEqual(left, again, "absolute deltas never compound across events")
+  }
+
   private func conversation(
     _ name: String, channel: String, lease: String
   ) throws -> OverlayConversation {

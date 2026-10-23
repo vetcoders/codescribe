@@ -65,24 +65,14 @@ struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
   }
 }
 
-/// The whole durable desktop: detached instances plus the group's
-/// proportional scale. One presentation owner in the app domain; layout never
+/// The whole durable desktop: detached instances plus the group's content
+/// dimensions and tier. One presentation owner in the app domain; layout never
 /// leaks into the engine's runtime configuration.
 struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
-  static let minimumGroupScale: Double = 1
-  static let maximumGroupScale: Double = 2.5
-
-  var groupScale: Double = 1
+  var groupWidth: Double? = nil
+  var groupRowHeight: Double? = nil
+  var groupTier: IntercomContentTier = .actions
   var instances: [OverlayIntercomInstance] = []
-
-  /// Resizing the group works like resizing a window: the ratio between the
-  /// requested and the current width becomes the new proportional scale for
-  /// every attached fiszka. Detached instances keep their own geometry.
-  static func groupScale(current: Double, currentWidth: Double, requestedWidth: Double) -> Double {
-    guard currentWidth > 0, requestedWidth > 0 else { return current }
-    let scaled = current * (requestedWidth / currentWidth)
-    return min(max(scaled, minimumGroupScale), maximumGroupScale)
-  }
 
   /// The one open fiszka of this exact conversation, if any. A second detach
   /// never mints a copy: it shows this window, and the group row stays as the
@@ -108,6 +98,25 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
   }
 }
 
+extension OverlayIntercomDesktopState {
+  private enum CodingKeys: String, CodingKey {
+    case groupWidth, groupRowHeight, groupTier, instances
+  }
+
+  /// A desktop saved before content tiers still owns its detached instances.
+  /// Missing dimensions let the current content establish their resting size;
+  /// an obsolete scale never changes text or glyph metrics on restore.
+  init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    let width = try? values.decode(Double.self, forKey: .groupWidth)
+    let rowHeight = try? values.decode(Double.self, forKey: .groupRowHeight)
+    groupWidth = width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+    groupRowHeight = rowHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+    groupTier = (try? values.decode(IntercomContentTier.self, forKey: .groupTier)) ?? .actions
+    instances = try values.decodeIfPresent([OverlayIntercomInstance].self, forKey: .instances) ?? []
+  }
+}
+
 /// Persistence for the durable desktop, beside the other chrome preferences.
 /// Restore is a UI operation: it brings windows back as they were and never
 /// opens a microphone, re-sends a message or changes recipients.
@@ -125,9 +134,6 @@ final class OverlayIntercomDesktopStore {
     guard let data = defaults.data(forKey: Self.key),
       var state = try? JSONDecoder().decode(OverlayIntercomDesktopState.self, from: data)
     else { return OverlayIntercomDesktopState() }
-    state.groupScale = min(
-      max(state.groupScale, OverlayIntercomDesktopState.minimumGroupScale),
-      OverlayIntercomDesktopState.maximumGroupScale)
     // A persisted instance without its exact conversation identity cannot be
     // presented or safely rebound; drop it rather than guess an owner. The
     // broadcast channel "0" is the one identity that owns no agent: it stays.

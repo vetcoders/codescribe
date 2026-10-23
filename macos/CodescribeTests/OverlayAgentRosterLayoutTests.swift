@@ -48,11 +48,12 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let card = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func cardHeader(",
       to: "private func audioSlot(")
+    let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(identity.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
+        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
         "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(conversation,",
-      ], in: card)
+      ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func headerRow(",
