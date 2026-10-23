@@ -1,10 +1,10 @@
 import Foundation
 
 /// One durable desktop fiszka (Maciej, 2026-10-22): a view instance separate
-/// from the conversation it presents. The same agent can keep several
-/// instances in different places; each one owns its geometry and window
-/// state. Instances observe the one shared conversation/draft state and never
-/// copy the inventory, the document or a recorder.
+/// from the conversation it presents. One agent keeps one open fiszka
+/// (Maciej, 2026-10-23); it owns its geometry and window state, observes the
+/// one shared conversation/draft state and never copies the inventory, the
+/// document or a recorder.
 struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
   let id: UUID
   /// The exact conversation this instance was detached from. A digit or a
@@ -84,6 +84,17 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
     return min(max(scaled, minimumGroupScale), maximumGroupScale)
   }
 
+  /// The one open fiszka of this exact conversation, if any. A second detach
+  /// never mints a copy: it shows this window, and the group row stays as the
+  /// road back to it (Maciej, 2026-10-23). A closed record is a saved window,
+  /// not an open one; mini still counts as open.
+  func openInstance(for identity: OverlayIntercomCardIdentity) -> OverlayIntercomInstance? {
+    instances.first {
+      !$0.closed && $0.conversationID == identity.conversationID
+        && $0.ownerID == (identity.ownerID ?? "")
+    }
+  }
+
   mutating func upsert(_ instance: OverlayIntercomInstance) {
     if let index = instances.firstIndex(where: { $0.id == instance.id }) {
       instances[index] = instance
@@ -120,7 +131,9 @@ final class OverlayIntercomDesktopStore {
     // A persisted instance without its exact conversation identity cannot be
     // presented or safely rebound; drop it rather than guess an owner. The
     // broadcast channel "0" is the one identity that owns no agent: it stays.
-    state.instances.removeAll { $0.conversationID.isEmpty || ($0.ownerID.isEmpty && $0.digit != "0") }
+    state.instances.removeAll {
+      $0.conversationID.isEmpty || ($0.ownerID.isEmpty && $0.digit != "0")
+    }
     return state
   }
 

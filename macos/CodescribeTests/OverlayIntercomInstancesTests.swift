@@ -19,32 +19,35 @@ final class OverlayIntercomInstancesTests: XCTestCase {
         id: owner.id, channel: channel, name: name, owner: owner, messages: []))
   }
 
-  /// Maciej, 2026-10-22: the same agent can keep two fiszki in two places.
-  /// Each instance owns its geometry and window state; closing one leaves the
-  /// other standing.
-  func testTwoInstancesOfTheSameAgentLiveAndCloseIndependently() throws {
+  /// Maciej, 2026-10-23: one agent keeps one open fiszka. The desktop finds
+  /// the open window for a card identity; a closed record is a saved window
+  /// and never counts, mini still counts, and another owner behind the same
+  /// name is another conversation.
+  func testOneOpenInstancePerConversation() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
+    let usurper = try identity("lena", channel: "2", lease: "b")
     var desktop = OverlayIntercomDesktopState()
-    let first = OverlayIntercomInstance(
-      identity: lena, frame: CGRect(x: 100, y: 100, width: 380, height: 360))
-    let second = OverlayIntercomInstance(
+    XCTAssertNil(desktop.openInstance(for: lena), "nothing detached yet")
+
+    let saved = OverlayIntercomInstance(
+      identity: lena, frame: CGRect(x: 100, y: 100, width: 380, height: 360), closed: true)
+    desktop.upsert(saved)
+    XCTAssertNil(
+      desktop.openInstance(for: lena), "a closed record is a saved window, not an open one")
+
+    let mini = OverlayIntercomInstance(
       identity: lena, frame: CGRect(x: 900, y: 500, width: 320, height: 240), minimized: true)
-    desktop.upsert(first)
-    desktop.upsert(second)
+    desktop.upsert(mini)
+    XCTAssertEqual(desktop.openInstance(for: lena)?.id, mini.id, "mini is still an open window")
+    XCTAssertNil(
+      desktop.openInstance(for: usurper),
+      "another owner behind the same name and digit is another conversation")
 
-    XCTAssertNotEqual(first.id, second.id, "a view instance is not the conversation")
-    XCTAssertEqual(desktop.instances.count, 2)
-
-    var closed = second
+    var closed = mini
     closed.closed = true
     desktop.upsert(closed)
     XCTAssertEqual(desktop.instances.count, 2, "closing records state, it does not forget")
-    XCTAssertFalse(desktop.instances[0].closed)
-    XCTAssertTrue(desktop.instances[1].closed)
-    XCTAssertTrue(desktop.instances[1].minimized, "mini survives beside closed")
-
-    desktop.remove(first.id)
-    XCTAssertEqual(desktop.instances.map(\.id), [second.id])
+    XCTAssertNil(desktop.openInstance(for: lena), "closing frees the row for a fresh detach")
   }
 
   /// Restore is a UI operation: geometry, mini and closed come back exactly,

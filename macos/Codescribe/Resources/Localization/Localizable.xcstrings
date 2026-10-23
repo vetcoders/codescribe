@@ -19,6 +19,30 @@
         "pl" : { "stringUnit" : { "state" : "translated", "value" : "Przeciągnij, aby odpiąć" } }
       }
     },
+    "Detached — click to show its window" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Odpięta — kliknij, aby pokazać jej okno" } }
+      }
+    },
+    "Show detached fiszka" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Pokaż odpiętą fiszkę" } }
+      }
+    },
+    "Horizontal strip (experimental)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Poziomy pasek (eksperymentalny)" } }
+      }
+    },
+    "Floating agent pills (experimental)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : { "stringUnit" : { "state" : "translated", "value" : "Lewitujące pigułki agentów (eksperymentalne)" } }
+      }
+    },
     "Next agents" : {
       "extractionState" : "manual",
       "localizations" : {

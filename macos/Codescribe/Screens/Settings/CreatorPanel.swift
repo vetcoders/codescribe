@@ -57,6 +57,8 @@ struct CreatorPanel: View {
             localized:
               "Classic overlay, the horizontal agent strip, or floating vertical agent pills.")
         ) {
+          // Classic ships as the default; the two mapped layouts ship marked
+          // experimental (Maciej, 2026-10-23).
           Picker(
             "Intercom layout",
             selection: Binding(
@@ -64,8 +66,10 @@ struct CreatorPanel: View {
               set: { model.selectOverlayIntercomMode($0) })
           ) {
             Text("Classic").tag(OverlayIntercomPresentationMode.classic)
-            Text("Horizontal strip").tag(OverlayIntercomPresentationMode.horizontal)
-            Text("Floating agent pills").tag(OverlayIntercomPresentationMode.vertical)
+            Text("Horizontal strip (experimental)")
+              .tag(OverlayIntercomPresentationMode.horizontal)
+            Text("Floating agent pills (experimental)")
+              .tag(OverlayIntercomPresentationMode.vertical)
           }
           .labelsHidden()
           .accessibilityIdentifier("settings-overlay-intercom-layout")
