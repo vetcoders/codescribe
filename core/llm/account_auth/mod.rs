@@ -4,6 +4,7 @@
 //! bundle under a provider-specific account. No `auth.json` file is written.
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -681,6 +682,14 @@ pub fn store_account_tokens(
     tokens: &AccountTokens,
 ) -> Result<(), AccountAuthError> {
     ensure_provider_supported(provider)?;
+    provider_auth_state(provider).replace_with(|| persist_account_tokens(provider, tokens))
+}
+
+/// Storage only; callers hold the provider mutation boundary.
+fn persist_account_tokens(
+    provider: ProviderKind,
+    tokens: &AccountTokens,
+) -> Result<(), AccountAuthError> {
     let account = token_account(provider)?;
     let payload = serde_json::to_string(tokens)
         .map_err(|error| AccountAuthError::Storage(error.to_string()))?;
@@ -799,14 +808,15 @@ fn cached_account_tokens(provider: ProviderKind) -> Result<AccountTokens, Accoun
 pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
-    delete_key(account).map_err(|error| AccountAuthError::Storage(error.to_string()))?;
-    // SAFETY: clears the process-env mirror of the tokens (the test/dev
-    // injection channel read by `load_account_tokens`) so sign-out is not
-    // undone by a stale override. Sign-out is a single user-driven action,
-    // not a hot concurrent path.
-    unsafe { std::env::remove_var(account) };
-    crate::config::keychain::advance_bundle_revision();
-    Ok(())
+    provider_auth_state(provider).replace_with(|| {
+        delete_key(account).map_err(|error| AccountAuthError::Storage(error.to_string()))?;
+        // SAFETY: preserve the sign-out contract for the process-env mirror.
+        // The provider mutation boundary also excludes its refresh and login
+        // writes until both deletion and env clearing have completed.
+        unsafe { std::env::remove_var(account) };
+        crate::config::keychain::advance_bundle_revision();
+        Ok(())
+    })
 }
 
 /// Ready-to-send `Authorization` value (`Bearer <token>`), refreshing if needed.
@@ -825,30 +835,61 @@ pub async fn authorization_header(provider: ProviderKind) -> Result<String, Acco
 /// its refresh token, and every response after the first invalidates the token
 /// the others are about to store — signing the user out mid-session.
 pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthError> {
-    let tokens = credential_io(move || load_account_tokens(provider)).await?;
+    access_token_with(
+        provider,
+        provider_auth_state(provider),
+        move || load_account_tokens(provider),
+        move |tokens| refresh_tokens(provider, tokens),
+        move |tokens| persist_account_tokens(provider, tokens),
+    )
+    .await
+}
+
+/// The production transaction with injectable I/O boundaries. Tests can use
+/// memory and barriers without a second refresh algorithm or a real Keychain.
+async fn access_token_with<L, R, F, P>(
+    provider: ProviderKind,
+    state: Arc<ProviderAuthState>,
+    load: L,
+    refresh: R,
+    persist: P,
+) -> Result<String, AccountAuthError>
+where
+    L: Fn() -> Result<AccountTokens, AccountAuthError> + Send + Sync + 'static,
+    R: FnOnce(AccountTokens) -> F + Send + 'static,
+    F: std::future::Future<Output = Result<AccountTokens, AccountAuthError>> + Send + 'static,
+    P: FnOnce(&AccountTokens) -> Result<(), AccountAuthError> + Send + 'static,
+{
+    let load = Arc::new(load);
+    let first_state = Arc::clone(&state);
+    let first_load = Arc::clone(&load);
+    let (tokens, _) = credential_io(move || first_state.snapshot_with(|| first_load())).await?;
     if !tokens.expires_within(REFRESH_SKEW) {
         return Ok(tokens.access_token);
     }
 
-    let lock = refresh_lock(provider).lock().await;
-    // Re-read under the lock: a concurrent holder may have just refreshed.
-    let tokens = credential_io(move || load_account_tokens(provider)).await?;
-    if !tokens.expires_within(REFRESH_SKEW) {
-        return Ok(tokens.access_token);
-    }
-    // The refresh and its storage write are one transaction that owns the lock.
-    // A caller's deadline (a formatter timeout) drops only this future: the
-    // provider may already have rotated the refresh token, so releasing the lock
-    // before the write landed would let the next caller refresh with the token
-    // the provider just invalidated.
+    // This task, not its cancellable caller, owns serialization through rotation
+    // AND persistence. Sign-out need not wait for the network: its synchronous
+    // mutation invalidates the captured epoch before an old write can commit.
     let transaction = tokio::spawn(async move {
-        let _lock = lock;
-        refresh_tokens(provider, tokens).await
+        let _refresh = state.refresh.lock().await;
+        let snapshot_state = Arc::clone(&state);
+        let (tokens, epoch) =
+            credential_io(move || snapshot_state.snapshot_with(|| load())).await?;
+        if !tokens.expires_within(REFRESH_SKEW) {
+            return Ok(tokens.access_token);
+        }
+        let refreshed = refresh(tokens).await?;
+        let commit_state = Arc::clone(&state);
+        credential_io(move || {
+            commit_state.commit_with(provider, &epoch, || persist(&refreshed))?;
+            Ok(refreshed.access_token)
+        })
+        .await
     });
-    let refreshed = transaction.await.map_err(|error| {
+    transaction.await.map_err(|error| {
         AccountAuthError::Storage(format!("credential refresh task ended: {error}"))
-    })??;
-    Ok(refreshed.access_token)
+    })?
 }
 
 /// Run a Keychain operation on the blocking pool. A Keychain call can wait on
@@ -867,39 +908,78 @@ async fn credential_io<T: Send + 'static>(
         })?
 }
 
-/// Per-provider refresh mutex. Held across the network round trip AND the
-/// storage write, so the winner's rotated token is durable before the next
-/// caller re-reads.
-///
-/// Keyed by provider rather than one static per vendor: the map grows a lock
-/// the first time a provider refreshes, so a new registry row needs no edit
-/// here. The leak is bounded by the number of providers that ever refresh.
-fn refresh_lock(provider: ProviderKind) -> &'static tokio::sync::Mutex<()> {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-
-    /// Process-global map from provider to its async refresh mutex (leaked entries).
-    type LockTable = Mutex<HashMap<ProviderKind, &'static tokio::sync::Mutex<()>>>;
-    /// Lazily initialized [`LockTable`]; one entry per provider that has refreshed.
-    static LOCKS: OnceLock<LockTable> = OnceLock::new();
-
-    let mut table = LOCKS
-        .get_or_init(Default::default)
-        .lock()
-        // A panic while merely inserting into this map cannot corrupt it, so a
-        // poisoned guard is safe to take over — refusing would break refresh.
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    table
-        .entry(provider)
-        .or_insert_with(|| Box::leak(Box::new(tokio::sync::Mutex::new(()))))
+/// One owner for a provider's refresh serialization and account identity.
+/// Epochs contain no credentials. A retained Arc identity cannot wrap or suffer
+/// ABA: the old allocation stays alive until every in-flight snapshot drops it.
+#[derive(Default)]
+struct ProviderAuthState {
+    refresh: tokio::sync::Mutex<()>,
+    mutation: Mutex<Arc<()>>,
 }
 
-/// Exchange a refresh token for a fresh set and store the result.
-///
-/// Unsynchronized on purpose — [`access_token`] is the path that serializes
-/// refreshes. Calling this directly against a provider that rotates its refresh
-/// token concurrently invites the sign-out race described there.
-pub async fn refresh_tokens(
+impl ProviderAuthState {
+    fn snapshot_with(
+        &self,
+        load: impl FnOnce() -> Result<AccountTokens, AccountAuthError>,
+    ) -> Result<(AccountTokens, Arc<()>), AccountAuthError> {
+        let epoch = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Ok((load()?, Arc::clone(&epoch)))
+    }
+
+    /// Login and logout supersede any old refresh, even if storage reports an
+    /// error. Return that original error; invalidation is not a success receipt.
+    fn replace_with<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, AccountAuthError>,
+    ) -> Result<T, AccountAuthError> {
+        let mut epoch = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *epoch = Arc::new(());
+        operation()
+    }
+
+    /// The identity check and existing storage operation are one critical
+    /// section. Lock order is provider mutation -> Keychain BUNDLE_IO; nothing
+    /// in the Keychain owner acquires a provider mutation lock in reverse.
+    fn commit_with<T>(
+        &self,
+        provider: ProviderKind,
+        expected: &Arc<()>,
+        operation: impl FnOnce() -> Result<T, AccountAuthError>,
+    ) -> Result<T, AccountAuthError> {
+        let epoch = self
+            .mutation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !Arc::ptr_eq(&epoch, expected) {
+            return Err(AccountAuthError::NotSignedIn(provider.as_str().to_string()));
+        }
+        operation()
+    }
+}
+
+/// Provider rows share this state across login, sign-out and every caller.
+/// The table holds only synchronization and epoch identities, never tokens.
+fn provider_auth_state(provider: ProviderKind) -> Arc<ProviderAuthState> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    static STATES: OnceLock<Mutex<HashMap<ProviderKind, Arc<ProviderAuthState>>>> = OnceLock::new();
+    let mut table = STATES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(table.entry(provider).or_default())
+}
+
+/// Exchange only. The detached access-token transaction owns persistence and
+/// checks its captured account epoch before invoking the existing storage owner.
+async fn refresh_tokens(
     provider: ProviderKind,
     tokens: AccountTokens,
 ) -> Result<AccountTokens, AccountAuthError> {
@@ -909,11 +989,7 @@ pub async fn refresh_tokens(
     })?;
     let client_id = client_id_for_provider(provider)?;
     let issuer = issuer_for(provider);
-    let refreshed =
-        refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await?;
-    let stored = refreshed.clone();
-    credential_io(move || store_account_tokens(provider, &stored)).await?;
-    Ok(refreshed)
+    refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await
 }
 
 /// The refresh round trip itself: POST to the provider's token endpoint in its
