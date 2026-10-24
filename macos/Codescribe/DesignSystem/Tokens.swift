@@ -127,12 +127,8 @@ enum CSPalette {
   /// the app sheet, its cards, chips and bubbles. `secondaryLabelColor` (50 %)
   /// measured 3.82:1 for Settings helper text on a card (2026-10-24); the app
   /// sheet is darker than the window background that rung was tuned for.
-  /// Increased Contrast raises it further, as the system rung does.
-  static let secondaryInk = NSColor(name: nil) { appearance in
-    let highContrast = appearance.name.rawValue.contains("HighContrast")
-    let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    return (dark ? NSColor.white : NSColor.black).withAlphaComponent(highContrast ? 0.8 : 0.6)
-  }
+  static let secondaryInk = adaptive(
+    light: NSColor.black.withAlphaComponent(0.6), dark: NSColor.white.withAlphaComponent(0.6))
   /// The amber and the processing orange at label strength. The floating sheet
   /// proves 4.5:1 for status words against the opaque sheet, which the base
   /// rungs of both hues miss on paper; these are the same hues, deepened.

@@ -184,9 +184,6 @@ final class DesignSystemAdaptiveTests: XCTestCase {
           ratio, systemRatio, "secondaryInk must read stronger than the system rung on \(surface)")
       }
     }
-    let plain = resolvedRGBA(CSPalette.secondaryInk, .aqua)
-    let raised = resolvedRGBA(CSPalette.secondaryInk, .accessibilityHighContrastAqua)
-    XCTAssertGreaterThan(raised.alpha, plain.alpha, "Increase Contrast must raise secondary ink")
   }
 
   func testTextRolesClearAaOnEveryRealSurfaceAndTheirOwnTint() {

@@ -413,7 +413,7 @@ A panel reads the role, never a bare number.
   meet, not only on `ink`: the sheet, a card (`primary` 5 %), a chip on it,
   the glass sheet as measured on screen (#DFDDD9 paper, #18181C ink) and a
   status word's own 12 % tint. Secondary text is `CSColor.secondaryInk`, the
-  label ink at 60 % (80 % under Increase Contrast); the system
+  label ink at 60 %; the system
   `secondaryLabelColor` reads 3.8:1 on a light card. A status hue drawn as a
   word or an essential glyph takes its label rung — `terracottaText`,
   `amberLight`, `dangerLight`, `oliveLight` — while dots, fills and borders
