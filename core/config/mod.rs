@@ -73,7 +73,7 @@ pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
 pub use types::{
     AudioRetention, ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding,
     OverlayPositionMode, PasteMode, RecordingKeys, ShortcutBinding, TranscriptSendMode,
-    WidgetShortcut, WidgetShortcutKey, WorkMode,
+    WidgetShortcut, WidgetShortcutKey, WorkMode, mode_binding_reachable,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{
