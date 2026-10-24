@@ -974,6 +974,8 @@ learned, and where the active rules come from.
   channel), length, word count and the words the ledger admitted. **Copy text**
   puts the take on the pasteboard; **Open in Lab** jumps to the acoustic view
   of the same takes (word pins, PCM slots, Silero ranges), which stays in Lab.
+  **Open in Lab** appears only where the Lab section is available (a developer
+  build); elsewhere Lab is hidden and the card does not offer it.
   A take the ledger left open (any terminal status other than sealed or
   observed silence) says so, with the share of its speech that committed
   words cover. The ledger's refusal list is not shown as a word count: it
