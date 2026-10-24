@@ -64,7 +64,7 @@ pub mod stt_migration;
 mod types;
 
 pub use loader::{
-    CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
+    CHURN_DIR_NAME, CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
     note_startup_acquisition,
 };
 pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
