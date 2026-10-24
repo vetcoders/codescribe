@@ -84,7 +84,7 @@ struct ShortcutsPanel: View {
         if let blurb = row.mode.blurb {
           Text(blurb)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -117,8 +117,8 @@ struct ShortcutsPanel: View {
       HStack(spacing: 8) {
         Text(row.binding.visibleName)
           .font(SettingsScale.monoValue)
-          .foregroundStyle(CSColor.terracotta)
-        CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
+          .foregroundStyle(CSColor.terracottaText)
+        CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.secondaryInk)
       }
       .padding(.horizontal, SettingsScale.controlInsetH)
       .padding(.vertical, SettingsScale.controlInsetV)
@@ -152,7 +152,7 @@ struct ShortcutsPanel: View {
             .font(SettingsScale.settingName)
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
-            .foregroundStyle(model.canSaveBindings ? Color.primary : Color.secondary)
+            .foregroundStyle(model.canSaveBindings ? Color.primary : CSColor.secondaryInk)
             .background(
               RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                 .fill(
@@ -169,7 +169,7 @@ struct ShortcutsPanel: View {
         } label: {
           Text("Restore defaults")
             .font(SettingsScale.settingName)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
         .csFocusRing()
 
@@ -192,25 +192,25 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: 6) {
       if model.hasBlockingBindingConflicts {
         statusLine(
-          color: CSColor.terracotta,
+          color: CSColor.terracottaText,
           text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
         )
       } else if model.hasPendingBindingChanges {
         statusLine(
-          color: CSColor.amber,
+          color: CSColor.amberLight,
           text: String(localized: "Unsaved changes to the mode gestures.")
         )
       }
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.terracotta : CSColor.olive,
+            color: receipt.hasRejection ? CSColor.terracottaText : CSColor.oliveLight,
             text: sentence
           )
           if let detail = receipt.failureDetail {
             Text(verbatim: detail)
               .font(CSFont.mono(10, .medium))
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
@@ -225,7 +225,7 @@ struct ShortcutsPanel: View {
         .foregroundStyle(color)
       Text(text)
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -245,7 +245,7 @@ struct ShortcutsPanel: View {
             .foregroundStyle(Color.primary)
           Text("While holding Fn, press the chosen key to attach the selection.")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -254,7 +254,7 @@ struct ShortcutsPanel: View {
         HStack(spacing: SettingsScale.rowGap) {
           Text("Arm with")
             .font(SettingsScale.controlLabel)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           Picker("Arm modifier", selection: armModifierBinding) {
             Text(verbatim: "Shift").tag("shift")
             Text(verbatim: "Command").tag("cmd")
@@ -358,7 +358,7 @@ struct ShortcutsPanel: View {
         if let note = model.channelModifierRecordingNote {
           Text(note)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, SettingsScale.rowInsetH)
@@ -423,7 +423,7 @@ struct ShortcutsPanel: View {
           .foregroundStyle(Color.primary)
         Text("Use the saved transcript when automatic pasting is unavailable.")
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -455,7 +455,7 @@ struct ShortcutsPanel: View {
           .foregroundStyle(Color.primary)
         Text(detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -508,7 +508,7 @@ struct ShortcutsPanel: View {
 
         Text(model.pasteMode.blurb)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -535,7 +535,7 @@ struct ShortcutsPanel: View {
       Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       Text(text)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -562,7 +562,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
-        validationRow(conflict, accent: CSColor.terracotta, marker: "!")
+        validationRow(conflict, accent: CSColor.terracottaText, marker: "!")
       }
     }
   }
@@ -583,12 +583,12 @@ struct ShortcutsPanel: View {
     HStack(alignment: .top, spacing: 9) {
       Image(systemName: "globe")
         .font(CSFont.ui(12, .semibold))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 14)
         .accessibilityHidden(true)
       Text(entry.message)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
@@ -636,12 +636,12 @@ struct ShortcutsPanel: View {
     HStack(alignment: .top, spacing: 9) {
       Text(verbatim: "!")
         .font(CSFont.ui(11, .bold))
-        .foregroundStyle(CSColor.amber)
+        .foregroundStyle(CSColor.amberLight)
         .frame(width: 14)
       VStack(alignment: .leading, spacing: 2) {
         Text("Shortcuts need Input Monitoring + Accessibility")
           .font(SettingsScale.settingName)
-          .foregroundStyle(CSColor.amber)
+          .foregroundStyle(CSColor.amberLight)
         Text("Bindings won't fire until both are granted. Click to open System Settings.")
           .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)

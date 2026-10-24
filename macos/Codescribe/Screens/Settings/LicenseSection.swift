@@ -40,7 +40,7 @@ struct LicenseSection: View {
           comment: "User panel, License section: what a license unlocks")
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, CSSpace.xxs)
 
@@ -50,7 +50,7 @@ struct LicenseSection: View {
       if let error = model.licenseError {
         Text(error)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.danger)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.md)
       }
@@ -66,7 +66,7 @@ struct LicenseSection: View {
             .textSelection(.enabled)
         }
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .padding(.top, CSSpace.md)
       }
     }
@@ -120,7 +120,7 @@ struct LicenseSection: View {
         if let purchase = purchaseLine {
           Text(purchase)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -140,7 +140,7 @@ struct LicenseSection: View {
       }
       Text(statusLabel)
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(isActive ? CSColor.oliveLight : Color.secondary)
+        .foregroundStyle(isActive ? CSColor.oliveLight : CSColor.secondaryInk)
         .lineLimit(1)
     }
     .padding(.horizontal, isActive ? SettingsScale.controlInsetH : 0)
@@ -174,7 +174,7 @@ struct LicenseSection: View {
             comment: "License card, key row: where the saved key lives")
         )
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
       Spacer(minLength: CSSpace.md)
@@ -244,7 +244,7 @@ struct LicenseSection: View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(label)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityHidden(true)
       HStack(alignment: .center, spacing: CSSpace.sm) {
         SecureField(Self.keyPlaceholder, text: $key)
@@ -307,7 +307,7 @@ struct LicenseSection: View {
         }
         .csFocusRing()
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(CSColor.danger)
+        .foregroundStyle(CSColor.dangerLight)
         .disabled(model.licenseBusy)
       }
     }

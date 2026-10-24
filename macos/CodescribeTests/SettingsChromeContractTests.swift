@@ -22,8 +22,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "CSColor.textMutedAlt",
       "CSColor.textFaint",
       "CSColor.textFaintAlt",
+      // Pale `terracottaLight` on ink: Settings keeps solid terracotta there,
+      // through `CSColor.terracottaText`. `dangerLight` is the error rung that
+      // clears 4.5:1 on the sheet in both appearances (contrast audit 2026-10-24).
       "CSColor.terracottaLight",
-      "CSColor.dangerLight",
       "cornerRadius: 10",
       "cornerRadius: 11",
       "focusEffectDisabled",
@@ -322,7 +324,7 @@ final class SettingsChromeContractTests: XCTestCase {
     // level, the sentence is quiet secondary text (Monika, 2026-10-18).
     XCTAssertTrue(
       view.contains(
-        "Text(message)\n        .font(.caption)\n        .foregroundStyle(Color.secondary)"))
+        "Text(message)\n        .font(.caption)\n        .foregroundStyle(CSColor.secondaryInk)"))
     // Narrowest sidebar minus the footer padding, the status dot and its gap.
     let slot: CGFloat = 196 - 2 * 16 - 6 - 8
     XCTAssertEqual(states.first?.level, .healthy)
@@ -404,7 +406,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertFalse(accountSource.contains("Advanced · OAuth client id…"))
 
     // Red only for a real failure: an absent key and Sign out stay neutral.
-    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : Color.secondary"))
+    XCTAssertTrue(keyRowSource.contains("isSet ? CSColor.olive : CSColor.secondaryInk"))
     XCTAssertFalse(rows.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertFalse(panel.contains("\"Sign out\", tint: CSColor.terracotta"))
     XCTAssertTrue(panel.contains("optional: !provider.keyRequired || accountServesRequests"))
@@ -1485,7 +1487,7 @@ final class SettingsChromeContractTests: XCTestCase {
   func testAvailabilityTintsUseSolidTerracotta() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
-      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracotta").count, 3)
+      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracottaText").count, 3)
     XCTAssertTrue(
       model.contains(
         "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))

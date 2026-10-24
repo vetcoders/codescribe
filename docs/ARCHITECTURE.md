@@ -409,6 +409,15 @@ A panel reads the role, never a bare number.
   projection do not cache the choice. Shipped values stay in `SheetShade`.
   Light, dark or system is `AppearancePreference`, handed to `NSApp` at launch
   and on change.
+- **Text contrast.** Words clear WCAG AA (4.5:1) on the surfaces they really
+  meet, not only on `ink`: the sheet, a card (`primary` 5 %), a chip on it,
+  the glass sheet as measured on screen (#DFDDD9 paper, #18181C ink) and a
+  status word's own 12 % tint. Secondary text is `CSColor.secondaryInk`, the
+  label ink at 60 %; the system
+  `secondaryLabelColor` reads 3.8:1 on a light card. A status hue drawn as a
+  word or an essential glyph takes its label rung — `terracottaText`,
+  `amberLight`, `dangerLight`, `oliveLight` — while dots, fills and borders
+  keep the base hue. `DesignSystemAdaptiveTests` holds these pairs.
 
 ### Agent window header
 

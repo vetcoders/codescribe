@@ -54,7 +54,7 @@ struct LabPanel: View {
         "Applies to the next recording. Adaptive buffering preserves phrase boundaries within bounded audio and wait limits."
       )
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
 
       Picker(
         "Text formatting",
@@ -70,7 +70,7 @@ struct LabPanel: View {
         "Applies to Smart and Corrections from the next formatting pass. The on-device model runs first without a cloud credential; on failure the formatting provider is used when one is configured. Max always uses the Agent model. A .env value overrides this toggle."
       )
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
 
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }
@@ -106,7 +106,7 @@ struct LabPanel: View {
     }
     Text(sealLane.detail)
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
   }
 
@@ -216,7 +216,7 @@ struct LabPanel: View {
           Text(verbatim: ledgerSensitivityLabel)
             .font(CSFont.ui(11, .semibold))
             .monospacedDigit()
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
         Slider(
           value: Binding(
@@ -246,13 +246,13 @@ struct LabPanel: View {
           Text("Fewer cut words")
         }
         .font(CSFont.ui(11))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         HStack(alignment: .firstTextBaseline) {
           Text(
             "Too many repeated words: move it left. Too many cut words: move it right. The centre is the shipped engine. Applies to the next recording."
           )
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           Spacer(minLength: 8)
           Button("Centre") {
@@ -311,7 +311,7 @@ struct LabPanel: View {
           "This build decodes Whisper refinement on a fixed capture-clock window, so the context length is stored but not read."
         )
         .font(CSFont.ui(11))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
       .settingsGroupedInset()

@@ -126,7 +126,7 @@ struct CreatorPanel: View {
             )
           )
           .font(.caption)
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("settings-max-agent-unavailable")
         }
@@ -209,7 +209,7 @@ struct CreatorPanel: View {
       if !model.creatorAgentBridgeStatus.payloadAvailable {
         Text(model.creatorAgentBridgeStatus.detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let notice = model.creatorAgentBridgeNotice {
@@ -219,7 +219,7 @@ struct CreatorPanel: View {
       if let error = model.creatorAgentBridgeError {
         Text(error)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .textSelection(.enabled)
       }
     }
@@ -262,7 +262,7 @@ struct CreatorPanel: View {
       )
     )
     .font(SettingsScale.helper)
-    .foregroundStyle(.secondary)
+    .foregroundStyle(CSColor.secondaryInk)
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, SettingsScale.rowInsetH)
@@ -349,7 +349,7 @@ struct CreatorPanel: View {
                 comment: "Status on an agent client row: this app carries a newer skill")
           )
           .font(SettingsScale.helper)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -386,7 +386,7 @@ struct CreatorPanel: View {
         ForEach(AgentBridgeClient.allCases) { client in
           Text(verbatim: "\(client.displayName): \(client.skillPathLabel)")
             .font(SettingsScale.metaKey)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -440,7 +440,7 @@ private struct MaxConsultationCard: View {
               .foregroundStyle(.primary)
             Text("Continue the consultation or start a new one. History stays.")
               .font(SettingsScale.helper)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
           }
           .frame(maxWidth: .infinity, alignment: .leading)
           Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
@@ -504,7 +504,7 @@ struct MaxApprovalCards: View {
         .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
       }
       if let error = model.maxApprovalError {
-        Text(error).foregroundStyle(CSColor.amber)
+        Text(error).foregroundStyle(CSColor.amberLight)
       }
     }
   }
@@ -529,7 +529,7 @@ struct MaxApprovalCards: View {
             comment: "Line under the Max permissions heading: the cards below need a decision")
       )
       .font(SettingsScale.helper)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .accessibilityIdentifier("settings-max-approvals-pending")
     }
   }
@@ -618,7 +618,7 @@ struct SettingsControlRow<Control: View>: View {
         if let subtitle {
           Text(subtitle)
             .font(SettingsScale.helper)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -663,7 +663,7 @@ private struct InterfaceLanguageRow: View {
         HStack(spacing: 12) {
           Text(model.interfaceLanguageRestartExplanation)
             .font(SettingsScale.helper)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           Button(model.interfaceLanguageRestartTitle) { model.applyInterfaceLanguage() }
@@ -674,7 +674,7 @@ private struct InterfaceLanguageRow: View {
       if let notice = model.interfaceLanguageNotice {
         Text(notice)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-interface-language-notice")
       }
@@ -789,7 +789,7 @@ private struct PermissionChecklistRow: View {
         if let note {
           Text(note)
             .font(.caption)
-            .foregroundStyle(CSColor.terracotta)
+            .foregroundStyle(CSColor.terracottaText)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -807,7 +807,7 @@ private struct PermissionChecklistRow: View {
           } label: {
             Text("allow \(kind.displayName)")
               .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracotta)
+              .foregroundStyle(CSColor.terracottaText)
           }
           .csFocusRing()
         }
@@ -818,7 +818,7 @@ private struct PermissionChecklistRow: View {
           } label: {
             Text("open System Settings")
               .font(CSFont.ui(11, .semibold))
-              .foregroundStyle(CSColor.terracotta)
+              .foregroundStyle(CSColor.terracottaText)
           }
           .csFocusRing()
         }
@@ -831,12 +831,12 @@ private struct PermissionChecklistRow: View {
   @ViewBuilder
   private var statusBadge: some View {
     ZStack {
-      Circle().fill((granted ? CSColor.olive : CSColor.terracotta).opacity(0.2))
+      Circle().fill((granted ? CSColor.olive : CSColor.terracottaText).opacity(0.2))
       CSIconView(
         icon: granted ? .success : .warning,
         size: 11,
         weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.terracotta
+        color: granted ? CSColor.oliveLight : CSColor.terracottaText
       )
     }
     .frame(width: 20, height: 20)

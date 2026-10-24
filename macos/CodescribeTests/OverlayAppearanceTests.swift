@@ -20,7 +20,7 @@ final class OverlayAppearanceTests: XCTestCase {
     for palette in [OverlayAppearancePalette.light, .dark] {
       assertContrast(palette.primaryText, on: palette, minimum: 4.5, role: "primary")
       assertContrast(palette.bodyText, on: palette, minimum: 4.5, role: "body")
-      assertContrast(palette.mutedText, on: palette, minimum: 3.0, role: "muted")
+      assertContrast(palette.mutedText, on: palette, minimum: 4.5, role: "muted")
 
       for (role, token) in [
         ("listening", palette.listeningStatus),

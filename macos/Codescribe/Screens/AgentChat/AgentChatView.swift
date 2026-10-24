@@ -350,7 +350,7 @@ private struct AgentIntegratedChrome: ViewModifier {
     } label: {
       Image(systemName: isPinned ? "pin.fill" : "pin")
         .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(isPinned ? CSColor.chromeAccent : Color.secondary)
+        .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.secondaryInk)
         .frame(width: 24, height: 20)
         .background(
           RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
@@ -633,7 +633,7 @@ private struct QueuedTurnRow: View {
     HStack(spacing: 10) {
       Text("Queued")
         .font(CSFont.mono(10, .semibold))
-        .foregroundStyle(CSColor.amber)
+        .foregroundStyle(CSColor.amberLight)
       if isEditing {
         TextField("Queued message", text: $editText, axis: .vertical)
           .textFieldStyle(.plain)
@@ -728,7 +728,7 @@ struct ToolApprovalCard: View {
       HStack {
         Text("Permission required")
           .font(CSFont.ui(13, .semibold))
-          .foregroundStyle(CSColor.amber)
+          .foregroundStyle(CSColor.amberLight)
         Spacer()
         Text(request.risk.replacingOccurrences(of: "_", with: " "))
           .font(CSFont.mono(10, .medium))
@@ -746,7 +746,7 @@ struct ToolApprovalCard: View {
       if let command = request.command {
         Text(verbatim: "$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {

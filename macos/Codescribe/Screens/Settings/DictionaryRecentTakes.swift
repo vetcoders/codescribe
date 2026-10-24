@@ -182,17 +182,17 @@ struct DictionaryRecentTakes: View {
     if let latest = takes.first {
       Text("Last take on this Mac: \(Self.dateLabel(latest.recordedAt))")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else if loaded {
       Text("No take has been recorded on this Mac yet.")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else {
       Text("Reading takes…")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
     }
   }
 
@@ -203,13 +203,13 @@ struct DictionaryRecentTakes: View {
           .font(CSFont.ui(12.5, .semibold))
         Text(take.destination)
           .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Text(Self.durationLabel(take.durationSeconds))
           .font(CSFont.mono(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Text("\(take.wordCount) words")
           .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Spacer()
         Button(String(localized: "Copy text")) {
           NSPasteboard.general.clearContents()
@@ -227,7 +227,7 @@ struct DictionaryRecentTakes: View {
       if take.text.isEmpty {
         Text("No words were admitted for this take.")
           .font(CSFont.ui(12))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       } else {
         Text(take.text)
           .font(CSFont.ui(12.5))
@@ -253,7 +253,7 @@ struct DictionaryRecentTakes: View {
           }
         }
         .font(CSFont.ui(11))
-        .foregroundStyle(Color.orange)
+        .foregroundStyle(CSColor.amberLight)
       }
     }
     .padding(CSSpace.md)
