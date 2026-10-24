@@ -743,8 +743,9 @@ struct DictationOverlayView: View {
   }
 
   /// Trailing transcript actions. This is the only mount of the rail, so each
-  /// command has one control. Seven visible slots float over the transcript
-  /// surface, with the rest reachable by scrolling and no extra sidebar fill.
+  /// available command has one control. The column uses the height under the
+  /// header. A short window scrolls the overflow; a tall window does not stop
+  /// at the seven-control floor.
   private func transcriptActionsColumn<Rail: View>(
     maximumHeight: CGFloat, width: CGFloat, rail: Rail
   ) -> some View {
@@ -755,7 +756,7 @@ struct DictationOverlayView: View {
 
     return
       rail
-      .frame(height: min(availableHeight, OverlayTranscriptActionsLayout.viewportHeight))
+      .frame(height: availableHeight)
       .padding(.top, headerHeight + OverlayTranscriptActionsLayout.columnTopGap)
       .padding(.bottom, OverlayTranscriptActionsLayout.columnBottomPadding)
       // Keep the complete action buttons outside the native resize band.

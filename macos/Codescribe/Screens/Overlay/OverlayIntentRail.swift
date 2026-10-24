@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// One slot of the permanent transcript-action column. The column shows every
-/// slot from its first render, always in this order; availability only
-/// changes a slot's enabled state, never its presence or place. `finish`,
-/// `startRecording` and `close` are not slots: the header's recording and
-/// brand controls are their only renders.
+/// One place in the transcript-action column. The column keeps this order and
+/// mounts a place only while `actionAvailability` says it can run. A dim
+/// resting glyph is the rail's hover presentation, not a disabled placeholder.
+/// `finish`, `startRecording` and `close` are not places: the header's
+/// recording and brand controls are their only renders.
 enum OverlayTranscriptActionSlot: Equatable, Hashable {
   case history
   case versions
@@ -14,12 +14,21 @@ enum OverlayTranscriptActionSlot: Equatable, Hashable {
   case intent(OverlayIntent)
 }
 
-/// Whether one fixed slot can run right now, derived from the projected
-/// intents and the versions presentation. Pure, so the whole fixed set can be
-/// falsified without rendering.
+/// Whether one ordered action can run right now, derived from the projected
+/// intents and the versions presentation. Pure, so availability can be
+/// falsified without rendering. The column mounts `isEnabled` rows only.
 struct OverlayTranscriptActionAvailability: Equatable {
   let slot: OverlayTranscriptActionSlot
   let isEnabled: Bool
+}
+
+/// One non-empty band of the rail, in the stable order `actionAvailability`
+/// already uses. An empty band is absent, so a missing action leaves no
+/// separator and no placeholder.
+private struct OverlayIntentRailBand: Identifiable {
+  let id: String
+  let slots: [OverlayTranscriptActionSlot]
+  let showsSeparator: Bool
 }
 
 /// The overlay needs a quiet text-only state; tools are transient. Retained work
@@ -147,11 +156,12 @@ struct OverlayIntentRail: View {
   var onInteraction: () -> Void = {}
   var onPresentationChange: (Bool) -> Void = { _ in }
 
-  /// The complete, finite set of transcript actions, in the order the column
-  /// renders them. The projection only decides which of them are enabled:
-  /// a phase, a selection, an edit or a versions cursor can grey a control,
-  /// never add or remove one. Recovery commands stay behind the previous-take
-  /// menu, and undo/redo behind the versions cursor, exactly as before.
+  /// Stable order of every transcript action this column knows. `isEnabled`
+  /// is the existing availability: projected intents, the versions cursor,
+  /// and history, which stays available. The column mounts enabled rows only.
+  /// It does not keep a disabled placeholder for a row that cannot run.
+  /// Recovery stays inside the previous-take menu. Undo and redo appear only
+  /// while the versions cursor can move that way.
   static func actionAvailability(
     intents: [OverlayIntent], versions: OverlayTranscriptVersionsPresentation
   ) -> [OverlayTranscriptActionAvailability] {
@@ -179,42 +189,85 @@ struct OverlayIntentRail: View {
     ]
   }
 
-  /// The slots the current projection lights up; every other slot in the
-  /// fixed set renders disabled. Computed, not stored, so the body below
-  /// stays a direct expression of the fixed column.
-  private var enabledSlots: Set<OverlayTranscriptActionSlot> {
-    Set(
-      Self.actionAvailability(intents: intents, versions: versions)
-        .filter(\.isEnabled).map(\.slot))
+  /// Enabled rows, grouped in `actionAvailability` order. Empty bands drop
+  /// out, so the separators only sit between actions that are actually there.
+  private var visibleBands: [OverlayIntentRailBand] {
+    let mounted = Self.actionAvailability(intents: intents, versions: versions)
+      .filter(\.isEnabled)
+      .map(\.slot)
+    let order = ["cursor", "recovery", "document", "engine", "delivery"]
+    var bands: [OverlayIntentRailBand] = []
+    for id in order {
+      let slots = mounted.filter { Self.bandID($0) == id }
+      guard !slots.isEmpty else { continue }
+      bands.append(
+        OverlayIntentRailBand(id: id, slots: slots, showsSeparator: !bands.isEmpty))
+    }
+    return bands
+  }
+
+  private var visibleControlIDs: [String] {
+    visibleBands.flatMap(\.slots).map(Self.controlID)
+  }
+
+  /// History, versions and the versions cursor share the first band. The
+  /// previous take is its own band. Document, engine and delivery follow.
+  /// Header-owned and menu-owned intents are not bands.
+  private static func bandID(_ slot: OverlayTranscriptActionSlot) -> String? {
+    switch slot {
+    case .history, .versions, .undo, .redo:
+      "cursor"
+    case .previousTake:
+      "recovery"
+    case .intent(let intent):
+      switch intent {
+      case .commitRevision, .discardRevision, .insertPaste, .copy:
+        "document"
+      case .retranscribe, .format:
+        "engine"
+      case .sendToAgent:
+        "delivery"
+      case .startRecording, .finish, .undo, .redo, .recoverSuperseded, .discardSuperseded, .close:
+        nil
+      }
+    }
+  }
+
+  private static func controlID(_ slot: OverlayTranscriptActionSlot) -> String {
+    switch slot {
+    case .history:
+      "overlay-history-menu"
+    case .versions:
+      versionsControlID
+    case .undo:
+      "overlay-intent-\(OverlayIntent.undo.rawValue)"
+    case .redo:
+      "overlay-intent-\(OverlayIntent.redo.rawValue)"
+    case .previousTake:
+      "overlay-previous-take-menu"
+    case .intent(let intent):
+      "overlay-intent-\(intent.rawValue)"
+    }
   }
 
   var body: some View {
     ScrollView(.vertical) {
-      VStack(spacing: OverlayTranscriptActionsLayout.groupSpacing) {
-        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
-          historyControl
-          versionsControl(enabled: enabledSlots.contains(.versions))
-          undoRedoControl(.undo, enabled: versions.canUndo, title: versions.undoTitle)
-          undoRedoControl(.redo, enabled: versions.canRedo, title: versions.redoTitle)
+      VStack(spacing: 0) {
+        ForEach(visibleBands) { band in
+          VStack(spacing: 0) {
+            if band.showsSeparator {
+              groupSeparator
+                .padding(.vertical, OverlayTranscriptActionsLayout.groupSpacing)
+            }
+            VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
+              ForEach(band.slots, id: \.self) { slot in
+                mountedControl(slot)
+              }
+            }
+          }
         }
-        groupSeparator
-        previousTakeControl(enabled: enabledSlots.contains(.previousTake))
-        groupSeparator
-        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
-          intentControl(.commitRevision, enabled: enabledSlots.contains(.intent(.commitRevision)))
-          intentControl(.discardRevision, enabled: enabledSlots.contains(.intent(.discardRevision)))
-          intentControl(.insertPaste, enabled: enabledSlots.contains(.intent(.insertPaste)))
-          intentControl(.copy, enabled: enabledSlots.contains(.intent(.copy)))
-        }
-        groupSeparator
-        VStack(spacing: OverlayTranscriptActionsLayout.itemSpacing) {
-          intentControl(.retranscribe, enabled: enabledSlots.contains(.intent(.retranscribe)))
-          intentControl(.format, enabled: enabledSlots.contains(.intent(.format)))
-        }
-        groupSeparator
-        intentControl(.sendToAgent, enabled: enabledSlots.contains(.intent(.sendToAgent)))
       }
-      .frame(maxWidth: .infinity)
+      .frame(maxWidth: .infinity, alignment: .top)
       .padding(.vertical, OverlayTranscriptActionsLayout.contentVerticalPadding)
       .csAutohidingScrollers()
     }
@@ -225,6 +278,11 @@ struct OverlayIntentRail: View {
       if value != nil { onInteraction() }
       if value == Self.versionsControlID { onVersionsOpened() }
     }
+    .onChange(of: visibleControlIDs) { _, ids in
+      if let presented, !ids.contains(presented) {
+        self.presented = nil
+      }
+    }
     .onDisappear { onPresentationChange(false) }
     .onExitCommand {
       presented = nil
@@ -234,6 +292,24 @@ struct OverlayIntentRail: View {
     .accessibilityLabel("Overlay actions")
     .accessibilityValue(Self.accessibilityValue(for: phase))
     .accessibilityIdentifier("overlay-intent-dock")
+  }
+
+  @ViewBuilder
+  private func mountedControl(_ slot: OverlayTranscriptActionSlot) -> some View {
+    switch slot {
+    case .history:
+      historyControl
+    case .versions:
+      versionsControl
+    case .undo:
+      undoRedoControl(.undo, title: versions.undoTitle)
+    case .redo:
+      undoRedoControl(.redo, title: versions.redoTitle)
+    case .previousTake:
+      previousTakeControl
+    case .intent(let intent):
+      intentControl(intent)
+    }
   }
 
   private var groupSeparator: some View {
@@ -248,6 +324,7 @@ struct OverlayIntentRail: View {
       id: "overlay-history-menu", title: String(localized: "Transcription history"),
       palette: palette,
       presented: $presented,
+      emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
@@ -265,12 +342,12 @@ struct OverlayIntentRail: View {
     }
   }
 
-  private func versionsControl(enabled: Bool) -> some View {
+  private var versionsControl: some View {
     OverlayHoverControl(
       id: Self.versionsControlID, title: Self.versionsTitle(versions),
       palette: palette,
       presented: $presented,
-      isEnabled: enabled,
+      emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
@@ -287,12 +364,12 @@ struct OverlayIntentRail: View {
     .accessibilityValue(versions.current?.title ?? "")
   }
 
-  private func previousTakeControl(enabled: Bool) -> some View {
+  private var previousTakeControl: some View {
     OverlayHoverControl(
       id: "overlay-previous-take-menu", title: String(localized: "Previous take"),
       palette: palette,
       presented: $presented,
-      isEnabled: enabled,
+      emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
@@ -317,12 +394,12 @@ struct OverlayIntentRail: View {
     }
   }
 
-  private func intentControl(_ intent: OverlayIntent, enabled: Bool) -> some View {
+  private func intentControl(_ intent: OverlayIntent) -> some View {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: intent.accessibilityLabel,
       palette: palette, presented: $presented,
       action: intent == .format || intent == .retranscribe ? nil : { dispatch(intent) },
-      isEnabled: enabled,
+      emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
@@ -485,14 +562,13 @@ struct OverlayIntentRail: View {
 
   static let versionsControlID = "overlay-versions-menu"
 
-  /// Undo and Redo stay in place at their limits, disabled, so the tooltip
-  /// can say what they would take back or bring back, or why they cannot.
-  private func undoRedoControl(_ intent: OverlayIntent, enabled: Bool, title: String)
-    -> some View
-  {
+  /// Undo and Redo mount only while the versions cursor can move. Their title
+  /// still names the step they take.
+  private func undoRedoControl(_ intent: OverlayIntent, title: String) -> some View {
     OverlayHoverControl(
       id: "overlay-intent-\(intent.rawValue)", title: title, palette: palette,
-      presented: $presented, action: { dispatch(intent) }, isEnabled: enabled,
+      presented: $presented, action: { dispatch(intent) },
+      emphasis: .transcriptRail,
       keepsHintInsideWindow: true,
       popoverArrow: .trailing
     ) {
