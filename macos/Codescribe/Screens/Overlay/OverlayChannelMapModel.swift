@@ -1,33 +1,41 @@
 import CoreGraphics
 import Foundation
 
-/// The Agent channel chord's modifier as Settings › Shortcuts › Extra
-/// shortcuts stores it (`AGENT_CHANNEL_MODIFIER`). The channel map names it in
-/// every shortcut hint, so a hint never claims Ctrl while the chord is Fn.
+/// The Agent channel chord's modifier in effect (`AGENT_CHANNEL_MODIFIER`
+/// after the core's one-key-one-role rule). The channel map names it in every
+/// shortcut hint, so a hint never claims Ctrl while the chord is Fn, and names
+/// no chord at all when both keys record dictation (`"off"`).
 enum OverlayChannelChordModifier: Equatable, Sendable {
   case control
   case function
+  /// Both keys record dictation: no digit chord opens a channel.
+  case unbound
 
-  /// The Settings normalization: `"fn"` is Fn, every other token, Command
-  /// included, is Ctrl (`HotkeysEngine.normalizeChannelModifier`).
+  /// `"fn"` is Fn, `"off"` is no chord, every other token, Command included,
+  /// is Ctrl (`HotkeysEngine.normalizeChannelModifier`).
   init(setting: String) {
-    self = setting.lowercased() == "fn" ? .function : .control
-  }
-
-  /// The key's name as the Settings picker prints it, verbatim in every
-  /// language there as well.
-  var keyName: String {
-    switch self {
-    case .control: "Ctrl"
-    case .function: "Fn"
+    switch setting.lowercased() {
+    case "fn": self = .function
+    case "off": self = .unbound
+    default: self = .control
     }
   }
 
-  /// The written chord in a hint: `Ctrl+5`.
-  func shortcut(digit: String) -> String { keyName + "+" + digit }
+  /// The key's name as the Settings picker prints it, verbatim in every
+  /// language there as well; `nil` without a chord.
+  var keyName: String? {
+    switch self {
+    case .control: "Ctrl"
+    case .function: "Fn"
+    case .unbound: nil
+    }
+  }
 
-  /// The chord as VoiceOver reads it: `Ctrl 5`.
-  func spokenShortcut(digit: String) -> String { keyName + " " + digit }
+  /// The written chord in a hint: `Ctrl+5`; `nil` without a chord.
+  func shortcut(digit: String) -> String? { keyName.map { $0 + "+" + digit } }
+
+  /// The chord as VoiceOver reads it: `Ctrl 5`; `nil` without a chord.
+  func spokenShortcut(digit: String) -> String? { keyName.map { $0 + " " + digit } }
 }
 
 /// One channel of the collapsed overlay's map: a bound digit and its agent,
@@ -66,14 +74,18 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
     }
   }
 
-  /// The floating hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`.
+  /// The floating hint: `5 · Kuba · Ctrl+5`, or `0 · Ctrl+0`; without a
+  /// chord `5 · Kuba` or `0`.
   func hint(modifier: OverlayChannelChordModifier) -> String {
-    let shortcut = modifier.shortcut(digit: digit)
-    return isBroadcast ? digit + " · " + shortcut : digit + " · " + name + " · " + shortcut
+    var parts = isBroadcast ? [digit] : [digit, name]
+    if let shortcut = modifier.shortcut(digit: digit) { parts.append(shortcut) }
+    return parts.joined(separator: " · ")
   }
 
   func accessibilityLabel(modifier: OverlayChannelChordModifier) -> String {
-    let shortcut = modifier.spokenShortcut(digit: digit)
+    guard let shortcut = modifier.spokenShortcut(digit: digit) else {
+      return accessibilityLabelWithoutShortcut
+    }
     // Channel 0 is on the map only while the microphone broadcasts on it.
     if isBroadcast {
       return String(
@@ -91,6 +103,27 @@ struct OverlayChannelMapChip: Equatable, Identifiable, Sendable {
       : String(
         localized: "Channel \(digit), \(name), shortcut \(shortcut)",
         comment: "Compact overlay channel chip: digit, agent name, the channel chord (e.g. Ctrl 5)")
+  }
+
+  /// VoiceOver label while both keys record dictation and no chord exists.
+  private var accessibilityLabelWithoutShortcut: String {
+    if isBroadcast {
+      return String(
+        localized: "Channel \(digit), microphone open",
+        comment:
+          "Collapsed overlay channel 0 chip while broadcasting, when no key plus digit opens a channel"
+      )
+    }
+    return microphoneOpen
+      ? String(
+        localized: "Channel \(digit), \(name), microphone open",
+        comment:
+          "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name; the microphone feeds this channel"
+      )
+      : String(
+        localized: "Channel \(digit), \(name)",
+        comment:
+          "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name")
   }
 
   /// A lease name as the map prints it: the first grapheme upper-cased for

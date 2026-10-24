@@ -1957,6 +1957,9 @@ final class SettingsViewModel: ObservableObject {
     bindingOptions = hotkeys.availableBindings()
     draftBindings = persisted
     revalidateBindings()
+    // A binding decides which keys record, and so which channel modifier is
+    // in effect: re-read the projection, never keep the stale one.
+    if let engine { applyLoadedSettings(engine.loadSettings()) }
 
     func landed(_ entry: CsModeBinding) -> Bool {
       persisted.first { $0.mode == entry.mode }?.binding == entry.binding
@@ -1975,6 +1978,7 @@ final class SettingsViewModel: ObservableObject {
     do {
       try hotkeys.resetToDefaults()
       loadHotkeys()
+      if let engine { applyLoadedSettings(engine.loadSettings()) }
     } catch {
       lastError = error.userFacingMessage
     }
@@ -3351,9 +3355,69 @@ final class SettingsViewModel: ObservableObject {
     persist("HOLD_ARM_MODIFIER", normalized)
   }
 
-  /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is not offered.
+  /// Agent-channel modifier in effect: `"ctrl"` (default) or `"fn"`, or
+  /// `"off"` when both keys record dictation. The core never returns a key
+  /// that records (one key, one role), so this can differ from the stored
+  /// choice. Command is not offered.
   var channelModifier: String {
-    settings.channelModifier.lowercased() == "fn" ? "fn" : "ctrl"
+    switch settings.channelModifier.lowercased() {
+    case "fn": "fn"
+    case "off": "off"
+    default: "ctrl"
+    }
+  }
+
+  /// Fn can be the channel modifier only while no gesture records with it.
+  var channelModifierFnAvailable: Bool { !settings.fnRecordsDictation }
+
+  /// Ctrl can be the channel modifier only while no gesture records with it.
+  var channelModifierCtrlAvailable: Bool { !settings.ctrlRecordsDictation }
+
+  /// The one sentence under the Agent channel row when a key is taken by
+  /// dictation: what records with it and what would free it. Only the parts
+  /// that apply are named: turning the Fn tap off alone does not free Fn while
+  /// a Hold Fn/Globe binding records. `nil` while both keys are free.
+  var channelModifierRecordingNote: String? {
+    let fnBinding = settings.fnBindingRecordsDictation
+    let fnTap = settings.fnTapTogglesDictation
+    switch (settings.fnRecordsDictation, settings.ctrlRecordsDictation) {
+    case (true, true):
+      return String(
+        localized:
+          "Ctrl and Fn both record dictation, so open Agent channels from the agents list.",
+        comment:
+          "Settings › Shortcuts › Agent channel: both modifier keys start dictation, so no key plus digit opens a channel; the overlay agents list still does"
+      )
+    case (true, false) where fnBinding && fnTap:
+      return String(
+        localized:
+          "Fn records dictation — to use it for channels, assign dictation to another shortcut and turn off the Fn tap.",
+        comment:
+          "Settings › Shortcuts › Agent channel: Fn is greyed out because Hold Fn/Globe dictation and the Fn tap both use it; names both steps that free Fn"
+      )
+    case (true, false) where fnBinding:
+      return String(
+        localized:
+          "Fn records dictation — to use it for channels, assign dictation to another shortcut.",
+        comment:
+          "Settings › Shortcuts › Agent channel: Fn is greyed out because dictation is bound to Hold Fn/Globe; rebinding dictation frees Fn"
+      )
+    case (true, false):
+      return String(
+        localized: "Fn records dictation — to use it for channels, turn off the Fn tap.",
+        comment:
+          "Settings › Shortcuts › Agent channel: Fn is greyed out because the Fn tap toggles dictation; turning the tap off frees Fn"
+      )
+    case (false, true):
+      return String(
+        localized:
+          "Ctrl records dictation — to use it for channels, assign dictation to another shortcut.",
+        comment:
+          "Settings › Shortcuts › Agent channel: Ctrl is greyed out because a Ctrl shortcut starts dictation; rebinding dictation frees Ctrl"
+      )
+    case (false, false):
+      return nil
+    }
   }
 
   func setChannelModifier(_ value: String) {
