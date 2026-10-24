@@ -505,7 +505,7 @@ private struct AgentEmptyThread: View {
         .padding(.top, 2)
       Text(agentEmptyThreadDetail)
         .font(CSFont.ui(12.5, .regular))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
     .multilineTextAlignment(.center)
@@ -571,7 +571,7 @@ struct JumpToCurrentButton: View {
           color: CSColor.chromeAccent)
         Text("Current")
           .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(hovering ? Color.primary : Color.secondary)
+          .foregroundStyle(hovering ? Color.primary : CSColor.secondaryInk)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
@@ -859,7 +859,7 @@ private struct ContextChip: View {
           if let app {
             Text("app · \(app)")
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
           }
           if let selection {
             // Huge pasted selections (legacy assistive wires) must
@@ -1029,7 +1029,7 @@ struct AttachmentPreviewSheet: View {
             Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
             Text(String(format: "%.0f%%", zoom * 100))
               .font(CSFont.mono(10.5, .medium))
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .frame(width: 44, alignment: .trailing)
           }
         } else if attachment.url == nil {
@@ -1118,10 +1118,10 @@ struct AttachmentPreviewSheet: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(CSColor.terracotta)
+        .foregroundStyle(CSColor.terracottaText)
       Text(detail)
         .font(CSFont.mono(11))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(CSSpace.card)
@@ -1209,9 +1209,9 @@ private struct ToolLineRow: View {
   private var rowColor: Color {
     switch line.state {
     case .running:
-      return CSColor.amber
+      return CSColor.amberLight
     case .failed:
-      return CSColor.terracotta
+      return CSColor.terracottaText
     case .cancelled, .unknown:
       return CSColor.textTertiary
     case .succeeded:
@@ -1293,7 +1293,7 @@ private struct ToolInspectPanel: View {
           .textCase(.uppercase)
           Text(reason)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(line.state == .failed ? CSColor.terracotta : Color.primary)
+            .foregroundStyle(line.state == .failed ? CSColor.terracottaText : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
@@ -1382,7 +1382,7 @@ private struct ToolTurn: View {
             icon: hasRunning ? .more : hasCancelled ? .stop : .success,
             size: 11,
             color: hasRunning
-              ? CSColor.amber : hasCancelled ? CSColor.textTertiary : CSColor.oliveLight
+              ? CSColor.amberLight : hasCancelled ? CSColor.textTertiary : CSColor.oliveLight
           )
           Text(message.toolTitle)
             .font(CSFont.mono(11, .semibold))
@@ -1829,7 +1829,7 @@ private struct ReasonedChip: View {
   var body: some View {
     Text("worked · \(String(format: "%.1f", seconds))s")
       .font(CSFont.mono(10, .medium))
-      .foregroundStyle(CSColor.amber)
+      .foregroundStyle(CSColor.amberLight)
       .padding(.horizontal, 8)
       .padding(.vertical, 3)
       .background(CSColor.amber.opacity(0.1))

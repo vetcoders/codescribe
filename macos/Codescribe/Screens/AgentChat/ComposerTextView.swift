@@ -182,7 +182,7 @@ struct ComposerTextView: NSViewRepresentable {
     textView.font = ComposerTextLayout.composerFont(
       size: ComposerControlMetrics.textSize * textScale)
     textView.textColor = .labelColor
-    textView.insertionPointColor = NSColor(CSColor.terracotta)
+    textView.insertionPointColor = NSColor(CSColor.terracottaText)
     textView.setAccessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
     textView.setAccessibilityLabel(
       String(localized: "Message", comment: "Accessibility label of the composer field"))
@@ -230,7 +230,7 @@ struct ComposerTextView: NSViewRepresentable {
       textView.setSelectedRange(NSRange(location: location, length: length))
     }
     textView.textColor = .labelColor
-    textView.insertionPointColor = NSColor(CSColor.terracotta)
+    textView.insertionPointColor = NSColor(CSColor.terracottaText)
     textView.needsDisplay = true
     context.coordinator.refreshLayout(textView, in: scrollView)
 
