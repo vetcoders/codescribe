@@ -816,6 +816,11 @@ pub enum TranscriptSessionEndReason {
     StartFailed,
     /// A CLI file decoder or output sink failed after opening its session.
     TranscriptionFailed,
+    /// Written only before 2026-10-24: an admitted hold on the agent-channel
+    /// modifier turned out to prefix a channel digit chord. A key that records
+    /// is no longer the channel modifier, so no session ends this way now; the
+    /// value stays so older append-only lines still decode.
+    ChordPrefix,
 }
 
 /// Append-only public event contract. `text` is always clean reducer truth;
@@ -2675,7 +2680,9 @@ impl TranscriptBus {
             TranscriptSessionEndReason::Completed if has_text => {
                 TranscriptProjectionPhase::Formatted
             }
-            TranscriptSessionEndReason::Completed => TranscriptProjectionPhase::NoSpeech,
+            TranscriptSessionEndReason::Completed | TranscriptSessionEndReason::ChordPrefix => {
+                TranscriptProjectionPhase::NoSpeech
+            }
             TranscriptSessionEndReason::CoverageRefused if has_text => {
                 TranscriptProjectionPhase::CoverageRefused
             }
@@ -5109,6 +5116,35 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    /// Lines written before 2026-10-24 may end with `chord_prefix`
+    /// (docs/TRANSCRIPT_BUS.md); a typed reader still decodes them.
+    #[test]
+    fn a_historical_chord_prefix_terminal_line_still_decodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("historical-chord-prefix.jsonl");
+        let bus =
+            TranscriptBus::open_at(session("historical-chord-prefix"), path.clone(), None).unwrap();
+        bus.publish_started();
+        bus.publish_ended(
+            TranscriptSessionEndReason::Completed,
+            false,
+            TranscriptDelivery::Unattempted,
+        )
+        .expect("a started session ends once");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let mut raw: serde_json::Value =
+            serde_json::from_str(written.lines().last().unwrap()).unwrap();
+        raw["end_reason"] = serde_json::Value::from("chord_prefix");
+        let historical: CleanTranscriptEvent =
+            serde_json::from_str(&raw.to_string()).expect("a pre-2026-10-24 line decodes");
+        assert_eq!(historical.status, "session_ended");
+        assert_eq!(
+            historical.end_reason,
+            Some(TranscriptSessionEndReason::ChordPrefix)
+        );
     }
 
     /// `session_ended` is the text-free terminal lifecycle line: written once,
