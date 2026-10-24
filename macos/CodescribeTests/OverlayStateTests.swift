@@ -492,6 +492,86 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.selectedConversation?.id, other.id)
   }
 
+  /// Maciej, 2026-10-23: the composer microphone closed the Agent view it was
+  /// dictating into. The take-start form must not fold a draft's conversation.
+  func testComposerMicrophoneTakeKeepsItsConversationExpanded() async throws {
+    let state = OverlayState()
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    await state.toggleDraftMicrophone(in: origin)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertFalse(state.draftMicrophoneBusy(in: origin), "its own Stop stays reachable")
+  }
+
+  /// Maciej, 2026-10-23 (take 0250cc19, ElevenLabs): the composer microphone
+  /// "zamyka mi widok agenta". With expand-by-default off, take 89e47c0e folded
+  /// the expanded Agents canvas to the strip at its start, and the composer
+  /// the words were going to left the screen. A composer take keeps the
+  /// conversation and its form; an ordinary take still folds
+  /// (`testTakeStartHonorsOptOutAfterLocalExpansion`).
+  func testComposerTakeStartKeepsTheExpandedConversationOnScreen() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    var modes: [OverlayPresentationMode] = []
+    state.onPresentationModeChanged = { modes.append($0) }
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertTrue(state.recording)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertTrue(modes.isEmpty, "a composer take never morphs the overlay")
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  /// Take 2a350ca4 (2026-10-23 09:36): a composer take started beside a mini
+  /// overlay grew it to the strip. The card owns that take; mini stays mini.
+  func testComposerTakeStartLeavesAMiniOverlayAlone() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    XCTAssertEqual(state.presentationMode, .mini)
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.finishControllerRecording()
+  }
+
   func testDraftTerminalBeforeStartReplyJoinsOnlyAdmittedCapture() async throws {
     let state = OverlayState()
     let surface = DraftCaptureFixture()

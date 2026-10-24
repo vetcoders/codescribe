@@ -32,6 +32,8 @@ class UserTextTests(unittest.TestCase):
                     self.assertEqual(len(events), 1)
                     payload = DEMUX.consider(events[0], name="lena", hear_all=False, drafts=False, debug=False)
                     self.assertEqual(payload["kind"], "message")
+                    # A row written before the sender field still reads as the Founder's.
+                    self.assertEqual(payload["sender"], {"name": "founder", "channel": "10"})
                     self.assertNotIn("status", payload)
                     self.assertNotIn("wav", payload)
                     lease.enrich(payload)
@@ -63,9 +65,17 @@ class UserTextTests(unittest.TestCase):
                 self.assertEqual({event["channel"] for event in events}, {"2", "7"})
                 for event in events:
                     self.assertEqual(event["origin_channel"], "0")
+                    self.assertEqual(event["sender"], {"name": "founder", "channel": "10"})
                     payload = DEMUX.consider(event, name=event["audience"], hear_all=False, drafts=False, debug=False)
                     self.assertEqual(payload["channel"], "0")
                     self.assertTrue(payload["state_change_allowed"])
+                    # Every copy names the Founder as the writer, not its own recipient.
+                    self.assertEqual(payload["name"], "founder")
+                    self.assertEqual(payload["sender"], {"name": "founder", "channel": "10"})
+                    self.assertEqual(payload["audience"], event["audience"])
+                    view = DEMUX.conversation_envelope(payload)
+                    self.assertEqual(view["sender"]["channel"], "10")
+                    self.assertEqual(view["addressed_to"], "0 (all audience)")
             # igor's follower died (the shape a restarted host leaves): nina still
             # hears the words and the receipt names igor with the reason.
             with patch.object(DEMUX, "live_follower_pid", side_effect=[123, None]), \
