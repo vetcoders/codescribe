@@ -94,31 +94,62 @@ enum CSPalette {
   static let textHigh = adaptive(light: NSColor(hex: 0x1D1B17), dark: NSColor(hex: 0xF4F2EC))
   static let textBody = adaptive(light: NSColor(hex: 0x2B2924), dark: NSColor(hex: 0xE9E7E0))
   static let textBodyAlt = adaptive(light: NSColor(hex: 0x363430), dark: NSColor(hex: 0xDFE2DB))
-  static let textMuted = adaptive(light: NSColor(hex: 0x6E7168), dark: NSColor(hex: 0x9A9D97))
+  /// The paper rung clears 4.5:1 on the real light surfaces, not only on
+  /// `ink`: the sheet, a card or chip on it, a bubble, and the measured glass
+  /// sheet (#DFDDD9, 2026-10-20). #6E7168 read 3.66:1 on the glass and on a
+  /// chip (contrast audit, 2026-10-24).
+  static let textMuted = adaptive(light: NSColor(hex: 0x585A53), dark: NSColor(hex: 0x9A9D97))
   static let textMutedAlt = adaptive(light: NSColor(hex: 0x84877E), dark: NSColor(hex: 0x82857F))
   static let textFaint = adaptive(light: NSColor(hex: 0x9DA094), dark: NSColor(hex: 0x6F7268))
   static let textFaintAlt = adaptive(light: NSColor(hex: 0xB2B5A9), dark: NSColor(hex: 0x5D6058))
 
   // "Light" label variants are drawn as text ON accent-tinted fills; on paper
   // they need the deepened rung of the same hue to stay legible.
-  static let terracottaLight = adaptive(light: NSColor(hex: 0xA94E2C), dark: NSColor(hex: 0xE9B79F))
-  static let assistiveLight = adaptive(light: NSColor(hex: 0x6F3FD8), dark: NSColor(hex: 0xC9B7FF))
-  static let oliveLight = adaptive(light: NSColor(hex: 0x55663A), dark: NSColor(hex: 0x9DB178))
+  // The paper rungs are sized for the darkest light surface a label meets: a
+  // chip on a card, the glass sheet measured at #DFDDD9, or the label's own
+  // 12 % tint on that glass (a status pill in the tray). Contrast audit
+  // 2026-10-24: #A94E2C read 4.06:1 on the glass, #8A5B00 4.33:1.
+  static let terracottaLight = adaptive(light: NSColor(hex: 0x8D4125), dark: NSColor(hex: 0xE9B79F))
+  static let assistiveLight = adaptive(light: NSColor(hex: 0x6338C1), dark: NSColor(hex: 0xC9B7FF))
+  static let oliveLight = adaptive(light: NSColor(hex: 0x4D5D35), dark: NSColor(hex: 0x9DB178))
   static let eyebrowOlive = adaptive(light: NSColor(hex: 0x66744A), dark: NSColor(hex: 0x7F8C5E))
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
-  static let dangerLight = adaptive(light: NSColor(hex: 0xB3261E), dark: NSColor(hex: 0xFFAAA5))
+  static let dangerLight = adaptive(light: NSColor(hex: 0xA5231C), dark: NSColor(hex: 0xFFAAA5))
+  /// Terracotta drawn as a word or an essential glyph (an error line, a
+  /// destructive icon, a failed status). The brand hue reads 2.57:1 on a light
+  /// card, so paper takes the label rung; ink keeps the solid brand hue, lifted
+  /// only the 3 % it needs to clear 4.5:1 on its own 12 % tint. Settings keeps
+  /// solid terracotta on ink by decision, which is why this is not
+  /// `terracottaLight` (pale #E9B79F on ink).
+  static let terracottaText = adaptive(light: NSColor(hex: 0x8D4125), dark: NSColor(hex: 0xDA7B5C))
+  /// Secondary text: the system label ink at a strength that clears 4.5:1 on
+  /// the app sheet, its cards, chips and bubbles. `secondaryLabelColor` (50 %)
+  /// measured 3.82:1 for Settings helper text on a card (2026-10-24); the app
+  /// sheet is darker than the window background that rung was tuned for.
+  /// Increased Contrast raises it further, as the system rung does.
+  static let secondaryInk = NSColor(name: nil) { appearance in
+    let highContrast =
+      appearance.bestMatch(from: [
+        .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+      ]).map { $0 == .accessibilityHighContrastAqua || $0 == .accessibilityHighContrastDarkAqua }
+      ?? false
+    let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    return (dark ? NSColor.white : NSColor.black).withAlphaComponent(highContrast ? 0.8 : 0.6)
+  }
   /// The amber and the processing orange at label strength. The floating sheet
   /// proves 4.5:1 for status words against the opaque sheet, which the base
   /// rungs of both hues miss on paper; these are the same hues, deepened.
-  static let amberLight = adaptive(light: NSColor(hex: 0x8A5B00), dark: NSColor(hex: 0xE2BE5B))
+  static let amberLight = adaptive(light: NSColor(hex: 0x784F00), dark: NSColor(hex: 0xE2BE5B))
   static let modeProcessingLight = adaptive(
-    light: NSColor(hex: 0x96450A), dark: NSColor(hex: 0xF09A4E))
+    light: NSColor(hex: 0x8D4109), dark: NSColor(hex: 0xF09A4E))
   /// The healthy olive at status strength. On ink the label rung sits within
   /// 0.15 of `textMuted`, so a resting grey glyph beside a status read as
   /// "healthy"; this rung keeps the status clear of the muted grey on both
   /// appearances.
-  static let oliveStatus = adaptive(light: NSColor(hex: 0x4D5E2D), dark: NSColor(hex: 0xB5C98D))
+  /// Paper #46591F: the deeper muted rung (#585A53) came within 0.16 of
+  /// #4D5E2D, so the status took more saturation to stay clear of it.
+  static let oliveStatus = adaptive(light: NSColor(hex: 0x46591F), dark: NSColor(hex: 0xB5C98D))
   /// Steel blue: the dictionary owns the words it rewrote, so a rewritten
   /// surface never wears the uncertainty orange.
   static let lexicon = adaptive(light: NSColor(hex: 0x31587A), dark: NSColor(hex: 0x9FC2E8))
@@ -179,12 +210,16 @@ enum CSColor {
   static let controlFill = Color(nsColor: .controlBackgroundColor)
   // SwiftUI ships no tertiary `Color` rung; the AppKit semantic lives here.
   static let textTertiary = Color(nsColor: .tertiaryLabelColor)
+  /// Secondary text that must stay readable; see `CSPalette.secondaryInk`.
+  static let secondaryInk = Color(nsColor: CSPalette.secondaryInk)
 
   // App semantics — these colors carry information and do not follow macOS accent.
   static let terracotta = Color(nsColor: CSPalette.terracotta)  // dictation / processing / brand
   // Active labels on accent fills.
   static let terracottaLight = Color(nsColor: CSPalette.terracottaLight)
   static let terracottaDeep = Color(nsColor: CSPalette.terracottaDeep)  // secondary voice accent
+  /// Terracotta as a word or essential glyph; see `CSPalette.terracottaText`.
+  static let terracottaText = Color(nsColor: CSPalette.terracottaText)
   // Every-5th waveform bar.
   static let terracottaTintBars = Color(nsColor: CSPalette.terracottaTintBars)
 
@@ -212,6 +247,9 @@ enum CSColor {
 
   // Reasoning — amber
   static let amber = Color(nsColor: CSPalette.amber)
+  /// Amber as a word (a warning, a pending state): the label rung that clears
+  /// 4.5:1 on paper, where the base amber reads 3.31:1 on a card.
+  static let amberLight = Color(nsColor: CSPalette.amberLight)
 
   // Destructive actions — reserved for explicit danger-zone controls
   static let danger = Color(nsColor: CSPalette.danger)
