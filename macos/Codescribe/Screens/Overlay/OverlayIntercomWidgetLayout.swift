@@ -8,7 +8,14 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
 /// its full conversation window has been opened. These are presentation gates;
 /// drafts, messages and commands remain owned by the shared conversation.
 enum IntercomCardContent: Equatable, Sendable {
-  case header, context, preview, composer
+  case header, context, preview
+}
+
+/// A bounded text projection, independent of the full conversation/editor.
+struct IntercomCompactPreviewLayout: Equatable {
+  let lineLimit: Int
+  let textHeight: CGFloat
+  let showsContext: Bool
 }
 
 /// What a one-line row shows beside its digit, dot and name, counted from its
@@ -96,17 +103,45 @@ struct IntercomContentMetrics: Equatable {
   }
 
   func cardContent(width: CGFloat, cardHeight: CGFloat) -> IntercomCardContent {
-    let scale = max(1, nameFontSize / 11)
-    guard width >= minimumNameWidth else { return .header }
-    if width >= 320 * scale && cardHeight >= 240 * scale { return .composer }
-    if width >= 220 * scale && cardHeight >= 140 * scale { return .preview }
-    let header = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-    if cardHeight >= header + 24 * scale { return .context }
+    let scale = nameFontSize / 11
+    if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
+    guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
+    let contextFont = NSFont.systemFont(ofSize: 10 * scale)
+    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 8
+    if cardHeight >= compactHeaderHeight(width: width, cardHeight: cardHeight) + contextHeight {
+      return .context
+    }
     return .header
   }
 
+  /// Measure the font actually used by the preview, reserving the real header
+  /// rows first. Narrow, tall cards can wrap text; metadata never crowds out
+  /// the first readable line. No full-message chrome participates here.
+  func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
+    let scale = nameFontSize / 11
+    let font = NSFont.systemFont(ofSize: 13 * scale)
+    let readableWidth = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
+    guard width - 24 >= readableWidth else { return nil }
+    let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
+    let contextFont = NSFont.systemFont(ofSize: 10 * scale)
+    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 8
+    // The preview has 4pt top/bottom padding; context has its own 4pt pair.
+    var available = cardHeight - compactHeaderHeight(width: width, cardHeight: cardHeight) - 8
+    guard available >= lineHeight else { return nil }
+    let showsContext = available >= contextHeight + 2 * lineHeight
+    if showsContext { available -= contextHeight }
+    let lines = min(3, Int((available / lineHeight).rounded(.down)))
+    return IntercomCompactPreviewLayout(
+      lineLimit: lines, textHeight: CGFloat(lines) * lineHeight, showsContext: showsContext)
+  }
+
+  private func compactHeaderHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {
+    let stacked = tier(width: width, cardHeight: cardHeight) == .actions && width < actionsWidth
+    return OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) * (stacked ? 2 : 1)
+  }
+
   /// A card stretches with the gesture, from one row up to the space below the
-  /// header, revealing context, messages and then the composer (Maciej,
+  /// header, revealing context and a read-only message preview (Maciej,
   /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
   /// while the one-or-two-row snap that replaced them "nie robi nic"). Stacked
   /// controls appear once the card holds two rows.

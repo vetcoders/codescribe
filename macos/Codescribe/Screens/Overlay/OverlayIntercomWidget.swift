@@ -257,10 +257,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   private var groupIdentities: [OverlayIntercomCardIdentity] { desktop.groupRows(of: identities) }
 
-  private var groupHasComposer: Bool {
-    contentMetrics.cardContent(width: groupWidth, cardHeight: groupCardHeight) == .composer
-  }
-
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
       count: groupIdentities.count, offset: rowOffset, visibleHeight: availableHeight,
@@ -274,14 +270,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   func presentsConversation(_ conversationID: String?) -> Bool {
     guard visible, let conversationID else { return false }
-    if !presentation.folded, groupHasComposer,
-      groupIdentities.contains(where: { identity in
-        identity.conversationID == conversationID && cards[identity]?.isPresented == true
-          && state.conversations.contains(where: { identity.matches($0) })
-      })
-    {
-      return true
-    }
     if presentation.expanded.contains(where: { identity in
       identity.conversationID == conversationID && cards[identity]?.isPresented == true
         && state.conversations.contains(where: { identity.matches($0) })
@@ -504,7 +492,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     var siblingAppeared = false
     for (identity, panel) in cards {
       let expanded = presentation.expanded.contains(identity)
-      panel.acceptsConversationFocus = expanded || (groupHasComposer && identity.canExpand)
+      panel.acceptsConversationFocus = expanded
       guard !presentation.folded, let index = group.firstIndex(of: identity), range.contains(index)
       else {
         panel.setPresented(
@@ -1403,7 +1391,8 @@ private struct OverlayIntercomCard: View {
     let expanded = controller.presentation.expanded.contains(identity)
     let content = controller.contentMetrics.cardContent(
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
-    let showsMessages = expanded || content == .preview || content == .composer
+    let preview = controller.contentMetrics.compactPreviewLayout(
+      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let corner =
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
@@ -1416,31 +1405,40 @@ private struct OverlayIntercomCard: View {
           .frame(maxWidth: .infinity, alignment: .trailing)
           .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
-      if !expanded && content != .header, let conversation {
+      if !expanded && (content == .context || preview?.showsContext == true), let conversation {
         OverlayIntercomConversationContext(
           descriptor: state.conversationAgentDescriptor(conversation),
           timestamp: conversation.messages.last.flatMap {
             MessageTimestamp.date(fromISO8601: $0.emittedAt)
           }, palette: palette)
       }
-      if showsMessages {
+      if expanded {
         if let conversation {
-          conversationBody(
-            conversation, palette: palette, showsComposer: expanded || content == .composer,
-            preview: !expanded
-          )
+          conversationBody(conversation, palette: palette)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
           Text("Conversation unavailable").csFont(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+      } else if let preview, let message = conversation?.messages.last {
+        Text(verbatim: message.bodyText)
+          .font(.system(size: 13 * scale))
+          .foregroundStyle(palette.primaryText.color)
+          .lineLimit(preview.lineLimit)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(height: preview.textHeight, alignment: .topLeading)
+          .clipped()
+          .padding(.horizontal, 12)
+          .padding(.vertical, 4)
+          .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       }
     }
     .foregroundStyle(palette.primaryText.color)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    // An icon remains a compact row even if a previously tall group narrows.
+    // Header-only icons retain their compact row; text uses its measured space.
     .frame(
-      height: !expanded && controller.groupTier == .icon
+      height: !expanded && controller.groupTier == .icon && content == .header
         ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil
     )
     .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
@@ -1536,14 +1534,7 @@ private struct OverlayIntercomCard: View {
             if identity.isHumanInbox {
               Image(systemName: "tray").csFont(11)
             } else {
-              OverlayIntercomStatusMark(
-                roster: roster, channel: channelRow,
-                kind: intercomStatusDot(roster, state: state, digit: identity.digit),
-                palette: palette, hints: false)
-            }
-            if !identity.isHumanInbox {
-              Text(verbatim: identity.displayDigit).csMono(10)
-                .foregroundStyle(palette.mutedText.color)
+              Image(systemName: "bubble.left").csFont(11)
             }
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1571,7 +1562,7 @@ private struct OverlayIntercomCard: View {
       HStack(spacing: 3) {
         detachGrip
         HStack(spacing: 6) {
-          if !identity.isHumanInbox {
+          if expanded && !identity.isHumanInbox {
             Text(verbatim: identity.displayDigit).csMono(10)
               .foregroundStyle(palette.mutedText.color)
           }
@@ -1580,7 +1571,7 @@ private struct OverlayIntercomCard: View {
           }
           if identity.isHumanInbox {
             Image(systemName: "tray").csFont(11)
-          } else {
+          } else if expanded {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
               kind: intercomStatusDot(roster, state: state, digit: identity.digit),
@@ -1686,15 +1677,12 @@ private struct OverlayIntercomCard: View {
   }
 
   private func conversationBody(
-    _ conversation: OverlayConversation, palette: OverlayAppearancePalette,
-    showsComposer: Bool, preview: Bool
+    _ conversation: OverlayConversation, palette: OverlayAppearancePalette
   ) -> some View {
     OverlayIntercomConversationBody(
       state: state, conversation: conversation, palette: palette,
       focusRevision: controller.focusRevisions[identity] ?? 0,
-      presentation: .intercom, showsComposer: showsComposer,
-      messagePreviewLineLimit: preview ? 3 : nil,
-      messageWindowLimit: preview ? 3 : nil)
+      presentation: .intercom)
   }
 }
 
@@ -1869,9 +1857,6 @@ private struct OverlayIntercomConversationBody: View {
   let palette: OverlayAppearancePalette
   let focusRevision: UInt64
   var presentation: OverlayConversationPresentation = .standard
-  var showsComposer = true
-  var messagePreviewLineLimit: Int? = nil
-  var messageWindowLimit: Int? = nil
 
   var body: some View {
     OverlayConversationView(
@@ -1889,9 +1874,7 @@ private struct OverlayIntercomConversationBody: View {
           ? state.draftCapture.error : nil),
       onSend: { Task { await state.sendConversationText(conversation) } },
       hidesNavigation: true,
-      presentation: presentation, showsComposer: showsComposer,
-      messagePreviewLineLimit: messagePreviewLineLimit,
-      messageWindowLimit: messageWindowLimit,
+      presentation: presentation,
       onComposerEditorActive: { state.noteComposerEditorActive($0) },
       onComposerTypingActivity: { state.noteComposerTypingActivity() },
       replySelection: state.conversationReplies[conversation.id],
@@ -2104,7 +2087,7 @@ private struct OverlayIntercomInstanceCard: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     return HStack(spacing: 3) {
-      if !instance.isHumanInbox {
+      if !mini && !instance.isHumanInbox {
         Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
       }
       if layout.tier != .icon, layout.controls.marks, let channelRow {
@@ -2112,10 +2095,13 @@ private struct OverlayIntercomInstanceCard: View {
       }
       if instance.isHumanInbox {
         Image(systemName: "tray").csFont(11)
-      } else {
+      } else if !mini {
         OverlayIntercomStatusMark(
           roster: roster, channel: channelRow,
           kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
+      } else if layout.tier == .icon {
+        Image(systemName: "bubble.left").csFont(11)
+          .overlayFastHint(instance.name, palette: palette)
       }
       // Mini restores on its name; an open window is already key under the
       // click, so its name is plain text and part of the drag surface.
