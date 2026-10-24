@@ -154,9 +154,8 @@ struct DictionaryRecentTakes: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionHeaderRow(String(localized: "Recent takes")) {
         Button(String(localized: "Refresh")) { refresh += 1 }
-          .buttonStyle(.plain)
-          .font(CSFont.ui(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
+          .buttonStyle(.bordered)
+          .controlSize(.small)
           .accessibilityIdentifier("dictionary-recent-takes-refresh")
       }
       freshness
@@ -216,15 +215,13 @@ struct DictionaryRecentTakes: View {
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(take.text, forType: .string)
         }
-        .buttonStyle(.plain)
-        .font(CSFont.ui(11, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .disabled(take.text.isEmpty)
         if let openLab {
           Button(String(localized: "Open in Lab"), action: openLab)
-            .buttonStyle(.plain)
-            .font(CSFont.ui(11, .semibold))
-            .foregroundStyle(CSColor.chromeAccent)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
       }
       if take.text.isEmpty {
