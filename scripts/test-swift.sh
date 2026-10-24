@@ -16,6 +16,9 @@ shift 6
 export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
 export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
 export TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI="${CODESCRIBE_TEST_ISOLATED_GUI:-0}"
+# Do not inherit a previous GUI run's mailbox or receipt identity in hermetic mode.
+unset TEST_RUNNER_CODESCRIBE_AX_PROBE TEST_RUNNER_CODESCRIBE_INTERACTION_RUN_ID \
+  TEST_RUNNER_CODESCRIBE_INTERACTION_SOURCE_SHA TEST_RUNNER_CODESCRIBE_INTERACTION_RECEIPTS
 # The host's overlay polls the agent bridge and its Rust core answers the
 # channel roster from it. A live ~/.codescribe/agent-bridge drew a second
 # overlay with the real conversations during a take (2026-10-13).
@@ -56,26 +59,46 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 echo "=== Regenerating Xcode project from project.yml ==="
 ( cd macos && xcodegen generate ) || exit $?
-# Keep the AX client outside the XCTest host's process and TCC identity.
-# Its private mailbox admits only this run's synthetic DerivedData host.
-mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?
-xcrun swift -swift-version 6 -warnings-as-errors scripts/tests/native-ax-probe.swift \
-  "$CODESCRIBE_DATA_DIR/ax-probe" > "$CODESCRIBE_DATA_DIR/ax-probe.log" 2>&1 &
-AX_PROBE_PID=$!
-trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true; cp "$CODESCRIBE_DATA_DIR/ax-probe.log" "$SWIFT_TEST_LOG.ax-probe.log"' EXIT
-export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"
-AX_PROBE_DEADLINE=$((SECONDS + 15))
-while [[ ! -f "$CODESCRIBE_DATA_DIR/ax-probe/ready" ]]; do
-  if ! kill -0 "$AX_PROBE_PID" 2>/dev/null || (( SECONDS >= AX_PROBE_DEADLINE )); then
-    cat "$CODESCRIBE_DATA_DIR/ax-probe.log" >&2
-    echo "test-swift: independent AX client did not start" >&2
+if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" == 1 ]]; then
+  # Keep receipts beside the retained runner log, outside Make's disposable root.
+  # The AX mailbox/log can contain fixture text; neither is a durable receipt.
+  INTERACTION_RUN_ID="$(uuidgen)" || exit 2
+  INTERACTION_SOURCE_SHA="$(git rev-parse HEAD)" || exit 2
+  INTERACTION_RECEIPTS="$(mktemp "${SWIFT_TEST_LOG}.interactions.jsonl.XXXXXXXX")" || exit 2
+  chmod 600 "$INTERACTION_RECEIPTS" || exit 2
+  if ! INTERACTION_RECEIPTS="$(python3 - "$INTERACTION_RECEIPTS" "$CODESCRIBE_DATA_DIR" <<'PY'
+from pathlib import Path
+import sys
+receipt, disposable = (Path(value).resolve() for value in sys.argv[1:])
+if receipt == disposable or disposable in receipt.parents:
+    raise SystemExit("test-swift: receipts must survive disposal of the test data root")
+print(receipt)
+PY
+  )"; then exit 2; fi
+  export TEST_RUNNER_CODESCRIBE_INTERACTION_RUN_ID="$INTERACTION_RUN_ID"
+  export TEST_RUNNER_CODESCRIBE_INTERACTION_SOURCE_SHA="$INTERACTION_SOURCE_SHA"
+  export TEST_RUNNER_CODESCRIBE_INTERACTION_RECEIPTS="$INTERACTION_RECEIPTS"
+  echo "test-swift: synthetic DerivedData test-host AX acceptance; no installed-app or HID claim."
+  echo "test-swift: private interaction receipts $INTERACTION_RECEIPTS"
+  # Keep the independent AX client in its existing TCC identity. Never request trust.
+  mkdir -p "$CODESCRIBE_DATA_DIR/ax-probe" || exit $?
+  xcrun swift -swift-version 6 -warnings-as-errors scripts/tests/native-ax-probe.swift \
+    "$CODESCRIBE_DATA_DIR/ax-probe" > "$CODESCRIBE_DATA_DIR/ax-probe.log" 2>&1 &
+  AX_PROBE_PID=$!
+  trap 'kill "$AX_PROBE_PID" 2>/dev/null || true; wait "$AX_PROBE_PID" 2>/dev/null || true' EXIT
+  export TEST_RUNNER_CODESCRIBE_AX_PROBE="$CODESCRIBE_DATA_DIR/ax-probe"
+  AX_PROBE_DEADLINE=$((SECONDS + 15))
+  while [[ ! -f "$CODESCRIBE_DATA_DIR/ax-probe/ready" ]]; do
+    if ! kill -0 "$AX_PROBE_PID" 2>/dev/null || (( SECONDS >= AX_PROBE_DEADLINE )); then
+      echo "test-swift: independent AX client did not start (private transient log withheld)" >&2
+      exit 2
+    fi
+    sleep 0.05
+  done
+  if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then
+    echo "test-swift: independent AX client has no accessibility permission" >&2
     exit 2
   fi
-  sleep 0.05
-done
-if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then
-  echo "test-swift: independent AX client has no accessibility permission" >&2
-  exit 2
 fi
 
 echo "=== Swift front-end tests (CodescribeTests) ==="
@@ -102,6 +125,74 @@ if [ "$rc" -eq 0 ] && [ "${executed:-0}" -eq 0 ]; then
   echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2
   echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2
   rc=3
+fi
+if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" == 1 ]]; then
+  # Assertions return Void: only explicit Bool postcondition AND cleanup receipts
+  # can certify an action. Ordinary AX queries/AXPress success cannot pass this gate.
+  if ! python3 - "$INTERACTION_RECEIPTS" "$INTERACTION_RUN_ID" \
+    "$INTERACTION_SOURCE_SHA" "$SWIFT_TEST_LOG" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+def refuse():
+    raise SystemExit("test-swift: isolated GUI requires executed, unskipped tests and complete verified action receipts")
+
+path, run_id, source_sha, log_path = sys.argv[1:]
+log = Path(log_path).read_bytes().replace(b"\0", b"").decode("utf-8", errors="replace")
+# Unknown skip output also fails closed; only an explicit zero-skips summary
+# can contain that word. Never let a zero summary hide an individual skip.
+for line in log.splitlines():
+    if not re.search(r"\bskipped\b", line, re.IGNORECASE):
+        continue
+    if re.search(r"Test Case .*\bskipped\b", line, re.IGNORECASE):
+        refuse()
+    counts = re.findall(r"\b([0-9]+) (?:tests? )?(?:were )?skipped\b", line, re.IGNORECASE)
+    if not counts or any(int(count) != 0 for count in counts):
+        refuse()
+keys = {"schema", "runID", "sourceSHA", "requestID", "testMethod", "identifier",
+        "verb", "hostKind", "phase", "outcome", "axStatus", "postcondition", "cleanup"}
+actions = {}
+try:
+    for line in Path(path).read_text().splitlines():
+        row = json.loads(line)
+        if set(row) != keys or row["schema"] != "codescribe.test-host-interaction.v1":
+            refuse()
+        if row["runID"] != run_id or row["sourceSHA"] != source_sha:
+            refuse()
+        if (row["hostKind"] != "synthetic-deriveddata-xctest" or row["verb"] != "AXPress"
+                or row["identifier"] != "overlay-reply-play-" + "d" * 24
+                or row["testMethod"] != "OverlayConversationAcceptanceTests.testVoicelessReplyAndAgentTextRenderEnabledPlay()"
+                or not isinstance(row["requestID"], str)
+                or not re.fullmatch(r"[0-9A-Fa-f-]{36}", row["requestID"])):
+            refuse()
+        phases = actions.setdefault(row["requestID"], [])
+        phases.append(row)
+    if not actions:
+        refuse()
+    for phases in actions.values():
+        if len(phases) != 2:
+            refuse()
+        start, end = phases
+        if (start["phase"] != "started" or start["outcome"] != "UNVERIFIED"
+                or start["axStatus"] is not None or start["postcondition"] is not False
+                or start["cleanup"] is not False
+                or end["phase"] != "completed" or end["outcome"] != "PASS"
+                or type(end["axStatus"]) is not int or end["axStatus"] != 0
+                or end["postcondition"] is not True or end["cleanup"] is not True):
+            refuse()
+        case, method = end["testMethod"].removesuffix("()").split(".")
+        if not re.search(r"Test Case '-\[CodescribeTests\." + re.escape(case) + r" "
+                         + re.escape(method) + r"\]' passed", log):
+            refuse()
+except (OSError, ValueError, TypeError, KeyError):
+    refuse()
+print(f"test-swift: verified synthetic test-host AX actions={len(actions)}")
+PY
+  then
+    if [ "$rc" -eq 0 ]; then rc=6; fi
+  fi
 fi
 secs=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$/\1/p' | tail -1)
 test_durations=$(LC_ALL=C tr -d '\000' < "${SWIFT_TEST_LOG}" | sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$/\3 \1.\2/p")

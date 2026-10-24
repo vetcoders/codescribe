@@ -14,10 +14,12 @@ struct Element: Codable {
   let height: Double
 }
 struct Reception: Codable {
+  let requestID: String
   let trusted: Bool
   let elements: [Element]
   let pressStatus: Int32?
   let trace: [String]
+  let errorCode: String?
 }
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
   var result: CFTypeRef?
@@ -27,13 +29,16 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
   return result
 }
 struct Request: Codable {
+  let requestID: String
   let pid: Int32
   let identifier: String
   let press: Bool
 }
 func query(_ request: Request) throws -> Reception {
   let admittedIdentifier =
-    request.identifier.hasPrefix("overlay-conversation-")
+    // Only this fixed fixture Play control enters verified action acceptance.
+    request.identifier == "overlay-reply-play-" + String(repeating: "d", count: 24)
+    || request.identifier.hasPrefix("overlay-conversation-")
     || request.identifier.hasPrefix("overlay-view-conversation-")
     || request.identifier.hasPrefix("overlay-agent-rail-")
     || (!request.press && request.identifier.hasPrefix("overlay-intent-"))
@@ -47,7 +52,7 @@ func query(_ request: Request) throws -> Reception {
       && (request.identifier.hasPrefix("overlay-agent-title-")
         || request.identifier.hasPrefix("overlay-agent-timestamp-")
         || request.identifier.hasPrefix("overlay-agent-row-controls-")))
-  guard request.pid > 0, admittedIdentifier,
+  guard AXIsProcessTrusted(), request.pid > 0, admittedIdentifier,
     let bundle = NSRunningApplication(processIdentifier: request.pid)?.bundleURL?.path,
     bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/Codescribe.app")
   else { throw CocoaError(.fileReadNoPermission) }
@@ -95,7 +100,8 @@ func query(_ request: Request) throws -> Reception {
     pressStatus = AXUIElementPerformAction(matches[0], kAXPressAction as CFString).rawValue
   }
   return Reception(
-    trusted: AXIsProcessTrusted(), elements: elements, pressStatus: pressStatus, trace: trace)
+    requestID: request.requestID, trusted: AXIsProcessTrusted(), elements: elements,
+    pressStatus: pressStatus, trace: trace, errorCode: nil)
 }
 guard CommandLine.arguments.count == 2 else { exit(2) }
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
@@ -106,8 +112,23 @@ while Date() < deadline {
   for input in try FileManager.default.contentsOfDirectory(
     at: directory, includingPropertiesForKeys: nil)
   where input.lastPathComponent.hasSuffix(".request.json") {
-    let request = try JSONDecoder().decode(Request.self, from: Data(contentsOf: input))
-    let result = try query(request)
+    let requestID = String(input.lastPathComponent.dropLast(".request.json".count))
+    guard UUID(uuidString: requestID) != nil else {
+      try FileManager.default.removeItem(at: input)
+      continue
+    }
+    let result: Reception
+    do {
+      let request = try JSONDecoder().decode(Request.self, from: Data(contentsOf: input))
+      guard request.requestID == requestID else { throw CocoaError(.validationMultipleErrors) }
+      result = try query(request)
+    } catch {
+      // Errors stay content-free and per request. One refused action must not
+      // kill the sidecar and turn every later request into a ten-second timeout.
+      result = Reception(
+        requestID: requestID, trusted: AXIsProcessTrusted(), elements: [],
+        pressStatus: nil, trace: [], errorCode: "request-refused")
+    }
     let output = input.deletingPathExtension().deletingPathExtension().appendingPathExtension(
       "response.json")
     try JSONEncoder().encode(result).write(to: output, options: .atomic)
