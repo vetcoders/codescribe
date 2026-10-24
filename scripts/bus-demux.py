@@ -6347,6 +6347,8 @@ class PCMStreamPlayer:
 
 class SpeechPCMStream:
     """Bounded synthesis ahead of playback, with one cache entry per sentence."""
+    CLOSE_JOIN_SECONDS = 0.25
+
     def __init__(self, chunks: list[str], synthesize: Any, stopped: Any = None):
         import queue
         import threading
@@ -6427,13 +6429,17 @@ class SpeechPCMStream:
         except queue.Empty:
             return None
 
-    def close(self) -> None:
+    def close(self) -> str:
         self.cancelled.set()
         self._interrupt_response()
-        if self.thread.ident is not None:
-            # Streaming connection/header waits are bounded at 10 s. Join so
-            # no synthesis survives the request's terminal playback receipt.
-            self.thread.join()
+        if self.thread.ident is None:
+            return "NOT_STARTED"
+        # Headers, an unpublished error response or cache I/O can still be
+        # blocked after cancellation. Bound this join, not their lifetime.
+        # A late producer owns only its cancelled private queue and cache;
+        # it cannot access the player, announcement or playback-lock owner.
+        self.thread.join(timeout=self.CLOSE_JOIN_SECONDS)
+        return "NOT_JOINED" if self.thread.is_alive() else "JOINED"
 
 
 class _PCMStreamFeed:
@@ -7006,6 +7012,7 @@ def _play_pcm_24k(
     marker = None
     streaming = isinstance(pcm, SpeechPCMStream)
     stream_finished = False
+    synthesis_join = None
     marker_renewed = 0.0
     try:
         if not streaming:
@@ -7146,10 +7153,13 @@ def _play_pcm_24k(
         finally:
             try:
                 if streaming:
-                    pcm.close()
+                    synthesis_join = pcm.close()
+                    if control is not None:
+                        control.synthesis_join = synthesis_join
             finally:
-                # Both feed and synthesis are joined before the announcement
-                # or the cross-agent playback lock can be handed to a successor.
+                # Native playback is disposed and the feeder joined before
+                # handing off. A cancelled producer may remain NOT_JOINED;
+                # it has no playback authority and its queue has no consumer.
                 if marker is not None:
                     _withdraw_playback(marker)
                 if lock_descriptor is not None:
@@ -7159,6 +7169,8 @@ def _play_pcm_24k(
                         os.unlink(wav_path)
                     except OSError:
                         pass
+    if streaming and synthesis_join != "JOINED":
+        return False, "synthesis cleanup pending (producer not joined)", "playback_failed"
     return True, None, None
 
 
@@ -7779,6 +7791,7 @@ class ReplyPlaybackControl:
                  *, automatic: bool = False):
         self.bus, self.reply, self.ticket = bus, reply, ticket
         self.automatic = automatic
+        self.synthesis_join: str | None = None
         self.root = args.bridge_home
         # An explicit Play is admitted under a mute, but a mute switched on
         # while it speaks still stops it: the switches as they stood at
@@ -7843,7 +7856,12 @@ class ReplyPlaybackControl:
             event["playback"] = playback if playback is not None else self.mute_snapshot()
             event["mute_scope"] = event["playback"]["mute_scope"]
         publish_reply_event(self.bus, event, bridge_root=self.root)
-        atomic_json(self.path, {**event, "schema": REPLY_CONTROL_SCHEMA, "bus": str(self.bus)})
+        ticket = {**event, "schema": REPLY_CONTROL_SCHEMA, "bus": str(self.bus)}
+        if self.synthesis_join is not None:
+            # Local cleanup receipt only; do not add a transcript-bus event or
+            # replace the original stopped/refused reason with join status.
+            ticket["synthesis_join"] = self.synthesis_join
+        atomic_json(self.path, ticket)
         emit(event)
 
     def close(self) -> None:
