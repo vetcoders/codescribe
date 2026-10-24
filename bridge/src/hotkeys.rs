@@ -3869,6 +3869,27 @@ mod preparing_compensation_tests {
         PREPARING_PENDING.store(false, Ordering::SeqCst);
     }
 
+    /// Calling synchronously while this very thread owns the slot would hang
+    /// with a blocking acquisition. It must refuse without constructing a
+    /// controller, and a refused attempt must leave later idle admission open.
+    #[tokio::test]
+    #[serial]
+    async fn idle_restart_bridge_refuses_absence_and_slot_contention_then_reserves_idle() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+        let hotkeys = CodescribeHotkeys::default();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        assert!(shared_controller().lock().unwrap().is_none());
+        let (_listener, _controller) = install();
+        let store = shared_controller();
+        let held_slot = store.lock().unwrap();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        drop(held_slot);
+        assert!(hotkeys.reserve_idle_restart().unwrap());
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        teardown();
+    }
+
     /// A host lifecycle notification while idle must not construct the shared
     /// controller (and therefore cannot prewarm or load an engine).
     #[tokio::test]
