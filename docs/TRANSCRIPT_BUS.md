@@ -1475,21 +1475,30 @@ selection. Routine roster polling does not override manual review. Simultaneous
 new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
-The delivery observer's restart cache is
-`runtime/overlay-delivery-cursor.v1.json`. Live snapshots consume bus evidence
-and verified receipt metadata immediately; persistence is a separate checkpoint.
-The first changed snapshot saves once, and later changes across all buses share
-one atomic save after 30 seconds since the last successful checkpoint, or when
-one bus has advanced by at least 8 MiB. The byte threshold triggers a checkpoint
-after a read; it does not lower the existing 64 MiB per-read budget. Continuous
-activity cannot postpone the time deadline. Unchanged polls do not write.
+The delivery observer's restart cache is the directory
+`runtime/overlay-delivery-cursor/`. Each bus is one cache unit (its cursor plus
+its conversation projection) in its own owner-only JSON file, named by a digest
+of the bus path; the file also records that path. Live snapshots consume bus
+evidence and verified receipt metadata immediately; persistence is a separate
+checkpoint. The first changed snapshot saves once, and later changes across all
+buses share one checkpoint after 30 seconds since the last successful
+checkpoint, or when one bus has advanced by at least 8 MiB. The byte threshold
+triggers a checkpoint after a read; it does not lower the existing 64 MiB
+per-read budget. Continuous activity cannot postpone the time deadline.
+A checkpoint encodes and writes only the units whose bus changed since their
+last successful save, each atomically (temporary file, fsync, rename);
+unchanged units keep their files, and unchanged polls do not write at all.
 
-Each checkpoint pairs its projection with a cursor before any unfinished row
-or storage transaction. Restart replays the suffix after that cursor. A failed
-save preserves the previous file and retries the dirty state on the next poll.
-The existing 128 MiB cache budget evicts whole projection/cursor units; an
-evicted unit returns to the bounded cold-tail path. This cache never advances
-the agent mailbox cursor, acknowledges delivery, or establishes transcript truth.
+Each unit pairs its projection with a cursor before any unfinished row or
+storage transaction. Restart replays the suffix after that cursor. A failed
+save keeps the previous file of every unit it did not replace and retries the
+dirty state on the next poll. The existing 128 MiB cache budget, counted
+across all unit files, evicts whole units, largest projection first; an
+evicted unit, or the unit of a bus no longer in use once more than 16 are
+cached, loses its file and returns to the bounded cold-tail path. The earlier
+single file `runtime/overlay-delivery-cursor.v1.json` is never read; the first
+successful save deletes it. This cache never advances the agent mailbox cursor,
+acknowledges delivery, or establishes transcript truth.
 
 ## C11 evidence boundary
 
