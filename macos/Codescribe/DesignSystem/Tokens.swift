@@ -129,11 +129,7 @@ enum CSPalette {
   /// sheet is darker than the window background that rung was tuned for.
   /// Increased Contrast raises it further, as the system rung does.
   static let secondaryInk = NSColor(name: nil) { appearance in
-    let highContrast =
-      appearance.bestMatch(from: [
-        .aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
-      ]).map { $0 == .accessibilityHighContrastAqua || $0 == .accessibilityHighContrastDarkAqua }
-      ?? false
+    let highContrast = appearance.name.rawValue.contains("HighContrast")
     let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     return (dark ? NSColor.white : NSColor.black).withAlphaComponent(highContrast ? 0.8 : 0.6)
   }

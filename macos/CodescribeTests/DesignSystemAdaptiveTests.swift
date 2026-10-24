@@ -208,7 +208,12 @@ final class DesignSystemAdaptiveTests: XCTestCase {
         let ink = resolvedRGBA(color, name)
         var backgrounds = surfaces
         // A status word on its own 12 % tint: pills, probe chips, the tray row.
+        // The muted grey is never a pill; its tint check is the 8 % search field.
         for (surface, background) in surfaces where surface == "card" || surface == "glass" {
+          guard role != "textMuted" else {
+            backgrounds.append(("8 % muted field on \(surface)", ink.over(background, alpha: 0.08)))
+            continue
+          }
           backgrounds.append(("12 % \(role) tint on \(surface)", ink.over(background, alpha: 0.12)))
         }
         for (surface, background) in backgrounds {
