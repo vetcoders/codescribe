@@ -74,7 +74,14 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     state.channelMapPreference.selectLayout(.vertical)
     XCTAssertTrue(state.channelMapEnabled)
     XCTAssertFalse(state.channelMapInHeader)
-    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    state.setPresentationMode(.midi)
+    XCTAssertNil(
+      DictationOverlayView(state: state).channelMap,
+      "the vertical layout's chips live in the Intercom")
+    state.setPresentationMode(.mini)
+    let counter = try XCTUnwrap(
+      DictationOverlayView(state: state).channelMap, "mini is one widget in both layouts")
+    XCTAssertTrue(counter.stacked, "only the counter's face and destination differ")
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)
@@ -82,6 +89,8 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
     state.channelMapPreference.selectLayout(.horizontal)
     XCTAssertTrue(state.channelMapInHeader)
+    XCTAssertEqual(DictationOverlayView(state: state).channelMap?.stacked, false)
+    state.setPresentationMode(.midi)
     XCTAssertNotNil(DictationOverlayView(state: state).channelMap)
   }
 
