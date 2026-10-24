@@ -15,6 +15,7 @@
 //! it, while the destination of each event is decided by the controller.
 
 use super::config::HotkeyRuntimeConfig;
+pub use crate::config::mode_binding_reachable;
 use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding, WorkMode};
 use std::time::{Duration, Instant};
 
@@ -1348,39 +1349,6 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => None,
-    }
-}
-
-/// Whether [`HotkeyDetector::feed`] can ever start `mode` from `binding`.
-///
-/// This is the routing of [`HotkeyDetector::handle_flags_changed`] written as
-/// one predicate, so Settings validation and the bridge setter ask the
-/// detector instead of keeping their own table:
-///
-/// - Dictation: every hold combo ([`check_hold_combo`]) and double-tap Ctrl.
-/// - Formatting: double-tap left Option only.
-/// - Assistive: double-tap right Option only; a hold reaches it only through
-///   [`assistive_hold_binding`], which maps none today.
-///
-/// `Disabled` binds nothing and is always accepted. The reachable sets are
-/// disjoint, so one gesture bound to two modes leaves exactly one of them
-/// unreachable. Cross-mode precedence (double-tap Ctrl dictation silencing the
-/// Option toggles) is pairwise and stays in `shortcut_registry`.
-pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
-    match binding {
-        ShortcutBinding::Disabled => true,
-        ShortcutBinding::HoldFn
-        | ShortcutBinding::HoldCtrl
-        | ShortcutBinding::HoldCtrlAlt
-        | ShortcutBinding::HoldCtrlShift
-        | ShortcutBinding::HoldCtrlCmd => match mode {
-            WorkMode::Dictation => true,
-            WorkMode::Formatting => false,
-            WorkMode::Assistive => assistive_hold_binding(binding).is_some(),
-        },
-        ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
-        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
-        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
     }
 }
 

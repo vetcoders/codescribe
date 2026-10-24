@@ -554,6 +554,24 @@ pub struct ModeBinding {
     pub binding: ShortcutBinding,
 }
 
+/// Whether the hotkey detector can start `mode` from `binding`.
+///
+/// Disabled binds nothing. Holds and double-tap Ctrl dictate; the two Option
+/// gestures belong to Formatting and Assistive respectively.
+pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
+    match binding {
+        ShortcutBinding::Disabled => true,
+        ShortcutBinding::HoldFn
+        | ShortcutBinding::HoldCtrl
+        | ShortcutBinding::HoldCtrlAlt
+        | ShortcutBinding::HoldCtrlShift
+        | ShortcutBinding::HoldCtrlCmd
+        | ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
+        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
+        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
+    }
+}
+
 /// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
 /// left Option formats, double-tap right Option talks to the agent.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
@@ -879,6 +897,10 @@ impl FromStr for HoldArmModifier {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     // ===== Hotkeys =====
+    /// Mode bindings from the same settings capture as the resolved modifier.
+    #[serde(default = "default_mode_bindings")]
+    pub mode_bindings: Vec<ModeBinding>,
+
     /// Whether to ignore extra modifiers when hold key is pressed
     #[serde(default)]
     pub hold_exclusive: bool,
@@ -1130,6 +1152,7 @@ pub struct Config {
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
+            .field("mode_bindings", &self.mode_bindings)
             .field("hold_exclusive", &self.hold_exclusive)
             .field("hold_arm_modifier", &self.hold_arm_modifier)
             .field("hold_start_delay_ms", &self.hold_start_delay_ms)
@@ -1216,6 +1239,7 @@ impl Default for Config {
     /// Ship-safe defaults: hold modifiers on, STT prompt off, Responses LLM endpoint.
     fn default() -> Self {
         Self {
+            mode_bindings: default_mode_bindings(),
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
             hold_arm_modifier: HoldArmModifier::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),

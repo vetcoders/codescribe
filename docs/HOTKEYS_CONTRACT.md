@@ -191,7 +191,7 @@ plus a digit. A key that records dictation is never that modifier (Founder,
 
 - Fn records when `Dictation=HoldFn` (Hold Fn/Globe) or the Fn tap
   (`FN_TAP_TOGGLES_DICTATION`) is on.
-- Ctrl records when a work mode is bound to `HoldCtrl`, `HoldCtrlAlt`,
+- Ctrl records when Dictation is bound to `HoldCtrl`, `HoldCtrlAlt`,
   `HoldCtrlShift`, `HoldCtrlCmd` or `DoubleCtrl`.
 
 The loader applies the rule once, after every source (settings.json, `.env`,
@@ -205,6 +205,12 @@ resolved value; none of them re-checks the rule. The stored choice in
 settings.json is not rewritten: it applies again as soon as its key stops
 recording. The loader logs `agent channel modifier resolved` once per distinct
 outcome.
+
+Only bindings reachable for their assigned mode claim a recording key.
+The loader carries the mode bindings from the same settings capture as the
+resolved modifier and Fn-tap flag. Live reload publishes these dependent
+values in one atomic word, and the tap reads that word once per snapshot;
+it never reloads bindings from disk or observes mixed key ownership.
 
 Settings › Shortcuts › Fn and Agent channels greys out the key that records in
 the Agent channel picker, selects the modifier in effect and adds one sentence
@@ -473,7 +479,7 @@ The Shortcuts tab offers one flat gesture catalog for all three modes:
 `available_bindings()` returns every `ShortcutBinding` regardless of mode
 (`bridge/src/hotkeys.rs`). The detector routes a subset of those cells, and
 that subset is one predicate, `mode_binding_reachable(mode, binding)` in
-`app/os/hotkeys/detector.rs`:
+`core/config/types.rs`, re-exported by `app/os/hotkeys/detector.rs`:
 
 | Work mode  | Routed gestures                | Routing site in `HotkeyDetector::handle_flags_changed`                                             |
 | ---------- | ------------------------------ | -------------------------------------------------------------------------------------------------- |
