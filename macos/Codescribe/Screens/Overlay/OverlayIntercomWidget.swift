@@ -65,6 +65,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate private(set) var headerControlsVisible = true
   fileprivate private(set) var groupWidth: CGFloat = 0
+  /// Fold, Inbox and All remain three equal hit slots even at the icon tier.
+  fileprivate var minimumHeaderWidth: CGFloat {
+    3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + 16
+  }
   fileprivate var stacksGroupControls: Bool {
     groupTier == .actions && groupWidth < contentMetrics.actionsWidth
   }
@@ -163,13 +167,18 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
+      + (String(localized: "Your Inbox") as NSString).size(withAttributes: [.font: nameFont]).width
+      + (String(localized: "All") as NSString).size(withAttributes: [.font: nameFont]).width
+      + ("0" as NSString).size(withAttributes: [.font: digitFont]).width + 36 * scale + 16
       + 12 * scale + 8
       + (hasOverflow && !presentation.folded ? 32 * max(1, scale) + 16 : 0)
     let defaultWidth = max(
       contentMetrics.actionsWidth,
       OverlayIntercomWidgetLayout.restingWidth(headerText: titleWidth, agentText: 0, scale: scale))
-    let width = contentMetrics.fittedWidth(
-      CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width)
+    let width = max(
+      min(minimumHeaderWidth, screenFrame.width),
+      contentMetrics.fittedWidth(
+        CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width))
     groupCardHeight = contentMetrics.fittedCardHeight(
       CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)),
       count: visibleRows.count, available: screenFrame.height)
@@ -471,18 +480,32 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func expand(_ identity: OverlayIntercomCardIdentity) {
+    guard identity.canExpand else { return }
     if let open = desktop.openInstance(for: identity) {
       showInstance(open.id)
       return
     }
-    guard let conversation = state.conversations.first(where: { identity.matches($0) }),
-      conversation.owner != nil || conversation.isHumanInbox
-    else { return }
+    guard let conversation = state.conversations.first(where: { identity.matches($0) }) else { return }
+    if conversation.owner == nil {
+      openMailbox(conversation.id)
+      return
+    }
     presentation.expand(identity)
     focusRevisions[identity, default: 0] &+= 1
     positionCards()
     // Only this explicit click grants keyability. Hover never activates the app.
     cards[identity]?.makeKeyAndOrderFront(nil)
+  }
+
+  /// Mailbox buttons use the existing conversation surface, without creating
+  /// a group row, capture target or message delivery.
+  fileprivate func openMailbox(_ conversationID: String) {
+    guard let conversation = state.conversations.first(where: { $0.id == conversationID }),
+      conversation.owner == nil,
+      OverlayIntercomCardIdentity(digit: conversation.channel, conversation: conversation).canExpand
+    else { return }
+    state.chooseConversation(conversation.id)
+    revealConversation()
   }
 
   fileprivate func close(_ identity: OverlayIntercomCardIdentity) {
@@ -503,7 +526,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// in its own window is still an agent (Maciej, 2026-10-23 seal: "pomija —
   /// to bardzo źle"): the wheel reaches its window too.
   func chooserTargets() -> [OverlayConversation] {
-    let agents = identities.filter { !$0.isHumanInbox }.compactMap { identity in
+    let agents = identities.compactMap { identity in
       state.conversations.first { identity.matches($0) }
     }
     return (intercomConversation(state: state, digit: "0").map { [$0] } ?? []) + agents
@@ -517,11 +540,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   /// A left click on the chooser's focus opens that row's conversation here.
-  /// Channel 0 has no card to unroll: the group in front is the answer.
+  /// Channel 0 uses the same existing conversation surface as its header button.
   func openChosenConversation(_ conversationID: String) {
     revealGroup()
     if let identity = identities.first(where: { $0.conversationID == conversationID }) {
       expand(identity)
+    } else {
+      openMailbox(conversationID)
     }
   }
 
@@ -606,9 +631,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   ) -> UUID? {
     // Broadcast and the human inbox have stable conversations without an
     // agent owner; no other ownerless identity may detach.
-    guard identity.conversationID != nil,
-      identity.ownerID != nil || identity.digit == "0" || identity.isHumanInbox
-    else {
+    guard identity.canExpand else {
       presentation.close(identity)
       return nil
     }
@@ -848,10 +871,10 @@ private struct OverlayIntercomHeader: View {
   var body: some View {
     let chips = state.channelMapLayoutModel.agents
     let palette = OverlayAppearancePalette.resolve(colorScheme)
-    // The header's first row IS channel 0 (Maciej, 2026-10-23 05:18Z): the
-    // broadcast keeps its microphone and reply control here, nothing more —
-    // no pill of its own and no detach.
+    // Mailboxes open the existing conversation surface. Channel 0 also keeps
+    // its existing microphone and reply controls in this header.
     let broadcast = intercomConversation(state: state, digit: "0")
+    let inbox = state.conversations.first(where: \.isHumanInbox)
     HStack(spacing: 8) {
       Button {
         controller.toggleGroup()
@@ -867,6 +890,10 @@ private struct OverlayIntercomHeader: View {
           }
         }
         .contentShape(Capsule())
+        .frame(
+          width: controller.groupTier == .icon
+            ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil,
+          height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
       .buttonStyle(.plain)
       .conversationActionHover(
@@ -896,6 +923,8 @@ private struct OverlayIntercomHeader: View {
           }
         }
       }
+      mailboxControl(inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette)
+      mailboxControl(broadcast, title: String(localized: "All"), digit: "0", palette: palette)
       if controller.groupTier != .icon
         && (!controller.hasOverflow || controller.headerControlsVisible)
       {
@@ -961,6 +990,54 @@ private struct OverlayIntercomHeader: View {
       controller.revealChooserFocus(focus)
     }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
+  }
+
+  private func mailboxControl(
+    _ conversation: OverlayConversation?, title: String, digit: String?,
+    palette: OverlayAppearancePalette
+  ) -> some View {
+    let unread = conversation.map { state.unreadReplies(in: $0) } ?? 0
+    let selected = conversation != nil && state.selectedConversationID == conversation?.id
+    let compact = controller.groupTier == .icon
+    return Button {
+      if let conversation { controller.openMailbox(conversation.id) }
+    } label: {
+      HStack(spacing: 3) {
+        if compact {
+          if let digit {
+            Text(verbatim: digit).csMono(10)
+          } else {
+            Image(systemName: "tray").font(.system(size: 11 * scale, weight: .semibold))
+          }
+        } else {
+          if let digit { Text(verbatim: digit).csMono(10) }
+          Text(verbatim: title).csFont(11, .semibold).lineLimit(1)
+          if unread > 0 { Text(verbatim: unread.formatted()).csMono(10) }
+        }
+      }
+      .padding(.horizontal, compact ? 0 : 5)
+      .frame(width: compact ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil)
+      .frame(minHeight: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      .contentShape(Capsule())
+      .overlay(alignment: .topTrailing) {
+        if compact && unread > 0 {
+          Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
+            .accessibilityHidden(true)
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(selected ? palette.primaryText.color : palette.mutedText.color)
+    .background {
+      if selected { Capsule().fill(palette.primaryText.color.opacity(0.10)) }
+    }
+    .disabled(conversation == nil)
+    .accessibilityLabel(Text(verbatim: digit.map { $0 + " · " + title } ?? title))
+    .accessibilityValue(Text("\(unread) unread replies"))
+    .accessibilityAddTraits(selected ? .isSelected : [])
+    .accessibilityHint(Text("View conversation without changing the microphone"))
+    .accessibilityIdentifier(digit == nil ? "overlay-intercom-inbox" : "overlay-intercom-all")
+    .help(title)
   }
 }
 
@@ -1924,17 +2001,14 @@ private func intercomConversation(state: OverlayState, digit: String) -> Overlay
   ).first { $0.channel == digit }
 }
 
-/// Mailboxes share the Intercom presentation without turning the human into
-/// an agent chip, lease, chord or capture target.
+/// Only agents occupy group rows. The two mailboxes remain header controls.
 @MainActor
 func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   -> [OverlayIntercomCardIdentity]
 {
-  let inbox = state.conversations.first(where: \.isHumanInbox) ?? .humanInbox()
-  return [OverlayIntercomCardIdentity(digit: inbox.channel, conversation: inbox)]
-    + chips.map {
-      OverlayIntercomCardIdentity(
-        digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
-        name: $0.name)
-    }
+  chips.map {
+    OverlayIntercomCardIdentity(
+      digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
+      name: $0.name)
+  }
 }

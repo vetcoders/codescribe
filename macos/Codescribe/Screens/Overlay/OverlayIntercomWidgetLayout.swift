@@ -300,6 +300,13 @@ struct OverlayIntercomCardIdentity: Hashable {
   }
   var displayDigit: String { isHumanInbox ? "" : digit }
 
+  /// Only the two canonical mailboxes may present without an agent owner.
+  /// A known digit with a fabricated conversation ID is still a placeholder.
+  var canExpand: Bool {
+    guard conversationID != nil else { return false }
+    return ownerID != nil || isHumanInbox || (digit == "0" && conversationID == "0")
+  }
+
   static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.digit == rhs.digit && lhs.conversationID == rhs.conversationID && lhs.ownerID == rhs.ownerID
   }
@@ -337,7 +344,7 @@ struct OverlayIntercomPresentation: Equatable {
   /// the same or another agent is a durable detached instance, not a second
   /// group expansion.
   mutating func expand(_ identity: OverlayIntercomCardIdentity) {
-    guard identity.conversationID != nil, identity.ownerID != nil else { return }
+    guard identity.canExpand else { return }
     expanded = [identity]
   }
 
