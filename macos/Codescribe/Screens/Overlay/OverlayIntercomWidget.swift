@@ -615,22 +615,30 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// whether there is anything to drag.
   @discardableResult
   fileprivate func detach(_ identity: OverlayIntercomCardIdentity) -> Bool {
-    guard presentation.expanded.contains(identity) else { return false }
+    guard identity.canExpand else { return false }
     if let open = desktop.openInstance(for: identity) {
       close(identity)
       showInstance(open.id)
       return false
     }
-    let detached = detachIntoInstance(identity) != nil
+    var frame = cards[identity]?.frame
+    if !presentation.expanded.contains(identity), let current = frame {
+      let size = OverlayIntercomWidgetLayout.conversationSize(scale: effectiveScale)
+      // The compact grip keeps its screen position as the conversation opens
+      // downward from this card's top-left, in the same native panel.
+      frame = CGRect(
+        x: current.minX, y: current.maxY - size.height,
+        width: size.width, height: size.height)
+    }
+    let detached = detachIntoInstance(identity, frame: frame) != nil
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
     return detached
   }
 
   /// Dragging a collapsed row moves the whole group under the pointer, as
-  /// the header does. Rows no longer tear off: a fiszka leaves the group only
-  /// from its unrolled card's grip (Maciej, 2026-10-23: "nie odrywamy na
-  /// każde pierdnięcie tych fiszek, tylko … dopiero po rozwinięciu"). Screen
-  /// coordinates, because the row's own window moves with the group.
+  /// the header does. Only the dedicated grip detaches a card; its name and
+  /// background keep moving the group even while collapsed. Screen coordinates,
+  /// because the row's own window moves with the group.
   fileprivate func moveGroup(ended: Bool = false) {
     guard let header else { return }
     let pointer = NSEvent.mouseLocation
@@ -1110,10 +1118,12 @@ private final class OverlayIntercomDragView: NSView {
   var onDrag: () -> Bool = { true }
   var cursorHint = true
   private var moving = false
+  private var dragStart: NSPoint?
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
     moving = false
+    dragStart = event.locationInWindow
     super.mouseDown(with: event)
   }
   // A real drag moves the window (and detaches, where the grip detaches).
@@ -1125,14 +1135,19 @@ private final class OverlayIntercomDragView: NSView {
   // log "Window move completed without beginning" (Klaudiusz-div0, HID
   // probe on macOS 27).
   override func mouseDragged(with event: NSEvent) {
-    guard !moving else { return }
-    let window = window
+    guard !moving, let dragStart, let window else { return }
+    let delta = CGSize(
+      width: event.locationInWindow.x - dragStart.x,
+      height: event.locationInWindow.y - dragStart.y)
+    // Match the row's move threshold: pointer jitter on a grip is still a click.
+    guard delta.width * delta.width + delta.height * delta.height >= 16 else { return }
     guard onDrag() else { return }
     moving = true
-    window?.performDrag(with: event)
+    window.performDrag(with: event)
   }
   override func mouseUp(with event: NSEvent) {
     moving = false
+    dragStart = nil
     super.mouseUp(with: event)
   }
   override func resetCursorRects() {
@@ -1258,52 +1273,68 @@ private struct OverlayIntercomCard: View {
     let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
+    // The grip stays separate from the open button at every content tier.
+    // Its full-height native hit area never overlaps audio or the agent name.
+    let detachGrip = Image(systemName: "macwindow.badge.plus")
+      .font(.system(size: 10 * scale))
+      .frame(
+        width: 24 * max(1, scale),
+        height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
+      .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Detach conversation")
+      .accessibilityAddTraits(.isButton)
+      .accessibilityAction { _ = controller.detach(identity) }
+      .accessibilityIdentifier("overlay-intercom-detach-\(identity.digit)")
+      .allowsHitTesting(identity.canExpand)
+      .accessibilityHidden(!identity.canExpand)
     // The icon square names its agent in the hint panel, beside the column;
     // the card itself never grows under the pointer.
     if tier == .icon && !expanded {
-      Button {
-        controller.expand(identity)
-      } label: {
-        HStack(spacing: 4) {
-          if identity.isHumanInbox {
-            Image(systemName: "tray").csFont(11)
-          } else {
-            OverlayIntercomStatusMark(
-              roster: roster, channel: channelRow,
-              kind: intercomStatusDot(roster, state: state, digit: identity.digit),
-              palette: palette, hints: false)
+      HStack(spacing: 3) {
+        detachGrip
+        Button {
+          controller.expand(identity)
+        } label: {
+          HStack(spacing: 4) {
+            if identity.isHumanInbox {
+              Image(systemName: "tray").csFont(11)
+            } else {
+              OverlayIntercomStatusMark(
+                roster: roster, channel: channelRow,
+                kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+                palette: palette, hints: false)
+            }
+            if !identity.isHumanInbox {
+              Text(verbatim: identity.displayDigit).csMono(10)
+                .foregroundStyle(palette.mutedText.color)
+            }
           }
-          if !identity.isHumanInbox {
-            Text(verbatim: identity.displayDigit).csMono(10)
-              .foregroundStyle(palette.mutedText.color)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlayFastHint(
+          channelRow.flatMap { inactive ? name + " · " + roster.detail(for: $0) : nil } ?? name,
+          palette: palette, leading: true
+        )
+        .simultaneousGesture(moveGesture)
+        .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
+        .accessibilityLabel(
+          Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
+        )
+        .accessibilityActions {
+          if identity.canExpand {
+            Button("Detach conversation") { controller.detach(identity) }
           }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
+        .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
       }
-      .buttonStyle(.plain)
-      .overlayFastHint(
-        channelRow.flatMap { inactive ? name + " · " + roster.detail(for: $0) : nil } ?? name,
-        palette: palette, leading: true
-      )
-      .simultaneousGesture(moveGesture)
-      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
-      .accessibilityLabel(
-        Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
-      )
-      .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
     } else {
       // Reuse the menu execution, but Write stays in this card.
       HStack(spacing: 3) {
-        if expanded {
-          // A window-with-plus, not the finger that read as "draw" (Maciej,
-          // 2026-10-23): dragging it lifts the card into its own window.
-          Image(systemName: "macwindow.badge.plus").font(.system(size: 10 * scale))
-            .frame(width: 24 * max(1, scale))
-            .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
-            .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
-            .accessibilityLabel("Detach conversation")
-        }
+        detachGrip
         HStack(spacing: 6) {
           if !identity.isHumanInbox {
             Text(verbatim: identity.displayDigit).csMono(10)
@@ -1328,7 +1359,6 @@ private struct OverlayIntercomCard: View {
               .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
-          .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
           // Names rest lightly smoked; the agent talking brightens instead of
           // turning violet (Maciej, 2026-10-23: "można by się tego fioletu
           // pozbyć … na rzecz rozjaśnienia").
@@ -1343,16 +1373,16 @@ private struct OverlayIntercomCard: View {
               || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil)
           )
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
-          // Detaching needs the unrolled card, for assistive technology too.
           .accessibilityActions {
-            if expanded {
+            if identity.canExpand {
               Button("Detach conversation") { controller.detach(identity) }
             }
           }
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
         }
-        .padding(.leading, expanded ? 0 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
         // The road to the pane, then what I hear, then what I say, from the
         // right edge: the microphone is the last to go, the focus the first.
         if !controller.stacksGroupControls || expanded {
