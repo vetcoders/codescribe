@@ -6,6 +6,25 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  func testExpandedConversationIsAlwaysAboveItsSiblingRows() throws {
+    let cards = try ["2", "5", "8"].map { channel in
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "session-\(channel)",
+          "lease_id": String(repeating: channel, count: 32), "channel": channel,
+          "name": "Agent \(channel)",
+        ]))
+      return OverlayIntercomCardIdentity(
+        digit: channel,
+        conversation: .init(
+          id: owner.id, channel: channel, name: owner.name, owner: owner, messages: []))
+    }
+    var presentation = OverlayIntercomPresentation()
+    presentation.expand(cards[1])
+    XCTAssertEqual(presentation.frontOrder(cards), [cards[0], cards[2], cards[1]])
+    XCTAssertEqual(presentation.expanded, [cards[1]])
+  }
+
   func testStretchedCardsRevealUsefulContentAtEachTextScale() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)

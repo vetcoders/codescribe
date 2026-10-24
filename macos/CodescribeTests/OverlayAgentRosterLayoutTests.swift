@@ -151,7 +151,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     // 2026-10-23 20:31Z: "pomija — to bardzo źle") and wears the same ring.
     let targets = try sourceSection(
       "OverlayIntercomWidget.swift", from: "func chooserTargets()", to: "func presentChooser()")
-    XCTAssertTrue(targets.contains("identities.filter { !$0.isHumanInbox }.compactMap"))
+    XCTAssertTrue(targets.contains("identities.compactMap"))
     XCTAssertFalse(targets.contains("groupIdentities"))
     let detached = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func headerRow(",

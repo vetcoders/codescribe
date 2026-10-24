@@ -7,6 +7,32 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testIntercomPreviewBoundsRowsWithoutChangingTheConversationOrStandardDefaults() {
+    let messages = (0..<6).map { index in
+      OverlayConversationMessage(
+        id: "reply-\(index)", kind: .reply, text: "message \(index)", order: UInt64(index),
+        emittedAt: "2026-10-24T16:00:00Z", owner: nil, recipients: [], deliveryID: nil,
+        replyTo: nil, unsolicited: true, playback: nil, busPath: "", sourceChannel: "10")
+    }
+    let conversation = OverlayConversation.humanInbox(messages: messages)
+    var view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 0, bottomInset: 8,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+      draft: .constant("retained draft"), sending: false, sendError: nil, onSend: {})
+    XCTAssertEqual(view.presentation, .standard)
+    XCTAssertTrue(view.showsComposer)
+    XCTAssertEqual(view.orderedMessages, messages)
+    view.presentation = .intercom
+    view.messageWindowLimit = 3
+    XCTAssertEqual(view.orderedMessages, Array(messages.suffix(3)))
+    XCTAssertEqual(conversation.messages, messages)
+    view.messageWindowLimit = -1
+    XCTAssertTrue(view.orderedMessages.isEmpty)
+    view.messageWindowLimit = nil
+    XCTAssertEqual(view.orderedMessages, messages)
+    XCTAssertEqual(view.draft, "retained draft")
+  }
+
   func testIntercomMailboxCommandRevealsTheSelectedSurfaceWithoutSendingOrRecording() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -98,9 +124,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(state.agentGestureTargets.contains(where: \.isHumanInbox))
     XCTAssertFalse(state.channelMapLayoutModel.chips.contains { $0.digit == "10" })
     let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
-    let human = try XCTUnwrap(identities.first(where: \.isHumanInbox))
-    XCTAssertEqual(human.name, localizedTitle)
-    XCTAssertEqual(human.displayDigit, "")
+    XCTAssertFalse(identities.contains(where: \.isHumanInbox), "mailboxes occupy the header")
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
     state.publishConversationText = { _, _, _ in XCTFail("The inbox is read-only") }
     await state.sendConversationText(inbox)
