@@ -94,7 +94,7 @@ Codescribe lives in your menu bar. The icon color indicates status:
 
 - **GitHub Issues**: [github.com/vetcoders/codescribe/issues](https://github.com/vetcoders/codescribe/issues)
 - **Documentation**: This guide + [ARCHITECTURE.md](../ARCHITECTURE.md)
-- **Logs**: `~/.codescribe/logs/` or run `codescribe -v` for verbose output
+- **Logs**: `~/.codescribe/data.noindex/logs/` or run `codescribe -v` for verbose output
 
 ---
 
