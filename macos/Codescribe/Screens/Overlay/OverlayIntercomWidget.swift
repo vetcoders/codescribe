@@ -1037,7 +1037,7 @@ private struct OverlayIntercomHeader: View {
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityHint(Text("View conversation without changing the microphone"))
     .accessibilityIdentifier(digit == nil ? "overlay-intercom-inbox" : "overlay-intercom-all")
-    .help(title)
+    .overlayFastHint(title, palette: palette)
   }
 }
 
