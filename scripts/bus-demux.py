@@ -111,6 +111,9 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
+# The Founder's own lane: typed words are sent from channel 10, never from the
+# recipient whose mailbox carries the copy.
+FOUNDER_SENDER = {"name": "founder", "channel": "10"}
 CAPTURE_ATTACHMENT_SCHEMA = "codescribe.capture-attachment.v1"
 CAPTURE_ATTACHMENT_COMMIT_SCHEMA = "codescribe.capture-attachment-commit.v1"
 DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
@@ -1754,8 +1757,11 @@ def consider(
         audience = event.get("audience")
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
+        # The owner fields name the recipient; the delivery names who wrote it.
+        # Rows written before the sender existed get the same Founder sender.
         return {**event, "schema": EVENT_SCHEMA, "kind": "message",
                 "channel": event.get("origin_channel", event.get("channel")),
+                "name": FOUNDER_SENDER["name"], "sender": dict(FOUNDER_SENDER),
                 "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
                 "routing_match": "audience"}
     status = event.get("status")
@@ -8040,7 +8046,7 @@ def send_text_command(args: argparse.Namespace) -> int:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
-                     "recipients": [owner]}
+                     "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
             if user_reply is not None:
                 event["user_reply_to"] = user_reply
             if attachments:
