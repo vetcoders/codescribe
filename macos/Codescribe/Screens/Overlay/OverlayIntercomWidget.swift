@@ -99,7 +99,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       panel.contentView = NSHostingView(
         rootView: TextScaleRoot(controller: textScale) {
           OverlayIntercomHeader(state: state, controller: self)
-        })
+        }.csFocusPolicy())
       let fallback = anchor?.frame ?? NSScreen.main?.visibleFrame ?? .zero
       let stored = UserDefaults.standard.array(forKey: Self.positionKey) as? [Double]
       let origin: CGPoint
@@ -215,7 +215,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           OverlayIntercomCard(
             state: state, identity: identity, index: index, controller: self,
             onRevealConversation: revealConversation)
-        })
+        }.csFocusPolicy())
       cards[identity] = panel
     }
     positionCards()
@@ -298,7 +298,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
             OverlayIntercomInstanceCard(
               state: state, instanceID: instance.id, controller: self,
               onRevealConversation: revealConversation)
-          })
+          }.csFocusPolicy())
         instancePanels[instance.id] = panel
       }
       panel.acceptsConversationFocus = !instance.minimized
@@ -737,7 +737,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           OverlayIntercomInstanceCard(
             state: state, instanceID: id, controller: self,
             onRevealConversation: revealConversation)
-        })
+        }.csFocusPolicy())
       sizes.removeValue(forKey: identity)
       cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
@@ -1332,7 +1332,8 @@ private struct OverlayIntercomCard: View {
       .font(.system(size: 10 * scale))
       .frame(
         width: 24 * max(1, scale),
-        height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+        height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      )
       .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
       .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
       .accessibilityElement(children: .ignore)
@@ -1668,7 +1669,6 @@ private struct OverlayIntercomFocusButton: View {
       .conversationActionHover(
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
-      .csFocusOutline()
       .disabled(!action.enabled)
       .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
       .accessibilityLabel(Text(verbatim: action.title))

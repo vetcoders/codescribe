@@ -200,11 +200,12 @@ struct CSFocusOutline: View {
   var isFocused: Bool
   var cornerRadius: CGFloat
   @Environment(\.displayScale) private var displayScale
+  @Environment(\.appearsActive) private var appearsActive
 
   var body: some View {
     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       .strokeBorder(
-        CSColor.chromeAccent.opacity(isFocused ? 1 : 0),
+        CSColor.chromeAccent.opacity(isFocused && appearsActive ? 1 : 0),
         lineWidth: 1 / max(displayScale, 1)
       )
       .allowsHitTesting(false)
