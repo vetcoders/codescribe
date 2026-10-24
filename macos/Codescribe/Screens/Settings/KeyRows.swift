@@ -57,7 +57,7 @@ struct SettingsSaveButton: View {
     Button(action: action) {
       Text(title)
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : CSColor.secondaryInk)
         .padding(.horizontal, SettingsScale.controlInsetH)
         .padding(.vertical, SettingsScale.controlInsetV)
         .background(
@@ -127,7 +127,7 @@ struct SettingsRefreshButton: View {
         }
         Text(title).font(SettingsScale.controlLabel)
       }
-      .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
+      .foregroundStyle(enabled && !busy ? CSColor.secondaryInk : Color.secondary.opacity(0.6))
       .frame(height: 14)
     }
     .accessibilityLabel(Text(axLabel))
@@ -144,7 +144,7 @@ extension SettingsChipButton where Label == Text {
     self.init(enabled: enabled, action: action) {
       Text(title)
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(enabled ? tint : Color.secondary)
+        .foregroundStyle(enabled ? tint : CSColor.secondaryInk)
     }
   }
 }
@@ -192,7 +192,7 @@ struct SettingsUrlRow: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
       }
@@ -200,7 +200,7 @@ struct SettingsUrlRow: View {
         Text(caption)
           .font(SettingsScale.helper)
           .lineSpacing(2)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       }
     }
     .onAppear {
@@ -231,7 +231,7 @@ struct SettingsDetailRow: View {
     HStack(spacing: 8) {
       Text(title)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       Text(value)
         .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
@@ -289,7 +289,7 @@ struct KeyRow: View {
   /// own — an account can cover the same provider — so red is reserved for a
   /// real failure, which `KeyProbeChip` and the operation error report.
   private var accent: Color {
-    isSet ? CSColor.olive : Color.secondary
+    isSet ? CSColor.olive : CSColor.secondaryInk
   }
 
   init(
@@ -404,7 +404,7 @@ struct KeyRow: View {
 
   private var editButton: some View {
     SettingsChipButton(
-      isSet ? "Change" : "Add", tint: Color.secondary, enabled: !isUpdating
+      isSet ? "Change" : "Add", tint: CSColor.secondaryInk, enabled: !isUpdating
     ) {
       editing.toggle()
       isFocused = editing
@@ -416,7 +416,7 @@ struct KeyRow: View {
     VStack(alignment: .leading, spacing: 3) {
       Text("API address")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       Text(verbatim: endpoint)
         .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
@@ -453,7 +453,7 @@ struct KeyRow: View {
           }
           .frame(minWidth: 26, minHeight: 18)
           .fixedSize(horizontal: true, vertical: false)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         }
         .fixedSize(horizontal: true, vertical: false)
         .help(isSet ? "Test this key" : "Save a key first to test it")
@@ -462,7 +462,7 @@ struct KeyRow: View {
         SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
           CSIconView(
             icon: .delete, size: 12, weight: .semibold,
-            color: isSet ? CSColor.terracotta : Color.secondary
+            color: isSet ? CSColor.terracottaText : CSColor.secondaryInk
           )
           .frame(width: 10, height: 18)
         }
@@ -479,7 +479,7 @@ struct KeyRow: View {
     if let operationError {
       Text(operationError)
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.danger)
+        .foregroundStyle(CSColor.dangerLight)
         .textSelection(.enabled)
     }
   }
@@ -560,9 +560,9 @@ struct KeyProbeChip: View {
   private var tint: Color {
     switch result.status {
     case .ok: return CSColor.oliveLight
-    case .invalid, .noQuota: return CSColor.terracotta
-    case .network: return CSColor.amber
-    case .missing, .unsupported: return Color.secondary
+    case .invalid, .noQuota: return CSColor.terracottaText
+    case .network: return CSColor.amberLight
+    case .missing, .unsupported: return CSColor.secondaryInk
     }
   }
 
@@ -601,7 +601,7 @@ struct AccountLoginRow: View {
   let onSignOut: () -> Void
 
   private var signedIn: Bool { provider.accountSignedIn }
-  private var accent: Color { signedIn ? CSColor.olive : Color.secondary }
+  private var accent: Color { signedIn ? CSColor.olive : CSColor.secondaryInk }
   private var accountBrand: String { Self.brand(for: provider) }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
@@ -634,14 +634,14 @@ struct AccountLoginRow: View {
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
         .font(SettingsScale.statusBadge)
-        .foregroundStyle(accent)
+        .foregroundStyle(signedIn ? CSColor.oliveLight : CSColor.secondaryInk)
         .lineLimit(1)
         .truncationMode(.middle)
         .help(provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
           .font(SettingsScale.statusBadge)
-          .foregroundStyle(CSColor.terracotta)
+          .foregroundStyle(CSColor.terracottaText)
           .lineLimit(1)
           .help(loginNotice)
       }
@@ -650,7 +650,7 @@ struct AccountLoginRow: View {
       // ordinary choice, and destructive styling belongs to a confirmation.
       if signedIn {
         SettingsChipButton(
-          "Sign out", tint: Color.secondary, enabled: !loginPending, action: onSignOut
+          "Sign out", tint: CSColor.secondaryInk, enabled: !loginPending, action: onSignOut
         )
         .help("Remove the stored \(accountBrand) account tokens")
         .accessibilityLabel("Sign out of \(accountBrand)")
@@ -672,7 +672,7 @@ struct AccountLoginRow: View {
             .font(SettingsScale.controlLabel)
           }
           .foregroundStyle(
-            provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : Color.secondary
+            provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : CSColor.secondaryInk
           )
         }
         .help(provider.accountStatusMessage)
@@ -698,7 +698,7 @@ struct OAuthClientIdButton: View {
     Button("OAuth client id…") { editing = true }
       .buttonStyle(.plain)
       .font(SettingsScale.helper)
-      .foregroundStyle(Color.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .csFocusRing()
       .popover(isPresented: $editing, arrowEdge: .bottom) {
         OAuthClientIdEditor(
@@ -768,7 +768,7 @@ struct SettingsSecondsSlider: View {
         .foregroundStyle(Color.primary)
       Text(detail)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       // The track stops at `sliderWidth`; the value reads at its end.
       HStack(spacing: CSSpace.md) {

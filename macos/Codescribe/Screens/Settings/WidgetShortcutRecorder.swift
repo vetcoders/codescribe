@@ -186,7 +186,7 @@ struct WidgetShortcutRecorderPill: View {
       } label: {
         Text(verbatim: recording ? String(localized: "Press keys…", comment: "Widget shortcut recorder is waiting for a chord") : chord.label)
           .font(SettingsScale.monoValue)
-          .foregroundStyle(recording ? Color.secondary : CSColor.terracotta)
+          .foregroundStyle(recording ? CSColor.secondaryInk : CSColor.terracottaText)
           .padding(.horizontal, SettingsScale.controlInsetH)
           .padding(.vertical, SettingsScale.controlInsetV)
           .background(
@@ -209,7 +209,7 @@ struct WidgetShortcutRecorderPill: View {
       if let refusal {
         Text(refusal.message)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.amber)
+          .foregroundStyle(CSColor.amberLight)
           .multilineTextAlignment(.trailing)
           .fixedSize(horizontal: false, vertical: true)
       }
