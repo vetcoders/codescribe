@@ -116,7 +116,7 @@ class BroadcastPolicyTests(unittest.TestCase):
         with mock.patch.object(DEMUX, "emit") as emitted:
             self.assertEqual(DEMUX.read_pending_command(self.args()), 0)
         snapshot = emitted.call_args.args[0]
-        self.assertEqual(snapshot["broadcast"], {"policy": "quiet"})
+        self.assertEqual(snapshot["broadcast"], {"policy": "quiet", "membership": "on", "quiet": True})
         self.assertEqual(snapshot["read_delivery_ids"], [quiet["delivery_id"]])
         self.assertEqual(snapshot["deliveries"][0]["text"].split(), ["Iwo"] * 5)
         with mock.patch.object(DEMUX, "emit"):
@@ -185,7 +185,7 @@ class BroadcastPolicyTests(unittest.TestCase):
             code, output, error = self.cli("--broadcast", policy, *owner)
             self.assertEqual(code, 0, error)
             row = json.loads(output)
-            self.assertEqual(row["broadcast"], {"policy": policy})
+            self.assertEqual(row["broadcast"]["policy"], policy)
             self.assertEqual(row["bus"], str(self.bus))
             self.assertEqual(self.current_policy(), policy)
         path = DEMUX.broadcast_policy_path(self.root, self.provider, self.session, self.bus)
@@ -214,10 +214,11 @@ class BroadcastPolicyTests(unittest.TestCase):
     def test_attach_and_status_project_the_same_receipt(self):
         lease = self.lease()
         self.policy("off")
-        self.assertEqual(lease.attach_receipt()["broadcast"], {"policy": "off"})
+        expected = {"policy": "off", "membership": "off", "quiet": False}
+        self.assertEqual(lease.attach_receipt()["broadcast"], expected)
         with mock.patch.object(DEMUX, "emit") as emitted:
             self.assertEqual(DEMUX.status_command(self.args()), 0)
-        self.assertEqual(emitted.call_args.args[0]["broadcast"], {"policy": "off"})
+        self.assertEqual(emitted.call_args.args[0]["broadcast"], expected)
 
     def run_follower(self, events, *, switch=None):
         args = self.args(name="lena", all=False, become=False, follow=True, from_start=True,

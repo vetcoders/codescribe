@@ -282,6 +282,8 @@ install-app: install-voice-lab
 	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
+	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
+	if [ -n "$$version" ]; then echo "Build $$version zainstalowany"; "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi
 	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
 	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \
 		$(RESTART_IF_IDLE) || echo "Restart not armed; run 'make restart-if-idle' at an idle moment."; \
@@ -1208,6 +1210,7 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
 	python3 -m unittest scripts/tests/test_bus_history.py; \
 	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
+	python3 -m unittest scripts/tests/test_bus_moon_policy.py; \
 	python3 -m unittest scripts/tests/test_bus_panel_focus.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
