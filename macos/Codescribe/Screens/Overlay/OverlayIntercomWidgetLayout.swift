@@ -4,6 +4,13 @@ enum IntercomContentTier: String, Codable, CaseIterable, Sendable {
   case icon, name, actions
 }
 
+/// Content revealed inside the existing group card, independently of whether
+/// its full conversation window has been opened. These are presentation gates;
+/// drafts, messages and commands remain owned by the shared conversation.
+enum IntercomCardContent: Equatable, Sendable {
+  case header, context, preview, composer
+}
+
 /// What a one-line row shows beside its digit, dot and name, counted from its
 /// right edge as on the agents list (Maciej, 2026-10-23 seal: in a narrow row
 /// the microphone comes first, then the speaker that mutes an agent talking
@@ -88,16 +95,29 @@ struct IntercomContentMetrics: Equatable {
     return width < minimumNameWidth ? min(iconSide, available) : width
   }
 
-  /// A card stretches with the gesture, from one row up to its share of the
-  /// screen, and its content stands in the middle of the larger tile (Maciej,
+  func cardContent(width: CGFloat, cardHeight: CGFloat) -> IntercomCardContent {
+    let scale = max(1, nameFontSize / 11)
+    guard width >= minimumNameWidth else { return .header }
+    if width >= 320 * scale && cardHeight >= 240 * scale { return .composer }
+    if width >= 220 * scale && cardHeight >= 140 * scale { return .preview }
+    let header = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    if cardHeight >= header + 24 * scale { return .context }
+    return .header
+  }
+
+  /// A card stretches with the gesture, from one row up to the space below the
+  /// header, revealing context, messages and then the composer (Maciej,
   /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
   /// while the one-or-two-row snap that replaced them "nie robi nic"). Stacked
   /// controls appear once the card holds two rows.
   func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
     guard count > 0 else { return iconSide }
+    // The group can extend below the display. Dividing by the roster count
+    // prevented a 240 pt composer with four cards on a 900 pt screen, even
+    // after an explicit stretch. Bound each card, keeping room for the header.
     let maximum =
-      (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
-      / CGFloat(count) - OverlayIntercomWidgetLayout.gap
+      available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
+      - OverlayIntercomWidgetLayout.gap
     return max(iconSide, min(requested, maximum))
   }
 
