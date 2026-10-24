@@ -141,7 +141,9 @@ enum RecentTakesReader {
 /// forensics of those takes (pins, PCM slots, Silero ranges) stay in Lab.
 struct DictionaryRecentTakes: View {
   let configDir: String
-  /// Jumps to the Lab desk, whose word pins default to the latest take.
+  /// Jumps to the Lab desk, whose word pins default to the latest take. Nil
+  /// hides the button; build it with `openLabAction` so it exists only while
+  /// the Lab section can be selected.
   var openLab: (() -> Void)? = nil
 
   @State private var takes: [RecentTake] = []
@@ -255,6 +257,17 @@ struct DictionaryRecentTakes: View {
       RoundedRectangle(cornerRadius: 8, style: .continuous)
         .fill(Color.primary.opacity(0.04))
     )
+  }
+
+  /// The Lab jump for a recent-take card, or nil when Lab cannot be opened.
+  /// The Lab section's availability is the one source of truth: outside a
+  /// developer build it is hidden, `select(.lab)` returns early, and a button
+  /// wired to it would do nothing.
+  static func openLabAction(
+    availability: SettingsSectionAvailability = SettingsSection.lab.availability,
+    _ open: @escaping () -> Void
+  ) -> (() -> Void)? {
+    availability == .available ? open : nil
   }
 
   static func dateLabel(_ date: Date) -> String {

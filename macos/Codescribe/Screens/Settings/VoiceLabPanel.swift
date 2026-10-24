@@ -426,8 +426,11 @@ struct VoiceLabPanel: View {
       // The page leads with what happened on this Mac today, in human terms
       // (Maciej, 2026-10-21: the Dictionary must not sit on a three-week-old
       // correction). Acoustic forensics of the same takes live in Lab.
-      DictionaryRecentTakes(configDir: model.configDir) { model.select(.lab) }
-        .padding(.top, CSSpace.section)
+      DictionaryRecentTakes(
+        configDir: model.configDir,
+        openLab: DictionaryRecentTakes.openLabAction { model.select(.lab) }
+      )
+      .padding(.top, CSSpace.section)
 
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
         SettingsSectionHeaderRow(
