@@ -176,7 +176,8 @@ enum OverlayIntercomWidgetLayout {
     // Dividing the shared height among rows can round a fitting roster just
     // below an integer. Do not page away its last row for floating-point dust.
     let capacity = max(
-      1, Int((max(0, visibleHeight - header) / (max(header, row) + gap) + 0.000_001).rounded(.down)))
+      1, Int((max(0, visibleHeight - header) / (max(header, row) + gap) + 0.000_001).rounded(.down))
+    )
     let shown = min(max(0, count), capacity)
     let start = min(max(0, offset), max(0, count - shown))
     return start..<(start + shown)

@@ -71,7 +71,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate private(set) var groupWidth: CGFloat = 0
   fileprivate var hideAllWidth: CGFloat {
     let font = NSFont.systemFont(ofSize: 11 * effectiveScale, weight: .semibold)
-    return ceil((String(localized: "Hide all") as NSString).size(withAttributes: [.font: font]).width)
+    return ceil(
+      (String(localized: "Hide all") as NSString).size(withAttributes: [.font: font]).width)
       + 10
   }
   private var headerPagingWidth: CGFloat {
@@ -1068,12 +1069,14 @@ private struct OverlayIntercomHeader: View {
         Text("Hide all").csFont(11, .semibold).lineLimit(1).fixedSize()
           .frame(
             width: controller.hideAllWidth,
-            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+          )
           .contentShape(Capsule())
       }
       .buttonStyle(.plain)
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
       .accessibilityIdentifier("overlay-intercom-hide-all")
       if controller.headerControlsVisible {
         Spacer(minLength: 4)

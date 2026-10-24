@@ -14,21 +14,83 @@ final class OverlayIntercomProjectionTests: XCTestCase {
   private func identity(session: String = "first", name: String = "Roman") throws
     -> OverlayIntercomCardIdentity
   {
+    .init(digit: "3", conversation: try conversation(session: session, name: name))
+  }
+
+  private func conversation(session: String = "first", name: String = "Roman") throws
+    -> OverlayConversation
+  {
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
         "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
         "channel": "3", "name": name,
       ]))
-    return .init(
-      digit: "3",
-      conversation: .init(
-        id: owner.id, channel: "3", name: name, owner: owner, messages: []))
+    return .init(id: owner.id, channel: "3", name: name, owner: owner, messages: [])
   }
 
   private func settle() async throws {
     // Let the coordinator's queued MainActor task and its explicit yield finish.
     try await Task.sleep(for: .milliseconds(30))
+  }
+
+  func testHideAllReturnsDetachedWindowsToOneBarWithoutChangingConversations() throws {
+    let suite = "CodescribeTests.hide-all.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+    let agentConversation = try conversation()
+    let agent = OverlayIntercomCardIdentity(digit: "3", conversation: agentConversation)
+    let previousOwner = try identity(session: "previous")
+    let inbox = OverlayIntercomCardIdentity(digit: "10", conversation: .humanInbox())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [agentConversation, .humanInbox()]))
+    state.conversationDrafts = [agentConversation.id: "unfinished reply", "10": "private draft"]
+    state.publishConversationText = { _, _, _ in XCTFail("Hiding windows must not send") }
+    var desktop = OverlayIntercomDesktopState()
+    desktop.groupWidth = 600
+    desktop.groupRowHeight = 240
+    for (index, card) in [agent, previousOwner, inbox].enumerated() {
+      desktop.upsert(
+        .init(
+          identity: card,
+          frame: CGRect(x: 80 + index * 20, y: 160, width: 380, height: 320),
+          minimized: index == 1, closed: index == 2))
+    }
+    store.save(desktop)
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite), desktopStore: store)
+    defer { controller.invalidate() }
+    let existingWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+    controller.setVisible(true, relativeTo: nil)
+    let ownedWindows = NSApp.windows.filter { !existingWindows.contains(ObjectIdentifier($0)) }
+    XCTAssertGreaterThan(ownedWindows.filter(\.isVisible).count, 1)
+    let drafts = state.conversationDrafts
+    let generation = state.captureGeneration
+    let selected = state.selectedConversationID
+    let conversations = state.conversations.map(\.id)
+    let reconciliations = controller.reconciliationRequests
+
+    controller.hideAll()
+
+    let saved = store.load()
+    var expected = desktop
+    expected.groupTier = saved.groupTier
+    for index in expected.instances.indices { expected.instances[index].closed = true }
+    XCTAssertEqual(saved, expected, "Only open presentation records become closed")
+    XCTAssertEqual(ownedWindows.filter(\.isVisible).count, 1, "Only the Intercom bar remains")
+    XCTAssertEqual(controller.reconciliationRequests, reconciliations + 1)
+    XCTAssertEqual(state.conversationDrafts, drafts)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertEqual(state.selectedConversationID, selected)
+    XCTAssertEqual(state.conversations.map(\.id), conversations)
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+
+    controller.hideAll()
+    XCTAssertEqual(store.load(), saved, "Repeated recovery preserves exact saved windows")
+    XCTAssertEqual(ownedWindows.filter(\.isVisible).count, 1)
   }
 
   func testRepeatedHostingUpdatesDoNotRepeatNativePlacement() async throws {

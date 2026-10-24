@@ -41,10 +41,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           width: max(metrics.minimumNameWidth, 320 * factor), cardHeight: 240 * factor), .composer)
     }
     let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
-    for siblings in [1, 4, 9] {
-      let height = metrics.fittedCardHeight(260, count: siblings, available: 900)
-      XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: height), .composer)
-    }
+    XCTAssertEqual(
+      metrics.cardContent(
+        width: 500, cardHeight: metrics.fittedCardHeight(260, count: 1, available: 900)), .composer)
+    XCTAssertEqual(
+      metrics.cardContent(
+        width: 500, cardHeight: metrics.fittedCardHeight(260, count: 9, available: 900)), .context)
   }
 
   func testPagingCountsActualTallCardsSoLowerAgentsRemainReachable() {
@@ -99,21 +101,29 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testDraggingTheGroupBelowTheScreenKeepsItsHeaderWithoutMovingItBackUp() {
+  func testDraggingTheGroupBelowTheScreenRecoversTheWholeVisibleStack() {
     for screen in [
       CGRect(x: 0, y: 0, width: 1440, height: 900),
       CGRect(x: -1680, y: -90, width: 1680, height: 1050),
     ] {
       let proposed = CGRect(
         x: screen.minX + 100, y: screen.minY + 120, width: 400, height: 30)
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
+      let height = metrics.fittedCardHeight(260, count: 5, available: screen.height)
       let result = Layout.clampedHeader(
-        proposed, count: 5, visibleFrame: screen, cardHeight: 260)
-      XCTAssertEqual(result, proposed, "the group body may cross the display's lower edge")
+        proposed, count: 5, visibleFrame: screen, cardHeight: height)
+      XCTAssertGreaterThan(result.minY, proposed.minY)
       let lostHeader = proposed.offsetBy(dx: 0, dy: -1000)
       let recovered = Layout.clampedHeader(
-        lostHeader, count: 5, visibleFrame: screen, cardHeight: 260)
-      XCTAssertEqual(recovered.minY, screen.minY, "the entire header stays reachable")
+        lostHeader, count: 5, visibleFrame: screen, cardHeight: height)
+      XCTAssertEqual(recovered, result)
       XCTAssertTrue(screen.contains(recovered))
+      for index in 0..<5 {
+        XCTAssertTrue(
+          screen.contains(
+            Layout.rowFrame(
+              index: index, header: recovered, count: 5, visibleFrame: screen, cardHeight: height)))
+      }
     }
   }
 
@@ -193,10 +203,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: true, muted: nil, open: false))
   }
 
-  /// Maciej, 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie
-  /// fajne", the one-or-two-row snap "nie robi nic". A card follows the
-  /// gesture up to a viewport-sized card; siblings are reached by paging.
-  func testCardsStretchWithTheGestureWithoutDividingHeightBetweenSiblings() {
+  /// Maciej, 2026-10-24: stretching must keep the roster inside the screen.
+  /// Intermediate heights remain continuous until the shared budget is full.
+  func testCardsStretchContinuouslyWithinTheWholeRosterBudget() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
       let icon = metrics.iconSide
@@ -210,7 +219,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           metrics.fittedCardHeight(requested, count: 3, available: 2000), requested,
           "any height in between, not a snap")
       }
-      let maximum = 2000 - Layout.controlHeight(scale: scale) - Layout.gap
+      let maximum = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
       XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), maximum)
       XCTAssertEqual(
         metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 2 * icon), .actions,
@@ -277,12 +286,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertLessThanOrEqual(Layout.gap, 4, "the stack reads as one list")
   }
 
-  func testTallCardsPageWithoutShrinkingTheirControlsToFitEverySibling() {
+  func testCardsUseCompactRowsBeforePagingAwayFittingSiblings() {
     let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
     let minimum = metrics.minimumGroupSize(count: 4)
     let row = metrics.fittedCardHeight(200, count: 4, available: minimum.height)
-    XCTAssertEqual(row, minimum.height - Layout.controlHeight(scale: 1) - Layout.gap)
-    XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .actions)
+    XCTAssertEqual(row, metrics.iconSide)
+    XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .name)
     XCTAssertEqual(metrics.nameFontSize, 11)
     XCTAssertEqual(metrics.digitFontSize, 10)
     let tall = metrics.fittedCardHeight(200, count: 4, available: 700)
@@ -293,10 +302,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       count: 4, visibleFrame: screen, cardHeight: tall)
     let shown = Layout.visibleRange(
       count: 4, offset: 0, visibleHeight: screen.height, scale: 1, cardHeight: tall)
-    XCTAssertEqual(shown, 0..<3)
+    XCTAssertEqual(shown, 0..<4)
     XCTAssertEqual(
       Layout.visibleRange(
-        count: 4, offset: 3, visibleHeight: screen.height, scale: 1, cardHeight: tall), 1..<4)
+        count: 4, offset: 3, visibleHeight: screen.height, scale: 1, cardHeight: tall), 0..<4)
     for index in 0..<shown.count {
       let frame = Layout.rowFrame(
         index: index, header: header, count: shown.count,
