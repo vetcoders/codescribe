@@ -4439,8 +4439,7 @@ final class OverlayState {
       } else {
         clearCaptureClock()
       }
-      selectDictationSurfaceIfNeeded()
-      applyPreferredExpansion(forTake: true)
+      applyTakeStartPresentation()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -4461,8 +4460,7 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      selectDictationSurfaceIfNeeded()
-      applyPreferredExpansion(forTake: true)
+      applyTakeStartPresentation()
     }
     recording = true
     if !captureDidStart {
@@ -6034,6 +6032,17 @@ final class OverlayState {
     userRevisionProvenance = nil
     followDictationCapturePresentation()
     onTranscriptPresentationChanged?()
+  }
+
+  /// A new ordinary capture shows its own canvas in the preferred take-start
+  /// form. A take the composer owns starts where its microphone was pressed:
+  /// the conversation and its composer stay on screen. The preferred form
+  /// used to apply anyway and folded an expanded Agents canvas to the strip
+  /// (Maciej, 2026-10-23, take 0250cc19: "zamyka mi widok agenta").
+  private func applyTakeStartPresentation() {
+    guard !draftCapture.hasRequest else { return }
+    selectDictationSurfaceIfNeeded()
+    applyPreferredExpansion(forTake: true)
   }
 
   /// A new ordinary capture shows its own canvas. The controller's roster
