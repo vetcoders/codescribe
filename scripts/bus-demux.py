@@ -152,6 +152,8 @@ TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
 # A hold control must reach the follower before the row's deadline releases it.
 HOLD_CONTROL_MARGIN_SECONDS = 0.5
+# A withdraw or revision counts only once the owner's follower has applied it.
+HOLD_CONTROL_CONFIRM_SECONDS = 5.0
 PLAYBACK_SCAN_SECONDS = 0.5
 # A scan cut short by its budget proved nothing either way. Playback resumes the
 # cursor on the next tick and stops only after this many in a row.
@@ -8106,16 +8108,14 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             source_identity = identity
             voice_sessions: set[str] = set()
             deadline: float | None = None
-            released = False
+            releases: list[tuple[str, Any]] = []
             storage = ChunkDecoder()
             for raw in replay(Path(owner["bus"])):
                 source = parse_line(raw)
                 source = storage.feed(source) if source is not None else None
                 if source and source.get("schema") == DELIVERY_CONTROL_SCHEMA:
-                    # A release already handed the message over; nothing is held any more.
-                    released = released or (
-                        source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]
-                        and str(source.get("identity", "")) in (identity, source_identity))
+                    if source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]:
+                        releases.append((str(source.get("identity", "")), source.get("session_id")))
                     continue
                 if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
                     key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
@@ -8132,6 +8132,13 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                             source_identity = str(source[key])
             if len(voice_sessions) > 1:
                 raise ValueError("voice identity is ambiguous; select its capture session")
+            # A release already handed the message over; nothing is held any more.
+            # Voice captures reuse numeric labels, so a release counts only for the
+            # capture session it names, as the follower's control_delivery matches it.
+            released = any(
+                label in (identity, source_identity)
+                and (not session or not target.get("session_id") or session == target["session_id"])
+                for label, session in releases)
             # The follower hands a held row over at its deadline without waiting
             # for controls; a control written after that would report a withdraw
             # or revision the agent never sees. Refuse it while it can still be said.
@@ -8149,9 +8156,45 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 event["text"] = text
             source = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
             receipts.append({**owner, "source": source})
+        if kind != "release":
+            # The append receipt is not the agent's view: a control that lands after
+            # the follower handed the row over is ignored there. Report success only
+            # once every owner's follower has applied this control.
+            waiting = [owner["lease_id"] for owner, _, _ in plans]
+            confirm_by = time.monotonic() + HOLD_CONTROL_CONFIRM_SECONDS
+            while True:
+                waiting = [lease for lease in waiting
+                           if not held_control_applied(root, lease, kind, control_id, text)]
+                if not waiting or time.monotonic() >= confirm_by:
+                    break
+                time.sleep(0.1)
+            if waiting:
+                raise ValueError(
+                    "message already delivered; it can no longer be changed" if len(waiting) == len(plans)
+                    else f"message already delivered to {len(waiting)} of {len(plans)} agents")
     emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
           "control_id": control_id, "recipients": receipts, "skipped": skipped})
     return 0
+
+
+def held_control_applied(root: Path, lease_id: str, kind: str, control_id: str,
+                         text: str | None = None) -> bool:
+    """True once the lease's follower has applied this withdraw or revision.
+
+    Promotion strips `hold_controls`, so a revision applied just before its
+    deadline is also recognized by the handed-over row carrying its text.
+    """
+    lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if kind == "withdraw":
+        receipts = lease.get("withdrawn_held")
+        return isinstance(receipts, dict) and any(
+            isinstance(row, dict) and row.get("control_id") == control_id for row in receipts.values())
+    held = lease.get("held")
+    pending = lease.get("pending")
+    rows = [*(held.values() if isinstance(held, dict) else []), *(pending if isinstance(pending, list) else [])]
+    return any(isinstance(row, dict) and (control_id in (row.get("hold_controls") or [])
+               or text is not None and row.get("hold_until") is not None and row.get("text") == text)
+               for row in rows)
 
 
 def send_peer_command(args: argparse.Namespace) -> int:
