@@ -1207,11 +1207,13 @@ enum DictationOverlayWindow {
   /// width and no hole: the capsule hugs its content, and the recording form
   /// is the same rule with the recording counter, measured.
   @MainActor
-  static func miniNaturalWidth(map: OverlayChannelMapModel, textScale: CGFloat) -> CGFloat {
+  static func miniNaturalWidth(
+    map: OverlayChannelMapModel, textScale: CGFloat, stacked: Bool = false
+  ) -> CGFloat {
     guard !map.chips.isEmpty else { return miniFloorWidth }
     let counter = OverlayChannelPill.counterWidth(
       figure: String(map.count), openDigitCount: map.openDigits.count,
-      scale: OverlayChannelPill.headerScale(textScale))
+      scale: OverlayChannelPill.headerScale(textScale), stacked: stacked)
     return ceil(miniFloorWidth + miniBrandGap + counter)
   }
 
@@ -1380,8 +1382,9 @@ enum DictationOverlayWindow {
       guard let panel, let state else { return }
       let map = state.channelMapLayoutModel
       panel.setChannelMapPresentation(
-        enabled: state.channelMapInHeader, capturing: state.channelAudioCaptureActive,
-        naturalWidth: miniNaturalWidth(map: map, textScale: textScale.scale))
+        enabled: state.channelMapInMini, capturing: state.channelAudioCaptureActive,
+        naturalWidth: miniNaturalWidth(
+          map: map, textScale: textScale.scale, stacked: state.channelMapCounterStacked))
       panel.setMidiNaturalWidth(
         state.channelMapInHeader
           ? midiNaturalWidth(

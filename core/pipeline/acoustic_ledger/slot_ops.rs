@@ -310,6 +310,13 @@ pub enum SlotOperationRefusal {
 /// retired source's uncovered edge this short holds no other word.
 pub(super) const WORD_CONTINUITY_MS: u64 = 60;
 
+/// Below this span a short label can honestly be the whole utterance.
+const SPARSE_LABEL_MIN_SPAN_MS: u64 = 1_500;
+/// Polish dictation runs at 12–15 letters a second; "Wam." over 5.4 s is
+/// 0.55/s and "to jest" over 10.1 s is 0.6/s. Under 4/s the label has lost
+/// most of its words (10-21..10-23: 44 of 110 untimed Apple labels ≥1.5 s).
+const SPARSE_LABEL_MAX_CHARS_PER_SEC: u64 = 4;
+
 /// A repetition picker is needed only for equal lexical evidence on the same
 /// PCM. Different words over a coarse source are a partition, not a replay.
 impl AcousticLedger {
@@ -408,6 +415,24 @@ impl AcousticLedger {
         !self.word_pin_observations.contains(&source.observation)
             || (source.text.contains(char::is_whitespace)
                 && self.slot_source_ranges(source).len() == 1)
+    }
+
+    /// An owner whose committed label is far too sparse for its speech: one
+    /// word, or two or three, stretched over seconds (316ffbdd: "Wam." over
+    /// 5.4 s; d30f24bd: "to jest" over 10.1 s). The label covers the owner,
+    /// so coverage reads it as complete and no gap names the speech it lost.
+    /// It is an unresolved group that still owes a witness, not proof.
+    pub fn sparse_label_owner(&self, owner: &OccurrenceIdentity) -> bool {
+        let Some(rate) = self.capture_rate_hz.map(u64::from) else {
+            return false;
+        };
+        let span = owner.sample_end.saturating_sub(owner.sample_start);
+        let Some(text) = self.text_of(owner) else {
+            return false;
+        };
+        let chars = text.chars().filter(|ch| ch.is_alphanumeric()).count() as u64;
+        span.saturating_mul(1_000) >= rate.saturating_mul(SPARSE_LABEL_MIN_SPAN_MS)
+            && chars.saturating_mul(rate) < SPARSE_LABEL_MAX_CHARS_PER_SEC.saturating_mul(span)
     }
 
     pub(crate) fn complete_word_slot(&self, source: &WordSlot) -> bool {
@@ -2788,6 +2813,60 @@ impl AcousticLedger {
 mod slot_ops_tests {
     use super::*;
     use crate::pipeline::acoustic_ledger::word_adjudication_tests::corroborate_candidate;
+
+    fn sparse_label_capture(
+        span: u64,
+        label: Option<&str>,
+    ) -> (AcousticLedger, OccurrenceIdentity) {
+        let owner = OccurrenceIdentity::new("sparse-label", 1, 16_000, 16_000 + span);
+        let integral = span as f64 * 0.04;
+        let level = 20.0 * 0.2_f64.log10();
+        let calibration = EnergyCalibration::new("sparse-label-pcm", 1.0, 1);
+        let mut ledger = AcousticLedger::new();
+        ledger.bind_capture_rate(16_000);
+        assert!(
+            ledger
+                .qualify(
+                    &AcousticEvidence {
+                        occurrence: owner.clone(),
+                        duration_ms: span as f64 / 16.0,
+                        energy_integral: integral,
+                        mean_rms_dbfs: level,
+                        peak_dbfs: level,
+                        vad_open_sample: Some(owner.sample_start),
+                        vad_close_sample: Some(owner.sample_end),
+                        evidence_calibration_version: calibration.version.clone(),
+                    },
+                    &calibration
+                )
+                .is_qualified()
+        );
+        if let Some(label) = label {
+            let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
+            assert!(ledger.admit(&apple, label).grants_mutation());
+        }
+        (ledger, owner)
+    }
+
+    #[test]
+    fn one_word_over_seconds_of_speech_is_a_sparse_label() {
+        // 316ffbdd: Apple's single final "Wam." held a 5.4 s utterance.
+        let (ledger, owner) = sparse_label_capture(86_400, Some("Wam."));
+        assert!(ledger.sparse_label_owner(&owner));
+        let (ledger, owner) = sparse_label_capture(161_600, Some("to jest"));
+        assert!(ledger.sparse_label_owner(&owner));
+    }
+
+    #[test]
+    fn a_whole_sentence_or_a_short_utterance_is_not_a_sparse_label() {
+        let (ledger, owner) =
+            sparse_label_capture(86_400, Some("Halo żameczki kto kompiluje na Silvera"));
+        assert!(!ledger.sparse_label_owner(&owner));
+        let (ledger, owner) = sparse_label_capture(16_000, Some("Wam."));
+        assert!(!ledger.sparse_label_owner(&owner));
+        let (ledger, owner) = sparse_label_capture(86_400, None);
+        assert!(!ledger.sparse_label_owner(&owner));
+    }
 
     // Root-owned independent controls: actual capture measurements, not a word floor.
     fn forensic_neighbour_capture(

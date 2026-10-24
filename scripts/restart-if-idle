@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import time
@@ -253,7 +254,9 @@ def main() -> int:
         help="Retry busy refusals until the application is idle, for up to N seconds (at most 86400).",
     )
     parser.add_argument("--interval", type=float, default=15, help="Seconds between --wait attempts")
-    parser.add_argument("--announce", action="store_true", help="Play a sound and say the outcome")
+    parser.add_argument(
+        "--announce", action="store_true", help="Play the outcome sound and speak its text"
+    )
     parser.add_argument(
         "--detach",
         action="store_true",
@@ -350,18 +353,21 @@ def stamp() -> str:
 
 
 def announce(result: dict) -> None:
-    """Maciej, 2026-10-22: play it by itself or say "Zrobione" in a voice."""
+    """Play the outcome sound, then speak its text with the installed helper."""
     if result.get("status") == "restarted":
         sound, phrase = "Glass", "Zrobione"
     elif result.get("status") == "refused":
         sound, phrase = "Basso", "Restart się nie udał"
     else:
         return
-    voice = os.environ.get("RESTART_ANNOUNCE_VOICE", "Zosia")
-    for command in (
-        ["/usr/bin/afplay", f"/System/Library/Sounds/{sound}.aiff"],
-        ["/usr/bin/say", "-v", voice, phrase],
-    ):
+    commands = [["/usr/bin/afplay", f"/System/Library/Sounds/{sound}.aiff"]]
+    cs_say = shutil.which("cs-say") or str(Path.home() / ".local/bin/cs-say")
+    speech = [cs_say, phrase]
+    voice = os.environ.get("RESTART_ANNOUNCE_VOICE")
+    if voice:
+        speech.extend(["--voice", voice])
+    commands.append(speech)
+    for command in commands:
         try:
             run(command)
         except (OSError, subprocess.SubprocessError):

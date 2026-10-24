@@ -18,13 +18,19 @@ until zero plus one extra read. Then return to the event-driven listener.
 
 ## Channel 0 reception
 
-Change reception during a session with `cs-bus --broadcast on|quiet|off --provider PROVIDER --session SESSION [--bus BUS]`; omission of `--bus` uses the
-validated lease's bus. `on` is the default. `quiet` (Steer) retains all messages in the
-mailbox without waking the agent: on the next natural turn, explicitly read
+Reception has two independent axes. Change either during a session with
+`cs-bus --broadcast on|off --provider PROVIDER --session SESSION [--bus BUS]`
+(channel-0 membership) and `cs-bus --quiet on|off --provider PROVIDER --session SESSION [--bus BUS]`
+(the moon, do not disturb); omission of `--bus` uses the validated lease's bus.
+Both default to on channel 0 with the moon dark. The moon retains every message
+from every channel — broadcasts, the Founder's directs and peer messages — in
+the mailbox without waking the agent: on the next natural turn, explicitly read
 `--read-pending` and ACK only complete returned messages, even if no bell rang.
-`off` records a skip instead of queueing new broadcasts; direct and peer messages
-still wake in this mode. `quiet` also suppresses direct and peer wakeups. The
-policy file is reread without restarting or reattaching.
+Light it when a conversation must not be interrupted; it does not need channel 0
+to be off. `--broadcast off` records a skip instead of queueing new broadcasts;
+direct and peer messages still wake unless the moon is lit. `--broadcast quiet`
+is the pre-split spelling of on channel 0 with the moon lit. The policy file is
+reread without restarting or reattaching.
 
 ## Codex native queue
 

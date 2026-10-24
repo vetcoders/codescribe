@@ -213,36 +213,59 @@ private struct GlobalPlaybackMuteReceipt: Decodable, Sendable {
   let muted: Bool
 }
 
-enum AgentBroadcastPolicy: String, Decodable, Sendable, CaseIterable {
-  case on, quiet, off
+/// One lease's reception on two independent axes (Maciej, 2026-10-23): the
+/// antenna says whether the agent is on channel 0, the moon whether anything
+/// may wake it right now — every channel, the Founder's directs and peers
+/// included. Each combination is legal. The former single knob (on, quiet,
+/// off) could not say "off channel 0 with the moon lit", so a meeting kept
+/// being interrupted from other channels while the quiet box stayed greyed.
+struct AgentBroadcastPolicy: Equatable, Hashable, Sendable {
+  /// On channel 0: broadcasts reach this agent's mailbox.
+  var member = true
+  /// The moon ("tryb księżyc"): deliveries queue without a wake, whatever
+  /// their channel; the agent reads them on its own next turn.
+  var moon = false
 
-  var receivesWake: Bool { self == .on }
-  /// One mark per state (Maciej, 2026-10-17: channel 0 and channel 0 plus
-  /// steer could not be told apart): on and quiet are both members of
-  /// channel 0, off is not; quiet queues every delivery without a wake.
+  static let on = Self(member: true, moon: false)
+  /// The pre-split spelling of a lit moon on channel 0.
+  static let quiet = Self(member: true, moon: true)
+  static let off = Self(member: false, moon: false)
+  static let offQuiet = Self(member: false, moon: true)
+  static let allCases = [on, quiet, off, offQuiet]
+
+  var receivesWake: Bool { member && !moon }
+
+  /// The antenna, lit on channel 0 and slashed off it (Maciej, 2026-10-17:
+  /// channel 0 and channel 0 plus steer could not be told apart; the moon
+  /// now carries the second reading as its own mark).
   var statusSymbol: String {
-    switch self {
-    case .on: "antenna.radiowaves.left.and.right"
-    case .quiet: "tray.and.arrow.down"
-    case .off: "antenna.radiowaves.left.and.right.slash"
-    }
+    member ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash"
   }
   var statusHelp: String {
-    switch self {
-    case .on:
-      String(
-        localized: "Channel 0 · steer: deliveries wake the agent",
-        comment: "Agent row mark: member of channel 0, deliveries start a turn")
-    case .quiet:
-      String(
-        localized: "Channel 0 · queued: deliveries wait, the agent is not woken",
-        comment: "Agent row mark: member of channel 0, deliveries queue without a wake")
-    case .off:
-      String(
-        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive",
-        comment: "Agent row mark: not a member of channel 0")
-    }
+    member
+      ? String(
+        localized: "Channel 0: broadcasts reach this agent — click to leave",
+        comment: "Agent row mark: member of channel 0; the mark is a one-click switch")
+      : String(
+        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join",
+        comment: "Agent row mark: not a member of channel 0; the mark is a one-click switch")
   }
+
+  /// The moon, filled while do-not-disturb holds every delivery.
+  var quietSymbol: String { moon ? "moon.fill" : "moon" }
+  var quietHelp: String {
+    moon
+      ? String(
+        localized: "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear",
+        comment: "Agent row mark: the moon is lit; the mark is a one-click switch")
+      : String(
+        localized: "Messages wake the agent — click for do not disturb",
+        comment: "Agent row mark: the moon is dark; the mark is a one-click switch")
+  }
+
+  /// The helper's words for each axis.
+  var membershipArgument: String { member ? "on" : "off" }
+  var moonArgument: String { moon ? "on" : "off" }
 }
 
 enum OverlayDeliveryControl: String, CaseIterable, Sendable {
@@ -272,12 +295,24 @@ private struct AgentBroadcastPolicyReceipt: Decodable, Sendable {
   let providerSessionID: String
   let leaseID: String
   let bus: String
-  let policy: AgentBroadcastPolicy
+  /// The membership word; "quiet" is the pre-split spelling of a lit moon.
+  let policy: String
+  let quiet: Bool?
 
   private enum CodingKeys: String, CodingKey {
-    case schema, provider, bus, policy
+    case schema, provider, bus, policy, quiet
     case providerSessionID = "provider_session_id"
     case leaseID = "lease_id"
+  }
+
+  /// Nil for a word the helper would also refuse.
+  var reception: AgentBroadcastPolicy? {
+    switch policy {
+    case "on": AgentBroadcastPolicy(member: true, moon: quiet ?? false)
+    case "off": AgentBroadcastPolicy(member: false, moon: quiet ?? false)
+    case "quiet": .quiet
+    default: nil
+    }
   }
 
   func belongs(to identity: AgentPlaybackIdentity) -> Bool {
@@ -479,9 +514,9 @@ extension RealAgentBridgeInstaller {
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: 65537), data.count <= 65536,
           let row = try? JSONDecoder().decode(AgentBroadcastPolicyReceipt.self, from: data),
-          row.belongs(to: identity)
+          row.belongs(to: identity), let reception = row.reception
         else { continue }
-        result[identity] = row.policy
+        result[identity] = reception
       }
       return result
     }.value
@@ -490,9 +525,12 @@ extension RealAgentBridgeInstaller {
   static func broadcastPolicyArguments(
     _ policy: AgentBroadcastPolicy, for identity: AgentPlaybackIdentity, root: URL
   ) -> [String] {
+    // Both axes in one command: the helper moves only the flags it is given,
+    // and a full receipt never depends on what the previous one said.
     [
-      "--broadcast", policy.rawValue, "--provider", identity.provider,
-      "--session", identity.session, "--bus", identity.bus, "--bridge-home", root.path,
+      "--broadcast", policy.membershipArgument, "--quiet", policy.moonArgument,
+      "--provider", identity.provider, "--session", identity.session, "--bus", identity.bus,
+      "--bridge-home", root.path,
     ]
   }
 

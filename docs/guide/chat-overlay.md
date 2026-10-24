@@ -110,7 +110,13 @@ the main overlay is closed. Point at one agent to see information; click the
 name to expand that card into a conversation with a draft, pasted attachments
 and Send. Drag its window glyph to detach it into a durable fiszka; its row
 stays in the group, greyed with a window glyph, and clicking that row brings
-the window forward. Click **Intercom** to fold or unfold the group, and drag
+the window forward. Each pill carries the agents list's status dot, the
+channel-0 antenna and the do-not-disturb moon beside the name, the microphone
+and speaker drawn flat on the pill, and the same button that brings the
+agent's pane or terminal tab forward. The antenna and the moon are the same
+one-click switches as in the agents list: the antenna joins or leaves channel
+0, the lit moon holds every message from every channel in the agent's mailbox
+without waking it, and either can be set without the other. Click **Intercom** to fold or unfold the group, and drag
 any free spot on that bar to move the whole group. On a short screen with
 large text, scroll over a pill or use the header arrows to reach the
 remaining agents.
@@ -127,9 +133,11 @@ fiszka from its left edge or bottom corners; the edge lights up when the
 pointer is on it. Dragging a resting pill's left
 edge or bottom corners (or the header's left edge) zooms the whole attached
 group proportionally. Closing a card or switching layouts keeps its draft.
-Every row carries a microphone and a speaker: the speaker mutes that agent's
-automatic replies and lights while the agent speaks, and the Intercom bar's
-megaphone and speaker are channel 0 and the master mute. Press Play on a
+Every row carries the same microphone and speaker pair as the agents list:
+grey at rest, violet with a pulse while recording or speaking; the speaker
+mutes that agent's automatic replies, and the Intercom bar's megaphone and
+speaker are channel 0 and the master mute. Each row shows one status dot
+before its figure, the roster's own, and the bar shows channel 0's. Press Play on a
 message to hear it even while muted. Agent pills and the agent list wear the
 microphone with a waveform, the glyph of speaking to an agent live; the
 composer's dictation control keeps the plain microphone, since dictating a
