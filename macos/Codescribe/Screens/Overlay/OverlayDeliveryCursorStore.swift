@@ -18,25 +18,26 @@ struct OverlayDeliveryCursorMark: Equatable {
 
 /// Persistence for OverlayChannelDeliveryReader positions. Each bus is one
 /// cache unit (cursor plus projection) in its own JSON file under
-/// `<bridge home>/runtime/overlay-delivery-cursor/`, named by a digest of the
-/// bus path, which the file also stores. A checkpoint rewrites only the units
-/// that changed, each atomically (tmp file + rename) with owner-only
+/// `<data root>/data.noindex/overlay-delivery-cursor/`, named by a digest of
+/// the bus path, which the file also stores. A checkpoint rewrites only the
+/// units that changed, each atomically (tmp file + rename) with owner-only
 /// permissions. The files are a cache: a missing or corrupt unit costs one
-/// bounded tail-window read, never a full replay. The root is injected, so
-/// tests never touch the real bridge home.
+/// bounded tail-window read, never a full replay. `cacheRoot` is the core's
+/// high-churn folder (`CodescribeConfig.churnDir()`), which Spotlight does not
+/// index; it is injected, so tests never touch the real data root.
 enum OverlayDeliveryCursorStore {
   static let schema = "codescribe.overlay-delivery-cursor-unit.v1"
   static let directoryName = "overlay-delivery-cursor"
   /// The earlier single-file cache held every bus in one document and was
-  /// rewritten whole on each checkpoint. It is never read; the first
+  /// rewritten whole on each checkpoint. It is never read; the startup move
+  /// into `data.noindex` (core `config::churn`) brings it here, and the first
   /// successful save deletes it.
   static let singleFileCacheName = "overlay-delivery-cursor.v1.json"
   /// Total bytes of all unit files together.
   static let budget = 128 << 20
 
-  static func directory(root: URL) -> URL {
-    root.appendingPathComponent("runtime", isDirectory: true)
-      .appendingPathComponent(directoryName, isDirectory: true)
+  static func directory(cacheRoot: URL) -> URL {
+    cacheRoot.appendingPathComponent(directoryName, isDirectory: true)
   }
 
   static func filename(bus: String) -> String {
@@ -44,14 +45,14 @@ enum OverlayDeliveryCursorStore {
       + ".json"
   }
 
-  static func url(root: URL, bus: String) -> URL {
-    directory(root: root).appendingPathComponent(filename(bus: bus))
+  static func url(cacheRoot: URL, bus: String) -> URL {
+    directory(cacheRoot: cacheRoot).appendingPathComponent(filename(bus: bus))
   }
 
-  static func load(root: URL) -> [String: OverlayDeliveryCursorMark] {
+  static func load(cacheRoot: URL) -> [String: OverlayDeliveryCursorMark] {
     guard
       let files = try? FileManager.default.contentsOfDirectory(
-        at: directory(root: root), includingPropertiesForKeys: nil)
+        at: directory(cacheRoot: cacheRoot), includingPropertiesForKeys: nil)
     else { return [:] }
     var marks: [String: OverlayDeliveryCursorMark] = [:]
     for file in files
@@ -86,10 +87,10 @@ enum OverlayDeliveryCursorStore {
   /// budget, lose their files. Returns the retained marks.
   @discardableResult
   static func save(
-    root: URL, marks: [String: OverlayDeliveryCursorMark], changed: Set<String>? = nil,
+    cacheRoot: URL, marks: [String: OverlayDeliveryCursorMark], changed: Set<String>? = nil,
     budget: Int = OverlayDeliveryCursorStore.budget
   ) throws -> [String: OverlayDeliveryCursorMark] {
-    let folder = Self.directory(root: root)
+    let folder = Self.directory(cacheRoot: cacheRoot)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     var encoded: [String: Data] = [:]
     var sizes: [String: Int] = [:]
@@ -100,7 +101,7 @@ enum OverlayDeliveryCursorStore {
         sizes[path] = data.count
       } else {
         let attributes = try? FileManager.default.attributesOfItem(
-          atPath: url(root: root, bus: path).path)
+          atPath: url(cacheRoot: cacheRoot, bus: path).path)
         sizes[path] = (attributes?[.size] as? NSNumber)?.intValue ?? 0
       }
     }
@@ -117,7 +118,7 @@ enum OverlayDeliveryCursorStore {
       total -= sizes[largest.key] ?? 0
     }
     for (path, data) in encoded.sorted(by: { $0.key < $1.key }) where retained[path] != nil {
-      try write(data, to: url(root: root, bus: path), in: folder)
+      try write(data, to: url(cacheRoot: cacheRoot, bus: path), in: folder)
     }
     let kept = Set(retained.keys.map { filename(bus: $0) })
     for file in try FileManager.default.contentsOfDirectory(
@@ -125,9 +126,7 @@ enum OverlayDeliveryCursorStore {
     where file.pathExtension == "json" && !kept.contains(file.lastPathComponent) {
       try removeIfPresent(file)
     }
-    try removeIfPresent(
-      root.appendingPathComponent("runtime", isDirectory: true)
-        .appendingPathComponent(singleFileCacheName))
+    try removeIfPresent(cacheRoot.appendingPathComponent(singleFileCacheName))
     return retained
   }
 

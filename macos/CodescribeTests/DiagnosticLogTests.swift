@@ -20,16 +20,17 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testAppendWritesOneLineWithUTCTimestampAndCategory() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     log.append(
       category: "overlay-presentation", "frame.completed midi gen=7",
       at: Date(timeIntervalSince1970: 1_000_000_000.5))
     let text = try String(contentsOf: log.url, encoding: .utf8)
-    XCTAssertEqual(text, "2001-09-09T01:46:40.500Z overlay-presentation frame.completed midi gen=7\n")
+    XCTAssertEqual(
+      text, "2001-09-09T01:46:40.500Z overlay-presentation frame.completed midi gen=7\n")
   }
 
   func testURLIsLogsDiagnosticLogAndFirstAppendCreatesTheDirectory() {
-    let url = DiagnosticLog.url(dataDirectory: directory.path)
+    let url = DiagnosticLog.url(churnDirectory: directory.path)
     XCTAssertEqual(url.path, directory.appendingPathComponent("logs/diagnostic.log").path)
     let logs = directory.appendingPathComponent("logs").path
     XCTAssertFalse(FileManager.default.fileExists(atPath: logs))
@@ -38,7 +39,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testTwoAppendsLandInOrderOnOneFile() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     log.append(category: "a", "one")
     log.append(category: "b", "two")
     let lines = try log.lines()
@@ -48,7 +49,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testOversizedFileRollsToGenerationOneAtOpen() throws {
-    let url = DiagnosticLog.url(dataDirectory: directory.path)
+    let url = DiagnosticLog.url(churnDirectory: directory.path)
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let old = String(repeating: "x", count: 200) + "\n"

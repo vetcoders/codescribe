@@ -235,11 +235,15 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
     try encoded([source, stage]).write(to: primary)
     let owner = try XCTUnwrap(OverlayConversationOwner(row: fixture.recipient()))
-    let initial = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+    let initial = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot(
       selectedOwner: owner)
     XCTAssertTrue(initial.conversations.flatMap(\.messages).allSatisfy { $0.attachments == nil })
     try encoded([source, stage, commit]).write(to: primary)
-    let reopened = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+    let reopened = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot(
       selectedOwner: owner)
     let message = try XCTUnwrap(
       reopened.conversations.first(where: { $0.owner?.id == owner.id })?.messages.first)
@@ -247,8 +251,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(message.text, "Spoken words")
     let shared = fixture.root.appendingPathComponent("transcript-events.jsonl")
     try encoded([source]).write(to: shared)
-    let mirrored = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
-      .readSnapshot(selectedOwner: owner)
+    let mirrored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared
+    )
+    .readSnapshot(selectedOwner: owner)
     let all = try XCTUnwrap(mirrored.conversations.first(where: { $0.id == "0" }))
     XCTAssertEqual(all.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
     let privateCopy = try XCTUnwrap(
@@ -593,7 +599,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var bytes = try JSONSerialization.data(withJSONObject: row)
     bytes.append(10)
     try bytes.write(to: shared)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared)
     let first = try await reader.readSnapshot()
     let message = try XCTUnwrap(first.conversations.first { $0.id == "0" }?.messages.first)
     let receipt = try XCTUnwrap(message.recipients.first { $0.owner.leaseID == Fixture.leaseID })
@@ -605,7 +612,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     ])
     for snapshot in [
       try await reader.readSnapshot(checkpointTime: .now.advanced(by: .seconds(31))),
-      try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared).readSnapshot(),
+      try await OverlayChannelDeliveryReader(
+        root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared
+      ).readSnapshot(),
     ] {
       let all = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" })
       XCTAssertEqual(all.messages.map(\.id), ["reply:" + Fixture.firstID])
@@ -632,8 +641,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "association": "unsolicited", "channel": "0", "peer_to": "all",
       "sender": fixture.recipient(), "recipients": [], "text": "Retained broadcast",
     ])
-    _ = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
-    var marks = OverlayDeliveryCursorStore.load(root: fixture.root)
+    _ = try await OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
+      .readSnapshot()
+    var marks = OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot)
     var mark = try XCTUnwrap(marks[fixture.bus.path])
     var projection = try XCTUnwrap(
       JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
@@ -643,9 +653,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     projection["messages"] = messages
     mark.projection = try JSONSerialization.data(withJSONObject: projection)
     marks[fixture.bus.path] = mark
-    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    try OverlayDeliveryCursorStore.save(cacheRoot: fixture.cacheRoot, marks: marks)
 
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let snapshot = try await reader.readSnapshot()
     let all = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" })
     XCTAssertEqual(all.messages.map(\.id), ["reply:" + Fixture.firstID])
@@ -653,7 +663,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let consumed = await reader.consumedBytes
     XCTAssertGreaterThan(
       consumed, 0, "A cursor alone cannot restore discarded destination metadata")
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, snapshot)
     let reread = await restarted.consumedBytes
@@ -860,11 +870,13 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     bytes.append(try JSONSerialization.data(withJSONObject: previous))
     bytes.append(10)
     try bytes.write(to: peer)
-    _ = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: peer).readSnapshot()
+    _ = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: peer
+    ).readSnapshot()
 
     // Simulate the shipped cache: the same exact owner was first observed on
     // a lexicographically earlier peer bus with the broadcast route as its slot.
-    var marks = OverlayDeliveryCursorStore.load(root: fixture.root)
+    var marks = OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot)
     for path in marks.keys {
       var mark = try XCTUnwrap(marks[path])
       var projection = try XCTUnwrap(
@@ -877,9 +889,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       mark.projection = try JSONSerialization.data(withJSONObject: projection)
       marks[path] = mark
     }
-    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    try OverlayDeliveryCursorStore.save(cacheRoot: fixture.cacheRoot, marks: marks)
 
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: peer)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: peer)
     let snapshot = try await reader.readSnapshot()
     let current = try XCTUnwrap(
       snapshot.conversations.first {
@@ -910,7 +923,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(view.savedConversations.contains { $0.id == old.id })
 
     _ = try await reader.readSnapshot(checkpointTime: .now.advanced(by: .seconds(31)))
-    let saved = OverlayDeliveryCursorStore.load(root: fixture.root)
+    let saved = OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot)
     for mark in saved.values {
       let projection = try XCTUnwrap(
         JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
@@ -927,11 +940,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     let first = try await reader.readSnapshot(checkpointTime: start)
     var previousID = first.deliveries.first?.deliveryID
-    let cache = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
+    let cache = OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: fixture.bus.path)
     let initial = try Data(contentsOf: cache)
     for sequence in 2...21 {
       try fixture.append(fixture.seal(sequence))
@@ -943,7 +956,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       try Data(contentsOf: cache), initial,
       "Active polls paint new evidence without rewriting every cached projection")
     let current = try await reader.readSnapshot(checkpointTime: start)
-    let resumed = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let resumed = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(resumed, current, "Restart replays the suffix since the last checkpoint")
   }
 
@@ -957,7 +972,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     try other.append(other.seal(2))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: other.bus)
     let snapshot = try await reader.readSnapshot()
     let writes = await reader.checkpointWrites
     XCTAssertEqual(writes, 1, "All buses and derived receipts share one checkpoint")
@@ -966,7 +982,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       [
         fixture.bus.path: try fixture.busSize(), other.bus.path: try other.busSize(),
       ])
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let restarted = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: other.bus)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, snapshot)
     let replayed = await restarted.consumedBytes
@@ -978,7 +995,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
     for second in 1...29 {
@@ -991,7 +1008,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let latest = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
     let after = await reader.checkpointWrites
     XCTAssertEqual(after, 2, "The deadline measures from successful save, not newest change")
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, latest)
   }
 
@@ -1000,7 +1019,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     let initial = try await reader.readSnapshot(checkpointTime: start)
     XCTAssertEqual(initial.deliveries.first?.stage, .sent)
@@ -1033,7 +1052,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     }
     let idleWrites = await reader.checkpointWrites
     XCTAssertEqual(idleWrites, 2)
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, acknowledged)
   }
 
@@ -1042,7 +1063,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
     try fixture.fillBusWithEvidence(bytes: (8 << 20) + 10000)
@@ -1051,7 +1072,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let writes = await reader.checkpointWrites
     XCTAssertEqual(writes, 2, "Heavy input checkpoints without waiting thirty seconds")
     XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, latest)
     let replayed = await restarted.consumedBytes
@@ -1062,10 +1083,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
-    let cache = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
+    let cache = OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: fixture.bus.path)
     let saved = try Data(contentsOf: cache)
     let directory = cache.deletingLastPathComponent()
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
@@ -1085,7 +1106,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let retried = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
     let writes = await reader.checkpointWrites
     XCTAssertEqual(writes, 2)
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, retried)
   }
 
@@ -1103,11 +1126,14 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     try other.append(other.seal(2))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: other.bus)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
-    let changedUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
-    let quietUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: other.bus.path)
+    let changedUnit = OverlayDeliveryCursorStore.url(
+      cacheRoot: fixture.cacheRoot, bus: fixture.bus.path)
+    let quietUnit = OverlayDeliveryCursorStore.url(
+      cacheRoot: fixture.cacheRoot, bus: other.bus.path)
     let changedBefore = try Data(contentsOf: changedUnit)
     let quietBefore = try Data(contentsOf: quietUnit)
     let quietInode = try inode(quietUnit)
@@ -1121,7 +1147,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(
       try inode(quietUnit), quietInode, "A checkpoint never rewrites an unchanged bus's unit")
     XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let restarted = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: other.bus)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, latest)
     let replayed = await restarted.consumedBytes
@@ -1131,21 +1158,32 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testFirstCheckpointRemovesTheSingleFileCache() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let runtime = fixture.root.appendingPathComponent("runtime", isDirectory: true)
-    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
-    let singleFile = runtime.appendingPathComponent("overlay-delivery-cursor.v1.json")
+    // The startup move into data.noindex brings the earlier single file here.
+    try FileManager.default.createDirectory(
+      at: fixture.cacheRoot, withIntermediateDirectories: true)
+    let singleFile = fixture.cacheRoot.appendingPathComponent("overlay-delivery-cursor.v1.json")
     try Data(#"{"schema": "codescribe.overlay-delivery-cursor.v1", "buses": {}}"#.utf8)
       .write(to: singleFile)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let snapshot = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertFalse(
       FileManager.default.fileExists(atPath: singleFile.path),
       "The whole-roster cache file is deleted by the first per-unit save")
     XCTAssertTrue(
       FileManager.default.fileExists(
-        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path))
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+        atPath: OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: fixture.bus.path)
+          .path))
+    XCTAssertEqual(
+      OverlayDeliveryCursorStore.directory(cacheRoot: fixture.cacheRoot),
+      fixture.cacheRoot.appendingPathComponent("overlay-delivery-cursor", isDirectory: true))
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: fixture.root.appendingPathComponent("runtime/overlay-delivery-cursor").path),
+      "The restart cache lives in the high-churn folder, not in the bridge runtime")
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(restored, snapshot)
     let replayed = await restarted.consumedBytes
@@ -1168,16 +1206,16 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "/buses/b.jsonl": cacheMark(20, projectionBytes: 500),
       "/buses/c.jsonl": cacheMark(30, projectionBytes: 700),
     ]
-    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
-    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), marks)
-    let directory = OverlayDeliveryCursorStore.directory(root: fixture.root)
+    try OverlayDeliveryCursorStore.save(cacheRoot: fixture.cacheRoot, marks: marks)
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot), marks)
+    let directory = OverlayDeliveryCursorStore.directory(cacheRoot: fixture.cacheRoot)
     let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
     XCTAssertEqual(
       Set(files), Set(marks.keys.map { OverlayDeliveryCursorStore.filename(bus: $0) }),
       "One file per bus, nothing else")
     for path in marks.keys {
       let attributes = try FileManager.default.attributesOfItem(
-        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: path).path)
+        atPath: OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: path).path)
       let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
       XCTAssertEqual(permissions.uint16Value & 0o777, 0o600, "each unit is owner-only")
     }
@@ -1191,25 +1229,26 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "/buses/b.jsonl": cacheMark(20, projectionBytes: 5_000),
       "/buses/c.jsonl": cacheMark(30, projectionBytes: 2_000),
     ]
-    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    try OverlayDeliveryCursorStore.save(cacheRoot: fixture.cacheRoot, marks: marks)
     var total = 0
     for path in marks.keys {
       let attributes = try FileManager.default.attributesOfItem(
-        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: path).path)
+        atPath: OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: path).path)
       total += try XCTUnwrap(attributes[.size] as? NSNumber).intValue
     }
-    let kept = OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/c.jsonl")
+    let kept = OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: "/buses/c.jsonl")
     let keptBytes = try Data(contentsOf: kept)
 
     // Nothing changed, but the budget now sits one byte under the unit files.
     let retained = try OverlayDeliveryCursorStore.save(
-      root: fixture.root, marks: marks, changed: [], budget: total - 1)
+      cacheRoot: fixture.cacheRoot, marks: marks, changed: [], budget: total - 1)
     XCTAssertEqual(Set(retained.keys), ["/buses/a.jsonl", "/buses/c.jsonl"])
     XCTAssertFalse(
       FileManager.default.fileExists(
-        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl").path),
+        atPath: OverlayDeliveryCursorStore.url(cacheRoot: fixture.cacheRoot, bus: "/buses/b.jsonl")
+          .path),
       "The evicted unit loses its whole file")
-    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot), retained)
     XCTAssertEqual(try Data(contentsOf: kept), keptBytes)
   }
 
@@ -1218,30 +1257,33 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     let active = cacheMark(10, projectionBytes: 400)
     try OverlayDeliveryCursorStore.save(
-      root: fixture.root,
+      cacheRoot: fixture.cacheRoot,
       marks: [
         "/buses/active.jsonl": active,
         "/buses/unused.jsonl": cacheMark(20, projectionBytes: 400),
       ])
-    let activeUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/active.jsonl")
+    let activeUnit = OverlayDeliveryCursorStore.url(
+      cacheRoot: fixture.cacheRoot, bus: "/buses/active.jsonl")
     let activeBytes = try Data(contentsOf: activeUnit)
 
     let retained = try OverlayDeliveryCursorStore.save(
-      root: fixture.root, marks: ["/buses/active.jsonl": active], changed: [])
+      cacheRoot: fixture.cacheRoot, marks: ["/buses/active.jsonl": active], changed: [])
     XCTAssertEqual(retained, ["/buses/active.jsonl": active])
     XCTAssertFalse(
       FileManager.default.fileExists(
-        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/unused.jsonl")
-          .path))
+        atPath: OverlayDeliveryCursorStore.url(
+          cacheRoot: fixture.cacheRoot, bus: "/buses/unused.jsonl"
+        )
+        .path))
     XCTAssertEqual(try Data(contentsOf: activeUnit), activeBytes)
-    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot), retained)
   }
 
   func testPartialRowNeverAdvancesTheCheckpointPastItsSafeBoundary() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
     let safeOffset = try fixture.busSize()
@@ -1251,7 +1293,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.appendBytes(Data([10]))
     let complete = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
     XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, complete)
   }
 
@@ -1259,7 +1303,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let start = ContinuousClock.now
     let initial = try await reader.readSnapshot(checkpointTime: start)
     let safeOffset = try fixture.busSize()
@@ -1279,7 +1323,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let incomplete = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(30)))
     XCTAssertEqual(incomplete, initial, "Incomplete storage cannot publish its document")
     XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], safeOffset)
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let restoredIncomplete = try await restarted.readSnapshot()
     XCTAssertEqual(restoredIncomplete, initial)
     XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], safeOffset)
@@ -1301,7 +1345,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.write(lease, to: leaseURL)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     let coldBytes = await reader.consumedMetadataBytes
     let coldOpens = await reader.metadataFileOpens
@@ -1362,7 +1406,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
           "bus": foreign,
         ], to: url)
     }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     // 128 coordinates per tick: four polls read every receipt once.
     for _ in 0..<4 { _ = try await reader.readSnapshot() }
     let opens = await reader.metadataFileOpens
@@ -1436,7 +1480,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
           "bus": peerBus.path,
         ], to: url)
     }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     // 128 coordinates per tick: two polls read every receipt once.
     for _ in 0..<2 { _ = try await reader.readSnapshot() }
     let coldProbes = await reader.receiptProbes
@@ -1523,7 +1567,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     for _ in 0..<20 {
       let snapshot = try await reader.readSnapshot()
@@ -1566,7 +1610,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     _ = try await reader.readSnapshot()
     let settledBuilds = await reader.conversationBuilds
     XCTAssertEqual(settledBuilds, 3)
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, acknowledged)
   }
 
@@ -1577,7 +1623,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     row["audience"] = "*"
     row["channel"] = "0"
     try fixture.append(row)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: nil)
     let initial = try await reader.readSnapshot()
     let recipient = try XCTUnwrap(
       initial.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
@@ -1594,7 +1641,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.write(skip, to: marker)
     for snapshot in [
       try await reader.readSnapshot(checkpointTime: .now.advanced(by: .seconds(31))),
-      try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil).readSnapshot(),
+      try await OverlayChannelDeliveryReader(
+        root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: nil
+      ).readSnapshot(),
     ] {
       let observed = try XCTUnwrap(
         snapshot.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
@@ -1612,7 +1661,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     row["audience"] = "*"
     row["channel"] = "0"
     try fixture.append(row)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: nil)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: nil)
     let initial = try await reader.readSnapshot()
     let message = try XCTUnwrap(initial.conversations.first { $0.id == "0" }?.messages.first)
     let recipient = try XCTUnwrap(message.recipients.first)
@@ -1715,7 +1765,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let initialBytes = try Data(contentsOf: binding)
     let originalDate = try XCTUnwrap(
       FileManager.default.attributesOfItem(atPath: binding.path)[.modificationDate] as? Date)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.seal(1))
     let initial = try await reader.read()
     XCTAssertEqual(initial.first?.agent, "james")
@@ -1738,7 +1788,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let attributes = try FileManager.default.attributesOfItem(atPath: binding.path)
     let originalDate = try XCTUnwrap(attributes[.modificationDate] as? Date)
     let inode = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     _ = try await reader.read()
     let changed = Data(
       try XCTUnwrap(String(data: bytes, encoding: .utf8))
@@ -1760,7 +1810,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let binding = fixture.root.appendingPathComponent("vc.agent-audience-binding.v1.json")
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     _ = try await reader.read()
     try Data("{".utf8).write(to: binding, options: .atomic)
     do {
@@ -1783,7 +1833,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       JSONSerialization.jsonObject(with: Data(contentsOf: leaseURL)) as? [String: Any])
     lease["diagnostic_padding"] = String(repeating: "x", count: 9 << 20)
     try fixture.write(lease, to: leaseURL)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     let before = await reader.consumedMetadataBytes
     let repeated = try await reader.readSnapshot()
@@ -1806,7 +1856,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
           "diagnostic_padding": String(repeating: "x", count: 3 << 20),
         ], to: fixture.root.appendingPathComponent("leases/\(identity).json"))
     }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     let before = await reader.consumedMetadataBytes
     let repeated = try await reader.readSnapshot()
@@ -1842,18 +1892,21 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     {
       try XCTUnwrap(snapshot.conversations.first { $0.owner?.leaseID == Fixture.leaseID }).messages
     }
-    let initial = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
-      .readSnapshot()
+    let initial = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared
+    )
+    .readSnapshot()
     let replies = try messages(initial)
     XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
     XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, true])
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let restarted = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(try messages(restored), replies)
     let consumed = await restarted.consumedBytes
     XCTAssertEqual(consumed, 0)
 
-    var marks = OverlayDeliveryCursorStore.load(root: fixture.root)
+    var marks = OverlayDeliveryCursorStore.load(cacheRoot: fixture.cacheRoot)
     for path in Array(marks.keys) {
       var mark = try XCTUnwrap(marks[path])
       var projection = try XCTUnwrap(
@@ -1869,8 +1922,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       mark.projection = try JSONSerialization.data(withJSONObject: projection)
       marks[path] = mark
     }
-    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
-    let upgraded = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    try OverlayDeliveryCursorStore.save(cacheRoot: fixture.cacheRoot, marks: marks)
+    let upgraded = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared)
     let rebuilt = try await upgraded.readSnapshot()
     XCTAssertEqual(try messages(rebuilt), replies)
     let rebuiltBytes = await upgraded.consumedBytes
@@ -1894,7 +1948,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       ]
     }
     try fixture.append(row(1, "Pierwsze"))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     var snapshot = try await reader.readSnapshot()
     var message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
     XCTAssertFalse(message.showsDeliveryReceipts)
@@ -1918,7 +1972,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
     XCTAssertEqual(message.text, "Pierwsze i dalsze")
     XCTAssertTrue(message.showsDeliveryReceipts)
-    let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restored = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restored, snapshot)
   }
 
@@ -1953,7 +2009,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(row(1, "Pierwsze słowo"))
     try appendShared(row(1, "Pierwsze słowo"))
     try appendShared(row(4, "Pierwsze słowo i cała dalsza wypowiedź"))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+    let reader = OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared)
     var snapshot = try await reader.readSnapshot()
     var message = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }?.messages.first)
     XCTAssertEqual(message.text, "Pierwsze słowo i cała dalsza wypowiedź")
@@ -1970,8 +2027,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(message.id, identity)
     XCTAssertEqual(snapshot.conversations.first { $0.id == "0" }?.messages.count, 1)
 
-    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
-      .readSnapshot()
+    let restarted = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared
+    )
+    .readSnapshot()
     XCTAssertEqual(
       restarted.conversations.first { $0.id == "0" }?.messages.first?.text,
       "Poprawiona wypowiedź")
@@ -2003,8 +2062,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
     }
     try sharedBytes.write(to: shared)
-    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
-      .readSnapshot()
+    let snapshot = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot, sharedBus: shared
+    )
+    .readSnapshot()
     let messages = try XCTUnwrap(snapshot.conversations.first { $0.id == "0" }).messages
     XCTAssertEqual(messages.count, 2, "equal words in separate captures keep separate identity")
     XCTAssertEqual(Set(messages.map(\.id)).count, 2)
@@ -2020,14 +2081,14 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     try fixture.append(fixture.ack(Fixture.firstID))
-    let first = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let beforeRestart = try await first.read()
     XCTAssertEqual(beforeRestart.first?.stage, .received)
     XCTAssertEqual(beforeRestart.first?.isOpen, true)
 
     // Restart without appending another seal, heartbeat or receipt. A saved
     // cursor cannot replace the presentation state it has already consumed.
-    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let afterRestart = try await restarted.read()
     XCTAssertEqual(afterRestart, beforeRestart)
     let newBytes = await restarted.consumedBytes
@@ -2037,7 +2098,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testFixtureTriadRequiresNewestSealPendingEnvelopeAndMatchingBusAck() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     var statuses = try await reader.read()
@@ -2075,7 +2136,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testFiveIdenticalLabelsRemainFiveDistinctOutboundDeliveries() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let expected = [
       Fixture.firstID, "d8281fc3cceedc07762ee89e", "73aaf65a701a5d96129ef750",
       "8796735e3c8ab23e9dbf319c", "769a770d54e99f754fd91423",
@@ -2102,7 +2163,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       ])
     }
     try fixture.lease(pending: [fixture.envelope(id)])
-    var statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    var statuses = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).read()
     XCTAssertEqual(statuses.first?.deliveryID, id)
     XCTAssertEqual(statuses.first?.stage, .queued)
     try fixture.append(fixture.ack(id))
@@ -2116,7 +2179,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "reducer_revision": 7, "reducer_action": "record_ledger_terminal_seal",
       "rendered_text": "Iwo Iwo Iwo Iwo Iwo", "recipients": [fixture.recipient()],
     ])
-    statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    statuses = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).read()
     XCTAssertEqual(statuses.first?.deliveryID, id)
     XCTAssertEqual(statuses.first?.stage, .received)
   }
@@ -2124,7 +2189,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testOpenStateSurvivesSealAndOnlyMatchingLifecycleClosesIt() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     try fixture.append([
@@ -2149,7 +2214,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testLeaseRebindingAndBusRotationCannotRetainReceivedOrOpenState() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     try fixture.append(fixture.ack(Fixture.firstID))
@@ -2168,7 +2233,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testPartialBusLineWaitsForNewlineAndCorruptRowIsSkipped() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let data = try JSONSerialization.data(withJSONObject: fixture.seal(1))
     try data.write(to: fixture.bus)
     var statuses = try await reader.read()
@@ -2186,7 +2251,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testCorruptRowIsSkippedAndNeverRewindsTheCursor() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.appendBytes(Data("{\"schema\": broken\n".utf8))
     try fixture.append(fixture.seal(1))
@@ -2208,13 +2273,14 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let first = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     _ = try await first.read()
     var size = try fixture.busSize()
     var consumed = await first.consumedBytes
     XCTAssertEqual(consumed, size, "a bus smaller than the window is read from byte zero")
 
-    let cursorURL = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
+    let cursorURL = OverlayDeliveryCursorStore.url(
+      cacheRoot: fixture.cacheRoot, bus: fixture.bus.path)
     XCTAssertTrue(FileManager.default.fileExists(atPath: cursorURL.path))
     let attributes = try FileManager.default.attributesOfItem(atPath: cursorURL.path)
     let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
@@ -2225,7 +2291,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let appended = try fixture.busSize() - size
     size = try fixture.busSize()
 
-    let second = OverlayChannelDeliveryReader(root: fixture.root)
+    let second = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let statuses = try await second.read()
     consumed = await second.consumedBytes
     XCTAssertEqual(
@@ -2238,7 +2304,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testBusRotationResetsToTheTailWindowOfTheNewFile() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     var statuses = try await reader.read()
@@ -2266,7 +2332,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(fixture.seal(1))
     let before = Self.residentBytes()
     let started = Date()
-    let statuses = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    let statuses = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).read()
     let elapsed = Date().timeIntervalSince(started)
     let growth = Int64(bitPattern: Self.residentBytes()) &- Int64(bitPattern: before)
     print("PERF100MB elapsed=\(elapsed)s rss_delta=\(growth)B")
@@ -2947,7 +3015,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testAcknowledgedGlyphLightsOnlyFromTheMatchingAgentAckRow() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     func glyph() async throws -> OverlayAgentGlyph? {
       OverlayAgentGlyph.resolve(channels: try await reader.read(), unavailable: false)
     }
@@ -3046,7 +3114,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   func testManagedRolloverKeepsOpenReceiptAndConsumesOnlyTheNewSuffix() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
     let before = try await reader.read()
@@ -3062,7 +3130,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let consumedAfter = await reader.consumedBytes
     XCTAssertEqual(
       consumedAfter - consumedBefore, suffix, "active observer must not replay archived bytes")
-    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root).read()
+    let restarted = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).read()
     XCTAssertEqual(restarted.first?.stage, .received)
     XCTAssertEqual(restarted.first?.isOpen, true)
   }
@@ -3074,7 +3144,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try pinSyntheticGeneration(fixture)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let statuses = try await reader.read()
     XCTAssertEqual(
       statuses.first?.isOpen, true, "first monitor observation must include the newest capture")
@@ -3096,14 +3166,16 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "rendered_text": "Iwo Iwo", "persistence_encoding": "shared-revision.v1",
       "occurrence_rows": [["sequence": 11, "label": "Iwo"]],
     ])
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     do {
       _ = try await reader.read()
       XCTFail("an invalid shared inventory must be refused before publishing any occurrence")
     } catch {
       XCTAssertFalse(
         FileManager.default.fileExists(
-          atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path),
+          atPath: OverlayDeliveryCursorStore.url(
+            cacheRoot: fixture.cacheRoot, bus: fixture.bus.path
+          ).path),
         "invalid storage cannot advance a durable cursor")
     }
   }
@@ -3151,7 +3223,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       try fixture.append(fixture.seal(1))
       let before = try Data(contentsOf: fixture.bus)
       try pinSyntheticGeneration(fixture, volumeUUID: volume)
-      let reader = OverlayChannelDeliveryReader(root: fixture.root)
+      let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
       let observed = try await reader.read()
       XCTAssertEqual(observed.first?.stage, .sent)
       let archive = fixture.root.appendingPathComponent("events/2026_1002/closed.jsonl")
@@ -3166,15 +3238,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       defer { fixture.remove() }
       try fixture.append(fixture.open())
       try pinSyntheticGeneration(fixture, volumeUUID: volume)
-      let reader = OverlayChannelDeliveryReader(root: fixture.root)
+      let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
       do {
         _ = try await reader.read()
         XCTFail("a malformed volume identity must not admit the storage receipt")
       } catch {
         XCTAssertFalse(
           FileManager.default.fileExists(
-            atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
-              .path))
+            atPath: OverlayDeliveryCursorStore.url(
+              cacheRoot: fixture.cacheRoot, bus: fixture.bus.path
+            )
+            .path))
       }
     }
   }
@@ -3189,14 +3263,16 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
     manifest["unrecognized"] = true
     try fixture.write(manifest, to: receipt)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     do {
       _ = try await reader.read()
       XCTFail("an optional volume UUID must not loosen unknown-field validation")
     } catch {
       XCTAssertFalse(
         FileManager.default.fileExists(
-          atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path))
+          atPath: OverlayDeliveryCursorStore.url(
+            cacheRoot: fixture.cacheRoot, bus: fixture.bus.path
+          ).path))
     }
   }
 
@@ -3207,7 +3283,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try pinSyntheticGeneration(fixture, day: nil)
     try fixture.append(fixture.open())
     try fixture.append(fixture.seal(1))
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let first = try await reader.read()
     XCTAssertEqual(first.first?.stage, .sent)
     XCTAssertEqual(first.first?.isOpen, true)
@@ -3223,7 +3299,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     try fixture.append(fixture.seal(1))
     try pinSyntheticGeneration(fixture)
     XCTAssertEqual(try fixture.busSize(), 0)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let first = try await reader.read()
     XCTAssertEqual(first.first?.stage, .sent)
     XCTAssertEqual(first.first?.isOpen, true)
@@ -3272,7 +3348,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.append(fixture.open())
     try pinSyntheticGeneration(fixture)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let opened = try await reader.read()
     XCTAssertNotEqual(opened.first?.stage, .sent)
     let cold = await reader.generationManifestReads
@@ -4086,6 +4162,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     static let leaseID = "0123456789abcdef0123456789abcdef"
     static let firstID = "b67e9660afb01eb53ab2de50"
     let root: URL
+    /// The high-churn folder the reader's restart cache uses; under `root`, so
+    /// `remove()` cleans it too.
+    var cacheRoot: URL { root.appendingPathComponent("data.noindex", isDirectory: true) }
     var bus: URL { root.appendingPathComponent("fixture.jsonl") }
     init() throws {
       root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -4142,7 +4221,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
     }
     func cursorOffsets() throws -> [String: UInt64] {
-      OverlayDeliveryCursorStore.load(root: root).mapValues(\.offset)
+      OverlayDeliveryCursorStore.load(cacheRoot: cacheRoot).mapValues(\.offset)
     }
     /// Bulk evidence rows with a 30 KB pseudo-random payload each, the same
     /// shape that filled the Founder's bus, so the tail-window tests measure

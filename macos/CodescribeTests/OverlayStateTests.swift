@@ -2007,7 +2007,7 @@ final class OverlayStateTests: XCTestCase {
     // No stored marks yet: the history already on screen is adopted as read.
     reply("b")
     let first = OverlayState()
-    first.restoreReadState(root: root)
+    first.restoreReadState(cacheRoot: root)
     first.applyConversationSnapshot(snapshot())
     XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
 
@@ -2018,15 +2018,19 @@ final class OverlayStateTests: XCTestCase {
     if first.isCollapsed { first.setPresentationMode(.expanded) }
     first.setConversationVisible(true)
     XCTAssertEqual(first.unreadReplies(in: try lena()), 0)
-    XCTAssertEqual(OverlayReadStateStore.load(root: root), Set(try lena().replyIDs))
+    XCTAssertEqual(OverlayReadStateStore.load(cacheRoot: root), Set(try lena().replyIDs))
     let attributes = try FileManager.default.attributesOfItem(
-      atPath: OverlayReadStateStore.url(root: root).path)
+      atPath: OverlayReadStateStore.url(cacheRoot: root).path)
     XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    // The marks sit directly in the high-churn folder, not under a bridge runtime.
+    XCTAssertEqual(
+      OverlayReadStateStore.url(cacheRoot: root),
+      root.appendingPathComponent("overlay-read-state.v1.json"))
 
     // The app is closed while one more reply lands on the bus.
     reply("e")
     let relaunched = OverlayState()
-    relaunched.restoreReadState(root: root)
+    relaunched.restoreReadState(cacheRoot: root)
     relaunched.applyConversationSnapshot(snapshot())
     XCTAssertEqual(
       relaunched.unreadReplies(in: try lena()), 1, "only the reply that came while closed")

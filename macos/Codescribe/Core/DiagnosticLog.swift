@@ -1,6 +1,7 @@
 import Foundation
 
-/// The diagnostic log: a second file beside `~/.codescribe/logs/codescribe.log`
+/// The diagnostic log: a second file beside `codescribe.log` in
+/// `~/.codescribe/data.noindex/logs/`
 /// for disturbances worth reading after the fact — presentation morphs, policy
 /// decisions, refusals (Maciej, 2026-10-17: a diagnostic log next to the main
 /// one, for "zaburzenia"). The unified log stays the live stream; this file
@@ -20,16 +21,18 @@ final class DiagnosticLog: @unchecked Sendable {
   /// before launch, so no writer has to know whether a file exists.
   nonisolated(unsafe) private(set) static var installed: DiagnosticLog?
 
-  /// `<dataDirectory>/logs/diagnostic.log`, the folder the main log lives in.
-  static func url(dataDirectory: String) -> URL {
-    URL(fileURLWithPath: dataDirectory, isDirectory: true)
+  /// `<churnDirectory>/logs/diagnostic.log`, the folder the main log lives in.
+  /// `churnDirectory` is the core's high-churn folder
+  /// (`CodescribeConfig.churnDir()`), which Spotlight does not index.
+  static func url(churnDirectory: String) -> URL {
+    URL(fileURLWithPath: churnDirectory, isDirectory: true)
       .appendingPathComponent("logs", isDirectory: true)
       .appendingPathComponent(filename, isDirectory: false)
   }
 
   @discardableResult
-  static func install(dataDirectory: String) -> DiagnosticLog {
-    let log = DiagnosticLog(url: url(dataDirectory: dataDirectory))
+  static func install(churnDirectory: String) -> DiagnosticLog {
+    let log = DiagnosticLog(url: url(churnDirectory: churnDirectory))
     installed = log
     return log
   }
