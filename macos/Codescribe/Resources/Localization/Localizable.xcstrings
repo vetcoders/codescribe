@@ -11531,6 +11531,17 @@
         }
       }
     },
+    "Nightly" : {
+      "comment" : "Sheet shade name, light and dark",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nightly"
+          }
+        }
+      }
+    },
     "No Agent provider or MCP connector secrets are currently stored." : {
       "localizations" : {
         "pl" : {
