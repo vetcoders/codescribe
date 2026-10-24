@@ -169,19 +169,28 @@ enum OverlayIntercomWidgetLayout {
   }
 
   static func clampedHeader(
-    _ frame: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1,
-    cardHeight: CGFloat? = nil
+    _ frame: CGRect, count _: Int, visibleFrame: CGRect, scale: CGFloat = 1,
+    cardHeight _: CGFloat? = nil
   ) -> CGRect {
     var result = frame
     result.size.width = min(frame.width, visibleFrame.width)
     result.size.height = min(controlHeight(scale: scale), visibleFrame.height)
-    result.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - result.width)
-    let totalHeight = min(
-      result.height + CGFloat(count) * ((cardHeight ?? controlHeight(scale: scale)) + gap),
-      visibleFrame.height)
+    return movedFrame(result, visibleFrame: visibleFrame, headerHeight: result.height)
+  }
+
+  /// Moving keeps the grab strip reachable, not the body below it. The same
+  /// rule owns the group header and a detached conversation's title row.
+  /// Initial placement and resizing retain their separate size constraints.
+  static func movedFrame(
+    _ frame: CGRect, visibleFrame: CGRect, headerHeight: CGFloat
+  ) -> CGRect {
+    var result = frame
+    let gripHeight = min(max(0, headerHeight), frame.height, visibleFrame.height)
+    result.origin.x = min(
+      max(frame.minX, visibleFrame.minX), max(visibleFrame.minX, visibleFrame.maxX - frame.width))
     result.origin.y = min(
-      max(frame.minY, visibleFrame.minY + totalHeight - result.height),
-      visibleFrame.maxY - result.height)
+      max(frame.minY, visibleFrame.minY + gripHeight - frame.height),
+      visibleFrame.maxY - frame.height)
     return result
   }
 
