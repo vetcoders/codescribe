@@ -238,7 +238,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
       count: groupIdentities.count, offset: rowOffset, visibleHeight: availableHeight,
-      scale: contentMetrics.iconSide / OverlayIntercomWidgetLayout.rowHeight,
+      scale: effectiveScale,
       cardHeight: groupCardHeight)
   }
 
@@ -332,17 +332,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let stored = instance.frame
     let visibleFrame = visibleFrame(around: panel.frame == .zero ? stored : panel.frame)
     guard instance.minimized else {
-      // A smaller replacement display still limits the restored size. Keep
-      // the saved top-right anchor, including an explicitly lowered body.
-      let size = CGSize(
-        width: min(stored.width, visibleFrame.width),
-        height: min(stored.height, visibleFrame.height))
-      return OverlayIntercomWidgetLayout.movedFrame(
-        CGRect(
-          x: stored.maxX - size.width, y: stored.maxY - size.height,
-          width: size.width, height: size.height),
-        visibleFrame: visibleFrame,
-        headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
+      // Restore the full conversation inside its current display, even when
+      // the saved frame came from a larger screen or an explicitly lowered drag.
+      return OverlayIntercomWidgetLayout.cardFrame(
+        below: stored, size: stored.size, visibleFrame: visibleFrame)
     }
     // Mini is a compact pill anchored at the stored window's top-right: its
     // width comes from its own content, never from the expanded conversation
@@ -819,7 +812,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let header else { return }
     resizingGroup = true
     defer { resizingGroup = false }
-    let initialCount = presentation.folded ? 0 : groupIdentities.count
+    let initialCount = presentation.folded ? 0 : visibleRows.count
     let index = row.flatMap { groupIdentities.firstIndex(of: $0) }.map {
       $0 - visibleRows.lowerBound
     }
