@@ -1688,6 +1688,40 @@ final class SettingsChromeContractTests: XCTestCase {
     }
   }
 
+  /// Text actions in a row, card or header are small native bordered buttons,
+  /// not plain text in the system accent: with the Graphite accent that text
+  /// is grey, half a tone from a disabled control, and working actions read
+  /// as disabled. The bordered style keeps the system font and colour, with
+  /// no brand tint.
+  func testRowActionsAreSmallBorderedButtons() throws {
+    let sources = try settingsSources()
+    let takes = try XCTUnwrap(sources["DictionaryRecentTakes.swift"])
+    for title in ["Refresh", "Copy text", "Open in Lab"] {
+      let button = try XCTUnwrap(takes.range(of: "Button(String(localized: \"\(title)\")"))
+      let tail = takes[button.upperBound...]
+      let style = try XCTUnwrap(tail.range(of: ".buttonStyle(.bordered)"))
+      let size = try XCTUnwrap(tail.range(of: ".controlSize(.small)"))
+      let next = tail.range(of: "Button(")?.lowerBound ?? tail.endIndex
+      XCTAssertLessThan(style.lowerBound, next, "\(title) is not bordered")
+      XCTAssertLessThan(size.lowerBound, next, "\(title) is not small")
+    }
+    XCTAssertFalse(takes.contains(".buttonStyle(.plain)"))
+    XCTAssertFalse(takes.contains("CSColor.chromeAccent"))
+
+    let lab = try XCTUnwrap(sources["LabPanel.swift"])
+    let centre = try XCTUnwrap(lab.range(of: "Button(\"Centre\")"))
+    let disabled = try XCTUnwrap(
+      lab.range(
+        of: ".disabled(model.settings.ledgerSensitivity == 0)",
+        range: centre.upperBound..<lab.endIndex))
+    let modifiers = lab[centre.upperBound..<disabled.lowerBound]
+    XCTAssertTrue(modifiers.contains(".buttonStyle(.bordered)"))
+    XCTAssertTrue(modifiers.contains(".controlSize(.small)"))
+    XCTAssertFalse(modifiers.contains(".buttonStyle(.plain)"))
+    XCTAssertFalse(modifiers.contains("CSColor.chromeAccent"))
+    XCTAssertFalse(modifiers.contains(".font("))
+  }
+
   private func settingsSources() throws -> [String: String] {
     let root = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
