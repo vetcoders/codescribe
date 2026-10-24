@@ -297,7 +297,11 @@ owns. A live hotkey, tray or overlay dictation reads as busy and is never ended
 by a composer press. `ToggleNormal`, `ToggleAssistive` and both hold gestures
 keep `CaptureTurnIntent::HandsFree` and their existing behaviour; the intent is
 reset to hands-free between takes, so a composer turn cannot leak into the next
-hands-free one.
+hands-free one. A composer take also leaves the overlay as it is: the
+take-start form preference and the dictation canvas belong to ordinary takes,
+so the conversation whose microphone was pressed stays on screen (Maciej,
+2026-10-23: the composer microphone folded the Agents view, "zamyka mi widok
+agenta").
 
 **Thread routing (operator contract 2026-08-13).** An assistive turn always
 lands in the thread the Agent rail currently has selected — the thread the

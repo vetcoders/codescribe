@@ -871,6 +871,8 @@ def queued_say(
     take_wait_seconds=0.15,
     scan_delay=0.0,
     slow_scans=None,
+    finish_in_scan=None,
+    take_in_scan=False,
 ):
     """Real --say and flock in a process; only synthesis and afplay are replaced."""
     DEMUX.PLAYBACK_WAIT_SECONDS = wait_seconds
@@ -882,8 +884,26 @@ def queued_say(
     probe = DEMUX.installation_idle
 
     delayed = [0]
+    scans = [0]
+    ended = [False]
 
     def delayed_probe(*args, **kwargs):
+        if not sentinel.exists():
+            waiting.set()
+        if sentinel.exists():
+            scans[0] += 1
+            if scans[0] == finish_in_scan:
+                # The player exits while this scan runs, after the loop's last
+                # poll; with take_in_scan a take starts right after the last sample.
+                ended[0] = True
+                if take_in_scan:
+                    with Path(speech_bus or bus).open("a") as stream:
+                        stream.write(
+                            json.dumps(
+                                {"status": "session_started", "session_id": "channel-3-take"}
+                            )
+                            + "\n"
+                        )
         # Delay the real safety probe only after playback has started; with
         # slow_scans set, only that many scans are slow.
         if scan_delay and sentinel.exists() and (slow_scans is None or delayed[0] < slow_scans):
@@ -922,7 +942,7 @@ def queued_say(
         def poll(self):
             if self.result is not None:
                 return self.result
-            if release is None or release.is_set():
+            if ended[0] or release is None or release.is_set():
                 return self.finish(0)
             return None
 
@@ -998,6 +1018,8 @@ class PlaybackQueueTests(unittest.TestCase):
         take_wait_seconds=0.15,
         scan_delay=0.0,
         slow_scans=None,
+        finish_in_scan=None,
+        take_in_scan=False,
     ):
         events = [self.context.Event() for _ in range(3)]
         child = self.context.Process(
@@ -1014,6 +1036,8 @@ class PlaybackQueueTests(unittest.TestCase):
                 take_wait_seconds,
                 scan_delay,
                 slow_scans,
+                finish_in_scan,
+                take_in_scan,
             ),
         )
         child.start()
@@ -1132,6 +1156,43 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertEqual(reply["reason"], "take_started")
         self.assertFalse(reply["spoken"])
         self.assertIn('["filip", "terminate"]', (self.home / "playback.jsonl").read_text())
+
+    def test_take_after_the_last_sample_keeps_a_spoken_receipt(self):
+        # Founder, 2026-10-23 (Miksa ch6 20:12Z, Hania ch4 21:08Z): she heard the
+        # whole reply, pressed Fn+4 right after it, and the receipt said
+        # refused/take_started. The player had already exited inside the scan
+        # that saw the take, so nothing was cut and the reply was spoken.
+        canonical = self.home / "canonical-bus.jsonl"
+        canonical.touch()
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, speech_bus=canonical, finish_in_scan=1, take_in_scan=True
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], reply)
+        self.assertEqual(reply["state"], "spoken")
+        log = [
+            json.loads(line)
+            for line in (self.home / "playback.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(log, [["filip", "start"], ["filip", "end"]])
+
+    def test_unfinished_scans_after_the_player_ended_keep_a_spoken_receipt(self):
+        # Three over-budget scans stop a voice that is still playing (see
+        # test_scan_beyond_budget_still_terminates_playback), not one that ended.
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6, finish_in_scan=3
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], reply)
+        self.assertNotIn(
+            '["filip", "terminate"]', (self.home / "playback.jsonl").read_text()
+        )
 
     def test_take_started_while_waiting_is_checked_after_acquisition(self):
         lock = self.hold_lock()
@@ -1402,8 +1463,18 @@ class PlaybackQueueTests(unittest.TestCase):
     def last_outcome(self):
         return self.outcomes()[-1]
 
+    def bind(self, name, channel):
+        path = self.home / "vc.agent-audience-binding.v1.json"
+        state = (json.loads(path.read_text()) if path.exists()
+                 else {"schema": "vc.agent-audience-binding.v1", "bindings": {}})
+        state["bindings"][channel] = {
+            "audience": name, "provider": "codex", "provider_session_id": name,
+        }
+        path.write_text(json.dumps(state))
+
     def test_quiet_open_channel_admits_the_reply(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         marker = self.home / "runtime" / "agent-playback-now.json"
         for phase in ("quiet", "fresh"):
@@ -1418,6 +1489,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_speech_or_an_unproven_phase_holds_the_reply(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         gone = subprocess.Popen(["true"])
         gone.wait()
@@ -1443,6 +1515,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_reply_survives_the_seal_and_reopen_of_its_quiet_channel(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-first", "open")
         self.speech_now("agent-channel-1-first", "quiet")
         release = self.context.Event()
@@ -1460,6 +1533,57 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(self.last_outcome()["spoken"], self.last_outcome())
         self.assert_playback_ended()
 
+    def test_pause_in_a_take_for_another_agent_holds_the_reply(self):
+        # 2026-10-23 06:57: Roman (channel 3) started speaking one second into
+        # a pause of Monika's open take for hania (channel 4).
+        self.bind("filip", "3")
+        channel = self.home / "buses" / "channel-4.jsonl"
+        self.channel_row(channel, "agent-channel-4-first", "open")
+        self.speech_now("agent-channel-4-first", "quiet")
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set(), "a pause in a message to hania is not room for filip")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
+        # The take seals and the channel reopens with nothing said yet.
+        self.channel_row(channel, "agent-channel-4-first", "sealed")
+        self.channel_row(channel, "agent-channel-4-second", "open")
+        self.speech_now("agent-channel-4-second", "fresh")
+        child, (_, _, playing) = self.start_say("filip")
+        self.join(child)
+        self.assertTrue(playing.is_set())
+        self.assertTrue(self.last_outcome()["spoken"])
+
+    def test_ineligible_foreign_reply_does_not_hold_the_player_lock(self):
+        self.bind("filip", "3")
+        self.bind("hania", "4")
+        channel = self.home / "buses" / "channel-4.jsonl"
+        self.channel_row(channel, "agent-channel-4-first", "open")
+        self.speech_now("agent-channel-4-first", "quiet")
+        foreign, (_, waiting, foreign_playing) = self.start_say(
+            "filip", take_wait_seconds=1.5)
+        self.assertTrue(waiting.wait(5))
+        own, (_, _, own_playing) = self.start_say("hania")
+        self.assertTrue(own_playing.wait(1), "an ineligible reply must not occupy playback.lock")
+        self.assertFalse(foreign_playing.is_set())
+        self.join(own)
+        self.join(foreign)
+
+    def test_rebound_quiet_channel_revokes_the_waiting_agents_ownership(self):
+        self.bind("filip", "3")
+        channel = self.home / "buses" / "channel-3.jsonl"
+        self.channel_row(channel, "agent-channel-3-first", "open")
+        self.speech_now("agent-channel-3-first", "speaking")
+        child, (_, waiting, playing) = self.start_say("filip", take_wait_seconds=0.8)
+        self.assertTrue(waiting.wait(5))
+        self.bind("hania", "3")
+        self.channel_row(channel, "agent-channel-3-first", "sealed")
+        self.channel_row(channel, "agent-channel-3-second", "open")
+        self.speech_now("agent-channel-3-second", "quiet")
+        self.join(child)
+        self.assertFalse(playing.is_set(), "ownership must be read again at admission")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
+
     def assert_playback_ended(self):
         marker = json.loads((self.home / "runtime" / "agent-playback-now.json").read_text())
         self.assertTrue(marker["ended"])
@@ -1468,6 +1592,7 @@ class PlaybackQueueTests(unittest.TestCase):
     def test_quiet_restarts_when_the_previous_reply_ends(self):
         # Back-to-back replies: the channel heard nothing under the first one.
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         self.speech_now("agent-channel-1-live", "quiet", age=30.0)
         marker = self.home / "runtime" / "agent-playback-now.json"
@@ -1483,6 +1608,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_a_person_stops_a_reply_by_key_or_by_measured_speech(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         for how in ("key take", "speech"):
             with self.subTest(how):
