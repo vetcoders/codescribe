@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "The ledger did not close this take.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ledger nie domknął tego nagrania."
+          }
+        }
+      }
+    },
+    "The ledger anchored %@ of the speech and did not close this take.": {
+      "localizations": {
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ledger zakotwiczył %@ mowy i nie domknął tego nagrania."
+          }
+        }
+      }
+    },
     "" : {
       "shouldTranslate" : false
     },
@@ -4350,6 +4370,40 @@
         }
       }
     },
+    "Channel %@, %@" : {
+      "comment" : "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał %1$@, %2$@"
+          }
+        }
+      }
+    },
+    "Channel %@, %@, microphone open" : {
+      "comment" : "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name; the microphone feeds this channel",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, %2$@, microphone open"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał %1$@, %2$@, mikrofon otwarty"
+          }
+        }
+      }
+    },
     "Channel %@, %@, shortcut %@" : {
       "comment" : "Compact overlay channel chip: digit, agent name, the channel chord (e.g. Ctrl 5)",
       "localizations" : {
@@ -4380,6 +4434,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Kanał %1$@, %2$@, skrót %3$@, mikrofon otwarty"
+          }
+        }
+      }
+    },
+    "Channel %@, microphone open" : {
+      "comment" : "Collapsed overlay channel 0 chip while broadcasting, when no key plus digit opens a channel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kanał %@, mikrofon otwarty"
           }
         }
       }
@@ -6659,12 +6724,34 @@
         }
       }
     },
+    "Ctrl and Fn both record dictation, so open Agent channels from the agents list." : {
+      "comment" : "Settings › Shortcuts › Agent channel: both modifier keys start dictation, so no key plus digit opens a channel; the overlay agents list still does",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ctrl i Fn nagrywają dyktowanie, więc kanały Agenta otwierasz z listy agentów."
+          }
+        }
+      }
+    },
     "Ctrl or Fn plus a digit switches the Agent channel." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ctrl lub Fn + cyfra przełącza kanał Agenta."
+          }
+        }
+      }
+    },
+    "Ctrl records dictation — to use it for channels, assign dictation to another shortcut." : {
+      "comment" : "Settings › Shortcuts › Agent channel: Ctrl is greyed out because a Ctrl shortcut starts dictation; rebinding dictation frees Ctrl",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ctrl nagrywa dyktowanie — żeby użyć go dla kanałów, przypisz dyktowanie do innego skrótu."
           }
         }
       }
@@ -7137,16 +7224,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dźwięk z dyktowania opuści ten Mac i trafi do skonfigurowanego dostawcy rozpoznawania mowy w chmurze."
-          }
-        }
-      }
-    },
-    "Dictation control" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Sterowanie dyktowaniem"
           }
         }
       }
@@ -8213,6 +8290,49 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lewitujące pigułki agentów (eksperymentalne)"
+          }
+        }
+      }
+    },
+    "Fn and Agent channels" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fn i kanały Agenta"
+          }
+        }
+      }
+    },
+    "Fn records dictation — to use it for channels, assign dictation to another shortcut and turn off the Fn tap." : {
+      "comment" : "Settings › Shortcuts › Agent channel: Fn is greyed out because Hold Fn/Globe dictation and the Fn tap both use it; names both steps that free Fn",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fn nagrywa dyktowanie — żeby użyć go dla kanałów, przypisz dyktowanie do innego skrótu i wyłącz stuknięcie Fn."
+          }
+        }
+      }
+    },
+    "Fn records dictation — to use it for channels, assign dictation to another shortcut." : {
+      "comment" : "Settings › Shortcuts › Agent channel: Fn is greyed out because dictation is bound to Hold Fn/Globe; rebinding dictation frees Fn",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fn nagrywa dyktowanie — żeby użyć go dla kanałów, przypisz dyktowanie do innego skrótu."
+          }
+        }
+      }
+    },
+    "Fn records dictation — to use it for channels, turn off the Fn tap." : {
+      "comment" : "Settings › Shortcuts › Agent channel: Fn is greyed out because the Fn tap toggles dictation; turning the tap off frees Fn",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fn nagrywa dyktowanie — żeby użyć go dla kanałów, wyłącz stuknięcie Fn."
           }
         }
       }

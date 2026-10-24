@@ -1168,14 +1168,14 @@ default = "ctrl"
 type = "string"
 reload = "hot"
 category = "hotkeys"
-description = "Modifier held with a digit to open an agent channel (ctrl|fn). Command is rejected."
+description = "Modifier held with a digit to open an agent channel (ctrl|fn). Command is rejected. A key that records dictation is never the modifier in effect: Fn while Hold Fn/Globe or FN_TAP_TOGGLES_DICTATION is on, Ctrl while a Hold Ctrl or Double-tap Ctrl binding is set. That key gives way to the other one; with both recording no digit chord opens a channel. The stored value is kept."
 
 [vars.FN_TAP_TOGGLES_DICTATION]
 default = "0"
 type = "bool"
 reload = "hot"
 category = "hotkeys"
-description = "Quick Fn press below the hold delay toggles dictation. Off until chosen. Hold past the delay stays hold-to-talk."
+description = "Quick Fn press below the hold delay toggles dictation. Off until chosen. Hold past the delay stays hold-to-talk. While on, Fn records, so an AGENT_CHANNEL_MODIFIER of fn resolves to ctrl."
 
 [vars.MIDDLE_MOUSE_ACTS_AS_FN]
 default = "0"

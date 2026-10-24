@@ -258,9 +258,8 @@ struct LabPanel: View {
           Button("Centre") {
             model.setLedgerSensitivity(0)
           }
-          .font(CSFont.ui(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
-          .buttonStyle(.plain)
+          .buttonStyle(.bordered)
+          .controlSize(.small)
           .disabled(model.settings.ledgerSensitivity == 0)
         }
       }

@@ -59,8 +59,9 @@ the width to the user for the session: narrower than the natural width, it is
 kept and roster changes no longer resize the strip (the chips drop to digits
 or the counter); wider, it is kept and grows only when the natural width
 exceeds it. A map that cannot fit even its counter claims no width. Its
-shortcut hints read the Agent channel modifier from settings
-(`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and never assume Ctrl. A chip click is
+shortcut hints read the Agent channel modifier in effect
+(`AGENT_CHANNEL_MODIFIER` after the one-key-one-role rule, Ctrl or Fn) and never
+assume Ctrl. A chip click is
 passive selection, like a rail pill. The counter click changes form or width
 only: in mini it selects compact, as the form control's "Expand to compact
 widget" does; in a compact strip the user narrowed it forgets that width so
@@ -87,30 +88,11 @@ through their normal hangup path before admitting dictation (Founder delivery
 Each channel releases its PCM feed before dictation admission. Its retained
 terminal task then joins and publishes the final receipt; its words are retained.
 For hold gestures, handover waits until the existing start delay has elapsed.
-The modifier alone can still become a channel chord or be released without a
-take; an explicit channel gesture cancels that pending ordinary hold.
-When the hold's base key is also the agent-channel modifier (`HoldFn` with
-`AGENT_CHANNEL_MODIFIER=fn`, `HoldCtrl` with `ctrl`) and a channel is open,
-the elapsed delay admits nothing: the hold stays the chord's prefix, the
-channel survives, no hang-up receipt is written, and the digit chord is the
-only way to close it (Founder, 2026-10-22: a Fn held past the delay before the
-digit hung up the channel, the digit reopened it, and the reopened microphone
-fed Whisper silence). Dictation on that key starts only once no channel is
-open; the toggle gestures and the other hold presets are unaffected.
-With no channel open, the same hold can already be admitted (`RecHold`) when
-the digit arrives. An explicit channel gesture then opens the channel beside
-that take and ends the take as the chord's prefix (Founder, 2026-10-23: the
-key-up after such a chord pasted a stray word into the terminal). The channel
-opens first so it shares the live capture instead of waiting out the take's
-stop grace and recognizer drain. The rule covers only a non-assistive Raw hold
-whose base key is the channel modifier, the same pairs as above. The recorder's
-discard stop releases the take's capture under the serial transition lock; the
-open channel keeps its pointer badge; nothing is pasted, copied, routed or sent to an agent,
-no session archive is written, and the Bus session ends with
-`end_reason: chord_prefix` (phase `no_speech`, every overlay action off), which
-the overlay receives as its lifecycle terminal. The controller is Idle again,
-so the later key-up is a no-op. Holds on another key, assistive holds and
-toggle takes keep running beside the opened channel as before.
+A hold key released inside the delay starts no take, and an explicit channel
+gesture during the delay (an agents-list click) cancels that pending hold.
+The channel modifier never records (one key, one role, below), so a hold or
+toggle take is never a channel chord's prefix. A take on another key keeps
+running beside a channel opened from the agents list.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
@@ -200,6 +182,41 @@ Canonical hotkey configuration is **mode-first**:
 - bindings are persisted in `~/Library/Application Support/Codescribe/settings.json`
 - legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
 - fixed application commands are a separate, non-configurable command plane and never become `WorkMode` bindings
+
+### One key, one role: recording keys are never the channel modifier
+
+The agent channel chord is a modifier (`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn)
+plus a digit. A key that records dictation is never that modifier (Founder,
+2026-10-24: Fn+6 started a toggle dictation instead of channel 6).
+
+- Fn records when `Dictation=HoldFn` (Hold Fn/Globe) or the Fn tap
+  (`FN_TAP_TOGGLES_DICTATION`) is on.
+- Ctrl records when a work mode is bound to `HoldCtrl`, `HoldCtrlAlt`,
+  `HoldCtrlShift`, `HoldCtrlCmd` or `DoubleCtrl`.
+
+The loader applies the rule once, after every source (settings.json, `.env`,
+process env), when it resolves the configuration (`RecordingKeys`,
+core/config/types.rs; `Config::resolve_channel_modifier`,
+core/config/loader.rs). A requested key that records gives way to the other
+key. When both keys record, the modifier in effect is `off`: no digit chord
+opens a channel and the overlay's agents list is the way to open one. The
+hotkey detector, the controller, the overlay hints and Settings read the
+resolved value; none of them re-checks the rule. The stored choice in
+settings.json is not rewritten: it applies again as soon as its key stops
+recording. The loader logs `agent channel modifier resolved` once per distinct
+outcome.
+
+Settings › Shortcuts › Fn and Agent channels greys out the key that records in
+the Agent channel picker, selects the modifier in effect and adds one sentence
+that says what frees the key, naming only what records with it now: for Fn
+"Fn records dictation — to use it for channels, assign dictation to another
+shortcut and turn off the Fn tap." (either clause alone when only the Hold
+Fn/Globe binding or only the Fn tap records; turning the tap off does not free
+Fn while dictation holds Fn), for Ctrl "Ctrl records dictation — to use it for
+channels, assign dictation to another shortcut.", and with both keys recording
+"Ctrl and Fn both record dictation, so open Agent channels from the agents
+list." Turning on a recording gesture on the channel key moves the channel to
+the other key through the same rule.
 
 ### Agent summon command (not a recording mode)
 
@@ -830,6 +847,50 @@ arm_ignored reason=wrong_arm_modifier
 If **no** such line appears when you double-tap or arm, the OS never delivered
 the key event to Codescribe (permissions / focus / hardware) — that case is
 outside the detector.
+
+### Raw-input journal (INFO)
+
+To see what was pressed next to what the app understood, the event tap keeps a
+raw-input journal in `~/.codescribe/logs/codescribe.log` (the single log owner;
+no new file or setting). Each line holds the raw event and the detector's
+decision for it:
+
+```text
+hotkey_input kind=flags_changed|key_down|key_up key=fn|left_ctrl|right_ctrl|digit_N|… keycode=K t_ns=T fn=0|1 ctrl=0|1 option=0|1 shift=0|1 cmd=0|1 decision=…
+hotkey_input kind=hold_timer decision=hold_down
+hotkey_input kind=journal_overflow dropped=N
+```
+
+`t_ns` is the CoreGraphics event timestamp (monotonic, nanoseconds since
+boot). `decision` is `none`, `hold_down`, `hold_up`, `hold_update`,
+`attach_selection`, `toggle_raw`, `toggle_normal`, `toggle_assistive`,
+`agent_channel channel=N`, `double_tap_blocked` or `ui_command`.
+
+**Privacy filter** (inside the tap callback, before anything is queued): Fn
+flag changes, the channel modifier's own flag changes when it is Ctrl, and
+digit key-down/up only while the channel modifier is held or for a digit the
+tap claimed. Any other modifier change is journaled only when it produced a
+gesture. Every other key is dropped: no letters, no text, no
+keycodes of ordinary typing.
+
+**Tap cost:** the callback copies a small record (event kind, key, keycode,
+timestamp, flags, decision) into a bounded queue (256) with a non-blocking
+`try_send`; it never formats, writes a file or takes a lock shared with the
+UI. The `hotkey-journal` thread formats and logs. A full queue drops records
+and reports the count as `journal_overflow`.
+
+The controller adds one line per admitted gesture and per channel chord:
+
+```text
+hotkey_decision gesture=hold|toggle|conversation edge=down|up|press mode=dictation|raw|formatting|assistive state=idle|rec_hold|rec_toggle|busy|conversation|unknown action=start_toggle|stop_take|schedule_hold|cancel_pending_hold|start_conversation|stop_conversation|none
+hotkey_decision gesture=channel_chord channel=N state=… action=opened|closed|refused
+```
+
+Event-tap health (WARN): macOS disables a tap whose callback is slow or on
+some user input; the callback re-enables it at once and logs
+`hotkey_tap_health event=disabled reason=timeout|user_input rearmed=true|false`.
+Keys pressed while the tap was disabled never reach the journal, so a gap
+between two `hotkey_input` lines with this line in it explains a lost key.
 
 ---
 
