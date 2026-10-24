@@ -1378,7 +1378,17 @@ channel feed. External speech reports its actual outcome in a distinct
 `agent_reply_playback` event. Reply text itself is published before synthesis;
 its initial `spoken: false` is not evidence of a failed or completed playback.
 The helper admits playback only after the existing capture interlock proves
-idle, and stops its own player when a take starts.
+idle, and stops its own player when a take starts. An open channel does not
+block a reply by itself: the app publishes its measured speech phase in
+`runtime/channel-speech-<digit>.json`. A `fresh` session (no speech since it
+opened, e.g. the reopen after a silence seal) admits any reply after 1 s.
+A `quiet` session (speech, then silence, inside the same take) admits only
+the reply of the agent bound to that channel: a pause in a message to one
+agent is not room for another, which waits for that take to seal. Quiet is
+measured again from the end of the previous reply. While a reply plays, the
+speaker announces it in `runtime/agent-playback-now.json` and the app drops
+all channel PCM (half-duplex); a key take, a channel opened during the reply
+or measured speech stops it.
 
 ## Durable replies and exact speech controls
 
