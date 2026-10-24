@@ -1448,7 +1448,7 @@ final class SettingsChromeContractTests: XCTestCase {
     // Maciej, 2026-10-21: the pane leads with this Mac's recent takes, in
     // human terms, above the corrections desk.
     let recentTakes = try XCTUnwrap(
-      panel.range(of: "DictionaryRecentTakes(configDir: model.configDir)"))
+      panel.range(of: "DictionaryRecentTakes(\n        configDir: model.configDir,"))
     let correctionsHeader = try XCTUnwrap(
       panel.range(of: "SettingsSectionHeaderRow(String(localized: \"Recent corrections\"))"))
     XCTAssertLessThan(recentTakes.lowerBound, correctionsHeader.lowerBound)
