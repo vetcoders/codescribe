@@ -585,9 +585,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         return
       }
       // Agent-authored text shares the reply presentation and playback owner.
-      // Typed Founder messages carry recipient coordinates, never an author.
+      // A typed Founder message may name channel 10 as its sender, but remains
+      // a user message routed through its recipient coordinates.
       if schema == "codescribe.agent-user-message.v1",
-        row["kind"] as? String == "agent_user_message", row["sender"] is [String: Any],
+        row["kind"] as? String == "agent_user_message", row["source"] as? String != "typed",
+        row["sender"] is [String: Any],
         let identity = row["message_id"] as? String, identity.count == 24,
         identity.allSatisfy({ "0123456789abcdef".contains($0) })
       {
