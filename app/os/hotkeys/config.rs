@@ -52,11 +52,18 @@ const MODE_BINDINGS_MASK: u16 = 0x0FFF;
 const CHANNEL_MODIFIER_MASK: u16 = 0x3000;
 const FN_TAP_MASK: u16 = 0x4000;
 
+/// A compare-exchange loop: `fetch_update` is deprecated on current stable and
+/// its `try_update` replacement is still unstable at the 1.94 MSRV.
 fn update_gesture_bits(mask: u16, value: u16) {
-    let _ =
-        HOTKEY_GESTURES.fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |current| {
-            Some((current & !mask) | value)
-        });
+    let mut current = HOTKEY_GESTURES.load(AtomicOrdering::SeqCst);
+    while let Err(actual) = HOTKEY_GESTURES.compare_exchange_weak(
+        current,
+        (current & !mask) | value,
+        AtomicOrdering::SeqCst,
+        AtomicOrdering::SeqCst,
+    ) {
+        current = actual;
+    }
 }
 
 /// Pack one binding into its 4-bit slot.
@@ -355,17 +362,6 @@ pub fn get_channel_modifier() -> ChannelModifier {
     )
 }
 
-/// Enable or disable dictation toggle on a quick Fn press.
-pub fn set_fn_tap_toggles_dictation(enabled: bool) {
-    update_gesture_bits(FN_TAP_MASK, if enabled { FN_TAP_MASK } else { 0 });
-    tracing::info!("Fn tap toggles dictation: {}", enabled);
-}
-
-/// Whether a quick Fn press toggles dictation.
-pub fn get_fn_tap_toggles_dictation() -> bool {
-    HOTKEY_GESTURES.load(AtomicOrdering::SeqCst) & FN_TAP_MASK != 0
-}
-
 /// Enable or disable the middle mouse button as an Fn press/release.
 pub fn set_middle_mouse_acts_as_fn(enabled: bool) {
     MIDDLE_MOUSE_ACTS_AS_FN.store(enabled, AtomicOrdering::SeqCst);
@@ -649,7 +645,7 @@ mod tests {
             runtime.deferred_insert_shortcut
         );
         assert_eq!(get_channel_modifier(), ChannelModifier::Fn);
-        assert!(get_fn_tap_toggles_dictation());
+        assert!(get_hotkey_runtime_config().fn_tap_toggles_dictation);
         assert!(get_middle_mouse_acts_as_fn());
         assert!(get_middle_mouse_agent_gesture());
     }

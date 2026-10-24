@@ -16,7 +16,7 @@
 
 use super::config::HotkeyRuntimeConfig;
 pub use crate::config::mode_binding_reachable;
-use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding, WorkMode};
+use crate::config::{ChannelModifier, DeferredInsertShortcut, ShortcutBinding};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
@@ -1373,6 +1373,7 @@ fn compute_hold_mode(
 mod tests {
     use super::super::config::ModeHotkeyBindings;
     use super::*;
+    use crate::config::WorkMode;
 
     /// Build a HotkeyRuntimeConfig with fixed hold delay and double-tap window for tests.
     fn test_config(
