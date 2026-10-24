@@ -355,17 +355,6 @@ pub fn get_channel_modifier() -> ChannelModifier {
     )
 }
 
-/// Enable or disable dictation toggle on a quick Fn press.
-pub fn set_fn_tap_toggles_dictation(enabled: bool) {
-    update_gesture_bits(FN_TAP_MASK, if enabled { FN_TAP_MASK } else { 0 });
-    tracing::info!("Fn tap toggles dictation: {}", enabled);
-}
-
-/// Whether a quick Fn press toggles dictation.
-pub fn get_fn_tap_toggles_dictation() -> bool {
-    HOTKEY_GESTURES.load(AtomicOrdering::SeqCst) & FN_TAP_MASK != 0
-}
-
 /// Enable or disable the middle mouse button as an Fn press/release.
 pub fn set_middle_mouse_acts_as_fn(enabled: bool) {
     MIDDLE_MOUSE_ACTS_AS_FN.store(enabled, AtomicOrdering::SeqCst);
@@ -649,7 +638,7 @@ mod tests {
             runtime.deferred_insert_shortcut
         );
         assert_eq!(get_channel_modifier(), ChannelModifier::Fn);
-        assert!(get_fn_tap_toggles_dictation());
+        assert!(get_hotkey_runtime_config().fn_tap_toggles_dictation);
         assert!(get_middle_mouse_acts_as_fn());
         assert!(get_middle_mouse_agent_gesture());
     }
