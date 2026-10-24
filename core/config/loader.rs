@@ -1028,7 +1028,14 @@ impl Config {
                 WorkMode::Formatting,
                 WorkMode::Assistive,
             ]
-            .map(|mode| user_settings.mode_binding_for(mode)),
+            .map(|mode| {
+                let binding = user_settings.mode_binding_for(mode);
+                if super::mode_binding_reachable(mode, binding) {
+                    binding
+                } else {
+                    super::ShortcutBinding::Disabled
+                }
+            }),
             fn_tap_toggles_dictation,
         )
     }
@@ -1436,6 +1443,16 @@ impl Config {
     /// Apply user settings from JSON (lower priority than .env).
     /// Only applies values that are Some AND not already overridden by env vars.
     fn apply_user_settings(&mut self, settings: &super::settings::UserSettings) {
+        self.mode_bindings = [
+            WorkMode::Dictation,
+            WorkMode::Formatting,
+            WorkMode::Assistive,
+        ]
+        .map(|mode| super::ModeBinding {
+            mode,
+            binding: settings.mode_binding_for(mode),
+        })
+        .to_vec();
         // Helper: only apply if the env var is NOT set
         macro_rules! apply_parsed_if_no_env {
             ($env_key:expr, $field:expr, $val:expr) => {
@@ -4068,6 +4085,10 @@ mod tests {
 
         let mut config = Config::default();
         let settings = super::super::settings::UserSettings {
+            mode_bindings: Some(vec![super::super::ModeBinding {
+                mode: WorkMode::Dictation,
+                binding: super::super::ShortcutBinding::HoldCtrl,
+            }]),
             hold_start_delay_ms: Some(500),
             double_tap_interval_ms: Some(300),
             toggle_silence_sec: Some(3.0),
@@ -4077,6 +4098,10 @@ mod tests {
 
         config.apply_user_settings(&settings);
 
+        for entry in &config.mode_bindings {
+            assert_eq!(entry.binding, settings.mode_binding_for(entry.mode));
+        }
+        assert_eq!(config.mode_bindings.len(), 3);
         assert_eq!(config.hold_start_delay_ms, 500);
         assert_eq!(config.double_tap_interval_ms, 300);
         assert!((config.toggle_silence_sec - 3.0).abs() < f32::EPSILON);
@@ -4555,6 +4580,34 @@ mod channel_modifier_resolution_tests {
             ChannelModifier::Ctrl
         );
     }
+
+    #[test]
+    fn unreachable_recording_bindings_do_not_claim_channel_keys() {
+        for mode in [WorkMode::Formatting, WorkMode::Assistive] {
+            for binding in [
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::HoldCtrl,
+                ShortcutBinding::HoldCtrlAlt,
+                ShortcutBinding::HoldCtrlShift,
+                ShortcutBinding::HoldCtrlCmd,
+                ShortcutBinding::DoubleCtrl,
+            ] {
+                let mut settings = settings_with_dictation(ShortcutBinding::HoldCtrl);
+                settings
+                    .mode_bindings
+                    .as_mut()
+                    .unwrap()
+                    .push(ModeBinding { mode, binding });
+                let mut config = Config::default();
+                config.resolve_channel_modifier(&settings);
+                assert_eq!(
+                    config.channel_modifier,
+                    ChannelModifier::Fn,
+                    "{mode:?}: {binding:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4683,6 +4736,16 @@ mod captured_startup_tests {
                 })
         );
         assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    fn captured_mode_bindings_change_the_snapshot_digest() {
+        let original = inputs();
+        let first = Config::runtime_snapshot_from_captured(original.clone());
+        let mut changed = original;
+        changed.values.mode_bindings[0].binding = super::super::ShortcutBinding::HoldCtrl;
+        let second = Config::runtime_snapshot_from_captured(changed);
+        assert_ne!(first.digest(), second.digest());
     }
 
     #[test]
