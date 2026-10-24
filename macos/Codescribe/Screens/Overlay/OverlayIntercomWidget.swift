@@ -1165,7 +1165,8 @@ private struct OverlayIntercomCard: View {
               palette: palette, hints: false)
           }
           if !identity.isHumanInbox {
-            Text(verbatim: identity.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
+            Text(verbatim: identity.displayDigit).csMono(10)
+              .foregroundStyle(palette.mutedText.color)
           }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1179,7 +1180,8 @@ private struct OverlayIntercomCard: View {
       .simultaneousGesture(moveGesture)
       .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .accessibilityLabel(
-        Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name))
+        Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
+      )
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
     } else {
       // Reuse the menu execution, but Write stays in this card.
@@ -1195,7 +1197,8 @@ private struct OverlayIntercomCard: View {
         }
         HStack(spacing: 6) {
           if !identity.isHumanInbox {
-            Text(verbatim: identity.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
+            Text(verbatim: identity.displayDigit).csMono(10)
+              .foregroundStyle(palette.mutedText.color)
           }
           if let channelRow, row.marks {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
@@ -1228,7 +1231,8 @@ private struct OverlayIntercomCard: View {
           )
           .disabled(
             conversation == nil
-              || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil))
+              || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil)
+          )
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
           // Detaching needs the unrolled card, for assistive technology too.
           .accessibilityActions {

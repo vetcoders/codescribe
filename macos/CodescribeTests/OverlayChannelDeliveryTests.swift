@@ -849,7 +849,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
     XCTAssertEqual(ada.messages.map(\.text), ["Raport na skrzynkę 10"])
     let inbox = try XCTUnwrap(conversations.first(where: \.isHumanInbox))
-    XCTAssertEqual(inbox.messages, ada.messages, "the human projection preserves author attribution")
+    XCTAssertEqual(
+      inbox.messages, ada.messages, "the human projection preserves author attribution")
     let message = try XCTUnwrap(ada.messages.first)
     XCTAssertEqual(
       OverlayChannelStatusView.drawerPreview(message: message),
