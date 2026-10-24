@@ -1644,12 +1644,18 @@ impl CodescribeHotkeys {
 
     /// Atomically reject busy capture or close future admission for this process.
     /// This never constructs a new controller and never stops an active take.
-    pub async fn reserve_idle_restart(&self) -> Result<bool, CsError> {
-        application_runtime::run(async move {
-            current_controller(&shared_controller())
-                .is_some_and(|controller| controller.reserve_idle_restart())
-        })
-        .await
+    /// Synchronous so Swift can check composition, reserve and terminate in one
+    /// run-loop callback. Every lock in this path refuses rather than waiting.
+    pub fn reserve_idle_restart(&self) -> Result<bool, CsError> {
+        let store = shared_controller();
+        let Ok(slot) = store.try_lock() else {
+            return Ok(false);
+        };
+        // Keep this exact controller in the slot until its decision. The core
+        // reservation takes only try-locks and never calls back into the bridge.
+        Ok(slot
+            .as_ref()
+            .is_some_and(|controller| controller.reserve_idle_restart()))
     }
 
     /// True while the shared controller is in an active recording/conversation state.
@@ -3861,6 +3867,27 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// Calling synchronously while this very thread owns the slot would hang
+    /// with a blocking acquisition. It must refuse without constructing a
+    /// controller, and a refused attempt must leave later idle admission open.
+    #[tokio::test]
+    #[serial]
+    async fn idle_restart_bridge_refuses_absence_and_slot_contention_then_reserves_idle() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+        let hotkeys = CodescribeHotkeys::default();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        assert!(shared_controller().lock().unwrap().is_none());
+        let (_listener, _controller) = install();
+        let store = shared_controller();
+        let held_slot = store.lock().unwrap();
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        drop(held_slot);
+        assert!(hotkeys.reserve_idle_restart().unwrap());
+        assert!(!hotkeys.reserve_idle_restart().unwrap());
+        teardown();
     }
 
     /// A host lifecycle notification while idle must not construct the shared

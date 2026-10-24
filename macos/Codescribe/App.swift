@@ -698,10 +698,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       idleRestartCoordinator = try IdleRestartCoordinator(
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
-        reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        reserveCapture: { [hotkeys] in try hotkeys.reserveIdleRestart() },
         founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
-          RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+          // The coordinator already runs its final check and reservation from
+          // the run loop, outside the async job. Do not queue another gap.
+          NSApp.terminate(nil)
         })
     } catch {
       appLogger.error("Idle restart capability unavailable: \(error.localizedDescription)")

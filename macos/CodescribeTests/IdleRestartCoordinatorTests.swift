@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 
@@ -8,6 +9,16 @@ final class IdleRestartCoordinatorTests: XCTestCase {
   @MainActor
   private final class CaptureState {
     var busy = false
+  }
+
+  @MainActor
+  private final class FinalizationQueue {
+    var actions: [IdleRestartCoordinator.Finalization] = []
+
+    func runNext() {
+      precondition(!actions.isEmpty)
+      actions.removeFirst()()
+    }
   }
 
   private func fixture() throws -> URL {
@@ -41,7 +52,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
     let coordinator = try IdleRestartCoordinator(
       root: root, pid: 123, nonce: "generation",
       acquireLease: { try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) },
-      reserveCapture: { !capture.busy }, terminate: { terminated += 1 })
+      reserveCapture: { !capture.busy }, scheduleFinalization: { $0() }, terminate: { terminated += 1 })
     let first = try request(root)
     await coordinator.handle(first)
     XCTAssertEqual(try receipt(root, first)["status"] as? String, "refused")
@@ -69,7 +80,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
         reservations += 1
         return true
       },
-      founderComposing: { composing.busy }, terminate: { terminated += 1 })
+      founderComposing: { composing.busy }, scheduleFinalization: { $0() }, terminate: { terminated += 1 })
     let typing = try request(root)
     await coordinator.handle(typing)
     XCTAssertEqual(try receipt(root, typing)["reason"] as? String, "founder_composing")
@@ -105,7 +116,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
         reservations += 1
         return true
       },
-      founderComposing: { composing.busy }, terminate: { terminated = true })
+      founderComposing: { composing.busy }, scheduleFinalization: { $0() }, terminate: { terminated = true })
     let url = try request(root)
     let pending = Task { await coordinator.handle(url) }
     await fulfillment(of: [entered], timeout: 1)
@@ -131,7 +142,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
           entered.fulfill()
         }
         return try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
-      }, reserveCapture: { !capture.busy }, terminate: { terminated = true })
+      }, reserveCapture: { !capture.busy }, scheduleFinalization: { $0() }, terminate: { terminated = true })
     let url = try request(root)
     let pending = Task { await coordinator.handle(url) }
     await fulfillment(of: [entered], timeout: 1)
@@ -154,7 +165,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
         closed = true
         return true
       },
-      terminate: {
+      scheduleFinalization: { $0() }, terminate: {
         XCTAssertTrue(closed)
         XCTAssertEqual(try? self.receipt(root, url)["status"] as? String, "accepted")
         terminated = true
@@ -172,7 +183,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
       reserveCapture: {
         reservations += 1
         return true
-      }, terminate: { XCTFail("Unexpected Quit") })
+      }, scheduleFinalization: { $0() }, terminate: { XCTFail("Unexpected Quit") })
     await coordinator.handle(try request(root, nonce: "previous-process"))
     let expired = try request(root, age: 31)
     await coordinator.handle(expired)
@@ -189,10 +200,122 @@ final class IdleRestartCoordinatorTests: XCTestCase {
       reserveCapture: {
         reservations += 1
         return true
-      }, terminate: { XCTFail("Unexpected Quit") })
+      }, scheduleFinalization: { $0() }, terminate: { XCTFail("Unexpected Quit") })
     let url = try request(root)
     await coordinator.handle(url)
     XCTAssertEqual(reservations, 0)
     XCTAssertEqual(try receipt(root, url)["reason"] as? String, "idle_lease_unavailable")
+  }
+
+  func testTypingAfterQueueingRefusesAndClosesLeaseBeforeAnyReservation() async throws {
+    let root = try fixture()
+    let composing = CaptureState()
+    let queue = FinalizationQueue()
+    var leaseFD: Int32 = -1
+    var reservations = 0
+    var terminated = 0
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        leaseFD = handle.fileDescriptor
+        return handle
+      },
+      reserveCapture: { reservations += 1; return true },
+      founderComposing: { composing.busy },
+      scheduleFinalization: { queue.actions.append($0) },
+      terminate: { terminated += 1 })
+    let first = try request(root)
+    await coordinator.handle(first)
+    XCTAssertEqual(queue.actions.count, 1)
+    XCTAssertGreaterThanOrEqual(fcntl(leaseFD, F_GETFD), 0, "lease survives async handle return")
+    XCTAssertEqual(try receipt(root, first)["status"] as? String, "checking")
+    let concurrent = try request(root)
+    await coordinator.handle(concurrent)
+    XCTAssertEqual(try receipt(root, concurrent)["reason"] as? String, "restart_in_progress")
+    XCTAssertEqual(queue.actions.count, 1)
+    composing.busy = true
+    queue.runNext()
+    XCTAssertEqual(try receipt(root, first)["reason"] as? String, "founder_composing")
+    XCTAssertEqual(fcntl(leaseFD, F_GETFD), -1)
+    XCTAssertEqual(reservations, 0)
+    XCTAssertEqual(terminated, 0)
+
+    composing.busy = false
+    let retry = try request(root)
+    await coordinator.handle(retry)
+    XCTAssertEqual(queue.actions.count, 1, "refusal releases handling for another request")
+    queue.runNext()
+    XCTAssertEqual(try receipt(root, retry)["status"] as? String, "accepted")
+    XCTAssertEqual(reservations, 1)
+    XCTAssertEqual(terminated, 1)
+  }
+
+  func testFinalizationChecksReservesAndTerminatesWithinTheSameCallback() async throws {
+    let root = try fixture()
+    let queue = FinalizationQueue()
+    var events: [String] = []
+    var leaseFD: Int32 = -1
+    let url = try request(root)
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        leaseFD = handle.fileDescriptor
+        return handle
+      },
+      reserveCapture: { events.append("reserve"); return true },
+      founderComposing: { events.append("composing"); return false },
+      scheduleFinalization: { queue.actions.append($0) },
+      terminate: {
+        XCTAssertEqual(try? self.receipt(root, url)["status"] as? String, "accepted")
+        XCTAssertGreaterThanOrEqual(fcntl(leaseFD, F_GETFD), 0)
+        events.append("terminate")
+      })
+    await coordinator.handle(url)
+    XCTAssertEqual(events, ["composing", "composing"])
+    XCTAssertEqual(queue.actions.count, 1)
+    events.removeAll()
+    queue.runNext()
+    XCTAssertEqual(events, ["composing", "reserve", "terminate"])
+    XCTAssertTrue(queue.actions.isEmpty, "successful reservation introduces no second dispatch")
+    XCTAssertGreaterThanOrEqual(fcntl(leaseFD, F_GETFD), 0, "accepted lease stays held")
+  }
+
+  func testQueuedReservationRefusalOrThrowClosesLeaseAndAllowsRetry() async throws {
+    for throwsOnReserve in [false, true] {
+      let root = try fixture()
+      let queue = FinalizationQueue()
+      var shouldRefuse = true
+      var leaseFD: Int32 = -1
+      var terminated = false
+      let coordinator = try IdleRestartCoordinator(
+        root: root, pid: 123, nonce: "generation",
+        acquireLease: {
+          let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+          leaseFD = handle.fileDescriptor
+          return handle
+        },
+        reserveCapture: {
+          if shouldRefuse && throwsOnReserve { throw CocoaError(.fileReadUnknown) }
+          return !shouldRefuse
+        },
+        scheduleFinalization: { queue.actions.append($0) },
+        terminate: { terminated = true })
+      let first = try request(root)
+      await coordinator.handle(first)
+      queue.runNext()
+      XCTAssertFalse(terminated)
+      XCTAssertEqual(fcntl(leaseFD, F_GETFD), -1)
+      XCTAssertEqual(try receipt(root, first)["reason"] as? String,
+        throwsOnReserve ? "idle_lease_unavailable" : "capture_busy_or_not_ready")
+      shouldRefuse = false
+      let retry = try request(root)
+      await coordinator.handle(retry)
+      XCTAssertEqual(queue.actions.count, 1)
+      queue.runNext()
+      XCTAssertTrue(terminated)
+      XCTAssertEqual(try receipt(root, retry)["status"] as? String, "accepted")
+    }
   }
 }
