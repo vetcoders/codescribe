@@ -295,6 +295,11 @@ struct OverlayIntercomCardIdentity: Hashable {
     self.name = name ?? conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? digit
   }
 
+  var isHumanInbox: Bool {
+    digit == "10" && conversationID == "10" && ownerID == nil
+  }
+  var displayDigit: String { isHumanInbox ? "" : digit }
+
   static func == (lhs: Self, rhs: Self) -> Bool {
     lhs.digit == rhs.digit && lhs.conversationID == rhs.conversationID && lhs.ownerID == rhs.ownerID
   }

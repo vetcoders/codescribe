@@ -419,10 +419,7 @@ struct OverlayConversationView: View {
       if conversation.channel == "0" {
         Text("0 · All")
       } else {
-        Text(
-          verbatim: conversation.channel.isEmpty
-            ? conversation.name : "\(conversation.channel) · \(conversation.name)"
-        )
+        Text(verbatim: conversation.displayTitle)
 
         if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
           Text(verbatim: descriptor)
@@ -825,7 +822,9 @@ struct OverlayConversationView: View {
       }
       HStack {
         messageFooter(message)
-        if let onReply, message.captureState != .receiving, message.withdrawn != true {
+        if !conversation.isHumanInbox, let onReply,
+          message.captureState != .receiving, message.withdrawn != true
+        {
           Spacer(minLength: 8)
           Button("Reply", systemImage: "arrowshape.turn.up.left") {
             onReply(message)

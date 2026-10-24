@@ -136,11 +136,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate func reconcile(chips: [OverlayChannelMapChip], scale: CGFloat) {
     guard !invalidated, visible, let header else { return }
     if availableHeight != screenFrame.height { availableHeight = screenFrame.height }
-    identities = chips.map {
-      OverlayIntercomCardIdentity(
-        digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
-        name: $0.name)
-    }
+    identities = intercomIdentities(state: state, chips: chips)
     // Channel reuse cannot replace the editor underneath a draft. The old
     // exact owner's open card survives as a durable detached instance.
     for identity in presentation.expanded where !identities.contains(identity) {
@@ -163,7 +159,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     // Every agent's name sizes the group, standing in it or not, so detaching
     // a fiszka or handing it back never reflows the column.
     contentMetrics = IntercomContentMetrics(
-      names: chips.map(\.name), digits: chips.map(\.digit), scale: scale)
+      names: identities.map(\.name), digits: identities.map(\.displayDigit), scale: scale)
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
@@ -313,7 +309,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     // (Astra, V3 — a 900 pt conversation must not leave a 900 pt mini). The
     // expanded frame survives untouched for restore.
     let height = OverlayIntercomWidgetLayout.controlHeight(scale: textScale.scale)
-    let width = min(stored.width, minimizedWidth(name: instance.name, digit: instance.digit))
+    let width = min(stored.width, minimizedWidth(name: instance.name, digit: instance.displayDigit))
     return OverlayIntercomWidgetLayout.cardFrame(
       below: CGRect(x: stored.maxX - width, y: stored.maxY, width: width, height: 0),
       size: CGSize(width: width, height: height), visibleFrame: visibleFrame)
@@ -480,7 +476,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     guard let conversation = state.conversations.first(where: { identity.matches($0) }),
-      conversation.owner != nil
+      conversation.owner != nil || conversation.isHumanInbox
     else { return }
     presentation.expand(identity)
     focusRevisions[identity, default: 0] &+= 1
@@ -507,7 +503,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// in its own window is still an agent (Maciej, 2026-10-23 seal: "pomija —
   /// to bardzo źle"): the wheel reaches its window too.
   func chooserTargets() -> [OverlayConversation] {
-    let agents = identities.compactMap { identity in
+    let agents = identities.filter { !$0.isHumanInbox }.compactMap { identity in
       state.conversations.first { identity.matches($0) }
     }
     return (intercomConversation(state: state, digit: "0").map { [$0] } ?? []) + agents
@@ -608,9 +604,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   private func detachIntoInstance(
     _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil
   ) -> UUID? {
-    // The broadcast channel "0" has a conversation but no owner; it is the
-    // one ownerless identity a fiszka may carry (Maciej, 2026-10-23).
-    guard identity.conversationID != nil, identity.ownerID != nil || identity.digit == "0" else {
+    // Broadcast and the human inbox have stable conversations without an
+    // agent owner; no other ownerless identity may detach.
+    guard identity.conversationID != nil,
+      identity.ownerID != nil || identity.digit == "0" || identity.isHumanInbox
+    else {
       presentation.close(identity)
       return nil
     }
@@ -893,7 +891,7 @@ private struct OverlayIntercomHeader: View {
             Button {
               controller.reopenInstance(instance.id)
             } label: {
-              Text(verbatim: "\(instance.digit) · \(instance.name)")
+              Text(verbatim: instance.displayTitle)
             }
           }
         }
@@ -947,11 +945,7 @@ private struct OverlayIntercomHeader: View {
     .background(
       OverlayIntercomWindowProjection(
         chips: chips,
-        identities: chips.map {
-          OverlayIntercomCardIdentity(
-            digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
-            name: $0.name)
-        }, controller: controller
+        identities: intercomIdentities(state: state, chips: chips), controller: controller
       )
     )
     .overlay {
@@ -1162,11 +1156,17 @@ private struct OverlayIntercomCard: View {
         controller.expand(identity)
       } label: {
         HStack(spacing: 4) {
-          OverlayIntercomStatusMark(
-            roster: roster, channel: channelRow,
-            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
-            palette: palette, hints: false)
-          Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
+          if identity.isHumanInbox {
+            Image(systemName: "tray").csFont(11)
+          } else {
+            OverlayIntercomStatusMark(
+              roster: roster, channel: channelRow,
+              kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+              palette: palette, hints: false)
+          }
+          if !identity.isHumanInbox {
+            Text(verbatim: identity.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
+          }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -1178,7 +1178,8 @@ private struct OverlayIntercomCard: View {
       )
       .simultaneousGesture(moveGesture)
       .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
-      .accessibilityLabel(Text(verbatim: identity.digit + " · " + name))
+      .accessibilityLabel(
+        Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name))
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
     } else {
       // Reuse the menu execution, but Write stays in this card.
@@ -1193,14 +1194,20 @@ private struct OverlayIntercomCard: View {
             .accessibilityLabel("Detach conversation")
         }
         HStack(spacing: 6) {
-          Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
+          if !identity.isHumanInbox {
+            Text(verbatim: identity.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
+          }
           if let channelRow, row.marks {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
           }
-          OverlayIntercomStatusMark(
-            roster: roster, channel: channelRow,
-            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
-            palette: palette)
+          if identity.isHumanInbox {
+            Image(systemName: "tray").csFont(11)
+          } else {
+            OverlayIntercomStatusMark(
+              roster: roster, channel: channelRow,
+              kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+              palette: palette)
+          }
           Button {
             controller.expand(identity)
           } label: {
@@ -1219,7 +1226,9 @@ private struct OverlayIntercomCard: View {
               : speaking ? palette.primaryText.color : palette.bodyText.color,
             hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
-          .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
+          .disabled(
+            conversation == nil
+              || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil))
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
           // Detaching needs the unrolled card, for assistive technology too.
           .accessibilityActions {
@@ -1263,7 +1272,7 @@ private struct OverlayIntercomCard: View {
       }
       .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .modifier(
-        current
+        current && !identity.isHumanInbox
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
           : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
     }
@@ -1328,29 +1337,31 @@ private struct OverlayIntercomAudioControls: View {
   var shared = false
 
   var body: some View {
-    let muted = conversation.flatMap { state.conversationPlaybackMuted($0) }
-    OverlayAgentAudioControls(
-      open: open, muted: muted,
-      microphoneEnabled: microphoneEnabled,
-      playbackEnabled: muted != nil && playbackEnabled,
-      palette: palette,
-      onMicrophone: {
-        guard let conversation else { return }
-        Task {
-          await state.toggleConversationMicrophone(conversation, preservesPresentation: true)
-        }
-      },
-      onPlayback: {
-        guard let conversation else { return }
-        Task { await state.toggleConversationPlayback(conversation) }
-      },
-      broadcast: digit == "0", speaking: speaking, broadcastEmphasis: false,
-      chrome: false,
-      diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
-      shared: shared
-    )
-    .fixedSize()
-    .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
+    if conversation?.isHumanInbox != true {
+      let muted = conversation.flatMap { state.conversationPlaybackMuted($0) }
+      OverlayAgentAudioControls(
+        open: open, muted: muted,
+        microphoneEnabled: microphoneEnabled,
+        playbackEnabled: muted != nil && playbackEnabled,
+        palette: palette,
+        onMicrophone: {
+          guard let conversation else { return }
+          Task {
+            await state.toggleConversationMicrophone(conversation, preservesPresentation: true)
+          }
+        },
+        onPlayback: {
+          guard let conversation else { return }
+          Task { await state.toggleConversationPlayback(conversation) }
+        },
+        broadcast: digit == "0", speaking: speaking, broadcastEmphasis: false,
+        chrome: false,
+        diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
+        shared: shared
+      )
+      .fixedSize()
+      .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
+    }
   }
 
   private var microphoneEnabled: Bool {
@@ -1675,13 +1686,19 @@ private struct OverlayIntercomInstanceCard: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     return HStack(spacing: 3) {
-      Text(verbatim: instance.digit).csMono(10).foregroundStyle(palette.mutedText.color)
+      if !instance.isHumanInbox {
+        Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
+      }
       if layout.tier != .icon, layout.controls.marks, let channelRow {
         OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
-      OverlayIntercomStatusMark(
-        roster: roster, channel: channelRow,
-        kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
+      if instance.isHumanInbox {
+        Image(systemName: "tray").csFont(11)
+      } else {
+        OverlayIntercomStatusMark(
+          roster: roster, channel: channelRow,
+          kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
+      }
       // Mini restores on its name; an open window is already key under the
       // click, so its name is plain text and part of the drag surface.
       if layout.tier != .icon {
@@ -1786,7 +1803,7 @@ private struct OverlayIntercomInstanceCard: View {
     // The same right-click menu as the row in the group: Show in Agents,
     // microphone, playback, archive. A detached fiszka had none.
     .modifier(
-      current
+      current && !instance.isHumanInbox
         ? roster.agentPillMenu(for: instance.digit, showsInlineError: false)
         : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
   }
@@ -1797,7 +1814,7 @@ private struct OverlayIntercomInstanceCard: View {
     -> (tier: IntercomContentTier, stacked: Bool, controls: IntercomRowControls)
   {
     let metrics = IntercomContentMetrics(
-      names: [instance.name], digits: [instance.digit], scale: scale)
+      names: [instance.name], digits: [instance.displayDigit], scale: scale)
     let windowSlots = (instance.minimized ? 26 : 48) * max(1, scale)
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
@@ -1901,4 +1918,19 @@ private func intercomConversation(state: OverlayState, digit: String) -> Overlay
     conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
     hudStates: state.channelHudStates
   ).first { $0.channel == digit }
+}
+
+/// Mailboxes share the Intercom presentation without turning the human into
+/// an agent chip, lease, chord or capture target.
+@MainActor
+func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
+  -> [OverlayIntercomCardIdentity]
+{
+  let inbox = state.conversations.first(where: \.isHumanInbox) ?? .humanInbox()
+  return [OverlayIntercomCardIdentity(digit: inbox.channel, conversation: inbox)]
+    + chips.map {
+      OverlayIntercomCardIdentity(
+        digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
+        name: $0.name)
+    }
 }

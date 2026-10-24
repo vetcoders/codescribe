@@ -1,6 +1,17 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Your Inbox" : {
+      "comment" : "The human mailbox beside agent conversations; no channel number is displayed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Twoja skrzynka"
+          }
+        }
+      }
+    },
     "The ledger did not close this take.": {
       "localizations": {
         "pl": {

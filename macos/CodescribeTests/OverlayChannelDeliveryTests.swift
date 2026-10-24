@@ -7,6 +7,73 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testHumanInboxIsEmptySelectableAndNeverAnAgentTarget() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let inbox = try XCTUnwrap(snapshot.conversations.first(where: \.isHumanInbox))
+    XCTAssertEqual(inbox.name, "Your Inbox")
+    XCTAssertEqual(inbox.displayTitle, "Your Inbox")
+    XCTAssertEqual(inbox.channel, "10", "the internal human route stays unchanged")
+    XCTAssertNil(inbox.owner)
+    XCTAssertTrue(inbox.messages.isEmpty)
+    XCTAssertEqual(
+      OverlayChannelStatusView.rosterOrder(
+        current: snapshot.conversations, channels: snapshot.deliveries
+      ).first(where: { $0.channel != "0" })?.id, inbox.id)
+    XCTAssertTrue(
+      OverlayChannelStatusView.currentConversations(
+        conversations: [inbox], archivedOwners: [], hudStates: [:]
+      ).contains(inbox))
+
+    let state = OverlayState()
+    state.applyConversationSnapshot(snapshot)
+    state.chooseConversation(inbox.id)
+    XCTAssertEqual(state.selectedConversation?.id, inbox.id)
+    XCTAssertFalse(state.canToggleConversationMicrophone(inbox))
+    XCTAssertNil(state.conversationPlaybackMuted(inbox))
+    XCTAssertFalse(state.agentGestureTargets.contains(where: \.isHumanInbox))
+    XCTAssertFalse(state.channelMapLayoutModel.chips.contains { $0.digit == "10" })
+    let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
+    let human = try XCTUnwrap(identities.first(where: \.isHumanInbox))
+    XCTAssertEqual(human.name, "Your Inbox")
+    XCTAssertEqual(human.displayDigit, "")
+    state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
+    state.publishConversationText = { _, _, _ in XCTFail("The inbox is read-only") }
+    await state.sendConversationText(inbox)
+    XCTAssertEqual(state.conversationDrafts[inbox.id], "This cannot be sent to myself")
+  }
+
+  func testHumanInboxIncludesOnlyExplicitHumanDestinationAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    for (index, destination) in ["10", "0", "2"].enumerated() {
+      var row = fixture.recipient()
+      let identity = String(repeating: String(index + 1), count: 24)
+      row["schema"] = "codescribe.agent-reply.v1"
+      row["kind"] = "agent_reply"
+      row["reply_id"] = identity
+      row["message_id"] = identity
+      row["channel"] = destination
+      row["sender"] = fixture.recipient()
+      row["recipients"] = []
+      row["association"] = "unsolicited"
+      row["text"] = destination == "10" ? "Human report" : "Your Inbox and Founder mentioned"
+      bus.consume(row)
+    }
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let inbox = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).first(where: \.isHumanInbox))
+      XCTAssertEqual(inbox.messages.map(\.text), ["Human report"])
+      XCTAssertEqual(inbox.messages.first?.sourceChannel, "10")
+      XCTAssertEqual(inbox.messages.first?.owner?.leaseID, Fixture.leaseID)
+    }
+  }
+
   func testPasteBeforeFirstWordsWaitsWithoutErrorAndDrainsOnSameCaptureProjection() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -781,6 +848,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let ada = try XCTUnwrap(
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
     XCTAssertEqual(ada.messages.map(\.text), ["Raport na skrzynkę 10"])
+    let inbox = try XCTUnwrap(conversations.first(where: \.isHumanInbox))
+    XCTAssertEqual(inbox.messages, ada.messages, "the human projection preserves author attribution")
     let message = try XCTUnwrap(ada.messages.first)
     XCTAssertEqual(
       OverlayChannelStatusView.drawerPreview(message: message),

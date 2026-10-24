@@ -2280,7 +2280,8 @@ final class OverlayState {
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates)
     return OverlayChannelStatusView.rosterOrder(
-      current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
+      current: current, channels: visibleChannelRows.filter { $0.channel != "0" }
+    ).filter { !$0.isHumanInbox }
   }
 
   private var agentListOnScreen: Bool {

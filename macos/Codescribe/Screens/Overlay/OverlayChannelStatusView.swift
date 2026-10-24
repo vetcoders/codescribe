@@ -1632,7 +1632,7 @@ struct OverlayChannelStatusView: View {
     hudStates: [String: OverlayChannelHudProjection]
   ) -> [OverlayConversation] {
     conversations.filter { conversation in
-      if conversation.channel == "0" { return true }
+      if conversation.channel == "0" || conversation.isHumanInbox { return true }
       if let owner = conversation.owner,
         archivedOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel })
       {
@@ -2051,7 +2051,7 @@ struct OverlayChannelStatusView: View {
       onSelectConversation?(conversation.id)
     } label: {
       HStack(spacing: 10) {
-        Image(systemName: saved ? "clock" : "bubble.left")
+        Image(systemName: conversation.isHumanInbox ? "tray" : saved ? "clock" : "bubble.left")
           .font(.system(size: 12))
           .foregroundStyle(palette.mutedText.color)
           .frame(width: 16)
@@ -2059,7 +2059,7 @@ struct OverlayChannelStatusView: View {
           if conversation.channel == "0" {
             Text(verbatim: broadcastHeader)
           } else {
-            Text(verbatim: "\(conversation.channel) · \(conversation.name)")
+            Text(verbatim: conversation.displayTitle)
           }
           if saved, let owner = conversation.owner {
             Text(verbatim: savedConversationDetail(conversation, owner: owner))
@@ -2115,7 +2115,8 @@ struct OverlayChannelStatusView: View {
   }
 
   var showsConnectionHint: Bool {
-    rosterReady && channels.isEmpty && !currentConversations.contains(where: { $0.channel != "0" })
+    rosterReady && channels.isEmpty
+      && !currentConversations.contains(where: { $0.owner != nil })
   }
 
   var showsRosterLoading: Bool {
@@ -2138,6 +2139,11 @@ struct OverlayChannelStatusView: View {
         .padding(.vertical, 12)
         .accessibilityIdentifier("overlay-agent-connection-hint")
       }
+      if onSelectConversation != nil,
+        let inbox = currentConversations.first(where: \.isHumanInbox)
+      {
+        conversationRow(inbox, saved: false, rowFocus: rowFocus)
+      }
       ForEach(channels) { channel in
         channelRow(channel, rowFocus: rowFocus)
       }
@@ -2146,7 +2152,8 @@ struct OverlayChannelStatusView: View {
         // Keep it visible without inventing a microphone binding.
         ForEach(
           currentConversations.filter { conversation in
-            conversation.channel != "0" && !channels.contains { $0.channel == conversation.channel }
+            conversation.channel != "0" && !conversation.isHumanInbox
+              && !channels.contains { $0.channel == conversation.channel }
           }
         ) { conversation in
           conversationRow(conversation, saved: false, rowFocus: rowFocus)
@@ -2421,14 +2428,17 @@ struct OverlayChannelStatusView: View {
       comment: "Channel row; the placeholder is the delivery state of that channel")
   }
 
-  /// Channel 0 first, then the bound channels in roster order, then any
-  /// passive current conversation the roster snapshot has not caught up with.
+  /// Channel 0 first, the human inbox, then bound channels in roster order,
+  /// followed by passive conversations the roster snapshot has not caught up with.
   static func rosterOrder(
     current: [OverlayConversation], channels: [OverlayChannelDelivery]
   ) -> [OverlayConversation] {
     var ordered: [OverlayConversation] = []
     if let zero = current.first(where: { $0.channel == "0" }) {
       ordered.append(zero)
+    }
+    if let inbox = current.first(where: \.isHumanInbox) {
+      ordered.append(inbox)
     }
     for channel in channels where channel.channel != "0" {
       if let conversation = current.first(where: { $0.channel == channel.channel }) {

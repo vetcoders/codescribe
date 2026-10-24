@@ -437,7 +437,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       var result = [
         OverlayConversation(
           id: "0", channel: "0", name: "All", owner: nil,
-          messages: broadcast)
+          messages: broadcast),
+        .humanInbox(messages: ordered.filter { $0.sourceChannel == "10" }),
       ]
       // Materialize identity strings once per row, not once per historical
       // owner comparison on every poll. These coordinates are local to this
@@ -1735,6 +1736,23 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   /// Archive metadata can advertise an owner before its bus has been read.
   /// An unopened history is not a verified empty conversation.
   var historyLoaded = true
+
+  /// The human mailbox has no agent lease, microphone or numeric shortcut.
+  /// Its internal route remains channel 10; only the presentation is named.
+  var isHumanInbox: Bool { id == "10" && channel == "10" && owner == nil }
+  var displayTitle: String {
+    isHumanInbox || channel.isEmpty ? name : "\(channel) · \(name)"
+  }
+
+  static func humanInbox(messages: [OverlayConversationMessage] = []) -> Self {
+    Self(
+      id: "10", channel: "10",
+      name: String(
+        localized: "Your Inbox",
+        comment: "The human mailbox beside agent conversations; no channel number is displayed"),
+      owner: nil, messages: messages)
+  }
+
   var replyIDs: [String] { messages.filter { $0.kind == .reply }.map(\.id) }
   func projectingDelivery(at now: Date) -> Self {
     var result = Self(

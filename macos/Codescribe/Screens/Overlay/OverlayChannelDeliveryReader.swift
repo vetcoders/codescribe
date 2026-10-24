@@ -506,7 +506,8 @@ actor OverlayChannelDeliveryReader {
         }
       }
     }
-    var named: [String: OverlayConversation] = [:]
+    // The human mailbox is selectable even before its first bus event.
+    var named: [String: OverlayConversation] = ["10": .humanInbox()]
     var all: [String: OverlayConversationMessage] = [:]
     var historyReplyIDs: Set<String> = []
     for bus in buses.keys.sorted(by: { $0.path < $1.path }) {

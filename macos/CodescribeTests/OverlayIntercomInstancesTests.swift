@@ -5,6 +5,38 @@ import XCTest
 
 @MainActor
 final class OverlayIntercomInstancesTests: XCTestCase {
+  func testHumanInboxDetachPersistsWithoutAnAgentOwnerOrDisplayedDigit() throws {
+    let suite = "CodescribeTests.human-inbox.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let inbox = OverlayConversation.humanInbox()
+    let identity = OverlayIntercomCardIdentity(digit: inbox.channel, conversation: inbox)
+    var desktop = OverlayIntercomDesktopState()
+    let instance = OverlayIntercomInstance(
+      identity: identity, frame: CGRect(x: 100, y: 100, width: 380, height: 360))
+    desktop.upsert(instance)
+    let impostor = OverlayConversation(
+      id: "unknown", channel: "10", name: "Not the inbox", owner: nil, messages: [])
+    desktop.upsert(
+      OverlayIntercomInstance(
+        identity: .init(digit: "10", conversation: impostor), frame: instance.frame))
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+    store.save(desktop)
+    let restored = store.load()
+    XCTAssertEqual(restored.instances.count, 1, "only the canonical human identity is ownerless")
+    let human = try XCTUnwrap(restored.openInstance(for: identity))
+    XCTAssertTrue(human.matches(inbox))
+    XCTAssertTrue(human.ownerID.isEmpty)
+    XCTAssertEqual(human.displayDigit, "")
+    XCTAssertEqual(human.displayTitle, "Your Inbox")
+    XCTAssertTrue(restored.groupRows(of: [identity]).isEmpty)
+    var closed = human
+    closed.closed = true
+    desktop = restored
+    desktop.upsert(closed)
+    XCTAssertEqual(desktop.groupRows(of: [identity]), [identity])
+  }
+
   private func identity(
     _ name: String, channel: String, lease: String
   ) throws -> OverlayIntercomCardIdentity {
