@@ -52,7 +52,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "Hover.manual")) as? FloatingOverlayPanel)
     panel.setFrameOrigin(NSPoint(x: 900, y: 500))
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       panel.orderOut(nil)
       panel.invalidatePresence()
@@ -111,7 +111,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     let host = FirstMouseHostingView(rootView: Harness(model: model))
     host.sizingOptions = []
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       model.presented = nil
       panel.orderOut(nil)
@@ -159,7 +159,7 @@ final class OverlayHoverInteractionTests: XCTestCase {
     let host = FirstMouseHostingView(rootView: Harness(model: model, opensDetails: true))
     host.sizingOptions = []
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer {
       model.presented = nil
       panel.orderOut(nil)
@@ -207,6 +207,51 @@ final class OverlayHoverInteractionTests: XCTestCase {
       XCTAssertLessThanOrEqual(model.hint.maxY, model.anchor.minY - 12)
       XCTAssertEqual(model.hint.midX, model.anchor.midX, accuracy: 0.5)
     }
+  }
+
+  func testNarrowRailHoverHintEscapesScrollClipOverTheDocument() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let host = NSHostingView(
+      rootView: HStack(spacing: 0) {
+        Color.clear
+        OverlayIntentRail(
+          phase: "formatted", intents: [.insertPaste, .copy], palette: .dark, onIntent: { _ in }
+        )
+        .frame(width: 52)
+      })
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 300, y: 200, width: 500, height: 550),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.contentView = OverlayContentContainer(hosting: host)
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    settle(host)
+    let button = try XCTUnwrap(
+      NativeAccessibilityProbe.waitForElements("overlay-intent-insert-paste").elements.first)
+    let screenTop = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+    let screenPoint = NSPoint(
+      x: button.x + button.width / 2, y: screenTop - button.y - button.height / 2)
+    let point = panel.convertPoint(fromScreen: screenPoint)
+    panel.sendEvent(
+      try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: .mouseMoved, location: point, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 0, pressure: 0)))
+    settle(host)
+    let hint = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertTrue(hint.parent === panel)
+    XCTAssertTrue(hint.ignoresMouseEvents)
+    XCTAssertGreaterThan(hint.frame.width, 52, "the full label exceeds the narrow rail")
+    XCTAssertLessThanOrEqual(hint.frame.maxX, button.x - OverlayHintPanel.gap + 1)
+    let regions = panel.menuCursorRegions.allObjects.compactMap {
+      $0 as? OverlayMenuCursorRegionView
+    }
+    let region = try XCTUnwrap(regions.first { $0.onHover != nil && $0.hovered })
+    region.updateHover(at: nil)
+    XCTAssertNil(OverlayHintPanel.shared.presentedPanel)
   }
 
   private func click(_ panel: NSPanel, host: NSView, anchor: CGRect) {

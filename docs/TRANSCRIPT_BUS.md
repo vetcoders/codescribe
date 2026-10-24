@@ -60,8 +60,8 @@ Voice evidence `apply_manual_edit` / `apply_user_revision` for the held
 receipts prevent resurrection during cursor replay; original messages and
 controls remain source history. Controls for unknown, already delivered or
 hold-disabled identities are ignored with one stderr line. Broadcast policy
-`off` is evaluated before parking (one skip receipt, no held row); `quiet`
-holds normally and later lands without a wake.
+`off` is evaluated before parking (one skip receipt, no held row); the moon
+(`quiet`) holds normally and later lands without a wake.
 
 Attach, status and `--read-pending` receipts expose only
 `"held": [{"identity": "…", "hold_until": "…"}]` beside `broadcast`, never held
@@ -85,6 +85,96 @@ that channel's previous occupant. Archive metadata identifies an owner and bus
 path, not proof that the text was loaded or read. An empty unread mailbox is not
 an empty history. Reading history neither ACKs another lease nor makes old
 requests fresh commands.
+
+## Agent panel focus
+
+A click on an agent row asks that agent's own follower to bring its vc-frame
+pane, or its iTerm2 or Terminal.app tab, to the Founder's focus. The app never
+drives the terminal; the follower was spawned from the agent's pane or tab and
+inherits its coordinates. A Codex agent's thread in the Codex app is the one
+destination the app opens itself, from the lease alone (see
+[Agent panel focus in Frame or a terminal tab](#agent-panel-focus-in-frame-or-a-terminal-tab)).
+
+At start the follower records them in its lease as `frame`: `session`,
+`pane_id`, `socket_dir`, `host_bundle_id` (`__CFBundleIdentifier`),
+and `host_pid` (from `ALACRITTY_SOCKET` / `ALACRITTY_LOG`). `frame` is `null`
+for an agent outside vc-frame. A follower that predates this contract reports
+no `frame` until it is restarted. The address comes from the owner's own pane
+(`VC_FRAME_PANE_ID`, `VC_FRAME_SESSION_NAME`, `VC_FRAME_SOCKET_DIR`, with the
+`ZELLIJ_*` names as fallback), the exported Vibecrafted contract.
+
+Beside `frame` the lease records `terminal`, the iTerm2 or Terminal.app tab
+hosting the agent: `host` (`iterm2` or `apple-terminal`), `host_bundle_id`
+(`com.googlecode.iterm2` or `com.apple.Terminal`), `tty` (a `/dev/ttys…`
+path, or `null`) and `session_id` (the UUID after the colon of iTerm2's
+`ITERM_SESSION_ID` / `TERM_SESSION_ID`, which is AppleScript's `id of session`; `null` for Terminal.app). The host comes from `__CFBundleIdentifier`,
+then `TERM_PROGRAM` (`iTerm.app`, `Apple_Terminal`); any other host, vc-frame's
+own terminal or an editor's included, leaves `terminal` `null`. A non-Claude
+follower takes it from the environment it inherited at attach and the tty of
+the nearest process in its ancestry that has one. A Claude Code follower
+resolves it from the session's processes with the same discovery as the pane
+(session files, daemon roster, ancestors, attached clients, PTY coupling) and
+refreshes it with the pane; a daemon worker's own tree is skipped because it
+inherits whichever terminal started the daemon. The tty and the iTerm2
+session id are local identifiers: they are written to the lease only and
+never to a bus row.
+
+A Codex follower also records `codex`, its thread in the Codex desktop app
+(installed as ChatGPT.app): `thread_id` (the `provider_session_id`, the id
+the lease and the channel binding already carry), `app_bundle_id`
+(`com.openai.codex`), `rollout` and `remote`. `rollout` is true when the local
+Codex store under `$CODEX_HOME` (default `~/.codex`) holds the thread's
+rollout, `sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` or the same name
+(also `.jsonl.zst`) in `archived_sessions/`; the walk visits the newest date
+directories first and is bounded. A found rollout is re-checked by path on
+every heartbeat, a missing one is searched again at most every 30 seconds, so
+a thread whose rollout appears later becomes openable. `remote` is true when
+a process in the follower's ancestry is a `codex … exec-server --remote …`,
+the Codex Cloud exec-server. Every other provider writes `codex: null`. The
+object adds no new identifier and holds no credential.
+
+The program is not part of the address. Each click runs the public `vc-frame`
+resolved on PATH at that moment (contract of the Vibecrafted maintainer,
+2026-10-19). `VIBECRAFTED_VC_FRAME_BIN` pins Vibecrafted's internal engine and
+is not a fallback; with no `vc-frame` on PATH the click answers `error`.
+
+The request is a row on the agent's bus, schema
+`codescribe.agent-panel-focus.v1`, `kind` `focus_agent_panel`, with
+`request_id` (24 lowercase hex), `emitted_at`, the exact `provider`,
+`provider_session_id`, `lease_id`, `bus` and `channel` of the agent, and
+`source` (`overlay_click`). It carries no text, status or capture coordinates.
+The owning follower acts once per `request_id`, with a known pane first: it
+runs `vc-frame action focus-pane-id terminal_<pane_id>` (vc-frame switches to
+the pane's tab first). Without a pane and with a known `terminal` it runs one
+`/usr/bin/osascript` (5-second timeout, no stdin): in iTerm2 it selects the
+window, tab and session whose `id` is `session_id`, or whose `tty` is `tty`
+when there is no id, and activates iTerm2; in Terminal.app it selects the tab
+whose `tty` matches, makes its window frontmost and activates Terminal. The
+session id and tty are script arguments, never spliced into the script text.
+It neither wakes the model nor touches the mailbox. A request older than 15
+seconds is a replayed backlog and is answered `stale` without focusing.
+
+The script is an Apple event from the follower, whose responsible process is
+the agent's own terminal. A terminal controlling itself normally raises no
+Automation prompt; when macOS refuses (`-1743`, "not allowed to send Apple
+events") the receipt is `automation_denied` and the user allows it in System
+Settings › Privacy & Security › Automation.
+
+The follower answers on the same bus with
+`codescribe.agent-panel-focus-result.v1`, `kind` `agent_panel_focus_result`:
+the same `request_id`, its own `provider`/`provider_session_id`/`lease_id`,
+`emitted_at`, `status` (`focused`, `already_focused`, `pane_missing`,
+`terminal_missing`, `automation_denied`, `no_frame`, `stale` or `error`),
+`exit_code` (integer or `null`), `elapsed_ms`, `target` (`frame`, `iterm2`,
+`terminal`, or `null` when neither is known), `frame` (`session`, `pane_id`,
+`host_bundle_id`, `host_pid`, or `null`) and `terminal` (`host`,
+`host_bundle_id`, `tty`, or `null`; never the iTerm2 session id).
+`terminal_missing` means the script ran and no tab matched; `no_frame` means
+the follower knows neither a pane nor a tab (the name is kept for older
+readers). Activating the host stays with the app on `focused` /
+`already_focused`: the click is its user action. A Frame receipt activates the
+Frame host; a terminal receipt without `frame` activates
+`terminal.host_bundle_id`. Both rows pass through `codescribe bus append-event`, which refuses any other shape.
 
 ## Conversational read receipt
 
@@ -157,7 +247,8 @@ event publication with the same delivery IDs. The follower and policy-release
 writers serialize each complete NDJSON frame in the follower event sidecar,
 including partial kernel writes. A remote retry requires a bounded source-side read with
 current bus, pending and wakeup-policy admission before client submission:
-quiet suppresses all wakeups, and channel-zero off suppresses broadcasts only.
+the moon (`quiet`) suppresses all wakeups, and channel-zero off suppresses
+broadcasts only; the two are independent.
 Remote status exposes local monitor and queue state; explicit retries
 execute on the client. A missing or interrupted relay leaves the remote mailbox
 intact and requires the existing watch to be resumed.
@@ -282,7 +373,11 @@ session lacked an end line.
 `start_superseded` when a key-up or reschedule invalidated a hold start after
 `session_started` and before the take became an active recording, and
 `start_failed` when the recorder could not be started after the session was
-announced. App refusal, stop timeout, and forced recovery use
+announced, and `chord_prefix` when an admitted hold on the agent-channel
+modifier turned out to be the prefix of a channel digit chord (see
+`docs/HOTKEYS_CONTRACT.md`): its capture is discarded, nothing is delivered or
+archived, and the terminal line carries phase `no_speech` with every action
+flag off. App refusal, stop timeout, and forced recovery use
 `transcription_failed`; returning the recorder to Idle does not imply transcript
 success. CLI file sessions use `transcription_failed` when decoding or
 stream output fails after publishing a draft; the partial text is never sealed
@@ -1128,24 +1223,36 @@ The receipt schema is `codescribe.broadcast-policy.v1`:
   "provider_session_id": "SESSION_ID",
   "lease_id": "<32 lowercase hex>",
   "bus": "<resolved leased bus path>",
-  "policy": "quiet",
+  "policy": "off",
+  "quiet": true,
   "emitted_at": "<utc>"
 }
 ```
 
-- `on`: queue deliveries and wake normally (the default).
-- `quiet`: queue them in the existing pending mailbox without follower output,
-  native queue submission, seal hook or waiter completion. On the next natural
-  turn, `--read-pending` includes them and the agent ACKs only what it read.
-  Steer is global (Maciej, 2026-10-17): quiet applies to every delivery —
-  channel-zero broadcasts, directs and peer-to-peer alike — so an unticked
-  Steer means "nothing wakes me; everything waits in my mailbox".
-- `off`: do not queue a new broadcast; append an idempotent `broadcast_skipped`
-  row with delivery identity, `origin_channel: "0"` and `policy: "off"` to the
-  existing follower events stream. A skip is not an ACK marker and contains no
-  transcript text. There is nothing to acknowledge. Off stays broadcast-only:
-  a direct or peer delivery to an `off` lease queues and wakes as `on`, so
-  leaving channel 0 never cuts the agent off from addressed words.
+The receipt carries two independent axes (Maciej, 2026-10-23: "księżyc niech
+routuje tym, czy może go do ciebie napisać, a broadcast niech routuje tym,
+czy jest ten agent dostępny na kanale 0"):
+
+- `policy` — channel-0 membership, `on` or `off`. `off`: do not queue a new
+  broadcast; append an idempotent `broadcast_skipped` row with delivery
+  identity, `origin_channel: "0"` and `policy: "off"` to the existing follower
+  events stream. A skip is not an ACK marker and contains no transcript text.
+  There is nothing to acknowledge. Off stays broadcast-only: a direct or peer
+  delivery to an `off` lease still queues, so leaving channel 0 never cuts the
+  agent off from addressed words.
+- `quiet` — the moon ("tryb księżyc", do not disturb), `true` or `false`.
+  Lit, every delivery from every channel — broadcasts, the Founder's directs
+  and peer-to-peer alike — queues in the existing pending mailbox without
+  follower output, native queue submission, seal hook or waiter completion.
+  On the next natural turn, `--read-pending` includes them and the agent ACKs
+  only what it read. The moon does not need channel 0: an agent in a meeting
+  lights it and keeps its membership, or sits off channel 0 with the moon lit.
+
+Every combination is legal. Readers that want the one word a broadcast meets
+get `off` (not a member), `quiet` (member, moon lit) or `on`; a direct meets
+`quiet` or `on` from the moon alone. A receipt written before the split
+spelled the lit moon as `"policy": "quiet"` without a `quiet` field; it still
+reads as on channel 0 with the moon lit.
 
 Missing files mean `on`. Invalid, foreign or unreadable receipts log a warning
 and also mean `on`: unlike playback mute's fail-closed silence, policy fails
@@ -1153,16 +1260,21 @@ open so damaged state never silently disconnects an agent. Typed Founder,
 spoken channel-zero and peer broadcasts all use the same policy gate; direct
 channel/name deliveries pass through only quiet, never off. Previously queued
 messages are retained when the policy changes; already submitted provider
-wakeups cannot be recalled by changing this preference. Switching back to `on`
-delivers what queued while quiet: the Claude/OMP waiter's unread poll surfaces
+wakeups cannot be recalled by changing this preference. Clearing the moon
+delivers what queued under it: the Claude/OMP waiter's unread poll surfaces
 the rows by itself, and for a codex lease the policy write resubmits the
 pending seals to the native queue once.
 
-`cs-bus --broadcast on|quiet|off --provider P --session S [--bus B]` validates
-the lease before atomically writing the receipt. The omitted bus is resolved
-from that lease. Followers read the receipt per delivery without restart or
-reattachment. Attach, pending reads and status include `broadcast.policy` next
-to `playback`. Typed and peer publisher receipts report each recipient's
+`cs-bus --broadcast on|off --quiet on|off --provider P --session S [--bus B]`
+validates the lease before atomically writing the receipt; each flag moves its
+own axis and leaves the other as the receipt had it, and the app always sends
+both. `--broadcast on|quiet|off` alone keeps its pre-split one-knob meaning
+(`quiet` = member with the moon lit; `on` and `off` clear the moon) for callers
+that know only that flag. The omitted bus is resolved from that lease.
+Followers read the receipt per delivery without restart or reattachment.
+Attach, pending reads and status include `broadcast.policy` (the word a
+broadcast meets), `broadcast.membership` and `broadcast.quiet` next to
+`playback`. Typed and peer publisher receipts report each recipient's
 `broadcast` policy, but still publish every admitted copy, including `off`;
 the follower is the delivery authority. Sender snapshots are informational,
 not a promise against a policy switch while the publication is in flight.
@@ -1266,7 +1378,17 @@ channel feed. External speech reports its actual outcome in a distinct
 `agent_reply_playback` event. Reply text itself is published before synthesis;
 its initial `spoken: false` is not evidence of a failed or completed playback.
 The helper admits playback only after the existing capture interlock proves
-idle, and stops its own player when a take starts.
+idle, and stops its own player when a take starts. An open channel does not
+block a reply by itself: the app publishes its measured speech phase in
+`runtime/channel-speech-<digit>.json`. A `fresh` session (no speech since it
+opened, e.g. the reopen after a silence seal) admits any reply after 1 s.
+A `quiet` session (speech, then silence, inside the same take) admits only
+the reply of the agent bound to that channel: a pause in a message to one
+agent is not room for another, which waits for that take to seal. Quiet is
+measured again from the end of the previous reply. While a reply plays, the
+speaker announces it in `runtime/agent-playback-now.json` and the app drops
+all channel PCM (half-duplex); a key take, a channel opened during the reply
+or measured speech stops it.
 
 ## Durable replies and exact speech controls
 
@@ -1353,21 +1475,30 @@ selection. Routine roster polling does not override manual review. Simultaneous
 new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
-The delivery observer's restart cache is
-`runtime/overlay-delivery-cursor.v1.json`. Live snapshots consume bus evidence
-and verified receipt metadata immediately; persistence is a separate checkpoint.
-The first changed snapshot saves once, and later changes across all buses share
-one atomic save after 30 seconds since the last successful checkpoint, or when
-one bus has advanced by at least 8 MiB. The byte threshold triggers a checkpoint
-after a read; it does not lower the existing 64 MiB per-read budget. Continuous
-activity cannot postpone the time deadline. Unchanged polls do not write.
+The delivery observer's restart cache is the directory
+`runtime/overlay-delivery-cursor/`. Each bus is one cache unit (its cursor plus
+its conversation projection) in its own owner-only JSON file, named by a digest
+of the bus path; the file also records that path. Live snapshots consume bus
+evidence and verified receipt metadata immediately; persistence is a separate
+checkpoint. The first changed snapshot saves once, and later changes across all
+buses share one checkpoint after 30 seconds since the last successful
+checkpoint, or when one bus has advanced by at least 8 MiB. The byte threshold
+triggers a checkpoint after a read; it does not lower the existing 64 MiB
+per-read budget. Continuous activity cannot postpone the time deadline.
+A checkpoint encodes and writes only the units whose bus changed since their
+last successful save, each atomically (temporary file, fsync, rename);
+unchanged units keep their files, and unchanged polls do not write at all.
 
-Each checkpoint pairs its projection with a cursor before any unfinished row
-or storage transaction. Restart replays the suffix after that cursor. A failed
-save preserves the previous file and retries the dirty state on the next poll.
-The existing 128 MiB cache budget evicts whole projection/cursor units; an
-evicted unit returns to the bounded cold-tail path. This cache never advances
-the agent mailbox cursor, acknowledges delivery, or establishes transcript truth.
+Each unit pairs its projection with a cursor before any unfinished row or
+storage transaction. Restart replays the suffix after that cursor. A failed
+save keeps the previous file of every unit it did not replace and retries the
+dirty state on the next poll. The existing 128 MiB cache budget, counted
+across all unit files, evicts whole units, largest projection first; an
+evicted unit, or the unit of a bus no longer in use once more than 16 are
+cached, loses its file and returns to the bounded cold-tail path. The earlier
+single file `runtime/overlay-delivery-cursor.v1.json` is never read; the first
+successful save deletes it. This cache never advances the agent mailbox cursor,
+acknowledges delivery, or establishes transcript truth.
 
 ## C11 evidence boundary
 
@@ -1375,6 +1506,59 @@ the agent mailbox cursor, acknowledges delivery, or establishes transcript truth
 `d57196ab`. C11 is the next structural executable cut; its actual commit hash is
 recorded only in the durable C11 report. Compiler, tests, runtime, app, install,
 and release behavior are `NOT_ASSESSED` under the C11 embargo.
+
+## Attachments bound to a live channel take
+
+The overlay stages files against the displayed capture evidence, using
+`cs-bus --stage-capture-attachment --capture-session ID --capture-epoch EPOCH --capture-source-sequence SEQUENCE --bus ABS --attach-file PATH` (repeat the
+last option for more files). Sequence zero is valid. A channel digit, current
+focus or latest text is never a substitute for the exact session and epoch.
+
+The Rust append owner validates that the capture remains open and the source
+sequence names an exact retained evidence row. Continued speech may advance the
+latest sequence, revision or occurrence while a paste is in flight; that does
+not retarget or invalidate the selected row. A changed epoch, frozen audience
+or recipient set, and closed capture evidence still refuse admission. Sealing
+one ledger segment does not close an otherwise open channel capture.
+It copies the selected source occurrence
+coordinates and frozen audience/recipients, then acquires every recipient bus's
+normal append lease in sorted order. It validates the same source on every bus
+before writing `codescribe.capture-attachment.v1` pending receipts. Only after
+all pending writes are durable does it append the exact
+`codescribe.capture-attachment-commit.v1` marker to the selected primary bus.
+Readers ignore pending pointers without this commit. A partial write therefore
+cannot authorize a partial broadcast; an idempotent stage ID permits an
+open-target retry. Closed or changed targets refuse and retain the UI's files.
+
+The follower preserves committed pointers across revisions/restart and adds
+structured `attachments` plus readable pointer lines to the same sealed voice
+envelope. It never emits a separate typed message or resolves new recipients.
+The overlay projects the pointers on the same capture bubble; secondary history
+resolves the named primary commit through its existing generation reader. The
+transcript reducer's document is unchanged. Files pasted before evidence exists
+wait without an error. The read-only opening receipt and frozen recipients bind
+that wait to a capture already open at paste time. Its first matching evidence
+automatically drains the files through the same append owner. A successor take
+cannot inherit the files. Retry retains an already-bound exact segment; it does
+not choose the latest occurrence or a new audience. The follower retains source
+coordinates across revisions and restart, so continued speech cannot drop a
+committed image from the final voice envelope. This segment association does
+not yet supply the exact audio sample corresponding to the paste gesture.
+
+## Overlay draft dictation and Reply
+
+The conversation composer's microphone uses the existing shared controller's
+single-turn composer capture and its admitted handle. Explicit Stop addresses
+only that handle. Delivered text joins the original conversation's editable
+draft, retaining its files and edits after navigation. It never auto-sends.
+Terminal projections and identified terminal status release that take; late
+projections still retain their original destination.
+
+Bubble Reply selects a bounded `{message_id, author, text}` reference. Clearing
+it leaves the draft intact; selecting the quote navigates to the retained
+parent. `--send-text --user-reply-to JSON` publishes it as `user_reply_to` on the
+actual user message and its queue envelope. It is separate from the agent's
+`reply_to` delivery receipt and carries no capture authority.
 
 ## Written messages from agent conversations
 
@@ -1541,3 +1725,54 @@ The overlay reader ignores archive metadata while that exact owner remains
 bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
+
+## Agent panel focus in Frame or a terminal tab
+
+Each agent row resolves one destination for its focus button
+(`overlay-focus-panel-CHANNEL`, unchanged): the Frame pane when the roster
+reports `frame_detected` and a compatible `vc-frame` is installed (below),
+otherwise the iTerm2 or Terminal.app tab when it reports `terminal_detected`
+(the lease's `terminal.host_bundle_id` is non-empty), otherwise a Codex
+agent's thread in the Codex app when it reports `codex_thread_url` with
+`codex_thread_local` true. A Frame or terminal button shows only for a live
+follower; its help reads **Focus agent panel in Frame** or **Show the agent's
+terminal tab**, with the `terminal` symbol for a tab. `vc-frame` capability
+gates only the Frame destination.
+
+The Codex thread is the one destination the app reaches itself. The roster
+reads the lease's `codex` object without the heartbeat filter (the newest
+lease of the provider session wins; an id outside 8–128 letters, digits, `-`
+and `_` is dropped) and builds `codex://threads/<thread_id>` in one place,
+`ChannelHudState.codex_thread_url`. A click opens that URL with
+`NSWorkspace`: the Codex app activates and shows the thread, without
+AppleScript and without an Automation permission. No
+`codescribe.agent-panel-focus.v1` row is written and no follower acts. This
+is a deliberate exception to "the follower acts": opening a URL is not
+driving a terminal, and Codex app followers are usually dead between turns,
+so the button stays enabled while the row is dimmed as **Disconnected**. Its
+help reads **Show the agent's Codex thread**; the row answers at once with
+**Codex thread opened** or **Could not open the agent's Codex thread**.
+
+The link resolves against the Codex app's local thread store. A Codex Cloud
+thread has no local rollout (`codex_thread_local` false) and its link ends in
+the app's own "no rollout found for thread id" error, so with no Frame pane
+or terminal tab its button is shown greyed with **Codex Cloud thread: open it
+in ChatGPT** instead of failing on click.
+
+The overlay drawer starts fail-closed and renders **Focus agent panel in Frame**
+only after a public `vc-frame` command on `PATH`
+(or on the user's non-interactive `zsh` `PATH` when a `launchd`-spawned GUI
+process inherits only `/usr/bin:/bin:/usr/sbin:/sbin` and `$HOME/.zshenv` or
+`$HOME/.zprofile` is present) is verified to support
+`vc-frame action focus-pane-id <PANE_ID>`. Capability detection probes
+`vc-frame action focus-pane-id --help` with session and socket variables
+stripped. Positive results are memoized by the executable and wrapper-target
+file stamps so older compatible `vc-frame` releases and current releases are
+both accepted without version-string equality, focus changes, or session side
+effects, while negative results are never cached so repairing a missing wrapper
+dependency restores availability on the next poll without restarting Codescribe.
+Literal `~/.local/bin` fallbacks and `VIBECRAFTED_VC_FRAME_BIN` are never used.
+When a compatible `vc-frame` is absent or unsupported, the Frame destination is
+excluded and only a known terminal tab can still offer the button; when a
+destination exists and a channel's follower is disconnected, the button
+remains rendered and disabled.

@@ -30,10 +30,13 @@ enum CloudPrivacyCopy {
     let lines: [String]
   }
 
-  // MARK: - Cloud status
+  // MARK: - Data processing
 
+  /// Wider than "cloud": the card sits above both audio and text egress
+  /// (Founder review, round 2, 2026-10-20).
   static let statusHeading = String(
-    localized: "Cloud status", comment: "Privacy section: current cloud lane and stored consent")
+    localized: "Data processing",
+    comment: "Privacy section: the selected recognition mode and the stored consent")
 
   /// Row label for the selected recognition mode. The value is the mode label
   /// the Engine picker shows, read from the view model.
@@ -144,10 +147,12 @@ enum CloudPrivacyCopy {
       lines: [localPowerInstall]),
   ]
 
-  /// One discreet action instead of a prose pointer. It deep-links to
-  /// Providers › Cloud transcription through `SettingsDeepLink`, which the
-  /// open Settings window consumes — the link is live, not decorative.
+  /// The one entry point from Privacy to the cloud configuration, which stays
+  /// in Providers. It deep-links to Providers › Cloud transcription through
+  /// `SettingsDeepLink`, which the open Settings window consumes and scrolls
+  /// to the section — the link is live, not decorative.
   static let configureCloudServices = String(
-    localized: "Configure cloud services",
-    comment: "Privacy action: opens Providers > Cloud transcription")
+    localized: "Set up the cloud in Providers",
+    comment:
+      "Privacy action: opens Providers > Cloud transcription; Providers is the Settings section name")
 }

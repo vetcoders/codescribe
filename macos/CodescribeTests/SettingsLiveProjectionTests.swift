@@ -88,8 +88,9 @@ final class SettingsLiveProjectionTests: XCTestCase {
     XCTAssertEqual(settings.whisperModelCatalog?.loaded, SyntheticWhisperRuntime.resolved)
     XCTAssertTrue(settings.whisperResidencySettled)
     XCTAssertEqual(
-      DictationWhisperModelTab.residencyLabel(settings.whisperModelCatalog),
-      DictationWhisperModelTab.residencyLabel(.sample),
+      DictationWhisperModelTab.modelStatus(available: true, catalog: settings.whisperModelCatalog)
+        .label,
+      DictationWhisperModelTab.modelStatus(available: true, catalog: .sample).label,
       "the open picker must say the model is loaded without reopening Settings")
   }
 

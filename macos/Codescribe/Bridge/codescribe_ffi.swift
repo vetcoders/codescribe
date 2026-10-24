@@ -1765,6 +1765,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func testApiKey(account: String) throws  -> CsApiKeyProbeResult
 
     /**
+     * Settings › Formatting › Test: format `sample` once through the live
+     * formatter path (empty `sample` sends the built-in raw transcript).
+     * Blocks for up to the live deadline; Swift calls it off MainActor.
+     */
+    func testFormatting(sample: String) throws  -> CsFormattingProbe
+
+    /**
      * Lightweight tray-only settings read uses files, env and cached credentials.
      * It never prompts just because the user opened the menu. Projects from one
      * keychain-free runtime snapshot.
@@ -2571,6 +2578,20 @@ open func testApiKey(account: String)throws  -> CsApiKeyProbeResult  {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_test_api_key(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(account),$0
+    )
+})
+}
+
+    /**
+     * Settings › Formatting › Test: format `sample` once through the live
+     * formatter path (empty `sample` sends the built-in raw transcript).
+     * Blocks for up to the live deadline; Swift calls it off MainActor.
+     */
+open func testFormatting(sample: String)throws  -> CsFormattingProbe  {
+    return try  FfiConverterTypeCsFormattingProbe_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_test_formatting(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sample),$0
     )
 })
 }
@@ -6441,6 +6462,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
     func onShowAgent()
 
     /**
+     * Show the collapsed overlay widget, or hide it while nothing records.
+     * UI-only — the overlay decides between show, front and hide.
+     */
+    func onToggleWidget()
+
+    /**
      * Pending Max permission state changed; re-read its authoritative snapshot.
      */
     func onMaxApprovalsChanged()
@@ -6516,6 +6543,17 @@ open func onShowAgent()  {try! rustCall() {
 }
 
     /**
+     * Show the collapsed overlay widget, or hide it while nothing records.
+     * UI-only — the overlay decides between show, front and hide.
+     */
+open func onToggleWidget()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_toggle_widget(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+    /**
      * Pending Max permission state changed; re-read its authoritative snapshot.
      */
 open func onMaxApprovalsChanged()  {try! rustCall() {
@@ -6577,6 +6615,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onShowAgent(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onToggleWidget: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onToggleWidget(
                 )
             }
 
@@ -9756,6 +9816,28 @@ public struct CsChannelRosterState: Equatable, Hashable {
      */
     public var followerAlive: Bool?
     /**
+     * Whether the live follower's lease names a vc-frame pane; `None` = no
+     * live follower or no claim. Off means the Frame focus control is idle.
+     */
+    public var frameDetected: Bool?
+    /**
+     * Whether the live follower's lease names an iTerm2 or Terminal.app tab;
+     * `None` = no live follower or no claim. Off means the terminal focus
+     * control is idle.
+     */
+    public var terminalDetected: Bool?
+    /**
+     * `codex://threads/<id>` of a Codex follower's thread in the Codex app,
+     * known from its lease whether or not the follower is alive; the app
+     * opens it itself. `None` = no thread known.
+     */
+    public var codexThreadUrl: String?
+    /**
+     * Whether the local Codex store holds that thread, so the link opens;
+     * `Some(false)` is a Codex Cloud thread. `None` with no thread.
+     */
+    public var codexThreadLocal: Bool?
+    /**
      * Milliseconds since the Unix epoch of the live follower's oldest
      * unacknowledged delivery; `None` = no backlog or no follower. The
      * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9776,6 +9858,24 @@ public struct CsChannelRosterState: Equatable, Hashable {
          * `None` = the snapshot made no liveness claim for this row.
          */followerAlive: Bool?,
         /**
+         * Whether the live follower's lease names a vc-frame pane; `None` = no
+         * live follower or no claim. Off means the Frame focus control is idle.
+         */frameDetected: Bool? = nil,
+        /**
+         * Whether the live follower's lease names an iTerm2 or Terminal.app tab;
+         * `None` = no live follower or no claim. Off means the terminal focus
+         * control is idle.
+         */terminalDetected: Bool? = nil,
+        /**
+         * `codex://threads/<id>` of a Codex follower's thread in the Codex app,
+         * known from its lease whether or not the follower is alive; the app
+         * opens it itself. `None` = no thread known.
+         */codexThreadUrl: String? = nil,
+        /**
+         * Whether the local Codex store holds that thread, so the link opens;
+         * `Some(false)` is a Codex Cloud thread. `None` with no thread.
+         */codexThreadLocal: Bool? = nil,
+        /**
          * Milliseconds since the Unix epoch of the live follower's oldest
          * unacknowledged delivery; `None` = no backlog or no follower. The
          * overlay's "alive but not reading" layer: a process heartbeat proves
@@ -9789,6 +9889,10 @@ public struct CsChannelRosterState: Equatable, Hashable {
         self.loud = loud
         self.autosealDeadlineUnixMs = autosealDeadlineUnixMs
         self.followerAlive = followerAlive
+        self.frameDetected = frameDetected
+        self.terminalDetected = terminalDetected
+        self.codexThreadUrl = codexThreadUrl
+        self.codexThreadLocal = codexThreadLocal
         self.unreadSinceUnixMs = unreadSinceUnixMs
     }
 
@@ -9814,6 +9918,10 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
                 loud: FfiConverterBool.read(from: &buf),
                 autosealDeadlineUnixMs: FfiConverterOptionInt64.read(from: &buf),
                 followerAlive: FfiConverterOptionBool.read(from: &buf),
+                frameDetected: FfiConverterOptionBool.read(from: &buf),
+                terminalDetected: FfiConverterOptionBool.read(from: &buf),
+                codexThreadUrl: FfiConverterOptionString.read(from: &buf),
+                codexThreadLocal: FfiConverterOptionBool.read(from: &buf),
                 unreadSinceUnixMs: FfiConverterOptionInt64.read(from: &buf)
         )
     }
@@ -9827,6 +9935,10 @@ public struct FfiConverterTypeCsChannelRosterState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.loud, into: &buf)
         FfiConverterOptionInt64.write(value.autosealDeadlineUnixMs, into: &buf)
         FfiConverterOptionBool.write(value.followerAlive, into: &buf)
+        FfiConverterOptionBool.write(value.frameDetected, into: &buf)
+        FfiConverterOptionBool.write(value.terminalDetected, into: &buf)
+        FfiConverterOptionString.write(value.codexThreadUrl, into: &buf)
+        FfiConverterOptionBool.write(value.codexThreadLocal, into: &buf)
         FfiConverterOptionInt64.write(value.unreadSinceUnixMs, into: &buf)
     }
 }
@@ -10616,6 +10728,98 @@ public func FfiConverterTypeCsEnergyCalibrationReport_lift(_ buf: RustBuffer) th
 #endif
 public func FfiConverterTypeCsEnergyCalibrationReport_lower(_ value: CsEnergyCalibrationReport) -> RustBuffer {
     return FfiConverterTypeCsEnergyCalibrationReport.lower(value)
+}
+
+
+/**
+ * One Settings › Formatting › Test request, measured. `status` is one of
+ * `applied`, `unchanged`, `skipped`, `failed`, `timed_out`. Never a secret.
+ */
+public struct CsFormattingProbe: Equatable, Hashable {
+    public var status: String
+    public var input: String
+    public var output: String
+    public var elapsedMs: UInt64
+    /**
+     * The live formatter job's deadline the request had to meet.
+     */
+    public var deadlineMs: UInt64
+    public var provider: String
+    public var model: String
+    /**
+     * The reasoning effort sent; `None` when the request carried no field.
+     */
+    public var reasoning: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(status: String, input: String, output: String, elapsedMs: UInt64,
+        /**
+         * The live formatter job's deadline the request had to meet.
+         */deadlineMs: UInt64, provider: String, model: String,
+        /**
+         * The reasoning effort sent; `None` when the request carried no field.
+         */reasoning: String?) {
+        self.status = status
+        self.input = input
+        self.output = output
+        self.elapsedMs = elapsedMs
+        self.deadlineMs = deadlineMs
+        self.provider = provider
+        self.model = model
+        self.reasoning = reasoning
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsFormattingProbe: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsFormattingProbe {
+        return
+            try CsFormattingProbe(
+                status: FfiConverterString.read(from: &buf),
+                input: FfiConverterString.read(from: &buf),
+                output: FfiConverterString.read(from: &buf),
+                elapsedMs: FfiConverterUInt64.read(from: &buf),
+                deadlineMs: FfiConverterUInt64.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                reasoning: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsFormattingProbe, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterString.write(value.input, into: &buf)
+        FfiConverterString.write(value.output, into: &buf)
+        FfiConverterUInt64.write(value.elapsedMs, into: &buf)
+        FfiConverterUInt64.write(value.deadlineMs, into: &buf)
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterOptionString.write(value.reasoning, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsFormattingProbe_lift(_ buf: RustBuffer) throws -> CsFormattingProbe {
+    return try FfiConverterTypeCsFormattingProbe.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsFormattingProbe_lower(_ value: CsFormattingProbe) -> RustBuffer {
+    return FfiConverterTypeCsFormattingProbe.lower(value)
 }
 
 
@@ -13635,6 +13839,10 @@ public struct CsSettings: Equatable, Hashable {
     public var appleLiveEnabled: Bool
     public var lightPlusSentencePauseSec: Float
     /**
+     * Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+     */
+    public var ledgerSensitivity: Int32
+    /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
      * from the canonical merged config snapshot. `"disabled"` is the
      * product default when no persisted choice exists.
@@ -13645,6 +13853,14 @@ public struct CsSettings: Equatable, Hashable {
      * Command is not a value.
      */
     public var channelModifier: String
+    /**
+     * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+     */
+    public var widgetShortcut: String
+    /**
+     * The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+     */
+    public var widgetShortcutLabel: String
     /**
      * Quick Fn press below the hold delay toggles dictation. Default off.
      */
@@ -13660,7 +13876,6 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var middleMouseAgentGesture: Bool
     public var whisperLanguage: CsLanguage
-    public var aiFormattingEnabled: Bool
     /**
      * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
      */
@@ -13716,8 +13931,16 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var llmFormattingProvider: String?
     public var llmFormattingModel: String?
+    /**
+     * Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+     */
+    public var llmFormattingReasoning: String
     public var llmAssistiveProvider: String?
     public var llmAssistiveModel: String?
+    /**
+     * Agent reasoning level: `default` (the model's own) or a chosen level.
+     */
+    public var llmAssistiveReasoning: String
     public var formattingLevel: String?
     public var whisperModel: String?
     /**
@@ -13783,6 +14006,9 @@ public struct CsSettings: Equatable, Hashable {
          * Independent next-take publication and Apple producer choices.
          */sealLedgerEnabled: Bool, appleLiveEnabled: Bool, lightPlusSentencePauseSec: Float,
         /**
+         * Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+         */ledgerSensitivity: Int32,
+        /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
          * product default when no persisted choice exists.
@@ -13791,6 +14017,12 @@ public struct CsSettings: Equatable, Hashable {
          * Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
          * Command is not a value.
          */channelModifier: String,
+        /**
+         * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+         */widgetShortcut: String,
+        /**
+         * The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+         */widgetShortcutLabel: String,
         /**
          * Quick Fn press below the hold delay toggles dictation. Default off.
          */fnTapTogglesDictation: Bool,
@@ -13801,7 +14033,7 @@ public struct CsSettings: Equatable, Hashable {
         /**
          * A short middle click opens the overlay's agent chooser. Default off.
          * While it is on, the middle button is Codescribe's, not the frontmost app's.
-         */middleMouseAgentGesture: Bool, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */middleMouseAgentGesture: Bool, whisperLanguage: CsLanguage,
         /**
          * Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
          */pasteMode: CsPasteMode,
@@ -13819,7 +14051,13 @@ public struct CsSettings: Equatable, Hashable {
          */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
-         */llmFormattingProvider: String?, llmFormattingModel: String?, llmAssistiveProvider: String?, llmAssistiveModel: String?, formattingLevel: String?, whisperModel: String?,
+         */llmFormattingProvider: String?, llmFormattingModel: String?,
+        /**
+         * Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+         */llmFormattingReasoning: String, llmAssistiveProvider: String?, llmAssistiveModel: String?,
+        /**
+         * Agent reasoning level: `default` (the model's own) or a chosen level.
+         */llmAssistiveReasoning: String, formattingLevel: String?, whisperModel: String?,
         /**
          * Read-only diagnostic env override captured by the runtime snapshot.
          * ASR mode owns the default; Settings never writes this value.
@@ -13862,13 +14100,15 @@ public struct CsSettings: Equatable, Hashable {
         self.sealLedgerEnabled = sealLedgerEnabled
         self.appleLiveEnabled = appleLiveEnabled
         self.lightPlusSentencePauseSec = lightPlusSentencePauseSec
+        self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
+        self.widgetShortcut = widgetShortcut
+        self.widgetShortcutLabel = widgetShortcutLabel
         self.fnTapTogglesDictation = fnTapTogglesDictation
         self.middleMouseActsAsFn = middleMouseActsAsFn
         self.middleMouseAgentGesture = middleMouseAgentGesture
         self.whisperLanguage = whisperLanguage
-        self.aiFormattingEnabled = aiFormattingEnabled
         self.pasteMode = pasteMode
         self.transcriptSendMode = transcriptSendMode
         self.transcriptTaggingEnabled = transcriptTaggingEnabled
@@ -13906,8 +14146,10 @@ public struct CsSettings: Equatable, Hashable {
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
+        self.llmFormattingReasoning = llmFormattingReasoning
         self.llmAssistiveProvider = llmAssistiveProvider
         self.llmAssistiveModel = llmAssistiveModel
+        self.llmAssistiveReasoning = llmAssistiveReasoning
         self.formattingLevel = formattingLevel
         self.whisperModel = whisperModel
         self.layeredTranscription = layeredTranscription
@@ -13949,13 +14191,15 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 sealLedgerEnabled: FfiConverterBool.read(from: &buf),
                 appleLiveEnabled: FfiConverterBool.read(from: &buf),
                 lightPlusSentencePauseSec: FfiConverterFloat.read(from: &buf),
+                ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
+                widgetShortcut: FfiConverterString.read(from: &buf),
+                widgetShortcutLabel: FfiConverterString.read(from: &buf),
                 fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
                 middleMouseActsAsFn: FfiConverterBool.read(from: &buf),
                 middleMouseAgentGesture: FfiConverterBool.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
-                aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 pasteMode: FfiConverterTypeCsPasteMode.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
                 transcriptTaggingEnabled: FfiConverterBool.read(from: &buf),
@@ -13993,8 +14237,10 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
+                llmFormattingReasoning: FfiConverterString.read(from: &buf),
                 llmAssistiveProvider: FfiConverterOptionString.read(from: &buf),
                 llmAssistiveModel: FfiConverterOptionString.read(from: &buf),
+                llmAssistiveReasoning: FfiConverterString.read(from: &buf),
                 formattingLevel: FfiConverterOptionString.read(from: &buf),
                 whisperModel: FfiConverterOptionString.read(from: &buf),
                 layeredTranscription: FfiConverterOptionString.read(from: &buf),
@@ -14024,13 +14270,15 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.sealLedgerEnabled, into: &buf)
         FfiConverterBool.write(value.appleLiveEnabled, into: &buf)
         FfiConverterFloat.write(value.lightPlusSentencePauseSec, into: &buf)
+        FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterString.write(value.widgetShortcut, into: &buf)
+        FfiConverterString.write(value.widgetShortcutLabel, into: &buf)
         FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)
         FfiConverterBool.write(value.middleMouseActsAsFn, into: &buf)
         FfiConverterBool.write(value.middleMouseAgentGesture, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
-        FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterTypeCsPasteMode.write(value.pasteMode, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
         FfiConverterBool.write(value.transcriptTaggingEnabled, into: &buf)
@@ -14068,8 +14316,10 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
+        FfiConverterString.write(value.llmFormattingReasoning, into: &buf)
         FfiConverterOptionString.write(value.llmAssistiveProvider, into: &buf)
         FfiConverterOptionString.write(value.llmAssistiveModel, into: &buf)
+        FfiConverterString.write(value.llmAssistiveReasoning, into: &buf)
         FfiConverterOptionString.write(value.formattingLevel, into: &buf)
         FfiConverterOptionString.write(value.whisperModel, into: &buf)
         FfiConverterOptionString.write(value.layeredTranscription, into: &buf)
@@ -21569,6 +21819,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 41767) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_formatting() != 61038) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33194) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -21908,10 +22161,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_toggle_widget() != 24641) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 5950) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 32217) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 52788) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {

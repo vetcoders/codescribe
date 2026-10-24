@@ -1143,3 +1143,536 @@ fn an_interior_word_does_not_inherit_the_bursts_left_decode_cut() {
         assert_eq!(ledger.conservation().residue(), 0);
     }
 }
+
+#[test]
+fn recorded_1021_phrase_grain_dt_word_after_a_displaced_whisper_clock_is_one_word() {
+    // Take 3ff83fef (dragon, 2026-10-21): "jesteś po prostu wolny i". Whisper
+    // pinned "wolny." at 8.00-8.30 s, over the tail of "prostu" and the pause
+    // after it; the speech of "wolny" is at 8.90-9.28 s. DT declared "po
+    // prostu" as one phrase and "wolny" at 8.79-9.36 s. Silero joined the
+    // whole stretch into one speech range, so continuous PCM stands in for it.
+    let owner = OccurrenceIdentity::new("phrase-dt-displaced-clock-1021", 1, 24_000, 480_000);
+    let mut pcm = vec![0.0_f32; 500_000];
+    pcm[41_472..470_000].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[
+                        ("jesteś", 338_880, 365_760),
+                        ("po", 365_760, 374_400),
+                        ("prostu", 374_400, 384_000),
+                        ("wolny.", 384_000, 398_400),
+                        ("i", 444_480, 457_920),
+                    ],
+                    (0, 480_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        owner.clone(),
+    );
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("jesteś", 342_720, 354_240),
+                ("po prostu", 370_080, 390_240),
+                ("wolny", 421_920, 449_280),
+            ],
+            (0, 480_000),
+        ),
+    );
+    let text = ledger.text_of(&owner).unwrap();
+    assert_eq!(
+        lowercase_tokens(text)
+            .iter()
+            .filter(|token| token.as_str() == "wolny")
+            .count(),
+        1,
+        "one spoken word displaced by one producer's clock is one word: {text:?}",
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn recorded_1021_dt_partition_of_a_held_whisper_word_on_speech_stays_an_alternative() {
+    // Take 0428dd93 (dragon, 2026-10-21): Whisper held "widoczne" over 2 s of
+    // speech where the reference hears "widoczne"; word adjudication chose DT's
+    // partition "są one", next to the following "one", and the document read
+    // "one one". Where the instruments hear speech, DT does not retire the
+    // Whisper word. A DT word over speech no word holds is still admitted, and
+    // a Whisper word with no speech under it stays open to DT falsification.
+    let owner = OccurrenceIdentity::new("dt-over-whisper-on-speech-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..78_000].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("jakby", 9_600, 24_000), ("widoczne", 24_000, 72_000)],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let widoczne = ledger.slots_of(&owner).unwrap()[1].clone();
+    let echo = WordSlot {
+        sample_start: 84_000,
+        sample_end: 90_000,
+        text: "echo".into(),
+        ..widoczne.clone()
+    };
+    ledger
+        .committed
+        .get_mut(&owner)
+        .unwrap()
+        .slots
+        .push(echo.clone());
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        owner.clone(),
+    );
+    let dt_word = |text: &str, sample_start: u64, sample_end: u64| WordSlot {
+        sample_start,
+        sample_end,
+        text: text.into(),
+        producer: ObservationProducer::AppleDictation,
+        observation: dt.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    let partition = SlotOperationReceipt {
+        observation: dt.clone(),
+        kind: SlotOperationKind::Split,
+        sources: vec![widoczne.clone()],
+        outputs: vec![
+            dt_word("są", 24_000, 43_200),
+            dt_word("one", 52_800, 72_000),
+        ],
+        source_ranges: Vec::new(),
+        rule_id: "fixture".into(),
+    };
+    let falsifier = dt_word("cisza", 84_000, 90_000);
+    let novel = dt_word("nowe", 72_000, 77_000);
+    let mut proposed = partition.outputs.clone();
+    proposed.extend([novel.clone(), falsifier.clone()]);
+
+    let (kept, operations, label) = ledger.withhold_lower_authority_over_speech(
+        &dt,
+        Some(proposed),
+        std::slice::from_ref(&partition),
+    );
+
+    assert!(operations.is_empty());
+    assert_eq!(kept, Some(vec![novel, falsifier]));
+    assert_eq!(label.as_deref(), Some("nowe cisza"));
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == dt
+            && alternative.reason == "lower_authority_over_speech"
+            && alternative.candidate == "są one"
+            && alternative.sources == [widoczne.clone()]
+    }));
+}
+
+#[test]
+fn recorded_1021_a_redecoded_word_spelled_like_its_neighbour_is_not_its_continuation() {
+    // Take 0d3ede90 (dragon, 2026-10-21): Whisper held "first." and the "że"
+    // after it; a later generation of the same request decoded "że" over half
+    // of "first." and the document read "że że". A one-word successor spelled
+    // like the held neighbour is that neighbour heard again, so the source's
+    // speech keeps its own word. A successor of the source's own spelling
+    // still continues it.
+    let owner = OccurrenceIdentity::new("redecode-neighbour-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..91_200].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 8, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[("first.", 9_600, 45_120), ("że", 45_120, 71_520)],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let first = ledger.slots_of(&owner).unwrap()[0].clone();
+    let redecode = ObservationIdentity::new(ObservationProducer::Whisper, 8, 6, owner.clone());
+    let successor = |text: &str| WordSlot {
+        sample_start: 12_480,
+        sample_end: 29_760,
+        text: text.into(),
+        producer: ObservationProducer::Whisper,
+        observation: redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    assert!(ledger.same_anchored_word(&first, &successor("że")));
+    assert!(!ledger.slot_retirement_has_acoustic_coverage(
+        &redecode,
+        &first,
+        &[successor("że")],
+        std::slice::from_ref(&first),
+    ));
+    assert!(ledger.slot_retirement_has_acoustic_coverage(
+        &redecode,
+        &first,
+        &[successor("first")],
+        std::slice::from_ref(&first),
+    ));
+}
+
+#[test]
+fn recorded_1021_phrase_grain_dt_word_held_across_the_owner_fence_is_not_inserted_again() {
+    // Take 3ff83fef (dragon, 2026-10-21): Whisper held "i" at 9.26-9.54 s,
+    // the last word before the owner fence; the reference hears it at
+    // 9.78-9.90 s. DT, in a phrase-grain batch for the next owner, declared
+    // "i" at 9.66-9.90 s before "trochę", and the document read "i i". The
+    // aligned sequence places that "i" on the neighbour's word.
+    let mut pcm = vec![0.0_f32; 900_000];
+    pcm[41_472..852_480].fill(0.1);
+    let left = OccurrenceIdentity::new("phrase-dt-owner-fence-1021", 1, 24_000, 457_728);
+    let right = OccurrenceIdentity::new("phrase-dt-owner-fence-1021", 1, 457_728, 877_440);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 6, 0, left.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &first,
+                &decoded(
+                    &[
+                        ("po", 365_760, 374_400),
+                        ("prostu", 374_400, 384_000),
+                        ("wolny.", 384_000, 398_400),
+                        ("i", 444_480, 457_728),
+                    ],
+                    (0, 480_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let next = ObservationIdentity::new(ObservationProducer::Whisper, 7, 0, right.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &next,
+                &decoded(
+                    &[
+                        ("trochę", 470_400, 489_600),
+                        ("zaniedbujesz", 489_600, 533_760),
+                        ("pewne", 533_760, 549_120),
+                    ],
+                    (432_000, 880_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let left_before = ledger.slots_of(&left).unwrap().to_vec();
+    let dt = ObservationIdentity::new(
+        ObservationProducer::AppleDictation,
+        1_u64 << 62,
+        0,
+        right.clone(),
+    );
+    ledger.admit_word_slots(
+        &dt,
+        &decoded(
+            &[
+                ("i", 463_680, 475_200),
+                ("trochę", 475_200, 498_240),
+                ("zaniedbujesz", 502_560, 535_680),
+                ("to jest", 560_000, 580_000),
+            ],
+            (0, 892_320),
+        ),
+    );
+    assert_eq!(ledger.slots_of(&left).unwrap(), left_before.as_slice());
+    let right_text = ledger.text_of(&right).unwrap();
+    assert!(
+        !lowercase_tokens(right_text).contains(&"i".to_string()),
+        "the neighbour's word is not a second word of this owner: {right_text:?}",
+    );
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == dt
+            && alternative.reason == "cross_owner_sequence_correspondence"
+            && alternative.candidate == "i"
+    }));
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+#[test]
+fn recorded_1021_a_redecode_continues_a_word_only_over_most_of_it_and_off_its_neighbours() {
+    // Takes 3ff83fef and dbb410fa (dragon, 2026-10-21): re-decodes of one
+    // word turned "jesteś" into "ale" over 60 ms of it, and "pokazać" into a
+    // 2.76 s "właściwe" across the "generalnie" after it. A successor that
+    // holds most of the word's span and stays off the words beside it still
+    // continues the word.
+    let owner = OccurrenceIdentity::new("redecode-continuation-1021", 1, 0, 96_000);
+    let mut pcm = vec![0.0_f32; 100_000];
+    pcm[4_800..91_200].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[
+                        ("jesteś", 9_600, 36_480),
+                        ("pokazać", 36_480, 62_000),
+                        ("generalnie", 62_000, 86_400),
+                    ],
+                    (0, 96_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let held = ledger.slots_of(&owner).unwrap().to_vec();
+    let (jestes, pokazac) = (held[0].clone(), held[1].clone());
+    let redecode = ObservationIdentity::new(ObservationProducer::Whisper, 1, 4, owner.clone());
+    let word = |text: &str, sample_start: u64, sample_end: u64| WordSlot {
+        sample_start,
+        sample_end,
+        text: text.into(),
+        producer: ObservationProducer::Whisper,
+        observation: redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    let covered = |ledger: &AcousticLedger, source: &WordSlot, successor: WordSlot| {
+        assert!(
+            ledger.same_anchored_word(source, &successor),
+            "{source:?} {successor:?}"
+        );
+        ledger.slot_retirement_has_acoustic_coverage(
+            &redecode,
+            source,
+            &[successor],
+            std::slice::from_ref(source),
+        )
+    };
+    assert!(!covered(&ledger, &jestes, word("ale", 30_000, 33_600)));
+    assert!(!covered(
+        &ledger,
+        &pokazac,
+        word("właściwe", 40_000, 90_000)
+    ));
+    assert!(covered(&ledger, &jestes, word("jesteś,", 12_000, 32_000)));
+    assert!(covered(&ledger, &pokazac, word("pokazać", 40_000, 58_000)));
+
+    // Recorded order on dbb410fa: "generalnie" was not held yet when the
+    // 2.76 s "właściwe" re-decoded "pokazać", so no word beside it stayed.
+    let lone = OccurrenceIdentity::new("redecode-continuation-lone-1021", 1, 0, 96_000);
+    let mut lone_ledger = measured_ledger_at_rate(&lone, &pcm, RATE);
+    let lone_whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, lone.clone());
+    assert!(
+        lone_ledger
+            .admit_word_slots(
+                &lone_whisper,
+                &decoded(&[("pokazać", 36_480, 62_000)], (0, 96_000))
+            )
+            .grants_mutation()
+    );
+    let lone_pokazac = lone_ledger.slots_of(&lone).unwrap()[0].clone();
+    let lone_redecode = ObservationIdentity::new(ObservationProducer::Whisper, 2, 4, lone.clone());
+    let lone_successor = WordSlot {
+        sample_start: 40_000,
+        sample_end: 90_000,
+        text: "właściwe".into(),
+        producer: ObservationProducer::Whisper,
+        observation: lone_redecode.clone(),
+        witness: SlotWitness::Unwitnessed,
+        confidence: None,
+        surface_rewritten: false,
+    };
+    assert!(lone_ledger.same_anchored_word(&lone_pokazac, &lone_successor));
+    assert!(!lone_ledger.slot_retirement_has_acoustic_coverage(
+        &lone_redecode,
+        &lone_pokazac,
+        &[lone_successor],
+        std::slice::from_ref(&lone_pokazac),
+    ));
+}
+
+#[test]
+fn recorded_1021_a_recovery_pin_over_the_neighbours_word_is_that_word_whatever_its_spelling() {
+    // Take dcc26684 (dragon, 2026-10-21): a Whisper recovery window declared
+    // "długoscią" over 14.12-15.60 s; its midpoint fell just before the owner
+    // fence at 14.88 s, while the next owner already held Whisper's
+    // "długością" over the same speech. The document read "długoscią
+    // długością". One producer cannot hold two words on the same PCM.
+    let mut pcm = vec![0.0_f32; 1_100_000];
+    pcm[315_000..1_000_000].fill(0.1);
+    let left = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 312_000, 714_240);
+    let right = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 714_240, 1_009_152);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let first = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, left.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &first,
+                &decoded(
+                    &[("prostu", 645_120, 664_320), ("z", 664_320, 679_680)],
+                    (288_000, 720_000),
+                )
+            )
+            .grants_mutation()
+    );
+    let next = ObservationIdentity::new(ObservationProducer::Whisper, 4, 0, right.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &next,
+                &decoded(
+                    &[
+                        ("długością", 680_640, 747_840),
+                        ("trwania", 747_840, 787_200)
+                    ],
+                    (663_360, 1_000_000),
+                )
+            )
+            .grants_mutation()
+    );
+    // Live windows leave short occurrences inside the owner; in key order
+    // one sorts between this owner and the next (7.08-7.28 s in the take).
+    let live = OccurrenceIdentity::new("recovery-over-neighbour-1021", 1, 420_000, 440_000);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: live.clone(),
+                    duration_ms: (live.sample_end - live.sample_start) as f64 / 48.0,
+                    energy_integral: (live.sample_end - live.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(live.sample_start),
+                    vad_close_sample: Some(live.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration
+            )
+            .is_qualified()
+    );
+    let live_word = ObservationIdentity::new(ObservationProducer::Whisper, 2, 0, live.clone());
+    ledger.admit_word_slots(
+        &live_word,
+        &decoded(&[("coś", 420_000, 440_000)], (400_000, 460_000)),
+    );
+    assert!(ledger.committed.contains_key(&live));
+    let right_before = ledger.slots_of(&right).unwrap().to_vec();
+    let recovery = ObservationIdentity::new(ObservationProducer::Whisper, 1, 12, left.clone());
+    // The recorded callback reached the identity normalizer as "długoscią"
+    // alone: live-edge deferral had held back "plus". That lone pin carries
+    // no sequence context, so the normalizer is asked directly with it.
+    let pins = decoded(&[("długoscią", 677_760, 748_800)], (663_360, 1_007_040));
+    let anchors = ledger.measured_word_anchors(&left).unwrap();
+    let incoming = ledger
+        .normalize_anchor_words(&recovery, &pins, &anchors)
+        .unwrap();
+    assert!(
+        incoming.iter().all(|(slot, _)| slot.text != "długoscią"),
+        "the neighbour's word is not a second word of this owner: {:?}",
+        incoming
+            .iter()
+            .map(|(slot, _)| slot.text.as_str())
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(ledger.slots_of(&right).unwrap(), right_before.as_slice());
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == recovery
+            && alternative.reason == "cross_owner_sequence_correspondence"
+            && alternative.candidate == "długoscią"
+    }));
+    // A pin that holds the neighbour's word and more speech is another token
+    // glued to it (bad24852: "release.dmdn" shared 51% of itself with
+    // "Release..." and also carried "DMDN"); it stays this owner's.
+    let glued = ObservationIdentity::new(ObservationProducer::Whisper, 1, 13, left.clone());
+    let glued_pins = decoded(
+        &[("długością.dmdn", 677_760, 809_520)],
+        (663_360, 1_007_040),
+    );
+    let glued_incoming = ledger
+        .normalize_anchor_words(&glued, &glued_pins, &anchors)
+        .unwrap();
+    assert!(
+        glued_incoming
+            .iter()
+            .any(|(slot, _)| slot.text == "długością.dmdn")
+    );
+    assert!(!ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == glued
+            && alternative.reason == "cross_owner_sequence_correspondence"
+    }));
+
+    // A plain word over most of the neighbour's word is that word even when
+    // it reaches further: one bar of three quarters for every pin lost the
+    // dbb410fa and 0d3ede90 gains of the plain-majority rule again.
+    let plain = ObservationIdentity::new(ObservationProducer::Whisper, 1, 14, left.clone());
+    let plain_pins = decoded(&[("długoscią", 677_760, 809_520)], (663_360, 1_007_040));
+    let plain_incoming = ledger
+        .normalize_anchor_words(&plain, &plain_pins, &anchors)
+        .unwrap();
+    assert!(
+        plain_incoming
+            .iter()
+            .all(|(slot, _)| slot.text != "długoscią")
+    );
+    assert!(ledger.slot_alternatives.iter().any(|alternative| {
+        alternative.observation == plain
+            && alternative.reason == "cross_owner_sequence_correspondence"
+    }));
+}

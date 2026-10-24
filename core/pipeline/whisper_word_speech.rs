@@ -1,13 +1,18 @@
-//! A Whisper word is admitted only when its own sample span carries speech.
+//! PCM decides where speech exists; a Whisper word is a label laid on it.
 //!
-//! The session measures Silero and the calibrated existence floor. This module
-//! does not read PCM and does not turn a missing channel into silence.
+//! The session measures Silero and the calibrated existence floor on the
+//! capture clock. This module does not read PCM and does not turn a missing
+//! channel into silence.
 //!
-//! One rule needs no calibration: a word with no Silero speech anywhere within
-//! [`WHISPER_WORD_SPEECH_NEAR_MS`] of its span was written over silence and is
-//! refused, in the ledger lane and in the direct lane alike.
+//! A word is refused only when PCM measured no speech where it lies: its span
+//! touches no Silero speech island, or, before Silero has observed the span,
+//! no hop reaches the existence floor. The pin's length and where its edges
+//! fall are decoder timing, not acoustic boundaries, so they never refuse a
+//! word. When neither channel has measured the span, the word stays visible
+//! and cannot mutate the document.
 
 use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
+use super::engine_tuning::EngineTuning;
 
 /// Shortest voiced span, in milliseconds, that can be one syllable of an
 /// identical Whisper repeat.
@@ -21,35 +26,27 @@ use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
 /// syllable. Digital zero and a span below the existence floor are refused by
 /// [`RefuseReason::NoVoicedHopInPin`] before this floor is consulted.
 ///
-/// The floor is not applied when speech evidence is unmeasured. The live
-/// "Iwo Iwo Iwo Iwo Iwo" capture trace uses 3 000-sample pins at 16 kHz
-/// (187 ms, two vowel groups, so 200 ms at this floor) on flat PCM and does
-/// not bind this floor; those pins stay on today's path.
+/// Missing speech evidence grants visibility only, never an insertion. The
+/// historical capture trace used 3,000-sample pins at 16 kHz (187 ms, two
+/// vowel groups, so 200 ms at this floor); unmeasured separation cannot
+/// establish an independent repeat occurrence.
 pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
 
-/// How far from its own span a word that is not a repeat may find speech.
+/// Radius retained for distance diagnostics and the existing tuning surface.
+/// It does not grant admission to a word without its own Silero intersection.
 ///
-/// Polish speech decoded to English is a working use of Whisper: the
-/// translated words do not line up one to one with the voiced words, and
-/// their timestamps can land on a short pause inside the sentence. Such a
-/// word keeps today's path with its own receipt. 500 ms is chosen, not
-/// measured; it is wider than the 200 ms Silero merge gap and shorter than
-/// the silences the corpus hallucinations sit on (47–612 s of digital zero).
-///
-/// The same radius bounds the Silero-only rule. Div0 census of 15–17 X
-/// (231 takes, 21 080 Whisper words, `stasiu-silence/REPORT.md`): 689 words
-/// have no Silero speech under their span; 303 of them lie within 500 ms of
-/// speech (pin jitter is 0.1–0.3 s), 49 at 0.5–1 s and 337 further than 1 s.
-/// Every such word but two is Whisper's, and most sit on sound without speech,
-/// not on digital zero.
+/// Archived Div0 evidence from 15–17 October contains 689 words without
+/// Silero speech under their spans; 303 lie within 500 ms of speech. That
+/// proximity was previously an admission path. It remains useful to diagnose
+/// timestamp jitter, but cannot establish a spoken occurrence.
 pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 500;
 
-/// Receipt label when neither Silero nor the calibrated floor was measured.
-/// The word is kept. The string is the receipt; it is not a refusal.
+/// Receipt label when required evidence was not measured. The word may stay
+/// visible, but this verdict never grants document admission.
 pub const WHISPER_WORD_SPEECH_UNMEASURED: &str = "unmeasured";
 
-/// Receipt label for a word whose own span is silent while speech lies within
-/// [`WHISPER_WORD_SPEECH_NEAR_MS`]. The word is kept.
+/// Historical receipt label retained for archived decisions. Nearness no
+/// longer grants admission.
 pub const WHISPER_WORD_SPEECH_NEAR: &str = "speech_near_span";
 
 /// How far Silero places the nearest speech from one word's span.
@@ -64,25 +61,6 @@ pub enum SileroSpeechDistance {
     Ms(u64),
 }
 
-impl SileroSpeechDistance {
-    /// `true` only when Silero measured that no speech lies within the radius.
-    fn beyond_near_radius(self) -> bool {
-        match self {
-            Self::Unmeasured => false,
-            Self::NoSpeechHeard => true,
-            Self::Ms(distance) => distance > WHISPER_WORD_SPEECH_NEAR_MS,
-        }
-    }
-
-    /// Receipt value: the measured distance, `None` when nothing was heard.
-    fn receipt_ms(self) -> Option<u32> {
-        match self {
-            Self::Ms(distance) => Some(u32::try_from(distance).unwrap_or(u32::MAX)),
-            Self::Unmeasured | Self::NoSpeechHeard => None,
-        }
-    }
-}
-
 /// One Whisper word plus the speech facts already measured for its span.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhisperWordSpeech {
@@ -91,11 +69,12 @@ pub struct WhisperWordSpeech {
     pub sample_end: u64,
     pub sample_rate: u32,
     /// `Some` only when Silero observed this span on the capture clock.
-    /// `true` when a session-threshold speech range overlaps the span.
+    /// `true` when the span overlaps a speech island: Silero speech joined
+    /// across the short pauses inside a sentence.
     pub silero_speech: Option<bool>,
     /// `Some` only when the calibrated existence floor was applied to this span.
     /// `true` when a hop inside the span is at or above that floor. `None`
-    /// keeps the word unmeasured, whatever Silero says.
+    /// is unknown energy; it cannot override Silero's speech measurement.
     pub energy_above_floor: Option<bool>,
     /// The same two channels on the span widened by
     /// [`WHISPER_WORD_SPEECH_NEAR_MS`] on each side. `true` when either finds
@@ -118,10 +97,9 @@ pub struct WhisperWordSpeech {
 pub enum WhisperWordSpeechVerdict {
     /// Speech was measured on this span and the repeat rule passed.
     Admit,
-    /// A channel the rule needs was not measured. The word keeps today's path.
+    /// A required speech channel was not measured. Visibility only.
     Unmeasured,
-    /// Not a repeat; its own span is silent and speech lies near it. The
-    /// word keeps today's path.
+    /// Historical verdict; no current decision uses nearby speech to admit.
     NearSpeech,
     /// The span was measured and the word does not enter the document.
     Refuse(RefuseReason),
@@ -134,10 +112,9 @@ pub struct WhisperWordSpeechDecision {
 }
 
 impl WhisperWordSpeechDecision {
-    /// Kept words are admitted, near speech or explicitly unmeasured. A
-    /// refusal is not.
+    /// Only a fully measured admission can mutate the document.
     pub fn admits(self) -> bool {
-        !matches!(self.verdict, WhisperWordSpeechVerdict::Refuse(_))
+        matches!(self.verdict, WhisperWordSpeechVerdict::Admit)
     }
 
     /// Stable receipt text. Unmeasured is a word, not a [`RefuseReason`].
@@ -156,13 +133,22 @@ impl WhisperWordSpeechDecision {
 /// The first word of an identical run is judged only on its own span. Each
 /// later word also needs its own voiced segment: a measured valley or Silero
 /// dip behind it, and at least [`WHISPER_REPEAT_MIN_MS_PER_SYLLABLE`] per
-/// syllable. A missing measurement never becomes a refusal.
+/// syllable. A missing measurement grants visibility only.
 pub fn judge_whisper_words(words: &[WhisperWordSpeech]) -> Vec<WhisperWordSpeechDecision> {
+    judge_whisper_words_tuned(words, &EngineTuning::DEFAULT)
+}
+
+/// [`judge_whisper_words`] with the take's repeat-duration floor. The near
+/// radius remains a diagnostic setting and grants no word admission.
+pub fn judge_whisper_words_tuned(
+    words: &[WhisperWordSpeech],
+    tuning: &EngineTuning,
+) -> Vec<WhisperWordSpeechDecision> {
     words
         .iter()
         .enumerate()
         .map(|(index, word)| WhisperWordSpeechDecision {
-            verdict: judge_one(words, index, word),
+            verdict: judge_one(words, index, word, tuning),
         })
         .collect()
 }
@@ -171,60 +157,40 @@ fn judge_one(
     words: &[WhisperWordSpeech],
     index: usize,
     word: &WhisperWordSpeech,
+    tuning: &EngineTuning,
 ) -> WhisperWordSpeechVerdict {
-    // No speech anywhere near the word: Silero alone decides this, with or
-    // without a calibration profile. Energy is not consulted, because sound
-    // above the floor without speech is where most of these words sit.
-    if word.silero_speech_distance.beyond_near_radius() {
-        return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-            silence: word.silence_under_span,
-            distance_ms: word.silero_speech_distance.receipt_ms(),
-        });
-    }
-    // Without the calibrated floor Silero alone does not decide: it merges
-    // gaps shorter than its merge window, so two real repeats inside one
-    // range look like one word. A take without a profile keeps today's path.
-    if word.energy_above_floor.is_none() {
-        return WhisperWordSpeechVerdict::Unmeasured;
-    }
-    let repeat = is_identical_repeat(words, index);
-    if !span_has_speech(word) {
-        // A repeat needs its own voiced segment, so nearby speech does not
-        // count for it. A loop copy beside the one real word stays refused.
-        if !repeat && word.speech_near_span == Some(true) {
-            return WhisperWordSpeechVerdict::NearSpeech;
+    // Silero is the speech witness: its island decides, and energy cannot
+    // promote room noise it rejected to speech. A word on an island keeps its
+    // place even where its own pin covers a pause. Energy decides only where
+    // Silero has not observed the span yet.
+    match (word.silero_speech, word.energy_above_floor) {
+        (Some(false), _) => {
+            return WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech);
         }
-        return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoVoicedHopInPin);
+        (None, Some(false)) => {
+            return WhisperWordSpeechVerdict::Refuse(RefuseReason::NoVoicedHopInPin);
+        }
+        (None, None) => return WhisperWordSpeechVerdict::Unmeasured,
+        _ => {}
     }
-    if !repeat {
+    if !is_identical_repeat(words, index) {
         return WhisperWordSpeechVerdict::Admit;
-    }
-    // Energy above the floor is also what a loop on room noise has. A repeat
-    // that Silero observed and did not hear is not its own voiced segment.
-    if word.silero_speech == Some(false) {
-        return WhisperWordSpeechVerdict::Refuse(
-            RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
-        );
     }
     match word.separated_from_previous {
         Some(false) => {
             WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
         }
-        Some(true) => match span_meets_syllable_floor(word) {
-            Some(true) => WhisperWordSpeechVerdict::Admit,
-            Some(false) => WhisperWordSpeechVerdict::Refuse(
-                RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
-            ),
-            None => WhisperWordSpeechVerdict::Unmeasured,
-        },
+        Some(true) => {
+            match span_meets_syllable_floor(word, tuning.whisper_repeat_min_ms_per_syllable) {
+                Some(true) => WhisperWordSpeechVerdict::Admit,
+                Some(false) => WhisperWordSpeechVerdict::Refuse(
+                    RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
+                ),
+                None => WhisperWordSpeechVerdict::Unmeasured,
+            }
+        }
         None => WhisperWordSpeechVerdict::Unmeasured,
     }
-}
-
-/// Speech is present when any measured channel says so. Every measured
-/// channel saying no is silence.
-fn span_has_speech(word: &WhisperWordSpeech) -> bool {
-    word.silero_speech == Some(true) || word.energy_above_floor == Some(true)
 }
 
 fn is_identical_repeat(words: &[WhisperWordSpeech], index: usize) -> bool {
@@ -277,14 +243,14 @@ pub(crate) fn window_has_silero_dip(
 }
 
 /// `Some` when the sample rate can turn the span into milliseconds.
-fn span_meets_syllable_floor(word: &WhisperWordSpeech) -> Option<bool> {
+fn span_meets_syllable_floor(word: &WhisperWordSpeech, min_ms_per_syllable: u64) -> Option<bool> {
     if word.sample_rate == 0 || word.sample_end <= word.sample_start {
         return None;
     }
     let syllables = u64::from(syllable_groups(&word.text).max(1));
     let milliseconds =
         word.sample_end.saturating_sub(word.sample_start) * 1_000 / u64::from(word.sample_rate);
-    Some(milliseconds >= WHISPER_REPEAT_MIN_MS_PER_SYLLABLE.saturating_mul(syllables))
+    Some(milliseconds >= min_ms_per_syllable.saturating_mul(syllables))
 }
 
 /// Vowel groups in lowercase. Polish `i`/`y` immediately before another vowel
@@ -360,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_word_far_from_any_silero_speech_is_refused_without_a_calibration_profile() {
+    fn a_word_on_no_speech_island_is_refused_without_a_calibration_profile() {
         // Div0 cdff34c7 (17 X 03:41Z): "nie," 2 176 ms from the nearest speech,
         // on sound the existence floor calls voiced.
         let decisions = judge_whisper_words(&[silero_distance(
@@ -370,14 +336,11 @@ mod tests {
         )]);
         assert_eq!(
             decisions[0].verdict,
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-                silence: SilenceUnderSpan::SoundWithoutSpeech,
-                distance_ms: Some(2_176),
-            }),
-            "Silero heard no speech within the radius; a missing floor must not keep a word \
-             written over silence, and the receipt carries the class and the distance"
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech),
+            "no speech island lies under the span; a missing floor must not keep a word \
+             written over silence"
         );
-        assert_eq!(decisions[0].receipt(), "no_speech_near_span");
+        assert_eq!(decisions[0].receipt(), "span_without_own_speech");
     }
 
     #[test]
@@ -394,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn digital_zero_with_no_speech_in_the_epoch_is_refused_with_no_distance() {
+    fn digital_zero_with_no_speech_in_the_epoch_is_refused() {
         let decisions = judge_whisper_words(&[silero_distance(
             word("Dziękuję.", 0, 48_000, Some(false), Some(false), None),
             SileroSpeechDistance::NoSpeechHeard,
@@ -402,35 +365,57 @@ mod tests {
         )]);
         assert_eq!(
             decisions[0].verdict,
-            WhisperWordSpeechVerdict::Refuse(RefuseReason::NoSpeechNearSpan {
-                silence: SilenceUnderSpan::DigitalZero,
-                distance_ms: None,
-            }),
-            "no speech heard in the epoch has no distance to report"
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech),
+            "digital zero holds no speech island"
         );
     }
 
     #[test]
-    fn speech_within_the_radius_leaves_the_word_to_the_existing_rules() {
+    fn nearness_to_speech_off_an_island_grants_nothing() {
+        // The session already joins Silero speech across short pauses into
+        // islands. A span that still touches none is off speech, however near.
         let edge = judge_whisper_words(&[silero_distance(
             near_speech(word("the", 0, 4_800, Some(false), Some(false), None)),
             SileroSpeechDistance::Ms(WHISPER_WORD_SPEECH_NEAR_MS),
             SilenceUnderSpan::BelowFloor,
         )]);
-        assert_eq!(
-            edge[0].receipt(),
-            WHISPER_WORD_SPEECH_NEAR,
-            "speech exactly at the radius is near; the word keeps its near-speech receipt"
-        );
+        assert_eq!(edge[0].receipt(), "span_without_own_speech");
         let jitter = judge_whisper_words(&[silero_distance(
             word("Co?", 0, 4_800, Some(false), None, None),
             SileroSpeechDistance::Ms(64),
             SilenceUnderSpan::EnergyUnmeasured,
         )]);
+        assert_eq!(jitter[0].receipt(), "span_without_own_speech");
+    }
+
+    #[test]
+    fn the_ledger_slider_moves_the_repeat_floor() {
+        let strict = EngineTuning::with_ledger_sensitivity(-100);
+        let loose = EngineTuning::with_ledger_sensitivity(100);
+
+        // A separated one-syllable repeat of 130 ms (6 240 samples at 48 kHz):
+        // above today's 100 ms floor, below the strict 160 ms one.
+        let repeat = [
+            word("nie", 0, 6_240, Some(true), Some(true), None),
+            word("nie", 9_600, 15_840, Some(true), Some(true), Some(true)),
+        ];
+        assert!(judge_whisper_words(&repeat)[1].admits());
         assert_eq!(
-            jitter[0].receipt(),
-            WHISPER_WORD_SPEECH_UNMEASURED,
-            "a pin 64 ms off speech is Whisper's timing, not a word over silence"
+            judge_whisper_words_tuned(&repeat, &strict)[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
+        );
+        // 80 ms: below today's floor, above the loose 60 ms one.
+        let short_repeat = [
+            word("nie", 0, 3_840, Some(true), Some(true), None),
+            word("nie", 9_600, 13_440, Some(true), Some(true), Some(true)),
+        ];
+        assert!(!judge_whisper_words(&short_repeat)[1].admits());
+        assert!(judge_whisper_words_tuned(&short_repeat, &loose)[1].admits());
+
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat, &EngineTuning::with_ledger_sensitivity(0)),
+            judge_whisper_words(&repeat),
+            "the slider's centre is today's judge"
         );
     }
 
@@ -481,8 +466,8 @@ mod tests {
         assert!(
             refusals
                 .iter()
-                .all(|decision| decision.receipt() == RefuseReason::NoVoicedHopInPin.as_str()),
-            "a span measured as silence is no voiced hop in that pin, not a string-equality drop"
+                .all(|decision| decision.receipt() == RefuseReason::SpanWithoutOwnSpeech.as_str()),
+            "a span measured as silence lies on no speech island, not a string-equality drop"
         );
     }
 
@@ -514,8 +499,8 @@ mod tests {
         assert!(
             decisions
                 .iter()
-                .all(|decision| { decision.receipt() == RefuseReason::NoVoicedHopInPin.as_str() }),
-            "digital zero is measured absence of a voiced hop, including the first copy"
+                .all(|decision| decision.receipt() == RefuseReason::SpanWithoutOwnSpeech.as_str()),
+            "digital zero lies on no speech island, including the first copy"
         );
     }
 
@@ -549,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn unmeasured_evidence_keeps_words_and_says_unmeasured() {
+    fn unmeasured_pcm_keeps_words_visible_and_says_unmeasured() {
         let span = 960u64;
         let words = (0..4u64)
             .map(|index| {
@@ -559,8 +544,8 @@ mod tests {
             .collect::<Vec<_>>();
         let decisions = judge_whisper_words(&words);
         assert!(
-            decisions.iter().all(|decision| decision.admits()),
-            "unmeasured speech evidence must keep today's words, including a short identical run"
+            decisions.iter().all(|decision| !decision.admits()),
+            "with neither PCM channel measured, no word can mutate the document"
         );
         assert!(
             decisions
@@ -573,15 +558,16 @@ mod tests {
     #[test]
     fn flat_noise_repeat_without_a_valley_keeps_only_the_first() {
         // 400 ms, above the one-syllable floor, so duration is not the reason.
+        // One voiced region on one speech island, no valley and no dip inside.
         let span = 19_200u64;
-        let mut words = vec![word("trzy", 0, span, Some(false), Some(true), None)];
+        let mut words = vec![word("trzy", 0, span, Some(true), Some(true), None)];
         for index in 1..16u64 {
             let start = index * span;
             words.push(word(
                 "trzy",
                 start,
                 start + span,
-                Some(false),
+                Some(true),
                 Some(true),
                 Some(false),
             ));
@@ -593,7 +579,7 @@ mod tests {
             .count();
         assert_eq!(
             admitted, 1,
-            "noise above the floor can admit the first trzy; fifteen copies that share one region must not"
+            "one region admits the first trzy; fifteen copies that share it must not"
         );
         assert!(
             decisions.iter().skip(1).all(|decision| {
@@ -631,57 +617,51 @@ mod tests {
     }
 
     #[test]
-    fn silero_alone_without_the_calibrated_floor_keeps_the_word_unmeasured() {
+    fn silero_alone_decides_where_no_floor_is_calibrated() {
         let decisions = judge_whisper_words(&[
             word("Dziękuję", 0, 48_000, Some(false), None, None),
             word("Iwo", 48_000, 60_000, Some(true), None, None),
-            word("Iwo", 60_000, 72_000, Some(true), None, Some(false)),
         ]);
+        assert_eq!(
+            decisions[0].receipt(),
+            RefuseReason::SpanWithoutOwnSpeech.as_str(),
+            "off every island is off speech, with or without a floor"
+        );
         assert!(
-            decisions
-                .iter()
-                .all(|decision| decision.receipt() == WHISPER_WORD_SPEECH_UNMEASURED),
-            "a take without a calibration profile keeps today's words: Silero merges short gaps, \
-             so on its own it would refuse real repeats inside one speech range"
+            decisions[1].admits(),
+            "a word on an island needs no calibrated floor to have its place"
         );
     }
 
     #[test]
-    fn a_repeat_silero_did_not_hear_is_refused_even_with_a_valley() {
+    fn room_noise_silero_did_not_hear_admits_no_copy() {
         let decisions = judge_whisper_words(&[
             word("trzy", 0, 19_200, Some(false), Some(true), None),
             word("trzy", 19_200, 38_400, Some(false), Some(true), Some(true)),
         ]);
         assert!(
-            decisions[0].admits(),
-            "the first word is judged on its own span; energy above the floor is speech evidence"
-        );
-        assert_eq!(
-            decisions[1].receipt(),
-            RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment.as_str(),
-            "a loop on fluctuating room noise has valleys too; a repeat Silero observed and did \
-             not hear is not its own voiced segment"
+            decisions
+                .iter()
+                .all(|decision| decision.receipt() == RefuseReason::SpanWithoutOwnSpeech.as_str()),
+            "energy above the floor is sound; without a speech island it is no word's place, \
+             the first copy included"
         );
     }
 
     #[test]
-    fn a_translated_word_on_a_short_pause_beside_speech_stays() {
+    fn a_translated_word_on_a_short_pause_inside_a_sentence_stays() {
         // Polish speech decoded to English: "the" lands on a pause inside the
-        // sentence, with speech on both sides of it.
+        // sentence, with speech on both sides of it. The pause is shorter than
+        // the island gap, so the span lies on the sentence's island; its own
+        // pin holds no hop over the floor.
         let decisions = judge_whisper_words(&[
             word("I", 0, 9_600, Some(true), Some(true), None),
-            near_speech(word("the", 9_600, 14_400, Some(false), Some(false), None)),
+            word("the", 9_600, 14_400, Some(true), Some(false), None),
             word("patient", 14_400, 33_600, Some(true), Some(true), None),
         ]);
         assert!(
             decisions.iter().all(|decision| decision.admits()),
-            "translated words do not line up with the voiced Polish words; a word whose \
-             timestamp sits on a short pause beside speech must not be lost"
-        );
-        assert_eq!(
-            decisions[1].receipt(),
-            WHISPER_WORD_SPEECH_NEAR,
-            "the kept word says why it was kept: its own span was silent"
+            "a word whose timestamp sits on a pause inside the island must not be lost"
         );
     }
 
@@ -700,8 +680,8 @@ mod tests {
         ]);
         assert_eq!(
             decisions[1].receipt(),
-            RefuseReason::NoVoicedHopInPin.as_str(),
-            "a loop copy right after the one real nie is near speech, but a repeat needs its own"
+            RefuseReason::SpanWithoutOwnSpeech.as_str(),
+            "a loop copy right after the one real nie is near speech, but off the island"
         );
     }
 

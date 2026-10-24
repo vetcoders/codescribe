@@ -78,11 +78,13 @@ enum HotkeyModeChoice: String, CaseIterable {
     }
   }
 
-  var summary: String {
+  var summary: String? {
     summary(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
   }
 
-  func summary(locale: Locale) -> String {
+  /// The gesture each preset binds. Hybrid has none of its own to explain —
+  /// it is the other two together — so it carries no detail line.
+  func summary(locale: Locale) -> String? {
     switch self {
     case .hold:
       return String(
@@ -96,10 +98,7 @@ enum HotkeyModeChoice: String, CaseIterable {
           locale: locale,
           comment: "Hotkey preset detail; left and right Option activate different modes"))
     case .both:
-      return String(
-        localized: LocalizedStringResource(
-          "Use both methods.", locale: locale,
-          comment: "Hotkey preset detail: hold and toggle methods are both enabled"))
+      return nil
     }
   }
 
@@ -158,6 +157,10 @@ final class OnboardingViewModel: ObservableObject {
 
   // Hotkey-mode step state.
   @Published private(set) var hotkeyMode: HotkeyModeChoice
+  // Whether the user picked a preset in THIS wizard run. Only then does
+  // leaving the step overwrite the live mode bindings — otherwise a rerun
+  // would silently clobber custom shortcuts the user never touched here.
+  private var hotkeyModePicked = false
 
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
@@ -287,14 +290,28 @@ final class OnboardingViewModel: ObservableObject {
   var totalSteps: Int { OnboardingStep.count }
   var canGoBack: Bool { stepIndex > 0 }
 
-  /// Human-readable "Step N of M" — permission steps are still counted by their
-  /// absolute flow index so the bar never jumps.
+  /// The steps this lane actually shows. Counting the whole flow would promise
+  /// a step the Basic lane never reaches.
+  private var visibleSteps: [OnboardingStep] { OnboardingStep.flow.filter(isVisible) }
+
+  var visibleStepCount: Int { visibleSteps.count }
+  var visibleStepNumber: Int { (visibleSteps.firstIndex(of: step) ?? 0) + 1 }
+
+  /// Human-readable "Step N of M" over the visible steps, so the last step of
+  /// the Basic lane reads "Step 8 of 8" instead of jumping from 7 to 9. The
+  /// lane is chosen on step two, so the total can change once, there; after
+  /// that it is fixed and the bar never jumps.
   var progressLabel: String {
     String(
       localized: LocalizedStringResource(
-        "Step \(stepIndex + 1) of \(totalSteps)", locale: interfaceLocale,
+        "Step \(visibleStepNumber) of \(visibleStepCount)", locale: interfaceLocale,
         comment: "Setup wizard progress; first %lld is the current step, second the total"
       ))
+  }
+
+  /// The bar follows the same visible fraction as the counter.
+  var progressFraction: Double {
+    Double(visibleStepNumber - 1) / Double(max(1, visibleStepCount - 1))
   }
 
   var isDone: Bool { step == .done }
@@ -710,7 +727,7 @@ final class OnboardingViewModel: ObservableObject {
     case .interfaceLanguage: selectInterfaceLanguage(interfaceLanguage)
     case .mode: persistMode()
     case .language: persistLanguage()
-    case .hotkeyMode: persistHotkeyMode()
+    case .hotkeyMode: if hotkeyModePicked { persistHotkeyMode() }
     default: break
     }
   }
@@ -733,8 +750,10 @@ final class OnboardingViewModel: ObservableObject {
     finishPending = true
     reprobePermissions()
     dictationLane = engine.dictationLane()
-    whisperDownloadStore.refresh()
+    let modelRead = whisperDownloadStore.refresh()
     Task { @MainActor [weak self] in
+      // The verdict waits for a model read begun after this click.
+      await modelRead.value
       guard let self else { return }
       await readAdmission()
       finishPending = false
@@ -833,6 +852,7 @@ final class OnboardingViewModel: ObservableObject {
   /// HotkeysEngine — the same seam and live-reload the Shortcuts panel uses.
   func selectHotkeyMode(_ mode: HotkeyModeChoice) {
     hotkeyMode = mode
+    hotkeyModePicked = true
     persistHotkeyMode()
   }
 
@@ -844,6 +864,24 @@ final class OnboardingViewModel: ObservableObject {
       try hotkeys.setModeBinding(mode: .assistive, binding: assistive)
     } catch {
       lastError = error.userFacingMessage
+    }
+  }
+
+  /// Whether the live mode bindings do not exactly match any preset's triple —
+  /// i.e. the user is running custom shortcuts the wizard will leave alone
+  /// unless they pick a preset. Mirrors the three-core-mode comparison in
+  /// `HotkeyModeChoice.derive`.
+  var hotkeyBindingsAreCustom: Bool {
+    let live = hotkeys.modeBindings()
+    func binding(_ mode: CsWorkMode) -> CsShortcutBinding? {
+      live.first { $0.mode == mode }?.binding
+    }
+    let dictation = binding(.dictation)
+    let formatting = binding(.formatting)
+    let assistive = binding(.assistive)
+    return !HotkeyModeChoice.allCases.contains { preset in
+      let p = preset.bindings
+      return dictation == p.0 && formatting == p.1 && assistive == p.2
     }
   }
 
@@ -923,15 +961,23 @@ final class OnboardingViewModel: ObservableObject {
           "Account access unavailable", locale: interfaceLocale,
           comment: "Setup Agent account row status when account credentials cannot be read"))
     }
-    return selectedProviderAccountConnected
-      ? String(
+    if selectedProviderAccountConnected {
+      return String(
         localized: LocalizedStringResource(
           "Connected", locale: interfaceLocale,
           comment: "Setup Agent account row status"))
-      : String(
+    }
+    // A stored key already covers this provider, so the account is an extra.
+    if selectedProviderKeySet {
+      return String(
         localized: LocalizedStringResource(
-          "Not connected", locale: interfaceLocale,
-          comment: "Setup Agent account row status"))
+          "Optional", locale: interfaceLocale,
+          comment: "Status chip"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Not connected", locale: interfaceLocale,
+        comment: "Setup Agent account row status"))
   }
 
   var selectedProviderKeyStatus: String {
@@ -947,15 +993,23 @@ final class OnboardingViewModel: ObservableObject {
           "Provider access unavailable", locale: interfaceLocale,
           comment: "Setup provider row status when the credential snapshot failed"))
     }
-    return selectedProviderKeySet
-      ? String(
+    if selectedProviderKeySet {
+      return String(
         localized: LocalizedStringResource(
           "Set", locale: interfaceLocale,
           comment: "Setup API key row status"))
-      : String(
+    }
+    // The connected account already covers this provider, so the key is an extra.
+    if selectedProviderAccountConnected {
+      return String(
         localized: LocalizedStringResource(
-          "Not set", locale: interfaceLocale,
-          comment: "Setup API key row status"))
+          "Optional", locale: interfaceLocale,
+          comment: "Status chip"))
+    }
+    return String(
+      localized: LocalizedStringResource(
+        "Not set", locale: interfaceLocale,
+        comment: "Setup API key row status"))
   }
 
   func beginApiKeyEditing() {

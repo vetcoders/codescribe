@@ -16,7 +16,9 @@ struct SettingsView: View {
   // Native selection reconciliation writes only view state. Navigation and
   // its refresh effects are committed by onChange, outside the List setter.
   @State private var sidebarSelection: SettingsSection?
-  @State private var columnVisibility: NavigationSplitViewVisibility = .all
+  /// Persist only the user's expanded/collapsed choice; the split view owns
+  /// column geometry inside the bounds `CSSidebarColumn` carries.
+  @AppStorage("Settings.sidebarExpanded.v1") private var sidebarExpanded = true
   @State private var search: String = ""
   @State private var pendingScrollAnchor: SettingsAnchor?
   @State private var hostWindow: NSWindow?
@@ -27,25 +29,28 @@ struct SettingsView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: $columnVisibility) {
-      sidebar
-        .scrollContentBackground(.hidden)
-        .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
-        .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
-        .background { SettingsSidebarMaterial().ignoresSafeArea() }
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
+      CSSidebarColumn(
+        width: .navigation,
+        search: $search,
+        prompt: Text("Search settings")
+      ) {
+        sidebar
+      } footer: {
+        SettingsHealthFooter(model: model)
+      }
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
         .modifier(CSDetailHeaderGlass())
         .background(CSColor.sheet)
     }
+    .csSidebarToggle(expanded: $sidebarExpanded)
     .toolbar {
       if #available(macOS 26.0, *) {
         brandToolbar.sharedBackgroundVisibility(.hidden)
-        sectionToolbar.sharedBackgroundVisibility(.hidden)
       } else {
         brandToolbar
-        sectionToolbar
       }
     }
     .modifier(CSWindowHeaderChrome())
@@ -90,10 +95,16 @@ struct SettingsView: View {
     }
   }
 
+  /// The toolbar toggle, a divider drag to collapse and ⌃⌘S all write the
+  /// one persisted flag, so every path keeps the same choice.
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    CSSidebarVisibility.binding(expanded: $sidebarExpanded)
+  }
+
   /// The wordmark toolbar is the visible title. The window keeps its name for
-  /// Mission Control, App Exposé and the Window menu, and never minimises
-  /// (`DockPresence`): the app does not own this SwiftUI window's class, so it
-  /// keeps no minimise control rather than one that could leave an Exposé tile.
+  /// Mission Control, App Exposé and the Window menu, and never miniaturises:
+  /// its minimise control and ⌘M hide it (`DockPresence`), so no empty Exposé
+  /// tile is left behind; Open Settings and ⌘, bring it back.
   ///
   /// The window titlebar and backing are configured to allow native sidebar
   /// translucency (`.sidebar` material with `.behindWindow` blending) while
@@ -117,6 +128,8 @@ struct SettingsView: View {
     DockPresence.adopt(window)
   }
 
+  /// The bar carries only the wordmark: the selected sidebar row and the
+  /// pane's own headline already name the pane, so the bar does not repeat it.
   private var brandToolbar: some ToolbarContent {
     ToolbarItem(placement: .navigation) {
       CSWindowHeaderItem {
@@ -131,20 +144,12 @@ struct SettingsView: View {
     }
   }
 
-  private var sectionToolbar: some ToolbarContent {
-    ToolbarItem(placement: .principal) {
-      CSWindowHeaderItem {
-        Text(model.currentTab?.title ?? model.section.title)
-          .font(CSFont.ui(14, .semibold))
-          .lineLimit(1)
-          .truncationMode(.tail)
-      }
-    }
-  }
-
-  /// Native sidebar: grouped sections, SF Symbol rows, system selection, and a
-  /// search field that matches panel names AND what each panel does. One flat
-  /// row per section — a pane's parts are tabs inside the pane, not child rows.
+  /// The window's own rows inside the shared sidebar column: grouped
+  /// sections, SF Symbol rows and system selection. One flat row per
+  /// section — a pane's parts are tabs inside the pane, not child rows.
+  /// The list style, the search field that matches panel names AND what each
+  /// panel does, the material and the column bounds belong to
+  /// `CSSidebarColumn`.
   private var sidebar: some View {
     List(selection: $sidebarSelection) {
       ForEach(SettingsSectionGroup.allCases) { group in
@@ -153,6 +158,9 @@ struct SettingsView: View {
           Section(group.title) {
             ForEach(items) { item in
               Label(item.title, systemImage: item.symbol)
+                // Rows carry the shared scroller policy into the list's own
+                // scroll view (Founder, 2026-10-18).
+                .csAutohidingScrollers()
                 .tag(item)
                 .accessibilityIdentifier("settings-rail-\(item.rawValue)")
             }
@@ -160,12 +168,6 @@ struct SettingsView: View {
         }
       }
     }
-    .listStyle(.sidebar)
-    .searchable(
-      text: $search,
-      placement: .sidebar,
-      prompt: "Search settings"
-    )
     .onChange(of: sidebarSelection) { _, selection in
       // Clearing/filtering the native selection does not clear the detail.
       guard let selection, selection != model.section else { return }
@@ -210,6 +212,11 @@ struct SettingsView: View {
           ScrollView {
             untabbedDetail
               .frame(maxWidth: .infinity, alignment: .leading)
+              // `.scrollIndicators(.hidden)` stood here and could not keep its
+              // promise: with a mouse attached the system still handed this
+              // pane the legacy bar (Founder, 2026-10-18). `CSScrollerPin` is
+              // the one owner of the policy.
+              .csAutohidingScrollers()
           }
           .scrollContentBackground(.hidden)
         }
@@ -237,8 +244,6 @@ struct SettingsView: View {
       VoiceLabPanel(model: model)
     case .audio:
       AudioPanel(model: model)
-    case .license:
-      LicensePanel(model: model)
     case .creator:
       CreatorPanel(model: model)
     case .lab:
@@ -278,12 +283,15 @@ struct SettingsHealthFooter: View {
     }
   }
 
+  /// The coloured dot is the whole status signal. The line beside it is
+  /// ordinary secondary text in the system face, so the column ends quietly
+  /// instead of shouting a second time in colour (Monika, 2026-10-18).
   private func content(_ health: SettingsHealthState, message: String) -> some View {
     HStack(spacing: 8) {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
       Text(message)
-        .font(CSFont.mono(10, .medium))
-        .foregroundStyle(health.level.color)
+        .font(.caption)
+        .foregroundStyle(Color.secondary)
         .lineLimit(2)
       Spacer(minLength: 0)
     }
@@ -309,6 +317,7 @@ extension SettingsHealthLevel {
 
 // MARK: - Shared Settings chrome (consumed by every panel)
 
+/// The one headline of a page, above everything that page contains.
 struct SettingsPageHeader: View {
   let title: String
   var blurb: String?
@@ -319,14 +328,14 @@ struct SettingsPageHeader: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: CSSpace.sm) {
+    VStack(alignment: .leading, spacing: SettingsScale.titleGap) {
       Text(title)
-        .font(.title2.weight(.semibold))
+        .font(SettingsScale.pageTitle)
         .foregroundStyle(.primary)
         .accessibilityAddTraits(.isHeader)
       if let blurb, !blurb.isEmpty {
         Text(blurb)
-          .font(.callout)
+          .font(SettingsScale.pageBlurb)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -335,19 +344,27 @@ struct SettingsPageHeader: View {
   }
 }
 
+/// The one title of a peer section, above the cards it introduces. It reads at
+/// primary strength and one rung above a setting's own name, because a header
+/// that is quieter than the rows beneath it stops being a header. Every
+/// section of a page is a peer, so there is no rung above this one.
 struct SettingsSectionLabel: View {
   let text: String
-  init(_ text: String) { self.text = text }
+  init(_ text: String) {
+    self.text = text
+  }
   var body: some View {
     Text(text)
-      .font(.subheadline.weight(.semibold))
-      .foregroundStyle(.secondary)
+      .font(SettingsScale.sectionTitle)
+      .foregroundStyle(.primary)
       .accessibilityAddTraits(.isHeader)
   }
 }
 
 /// Section label with one trailing action on the same line, so a helper such
-/// as refresh or a System Settings link does not take a row of its own.
+/// as refresh or a System Settings link does not take a row of its own. This
+/// is the one header owner of the central pane; a panel that needs a title
+/// without an action uses the `EmptyView` init below or `SettingsSectionLabel`.
 struct SettingsSectionHeaderRow<Action: View>: View {
   let text: String
   @ViewBuilder var action: () -> Action
@@ -356,12 +373,18 @@ struct SettingsSectionHeaderRow<Action: View>: View {
     self.action = action
   }
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
       SettingsSectionLabel(text)
         .frame(maxWidth: .infinity, alignment: .leading)
       action()
         .controlSize(.small)
     }
+  }
+}
+
+extension SettingsSectionHeaderRow where Action == EmptyView {
+  init(_ text: String) {
+    self.init(text) { EmptyView() }
   }
 }
 
@@ -372,7 +395,7 @@ struct SettingsMenuLabel: View {
   var body: some View {
     HStack(spacing: CSSpace.xs) {
       Text(text)
-        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .font(mono ? SettingsScale.monoValue : SettingsScale.settingName)
         .foregroundStyle(.primary)
         .lineLimit(1)
       CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
@@ -382,17 +405,29 @@ struct SettingsMenuLabel: View {
 }
 
 extension View {
-  /// Grouped settings inset that follows the system appearance.
-  /// `csSettingsCard` stays on surfaces that still paint a fixed dark canvas.
-  func settingsGroupedInset(padding: CGFloat = CSSpace.card) -> some View {
+  /// The one switch of Settings: a small macOS switch, tinted, its label
+  /// carried by the row that holds it. The regular size reads as an iPad
+  /// control on the desktop (Founder, 2026-10-20), so no switch sets its own.
+  func settingsSwitch() -> some View {
+    self
+      .toggleStyle(.switch)
+      .controlSize(.small)
+      .labelsHidden()
+      .tint(CSColor.chromeAccent)
+  }
+
+  /// The one card of the central pane: a grouped inset that follows the
+  /// system appearance. Setting names live inside it; the section title that
+  /// introduces it sits above it.
+  func settingsGroupedInset(padding: CGFloat = SettingsScale.cardPadding) -> some View {
     self
       .padding(padding)
       .background(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
           .fill(Color.primary.opacity(0.05))
       )
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
   }
@@ -412,24 +447,24 @@ struct RuntimeRow: View {
   var mono: Bool = false
   var trailing: Trailing = .none
   /// Key column; a table whose Polish keys run long widens it once for all rows.
-  var keyWidth: CGFloat = 160
+  var keyWidth: CGFloat = SettingsScale.rowKeyWidth
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: CSSpace.md) {
       Text(key)
-        .font(CSFont.mono(12, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.secondary)
         .frame(width: keyWidth, alignment: .leading)
       Text(value)
-        .font(mono ? CSFont.mono(12.5, .semibold) : .body.weight(.semibold))
+        .font(mono ? SettingsScale.monoValue : SettingsScale.settingValue)
         .foregroundStyle(.primary)
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(maxWidth: .infinity, alignment: .leading)
       trailingView
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 13)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .background(tint ? Color.primary.opacity(0.04) : Color.clear)
   }
 
@@ -442,7 +477,7 @@ struct RuntimeRow: View {
       Circle().fill(color).frame(width: 7, height: 7)
     case .text(let label, let color):
       Text(label)
-        .font(CSFont.mono(10, .semibold))
+        .font(SettingsScale.statusBadge)
         .foregroundStyle(color)
     }
   }

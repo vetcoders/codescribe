@@ -43,18 +43,22 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import ctypes
 import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import select
+import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
 from stat import S_ISREG
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from types import SimpleNamespace
 
 # =============================================================================
@@ -71,6 +75,9 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 #: The bridge reads them only as flush boundaries for the coverage-refused
 #: safety net below; it never turns them into transcript envelopes.
 CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Capture-owned publication refusal. It retires a channel document before
+#: lifecycle boundaries can invoke the coverage-refused delivery net.
+PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
 #: a channel closed by a second digit / Fn press is not reopened, so no
 #: later channel-session row would ever release its refused take.
@@ -86,6 +93,14 @@ TERMINAL_PUBLICATIONS = (TERMINAL_SEAL, DIRECT_TERMINAL)
 #: ``state_change_allowed: false`` — parity with the Stop lane's degraded
 #: handoff: the take is delivered but no longer allowed to certify itself.
 COVERAGE_REFUSED = "refused"
+#: A channel-session row stamped ``publication: controller`` comes from a
+#: controller that publishes every take's closing decision itself: a closing
+#: seal stamped ``closing_decision: publish``, or a publication refusal. For
+#: such a session the net above never promotes a draft. On 2026-10-22 it
+#: delivered take f32ff617, a 224 ms unwitnessed "Dziękuję.", because no
+#: controller decision existed and the net stood in for one.
+CONTROLLER_PUBLICATION = "controller"
+CLOSING_PUBLISH = "publish"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 AGENT_TURN_LEASE_FILENAME = "agent-turn.lock"
 SEALED = "transcript_sealed"
@@ -96,9 +111,22 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
+# The Founder's own lane: typed words are sent from channel 10, never from the
+# recipient whose mailbox carries the copy.
+FOUNDER_SENDER = {"name": "founder", "channel": "10"}
+CAPTURE_ATTACHMENT_SCHEMA = "codescribe.capture-attachment.v1"
+CAPTURE_ATTACHMENT_COMMIT_SCHEMA = "codescribe.capture-attachment-commit.v1"
 DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
 AGENT_REPLY_SCHEMA = "codescribe.agent-reply.v1"
 AGENT_REPLY_PLAYBACK_SCHEMA = "codescribe.agent-reply-playback.v1"
+#: A click on an agent row asks that agent's follower to bring its own
+#: vc-frame pane to the Founder's focus; the app never drives the terminal.
+AGENT_PANEL_FOCUS_SCHEMA = "codescribe.agent-panel-focus.v1"
+AGENT_PANEL_FOCUS_RESULT_SCHEMA = "codescribe.agent-panel-focus-result.v1"
+#: A request older than this is a backlog replayed after a restart, not a
+#: click: executing it would yank the focus away from whatever is on screen.
+PANEL_FOCUS_FRESH_SECONDS = 15.0
+PANEL_FOCUS_TIMEOUT_SECONDS = 5.0
 REPLY_SOURCE_SCHEMA = "codescribe.agent-reply-source.v1"
 REPLY_CONTROL_SCHEMA = "codescribe.agent-reply-control.v1"
 PLAYBACK_MUTE_SCHEMA = "codescribe.agent-playback-mute.v1"
@@ -125,10 +153,23 @@ DEFAULT_LEASE_TTL_SECONDS = 120.0
 PLAYBACK_WAIT_SECONDS = 120.0
 TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
+# A hold control must reach the follower before the row's deadline releases it.
+HOLD_CONTROL_MARGIN_SECONDS = 0.5
 PLAYBACK_SCAN_SECONDS = 0.5
 # A scan cut short by its budget proved nothing either way. Playback resumes the
 # cursor on the next tick and stops only after this many in a row.
 PLAYBACK_INCOMPLETE_SCANS_LIMIT = 3
+#: Half-duplex on this Mac (Maciej, 2026-10-22: "ktoś z nas użył afplaya ... ja
+#: nie używam afplaya, jak mówię"). While a reply plays, the speaking process
+#: announces itself here and the app drops its channel microphone feed.
+PLAYBACK_NOW_FILENAME = "agent-playback-now.json"
+PLAYBACK_NOW_SCHEMA = "codescribe.agent-playback-now.v1"
+#: Room tail added to the announced end of a reply.
+PLAYBACK_NOW_SLACK_SECONDS = 1.0
+#: The app's measured speech phase for one open channel, one file per channel.
+CHANNEL_SPEECH_NOW_SCHEMA = "codescribe.channel-speech-now.v1"
+#: Measured quiet an open channel needs before a reply may start into it.
+PLAYBACK_QUIET_SECONDS = 1.0
 DEFAULT_SPEECH_SPEED = 1.25
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
@@ -378,6 +419,7 @@ def installation_idle(
     cursor: dict[str, Any] | None = None,
     bridge_root: Path | None = None,
     deadline: float | None = None,
+    channel_released: Callable[[str, str], bool] | None = None,
 ) -> bool:
     """True when no current take is in flight.
 
@@ -397,14 +439,17 @@ def installation_idle(
     ``emitted_at`` is missing or unparseable stays live: abandonment must
     be proven, not presumed.
     Channel buses from the binding file and ``buses/channel-*.jsonl`` share
-    this guard. Only ``open`` holds a channel; any other lifecycle state or
-    a successor session on that channel ends it, as in the channel consumer.
+    this guard. Only ``open`` holds a channel; a later state of that session
+    or the open of a successor on that channel ends it, as in the channel
+    consumer. A predecessor's close never ends its successor.
     Silence alone does not release it. An open channel with no receipt for
     six hours uses the CLI abandonment threshold; unknown timestamps keep
     blocking. Evidence rows refresh the session's last known activity.
     A supplied monotonic deadline limits each scan to one bounded scan slice.
     Budget expiry retains the processed prefix and refuses idle; the caller
     can resume that cursor without skipping any unread lifecycle rows.
+    ``channel_released(channel, session_id)`` lets playback treat an open
+    channel as idle; installation never passes it.
     """
     scan_started = time.monotonic()
     scan_deadline = (
@@ -566,18 +611,26 @@ def installation_idle(
                                 or not session_id
                             ):
                                 raise ValueError("channel row has no identity")
-                            # A newer session on this channel supersedes its old open
-                            # receipt, matching _consume_channel_row and orphan seals.
-                            open_channels = {
-                                sid: value
-                                for sid, value in open_channels.items()
-                                if value[0] != channel
-                            }
                             if str(event.get("state") or "") == "open":
+                                # A newer session on this channel supersedes its
+                                # old open receipt, matching orphan seals.
+                                open_channels = {
+                                    sid: value
+                                    for sid, value in open_channels.items()
+                                    if value[0] != channel
+                                }
                                 emitted = event.get("emitted_at") or event.get("opened_at")
                                 open_channels[session_id] = (
                                     channel, emitted if isinstance(emitted, str) else None
                                 )
+                            else:
+                                # The controller reopens a channel before the
+                                # predecessor's tail publishes its seal (20:23:35
+                                # open b868b9ec, 20:23:36 sealed 896f2cea). That
+                                # close names only its own session, as in
+                                # _consume_channel_row; ending the successor let
+                                # replies play into Maciej's open microphone.
+                                open_channels.pop(session_id, None)
                             continue
                         if (
                             event.get("schema") == EVIDENCE_SCHEMA
@@ -655,7 +708,8 @@ def installation_idle(
         ]
         live_channels = any(
             not _cli_session_abandoned(activity, now)
-            for _, activity in open_channels.values()
+            and not (channel_released is not None and channel_released(channel, session_id))
+            for session_id, (channel, activity) in open_channels.items()
         )
         if live_app is not None or live_cli or live_channels:
             idle = False
@@ -903,7 +957,7 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
-    for key in ("message_id", "occurrences", "hold_until"):
+    for key in ("message_id", "occurrences", "hold_until", "user_reply_to", "attachments"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1005,7 +1059,10 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        PUBLICATION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
+        CAPTURE_ATTACHMENT_SCHEMA,
+        CAPTURE_ATTACHMENT_COMMIT_SCHEMA,
         # Replies enter the follower stream only for the peer text lane;
         # admission drops every reply that does not name a peer recipient.
         AGENT_REPLY_SCHEMA,
@@ -1022,6 +1079,23 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         ):
             return None
     return event
+
+
+def channel_publication_refusal_session(event: dict[str, Any]) -> str | None:
+    """Recognize an explicit capture refusal, never infer it from empty text."""
+    session = event.get("session_id")
+    if (event.get("schema") != PUBLICATION_SCHEMA
+            or event.get("status") != "channel_publication_refused"
+            or event.get("reason") != "sound_without_speech"
+            or event.get("entirely_unwitnessed") is not True
+            or not isinstance(session, str)
+            or channel_of_session(session) is None
+            or type(event.get("capture_epoch")) is not int
+            or event["capture_epoch"] <= 0
+            or (event.get("channel") is not None
+                and str(event["channel"]) != channel_of_session(session))):
+        return None
+    return session
 
 
 def evidence_revision_rows(event: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -1096,6 +1170,13 @@ def normalized_revision_events(
         rows = [snapshot]
     events: list[dict[str, Any]] = []
     for row in rows:
+        if row.get("schema") == PUBLICATION_SCHEMA:
+            # A provider lease may retire only its frozen channel ownership.
+            if lease and not lease.admits_channel_event(row):
+                continue
+            if lease:
+                if lease.retire_channel_publication(row):
+                    lease.persist(active=True)
         if lease and lease.revise_held_voice(row):
             continue
         event = normalizer.normalize(row)
@@ -1170,6 +1251,30 @@ def channel_message_phase_identity(event: dict[str, Any]) -> str:
                       event.get("reducer_revision"), event.get("reducer_action")))
 
 
+def capture_sample_rate(event: dict[str, Any]) -> int | None:
+    """Read the ledger's capture clock; VAD and TTS rates are different clocks."""
+    coverage = event.get("seal_coverage")
+    rate = event.get("sample_rate_hz")
+    if not (type(rate) is int and rate > 0) and isinstance(coverage, dict):
+        rate = coverage.get("sample_rate_hz")
+    return rate if type(rate) is int and rate > 0 else None
+
+
+def capture_attachment_anchor(document: dict[str, Any], stage: dict[str, Any]) -> dict[str, Any]:
+    sources = [row for row in document.get("capture_attachment_sources", [])
+               if row.get("capture_epoch") == stage.get("capture_epoch")]
+    source = next((row for row in sources
+                   if row.get("sequence") == stage.get("source_sequence")), None)
+    if source is None or type(source.get("sample_start")) is not int or source["sample_start"] < 0:
+        return {"attached_at_sample": 0, "attached_at_seconds": 0.0}
+    first_sample = min((row["sample_start"] for row in sources
+                        if type(row.get("sample_start")) is int and row["sample_start"] >= 0),
+                       default=source["sample_start"])
+    rate = capture_sample_rate(source) or capture_sample_rate(document)
+    seconds = (source["sample_start"] - first_sample) / rate if rate else 0.0
+    return {"attached_at_sample": source["sample_start"], "attached_at_seconds": seconds}
+
+
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
@@ -1189,6 +1294,10 @@ class EvidenceNormalizer:
     :meth:`pop_flushes`. A ledger terminal receipt carries certification;
     without it the envelope keeps ``coverage: "refused"``. Physical occurrence
     coordinates and receipts accompany the full render, never split its text.
+
+    The net is for producers that never decide. A session whose channel rows
+    declare ``publication: controller`` is delivered only from the
+    controller's closing seal; its drafts alone settle silently.
     """
 
     #: Unsealed channel sessions retained for the flush net. The quiet
@@ -1205,7 +1314,11 @@ class EvidenceNormalizer:
         self._settled_sessions: set[str] = set()
         self._session_docs: dict[str, dict[str, Any]] = {}
         self._channel_open_times: dict[str, tuple[str, float]] = {}
+        # Sessions whose channel rows declared ``publication: controller``,
+        # oldest first. Their close never promotes an undecided draft.
+        self._controller_sessions: dict[str, None] = {}
         self._flushes: list[dict[str, Any]] = []
+        self._publication_refusals: dict[str, dict[str, Any]] = {}
 
     def pop_flushes(self) -> list[dict[str, Any]]:
         """Final channel envelopes triggered by the last normalized row."""
@@ -1225,11 +1338,41 @@ class EvidenceNormalizer:
             elif session not in self._settled_sessions:
                 self._remember_channel_document(document, dict(document))
 
+    def restore_publication_refusals(self, receipts: list[dict[str, Any]]) -> None:
+        for receipt in receipts:
+            self._consume_publication_refusal(receipt)
+
+    def publication_refusals(self) -> dict[str, dict[str, Any]]:
+        return {session: dict(receipt) for session, receipt in self._publication_refusals.items()}
+
+    def _consume_publication_refusal(self, receipt: dict[str, Any]) -> None:
+        session = channel_publication_refusal_session(receipt)
+        if session is None:
+            return
+        document = self._session_docs.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != receipt["capture_epoch"]):
+            return
+        self._session_docs.pop(session, None)
+        self._channel_open_times.pop(session, None)
+        self._controller_sessions.pop(session, None)
+        self._settled_sessions.add(session)
+        self._flushes = [event for event in self._flushes if event.get("session_id") != session]
+        self._publication_refusals[session] = dict(receipt)
+
     def channel_documents(self) -> dict[str, dict[str, Any]]:
         return {session: dict(document) for session, document in self._session_docs.items()}
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None:
+            return None
+        if event.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA:
+            return None
+        if event.get("schema") == CAPTURE_ATTACHMENT_SCHEMA:
+            self._consume_capture_attachment(event)
+            return None
+        if event.get("schema") == PUBLICATION_SCHEMA:
+            self._consume_publication_refusal(event)
             return None
         if event.get("schema") == CHANNEL_SESSION_SCHEMA:
             self._consume_channel_row(event)
@@ -1305,16 +1448,51 @@ class EvidenceNormalizer:
             if not older_snapshot or key not in inventory:
                 inventory[key] = item
         clean["occurrences"] = list(inventory.values())
+        source_rows = event.get("occurrences") or [event]
+        rate = capture_sample_rate(event) or capture_sample_rate(previous or {})
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
+        clean["capture_source_sequence"] = event.get("capture_source_sequence")
+        if clean["capture_source_sequence"] is None:
+            clean["capture_source_sequence"] = source_rows[-1].get("sequence")
+        # A paste names one observed source sequence. Keep that metadata across
+        # continued speech, even when a revision replaces the same PCM range in
+        # the visible occurrence inventory. Text is never an attachment key.
+        attachment_sources = {
+            (item.get("capture_epoch"), item.get("sequence")): item
+            for item in (previous or event).get("capture_attachment_sources", [])
+        }
+        for source in source_rows:
+            coordinates = {key: source.get(key, event.get(key)) for key in (
+                "capture_epoch", "sequence", "reducer_revision", "occurrence_session_id",
+                "sample_start", "sample_end", "document_index",
+            )}
+            if rate is not None:
+                coordinates["sample_rate_hz"] = rate
+            attachment_sources.setdefault(
+                (coordinates["capture_epoch"], coordinates["sequence"]), coordinates)
+        clean["capture_attachment_sources"] = list(attachment_sources.values())
+        if previous:
+            for key in ("attachments", "capture_attachment_stages"):
+                if previous.get(key):
+                    clean[key] = previous[key]
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
+            previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             return False
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
         ) == (incoming_revision, event.get("reducer_action"))
         if same_phase:
             previous["occurrences"] = clean["occurrences"]
+            previous["capture_source_sequence"] = clean["capture_source_sequence"]
+            previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
+            if rate is not None:
+                previous["sample_rate_hz"] = rate
             if event.get("status") == SEALED:
-                for key in ("hold_until", "utterance_id"):
+                for key in ("hold_until", "utterance_id", "closing_decision"):
                     if key in event:
                         previous[key] = event[key]
         else:
@@ -1328,6 +1506,10 @@ class EvidenceNormalizer:
         session = str(row.get("session_id") or "")
         if not session or channel_of_session(session) != channel:
             return
+        if row.get("publication") == CONTROLLER_PUBLICATION:
+            self._controller_sessions[session] = None
+            while len(self._controller_sessions) > self.MAX_TRACKED_SESSIONS:
+                self._controller_sessions.pop(next(iter(self._controller_sessions)))
         # A delayed predecessor close is evidence only for that named capture.
         # It cannot terminate documents belonging to a newer admitted take.
         if str(row.get("state") or "") != "open":
@@ -1357,15 +1539,60 @@ class EvidenceNormalizer:
                          key=lambda key: self._channel_open_times[key][1])
             del self._channel_open_times[oldest]
 
+    def _consume_capture_attachment(self, receipt: dict[str, Any]) -> None:
+        session = str(receipt.get("session_id") or "")
+        document = self._session_docs.get(session)
+        if (receipt.get("kind") != "capture_attachment" or document is None
+                or session in self._settled_sessions
+                or receipt.get("capture_epoch") != document.get("capture_epoch")
+                or receipt.get("audience") != document.get("audience")
+                or receipt.get("recipients") != document.get("recipients")):
+            return
+        attachments = receipt.get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            return
+        pointer_fields = {"name", "path", "media_type", "bytes", "sha256"}
+        anchor_fields = {"attached_at_sample", "attached_at_seconds"}
+        if any(not isinstance(item, dict) or set(item) not in (pointer_fields, pointer_fields | anchor_fields)
+               or not all(isinstance(item.get(key), str) for key in ("name", "path", "media_type"))
+               or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in attachments):
+            return
+        commit_bus = receipt.get("commit_bus")
+        if not isinstance(commit_bus, str) or not Path(commit_bus).is_absolute():
+            return
+        known = document.setdefault("capture_attachment_stages", [])
+        if not any(item.get("stage_id") == receipt.get("stage_id") for item in known):
+            known.append(receipt)
+
     def _flush_session(self, session: str, emitted_at: Any) -> None:
         self._channel_open_times.pop(session, None)
+        controller = session in self._controller_sessions
+        self._controller_sessions.pop(session, None)
         clean = self._session_docs.pop(session, None)
         if not clean or session in self._settled_sessions:
             return
         self._settled_sessions.add(session)
+        if controller and clean.get("closing_decision") != CLOSING_PUBLISH:
+            # The controller decides this take's publication. Without its
+            # closing seal there is nothing to deliver, only drafts.
+            return
         if not (clean.get("text") or "").strip():
             return
         final = dict(clean)
+        final.pop("capture_attachment_sources", None)
+        attachments = list(clean.get("attachments", []))
+        for stage in clean.get("capture_attachment_stages", []):
+            if (stage.get("capture_epoch") == clean.get("capture_epoch")
+                    and stage.get("recipients") == clean.get("recipients")
+                    and stage.get("audience") == clean.get("audience")
+                    and capture_attachment_is_committed(stage)):
+                for pointer in stage["attachments"]:
+                    anchored = {**pointer, **capture_attachment_anchor(clean, stage)}
+                    if anchored not in attachments:
+                        attachments.append(anchored)
+        if attachments:
+            final["attachments"] = attachments
+            final["text"] = final["text"].rstrip() + attachment_pointer_lines(attachments)
         final.update(status=SEALED, emitted_at=emitted_at or clean.get("emitted_at"))
         if clean.get("reducer_action") == DIRECT_TERMINAL:
             final["coverage"] = "direct"
@@ -1397,12 +1624,16 @@ class EvidenceNormalizer:
             "sample_end": event.get("sample_end"),
             "document_index": event.get("document_index"),
         }
+        rate = capture_sample_rate(event)
+        if rate is not None:
+            clean["sample_rate_hz"] = rate
         audience = event.get("audience")
         if isinstance(audience, str) and audience:
             clean["audience"] = audience
         if channel_of_session(str(event.get("session_id") or "")) is not None and event.get("utterance_id") is None:
             clean.pop("utterance_id", None)
-        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id", "hold_until"):
+        for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id",
+                    "hold_until", "closing_decision"):
             if key in event:
                 clean[key] = event[key]
         return clean
@@ -1518,11 +1749,19 @@ def consider(
                 or not re.fullmatch(r"[0-9a-f]{24}", event["message_id"])
                 or event.get("source_event_id") != event["message_id"]):
             return None
+        if "user_reply_to" in event:
+            try:
+                validate_user_reply_reference(event["user_reply_to"])
+            except ValueError:
+                return None
         audience = event.get("audience")
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
+        # The owner fields name the recipient; the delivery names who wrote it.
+        # Rows written before the sender existed get the same Founder sender.
         return {**event, "schema": EVENT_SCHEMA, "kind": "message",
                 "channel": event.get("origin_channel", event.get("channel")),
+                "name": FOUNDER_SENDER["name"], "sender": dict(FOUNDER_SENDER),
                 "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
                 "routing_match": "audience"}
     status = event.get("status")
@@ -2535,8 +2774,699 @@ def repository_context(workspace: Path) -> dict[str, str]:
     return result
 
 
+def frame_context(environ: Any) -> dict[str, Any] | None:
+    """Name the vc-frame pane that hosts this provider session, or None outside vc-frame.
+
+    The follower is spawned from the agent's own shell, so it inherits the
+    pane, session and terminal-host coordinates of that pane. Which vc-frame
+    program answers is not part of the address: see frame_cli.
+    """
+    pane = str(environ.get("VC_FRAME_PANE_ID") or environ.get("ZELLIJ_PANE_ID") or "")
+    session = str(environ.get("VC_FRAME_SESSION_NAME") or environ.get("ZELLIJ_SESSION_NAME") or "")
+    if not pane.isdigit() or not session:
+        return None
+    host_pid = None
+    for key in ("ALACRITTY_SOCKET", "ALACRITTY_LOG"):
+        match = re.search(r"Alacritty-(\d+)\.(?:sock|log)$", str(environ.get(key) or ""))
+        if match:
+            host_pid = int(match.group(1))
+            break
+    return {
+        "session": session,
+        "pane_id": int(pane),
+        "socket_dir": environ.get("VC_FRAME_SOCKET_DIR") or environ.get("ZELLIJ_SOCKET_DIR"),
+        "host_bundle_id": environ.get("__CFBundleIdentifier"),
+        "host_pid": host_pid,
+    }
+
+
+_FRAME_ENV_KEYS = frozenset({
+    "VC_FRAME_PANE_ID",
+    "ZELLIJ_PANE_ID",
+    "VC_FRAME_SESSION_NAME",
+    "ZELLIJ_SESSION_NAME",
+    "VC_FRAME_SOCKET_DIR",
+    "ZELLIJ_SOCKET_DIR",
+    "__CFBundleIdentifier",
+    "ALACRITTY_SOCKET",
+    "ALACRITTY_LOG",
+})
+
+ITERM2_BUNDLE_ID = "com.googlecode.iterm2"
+APPLE_TERMINAL_BUNDLE_ID = "com.apple.Terminal"
+TERMINAL_HOSTS = {ITERM2_BUNDLE_ID: "iterm2", APPLE_TERMINAL_BUNDLE_ID: "apple-terminal"}
+_TERM_PROGRAM_BUNDLES = {"iTerm.app": ITERM2_BUNDLE_ID, "Apple_Terminal": APPLE_TERMINAL_BUNDLE_ID}
+_TERMINAL_ENV_KEYS = frozenset({
+    "__CFBundleIdentifier",
+    "TERM_PROGRAM",
+    "ITERM_SESSION_ID",
+    "TERM_SESSION_ID",
+})
+# iTerm2 exports `w0t5p0:<UUID>`; AppleScript's `id of session` is the UUID.
+_ITERM_SESSION_RE = re.compile(
+    r"(?:^|:)([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
+
+
+def terminal_tty(name: Any) -> str | None:
+    """`ps` prints `ttys005`; the terminals' AppleScript speaks `/dev/ttys005`."""
+    cleaned = str(name or "").strip()
+    if not cleaned or cleaned in ("??", "-"):
+        return None
+    return cleaned if cleaned.startswith("/dev/") else "/dev/" + cleaned
+
+
+def terminal_context(environ: Any, tty: Any = None) -> dict[str, Any] | None:
+    """Name the iTerm2 or Terminal.app tab hosting a process, or None elsewhere.
+
+    The bundle identifier the terminal exports wins over TERM_PROGRAM; any
+    other host (vc-frame's own terminal, an editor's terminal) is not a tab
+    this follower can bring to front.
+    """
+    bundle = str(environ.get("__CFBundleIdentifier") or "")
+    if bundle not in TERMINAL_HOSTS:
+        bundle = _TERM_PROGRAM_BUNDLES.get(str(environ.get("TERM_PROGRAM") or ""), "")
+    if bundle not in TERMINAL_HOSTS:
+        return None
+    session_id = None
+    if bundle == ITERM2_BUNDLE_ID:
+        for key in ("ITERM_SESSION_ID", "TERM_SESSION_ID"):
+            match = _ITERM_SESSION_RE.search(str(environ.get(key) or "").strip())
+            if match:
+                session_id = match.group(1)
+                break
+    return {
+        "host": TERMINAL_HOSTS[bundle],
+        "host_bundle_id": bundle,
+        "tty": terminal_tty(tty),
+        "session_id": session_id,
+    }
+
+
+def inherited_terminal_context(environ: Any) -> dict[str, Any] | None:
+    """The terminal tab of the agent that spawned this follower.
+
+    The tab comes from the inherited environment; its tty from the nearest
+    process in this follower's ancestry that holds one.
+    """
+    terminal = terminal_context(environ)
+    if terminal is None:
+        return None
+    procs = process_table()
+    current = os.getpid()
+    for _ in range(8):
+        info = procs.get(current)
+        if info is None:
+            break
+        tty = terminal_tty(info["tty"])
+        if tty is not None:
+            terminal["tty"] = tty
+            break
+        current = info["ppid"]
+    return terminal
+
+
+CODEX_APP_BUNDLE_ID = "com.openai.codex"
+_CODEX_THREAD_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
+#: Upper bound on directory entries one rollout lookup may visit.
+CODEX_ROLLOUT_SCAN_ENTRIES = 20_000
+
+
+class _CodexScanBound(Exception):
+    """A rollout lookup visited more entries than it may."""
+
+
+def codex_home(environ: Any) -> Path:
+    """`$CODEX_HOME`, else `~/.codex`: the root of Codex's local thread store."""
+    configured = str(environ.get("CODEX_HOME") or "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".codex"
+
+
+def codex_rollout_path(codex_root: Path, thread_id: str) -> Path | None:
+    """The rollout file of a Codex thread in the local store, or None.
+
+    Codex writes a live thread to `sessions/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl`
+    and moves an archived one to `archived_sessions/` (sometimes compressed
+    as `.jsonl.zst`). The Codex app opens `codex://threads/<id>` only for a
+    thread found here; a Codex Cloud thread has no local rollout. Newest
+    date directories are visited first and the walk is bounded.
+    """
+    if not isinstance(thread_id, str) or not _CODEX_THREAD_RE.fullmatch(thread_id):
+        return None
+    suffixes = (f"-{thread_id}.jsonl", f"-{thread_id}.jsonl.zst")
+    visited = 0
+
+    def entries(directory: Path) -> list[os.DirEntry[str]]:
+        nonlocal visited
+        try:
+            with os.scandir(directory) as scan:
+                found = list(scan)
+        except OSError:
+            return []
+        visited += len(found)
+        if visited > CODEX_ROLLOUT_SCAN_ENTRIES:
+            raise _CodexScanBound
+        return found
+
+    def dated(directory: Path, pattern: str) -> list[Path]:
+        newest_first = sorted(entries(directory), key=lambda entry: entry.name, reverse=True)
+        return [Path(entry.path) for entry in newest_first
+                if re.fullmatch(pattern, entry.name) and entry.is_dir(follow_symlinks=False)]
+
+    def rollout(directory: Path) -> Path | None:
+        for entry in entries(directory):
+            if (entry.name.startswith("rollout-") and entry.name.endswith(suffixes)
+                    and entry.is_file(follow_symlinks=False)):
+                return Path(entry.path)
+        return None
+
+    try:
+        for year in dated(codex_root / "sessions", r"\d{4}"):
+            for month in dated(year, r"\d{2}"):
+                for day in dated(month, r"\d{2}"):
+                    found = rollout(day)
+                    if found is not None:
+                        return found
+        return rollout(codex_root / "archived_sessions")
+    except _CodexScanBound:
+        return None
+
+
+def codex_remote_ancestor(procs: dict[int, dict[str, Any]], pid: int) -> bool:
+    """Whether a process in `pid`'s ancestry is a Codex Cloud exec-server.
+
+    The Codex app runs a cloud thread's tools through
+    `codex … exec-server --remote <url> …`; a local thread's tools never pass
+    through such a process.
+    """
+    current = pid
+    seen: set[int] = set()
+    for _ in range(16):
+        info = procs.get(current)
+        if info is None or current in seen:
+            break
+        seen.add(current)
+        tokens = str(info.get("command") or "").split()
+        if "exec-server" in tokens:
+            server = tokens.index("exec-server")
+            if (any(Path(token).name == "codex" for token in tokens[:server])
+                    and any(token == "--remote" or token.startswith("--remote=")
+                            for token in tokens[server + 1:])):
+                return True
+        current = info.get("ppid")
+    return False
+
+
+def codex_context(provider: str, thread_id: Any, *, rollout: bool, remote: bool) -> dict[str, Any] | None:
+    """Name the Codex app thread of a Codex follower, or None for other providers.
+
+    The thread id is the provider session id the lease already records;
+    `rollout` says whether the local store can open it, `remote` whether the
+    follower runs under a Codex Cloud exec-server.
+    """
+    if provider != "codex" or not isinstance(thread_id, str) or not _CODEX_THREAD_RE.fullmatch(thread_id):
+        return None
+    return {
+        "thread_id": thread_id,
+        "app_bundle_id": CODEX_APP_BUNDLE_ID,
+        "rollout": bool(rollout),
+        "remote": bool(remote),
+    }
+
+
+def process_environ(pid: int) -> dict[str, str]:
+    """Extract vc-frame and terminal-host environment variables from a live process via `ps eww`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "eww", "-o", "command=", "-p", str(pid)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=2, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    extracted: dict[str, str] = {}
+    for token in result.stdout.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        if key in _FRAME_ENV_KEYS or key in _TERMINAL_ENV_KEYS:
+            extracted[key] = value
+    return extracted
+
+
+def tty_window_and_access(tty_name: str) -> dict[str, Any] | None:
+    """Read slave PTY window size (rows, cols) and st_atime for live attach coupling."""
+    import struct
+    import termios
+
+    cleaned = (tty_name or "").strip()
+    if not cleaned or cleaned == "??":
+        return None
+    path = "/dev/" + cleaned.lstrip("/")
+    if path.startswith("/dev/dev/"):
+        path = path[4:]
+    descriptor: int | None = None
+    try:
+        metadata = os.stat(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        packed = fcntl.ioctl(descriptor, termios.TIOCGWINSZ, b"\x00" * 8)
+        rows, cols = struct.unpack("HHHH", packed)[:2]
+        return {"path": path, "atime": metadata.st_atime, "winsz": (rows, cols)}
+    except OSError:
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def process_table() -> dict[int, dict[str, Any]]:
+    """Snapshot live processes `{pid: {pid, ppid, tty, command}}`."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,tty=,command="],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=2, env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    table: dict[int, dict[str, Any]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = {"pid": pid, "ppid": ppid, "tty": parts[2], "command": parts[3]}
+    return table
+
+
+def resolve_claude_frame_context(
+    provider_session_id: str,
+    *,
+    home: Path | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the vc-frame pane hosting a Claude Code session.
+
+    Handles both direct interactive `claude` processes inside a vc-frame pane
+    and `claude daemon` (`--bg-pty-host`) workers viewed through a `claude agents`
+    or `claude attach` client running inside a vc-frame pane.
+    """
+    return _resolve_claude_host_context(
+        provider_session_id, home=home,
+        extract=lambda pid, _info: frame_context(process_environ(pid)),
+        skip_daemon_hosted=False,
+    )
+
+
+def resolve_claude_terminal_context(
+    provider_session_id: str,
+    *,
+    home: Path | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the iTerm2 or Terminal.app tab hosting a Claude Code session.
+
+    Same discovery as resolve_claude_frame_context. A daemon worker
+    (`--bg-pty-host`) inherits the environment of whichever terminal started
+    the daemon, so its own process tree never names its tab; only the
+    attached `claude agents` or `claude attach` client does.
+    """
+    return _resolve_claude_host_context(
+        provider_session_id, home=home,
+        extract=lambda pid, info: terminal_context(process_environ(pid), info.get("tty")),
+        skip_daemon_hosted=True,
+    )
+
+
+def _resolve_claude_host_context(
+    provider_session_id: str,
+    *,
+    home: Path | None,
+    extract: Callable[[int, dict[str, Any]], dict[str, Any] | None],
+    skip_daemon_hosted: bool,
+) -> dict[str, Any] | None:
+    """Find the host context `extract` reads off the process that shows a Claude Code session."""
+    if not isinstance(provider_session_id, str) or not provider_session_id.strip():
+        return None
+    claude_home = (home.expanduser() if home is not None else Path.home()) / ".claude"
+    short = provider_session_id[:8]
+    procs = process_table()
+    if not procs:
+        return None
+
+    sessions_dir = claude_home / "sessions"
+    target_pids: list[int] = []
+    other_session_pids: list[int] = []
+    try:
+        session_files = sorted(sessions_dir.glob("*.json"))
+    except OSError:
+        session_files = []
+    for session_file in session_files:
+        record = read_json(session_file)
+        if not isinstance(record, dict):
+            continue
+        pid = record.get("pid")
+        if not isinstance(pid, int) or pid not in procs:
+            continue
+        if record.get("sessionId") == provider_session_id:
+            target_pids.append(pid)
+        elif isinstance(record.get("sessionId"), str):
+            other_session_pids.append(pid)
+
+    roster = read_json(claude_home / "daemon" / "roster.json")
+    worker_record: dict[str, Any] | None = None
+    if isinstance(roster, dict) and isinstance(roster.get("workers"), dict):
+        workers = roster["workers"]
+        candidate = workers.get(short)
+        if isinstance(candidate, dict) and candidate.get("sessionId") in (None, provider_session_id):
+            worker_record = candidate
+        else:
+            for item in workers.values():
+                if isinstance(item, dict) and item.get("sessionId") == provider_session_id:
+                    worker_record = item
+                    break
+    if isinstance(worker_record, dict):
+        wpid = worker_record.get("pid")
+        if isinstance(wpid, int) and wpid in procs and wpid not in target_pids:
+            target_pids.append(wpid)
+
+    # 1. Direct or ancestor host environment on the session process tree.
+    visited: set[int] = set()
+    for start_pid in target_pids:
+        if skip_daemon_hosted and _daemon_hosted(start_pid, procs):
+            continue
+        current = start_pid
+        for _ in range(8):
+            if current <= 1 or current in visited or current not in procs:
+                break
+            visited.add(current)
+            frame = extract(current, procs[current])
+            if frame is not None:
+                return frame
+            current = procs[current]["ppid"]
+
+    # 2. Collect live `claude` client processes running inside a known host.
+    frame_clients: list[dict[str, Any]] = []
+    for pid, info in procs.items():
+        command = info["command"]
+        if "claude" not in command or "--bg-pty-host" in command:
+            continue
+        if skip_daemon_hosted and _daemon_hosted(pid, procs):
+            continue
+        frame = extract(pid, info)
+        if frame is None:
+            continue
+        # Direct CLI match (`claude --resume <id>` or `claude attach <short>`).
+        if provider_session_id in command or (
+            len(short) >= 8 and re.search(rf"\battach\s+{re.escape(short)}\b", command)
+        ):
+            return frame
+        frame_clients.append({
+            "pid": pid,
+            "tty": info["tty"],
+            "tinfo": tty_window_and_access(info["tty"]),
+            "frame": frame,
+        })
+
+    if not frame_clients:
+        return None
+
+    # 3. Live PTY coupling (`TIOCGWINSZ` + `st_atime`) between `claude agents`
+    # client TTY and attached `--bg-pty-host` worker slave TTY.
+    worker_ttys = [
+        tinfo for pid in target_pids
+        if (tinfo := tty_window_and_access(procs[pid]["tty"])) is not None
+    ]
+    if worker_ttys:
+        other_ttys = [
+            tinfo for pid in other_session_pids
+            if (tinfo := tty_window_and_access(procs[pid]["tty"])) is not None
+        ]
+        best_frame: dict[str, Any] | None = None
+        best_delta = 2.0
+        for client in frame_clients:
+            ctty = client["tinfo"]
+            if ctty is None:
+                continue
+            deltas = [
+                abs(ctty["atime"] - wtty["atime"])
+                for wtty in worker_ttys
+                if wtty["winsz"] == ctty["winsz"]
+            ]
+            if not deltas:
+                continue
+            delta = min(deltas)
+            if delta > best_delta:
+                continue
+            closer_other = any(
+                otty["winsz"] == ctty["winsz"]
+                and abs(ctty["atime"] - otty["atime"]) + 1e-6 < delta
+                for otty in other_ttys
+            )
+            if not closer_other:
+                best_delta = delta
+                best_frame = client["frame"]
+        if best_frame is not None:
+            return best_frame
+
+    # 4. Fallback when PTY ioctl/stat is unavailable (e.g. synthetic test doubles):
+    # match the client's latest `attach-journal` gesture to `firedInteractiveMarks`.
+    marks = worker_record.get("firedInteractiveMarks") if isinstance(worker_record, dict) else None
+    if not worker_ttys and isinstance(marks, list) and marks:
+        loaded_pairs = {
+            (m.get("msgsLoaded"), m.get("msgsInJsonl"))
+            for m in marks
+            if isinstance(m, dict)
+            and m.get("kind") == "loaded"
+            and isinstance(m.get("msgsLoaded"), int)
+            and isinstance(m.get("msgsInJsonl"), int)
+        }
+        ready_counts = {
+            m.get("msgsRenderedAtFirstPaint")
+            for m in marks
+            if isinstance(m, dict)
+            and m.get("kind") == "ready"
+            and isinstance(m.get("msgsRenderedAtFirstPaint"), int)
+        }
+        journal_dir = claude_home / "daemon" / "attach-journal"
+        latest_by_pid: dict[int, dict[str, Any]] = {}
+        try:
+            journal_files = list(journal_dir.glob("*.json"))
+        except OSError:
+            journal_files = []
+        for journal_file in journal_files:
+            entry = read_json(journal_file)
+            if not isinstance(entry, dict):
+                continue
+            cpid = entry.get("pid")
+            started = entry.get("startedAtEpochMs")
+            if not isinstance(cpid, int) or not isinstance(started, (int, float)):
+                continue
+            prev = latest_by_pid.get(cpid)
+            if prev is None or started >= prev.get("startedAtEpochMs", 0):
+                latest_by_pid[cpid] = entry
+        for client in frame_clients:
+            entry = latest_by_pid.get(client["pid"])
+            if not isinstance(entry, dict):
+                continue
+            pair = (entry.get("msgsLoaded"), entry.get("msgsInJsonl"))
+            rendered = entry.get("msgsRenderedAtFirstPaint")
+            if (loaded_pairs and pair in loaded_pairs) or (
+                ready_counts and rendered in ready_counts
+            ):
+                return client["frame"]
+
+    return None
+
+
+def _daemon_hosted(pid: int, procs: dict[int, dict[str, Any]]) -> bool:
+    """Whether a `claude daemon` PTY host (`--bg-pty-host`) runs this process."""
+    current = pid
+    for _ in range(8):
+        info = procs.get(current)
+        if info is None or current <= 1:
+            return False
+        if "--bg-pty-host" in info["command"]:
+            return True
+        current = info["ppid"]
+    return False
+
+
+def frame_cli(environ: Any) -> str | None:
+    """The public `vc-frame` on PATH, resolved at each action.
+
+    Contract of the vibecrafted maintainer (Leo, 2026-10-19): an external
+    client runs the public command; VIBECRAFTED_VC_FRAME_BIN pins Vibecrafted's
+    internal engine and is not a fallback. PATH semantics belong to Vibecrafted.
+    """
+    import shutil
+
+    return shutil.which("vc-frame", path=environ.get("PATH"))
+
+
+def panel_focus_request(raw: str) -> dict[str, Any] | None:
+    """Decode one panel-focus request row; every other bus row is None."""
+    if AGENT_PANEL_FOCUS_SCHEMA not in raw:
+        return None
+    try:
+        event = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if (not isinstance(event, dict) or event.get("schema") != AGENT_PANEL_FOCUS_SCHEMA
+            or event.get("kind") != "focus_agent_panel"
+            or not re.fullmatch(r"[0-9a-f]{24}", str(event.get("request_id") or ""))):
+        return None
+    return event
+
+
+def run_panel_focus(frame: dict[str, Any]) -> tuple[str, int | None]:
+    """Focus one pane; vc-frame switches the client to the pane's tab first."""
+    import subprocess
+
+    binary = frame_cli(os.environ)
+    if not binary:
+        return "error", None
+    environ = {**os.environ, "ZELLIJ_SESSION_NAME": frame["session"],
+               "VC_FRAME_SESSION_NAME": frame["session"]}
+    if frame.get("socket_dir"):
+        environ.update(ZELLIJ_SOCKET_DIR=frame["socket_dir"], VC_FRAME_SOCKET_DIR=frame["socket_dir"])
+    try:
+        result = subprocess.run(
+            [binary, "action", "focus-pane-id", f"terminal_{frame['pane_id']}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
+            timeout=PANEL_FOCUS_TIMEOUT_SECONDS, env=environ,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error", None
+    if result.returncode == 0:
+        return "focused", 0
+    # The server answers a focused or a missing pane with a nonzero exit and
+    # a message; neither is a transport failure.
+    message = f"{result.stdout}\n{result.stderr}"
+    if "already focused" in message:
+        return "already_focused", result.returncode
+    if "not found" in message:
+        return "pane_missing", result.returncode
+    return "error", result.returncode
+
+
+OSASCRIPT = "/usr/bin/osascript"
+
+# Values arrive as `argv`, never spliced into the script text.
+_ITERM2_FOCUS_SCRIPT = """
+on run argv
+    set wantedID to item 1 of argv
+    set wantedTTY to item 2 of argv
+    tell application id "com.googlecode.iterm2"
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                repeat with aSession in sessions of aTab
+                    set matched to false
+                    if wantedID is not "" then
+                        set matched to ((id of aSession) is wantedID)
+                    else
+                        set matched to ((tty of aSession) is wantedTTY)
+                    end if
+                    if matched then
+                        select aWindow
+                        tell aTab to select
+                        tell aSession to select
+                        activate
+                        return "focused"
+                    end if
+                end repeat
+            end repeat
+        end repeat
+    end tell
+    return "missing"
+end run
+"""
+
+_APPLE_TERMINAL_FOCUS_SCRIPT = """
+on run argv
+    set wantedTTY to item 1 of argv
+    tell application id "com.apple.Terminal"
+        repeat with aWindow in windows
+            repeat with aTab in tabs of aWindow
+                if (tty of aTab) is wantedTTY then
+                    set selected of aTab to true
+                    set frontmost of aWindow to true
+                    set index of aWindow to 1
+                    activate
+                    return "focused"
+                end if
+            end repeat
+        end repeat
+    end tell
+    return "missing"
+end run
+"""
+
+
+def terminal_focus_target(terminal: dict[str, Any]) -> str:
+    """The `target` a focus result names for a terminal tab."""
+    return "iterm2" if terminal.get("host") == "iterm2" else "terminal"
+
+
+def run_terminal_focus(terminal: dict[str, Any]) -> tuple[str, int | None]:
+    """Select this agent's own iTerm2 session or Terminal.app tab and bring it to front."""
+    import subprocess
+
+    # Arguments follow the script, so none may read as an osascript option:
+    # a session id is a UUID and a tty a /dev path, or the value is dropped.
+    session_id = str(terminal.get("session_id") or "")
+    session_id = session_id if _ITERM_SESSION_RE.fullmatch(session_id) else ""
+    tty = str(terminal.get("tty") or "")
+    tty = tty if tty.startswith("/dev/") else ""
+    if terminal.get("host") == "iterm2":
+        if not session_id and not tty:
+            return "terminal_missing", None
+        command = [OSASCRIPT, "-e", _ITERM2_FOCUS_SCRIPT, session_id, tty]
+    elif terminal.get("host") == "apple-terminal":
+        if not tty:
+            return "terminal_missing", None
+        command = [OSASCRIPT, "-e", _APPLE_TERMINAL_FOCUS_SCRIPT, tty]
+    else:
+        return "error", None
+    try:
+        result = subprocess.run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            check=False, timeout=PANEL_FOCUS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "error", None
+    if result.returncode == 0:
+        answer = result.stdout.strip()
+        if answer == "focused":
+            return "focused", 0
+        if answer == "missing":
+            return "terminal_missing", 0
+        return "error", 0
+    # -1743 is errAEEventNotPermitted: the user declined, or never granted,
+    # Automation control of the terminal.
+    message = f"{result.stdout}\n{result.stderr}".casefold()
+    if "-1743" in message or "not allowed to send apple events" in message \
+            or "not authorized to send apple events" in message:
+        return "automation_denied", result.returncode
+    return "error", result.returncode
+
+
 class SessionLease:
     """One provider-session cursor and active-name heartbeat."""
+
+    FRAME_DISCOVERY_INTERVAL = 5.0
+    CODEX_ROLLOUT_RESCAN_INTERVAL = 30.0
 
     def __init__(
         self,
@@ -2561,6 +3491,28 @@ class SessionLease:
         self.ttl_seconds = ttl_seconds
         self.coalesce = coalesce
         self.process_identity = process_identity(os.getpid())
+        self._provider_metadata_home = provider_metadata_home
+        self._inherited_frame = frame_context(os.environ)
+        self.frame = self._inherited_frame
+        # A Claude Code follower may run under a daemon that a different
+        # terminal started; its tab is resolved from the session's process.
+        self._inherited_terminal = (
+            inherited_terminal_context(os.environ) if self.provider != "claude-code" else None
+        )
+        self.terminal = self._inherited_terminal
+        self._next_frame_discovery = 0.0
+        # A Codex follower's thread opens in the Codex app from its local store.
+        self._codex_root = (
+            provider_metadata_home / ".codex" if provider_metadata_home is not None
+            else codex_home(os.environ)
+        )
+        self._codex_remote = (
+            codex_remote_ancestor(process_table(), os.getpid()) if self.provider == "codex" else False
+        )
+        self._codex_rollout: Path | None = None
+        self._next_codex_rollout_scan = 0.0
+        self.codex: dict[str, Any] | None = None
+        self.focused_requests: set[str] = set()
         canonical_lease_id = lease_identifier(provider, provider_session_id)
         if requested_id and requested_id != canonical_lease_id:
             raise ValueError(
@@ -2592,6 +3544,7 @@ class SessionLease:
             self.held: dict[str, dict[str, Any]] = {}
             self.withdrawn_held: dict[str, dict[str, Any]] = {}
             self.unclosed_channel_messages: dict[str, dict[str, Any]] = {}
+            self.channel_publication_refusals: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -2626,6 +3579,7 @@ class SessionLease:
                     # journal invalidates the recovered cursor and documents.
                     self.cursor = 0
                     previous["unclosed_channel_messages"] = {}
+                    previous["channel_publication_refusals"] = {}
                 self.last_sequence = previous.get("last_sequence")
                 # The follower's requested name outranks the recovered lease
                 # name: a channel rename (detach + attach under a new name)
@@ -2689,6 +3643,14 @@ class SessionLease:
                             for session, document in documents.items())):
                     raise ValueError("invalid unclosed channel messages; recovery state preserved")
                 self.unclosed_channel_messages = documents
+                refusals = previous.get("channel_publication_refusals", {})
+                if (not isinstance(refusals, dict) or any(
+                        not isinstance(receipt, dict)
+                        or channel_publication_refusal_session(receipt) != session
+                        or not self.admits_channel_event(receipt)
+                        for session, receipt in refusals.items())):
+                    raise ValueError("invalid publication refusals; recovery state preserved")
+                self.channel_publication_refusals = refusals
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -2710,6 +3672,8 @@ class SessionLease:
                 else {key: previous[key] for key in ("workspace", "repository_name", "repository_root")
                       if previous and isinstance(previous.get(key), str)}
             )
+            for receipt in list(self.channel_publication_refusals.values()):
+                self.retire_channel_publication(receipt)
             self.persist(active=True)
             for receipt in self.withdrawn_held.values():
                 self._record_hold_withdrawal(receipt)
@@ -2773,23 +3737,125 @@ class SessionLease:
                 "held": self.held,
                 "withdrawn_held": self.withdrawn_held,
                 "unclosed_channel_messages": self.unclosed_channel_messages,
+                "channel_publication_refusals": self.channel_publication_refusals,
                 "active": active,
                 "pid": os.getpid(),
                 "process_identity": self.process_identity,
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
+                "frame": self.frame,
+                "terminal": self.terminal,
+                "codex": self.codex,
                 **self.repository_context,
                 **({"wakeup_configuration": self.wakeup_configuration} if self.wakeup_configuration else {}),
                 **(self._provider_model_reader.projection if self._provider_model_reader is not None else {}),
             },
         )
 
+    def refresh_frame_context(self, *, force: bool = False) -> bool:
+        """Re-resolve a Claude Code session's pane and terminal tab; True when either moved."""
+        if self.provider != "claude-code":
+            return False
+        now = time.monotonic()
+        if not force and now < self._next_frame_discovery:
+            return False
+        self._next_frame_discovery = now + self.FRAME_DISCOVERY_INTERVAL
+        changed = False
+        if self._inherited_frame is None:
+            resolved = resolve_claude_frame_context(
+                self.provider_session_id,
+                home=self._provider_metadata_home,
+            )
+            changed = resolved != self.frame
+            self.frame = resolved
+        terminal = resolve_claude_terminal_context(
+            self.provider_session_id,
+            home=self._provider_metadata_home,
+        )
+        changed = changed or terminal != self.terminal
+        self.terminal = terminal
+        return changed
+
+    def refresh_codex_context(self) -> None:
+        """Re-check whether Codex's local store holds this thread's rollout.
+
+        A found rollout is re-checked by path on every heartbeat; a missing
+        one is searched again at most every CODEX_ROLLOUT_RESCAN_INTERVAL, so
+        a thread whose rollout appears later becomes openable.
+        """
+        if self.provider != "codex":
+            return
+        if self._codex_rollout is not None and not self._codex_rollout.is_file():
+            # Archiving moves the rollout; look for it again right away.
+            self._codex_rollout = None
+            self._next_codex_rollout_scan = 0.0
+        now = time.monotonic()
+        if self._codex_rollout is None and now >= self._next_codex_rollout_scan:
+            self._next_codex_rollout_scan = now + self.CODEX_ROLLOUT_RESCAN_INTERVAL
+            self._codex_rollout = codex_rollout_path(self._codex_root, self.provider_session_id)
+        self.codex = codex_context(
+            self.provider, self.provider_session_id,
+            rollout=self._codex_rollout is not None, remote=self._codex_remote,
+        )
+
     def refresh_provider_model(self) -> None:
         if self._provider_model_reader is not None:
             self._provider_model_reader.refresh()
+        self.refresh_frame_context()
+        self.refresh_codex_context()
+
+    def focus_panel(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        """Answer one click on this agent's row; None for another lease or a repeat.
+
+        The model is not woken and the mailbox is untouched: the follower
+        owns the pane coordinates and acts on them itself.
+        """
+        if (request.get("lease_id") != self.lease_id
+                or request.get("provider") != self.provider
+                or request.get("provider_session_id") != self.provider_session_id
+                or request.get("bus") != self.bus
+                or request["request_id"] in self.focused_requests):
+            return None
+        self.focused_requests.add(request["request_id"])
+        started = time.monotonic()
+        emitted = hold_timestamp(request.get("emitted_at"))
+        status: str
+        exit_code: int | None = None
+        if emitted is None or time.time() - emitted > PANEL_FOCUS_FRESH_SECONDS:
+            status = "stale"
+        else:
+            if self.refresh_frame_context(force=True):
+                self.persist(active=True)
+            # A known Frame pane wins; a terminal tab answers otherwise.
+            if self.frame is not None:
+                status, exit_code = run_panel_focus(self.frame)
+            elif self.terminal is not None:
+                status, exit_code = run_terminal_focus(self.terminal)
+            else:
+                status = "no_frame"
+        target = ("frame" if self.frame is not None
+                  else terminal_focus_target(self.terminal) if self.terminal is not None
+                  else None)
+        return {
+            "schema": AGENT_PANEL_FOCUS_RESULT_SCHEMA, "kind": "agent_panel_focus_result",
+            "emitted_at": utc_now(), "request_id": request["request_id"],
+            "provider": self.provider, "provider_session_id": self.provider_session_id,
+            "lease_id": self.lease_id, "status": status, "exit_code": exit_code,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "target": target,
+            "frame": ({key: self.frame.get(key) for key in
+                       ("session", "pane_id", "host_bundle_id", "host_pid")}
+                      if self.frame else None),
+            "terminal": ({key: self.terminal.get(key) for key in
+                          ("host", "host_bundle_id", "tty")}
+                         if self.terminal else None),
+        }
 
     def queue_delivery(self, payload: dict[str, Any]) -> bool:
         delivery_id = payload["delivery_id"]
+        if (payload.get("session_id") in self.channel_publication_refusals
+                and payload.get("producer_schema") == EVIDENCE_SCHEMA):
+            return False
         if delivery_acknowledged(self.root, self.lease_id, delivery_id, payload):
             return False
         if delivery_id in self.pending or delivery_id in self.withdrawn_held:
@@ -2917,6 +3983,31 @@ class SessionLease:
         payload.setdefault("hold_controls", []).append(control_id)
         self.persist(active=True)
         return [dict(payload)]
+
+    def retire_channel_publication(self, event: dict[str, Any]) -> bool:
+        """Retire only this owner's evidence envelopes of the refused capture.
+
+        A refusal is not an acknowledgment and never pretends previously
+        submitted provider content was unread or successfully withdrawn.
+        """
+        session = channel_publication_refusal_session(event)
+        if session is None or not self.admits_channel_event(event):
+            return False
+        document = self.unclosed_channel_messages.get(session)
+        if (document is not None and document.get("capture_epoch") is not None
+                and document["capture_epoch"] != event["capture_epoch"]):
+            return False
+        self.channel_publication_refusals[session] = dict(event)
+        self.unclosed_channel_messages.pop(session, None)
+        for inventory in (self.pending, self.held):
+            for delivery_id, payload in list(inventory.items()):
+                if (payload.get("session_id") == session
+                        and payload.get("producer_schema") == EVIDENCE_SCHEMA
+                        and payload.get("message_id") == channel_message_identity(session)
+                        and (payload.get("capture_epoch") is None
+                             or payload["capture_epoch"] == event["capture_epoch"])):
+                    del inventory[delivery_id]
+        return True
 
     def revise_held_voice(self, event: dict[str, Any]) -> bool:
         if (event.get("schema") != EVIDENCE_SCHEMA
@@ -3413,10 +4504,12 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     channel = payload.get("origin_channel", payload.get("channel"))
     audience = payload.get("peer_to") or payload.get("audience")
     peer_to = payload.get("peer_to")
+    if channel == "0":
+        # A peer broadcast names each copy's recipient in `peer_to` for routing;
+        # its address is still channel 0 (is_broadcast_delivery agrees).
+        return "0 (all audience)"
     if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
         return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
-    if channel == "0":
-        return "0 (all audience)"
     if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
         return f"{channel} ({audience})" if audience else channel
     if audience == "*":
@@ -3477,7 +4570,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "delivery_id", "delivery_owner", "lease_id", "provider", "provider_session_id",
         "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
-        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments",
+        "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
     )
     return {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}
@@ -3553,6 +4646,224 @@ def read_pending_command(args: argparse.Namespace) -> int:
                 raise ValueError("complete envelope exceeds --read-bytes; increase the limit, then read before ACK")
             break
     emit(result)
+    return 0
+
+
+#: `--since 6h`: a span back from now in minutes, hours or days.
+HISTORY_SPAN = re.compile(r"(\d{1,5})([mhd])")
+
+
+def history_moment(value: str, now: datetime.datetime) -> datetime.datetime:
+    """`--since`/`--until`: a span back from now (90m, 6h, 2d) or an ISO date/time.
+
+    A date or time without an offset is local, the way the Founder says it.
+    """
+    span = HISTORY_SPAN.fullmatch(value.strip())
+    if span:
+        seconds = int(span.group(1)) * {"m": 60, "h": 3600, "d": 86400}[span.group(2)]
+        return now - datetime.timedelta(seconds=seconds)
+    moment = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    return moment if moment.tzinfo else moment.astimezone()
+
+
+def history_time(value: Any) -> datetime.datetime | None:
+    if not isinstance(value, str):
+        return None
+    # Producers write up to nanoseconds; older Pythons parse at most six digits.
+    value = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
+    try:
+        moment = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=datetime.timezone.utc)
+
+
+def history_message(event: dict[str, Any]) -> dict[str, Any] | None:
+    """One conversational message in a normalized bus event, or None.
+
+    The same three lanes a mailbox delivers: typed Founder messages, sealed
+    Founder takes and agent replies. Drafts, ACKs and controls are not words.
+    """
+    text = event.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    schema = event.get("schema")
+    if schema == AGENT_REPLY_SCHEMA:
+        identity = event.get("message_id")
+        if event.get("kind") != "agent_reply" or not isinstance(identity, str):
+            return None
+        sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+        target = event.get("target") if isinstance(event.get("target"), dict) else {}
+        recipients = [str(row["name"]) for row in target.get("recipients") or []
+                      if isinstance(row, dict) and row.get("name")]
+        if target.get("channel") == "0":
+            to = ["all"]
+        elif recipients:
+            to = recipients
+        elif isinstance(event.get("peer_to"), str):
+            to = [event["peer_to"]]
+        else:
+            # A spoken reply without a peer recipient answers the Founder.
+            to = ["Founder"]
+        return {"key": ("reply", identity), "ids": {identity}, "lane": "agent",
+                "from": str(sender.get("name") or event.get("name") or "agent"), "to": to, "text": text}
+    if schema == AGENT_USER_MESSAGE_SCHEMA:
+        identity = event.get("message_id")
+        if (event.get("kind") != "agent_user_message" or event.get("source") != "typed"
+                or not isinstance(identity, str)):
+            return None
+        audience = event.get("audience")
+        to = ["all"] if event.get("origin_channel") == "0" or audience == "*" else [str(audience)]
+        return {"key": ("typed", identity), "ids": {identity}, "lane": "typed",
+                "from": "Founder (typed)", "to": to, "text": text}
+    if event.get("status") == SEALED and event.get("producer_schema") not in (AGENT_REPLY_SCHEMA, AGENT_USER_MESSAGE_SCHEMA):
+        session = str(event.get("session_id") or "")
+        identity = event.get("message_id") or event.get("utterance_id") or event.get("source_event_id")
+        audience = event.get("audience")
+        channel = channel_of_session(session)
+        to = ["all"] if audience == "*" or channel == "0" else [str(audience or f"channel {channel}")]
+        # A held take is revised or withdrawn by its message or utterance identity.
+        ids = {value for value in (identity, event.get("utterance_id")) if isinstance(value, str)}
+        return {"key": ("voice", session, identity), "ids": ids, "lane": "voice",
+                "from": "Founder (voice)", "to": to, "text": text}
+    return None
+
+
+def history_messages(root: Path) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
+    """Every retained channel message once, oldest first.
+
+    Each channel bus keeps all its generations, and a broadcast is written
+    into every recipient's bus, so copies merge on the message identity. The
+    normalizer is the one the mailboxes use: a sealed take reads here exactly
+    as it was delivered. A held message shows its last revision; one withdrawn
+    before delivery is left out and counted. Returns the messages, counts of
+    withdrawn messages and undecodable rows, and the buses that could not be
+    opened.
+    """
+    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+    controls: dict[str, list[dict[str, Any]]] = {}
+    unreadable = 0
+    skipped: list[str] = []
+    for path in sorted((root / "buses").glob("channel-*.jsonl")):
+        channel = path.name[len("channel-"):-len(".jsonl")]
+        normalizer = EvidenceNormalizer()
+        try:
+            with GenerationFile(path) as handle:
+                while True:
+                    raw = handle.readline()
+                    # A line without its newline is still being written.
+                    if not raw or not raw.endswith(b"\n"):
+                        break
+                    try:
+                        events = normalized_revision_events(raw.decode("utf-8"), normalizer)
+                    except ValueError:
+                        unreadable += 1
+                        normalizer.storage = ChunkDecoder()
+                        continue
+                    for event in events:
+                        if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                            identity = event.get("identity") or event.get("message_id") or event.get("utterance_id")
+                            if isinstance(identity, str):
+                                controls.setdefault(identity, []).append(event)
+                            continue
+                        message = history_message(event)
+                        if message is None:
+                            continue
+                        key = message.pop("key")
+                        moment = history_time(event.get("emitted_at"))
+                        known = found.get(key)
+                        if known is None:
+                            found[key] = {**message, "at": moment, "channels": {channel}}
+                            continue
+                        known["channels"].add(channel)
+                        known["ids"] |= message["ids"]
+                        known["to"] += [name for name in message["to"] if name not in known["to"]]
+                        if moment is not None and (known["at"] is None or moment < known["at"]):
+                            known["at"] = moment
+        except (OSError, ValueError) as error:
+            skipped.append(f"{path.name}: {error}")
+    withdrawn = 0
+    rows: list[dict[str, Any]] = []
+    for row in found.values():
+        applied = sorted((control for identity in row.pop("ids") for control in controls.get(identity, [])),
+                         key=lambda control: str(control.get("emitted_at") or ""))
+        if any(control.get("kind") == "withdraw" for control in applied):
+            withdrawn += 1
+            continue
+        for control in applied:
+            if control.get("kind") == "revise" and isinstance(control.get("text"), str) and control["text"].strip():
+                row.update(text=control["text"], revised=True)
+        rows.append(row)
+    oldest = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    rows.sort(key=lambda row: row["at"] or oldest)
+    # One agent sending the same words to several peers at once wrote one
+    # message per recipient; read it once, addressed to all of them.
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        twin = next((earlier for earlier in reversed(merged[-4:])
+                     if row["lane"] == earlier["lane"] == "agent" and row["from"] == earlier["from"]
+                     and row["text"] == earlier["text"] and row["at"] and earlier["at"]
+                     and (row["at"] - earlier["at"]).total_seconds() <= 5), None)
+        if twin is None:
+            merged.append(row)
+            continue
+        twin["to"] += [name for name in row["to"] if name not in twin["to"]]
+        twin["channels"] |= row["channels"]
+    return merged, {"withdrawn": withdrawn, "unreadable": unreadable}, skipped
+
+
+def history_markdown(
+    messages: list[dict[str, Any]], *, root: Path, since: datetime.datetime | None,
+    until: datetime.datetime | None, channel: str | None, counts: dict[str, int], skipped: list[str],
+) -> str:
+    local = datetime.datetime.now().astimezone()
+    lanes = {lane: sum(1 for row in messages if row["lane"] == lane) for lane in ("voice", "typed", "agent")}
+    start = f"{since.astimezone():%Y-%m-%d %H:%M}" if since else "first retained"
+    end = f"{until.astimezone():%Y-%m-%d %H:%M}" if until else "now"
+    lines = [
+        "# Codescribe bus history",
+        "",
+        f"- Source: `{root / 'buses'}/channel-*.jsonl`, every retained generation, read-only",
+        f"- Window: {start} → {end} (times in {local:%Z}, UTC{local:%z})",
+    ]
+    if channel is not None:
+        lines.append("- Channel: 0, messages to everyone" if channel == "0" else f"- Channel: {channel}")
+    lines.append(f"- Messages: {len(messages)} (Founder voice {lanes['voice']}, "
+                 f"Founder typed {lanes['typed']}, agents {lanes['agent']})")
+    if counts["withdrawn"]:
+        lines.append(f"- Withdrawn before delivery, not shown: {counts['withdrawn']} (whole history)")
+    if counts["unreadable"]:
+        lines.append(f"- Rows that could not be decoded: {counts['unreadable']} (whole history)")
+    lines += [f"- Not read: {item}" for item in skipped]
+    day = None
+    for row in messages:
+        moment = row["at"].astimezone() if row["at"] else None
+        if moment is not None and moment.date() != day:
+            day = moment.date()
+            lines += ["", f"## {day.isoformat()}"]
+        clock = f"{moment:%H:%M:%S}" if moment else "unknown time"
+        note = " (revised before delivery)" if row.get("revised") else ""
+        lines += ["", f"### {clock} · {row['from']} → {', '.join(row['to'])}{note}", ""]
+        # Quoted, so a heading or fence inside a message stays inside it.
+        lines += ["> " + line if line else ">" for line in row["text"].splitlines()]
+    return "\n".join(lines) + "\n"
+
+
+def history_command(args: argparse.Namespace) -> int:
+    """Print the retained channel conversation as Markdown. Reads only; never ACKs."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = history_moment(args.since, now) if args.since else None
+    until = history_moment(args.until, now) if args.until else None
+    messages, counts, skipped = history_messages(args.bridge_home)
+    if since is not None or until is not None:
+        messages = [row for row in messages if row["at"] is not None
+                    and (since is None or row["at"] >= since) and (until is None or row["at"] <= until)]
+    if args.channel == "0":
+        messages = [row for row in messages if "all" in row["to"]]
+    elif args.channel is not None:
+        messages = [row for row in messages if args.channel in row["channels"]]
+    sys.stdout.write(history_markdown(messages, root=args.bridge_home, since=since, until=until,
+                                      channel=args.channel, counts=counts, skipped=skipped))
     return 0
 
 
@@ -3844,6 +5155,7 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     if lease:
+        normalizer.restore_publication_refusals(list(lease.channel_publication_refusals.values()))
         # Prune first: a draft left over from a message that was sealed and
         # acknowledged in an earlier run must not be restored as an unclosed
         # document for a session that is already settled.
@@ -3922,6 +5234,18 @@ def run(args: argparse.Namespace) -> int:
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
+        request = panel_focus_request(raw) if lease and args.follow else None
+        if request is not None:
+            assert lease is not None
+            result = lease.focus_panel(request)
+            if result is not None:
+                try:
+                    publish_reply_event(Path(lease.bus), result, bridge_root=lease.root)
+                except (OSError, ValueError) as error:
+                    sys.stderr.write(f"bus-demux: panel focus receipt not published: {error}\n")
+            if next_cursor is not None and not normalizer.storage.pending:
+                lease.persist(active=True, cursor=next_cursor)
+            return
         # Coverage-refused flushes precede the row that triggered them: they
         # carry utterances older than the channel receipt on this line.
         events = normalized_revision_events(raw, normalizer, lease)
@@ -4097,8 +5421,174 @@ def run(args: argparse.Namespace) -> int:
 # =============================================================================
 
 
+class SpeechCredentialError(Exception):
+    """Only a bounded reason leaves the credential resolver, never provider data."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _xai_oauth_account(path: Path) -> tuple[dict[str, Any], str, dict[str, Any]] | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_size > 1 << 20:
+                raise SpeechCredentialError("credential_storage")
+            data = json.loads(handle.read((1 << 20) + 1))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise SpeechCredentialError("credential_storage") from None
+    if not isinstance(data, dict):
+        raise SpeechCredentialError("credential_storage")
+    for endpoint, value in data.items():
+        if (
+            str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
+            and isinstance(value, dict) and value.get("auth_mode") == "oidc"
+            and isinstance(value.get("key"), str) and value["key"]
+        ):
+            return data, endpoint, value
+    return None
+
+
+def _xai_oauth_needs_refresh(account: dict[str, Any]) -> bool:
+    expiry = account.get("expires_at")
+    if expiry is None:
+        # A store with no declared lifetime has no proactive refresh deadline.
+        return False
+    try:
+        if isinstance(expiry, str):
+            instant = datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                return True
+            expires = instant.timestamp()
+        else:
+            expires = float(expiry)
+        return not expires > time.time() + 120
+    except (ValueError, TypeError, OverflowError):
+        return True
+
+
+def _refresh_xai_speech_account(account: dict[str, Any]) -> dict[str, Any]:
+    """Refresh one grant at the fixed issuer, without redirects or body diagnostics."""
+    import http.client
+    import ssl
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    refresh = account.get("refresh_token")
+    client = account.get("oidc_client_id") or "b1a00492-073a-47ea-816f-4c329264a828"
+    if not isinstance(refresh, str) or not refresh or not isinstance(client, str):
+        raise SpeechCredentialError("credential_rejected")
+    request = urllib.request.Request(
+        "https://auth.x.ai/oauth2/token",
+        data=urllib.parse.urlencode({
+            "grant_type": "refresh_token", "client_id": client, "refresh_token": refresh,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    try:
+        with opener.open(request, timeout=30) as response:
+            if not 200 <= response.status < 300:
+                reason = "credential_rejected" if response.status in (400, 401, 403) else "network"
+                raise SpeechCredentialError(reason)
+            raw = response.read(65537)
+        if len(raw) > 65536:
+            raise SpeechCredentialError("credential_refresh_invalid")
+        body = json.loads(raw)
+        key = body.get("access_token")
+        rotated = body.get("refresh_token", refresh)
+        lifetime = body.get("expires_in")
+        if (
+            not isinstance(key, str) or not key or not isinstance(rotated, str) or not rotated
+            or isinstance(lifetime, bool) or not isinstance(lifetime, (int, float))
+            or not 120 < lifetime < 366 * 86400
+        ):
+            raise SpeechCredentialError("credential_refresh_invalid")
+        updated = dict(account)
+        updated.update(key=key, refresh_token=rotated, expires_at=(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=lifetime)
+        ).isoformat().replace("+00:00", "Z"))
+        return updated
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        raise SpeechCredentialError("network") from None
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        raise SpeechCredentialError("credential_refresh_invalid") from None
+
+
+def _xai_oidc_speech_key() -> str | None:
+    """One Grok store, one cross-process lock, re-read before rotating its grant."""
+    path = Path.home() / ".grok" / "auth.json"
+    found = _xai_oauth_account(path)
+    if found is None:
+        return None
+    if not _xai_oauth_needs_refresh(found[2]):
+        return found[2]["key"]
+    lock_path = path.with_name("auth.json.lock")
+    try:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as lock:
+            metadata = os.fstat(lock.fileno())
+            if not S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+                raise SpeechCredentialError("credential_storage")
+            deadline = time.monotonic() + 15
+            while True:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        found = _xai_oauth_account(path)
+                        if found is not None and not _xai_oauth_needs_refresh(found[2]):
+                            return found[2]["key"]
+                        raise SpeechCredentialError("credential_busy")
+                    time.sleep(0.05)
+            # Grok uses this same lock file. Never unlink a held lock or steal
+            # it on age: the kernel releases it after a crashed process exits.
+            identity = (metadata.st_dev, metadata.st_ino)
+            def owns_lock() -> bool:
+                current = lock_path.stat(follow_symlinks=False)
+                return (current.st_dev, current.st_ino) == identity
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            found = _xai_oauth_account(path)
+            if found is None:
+                return None
+            data, endpoint, account = found
+            if not _xai_oauth_needs_refresh(account):
+                return account["key"]
+            lock.seek(0)
+            lock.write(f"{os.getpid()}:{int(time.time())}".encode("ascii"))
+            lock.truncate()
+            lock.flush()
+            updated = _refresh_xai_speech_account(account)
+            if not owns_lock():
+                raise SpeechCredentialError("credential_busy")
+            latest = _xai_oauth_account(path)
+            if latest is None:
+                raise SpeechCredentialError("credential_storage")
+            # Preserve other accounts and a concurrent explicit login/logout.
+            if latest[1] != endpoint or latest[2] != account:
+                if not _xai_oauth_needs_refresh(latest[2]):
+                    return latest[2]["key"]
+                raise SpeechCredentialError("credential_busy")
+            data = latest[0]
+            data[endpoint] = updated
+            # Account order selects the same grant on the next call. The bus
+            # JSON writer sorts keys; this external store must retain its order.
+            atomic_bytes(path, (json.dumps(data, ensure_ascii=False) + "\n").encode("utf-8"))
+            return updated["key"]
+    except OSError:
+        raise SpeechCredentialError("credential_storage") from None
+
+
 def _xai_speech_key() -> str | None:
-    """Explicit Keychain key first, then the Grok CLI's xAI OIDC session."""
+    """Explicit Keychain key first, then the automatically renewed Grok grant."""
     import subprocess
 
     probe = subprocess.run(
@@ -4109,20 +5599,7 @@ def _xai_speech_key() -> str | None:
     key = probe.stdout.strip() if probe.returncode == 0 else ""
     if key:
         return key
-    try:
-        data = json.loads((Path.home() / ".grok" / "auth.json").read_text())
-        for endpoint, value in data.items():
-            if (
-                str(endpoint).split("::", 1)[0].rstrip("/") == "https://auth.x.ai"
-                and
-                isinstance(value, dict)
-                and value.get("auth_mode") == "oidc"
-                and value.get("key")
-            ):
-                return str(value["key"])
-    except (OSError, ValueError):
-        pass
-    return None
+    return _xai_oidc_speech_key()
 
 
 def _openai_speech_key() -> str | None:
@@ -4312,7 +5789,7 @@ def tts_failure_reason(status: int, body: bytes) -> str:
     return f"http_{status}"
 
 
-def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
+def _tts_exchange(request: Any, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
     """POST one TTS request: (pcm, None, None) or (None, error, reason).
 
     Install only TLS transport: no file handler, proxy or redirect handler.
@@ -4330,7 +5807,7 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
         urllib.request.HTTPSHandler(context=ssl.create_default_context())
     )
     try:
-        with opener.open(request, timeout=60) as response:
+        with opener.open(request, timeout=10 if on_pcm is not None else 60) as response:
             if not 200 <= response.status < 300:
                 try:
                     detail = response.read(TTS_ERROR_BODY_BYTES)
@@ -4341,7 +5818,25 @@ def _tts_exchange(request: Any) -> tuple[bytes | None, str | None, str | None]:
                     f"tts request failed ({response.status})",
                     tts_failure_reason(response.status, detail),
                 )
-            return response.read(), None, None
+            if on_pcm is None:
+                return response.read(), None, None
+            opened = getattr(on_pcm, "response_opened", None)
+            if opened is not None:
+                opened(response)
+            # read1 returns the currently available transport bytes, rather
+            # than waiting for an entire sentence (or a full read buffer).
+            pcm = bytearray()
+            pending = b""
+            while block := response.read1(16384):
+                pcm.extend(block)
+                pending += block
+                aligned = len(pending) - len(pending) % 2
+                if aligned:
+                    on_pcm(pending[:aligned])
+                    pending = pending[aligned:]
+            if pending or not pcm:
+                return None, "invalid PCM response", "invalid_audio"
+            return bytes(pcm), None, None
     except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
         return None, f"tts request failed ({error.__class__.__name__})", "network"
 
@@ -4385,7 +5880,7 @@ def _write_speech_atomically(path: Path, write: Any) -> None:
         raise
 
 
-def _speech_lock(directory: Path, key: str) -> int | None:
+def _speech_lock(directory: Path, key: str, cancelled: Any = None) -> int | None:
     """Single flight per key: a held flock on `<speech>/<sha256>.lock`, or None.
 
     Bounded like the playback lock. None after the wait or on any OS error
@@ -4398,6 +5893,9 @@ def _speech_lock(directory: Path, key: str) -> int | None:
         return None
     deadline = time.monotonic() + SPEECH_LOCK_WAIT_SECONDS
     while True:
+        if cancelled is not None and cancelled():
+            os.close(descriptor)
+            return None
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return descriptor
@@ -4417,6 +5915,7 @@ def _cached_speech(
     synthesize: Any,
     *,
     reply_id: str | None = None,
+    cancelled: Any = None,
 ) -> tuple[bytes | None, str | None, str | None]:
     """Every synthesis stays on disk; the same words in the same voice never call the API twice.
 
@@ -4435,8 +5934,11 @@ def _cached_speech(
         return cached, None, None
     # Two callers missing the same key at once pay once: the second waits for
     # the first and reads its recording.
-    lock = _speech_lock(directory, key)
+    lock = (_speech_lock(directory, key, cancelled) if cancelled is not None
+            else _speech_lock(directory, key))
     try:
+        if cancelled is not None and cancelled():
+            return None, "playback stopped", "stopped"
         if lock is not None:
             cached = _read_cached_speech(audio)
             if cached is not None:
@@ -4496,6 +5998,379 @@ def _control_reply_id(control: ReplyPlaybackControl | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def speech_sentence_chunks(text: str, minimum: int = 40) -> list[str]:
+    """Sentence boundaries outside code, decimals, initials and Polish abbreviations.
+
+    Small sentences join the next one; a small final tail joins its predecessor.
+    Nothing inside a backtick span/fence is a sentence boundary.
+    """
+    abbreviations = {"np", "tj", "itd", "itp", "m.in", "tzn", "dr", "prof", "mgr",
+                     "lek", "wet", "ul", "al", "nr", "godz", "r", "str", "ok", "św"}
+    boundaries = []
+    code_ticks = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "`":
+            end = index
+            while end < len(text) and text[end] == "`":
+                end += 1
+            count = end - index
+            if code_ticks == 0:
+                code_ticks = count
+            elif code_ticks == count:
+                code_ticks = 0
+            index = end
+            continue
+        if not code_ticks and character in ".!?…":
+            end = index + 1
+            while end < len(text) and text[end] in '.!?…\"”’»)]':
+                end += 1
+            token = re.search(r"([\w.]+)$", text[:index], re.UNICODE)
+            word = token.group(1) if token else ""
+            abbreviation = character == "." and (word.casefold() in abbreviations or word.isdigit()
+                or (len(word) == 1 and word.isalpha()))
+            if not abbreviation and (end == len(text) or text[end].isspace()):
+                boundaries.append(end)
+        index += 1
+    chunks, start = [], 0
+    for end in boundaries:
+        piece = text[start:end].strip()
+        if len(piece) >= minimum:
+            chunks.append(piece)
+            start = end
+    tail = text[start:].strip()
+    if tail:
+        if chunks and len(tail) < minimum:
+            chunks[-1] += " " + tail
+        else:
+            chunks.append(tail)
+    return chunks
+
+
+class _PCMStreamDescription(ctypes.Structure):
+    _fields_ = [
+        ("sample_rate", ctypes.c_double),
+        ("format_id", ctypes.c_uint32),
+        ("format_flags", ctypes.c_uint32),
+        ("bytes_per_packet", ctypes.c_uint32),
+        ("frames_per_packet", ctypes.c_uint32),
+        ("bytes_per_frame", ctypes.c_uint32),
+        ("channels_per_frame", ctypes.c_uint32),
+        ("bits_per_channel", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    ]
+
+
+class _PCMQueueBuffer(ctypes.Structure):
+    _fields_ = [
+        ("capacity", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+        ("byte_size", ctypes.c_uint32),
+        ("user_data", ctypes.c_void_p),
+        ("packet_capacity", ctypes.c_uint32),
+        ("packet_descriptions", ctypes.c_void_p),
+        ("packet_count", ctypes.c_uint32),
+    ]
+
+
+_PCMQueueBufferRef = ctypes.POINTER(_PCMQueueBuffer)
+_PCMQueueCallback = ctypes.CFUNCTYPE(
+    None, ctypes.c_void_p, ctypes.c_void_p, _PCMQueueBufferRef
+)
+
+
+class PCMStreamPlayer:
+    """Small process-shaped AudioQueue owner; enqueue never waits for capacity.
+
+    Each enqueue accepts up to BLOCK_BYTES. Call can_enqueue() before enqueue;
+    a full queue raises BufferError instead of delaying a Stop/take-start check.
+    finish() means all input has arrived. poll() returns 0 only after the native
+    queue has stopped, not merely after its last buffer became reusable.
+    """
+
+    BLOCK_BYTES = 16384
+    MAX_PENDING = 8
+    _IS_RUNNING = 0x6171726E  # AudioQueue.h: kAudioQueueProperty_IsRunning ('aqrn').
+
+    def __init__(self, *, _library: Any = None) -> None:
+        if _library is None:
+            if sys.platform != "darwin":
+                raise OSError("PCM streaming playback requires macOS")
+            _library = ctypes.CDLL(
+                "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
+            )
+        self._api = _library
+        self._condition = threading.Condition()
+        # Public native operations serialize independently of the callback's
+        # condition, so Dispose/Stop can invoke callbacks without deadlocking.
+        self._operations = threading.RLock()
+        self._queue = ctypes.c_void_p()
+        self._pending: dict[int, Any] = {}
+        self._available: list[Any] = []
+        self._tail = b""
+        self._started = False
+        self._eof = False
+        self._closed = False
+        self.returncode: int | None = None
+        self.error: str | None = None
+        self._callback = _PCMQueueCallback(self._buffer_consumed)
+        signatures = {
+            "AudioQueueNewOutput": [ctypes.POINTER(_PCMStreamDescription),
+                                    _PCMQueueCallback, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)],
+            "AudioQueueAllocateBuffer": [ctypes.c_void_p, ctypes.c_uint32,
+                                         ctypes.POINTER(_PCMQueueBufferRef)],
+            "AudioQueueEnqueueBuffer": [ctypes.c_void_p, _PCMQueueBufferRef,
+                                        ctypes.c_uint32, ctypes.c_void_p],
+            "AudioQueueStart": [ctypes.c_void_p, ctypes.c_void_p],
+            "AudioQueueStop": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueDispose": [ctypes.c_void_p, ctypes.c_ubyte],
+            "AudioQueueGetProperty": [ctypes.c_void_p, ctypes.c_uint32,
+                                      ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)],
+        }
+        for name, arguments in signatures.items():
+            function = getattr(self._api, name)
+            function.argtypes = arguments
+            function.restype = ctypes.c_int32
+        # lpcm, signed integer + packed, native little endian, one 16-bit sample
+        # per mono frame. The framework supplies its own callback thread.
+        description = _PCMStreamDescription(
+            24000.0, 0x6C70636D, (1 << 2) | (1 << 3), 2, 1, 2, 1, 16, 0
+        )
+        self._check(self._api.AudioQueueNewOutput(
+            ctypes.byref(description), self._callback, None, None, None, 0,
+            ctypes.byref(self._queue),
+        ), "create")
+
+    @staticmethod
+    def _check(status: int, operation: str) -> None:
+        if status:
+            raise OSError(f"AudioQueue {operation} failed ({int(status)})")
+
+    def _buffer_consumed(self, _context: Any, _queue: Any, buffer: Any) -> None:
+        # AudioQueueFreeBuffer is illegal while the queue is running. Reuse
+        # completed buffers; AudioQueueDispose releases all allocations later.
+        address = ctypes.cast(buffer, ctypes.c_void_p).value
+        with self._condition:
+            owned = self._pending.pop(address, None)
+            if owned is not None and not self._closed:
+                self._available.append(owned)
+            self._condition.notify_all()
+
+    @property
+    def pending(self) -> int:
+        with self._condition:
+            return len(self._pending)
+
+    def can_enqueue(self) -> bool:
+        with self._condition:
+            return (not self._closed and not self._eof
+                    and len(self._pending) < self.MAX_PENDING)
+
+    def enqueue(self, pcm: bytes) -> None:
+        if len(pcm) > self.BLOCK_BYTES:
+            raise ValueError("PCM block exceeds streaming buffer capacity")
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    raise OSError("PCM stream is closed")
+                if len(self._pending) >= self.MAX_PENDING:
+                    raise BufferError("PCM streaming queue is full")
+                data = self._tail + pcm
+                self._tail = data[-1:] if len(data) % 2 else b""
+                data = data[:len(data) - len(self._tail)]
+                if not data:
+                    return
+                buffer = self._available.pop() if self._available else None
+            if buffer is None:
+                buffer = _PCMQueueBufferRef()
+                self._check(self._api.AudioQueueAllocateBuffer(
+                    self._queue, self.BLOCK_BYTES, ctypes.byref(buffer)
+                ), "allocate")
+            ctypes.memmove(buffer.contents.data, data, len(data))
+            buffer.contents.byte_size = len(data)
+            address = ctypes.cast(buffer, ctypes.c_void_p).value
+            with self._condition:
+                self._pending[address] = buffer
+            status = self._api.AudioQueueEnqueueBuffer(self._queue, buffer, 0, None)
+            if status:
+                with self._condition:
+                    owned = self._pending.pop(address, None)
+                    if owned is not None:
+                        self._available.append(owned)
+                self._check(status, "enqueue")
+            if not self._started:
+                self._check(self._api.AudioQueueStart(self._queue, None), "start")
+                self._started = True
+
+    def finish(self) -> None:
+        with self._operations:
+            with self._condition:
+                if self._closed or self._eof:
+                    return
+                if self._tail:
+                    raise ValueError("PCM stream ended inside a 16-bit sample")
+                self._eof = True
+            if self._started:
+                # Asynchronous drain. poll also checks IsRunning, since a buffer
+                # can become reusable before its last sample reaches hardware.
+                self._check(self._api.AudioQueueStop(self._queue, False), "drain")
+
+    def _dispose(self, result: int) -> None:
+        # Caller holds _operations, never _condition during the native call.
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            queue = self._queue
+            self._queue = ctypes.c_void_p()
+        status = self._api.AudioQueueDispose(queue, True)
+        with self._condition:
+            self._pending.clear()
+            self._available.clear()
+            self._tail = b""
+            self.returncode = result if not status else 1
+            if status:
+                self.error = f"AudioQueue dispose failed ({int(status)})"
+            self._condition.notify_all()
+        # Dispose has returned, so the SDK guarantees no further callbacks.
+        # Keep the CFUNCTYPE callback alive for the complete native lifetime.
+
+    def poll(self) -> int | None:
+        with self._operations:
+            with self._condition:
+                if self.returncode is not None:
+                    return self.returncode
+                if not self._eof or self._pending:
+                    return None
+            if self._started:
+                running = ctypes.c_uint32()
+                size = ctypes.c_uint32(ctypes.sizeof(running))
+                status = self._api.AudioQueueGetProperty(
+                    self._queue, self._IS_RUNNING, ctypes.byref(running), ctypes.byref(size)
+                )
+                if status:
+                    self.error = f"AudioQueue status failed ({int(status)})"
+                    self._dispose(1)
+                    return self.returncode
+                if running.value:
+                    return None
+            self._dispose(0)
+            return self.returncode
+
+    def terminate(self) -> None:
+        with self._operations:
+            self._dispose(-15)
+
+    def kill(self) -> None:
+        with self._operations:
+            self._dispose(-9)
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("AudioQueue", timeout)
+            with self._condition:
+                self._condition.wait(0.02)
+
+
+class SpeechPCMStream:
+    """Bounded synthesis ahead of playback, with one cache entry per sentence."""
+    def __init__(self, chunks: list[str], synthesize: Any, stopped: Any = None):
+        import queue
+        import threading
+
+        self.chunks, self.synthesize = chunks, synthesize
+        self.stopped = stopped or (lambda: False)
+        self.queue = queue.Queue(maxsize=8)
+        self.cancelled = threading.Event()
+        self.active_response: Any = None
+        self.thread = threading.Thread(target=self._produce, name="reply-synthesis", daemon=True)
+
+    def _put(self, event: Any) -> None:
+        import queue
+
+        while not self.cancelled.is_set():
+            try:
+                self.queue.put(event, timeout=0.05)
+                return
+            except queue.Full:
+                pass
+        raise OSError("speech cancelled")
+
+    def _produce(self) -> None:
+        try:
+            for chunk in self.chunks:
+                if self.cancelled.is_set():
+                    return
+                if self.stopped():
+                    self._put(("done", (False, "playback stopped", "stopped")))
+                    return
+                emitted = 0
+
+                def emit_pcm(pcm: bytes) -> None:
+                    nonlocal emitted
+                    for offset in range(0, len(pcm), 16384):
+                        self._put(("pcm", pcm[offset:offset + 16384]))
+                    emitted += len(pcm)
+
+                emit_pcm.response_opened = self._response_opened
+                pcm, error, reason = self.synthesize(chunk, emit_pcm)
+                self.active_response = None
+                if pcm is None:
+                    self._put(("done", (False, error, reason)))
+                    return
+                # Cache hits (and hermetic whole-response transports) do not
+                # invoke the streaming callback. Feed their complete PCM here.
+                if not emitted:
+                    emit_pcm(pcm)
+            self._put(("done", (True, None, None)))
+        except Exception as error:
+            if not self.cancelled.is_set():
+                self._put(("done", (False, f"synthesis failed ({error.__class__.__name__})", "network")))
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _response_opened(self, response: Any) -> None:
+        self.active_response = response
+        if self.cancelled.is_set():
+            self._interrupt_response()
+
+    def _interrupt_response(self) -> None:
+        import socket
+
+        # Closing BufferedReader from another thread can wait for its read
+        # lock. Shut down the underlying HTTPS socket first to unblock read1.
+        response = self.active_response
+        try:
+            response.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+        except (AttributeError, OSError):
+            pass
+
+    def poll_audio(self) -> Any:
+        import queue
+
+        try:
+            return self.queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self.cancelled.set()
+        self._interrupt_response()
+        if self.thread.ident is not None:
+            # Streaming connection/header waits are bounded at 10 s. Join so
+            # no synthesis survives the request's terminal playback receipt.
+            self.thread.join()
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -4508,8 +6383,11 @@ def _speak_xai(
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
-        key = _xai_speech_key()
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
+        try:
+            key = _xai_speech_key()
+        except SpeechCredentialError as error:
+            return None, f"xAI credential unavailable ({error.reason})", error.reason
         if not key:
             return (
                 None,
@@ -4518,7 +6396,7 @@ def _speak_xai(
             )
         body = json.dumps(
             {
-                "text": text,
+                "text": chunk,
                 "voice_id": voice,
                 "language": "auto",
                 "output_format": {"codec": "pcm", "sample_rate": 24000},
@@ -4534,9 +6412,15 @@ def _speak_xai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
@@ -4717,9 +6601,170 @@ def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
     return installation_idle(bus, bridge_root=bridge_root)
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def channel_speech_now(runtime: Path, channel: str, session_id: str) -> dict[str, Any] | None:
+    """The app's speech phase for this open channel session, or None.
+
+    A missing, foreign, malformed or orphaned file proves nothing: the open
+    channel then holds playback exactly as before this file existed.
+    """
+    if not channel.isdigit():
+        return None
+    try:
+        raw = (runtime / f"channel-speech-{channel}.json").read_bytes()[:4097]
+        if len(raw) > 4096:
+            return None
+        row = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(row, dict)
+        or row.get("schema") != CHANNEL_SPEECH_NOW_SCHEMA
+        or row.get("session_id") != session_id
+        or row.get("phase") not in ("fresh", "speaking", "quiet", "unmeasured")
+        or not isinstance(row.get("since_ms"), int)
+        or not _pid_alive(row.get("pid"))
+    ):
+        return None
+    return row
+
+
+def reply_channels(root: Path, control: ReplyPlaybackControl | None) -> frozenset[str]:
+    """The channels bound to the agent whose reply is about to play.
+
+    An unknown speaker, or an unreadable binding file, owns no channel.
+    """
+    if control is None:
+        return frozenset()
+    state = read_json(root / AUDIENCE_BINDING_FILENAME)
+    bindings = state.get("bindings") if state and state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return frozenset()
+    provider = str(control.reply["provider"]).casefold()
+    session = control.reply["provider_session_id"]
+    return frozenset(
+        channel for channel, binding in bindings.items()
+        if isinstance(binding, dict)
+        and str(binding.get("provider", "")).casefold() == provider
+        and binding.get("provider_session_id") == session
+    )
+
+
+def channel_quiet_for_playback(
+    runtime: Path, root: Path, control: ReplyPlaybackControl | None
+) -> Callable[[str, str], bool]:
+    """An open channel admits a reply after measured quiet.
+
+    ``fresh`` is a session whose voice detector has reported no speech since
+    it opened (the reopen after a silence seal); ``unmeasured`` is a broken
+    edge chain and never counts as quiet. ``quiet`` follows speech inside the
+    take and admits only the agent that channel addresses: a pause in a
+    message to one agent is not room for another (Monika, 2026-10-23 06:58,
+    UI-86: "Roman na 3 kanale zaczął odtwarzać swoją wiadomość głosową").
+    """
+    def released(channel: str, session_id: str) -> bool:
+        row = channel_speech_now(runtime, channel, session_id)
+        if row is None or row["phase"] not in ("fresh", "quiet"):
+            return False
+        if row["phase"] == "quiet" and channel not in reply_channels(root, control):
+            return False
+        # The channel heard nothing while the previous reply played, so quiet
+        # is measured again from that reply's end.
+        quiet_from = max(row["since_ms"], _last_playback_end_ms(runtime))
+        return time.time() * 1000 - quiet_from >= PLAYBACK_QUIET_SECONDS * 1000
+    return released
+
+
+def _open_channels(cursor: dict[str, Any]) -> set[str]:
+    states = [cursor, *cursor.get("channel_buses", {}).values()]
+    return {
+        channel
+        for state in states
+        for channel, _ in state.get("open_channels", {}).values()
+    }
+
+
+def channel_keeps_playback(runtime: Path, playing_into: set[str]) -> Callable[[str, str], bool]:
+    """During a reply only a human take stops it.
+
+    Our own voice cannot open speech in the app (its channel feed is dropped
+    while the reply plays), so a channel that was open when the reply started
+    may seal and reopen under it. A channel opened during the reply is a Fn
+    press, and measured speech on any channel is a person: both stop it.
+    """
+    def kept(channel: str, session_id: str) -> bool:
+        if channel not in playing_into:
+            return False
+        row = channel_speech_now(runtime, channel, session_id)
+        return row is None or row["phase"] != "speaking"
+    return kept
+
+
+def _cursor_holds_take(cursor: dict[str, Any], channel_released: Callable[[str, str], bool]) -> bool:
+    """Whether the scanned rows themselves show a take.
+
+    ``installation_idle`` also refuses when a bus grew between its read and
+    its verification pass; that is an unfinished scan, not a person.
+    """
+    now = time.time()
+    for state in (cursor, *cursor.get("channel_buses", {}).values()):
+        if state.get("live_app") is not None:
+            return True
+        if any(not _cli_session_abandoned(at, now) for at in state.get("open_cli", {}).values()):
+            return True
+        for session_id, (channel, activity) in state.get("open_channels", {}).items():
+            if not _cli_session_abandoned(activity, now) and not channel_released(channel, session_id):
+                return True
+    return False
+
+
+def _announce_playback(runtime: Path, seconds: float) -> Path:
+    marker = runtime / PLAYBACK_NOW_FILENAME
+    atomic_json(marker, {
+        "schema": PLAYBACK_NOW_SCHEMA,
+        "pid": os.getpid(),
+        "until_ms": int((time.time() + seconds + PLAYBACK_NOW_SLACK_SECONDS) * 1000),
+    })
+    return marker
+
+
+def _withdraw_playback(marker: Path) -> None:
+    """End the announcement; its end stays as the start of measured quiet."""
+    try:
+        row = json.loads(marker.read_bytes()[:4096])
+        if isinstance(row, dict) and row.get("pid") == os.getpid():
+            atomic_json(marker, {**row, "until_ms": int(time.time() * 1000), "ended": True})
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+
+
+def _last_playback_end_ms(runtime: Path) -> int:
+    try:
+        row = json.loads((runtime / PLAYBACK_NOW_FILENAME).read_bytes()[:4096])
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return 0
+    if not isinstance(row, dict) or row.get("schema") != PLAYBACK_NOW_SCHEMA:
+        return 0
+    until = row.get("until_ms")
+    return until if isinstance(until, int) and not isinstance(until, bool) else 0
+
+
 def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
     control: ReplyPlaybackControl | None = None,
+    channel_released: Callable[[str, str], bool] | None = None,
+    save_cursor: bool = True,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
@@ -4734,9 +6779,10 @@ def _wait_for_take_end(
         })
         idle = installation_idle(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-            deadline=deadline,
+            deadline=deadline, channel_released=channel_released,
         )
-        _save_lifecycle_cursor(bus, root, cursor)
+        if save_cursor:
+            _save_lifecycle_cursor(bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -4754,9 +6800,22 @@ def _wait_for_take_end(
     return False
 
 
+def _playback_finished(player: Any, streaming: bool, stream_finished: bool) -> bool:
+    """True once the player has exited, so every queued sample was heard.
+
+    A stream counts only after its last chunk arrived; the player's own poll
+    decides, never the elapsed PCM duration.
+    """
+    if player is None or (streaming and not stream_finished):
+        return False
+    return player.poll() is not None
+
+
 def _stop_playback(player: Any) -> None:
     import subprocess
 
+    if player is None:
+        return
     player.terminate()
     try:
         player.wait(timeout=2)
@@ -4766,7 +6825,7 @@ def _stop_playback(player: Any) -> None:
 
 
 def _play_pcm_24k(
-    pcm: bytes,
+    pcm: bytes | SpeechPCMStream,
     *,
     playback_root: Path | None = None,
     bus: Path | None = None,
@@ -4780,14 +6839,19 @@ def _play_pcm_24k(
     wav_path = None
     lock_descriptor = None
     player = None
+    marker = None
+    streaming = isinstance(pcm, SpeechPCMStream)
+    stream_finished = False
+    marker_renewed = 0.0
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
-            wav_path = handle.name
-            with wave.open(handle, "wb") as sink:
-                sink.setnchannels(1)
-                sink.setsampwidth(2)
-                sink.setframerate(24000)
-                sink.writeframes(pcm)
+        if not streaming:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                wav_path = handle.name
+                with wave.open(handle, "wb") as sink:
+                    sink.setnchannels(1)
+                    sink.setsampwidth(2)
+                    sink.setframerate(24000)
+                    sink.writeframes(pcm)
         root = playback_root if playback_root is not None else bridge_home()
         runtime = root / "runtime"
         runtime.mkdir(parents=True, exist_ok=True)
@@ -4796,20 +6860,45 @@ def _play_pcm_24k(
         lock_descriptor = os.open(
             runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
         )
-        if not _acquire_playback_lock(lock_descriptor, control):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
-        # A take may have started during synthesis or the lock wait.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(speech_bus, cursor, bridge_root=root, control=control):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
-        if control is not None:
-            if control.stopped():
-                return False, "playback stopped", "stopped"
-            control.publish("playing")
-        player = subprocess.Popen(
-            ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        released = channel_quiet_for_playback(runtime, root, control)
+        # Eligibility waits keep their parser progress private. Only the player
+        # lock holder writes the shared lifecycle checkpoint.
+        admission_deadline = time.monotonic() + TAKE_WAIT_SECONDS + PLAYBACK_WAIT_SECONDS
+        while True:
+            if time.monotonic() >= admission_deadline or not _wait_for_take_end(
+                speech_bus, cursor, bridge_root=root, control=control,
+                channel_released=released, save_cursor=False,
+            ):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+            if not _acquire_playback_lock(lock_descriptor, control):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
+            # Revalidate after lock contention; a new take or a changed binding
+            # sends this reply back to eligibility without blocking another one.
+            idle = installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+                deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
+                channel_released=released,
+            )
+            _save_lifecycle_cursor(speech_bus, root, cursor)
+            if idle:
+                break
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        if control is not None and control.stopped():
+            return False, "playback stopped", "stopped"
+        kept = channel_keeps_playback(runtime, _open_channels(cursor))
+        # Announced before the first sample: the app drops the channel feed
+        # from now on, and the pid lets it ignore a marker this process left.
+        if streaming:
+            pcm.start()
+        else:
+            if control is not None:
+                control.publish("playing")
+            marker = _announce_playback(runtime, len(pcm) / 48000)
+            player = subprocess.Popen(
+                ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
         incomplete_scans = 0
         while True:
             if control is not None and control.stopped():
@@ -4818,35 +6907,69 @@ def _play_pcm_24k(
             scan_deadline = time.monotonic() + PLAYBACK_SCAN_SECONDS
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
-                deadline=scan_deadline,
+                deadline=scan_deadline, channel_released=kept,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
+            refuse = False
             if idle:
                 incomplete_scans = 0
-            elif time.monotonic() < scan_deadline:
+            elif time.monotonic() < scan_deadline and _cursor_holds_take(cursor, kept):
                 # The scan finished inside its budget and found a live take.
+                refuse = True
+            else:
+                # A loaded machine or a bus that grew mid-scan, not a take:
+                # the retained cursor resumes next tick. Only a run of
+                # unfinished scans stops the voice.
+                incomplete_scans += 1
+                refuse = incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT
+            if refuse and not _playback_finished(player, streaming, stream_finished):
                 _stop_playback(player)
                 return False, "take started during playback", "take_started"
-            else:
-                # A loaded machine, not a take: the retained cursor resumes
-                # next tick. Only a run of unfinished scans stops the voice.
-                incomplete_scans += 1
-                if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
-                    _stop_playback(player)
-                    return False, "take started during playback", "take_started"
-            result = player.poll()
+            # A player that ended before the refusal played every sample: a take
+            # that starts after the last sample cannot unsay the reply, so the
+            # result below reports what the player did (Founder, 2026-10-23).
+            if streaming and not stream_finished and (player is None or player.can_enqueue()):
+                event = pcm.poll_audio()
+                if event is not None:
+                    kind, value = event
+                    if kind == "pcm":
+                        if player is None:
+                            player = PCMStreamPlayer()
+                            if control is not None:
+                                control.publish("playing")
+                            marker = _announce_playback(runtime, 10)
+                            marker_renewed = time.monotonic()
+                        player.enqueue(value)
+                    else:
+                        stream_finished = True
+                        if not value[0]:
+                            _stop_playback(player)
+                            return value
+                        if player is None:
+                            return False, "empty PCM response", "invalid_audio"
+                        player.finish()
+            if streaming and marker is not None and time.monotonic() - marker_renewed >= 5:
+                marker = _announce_playback(runtime, 10)
+                marker_renewed = time.monotonic()
+            result = player.poll() if player is not None else None
             if result is not None:
                 if result != 0:
-                    return False, "afplay failed", "playback_failed"
+                    return False, "audio player failed", "playback_failed"
                 break
-            time.sleep(PLAYBACK_POLL_SECONDS)
+            # Streaming must drain small network buffers faster than real
+            # time; the file player's half-second cadence would starve PCM.
+            time.sleep(min(PLAYBACK_POLL_SECONDS, 0.02) if streaming else PLAYBACK_POLL_SECONDS)
     except OSError as error:
         return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
         if player is not None and player.poll() is None:
             _stop_playback(player)
+        if marker is not None:
+            _withdraw_playback(marker)
         if lock_descriptor is not None:
             os.close(lock_descriptor)
+        if streaming:
+            pcm.close()
         if wav_path:
             try:
                 os.unlink(wav_path)
@@ -4872,7 +6995,7 @@ def _speak_openai(
         or "gpt-4o-mini-tts-2025-12-15"
     )
 
-    def synthesize() -> tuple[bytes | None, str | None, str | None]:
+    def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         key = _openai_speech_key()
         if not key:
             return (
@@ -4883,7 +7006,7 @@ def _speak_openai(
         body = json.dumps(
             {
                 "model": model,
-                "input": text,
+                "input": chunk,
                 "voice": voice,
                 "response_format": "pcm",
                 "speed": speed,
@@ -4894,10 +7017,16 @@ def _speak_openai(
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
         )
-        return _tts_exchange(request)
+        return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
     fields = {"provider": "openai", "model": model, "voice": voice, "speed": float(speed),
               "language": None, "text": text}
+    if len(text) >= 40:
+        stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
+            playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),
+            reply_id=_control_reply_id(control), cancelled=stream.cancelled.is_set),
+            stopped=control.stopped if control else None)
+        return _play_pcm_24k(stream, playback_root=playback_root, bus=bus, control=control)
     speech = _cached_speech(playback_root, fields, synthesize, reply_id=_control_reply_id(control))
     return _speak_pcm(*speech, playback_root=playback_root, bus=bus, control=control)
 
@@ -5006,6 +7135,10 @@ def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path |
 
 
 def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, Any] | None]:
+    # The system speaker has no agent mailbox. Use the app's default bus (or
+    # the explicit private bus), never a same-named agent lease's destination.
+    if getattr(args, "system_reply", False):
+        return args.bus.expanduser().resolve(strict=False), None
     lease_id = lease_identifier(args.provider, args.session)
     lease_path = args.bridge_home / "leases" / f"{lease_id}.json"
     state = read_reply_json(lease_path) if lease_path.exists() else {}
@@ -5053,8 +7186,118 @@ def reply_delivery_envelope(args: argparse.Namespace) -> tuple[Path, dict[str, A
     return bus, envelope
 
 
+def remember_published_reply(root: Path, bus: Path, reply: dict[str, Any],
+                             receipt: dict[str, Any]) -> None:
+    """Keep canonical byte coordinates for speech and text-only agent replies."""
+    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
+            for key in ("stream_dev", "stream_inode", "offset", "length"))
+            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
+            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
+        raise ValueError("canonical reply publication has invalid source coordinates")
+    owner = {key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}
+    path = root / "runtime" / "reply-sources" / f"{reply['reply_id']}.json"
+    previous = read_reply_json(path) if path.exists() else {}
+    copies = []
+    if previous:
+        if (previous.get("schema") != REPLY_SOURCE_SCHEMA
+                or any(previous.get(key) != value for key, value in owner.items())):
+            raise ValueError("published reply source has a different owner")
+        copies = previous.get("copies", [{"bus": previous.get("bus"), "source": previous.get("source")}])
+        if not isinstance(copies, list) or any(not isinstance(copy, dict) for copy in copies):
+            raise ValueError("published reply source has invalid copies")
+    coordinates = {"bus": str(bus.resolve(strict=False)), "source": receipt}
+    copies = [copy for copy in copies if copy.get("bus") != coordinates["bus"]]
+    copies.append(coordinates)
+    atomic_json(path, {"schema": REPLY_SOURCE_SCHEMA, **owner, **copies[0], "copies": copies})
+
+
+def normalize_playable_reply(args: argparse.Namespace, identity: str,
+                             event: dict[str, Any]) -> dict[str, Any] | None:
+    """Only an agent author can supply playback identity; typed rows name recipients."""
+    owner = {"provider": args.provider.casefold(), "provider_session_id": args.session,
+             "lease_id": lease_identifier(args.provider, args.session)}
+    if event.get("schema") == AGENT_REPLY_SCHEMA and event.get("kind") == "agent_reply":
+        if event.get("reply_id") != identity or any(event.get(key) != value for key, value in owner.items()):
+            return None
+        return event
+    sender = event.get("sender")
+    if (event.get("schema") != AGENT_USER_MESSAGE_SCHEMA or event.get("kind") != "agent_user_message"
+            or event.get("message_id") != identity or event.get("source") == "typed"
+            or not isinstance(sender, dict)
+            or any(sender.get(key) != value for key, value in owner.items())
+            or not isinstance(event.get("text"), str) or not event["text"].strip()):
+        return None
+    return {**event, "schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply", "reply_id": identity,
+            **owner, "name": sender.get("name") or event.get("name")}
+
+
+def recover_published_reply_source(args: argparse.Namespace, identity: str) -> None:
+    """Index an older agent row only in the explicitly selected verified bus."""
+    if not args.bus_overridden:
+        raise ValueError("historical reply playback requires an explicit bus")
+    bus = args.bus.expanduser().resolve(strict=False)
+    with GenerationFile(bus) as handle:
+        manifest = read_reply_json(Path(str(bus) + ".generations.json"), 4 << 20)
+        if (manifest.get("schema") != "codescribe.bus-generations.v1"
+                or manifest.get("root") != str(bus)
+                or not isinstance(manifest.get("stream_id"), str) or not manifest["stream_id"]
+                or (handle.dev, handle.ino) != (manifest.get("stream_dev"), manifest.get("stream_inode"))):
+            raise ValueError("historical reply has no verified stream identity")
+        first = max(0, handle.size - (64 << 20))
+        handle.seek(first)
+        if first:
+            handle.readline()
+        decoder = ChunkDecoder()
+        record_start = handle.tell()
+        while handle.tell() < handle.size:
+            offset = handle.tell()
+            raw = handle.readline()
+            if not raw.endswith(b"\n"):
+                raise ValueError("historical reply journal has an incomplete record")
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                raise ValueError("historical reply journal has an invalid record")
+            # A bounded tail may begin inside a chunked publication. Only its
+            # next complete record can be used as an exact source coordinate.
+            if (not decoder.pending and row.get("schema") == "codescribe.bus-chunk.v1"
+                    and (row.get("part") != 0 or row.get("length", 0) > REPLY_READ_LIMIT)):
+                continue
+            if not decoder.pending:
+                record_start = offset
+            event = decoder.feed(row)
+            if event is None:
+                continue
+            reply = normalize_playable_reply(args, identity, event)
+            if reply is None:
+                continue
+            receipt = {"stream_id": manifest["stream_id"], "stream_dev": handle.dev,
+                       "stream_inode": handle.ino, "offset": record_start,
+                       "length": handle.tell() - record_start}
+            remember_published_reply(args.bridge_home, bus, reply, receipt)
+            return
+    raise ValueError("agent reply was not found in the selected bus history")
+
+
 def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path, dict[str, Any]]:
-    source = read_reply_json(args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json")
+    path = args.bridge_home / "runtime" / "reply-sources" / f"{identity}.json"
+    try:
+        source = read_reply_json(path)
+    except FileNotFoundError:
+        recover_published_reply_source(args, identity)
+        source = read_reply_json(path)
+    copies = source.get("copies", [{"bus": source.get("bus"), "source": source.get("source")}])
+    if not isinstance(copies, list) or not copies or any(not isinstance(copy, dict) for copy in copies):
+        raise ValueError("reply source has invalid copies")
+    selected = copies[0]
+    if args.bus_overridden:
+        requested_bus = str(args.bus.expanduser().resolve(strict=False))
+        selected = next((copy for copy in copies if copy.get("bus") == requested_bus), None)
+        if selected is None:
+            # An old broadcast can acquire its indexed copies one explicit
+            # Play at a time; each copy still comes from the canonical bus.
+            recover_published_reply_source(args, identity)
+            return load_published_reply(args, identity)
+    source = {**source, **selected}
     bus = Path(source.get("bus", ""))
     lease_id = lease_identifier(args.provider, args.session)
     if (source.get("schema") != REPLY_SOURCE_SCHEMA or source.get("reply_id") != identity
@@ -5087,11 +7330,8 @@ def load_published_reply(args: argparse.Namespace, identity: str) -> tuple[Path,
             events.append(value)
     if decoder.pending or len(events) != 1:
         raise ValueError("reply source is not one complete event")
-    reply = events[0]
-    if (reply.get("schema") != AGENT_REPLY_SCHEMA or reply.get("kind") != "agent_reply"
-            or reply.get("reply_id") != identity or reply.get("lease_id") != lease_id
-            or reply.get("provider") != args.provider.casefold()
-            or reply.get("provider_session_id") != args.session):
+    reply = normalize_playable_reply(args, identity, events[0])
+    if reply is None:
         raise ValueError("canonical reply does not match its source owner")
     return bus, reply
 
@@ -5108,7 +7348,17 @@ def broadcast_policy_path(root: Path, provider: str, session: str, bus: Path) ->
     return root / "runtime" / "broadcast-policy" / f"{key}.json"
 
 
-def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+def agent_bus_policy(root: Path, provider: str, session: str, bus: Path) -> tuple[str, bool]:
+    """The two independent axes of one lease's reception (Maciej, 2026-10-23):
+
+    membership ("on"/"off") says whether the agent is on channel 0 at all;
+    quiet — the moon — says whether anything may wake it right now. The moon
+    queues every delivery from every channel, the Founder's included, and it
+    no longer needs channel 0 to be ticked: an agent in a meeting lights the
+    moon and keeps its membership. A receipt written before the split spelled
+    the lit moon as policy "quiet"; it still reads as on channel 0 with the
+    moon lit.
+    """
     try:
         row = read_reply_json(broadcast_policy_path(root, provider, session, bus), 65536)
         if (row.get("schema") != BROADCAST_POLICY_SCHEMA
@@ -5116,20 +7366,34 @@ def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -
                 or row.get("provider_session_id") != session
                 or row.get("lease_id") != lease_identifier(provider, session)
                 or row.get("bus") != str(bus.resolve(strict=False))
-                or row.get("policy") not in ("on", "quiet", "off")):
+                or row.get("policy") not in ("on", "quiet", "off")
+                or not isinstance(row.get("quiet", False), bool)):
             raise ValueError("invalid broadcast policy receipt")
-        return row["policy"]
+        if row["policy"] == "quiet":
+            return "on", True
+        return row["policy"], bool(row.get("quiet", False))
     except FileNotFoundError:
-        return "on"
+        return "on", False
     except (OSError, ValueError, UnicodeError):
         # Mute fails closed to silence; policy fails open to "on": a broken
         # receipt must never silently cut an agent off from the Founder.
         sys.stderr.write("cs-bus: unreadable or invalid broadcast policy; using on\n")
-        return "on"
+        return "on", False
 
 
-def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, str]:
-    return {"policy": agent_broadcast_policy(root, provider, session, bus)}
+def agent_broadcast_policy(root: Path, provider: str, session: str, bus: Path) -> str:
+    """What a channel-0 broadcast meets: "off" (not a member, skipped), "quiet"
+    (member, queued without a wake) or "on"."""
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    if membership == "off":
+        return "off"
+    return "quiet" if quiet else "on"
+
+
+def broadcast_policy_snapshot(root: Path, provider: str, session: str, bus: Path) -> dict[str, Any]:
+    membership, quiet = agent_bus_policy(root, provider, session, bus)
+    return {"policy": agent_broadcast_policy(root, provider, session, bus),
+            "membership": membership, "quiet": quiet}
 
 
 def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
@@ -5142,15 +7406,16 @@ def is_broadcast_delivery(payload: dict[str, Any]) -> bool:
 
 def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
     if not is_broadcast_delivery(payload):
-        # Steer is global (Maciej, 2026-10-17): "quiet" queues every delivery
+        # Steer is global (Maciej, 2026-10-17): the moon queues every delivery
         # without waking — direct and peer-to-peer included — while leaving
         # channel 0 ("off") never blocks a direct; off stays broadcast-only so
         # unticking Channel 0 cannot cut the agent off from addressed words.
+        # The moon is read on its own axis, so it holds off channel 0 too.
         if any(key not in payload for key in ("provider", "provider_session_id", "bus")):
             return "on"
-        policy = agent_broadcast_policy(
+        _, quiet = agent_bus_policy(
             root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
-        return "quiet" if policy == "quiet" else "on"
+        return "quiet" if quiet else "on"
     return agent_broadcast_policy(
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
@@ -5199,14 +7464,28 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     lease_id = lease_identifier(args.provider, args.session)
     lease = read_reply_json(args.bridge_home / "leases" / f"{lease_id}.json")
     bus = (args.bus if args.bus_overridden else Path(str(lease.get("bus") or ""))).expanduser().resolve(strict=False)
+    moon = getattr(args, "quiet", None)
     if (lease.get("schema") != LEASE_SCHEMA or lease.get("lease_id") != lease_id
             or lease.get("provider") != args.provider.casefold()
             or lease.get("provider_session_id") != args.session
-            or lease.get("bus") != str(bus) or args.broadcast not in ("on", "quiet", "off")):
+            or lease.get("bus") != str(bus)
+            or args.broadcast not in (None, "on", "quiet", "off") or moon not in (None, "on", "off")
+            or (args.broadcast is None and moon is None)):
         raise ValueError("broadcast policy does not belong to this provider session and bus")
+    # With --quiet present each flag moves its own axis and leaves the other
+    # as the receipt had it. --broadcast alone keeps its pre-split meaning for
+    # callers that know only the one knob: on = member, moon dark; quiet =
+    # member, moon lit; off = not a member, moon dark.
+    membership, quiet = agent_bus_policy(args.bridge_home, args.provider, args.session, bus)
+    if moon is None:
+        membership, quiet = ("on", True) if args.broadcast == "quiet" else (args.broadcast, False)
+    else:
+        quiet = moon == "on"
+        if args.broadcast is not None:
+            membership = "on" if args.broadcast == "quiet" else args.broadcast
     row = {"schema": BROADCAST_POLICY_SCHEMA, "provider": args.provider.casefold(),
            "provider_session_id": args.session, "lease_id": lease_id, "bus": str(bus),
-           "policy": args.broadcast, "emitted_at": utc_now()}
+           "policy": membership, "quiet": quiet, "emitted_at": utc_now()}
     atomic_json(broadcast_policy_path(args.bridge_home, args.provider, args.session, bus), row)
     # The follower may persist a quiet row after our first snapshot but before
     # the policy write. Read it after publication; later rows observe the new
@@ -5219,7 +7498,7 @@ def set_agent_broadcast_policy(args: argparse.Namespace) -> int:
     # Releasing quiet makes eligible pending rows visible to the existing
     # watch, including direct rows when channel zero remains off. The source
     # follower's explicit wakeup=off still forbids queue submission here.
-    if args.broadcast != "quiet" and lease.get("provider") == "codex":
+    if not quiet and lease.get("provider") == "codex":
         native = (NativeQueueWakeup(args.bridge_home, args.session, None)
                   if (lease.get("wakeup_configuration") or {}).get("wakeup") != "off" else None)
         _, events = follower_paths(args.bridge_home, lease_id)
@@ -5274,13 +7553,15 @@ def global_playback_muted(root: Path) -> bool:
 
 def playback_mute_snapshot(root: Path, provider: str, session: str, bus: Path,
                            *, automatic: bool = True) -> dict[str, Any]:
-    """Project the canonical switches; manual replay bypasses only agent mute."""
+    """Project the canonical switches. Both mutes govern automatic speech only:
+    an explicit Play is the Founder's opt-in for that one reply and lifts the
+    global mute as well as the agent mute (Maciej, 2026-10-23)."""
     global_muted = global_playback_muted(root)
     agent_muted = agent_playback_muted(root, provider, session, bus)
-    effective_muted = global_muted or (automatic and agent_muted)
+    effective_muted = automatic and (global_muted or agent_muted)
     return {"global_muted": global_muted, "agent_muted": agent_muted,
             "effective_muted": effective_muted,
-            "mute_scope": "global" if global_muted else "agent" if effective_muted else None}
+            "mute_scope": ("global" if global_muted else "agent") if effective_muted else None}
 
 
 def set_global_muted(args: argparse.Namespace) -> int:
@@ -5315,6 +7596,11 @@ class ReplyPlaybackControl:
         self.bus, self.reply, self.ticket = bus, reply, ticket
         self.automatic = automatic
         self.root = args.bridge_home
+        # An explicit Play is admitted under a mute, but a mute switched on
+        # while it speaks still stops it: the switches as they stood at
+        # admission are the baseline that a later flip is measured against.
+        self.admitted_mutes = playback_mute_snapshot(
+            self.root, reply["provider"], reply["provider_session_id"], bus, automatic=True)
         self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
         self.stop_path = self.path.with_suffix(".stop.json")
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -5342,11 +7628,23 @@ class ReplyPlaybackControl:
                 and all(stop.get(key) == value for key, value in self.owner().items()))
 
     def muted(self) -> bool:
-        return self.mute_snapshot()["effective_muted"]
+        # System announcements are independent of agent chatter switches.
+        # Their Stop ticket and the player's live-take guard still apply.
+        if self.reply.get("system") is True:
+            return False
+        if self.mute_snapshot()["effective_muted"]:
+            return True
+        if self.automatic:
+            return False
+        now = playback_mute_snapshot(self.root, self.reply["provider"],
+                                     self.reply["provider_session_id"], self.bus, automatic=True)
+        return any(now[switch] and not self.admitted_mutes[switch]
+                   for switch in ("global_muted", "agent_muted"))
 
     def mute_snapshot(self) -> dict[str, Any]:
         return playback_mute_snapshot(self.root, self.reply["provider"],
-                                      self.reply["provider_session_id"], self.bus, automatic=self.automatic)
+                                      self.reply["provider_session_id"], self.bus,
+                                      automatic=self.automatic and self.reply.get("system") is not True)
 
     def publish(self, state: str, *, error: str | None = None, reason: str | None = None,
                 playback: dict[str, Any] | None = None) -> None:
@@ -5396,8 +7694,28 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
         control.close()
 
 
+def resolve_reply_voice(root: Path, reply: dict[str, Any]) -> dict[str, Any]:
+    """Explicit Play gives text-only replies the author's voice, then the system voice."""
+    resolved = dict(reply)
+    if not isinstance(resolved.get("voice"), str) or not resolved["voice"].strip():
+        sender = reply.get("sender")
+        name = reply.get("name") or (sender.get("name") if isinstance(sender, dict) else None)
+        profile, source = voice_profile_with_source(root, name)
+        if source == "default":
+            profile = {"voice": "carina", "speed": 1.0, "provider": "xai"}
+        resolved.update(voice=profile["voice"], speed=profile["speed"],
+                        tts_vendor=profile.get("provider") or "xai")
+    if resolved.get("tts_vendor") not in ("xai", "openai"):
+        resolved["tts_vendor"] = "xai"
+    speed = resolved.get("speed")
+    if type(speed) not in (int, float) or not math.isfinite(speed) or speed <= 0:
+        resolved["speed"] = DEFAULT_SPEECH_SPEED
+    return resolved
+
+
 def play_reply_command(args: argparse.Namespace) -> int:
     bus, reply = load_published_reply(args, args.play_reply)
+    reply = resolve_reply_voice(args.bridge_home, reply)
     return speak_published_reply(args, bus, reply, args.playback_ticket)
 
 
@@ -5486,7 +7804,9 @@ def say_reply(args: argparse.Namespace) -> int:
     historical_name = ((owner.get("name") or owner.get("audience")) if owner
                        else envelope.get("audience")) if envelope else None
     name = historical_name if historical_name and historical_name != "*" else args.name
-    profile = voice_profile(args.bridge_home, name)
+    system = getattr(args, "system_reply", False)
+    profile = ({"voice": "carina", "speed": 1.0, "provider": "xai"} if system
+               else voice_profile(args.bridge_home, name))
     voice = args.voice or str(profile["voice"])
     speed = args.speed if args.speed is not None else float(profile["speed"])
     vendor = args.tts_vendor or str(profile.get("provider") or "xai")
@@ -5500,6 +7820,8 @@ def say_reply(args: argparse.Namespace) -> int:
         "association": "addressed" if envelope else "unsolicited",
         "delivery_id": args.reply_to,
     }
+    if system:
+        reply["system"] = True
     if envelope:
         if owner:
             reply["channel"] = owner.get("channel")
@@ -5509,14 +7831,7 @@ def say_reply(args: argparse.Namespace) -> int:
             if key in envelope:
                 reply[key] = envelope[key]
     receipt = publish_reply_event(bus, reply, bridge_root=args.bridge_home)
-    if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-            for key in ("stream_dev", "stream_inode", "offset", "length"))
-            or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-            or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-        raise ValueError("canonical reply publication has invalid source coordinates")
-    atomic_json(args.bridge_home / "runtime" / "reply-sources" / f"{reply['reply_id']}.json",
-                {"schema": REPLY_SOURCE_SCHEMA, "bus": str(bus), "source": receipt,
-                 **{key: reply[key] for key in ("reply_id", "provider", "provider_session_id", "lease_id")}})
+    remember_published_reply(args.bridge_home, bus, reply, receipt)
     emit(reply)
     return speak_published_reply(args, bus, reply, os.urandom(12).hex(), automatic=True)
 
@@ -5568,9 +7883,17 @@ def describe_attachment(raw: str) -> dict[str, Any]:
 
 def attachment_pointer_lines(attachments: list[dict[str, Any]]) -> str:
     """Plain-text pointers so a reader without envelope parsing still sees the file."""
-    return "".join(
-        f"\n[attachment] {item['name']} ({item['media_type']}, {item['bytes']} bytes): {item['path']}"
-        for item in attachments)
+    lines = []
+    for item in attachments:
+        anchor = ""
+        if "attached_at_seconds" in item:
+            seconds = item["attached_at_seconds"]
+            seconds = (int(seconds) if type(seconds) in (int, float)
+                       and math.isfinite(seconds) and seconds >= 0 else 0)
+            anchor = f" @ {seconds // 60}:{seconds % 60:02d}"
+        lines.append(f"\n[attachment{anchor}] {item['name']} ({item['media_type']}, "
+                     f"{item['bytes']} bytes): {item['path']}")
+    return "".join(lines)
 
 
 class UserTextPublicationUncertain(RuntimeError):
@@ -5635,8 +7958,82 @@ def note_skipped_broadcast_channel(
     return entry
 
 
+def capture_attachment_is_committed(stage: dict[str, Any]) -> bool:
+    """Require an exact decoded primary commit inside the verified 64 MiB tail."""
+    try:
+        with GenerationFile(Path(stage["commit_bus"])) as handle:
+            end = handle.size
+            start = max(0, end - (64 << 20))
+            handle.seek(start)
+            if start:
+                discarded = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
+                if not discarded.endswith(b"\n"):
+                    raise ValueError("capture commit tail begins outside a complete storage record")
+            decoder = ChunkDecoder()
+            while handle.tell() < end:
+                raw = handle.readline(min(1024 * 1024 + 1, end - handle.tell()))
+                if not raw or not raw.endswith(b"\n"):
+                    raise ValueError("capture commit tail has an incomplete storage record")
+                parsed = parse_line(raw.decode("utf-8", errors="strict"))
+                if parsed is None:
+                    if decoder.pending or b"persistence_encoding" in raw or b"codescribe.bus-chunk" in raw:
+                        raise ValueError("capture commit tail interrupted a verified storage record")
+                    continue
+                decoded = decoder.feed(parsed)
+                if decoded is None:
+                    continue
+                rows = evidence_revision_rows(decoded)
+                if rows is None:
+                    raise ValueError("capture commit tail has unknown revision encoding")
+                for row in rows:
+                    if (row.get("schema") == CAPTURE_ATTACHMENT_COMMIT_SCHEMA
+                            and row.get("kind") == "capture_attachment_commit"
+                            and all(row.get(key) == stage.get(key) for key in
+                                    ("stage_id", "session_id", "capture_epoch", "source_sequence", "commit_bus"))):
+                        return True
+            if decoder.pending:
+                raise ValueError("capture commit tail ends inside a storage record")
+            raise ValueError("capture attachment has no verified primary commit within 64 MiB")
+    except (OSError, ValueError, KeyError) as error:
+        sys.stderr.write(f"bus-demux: capture attachment commit refused: {error}\n")
+        return False
+
+
+def stage_capture_attachment_command(args: argparse.Namespace) -> int:
+    """The canonical append owner validates the live target under its append lease."""
+    attachments = [describe_attachment(raw) for raw in args.attach_file]
+    event = {
+        "schema": CAPTURE_ATTACHMENT_SCHEMA, "kind": "capture_attachment",
+        "stage_id": _identity(("capture-attachment", args.capture_session, args.capture_epoch,
+                               args.capture_source_sequence, json.dumps(attachments, sort_keys=True))), "session_id": args.capture_session,
+        "capture_epoch": args.capture_epoch, "source_sequence": args.capture_source_sequence,
+        "attachments": attachments,
+        "emitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds"),
+    }
+    receipt = publish_reply_event(args.bus, event, bridge_root=args.bridge_home)
+    emit({"kind": "capture_attachment_staged", "stage_id": event["stage_id"],
+          "session_id": args.capture_session, "capture_epoch": args.capture_epoch,
+          "source_sequence": args.capture_source_sequence, "source": receipt})
+    return 0
+
+
+def validate_user_reply_reference(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {"message_id", "author", "text"}:
+        raise ValueError("invalid user reply reference")
+    identity, author, text = value["message_id"], value["author"], value["text"]
+    if (not isinstance(identity, str) or not identity or len(identity.encode("utf-8")) > 512
+            or any(ord(c) < 32 or ord(c) == 127 for c in identity)
+            or not isinstance(author, str) or not author.strip() or len(author) > 128
+            or any(ord(c) < 32 or ord(c) == 127 for c in author)
+            or not isinstance(text, str) or len(text) > 512):
+        raise ValueError("invalid user reply reference")
+    return {"message_id": identity, "author": author, "text": text}
+
+
 def send_text_command(args: argparse.Namespace) -> int:
     """Publish user text to every reachable owner of channel zero, or one exact owner."""
+    raw_reply = getattr(args, "user_reply_to", None)
+    user_reply = validate_user_reply_reference(json.loads(raw_reply)) if raw_reply is not None else None
     attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
     root = args.bridge_home
     broadcast = str(args.channel) == "0"
@@ -5693,7 +8090,9 @@ def send_text_command(args: argparse.Namespace) -> int:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
-                     "recipients": [owner]}
+                     "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
+            if user_reply is not None:
+                event["user_reply_to"] = user_reply
             if attachments:
                 event["attachments"] = attachments
             if broadcast:
@@ -5766,21 +8165,30 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             if not text.strip():
                 raise ValueError("empty revision")
         control_id = os.urandom(12).hex()
-        receipts = []
+        plans = []
         for owner in owners:
             target = {}
             source_identity = identity
             voice_sessions: set[str] = set()
+            deadline: float | None = None
+            released = False
             storage = ChunkDecoder()
             for raw in replay(Path(owner["bus"])):
                 source = parse_line(raw)
                 source = storage.feed(source) if source is not None else None
+                if source and source.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                    # A release already handed the message over; nothing is held any more.
+                    released = released or (
+                        source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]
+                        and str(source.get("identity", "")) in (identity, source_identity))
+                    continue
                 if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
                     key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
                     if str(source.get(key, "")) == identity or (key == "utterance_id" and source.get("session_id") == identity):
+                        deadline = hold_timestamp(source.get("hold_until")) or deadline
                         if key == "message_id":
                             target = {key: source[key]}
-                            break
+                            continue
                         if source.get("session_id"):
                             target["session_id"] = source["session_id"]
                             voice_sessions.add(source["session_id"])
@@ -5789,6 +8197,15 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                             source_identity = str(source[key])
             if len(voice_sessions) > 1:
                 raise ValueError("voice identity is ambiguous; select its capture session")
+            # The follower hands a held row over at its deadline without waiting
+            # for controls; a control written after that would report a withdraw
+            # or revision the agent never sees. Refuse it while it can still be said.
+            if kind != "release" and (released or deadline is not None
+                    and time.time() >= deadline - HOLD_CONTROL_MARGIN_SECONDS):
+                raise ValueError("message already delivered; it can no longer be changed")
+            plans.append((owner, target, source_identity))
+        receipts = []
+        for owner, target, source_identity in plans:
             event = {"schema": DELIVERY_CONTROL_SCHEMA, "kind": kind, **owner, **target,
                      "identity": source_identity, "control_id": control_id, "emitted_at": utc_now()}
             if broadcast:
@@ -5838,11 +8255,12 @@ def send_peer_command(args: argparse.Namespace) -> int:
         state = read_json(path) or {}
         bindings = (state.get("bindings")
                     if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None)
-        if not isinstance(bindings, dict) or not bindings:
+        is_founder_target = target.casefold() in ("10", "founder")
+        if not is_founder_target and (not isinstance(bindings, dict) or not bindings):
             raise ValueError("no channel bindings exist")
         rows: list[tuple[str, dict[str, Any], str]] = []
         sender_channel = None
-        for channel, binding in sorted(bindings.items()):
+        for channel, binding in sorted((bindings or {}).items()):
             if not isinstance(binding, dict):
                 continue
             owner_lease = lease_identifier(str(binding.get("provider") or ""),
@@ -5850,25 +8268,70 @@ def send_peer_command(args: argparse.Namespace) -> int:
             if owner_lease == lease_id:
                 sender_channel = str(channel)
             rows.append((str(channel), binding, owner_lease))
+        identity = os.urandom(12).hex()
+        sender = {"name": sender_name, "provider": args.provider.casefold(),
+                  "provider_session_id": args.session, "lease_id": lease_id,
+                  "channel": sender_channel}
+        if is_founder_target:
+            bus = (root / "buses" / "channel-10.jsonl").resolve(strict=False)
+            addressed = {"mode": "direct", "to": "10", "channel": "10",
+                         "recipients": [{"name": "founder", "channel": "10"}]}
+            event = {"schema": AGENT_REPLY_SCHEMA, "kind": "agent_reply",
+                     "emitted_at": utc_now(), "reply_id": identity,
+                     "message_id": identity, "source_event_id": identity,
+                     "name": sender_name,
+                     "provider": args.provider.casefold(),
+                     "provider_session_id": args.session, "lease_id": lease_id,
+                     "text": text, "spoken": False, "association": "unsolicited",
+                     "delivery_id": None, "peer_to": "founder",
+                     "channel": "10", "sender": sender, "recipients": [],
+                     "target": addressed}
+            receipt = publish_reply_event(bus, event, bridge_root=root)
+            remember_published_reply(root, bus, event, receipt)
+            deliveries = [{"peer": "founder", "channel": "10",
+                           "follower_live": False, "broadcast": "off",
+                           "source": receipt}]
+            emit({"kind": "peer_message_published", "message_id": identity,
+                  "origin_channel": "10", "sender": sender_name,
+                  "target": addressed, "recipients": deliveries})
+            return 0
         if target == "0":
             selected = [(channel, binding) for channel, binding, owner_lease in rows
                         if owner_lease != lease_id]
             if not selected:
                 raise ValueError("no other agent is bound to any channel")
-            origin = "0"
-        else:
-            selected = [(channel, binding) for channel, binding, _ in rows
-                        if str(binding.get("audience") or "").casefold() == target.casefold()]
+        elif len(target) == 1 and target in "123456789":
+            # A channel digit names one session, even when two share a name.
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if channel == target and owner_lease != lease_id]
             if not selected:
-                raise ValueError(f"no channel is bound to the name {target!r}")
-            selected = selected[:1]
-            origin = selected[0][0]
-        identity = os.urandom(12).hex()
-        sender = {"name": sender_name, "provider": args.provider.casefold(),
-                  "provider_session_id": args.session, "lease_id": lease_id,
-                  "channel": sender_channel}
+                raise ValueError(f"no other agent is bound to channel {target}")
+        else:
+            # A name reaches every other session bound to it (two Andrzej
+            # sessions on channels 3 and 4 both get it), never just the first.
+            selected = [(channel, binding) for channel, binding, owner_lease in rows
+                        if str(binding.get("audience") or "").casefold() == target.casefold()
+                        and owner_lease != lease_id]
+            if not selected:
+                raise ValueError(f"no other channel is bound to the name {target!r}")
+        # Every copy carries the original address and the audience frozen at
+        # sending, so a recipient tells a channel-0 broadcast from a message to
+        # it alone. `peer_to` stays the routing key of one copy and
+        # `recipients` that copy's admitted owner.
+        audience_at_send = []
+        for channel, binding in selected:
+            if target == "0" and agent_broadcast_policy(
+                    root, str(binding.get("provider") or "").casefold(),
+                    str(binding.get("provider_session_id") or ""),
+                    Path(str(binding.get("bus") or "")).expanduser()) == "off":
+                continue  # Channel 0 unticked: this agent never receives broadcasts.
+            audience_at_send.append({"name": binding.get("audience"), "channel": channel})
+        addressed = ({"mode": "broadcast", "channel": "0", "recipients": audience_at_send}
+                     if target == "0" else
+                     {"mode": "direct", "to": target.casefold(), "recipients": audience_at_send})
         deliveries: list[dict[str, Any]] = []
         for channel, binding in selected:
+            origin = "0" if target == "0" else channel
             owner_lease = lease_identifier(str(binding.get("provider") or ""),
                                            str(binding.get("provider_session_id") or ""))
             audience = binding.get("audience")
@@ -5889,20 +8352,17 @@ def send_peer_command(args: argparse.Namespace) -> int:
                      "provider_session_id": args.session, "lease_id": lease_id,
                      "text": text, "spoken": False, "association": "unsolicited",
                      "delivery_id": None, "peer_to": audience,
-                     "channel": origin, "sender": sender, "recipients": [owner]}
+                     "channel": origin, "sender": sender, "recipients": [owner],
+                     "target": addressed}
             receipt = publish_reply_event(bus, event, bridge_root=root)
-            if (any(type(receipt.get(key)) is not int or receipt[key] < 0
-                    for key in ("stream_dev", "stream_inode", "offset", "length"))
-                    or not 0 < receipt["length"] <= REPLY_READ_LIMIT
-                    or not isinstance(receipt.get("stream_id"), str) or not receipt["stream_id"]):
-                raise ValueError("publication has no durable receipt; do not automatically resend")
+            remember_published_reply(root, bus, event, receipt)
             deliveries.append({"peer": audience, "channel": channel,
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
                                "source": receipt})
     emit({"kind": "peer_message_published", "message_id": identity,
-          "origin_channel": origin, "sender": sender_name,
-          "recipients": deliveries})
+          "origin_channel": "0" if target == "0" else deliveries[0]["channel"],
+          "sender": sender_name, "target": addressed, "recipients": deliveries})
     return 0
 
 
@@ -6457,6 +8917,8 @@ def write_channel_binding(
     bus: str | None = None,
 ) -> Path:
     """Claim a channel without replacing another session's routing."""
+    if name.casefold() == "founder":
+        raise ValueError("founder is reserved for channel 10")
     path = root / AUDIENCE_BINDING_FILENAME
     with channel_bindings(root) as bindings:
         requested = {
@@ -6497,6 +8959,7 @@ def source_closes_retained_documents(bus: Path, documents: dict[str, Any]) -> bo
         for event in normalized_revision_events(raw, normalizer):
             if event.get("status") == SEALED:
                 remaining.discard(event.get("session_id"))
+        remaining.difference_update(normalizer.publication_refusals())
         if not remaining:
             return True
     return not remaining
@@ -6859,6 +9322,8 @@ def attach_command(args: argparse.Namespace) -> int:
 
     root: Path = args.bridge_home
     name = args.name.casefold()
+    if name == "founder":
+        raise ValueError("founder is reserved for channel 10")
     persist_voice = bool(args.voice or args.speed is not None or args.tts_vendor)
     voice_source = voice_profile_with_source(root, name)[1]
     if persist_voice:
@@ -7052,6 +9517,7 @@ def status_command(args: argparse.Namespace) -> int:
                 "last_loss": (lifecycle.get("losses") or [None])[-1],
                 "watch_alive": watch_alive if watch else None,
                 "watch_pid": watch_pid if watch_alive else None,
+                "until_event_alive": lock_held(until_event_lock_path(root, lease_id)),
             },
             "wakeup": (state or {}).get("wakeup_configuration", {}).get("wakeup", "unrecorded"),
             "wakeup_receipts": str(root / "wakeups" / lease_id),
@@ -7135,11 +9601,66 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     # Keep the owner and conversational attribution, without repeating the
     # acoustic envelope or every recipient's copy of the same coordinates.
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
-                "emitted_at", "source", "sender", "peer_to", "association", "reply_id", "reply_to",
-                "routing_candidates", "instructions", "attachments"):
+                "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
+                "routing_candidates", "instructions", "attachments", "user_reply_to"):
         if key in payload:
             line[key] = payload[key]
     return line
+
+
+def native_wake_module() -> Any:
+    """bus-mcp.py: the native conversation server, its hook modes, and the
+    native waiter's lock and announced ledger."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def until_event_lock_path(root: Path, lease_id: str) -> Path:
+    """Held shared for the whole life of each `--watch --until-event` task of
+    this lease, whatever its provider: --status reports it, and a native waiter
+    leaves the wake to the task while it is held."""
+    return root / "runtime" / "until-event" / f"{lease_id}.lock"
+
+
+def lock_held(path: Path) -> bool:
+    """True while another process holds `path`; observing never takes it."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
+@contextlib.contextmanager
+def until_event_mark(root: Path, provider: str, lease_id: str) -> Iterator[Any]:
+    """Mark this live `--watch --until-event` task for --status and for this
+    lease's native waiter (the Claude Code hooks, the OMP extension), so a
+    message wakes the conversation once. Yields `announce(ids)`, which records
+    reported deliveries in that waiter's ledger; without one it does nothing."""
+    path = until_event_lock_path(root, lease_id)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        try:
+            module = native_wake_module()
+        except OSError:
+            module = None  # a helper installed without bus-mcp.py still waits
+        if module is None or provider not in module.NATIVE_WAKE_PROVIDERS:
+            yield lambda _ids: None
+        else:
+            yield module.announcer(sys.modules[__name__], root, lease_id)
+    finally:
+        os.close(descriptor)
 
 
 def wait_for_pending_command(args: argparse.Namespace) -> int:
@@ -7147,7 +9668,8 @@ def wait_for_pending_command(args: argparse.Namespace) -> int:
 
     Without --max-wait the process ends only when the owned mailbox has an unread
     non-draft message, so an idle agent costs no model turn. --max-wait keeps a
-    bounded diagnostic variant that may also end with watch_timeout.
+    bounded diagnostic variant that may also end with watch_timeout. While it
+    runs, a native waiter of the same lease leaves the wake to this task.
     """
     lease_id = lease_identifier(args.provider, args.session)
     # No --max-wait: wait without a deadline. A provider that wakes its agent on
@@ -7156,24 +9678,28 @@ def wait_for_pending_command(args: argparse.Namespace) -> int:
     source = args.bridge_home / "leases" / f"{lease_id}.json"
     trigger = BusEventTrigger(source, args.interval)
     try:
-        while True:
-            _state, rows = unread_pending(args)
-            if rows:
-                emit({"kind": "mailbox_ready", "lease_id": lease_id,
-                      "provider": args.provider, "provider_session_id": args.session,
-                      "pending_count": len(rows),
-                      "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
-                return 0
-            if deadline is None:
-                trigger.wait(timeout=1.0)
-                continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                emit({"kind": "watch_timeout", "lease_id": lease_id,
-                      "provider": args.provider, "provider_session_id": args.session,
-                      "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
-                return 0
-            trigger.wait(timeout=min(1.0, remaining))
+        with until_event_mark(args.bridge_home, args.provider, lease_id) as announce:
+            while True:
+                _state, rows = unread_pending(args)
+                if rows:
+                    emit({"kind": "mailbox_ready", "lease_id": lease_id,
+                          "provider": args.provider, "provider_session_id": args.session,
+                          "pending_count": len(rows),
+                          "instructions": "Run --read-pending; read complete messages, then ACK only read_delivery_ids. Rearm --watch --until-event after draining."})
+                    # Recorded after the report and before the mark is released:
+                    # the waiter that takes over does not wake again for these.
+                    announce([row["delivery_id"] for row in rows])
+                    return 0
+                if deadline is None:
+                    trigger.wait(timeout=1.0)
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    emit({"kind": "watch_timeout", "lease_id": lease_id,
+                          "provider": args.provider, "provider_session_id": args.session,
+                          "instructions": "No unread message. Rearm --watch --until-event; do not ACK or reply to this timeout."})
+                    return 0
+                trigger.wait(timeout=min(1.0, remaining))
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError) as error:
@@ -7373,6 +9899,8 @@ def main() -> int:
                "  cs-bus --watch --provider codex --session THREAD\n"
                "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
                "  cs-bus --ack ID --provider codex --session THREAD\n"
+               "  cs-bus --history --since 1d > bus-history.md\n"
+               "  cs-say 'Gotowe.'  # Codescribe system voice (Carina, xAI)\n"
                "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
                "  cs-say auth --help\n\n"
                "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
@@ -7466,6 +9994,10 @@ def main() -> int:
     parser.add_argument("--read-pending", action="store_true", help="read complete unread non-draft envelopes as a bounded batch; never ACK automatically")
     parser.add_argument("--read-limit", type=int, default=None, help="with --read-pending: maximum envelopes, default 8 (1..256)")
     parser.add_argument("--read-bytes", type=int, default=None, help="with --read-pending: maximum UTF-8 output bytes, default 65536 (up to 16 MiB)")
+    parser.add_argument("--history", action="store_true",
+                        help="print the retained channel conversation as Markdown, every message once; reads only, never ACKs")
+    parser.add_argument("--since", metavar="WHEN", help="with --history: a span back from now (90m, 6h, 2d) or an ISO date/time, local unless it has an offset")
+    parser.add_argument("--until", metavar="WHEN", help="with --history: the same forms as --since")
     parser.add_argument(
         "--attach",
         action="store_true",
@@ -7538,9 +10070,10 @@ def main() -> int:
     parser.add_argument(
         "--ack",
         nargs="+",
+        action="extend",
         metavar="DELIVERY_ID",
         help="acknowledge one or more deliveries for --provider/--session "
-        "(all or nothing)",
+        "(all or nothing); a repeated --ack adds its ids",
     )
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
@@ -7555,12 +10088,14 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=0.15)
     parser.add_argument(
         "--say",
-        help="append an agent reply to the canonical Bus and speak it through "
-        "vendor TTS; --name defaults to the name on this session's lease",
+        help="publish and speak through vendor TTS; without --provider/--session "
+        "uses Codescribe system voice (Carina, xAI, speed 1.0); agent --name "
+        "defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
-    parser.add_argument("--to", metavar="NAME|0", help="recipient agent name for --send, or 0 to broadcast to every other bound agent")
+    parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
+                        "one channel digit 1-9, or 0 to broadcast to every other bound agent")
     parser.add_argument("--reply-to", metavar="DELIVERY_ID", help="associate --say with this owned delivery envelope")
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
@@ -7568,9 +10103,12 @@ def main() -> int:
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
-    mute.add_argument("--mute-all", action="store_true", help="mute all reply playback on every channel")
+    mute.add_argument("--mute-all", action="store_true", help="mute automatic agent reply playback on every channel; system announcements remain audible")
     mute.add_argument("--unmute-all", action="store_true", help="restore reply playback, retaining individual mute preferences")
-    parser.add_argument("--broadcast", choices=("on", "quiet", "off"), help="change this lease's channel-zero delivery policy at any time")
+    parser.add_argument("--broadcast", choices=("on", "quiet", "off"),
+                        help="change this lease's channel-zero membership at any time (quiet: legacy spelling of on plus --quiet on)")
+    parser.add_argument("--quiet", choices=("on", "off"),
+                        help="light or clear this lease's moon: on queues every delivery from every channel without a wake")
     parser.add_argument("--hold-seconds", type=int, default=None,
                         help="with --send-text: hold delivery for N seconds (0 sends immediately)")
     delivery_controls = parser.add_mutually_exclusive_group()
@@ -7598,11 +10136,37 @@ def main() -> int:
         help="TTS speed; defaults to the name's profile in voices.json, "
         f"then {DEFAULT_SPEECH_SPEED}; with --attach it is stored in the profile",
     )
+    parser.add_argument("--stage-capture-attachment", action="store_true",
+                        help="bind stored file pointers to an exact currently open voice capture")
+    parser.add_argument("--capture-session", help="exact voice capture session ID")
+    parser.add_argument("--capture-epoch", type=int, help="physical capture epoch, greater than zero")
+    parser.add_argument("--capture-source-sequence", type=int, help="latest evidence sequence, including zero")
+    parser.add_argument("--user-reply-to", metavar="JSON", help="with --send-text: selected parent message_id, author and bounded text")
     parser.add_argument("--attach-file", metavar="PATH", action="append",
                         help="with --send-text: pointer to a pasted file the app already stored "
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.stage_capture_attachment:
+        allowed = {"stage_capture_attachment", "capture_session", "capture_epoch",
+                   "capture_source_sequence", "attach_file", "bus", "bridge_home", "entrypoint"}
+        if (not args.capture_session or channel_of_session(args.capture_session) is None
+                or args.capture_epoch is None or args.capture_epoch <= 0
+                or args.capture_source_sequence is None or args.capture_source_sequence < 0
+                or args.bus is None or not args.attach_file
+                or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
+            parser.error("capture attachment requires exact --capture-session/--capture-epoch/--capture-source-sequence/--bus and --attach-file")
+        args.bus = args.bus.expanduser().resolve(strict=False)
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return stage_capture_attachment_command(args)
+        except (OSError, ValueError, RuntimeError) as error:
+            sys.stderr.write(f"cs-bus: capture attachment refused: {error}; draft retained\n")
+            return 3
+    if any(value is not None for value in (args.capture_session, args.capture_epoch, args.capture_source_sequence)):
+        parser.error("capture target flags require --stage-capture-attachment")
+    if args.user_reply_to is not None and not args.send_text:
+        parser.error("--user-reply-to requires --send-text")
     if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
         parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):
@@ -7619,11 +10183,11 @@ def main() -> int:
             return 3
     if args.hold_seconds is not None and (not args.send_text or not 0 <= args.hold_seconds <= 4294967295):
         parser.error("--hold-seconds requires --send-text and an unsigned 32-bit integer")
-    if args.broadcast is not None:
-        allowed = {"broadcast", "provider", "session", "bus", "bridge_home", "entrypoint"}
+    if args.broadcast is not None or args.quiet is not None:
+        allowed = {"broadcast", "quiet", "provider", "session", "bus", "bridge_home", "entrypoint"}
         if (not args.provider or not args.session
                 or any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed)):
-            parser.error("--broadcast requires only --provider/--session and optional --bus/--bridge-home")
+            parser.error("--broadcast/--quiet require only --provider/--session and optional --bus/--bridge-home")
         args.bus_overridden = args.bus is not None
         args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
@@ -7643,10 +10207,7 @@ def main() -> int:
                 parser.error("--omp-wake requires --provider omp and --session ID")
         elif args.host_pid is not None or args.provider is not None or args.session is not None:
             parser.error("--host-pid, --provider and --session combine only with --omp-wake here")
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("codescribe_mcp", Path(__file__).with_name("bus-mcp.py"))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = native_wake_module()
         root = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
         try:
             if args.install_junie_extension:
@@ -7677,6 +10238,20 @@ def main() -> int:
         except (OSError, ValueError) as error:
             sys.stderr.write(f"cs-bus: global playback mute refused: {error}\n")
             return 3
+    if args.history:
+        allowed = {"history", "since", "until", "channel", "bridge_home", "entrypoint"}
+        if any(value != parser.get_default(key) for key, value in vars(args).items() if key not in allowed):
+            parser.error("--history combines only with --since/--until/--channel/--bridge-home")
+        if args.channel is not None and (len(args.channel) != 1 or args.channel not in "0123456789"):
+            parser.error("--history --channel takes one digit 0-9; 0 keeps messages to everyone")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return history_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: history refused: {error}\n")
+            return 3
+    if args.since is not None or args.until is not None:
+        parser.error("--since and --until require --history")
     if args.attach_file and not args.send_text:
         parser.error("--attach-file is only valid with --send-text")
     if args.release_reader and args.archive_agent is None:
@@ -7924,7 +10499,25 @@ def main() -> int:
         receipt = read_json(args.bridge_home / "wakeups" / lease_id / f"{args.retry_wakeup}.json") or {}
         emit(receipt)
         return 0 if receipt.get("disposition") == "provider_accepted" else 3
-    if args.speed is not None and args.speed <= 0:
+    if args.say is not None:
+        args.system_reply = not args.provider and not args.session
+        if args.system_reply:
+            if args.reply_to:
+                parser.error("--reply-to requires an explicit --provider/--session")
+            args.provider, args.session = "codescribe", "system"
+            args.name = args.name or "Codescribe"
+            if args.voice is None:
+                args.voice = os.environ.get("CS_SAY_VOICE") or None
+            if args.speed is None and os.environ.get("CS_SAY_SPEED"):
+                try:
+                    args.speed = float(os.environ["CS_SAY_SPEED"])
+                except ValueError:
+                    parser.error("CS_SAY_SPEED must be a positive number")
+            if args.tts_vendor is None:
+                args.tts_vendor = os.environ.get("CS_SAY_TTS_VENDOR") or None
+            if args.tts_vendor not in (None, "xai", "openai"):
+                parser.error("CS_SAY_TTS_VENDOR must be xai or openai")
+    if args.speed is not None and (not math.isfinite(args.speed) or args.speed <= 0):
         parser.error("--speed must be positive")
     if args.voice is not None and not args.voice.strip():
         parser.error("--voice needs a voice id")
@@ -7992,8 +10585,6 @@ def main() -> int:
             parser.error("--status combines with no other command")
         return status_command(args)
     if args.say is not None:
-        if not args.provider:
-            parser.error("--say requires --provider/--session")
         if args.follow or args.once or args.from_start or args.all or args.become:
             parser.error("--say takes no read mode")
         if not args.say.strip():

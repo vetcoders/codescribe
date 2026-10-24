@@ -224,13 +224,9 @@ pub enum ObservationProducer {
     Apple,
     /// Live websocket finals, committed at Silero closes.
     CloudLive,
-    /// Terminal DictationTranscriber witness over recorder-owned, already
-    /// closed PCM: one bounded final decode with measured segment ranges,
-    /// requested only for unresolved recovery debt or material uncovered
-    /// speech gaps. It sits below Whisper: it inserts into ranges no complete
-    /// source holds and never overrides a held Whisper word. Apple's omission
-    /// of a word is not acoustic evidence of absence, so it carries no
-    /// deletion authority either.
+    /// Independent DictationTranscriber witness over recorder-owned PCM.
+    /// Its measured ranges may contest an existing label through word
+    /// adjudication; its omission of a label grants no deletion authority.
     AppleDictation,
     /// Whisper tail retranscription.
     Whisper,
@@ -427,6 +423,11 @@ pub enum RefuseReason {
     /// The pin's own PCM range was measured, and no hop inside it was voiced.
     /// Mean loudness of a wider span is not this fact.
     NoVoicedHopInPin,
+    /// This word has no measured Silero speech in its own sample span.
+    SpanWithoutOwnSpeech,
+    /// Historical receipt: a word refused for the length of its decoder pin.
+    /// Pin timing is not an acoustic boundary; no current decision uses it.
+    SpanExceedsSyllableCeiling,
     /// This Whisper word repeats the previous identical word, and the span
     /// was measured. It does not contain its own voiced segment: no energy
     /// valley and no Silero dip separates it from that previous word, or the
@@ -459,6 +460,8 @@ impl RefuseReason {
             Self::ClockLie => "clock_lie",
             Self::UnrecoveredSpeech => "unrecovered_speech",
             Self::NoVoicedHopInPin => "no_voiced_hop_in_pin",
+            Self::SpanWithoutOwnSpeech => "span_without_own_speech",
+            Self::SpanExceedsSyllableCeiling => "span_exceeds_syllable_ceiling",
             Self::IdenticalRepeatWithoutOwnVoicedSegment => {
                 "identical_repeat_without_own_voiced_segment"
             }
@@ -563,11 +566,21 @@ impl MutationReceipt {
     }
 }
 
-/// Speech witness attached to a word slot. Verdicts are a separate cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Independent lexical evidence on an already resolved acoustic range.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SlotWitness {
     /// No witness verdict has been issued; absence never authorizes deletion.
     Unwitnessed,
+    /// An independent decode agrees on this physical range.
+    Confirmed,
+    /// A timed independent decode contests the original label. The corrected
+    /// slot retains the dispute and its measured scope for inspection.
+    Contested {
+        witness_label: String,
+        range: OccurrenceIdentity,
+    },
+    /// The witness decoded this range without a label. This never deletes it.
+    Absent { range: OccurrenceIdentity },
 }
 
 /// Ordered lexical evidence inside one physically owned occurrence.
@@ -748,6 +761,11 @@ fn compose_label(slots: &[WordSlot]) -> String {
         .join(" ")
 }
 
+/// Reason of a [`SlotAlternative`] that only records another engine's word on
+/// its own PCM range (D3: hypotheses are collected, not rejected). It is
+/// evidence for adjudication and inspection, never a refused authority.
+pub const COLLECTED_HYPOTHESIS: &str = "collected_hypothesis";
+
 /// A candidate that did not prove a unique mutation target. The current words
 /// remain intact; producer and generation travel with the candidate for W-6.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -903,6 +921,9 @@ pub struct AcousticLedger {
     complete_decoded_words: std::collections::HashMap<ObservationIdentity, Vec<(u64, u64)>>,
     /// Actual decoder fences, distinct from owner clipping and word geometry.
     decoded_word_windows: std::collections::HashMap<ObservationIdentity, (u64, u64)>,
+    /// Returned Whisper and cloud fences merged per capture, so asking whether
+    /// complete decode covered an owner is one lookup, not a scan per tick.
+    complete_decode_spans: BTreeMap<String, BTreeMap<u64, Vec<(u64, u64)>>>,
     /// Matched successful empty finals; these observations mint no Word.
     successful_empty_decodes: std::collections::HashSet<ObservationIdentity>,
     answered: std::collections::HashSet<ObservationIdentity>,
@@ -1149,6 +1170,28 @@ impl AcousticLedger {
                 .checked_add(1)
                 .expect("word generation exhausted");
         }
+        // D3, Maciej 2026-10-21: "zbierzmy całość hipotez" — a word the batch
+        // could not place is still one engine's hypothesis on that PCM range.
+        // Keep it, keyed by its own range, beside the words held there. It
+        // changes no text and settles or blocks no debt. A batch that already
+        // kept its reading (whole, as one candidate for the picker) has
+        // collected this word with it; it is not collected twice.
+        let already_kept = self
+            .slot_alternatives
+            .iter()
+            .any(|alternative| alternative.observation == *observation);
+        if !already_kept && !word.text.trim().is_empty() {
+            let beside = self
+                .slots_of(owner)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|held| {
+                    held.sample_start < word.sample_end && word.sample_start < held.sample_end
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.retain_slot_alternative(&rejected, &word.text, beside, COLLECTED_HYPOTHESIS);
+        }
         self.refuse_replacement(&rejected, &word.text, RefuseReason::SlotAdmissionRejected);
     }
 
@@ -1345,6 +1388,12 @@ impl AcousticLedger {
         let anchors = measured_anchors.clone().unwrap_or_default();
         let original_words = words;
         let trace = super::trail::SlotTrace::words(self, observation, words, self.capture_rate_hz);
+        if observation.producer == ObservationProducer::AppleDictation
+            && words.is_empty()
+            && let Some(receipt) = self.record_witness_absence(observation)
+        {
+            return trace.finish(receipt, self);
+        }
         let owner = &observation.occurrence;
         if self.is_sealed(owner) && observation.producer != ObservationProducer::ManualHuman {
             let reason = match observation.producer {
@@ -1589,6 +1638,8 @@ impl AcousticLedger {
                         .collect::<Vec<_>>(),
                 ));
                 projected
+            } else if let Some(aligned) = self.declared_sequence_alignment(observation, words) {
+                aligned
             } else {
                 declared_slots()
             }
@@ -1632,6 +1683,67 @@ impl AcousticLedger {
                 self,
             );
         };
+        // Reconcile while live, before resegmentation can treat a drifted
+        // copy as a new word. The same rule applies to every word of a
+        // re-emitted clause, not merely adjacent equal strings.
+        let known = self
+            .committed
+            .values()
+            .flat_map(|held| held.slots.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut voice_replays = Vec::new();
+        incoming.retain(|(word, _)| {
+            if let Some(source) = self.acoustic_replay_source(word, &known) {
+                voice_replays.push((word.clone(), source));
+                false
+            } else {
+                true
+            }
+        });
+        for (word, source) in &voice_replays {
+            // The predecessor is a committed source from a different
+            // overlapping decode, never a provisional within-batch token.
+            if self
+                .slots_of(&source.observation.occurrence)
+                .is_some_and(|slots| slots.contains(source))
+            {
+                self.record_slot_operation(SlotOperationReceipt {
+                    observation: observation.clone(),
+                    kind: SlotOperationKind::Correct,
+                    sources: vec![source.clone()],
+                    outputs: vec![source.clone()],
+                    source_ranges: self.slot_source_ranges(source),
+                    rule_id: "overlapping_decode_same_voiced_burst/v1".into(),
+                });
+            }
+            if !incoming.is_empty() {
+                let pin = OccurrenceIdentity::new(
+                    &owner.session,
+                    owner.capture_epoch,
+                    word.sample_start,
+                    word.sample_end,
+                );
+                let mut replay =
+                    self.next_word_observation(observation.producer, observation.request, &pin);
+                if replay == *observation {
+                    replay.generation = replay.generation.saturating_add(1);
+                }
+                self.refuse_replayed_range(&replay, &word.text);
+            }
+        }
+        if !voice_replays.is_empty() && incoming.is_empty() {
+            // A window that only repeats held words still heard its whole
+            // decode range, so its return pays the text debt it covered
+            // (decision of Maciej, 2026-10-21) like any complete return. A
+            // second delivery of the same observation stopped at `answered`.
+            self.record_word_decode_bounds(observation, words);
+            let candidate = original_words
+                .iter()
+                .map(|pin| pin.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            return trace.finish(self.refuse_replayed_range(observation, &candidate), self);
+        }
         let mut no_speech_refused = Vec::new();
         incoming.retain(|(word, pin)| {
             if observation.producer != ObservationProducer::ManualHuman
@@ -1923,6 +2035,13 @@ impl AcousticLedger {
             } else {
                 None
             };
+            if local_choice == Some(true) {
+                let sources = conflicts
+                    .iter()
+                    .map(|&index| prior[index].clone())
+                    .collect::<Vec<_>>();
+                self.stamp_word_witness(observation, &sources, std::slice::from_mut(&mut word));
+            }
             if local_choice == Some(false) {
                 self.retain_slot_alternative(
                     observation,
@@ -2335,7 +2454,10 @@ impl AcousticLedger {
                         && slot.producer.authority_rank() < observation.producer.authority_rank()
                 })
             });
-        if recovery_unresolved && (recovery_pending || self.text_recovery_pending(owner)) {
+        if recovery_unresolved
+            && (recovery_pending || self.text_recovery_pending(owner))
+            && !self.complete_decode_covers(owner)
+        {
             self.pending_text_recovery.insert(owner.clone());
         }
         trace.finish(receipt, self)
@@ -2488,8 +2610,12 @@ impl AcousticLedger {
     /// Mark an acoustically qualified occurrence whose provisional label does
     /// not account for its speech. The label stays visible, but cannot certify
     /// coverage or finality until an authorized recovery observation lands.
+    /// A range that complete decode windows already heard owes nothing.
     pub fn require_text_recovery(&mut self, occurrence: &OccurrenceIdentity) -> bool {
-        if !self.evidence.contains_key(occurrence) || self.seals.contains_key(occurrence) {
+        if !self.evidence.contains_key(occurrence)
+            || self.seals.contains_key(occurrence)
+            || self.complete_decode_covers(occurrence)
+        {
             return false;
         }
         let newly_pending = self.pending_text_recovery.insert(occurrence.clone());
@@ -2504,8 +2630,9 @@ impl AcousticLedger {
         true
     }
 
+    /// Debt is open until complete decode windows cover its whole range.
     pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
-        self.pending_text_recovery.contains(occurrence)
+        self.pending_text_recovery.contains(occurrence) && !self.complete_decode_covers(occurrence)
     }
 
     pub fn pending_text_recoveries(
@@ -2516,7 +2643,9 @@ impl AcousticLedger {
         self.pending_text_recovery
             .iter()
             .filter(|occurrence| {
-                occurrence.session == session && occurrence.capture_epoch == capture_epoch
+                occurrence.session == session
+                    && occurrence.capture_epoch == capture_epoch
+                    && !self.complete_decode_covers(occurrence)
             })
             .cloned()
             .collect()
@@ -2762,6 +2891,139 @@ impl AcousticLedger {
     }
 
     /// All slot batches commit here, including explicit geometric operations.
+    /// Where the instruments hear speech, a producer of lower authority does
+    /// not retire a word a higher one holds, not even by retiming it: its
+    /// proposal leaves the batch and stays an alternative on the held word,
+    /// while the rest of the batch is still admitted. A held word with no
+    /// speech range under it is not protected here; the lower producer may
+    /// still falsify it through the acoustic coverage check. Returns the kept
+    /// slots and operations, and the kept label when anything was withheld.
+    fn withhold_lower_authority_over_speech(
+        &mut self,
+        observation: &ObservationIdentity,
+        slots: Option<Vec<WordSlot>>,
+        operations: &[SlotOperationReceipt],
+    ) -> (
+        Option<Vec<WordSlot>>,
+        Vec<SlotOperationReceipt>,
+        Option<String>,
+    ) {
+        let owner = &observation.occurrence;
+        let held = self.slots_of(owner).unwrap_or(&[]).to_vec();
+        let protected = |source: &WordSlot| {
+            observation.producer != ObservationProducer::ManualHuman
+                && source.producer.authority_rank() > observation.producer.authority_rank()
+                && !self.speech_evidence.as_ref().is_some_and(|speech| {
+                    speech
+                        .identity()
+                        .matches(&owner.session, owner.capture_epoch)
+                        && speech
+                            .availability()
+                            .observed_samples()
+                            .is_some_and(|end| end >= source.sample_end)
+                        && speech.ranges().iter().all(|range| {
+                            range.sample_end <= source.sample_start
+                                || range.sample_start >= source.sample_end
+                        })
+                })
+        };
+        let (withheld_operations, kept_operations): (Vec<_>, Vec<_>) = operations
+            .iter()
+            .cloned()
+            .partition(|operation| operation.sources.iter().any(&protected));
+        let mut withheld_sources = withheld_operations
+            .iter()
+            .flat_map(|operation| operation.sources.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut withheld_outputs = withheld_operations
+            .iter()
+            .flat_map(|operation| operation.outputs.iter().cloned())
+            .collect::<Vec<_>>();
+        let Some(proposed) = slots else {
+            return (None, kept_operations, None);
+        };
+        let mut kept = Vec::with_capacity(proposed.len());
+        for output in proposed {
+            if withheld_outputs.contains(&output) {
+                continue;
+            }
+            if kept_operations
+                .iter()
+                .any(|operation| operation.outputs.contains(&output))
+            {
+                kept.push(output);
+                continue;
+            }
+            match held
+                .iter()
+                .find(|source| **source != output && self.same_anchored_word(source, &output))
+            {
+                Some(source) if protected(source) => {
+                    withheld_sources.push(source.clone());
+                    withheld_outputs.push(output);
+                }
+                _ => kept.push(output),
+            }
+        }
+        if withheld_outputs.is_empty() {
+            return (Some(kept), kept_operations, None);
+        }
+        withheld_sources.sort_by_key(|word| (word.sample_start, word.sample_end));
+        withheld_sources.dedup();
+        withheld_outputs.sort_by_key(|word| (word.sample_start, word.sample_end));
+        self.retain_slot_alternative(
+            observation,
+            &compose_label(&withheld_outputs),
+            withheld_sources,
+            "lower_authority_over_speech",
+        );
+        let label = compose_label(&kept);
+        (Some(kept), kept_operations, Some(label))
+    }
+
+    /// D5 for part of a batch. When the batch cannot retire some held
+    /// sources, it retires none: every operation, and every proposed word that
+    /// replaces or overlaps a held word, is withheld and kept as one
+    /// alternative over the blocked sources. A word over speech no held word
+    /// labels still lands (field shape W27 of take fc40155d): appending it
+    /// replaces nothing. `None` when the batch proposes no such word.
+    fn withhold_unproven_retirements(
+        &mut self,
+        observation: &ObservationIdentity,
+        slots: Option<&[WordSlot]>,
+        operations: &[SlotOperationReceipt],
+        blocked: &[WordSlot],
+    ) -> Option<(Vec<WordSlot>, String)> {
+        let proposed = slots?;
+        let held = self
+            .slots_of(&observation.occurrence)
+            .unwrap_or(&[])
+            .to_vec();
+        let gap_word = |word: &WordSlot| {
+            !operations
+                .iter()
+                .any(|operation| operation.outputs.contains(word))
+                && !held.iter().any(|source| {
+                    source.sample_start < word.sample_end && word.sample_start < source.sample_end
+                })
+        };
+        let (kept, withheld): (Vec<WordSlot>, Vec<WordSlot>) = proposed
+            .iter()
+            .cloned()
+            .partition(|word| held.contains(word) || gap_word(word));
+        if kept.iter().all(|word| held.contains(word)) {
+            return None;
+        }
+        self.retain_slot_alternative(
+            observation,
+            &compose_label(&withheld),
+            blocked.to_vec(),
+            "absence_requires_acoustic_evidence",
+        );
+        let label = compose_label(&kept);
+        Some((kept, label))
+    }
+
     fn admit_slot_batch(
         &mut self,
         observation: &ObservationIdentity,
@@ -2782,6 +3044,119 @@ impl AcousticLedger {
                 non_mutating: None,
             }
         });
+        let (slots, kept_operations, kept_label) =
+            self.withhold_lower_authority_over_speech(observation, slots, operations);
+        let operations = kept_operations.as_slice();
+        if kept_label.is_some()
+            && slots.as_ref().is_some_and(Vec::is_empty)
+            && operations.is_empty()
+        {
+            let held_by = self
+                .committed
+                .get(&observation.occurrence)
+                .map_or(observation.producer, |held| held.producer);
+            self.offered_observations += 1;
+            self.note_answered(observation);
+            let decision = MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(),
+                held_by,
+            };
+            self.record_layer_decision(observation, text, &decision, None);
+            return decision;
+        }
+        let text = kept_label.as_deref().unwrap_or(text);
+        // Sources this batch retires one by one: each held word that a proposed
+        // word replaces as the same anchored word.
+        let individually_retired = slots
+            .as_ref()
+            .map(|proposed| {
+                self.slots_of(&observation.occurrence)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|source| {
+                        proposed.iter().any(|output| {
+                            output != *source && self.same_anchored_word(source, output)
+                        })
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let blocked_sources = if observation.producer == ObservationProducer::ManualHuman {
+            Vec::new()
+        } else {
+            self.slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .iter()
+                .filter(|source| {
+                    let operation_outputs = operations
+                        .iter()
+                        .find(|operation| operation.sources.contains(source))
+                        .map(|operation| operation.outputs.as_slice());
+                    let individual_outputs = slots
+                        .as_ref()
+                        .filter(|proposed| {
+                            proposed.iter().any(|output| {
+                                output != *source && self.same_anchored_word(source, output)
+                            })
+                        })
+                        .map(Vec::as_slice);
+                    let retired = operations
+                        .iter()
+                        .find(|operation| operation.sources.contains(source))
+                        .map_or(individually_retired.as_slice(), |operation| {
+                            operation.sources.as_slice()
+                        });
+                    operation_outputs
+                        .or(individual_outputs)
+                        .is_some_and(|outputs| {
+                            !self.slot_retirement_has_acoustic_coverage(
+                                observation,
+                                source,
+                                outputs,
+                                retired,
+                            )
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        // D5: a source the batch cannot retire keeps its words. The rest of
+        // the batch still applies: proven retirements, and words over speech
+        // no held word labels (field shape W27 of take fc40155d).
+        let unproven = if blocked_sources.is_empty() {
+            None
+        } else if let Some(kept) = self.withhold_unproven_retirements(
+            observation,
+            slots.as_deref(),
+            operations,
+            &blocked_sources,
+        ) {
+            Some(kept)
+        } else {
+            let held_by = self
+                .committed
+                .get(&observation.occurrence)
+                .map_or(observation.producer, |held| held.producer);
+            self.offered_observations += 1;
+            self.note_answered(observation);
+            self.retain_slot_alternative(
+                observation,
+                text,
+                blocked_sources,
+                "absence_requires_acoustic_evidence",
+            );
+            let decision = MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(),
+                held_by,
+            };
+            self.record_layer_decision(observation, text, &decision, None);
+            return decision;
+        };
+        let (slots, operations, text) = match unproven.as_ref() {
+            Some((kept, label)) => (Some(kept.clone()), &[][..], label.as_str()),
+            None => (slots, operations, text),
+        };
         self.offered_observations += 1;
         let has_pinned_sources = self
             .slots_of(&observation.occurrence)
@@ -2854,6 +3229,48 @@ impl AcousticLedger {
         let decision = self.decide_observation(observation, text, slot_revision, slots.is_some());
         let applies_slots = decision.grants_mutation()
             || (slot_revision && matches!(decision, MutationReceipt::Preserve { .. }));
+        // D3: a word that replaces another engine's word on the same range
+        // carries that engine's verdict. Group the proposed words by the held
+        // word each one replaces and stamp them before any receipt records
+        // them, so receipts and held slots stay the same words.
+        let slots = if applies_slots && let Some(mut proposed) = slots {
+            let held_sources = self
+                .slots_of(&observation.occurrence)
+                .unwrap_or(&[])
+                .to_vec();
+            let mut groups: Vec<(WordSlot, Vec<usize>)> = Vec::new();
+            for (index, output) in proposed.iter().enumerate() {
+                if operations
+                    .iter()
+                    .any(|group| group.outputs.contains(output))
+                {
+                    continue;
+                }
+                let Some(source) = held_sources
+                    .iter()
+                    .find(|source| *source != output && self.same_anchored_word(source, output))
+                else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(held, _)| held == source) {
+                    Some((_, members)) => members.push(index),
+                    None => groups.push((source.clone(), vec![index])),
+                }
+            }
+            for (source, members) in groups {
+                let mut outputs = members
+                    .iter()
+                    .map(|index| proposed[*index].clone())
+                    .collect::<Vec<_>>();
+                self.stamp_word_witness(observation, std::slice::from_ref(&source), &mut outputs);
+                for (index, output) in members.into_iter().zip(outputs) {
+                    proposed[index] = output;
+                }
+            }
+            Some(proposed)
+        } else {
+            slots
+        };
         let mut individual_sources = Vec::new();
         if applies_slots && let Some(proposed) = slots.as_ref() {
             for output in proposed {
@@ -2923,21 +3340,19 @@ impl AcousticLedger {
             && let Some(held) = self.committed.get_mut(&observation.occurrence)
         {
             self.word_pin_observations.insert(observation.clone());
-            // Every proposed source is applied individually. Omitted sources
-            // remain; this path has no deletion or implicit merge operation.
-            for slot in slots {
-                if !held.slots.contains(&slot) {
-                    held.slots.push(slot);
-                }
-            }
-            // Only explicit operation receipts retire old source geometry.
-            // Every source omitted without an operation remains held.
+            // Only explicit operations retire a source. Remove predecessors
+            // before inserting outputs: an identical output is still held.
             held.slots.retain(|source| {
                 !individual_sources.contains(source)
                     && !operations
                         .iter()
                         .any(|group| group.sources.contains(source))
             });
+            for slot in slots {
+                if !held.slots.contains(&slot) {
+                    held.slots.push(slot);
+                }
+            }
             held.slots
                 .sort_by_key(|word| (word.sample_start, word.sample_end));
             held.recompose();
@@ -3159,6 +3574,12 @@ impl AcousticLedger {
         }
 
         if text.trim().is_empty() && observation.producer != ObservationProducer::ManualHuman {
+            if let Some(held) = self.committed.get(&observation.occurrence) {
+                return MutationReceipt::Preserve {
+                    occurrence: observation.occurrence.clone(),
+                    held_by: held.producer,
+                };
+            }
             return MutationReceipt::Refuse {
                 occurrence: observation.occurrence.clone(),
                 reason: RefuseReason::EmptyLabel,
@@ -3202,21 +3623,10 @@ impl AcousticLedger {
                     let single_source = held.slots.len() == 1
                         && held.slots[0].sample_start == observation.occurrence.sample_start
                         && held.slots[0].sample_end == observation.occurrence.sample_end;
-                    // Explicit recovery may replace an occurrence-only hypothesis.
-                    // It supplies no word targets and cannot settle decoder debt.
-                    let recovering_label = single_source
-                        && self.pending_text_recovery.contains(&observation.occurrence)
-                        && !self
-                            .word_pin_observations
-                            .contains(&held.slots[0].observation)
-                        && matches!(
-                            observation.producer,
-                            ObservationProducer::Whisper | ObservationProducer::CloudLive
-                        );
-                    if single_source
-                        && !recovering_label
-                        && observation.producer != ObservationProducer::ManualHuman
-                    {
+                    // A recovery decode's omission is still not acoustic
+                    // absence. Whole-label revisions retain unpaired content;
+                    // measured word operations own any physical retirement.
+                    if single_source && observation.producer != ObservationProducer::ManualHuman {
                         let source = &held.slots[0];
                         let alignment = slot_ops::preserve_group_content(&source.text, text);
                         let (label, retained, reason) = match alignment {
@@ -3670,9 +4080,22 @@ impl AcousticLedger {
         );
         self.offered_observations += 1;
         self.note_answered(observation);
-        let decision = MutationReceipt::Refuse {
-            occurrence: observation.occurrence.clone(),
-            reason,
+        let decision = if text.trim().is_empty()
+            && matches!(
+                reason,
+                RefuseReason::EmptyLabel | RefuseReason::SlotAdmissionRejected
+            )
+            && let Some(held) = self.committed.get(&observation.occurrence)
+        {
+            MutationReceipt::Preserve {
+                occurrence: observation.occurrence.clone(),
+                held_by: held.producer,
+            }
+        } else {
+            MutationReceipt::Refuse {
+                occurrence: observation.occurrence.clone(),
+                reason,
+            }
         };
         self.record_layer_decision(observation, text, &decision, None);
         decision
@@ -5056,7 +5479,9 @@ pub struct AcousticEvidence {
     pub occurrence: OccurrenceIdentity,
     /// Duration of the region in milliseconds on the capture clock.
     pub duration_ms: f64,
-    /// Summed `rms^2 * sample_count` over the region's hops.
+    /// Summed `rms^2 * sample_count` over the region's hops that reach the
+    /// calibrated existence floor, the same floor `min_energy_integral` is
+    /// derived from. Sub-floor hops do not add up to existence.
     pub energy_integral: f64,
     /// Mean RMS of the region in dBFS.
     pub mean_rms_dbfs: f64,
@@ -7589,15 +8014,18 @@ mod tests {
         ));
         assert!(!ledger.text_recovery_pending(&owner));
         assert_eq!(ledger.text_of(&owner), Some("same words"));
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A (Maciej, 2026-10-21): a range a complete window heard owes
+        // nothing, so no new debt opens on it.
+        assert!(!ledger.require_text_recovery(&owner));
+        // Replaying the same observation still cannot mutate.
         assert!(matches!(
             ledger.admit_word_slots(&word_observation, &pins),
             MutationReceipt::Refuse { .. }
         ));
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         let stale = obs(ObservationProducer::Whisper, 0, owner.clone());
         ledger.admit(&stale, "same words");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert_eq!(ledger.text_of(&owner), Some("same words"));
         let fresh = ledger.next_word_observation(ObservationProducer::Whisper, 42, &owner);
         assert!(fresh.generation > word_observation.generation);
         assert!(matches!(
@@ -7636,15 +8064,16 @@ mod tests {
         );
         assert!(!ledger.text_recovery_pending(&owner));
         let before = ledger.slots_of(&owner).unwrap().to_vec();
-        assert!(ledger.require_text_recovery(&owner));
+        // Option A: the complete window heard the owner, so it owes nothing.
+        assert!(!ledger.require_text_recovery(&owner));
         ledger.admit(
             &obs(ObservationProducer::Formatter, 6, owner.clone()),
             "invented words",
         );
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         ledger.admit(&obs(ObservationProducer::ManualHuman, 7, owner.clone()), "");
-        assert!(ledger.text_recovery_pending(&owner));
+        assert!(!ledger.text_recovery_pending(&owner));
         // The UI's whole-document edit enters the document-receipt corridor,
         // not untargeted raw-label admission over already pinned words.
         let revision = ledger
@@ -7664,10 +8093,10 @@ mod tests {
         assert_eq!(ledger.slots_of(&owner).unwrap(), before.as_slice());
         assert_eq!(ledger.text_of(&owner), Some("heard words"));
         assert!(
-            ledger.text_recovery_pending(&owner),
-            "human document edits do not invent acoustic completion"
+            !ledger.text_recovery_pending(&owner),
+            "a human document edit reopens no debt the complete window paid"
         );
-        assert!(!ledger.is_sealed(&owner));
+        assert!(!ledger.is_sealed(&owner), "a document edit is not a seal");
         assert_eq!(ledger.conservation().residue(), 0);
 
         // An explicit human decision on an unpinned provisional label keeps
@@ -7713,7 +8142,13 @@ mod tests {
             &obs(ObservationProducer::Whisper, 1, occurrence.clone()),
             "entire recovered utterance",
         );
-        assert!(repaired.grants_mutation());
+        // D5 (ledger speech truth brief): absence is not evidence. A whole
+        // label without word geometry cannot show that the held wording is
+        // covered, so it preserves the held label (03beb77a).
+        assert!(
+            matches!(repaired, MutationReceipt::Preserve { .. }),
+            "{repaired:?}"
+        );
         assert!(
             ledger.text_recovery_pending(&occurrence),
             "an exact label is not returned decoder work"
@@ -8502,12 +8937,25 @@ mod tests {
         );
         assert_eq!(ledger.conservation().residue(), 0);
         ledger.assert_slot_labels();
-        assert!(
-            ledger
-                .slots_of(&owner)
-                .unwrap()
-                .iter()
-                .all(|slot| slot.witness == SlotWitness::Unwitnessed)
+        // D3 (ledger speech truth brief): a second engine on an owned range is
+        // a witness, not silence. Whisper's four words land over Apple's on the
+        // same ranges and agree with them, so they are Confirmed; Apple's `e`,
+        // which no Whisper word reached, keeps no verdict.
+        let witnesses = ledger
+            .slots_of(&owner)
+            .unwrap()
+            .iter()
+            .map(|slot| slot.witness.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            witnesses,
+            [
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Confirmed,
+                SlotWitness::Unwitnessed,
+            ]
         );
     }
 

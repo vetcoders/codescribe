@@ -178,7 +178,6 @@ struct OverlayCoverageStatus: View {
   let palette: OverlayAppearancePalette
   let canRetranscribe: Bool
   let cloudConfigured: Bool
-  var diagnosticDetail: String? = nil
   let onRetranscribe: (OverlayRetranscribePass) -> Void
   @State private var presented: String?
 
@@ -208,10 +207,6 @@ struct OverlayCoverageStatus: View {
             .controlSize(.small)
             .accessibilityIdentifier("overlay-open-mic-calibration-settings")
           }
-          if let diagnosticDetail {
-            Divider()
-            Text(diagnosticDetail).font(CSFont.mono(10, .medium))
-          }
           if canRetranscribe {
             Text(String(localized: "Transcribe this take again"))
             Text(String(localized: "Uses audio from the take currently shown in the overlay."))
@@ -233,6 +228,7 @@ struct OverlayCoverageStatus: View {
             .font(CSFont.ui(11, .medium))
           }
         }
+        .csAutohidingScrollers()
       }
       .frame(width: 280)
       .frame(maxHeight: 320)

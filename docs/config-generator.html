@@ -640,7 +640,7 @@
           `# =============================================================================`
         );
         const aiEnabled = isOn("toggle-ai");
-        lines.push(`AI_FORMATTING_ENABLED=${aiEnabled ? "1" : "0"}`);
+        lines.push(`FORMATTING_LEVEL=${aiEnabled ? "correction" : "off"}`);
 
         if (aiEnabled) {
           const llmEndpoint = document

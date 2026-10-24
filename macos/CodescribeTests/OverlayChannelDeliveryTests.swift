@@ -7,6 +7,499 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testPasteBeforeFirstWordsWaitsWithoutErrorAndDrainsOnSameCaptureProjection() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let empty = OverlayConversation(
+      id: receiving.id, channel: receiving.channel, name: receiving.name,
+      owner: receiving.owner, messages: [])
+    let target = try XCTUnwrap(receiving.messages.first?.activeCaptureAttachmentTarget)
+    let session = OverlayCaptureAttachmentSession(
+      id: target.captureSessionID, channel: "0", openedAt: "2026-10-20T21:59:59Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [empty], activeCaptureAttachmentSessions: [session]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "1", audience: empty.name, provider: empty.owner?.provider,
+        providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    let delivered = expectation(description: "first segment drains the pending image")
+    state.publishCaptureAttachments = { paths, received in
+      XCTAssertEqual(paths, ["/fixture/first.png"])
+      XCTAssertEqual(received, target)
+      delivered.fulfill()
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/first.png"], in: empty))
+    await state.sendCaptureAttachments(in: empty.id)
+    XCTAssertNil(state.captureAttachmentErrors[empty.id])
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id]?.target)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.captureSessionID, session.id)
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [receiving], activeCaptureAttachmentSessions: [session]))
+    await fulfillment(of: [delivered], timeout: 2)
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id])
+  }
+
+  func testWaitingPasteCannotMoveOntoSuccessorCaptureOnSnapshotOrRetry() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let receiving = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first {
+        $0.owner?.channel == "1"
+      })
+    let target = try XCTUnwrap(receiving.messages.first?.activeCaptureAttachmentTarget)
+    let empty = OverlayConversation(
+      id: receiving.id, channel: receiving.channel, name: receiving.name,
+      owner: receiving.owner, messages: [])
+    let original = OverlayCaptureAttachmentSession(
+      id: "agent-channel-0-predecessor", channel: "0", openedAt: "2026-10-20T21:59:58Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let successor = OverlayCaptureAttachmentSession(
+      id: target.captureSessionID, channel: "0", openedAt: "2026-10-20T21:59:59Z",
+      recipientIDs: target.recipientIDs.sorted())
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [empty], activeCaptureAttachmentSessions: [original]))
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "1", audience: empty.name, provider: empty.owner?.provider,
+        providerSessionId: empty.owner?.providerSessionID, open: true, loud: true,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    var sends = 0
+    state.publishCaptureAttachments = { _, _ in sends += 1 }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/pending.png"], in: empty))
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [], conversations: [receiving], activeCaptureAttachmentSessions: [successor]))
+    await state.retryCaptureAttachments(in: empty.id)
+    XCTAssertEqual(sends, 0)
+    XCTAssertNil(state.captureAttachmentDrafts[empty.id]?.target)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.captureSessionID, original.id)
+    XCTAssertEqual(state.captureAttachmentDrafts[empty.id]?.paths, ["/fixture/pending.png"])
+  }
+
+  func testCaptureOpeningAndFrozenRecipientsAreAvailableBeforeWords() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let session = "agent-channel-1-before-words"
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: fixture.recipient()))
+    bus.consume([
+      "schema": "codescribe.channel-recipients.v1", "session_id": session,
+      "channel": "1", "recipients": [fixture.recipient()],
+    ])
+    bus.consume([
+      "schema": "codescribe.channel-session.v1", "kind": "channel_session",
+      "session_id": session, "channel": "1", "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID, "opened_at": "2026-10-20T22:00:00Z",
+      "state": "open", "loud": true,
+    ])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions.map(\.id), [session])
+    XCTAssertEqual(bus.activeCaptureAttachmentSessions.first?.recipientIDs, [owner.id])
+    bus.consume([
+      "schema": "codescribe.channel-session.v1", "kind": "channel_session",
+      "session_id": session, "channel": "1", "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID, "opened_at": "2026-10-20T22:00:00Z",
+      "state": "sealed", "loud": true,
+    ])
+    XCTAssertTrue(bus.activeCaptureAttachmentSessions.isEmpty)
+  }
+
+  func testCapturePasteDuringAnAwaitedPublicationDrainsTheSecondFile() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first(where: { $0.owner?.channel == "1" }))
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    let finished = expectation(description: "both pasted batches published")
+    finished.expectedFulfillmentCount = 2
+    var batches: [[String]] = []
+    state.publishCaptureAttachments = { paths, target in
+      XCTAssertEqual(target.captureSessionID, "agent-channel-0-fixture")
+      batches.append(paths)
+      if batches.count == 1 {
+        XCTAssertTrue(state.stageConversationAttachments(["/fixture/second.png"], in: conversation))
+      }
+      finished.fulfill()
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/first.png"], in: conversation))
+    await fulfillment(of: [finished], timeout: 2)
+    XCTAssertEqual(batches, [["/fixture/first.png"], ["/fixture/second.png"]])
+    XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
+    XCTAssertNil(
+      state.conversationDrafts[conversation.id], "a live file must never become a typed message")
+  }
+
+  func testRefusedCaptureAttachmentKeepsFrozenTargetAndFilesForRetry() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first(where: { $0.owner?.channel == "1" }))
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    let refused = expectation(description: "refused exact target")
+    state.publishCaptureAttachments = { _, _ in
+      refused.fulfill()
+      throw CocoaError(.fileWriteNoPermission)
+    }
+    XCTAssertTrue(state.stageConversationAttachments(["/fixture/image.png"], in: conversation))
+    await fulfillment(of: [refused], timeout: 2)
+    XCTAssertEqual(state.captureAttachmentDrafts[conversation.id]?.paths, ["/fixture/image.png"])
+    XCTAssertEqual(state.captureAttachmentDrafts[conversation.id]?.target?.sourceSequence, 1)
+    XCTAssertNotNil(state.captureAttachmentErrors[conversation.id])
+    XCTAssertNil(state.conversationDrafts[conversation.id])
+    state.removeCaptureAttachment("/fixture/image.png", in: conversation.id)
+    XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
+  }
+
+  func testCaptureAttachmentsKeepExactRevisionAndReplyReferenceThroughRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var previous = source
+    previous["sequence"] = 0
+    previous["reducer_revision"] = 1
+    bus.consume(previous)
+    bus.consume(source)
+    bus.consume(stage)
+    XCTAssertNil(
+      bus.conversations(busPath: fixture.bus.path).flatMap(\.messages).first?.attachments)
+    bus.consume(commit)
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path)
+          .flatMap(\.messages).first(where: { $0.kind == .user }))
+      XCTAssertEqual(message.attachments?.map(\.path), ["/fixture/image.png"])
+      XCTAssertEqual(message.text, "Spoken words")
+      XCTAssertEqual(message.activeCaptureAttachmentTarget?.sourceSequence, 1)
+    }
+    let parent = ["message_id": "reply:parent", "author": "Astra", "text": "Quoted"]
+    bus.consume([
+      "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+      "source": "typed", "message_id": String(repeating: "f", count: 24),
+      "text": "Answer", "channel": "1", "audience": "james", "recipients": [fixture.recipient()],
+      "user_reply_to": parent,
+    ])
+    let restored = try JSONDecoder().decode(
+      OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus))
+    let answer = try XCTUnwrap(
+      restored.conversations(busPath: fixture.bus.path).flatMap(\.messages).first(where: {
+        $0.text == "Answer"
+      }))
+    XCTAssertEqual(answer.userReplyTo?.messageID, "reply:parent")
+    XCTAssertEqual(answer.userReplyTo?.text, "Quoted")
+  }
+
+  func testSecondaryCaptureHistoryResolvesPrimaryCommitAfterReaderRestart() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let directory = fixture.root.appendingPathComponent("buses")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let primary = directory.appendingPathComponent("channel-2.jsonl")
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: primary)
+    try fixture.append(source)
+    try fixture.append(stage)
+    func encoded(_ rows: [[String: Any]]) throws -> Data {
+      try rows.reduce(into: Data()) { bytes, row in
+        bytes.append(try JSONSerialization.data(withJSONObject: row))
+        bytes.append(10)
+      }
+    }
+    try encoded([source, stage]).write(to: primary)
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: fixture.recipient()))
+    let initial = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+      selectedOwner: owner)
+    XCTAssertTrue(initial.conversations.flatMap(\.messages).allSatisfy { $0.attachments == nil })
+    try encoded([source, stage, commit]).write(to: primary)
+    let reopened = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot(
+      selectedOwner: owner)
+    let message = try XCTUnwrap(
+      reopened.conversations.first(where: { $0.owner?.id == owner.id })?.messages.first)
+    XCTAssertEqual(message.attachments?.map(\.path), ["/fixture/image.png"])
+    XCTAssertEqual(message.text, "Spoken words")
+    let shared = fixture.root.appendingPathComponent("transcript-events.jsonl")
+    try encoded([source]).write(to: shared)
+    let mirrored = try await OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
+      .readSnapshot(selectedOwner: owner)
+    let all = try XCTUnwrap(mirrored.conversations.first(where: { $0.id == "0" }))
+    XCTAssertEqual(all.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
+    let privateCopy = try XCTUnwrap(
+      mirrored.conversations.first(where: { $0.owner?.id == owner.id }))
+    XCTAssertEqual(privateCopy.messages.first?.attachments?.map(\.path), ["/fixture/image.png"])
+  }
+
+  func testDeliveredCaptureChipsUseSourceSamplesAndLateCaptureRateAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    let rate = 48_000
+    let firstSample = 1_000
+    var beginning = source
+    beginning["sample_start"] = firstSample
+    beginning["sample_end"] = firstSample + 100
+    bus.consume(beginning)
+    for (index, seconds) in [73, 130].enumerated() {
+      let sequence = index + 2
+      let sample = firstSample + rate * seconds
+      var observed = source
+      observed["sequence"] = sequence
+      observed["reducer_revision"] = sequence + 1
+      observed["sample_start"] = sample
+      observed["sample_end"] = sample + 100
+      bus.consume(observed)
+      var pointer = stage
+      pointer["stage_id"] = String(repeating: String(sequence), count: 24)
+      pointer["source_sequence"] = sequence
+      pointer["reducer_revision"] = sequence + 1
+      pointer["sample_start"] = sample
+      pointer["sample_end"] = sample + 100
+      pointer["attachments"] = [
+        [
+          "name": "image\(sequence).png", "path": "/fixture/image\(sequence).png",
+          "media_type": "image/png", "bytes": 13,
+        ]
+      ]
+      bus.consume(pointer)
+      var committed = commit
+      committed["stage_id"] = pointer["stage_id"]
+      committed["source_sequence"] = sequence
+      bus.consume(committed)
+    }
+    // The terminal supplies the capture's actual rate after both stages.
+    bus.consume([
+      "schema": "codescribe.transcript.v1", "session_id": "agent-channel-0-fixture",
+      "status": "session_ended", "sample_rate_hz": rate,
+    ])
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first)
+      XCTAssertEqual(message.captureState, .finished)
+      let pointers = try XCTUnwrap(message.attachments)
+      XCTAssertEqual(pointers.map(\.attachedAtSample), [3_505_000, 6_241_000])
+      XCTAssertEqual(pointers.map(\.attachedAtSeconds), [73, 130])
+      XCTAssertEqual(pointers.map(\.attachmentTimeLabel), ["1:13", "2:10"])
+    }
+  }
+
+  func testCommittedStageWithoutRetainedSourceKeepsZeroTimeAndFrozenAudienceTrust() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, stage, commit) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    for mismatch in ["none", "uncommitted", "audience", "recipients", "conflicting-source"] {
+      var bus = OverlayChannelDelivery.Bus()
+      bus.consume(source)
+      var missing = stage
+      missing["source_sequence"] = 99
+      if mismatch == "audience" { missing["audience"] = "somebody-else" }
+      if mismatch == "recipients" { missing["recipients"] = [fixture.recipient()] }
+      if mismatch == "conflicting-source" {
+        missing["source_sequence"] = 1
+        missing["sample_start"] = 11
+      }
+      bus.consume(missing)
+      var committed = commit
+      committed["source_sequence"] = missing["source_sequence"]
+      if mismatch != "uncommitted" { bus.consume(committed) }
+      bus.consume([
+        "schema": "codescribe.transcript.v1", "session_id": "agent-channel-0-fixture",
+        "status": "session_ended", "sample_rate_hz": 48_000,
+      ])
+      for projection in [
+        bus,
+        try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+      ] {
+        let message = try XCTUnwrap(
+          projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first)
+        if mismatch == "none" {
+          let pointer = try XCTUnwrap(message.attachments?.first)
+          XCTAssertEqual(pointer.path, "/fixture/image.png")
+          XCTAssertEqual(pointer.attachedAtSample, 0)
+          XCTAssertEqual(pointer.attachedAtSeconds, 0)
+          XCTAssertEqual(pointer.attachmentTimeLabel, "0:00")
+        } else {
+          XCTAssertNil(
+            message.attachments, "A missing source must not bypass \(mismatch) validation")
+        }
+      }
+    }
+  }
+
+  func testAnchoredEnvelopePointersKeepExactPublishedLinesAndZeroFallback() throws {
+    let pointers = try XCTUnwrap(
+      OverlayMessageAttachment.pointers([
+        [
+          "name": "image.png", "path": "/fixture/image.png", "media_type": "image/png", "bytes": 13,
+          "attached_at_sample": 3_504_000, "attached_at_seconds": 73.75,
+        ],
+        [
+          "name": "missing.png", "path": "/fixture/missing.png", "media_type": "image/png",
+          "bytes": 17,
+          "attached_at_sample": 0, "attached_at_seconds": 0,
+        ],
+      ]))
+    XCTAssertEqual(pointers.map(\.attachmentTimeLabel), ["1:13", "0:00"])
+    XCTAssertEqual(
+      pointers[0].publishedLine,
+      "[attachment @ 1:13] image.png (image/png, 13 bytes): /fixture/image.png")
+    var message = OverlayConversationMessage(
+      id: "take", kind: .user,
+      text: "Spoken words\n" + pointers.map(\.publishedLine).joined(separator: "\n"),
+      order: 1, emittedAt: "", owner: nil, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    message.attachments = pointers
+    XCTAssertEqual(message.bodyText, "Spoken words")
+  }
+
+  private func captureAttachmentRows(fixture: Fixture, primary: URL) -> (
+    [String: Any], [String: Any], [String: Any]
+  ) {
+    let session = "agent-channel-0-fixture"
+    var second = fixture.recipient()
+    second["bus"] = primary.path
+    second["channel"] = "2"
+    second["provider_session_id"] = "second"
+    second["lease_id"] = String(repeating: "b", count: 32)
+    let recipients = [fixture.recipient(), second]
+    let source: [String: Any] = [
+      "schema": "codescribe.transcript-evidence.v1", "session_id": session,
+      "sequence": 1, "reducer_revision": 2, "reducer_action": "record_ledger_projection",
+      "capture_epoch": 7, "occurrence_session_id": session, "sample_start": 10,
+      "sample_end": 100, "document_index": 0, "channel": "0", "audience": "all",
+      "recipients": recipients, "rendered_text": "Spoken words",
+      "emitted_at": "2026-10-20T22:00:00Z",
+    ]
+    let stage: [String: Any] = [
+      "schema": "codescribe.capture-attachment.v1", "kind": "capture_attachment",
+      "stage_id": String(repeating: "1", count: 24), "session_id": session,
+      "capture_epoch": 7, "source_sequence": 1, "reducer_revision": 2, "document_index": 0,
+      "occurrence_session_id": session, "sample_start": 10, "sample_end": 100,
+      "channel": "0", "audience": "all", "recipients": recipients, "commit_bus": primary.path,
+      "attachments": [
+        ["name": "image.png", "path": "/fixture/image.png", "media_type": "image/png", "bytes": 13]
+      ],
+      "emitted_at": "2026-10-20T22:00:01Z",
+    ]
+    let commit: [String: Any] = [
+      "schema": "codescribe.capture-attachment-commit.v1", "kind": "capture_attachment_commit",
+      "stage_id": String(repeating: "1", count: 24), "session_id": session, "capture_epoch": 7,
+      "source_sequence": 1, "commit_bus": primary.path, "emitted_at": "2026-10-20T22:00:02Z",
+    ]
+    return (source, stage, commit)
+  }
+  func testVoicelessRepliesAndAgentAuthoredTextKeepPlaybackCoordinatesAcrossRestore() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var bus = OverlayChannelDelivery.Bus()
+    for (index, schema) in ["codescribe.agent-reply.v1", "codescribe.agent-user-message.v1"]
+      .enumerated()
+    {
+      var row = fixture.recipient()
+      let identity = String(repeating: String(index + 1), count: 24)
+      row["schema"] = schema
+      row["kind"] = index == 0 ? "agent_reply" : "agent_user_message"
+      row["reply_id"] = identity
+      row["message_id"] = identity
+      row["text"] = "Agent text \(index)"
+      row["sender"] = fixture.recipient()
+      row["channel"] = "10"
+      row["recipients"] = []
+      bus.consume(row)
+    }
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let messages = try XCTUnwrap(
+        projection.conversations(busPath: fixture.bus.path).first {
+          $0.owner?.leaseID == Fixture.leaseID
+        }
+      ).messages
+      XCTAssertEqual(messages.count, 2)
+      XCTAssertEqual(messages.map(\.kind), [.reply, .reply])
+      XCTAssertTrue(messages.allSatisfy(\.supportsSpeechPlayback))
+      XCTAssertEqual(messages.map(\.provider), ["codex", "codex"])
+      XCTAssertEqual(messages.map(\.providerSessionID), ["agent-session", "agent-session"])
+    }
+  }
+
+  func testAddressedSpeechBroadcastDoesNotEchoToAuthorAcrossRestore() throws {
+    for destination in ["0", "1"] {
+      let fixture = try Fixture()
+      defer { fixture.remove() }
+      var projection = OverlayChannelDelivery.Bus()
+      projection.consume([
+        "schema": "codescribe.agent-user-message.v1", "kind": "agent_user_message",
+        "source": "typed", "message_id": Fixture.firstID, "source_event_id": Fixture.firstID,
+        "text": "A question", "audience": "james", "channel": "1",
+        "origin_channel": destination, "recipients": [fixture.recipient()],
+      ])
+      let initial = projection.conversations(busPath: fixture.bus.path)
+      let question = try XCTUnwrap(initial.first { $0.owner?.channel == "1" }?.messages.first)
+      let delivery = try XCTUnwrap(question.recipients.first?.deliveryID)
+      var reply = fixture.recipient()
+      reply["schema"] = "codescribe.agent-reply.v1"
+      reply["kind"] = "agent_reply"
+      reply["reply_id"] = "fedcba9876543210fedcba98"
+      reply["text"] = "An answer"
+      reply["association"] = "addressed"
+      reply["delivery_id"] = delivery
+      reply["tts_vendor"] = "xai"
+      reply["voice"] = "leo"
+      projection.consume(reply)
+      for bus in [
+        projection,
+        try JSONDecoder().decode(
+          OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(projection)),
+      ] {
+        let views = bus.conversations(busPath: fixture.bus.path)
+        let all = try XCTUnwrap(views.first { $0.id == "0" })
+        let own = try XCTUnwrap(views.first { $0.owner?.channel == "1" })
+        XCTAssertEqual(all.messages.filter { $0.kind == .reply }.count, destination == "0" ? 1 : 0)
+        XCTAssertEqual(own.messages.filter { $0.kind == .reply }.count, destination == "0" ? 0 : 1)
+        XCTAssertEqual(own.messages.filter { $0.kind == .user }.map(\.text), ["A question"])
+        if destination == "0" {
+          let answer = try XCTUnwrap(all.messages.first { $0.kind == .reply })
+          XCTAssertEqual(answer.owner?.name, "james", "All keeps the author's identity")
+          XCTAssertEqual(answer.owner?.leaseID, Fixture.leaseID)
+          XCTAssertEqual(answer.replyTo, delivery)
+          XCTAssertTrue(answer.supportsSpeechPlayback)
+        }
+      }
+    }
+  }
+
   func testPeerReplyKeepsSenderIdentityOnBroadcastDestination() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -192,7 +685,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var projection = OverlayChannelDelivery.Bus()
     let sender: [String: Any] = [
       "provider": "claude-code", "provider_session_id": "peer-session",
-      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "klaudiusz", "channel": "2",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "ada", "channel": "2",
     ]
     var row: [String: Any] = [
       "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
@@ -221,7 +714,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let conversations = projection.conversations(busPath: fixture.bus.path)
     let james = try XCTUnwrap(conversations.first { $0.owner?.leaseID == Fixture.leaseID })
     XCTAssertEqual(james.messages.map(\.text), ["Spec for james"])
-    XCTAssertEqual(james.messages.first?.owner?.name, "klaudiusz")
+    XCTAssertEqual(james.messages.first?.owner?.name, "ada")
     // `_identity` in scripts/bus-demux.py for a peer message, which carries no audience.
     let delivery = "131d4e4cd70bef347dab33e7"
     XCTAssertEqual(
@@ -232,9 +725,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(
       conversations.first { $0.owner?.leaseID == laterLease }?.messages.isEmpty ?? false,
       "A later lease of the same name inherits neither the row nor a delivery")
-    let klaudiusz = try XCTUnwrap(
+    let ada = try XCTUnwrap(
       conversations.first { $0.owner?.providerSessionID == "peer-session" })
-    XCTAssertTrue(klaudiusz.messages.isEmpty, "The sender is attribution, not a destination")
+    XCTAssertEqual(
+      ada.messages.map(\.text), ["Spec for james"],
+      "A direct peer message stays visible in both participants' conversations")
     XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
     XCTAssertEqual(
       projection.receiptCoordinates().map { "\($0.0.leaseID) \($0.1)" },
@@ -265,6 +760,32 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       })
     XCTAssertEqual(settled.messages.first?.recipients.map(\.acknowledged), [true])
     XCTAssertTrue(projection.receiptCoordinates().isEmpty, "The marker settles polling")
+  }
+
+  func testFounderChannel10MessageAppearsInAuthorsConversationAndDrawerPreview() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var projection = OverlayChannelDelivery.Bus()
+    let sender: [String: Any] = [
+      "provider": "claude-code", "provider_session_id": "peer-session",
+      "lease_id": "abcdefabcdefabcdefabcdefabcdefab", "name": "ada", "channel": "1",
+    ]
+    projection.consume([
+      "schema": "codescribe.agent-reply.v1", "kind": "agent_reply",
+      "reply_id": "101010101010101010101010", "message_id": "101010101010101010101010",
+      "source_event_id": "101010101010101010101010", "association": "unsolicited",
+      "channel": "10", "peer_to": "founder", "text": "Raport na skrzynkę 10",
+      "sender": sender, "recipients": [],
+    ])
+    let conversations = projection.conversations(busPath: fixture.bus.path)
+    let ada = try XCTUnwrap(
+      conversations.first { $0.owner?.providerSessionID == "peer-session" })
+    XCTAssertEqual(ada.messages.map(\.text), ["Raport na skrzynkę 10"])
+    let message = try XCTUnwrap(ada.messages.first)
+    XCTAssertEqual(
+      OverlayChannelStatusView.drawerPreview(message: message),
+      "ada → You: Raport na skrzynkę 10")
+    XCTAssertTrue(conversations.first { $0.id == "0" }!.messages.isEmpty)
   }
 
   func testTypedMessagePointersBecomeChipsAndLeaveTheBubbleBody() throws {
@@ -410,7 +931,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let start = ContinuousClock.now
     let first = try await reader.readSnapshot(checkpointTime: start)
     var previousID = first.deliveries.first?.deliveryID
-    let cache = OverlayDeliveryCursorStore.url(root: fixture.root)
+    let cache = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
     let initial = try Data(contentsOf: cache)
     for sequence in 2...21 {
       try fixture.append(fixture.seal(sequence))
@@ -426,7 +947,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(resumed, current, "Restart replays the suffix since the last checkpoint")
   }
 
-  func testCheckpointBatchesAllChangedBusesIntoOneAtomicWrite() async throws {
+  func testCheckpointBatchesAllChangedBusesIntoOneCheckpoint() async throws {
     let fixture = try Fixture()
     let other = try Fixture()
     defer {
@@ -544,7 +1065,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root)
     let start = ContinuousClock.now
     _ = try await reader.readSnapshot(checkpointTime: start)
-    let cache = OverlayDeliveryCursorStore.url(root: fixture.root)
+    let cache = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
     let saved = try Data(contentsOf: cache)
     let directory = cache.deletingLastPathComponent()
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
@@ -566,6 +1087,181 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(writes, 2)
     let restored = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
     XCTAssertEqual(restored, retried)
+  }
+
+  func testCheckpointRewritesOnlyTheUnitOfTheBusThatChanged() async throws {
+    let fixture = try Fixture()
+    let other = try Fixture()
+    defer {
+      fixture.remove()
+      other.remove()
+    }
+    func inode(_ file: URL) throws -> UInt64 {
+      let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+      return try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber).uint64Value
+    }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    try other.append(other.seal(2))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let start = ContinuousClock.now
+    _ = try await reader.readSnapshot(checkpointTime: start)
+    let changedUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
+    let quietUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: other.bus.path)
+    let changedBefore = try Data(contentsOf: changedUnit)
+    let quietBefore = try Data(contentsOf: quietUnit)
+    let quietInode = try inode(quietUnit)
+
+    try fixture.append(fixture.seal(3))
+    let latest = try await reader.readSnapshot(checkpointTime: start.advanced(by: .seconds(31)))
+    let writes = await reader.checkpointWrites
+    XCTAssertEqual(writes, 2)
+    XCTAssertNotEqual(try Data(contentsOf: changedUnit), changedBefore)
+    XCTAssertEqual(try Data(contentsOf: quietUnit), quietBefore)
+    XCTAssertEqual(
+      try inode(quietUnit), quietInode, "A checkpoint never rewrites an unchanged bus's unit")
+    XCTAssertEqual(try fixture.cursorOffsets()[fixture.bus.path], try fixture.busSize())
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: other.bus)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(restored, latest)
+    let replayed = await restarted.consumedBytes
+    XCTAssertEqual(replayed, 0)
+  }
+
+  func testFirstCheckpointRemovesTheSingleFileCache() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let runtime = fixture.root.appendingPathComponent("runtime", isDirectory: true)
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    let singleFile = runtime.appendingPathComponent("overlay-delivery-cursor.v1.json")
+    try Data(#"{"schema": "codescribe.overlay-delivery-cursor.v1", "buses": {}}"#.utf8)
+      .write(to: singleFile)
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: singleFile.path),
+      "The whole-roster cache file is deleted by the first per-unit save")
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path))
+    let restarted = OverlayChannelDeliveryReader(root: fixture.root)
+    let restored = try await restarted.readSnapshot()
+    XCTAssertEqual(restored, snapshot)
+    let replayed = await restarted.consumedBytes
+    XCTAssertEqual(replayed, 0)
+  }
+
+  private func cacheMark(_ offset: UInt64, projectionBytes: Int) -> OverlayDeliveryCursorMark {
+    OverlayDeliveryCursorMark(
+      offset: offset, inode: offset + 1, length: offset * 2,
+      headHash: String(repeating: "a", count: 64),
+      projection: Data(repeating: 0x7b, count: projectionBytes), headLength: 128,
+      streamID: "stream-\(offset)", discardsLeadingParts: true, dropsCutRow: offset % 20 == 0)
+  }
+
+  func testCursorStoreLoadRestoresEveryUnit() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let marks = [
+      "/buses/a.jsonl": cacheMark(10, projectionBytes: 300),
+      "/buses/b.jsonl": cacheMark(20, projectionBytes: 500),
+      "/buses/c.jsonl": cacheMark(30, projectionBytes: 700),
+    ]
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), marks)
+    let directory = OverlayDeliveryCursorStore.directory(root: fixture.root)
+    let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    XCTAssertEqual(
+      Set(files), Set(marks.keys.map { OverlayDeliveryCursorStore.filename(bus: $0) }),
+      "One file per bus, nothing else")
+    for path in marks.keys {
+      let attributes = try FileManager.default.attributesOfItem(
+        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: path).path)
+      let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
+      XCTAssertEqual(permissions.uint16Value & 0o777, 0o600, "each unit is owner-only")
+    }
+  }
+
+  func testCursorStoreBudgetEvictsWholeUnitsLargestProjectionFirst() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let marks = [
+      "/buses/a.jsonl": cacheMark(10, projectionBytes: 1_000),
+      "/buses/b.jsonl": cacheMark(20, projectionBytes: 5_000),
+      "/buses/c.jsonl": cacheMark(30, projectionBytes: 2_000),
+    ]
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    var total = 0
+    for path in marks.keys {
+      let attributes = try FileManager.default.attributesOfItem(
+        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: path).path)
+      total += try XCTUnwrap(attributes[.size] as? NSNumber).intValue
+    }
+    let kept = OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/c.jsonl")
+    let keptBytes = try Data(contentsOf: kept)
+
+    // Nothing changed, but the budget now sits one byte under the unit files.
+    let retained = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: marks, changed: [], budget: total - 1)
+    XCTAssertEqual(Set(retained.keys), ["/buses/a.jsonl", "/buses/c.jsonl"])
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl").path),
+      "The evicted unit loses its whole file")
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
+    XCTAssertEqual(try Data(contentsOf: kept), keptBytes)
+  }
+
+  /// PR #197 review: a retry after a failed cleanup still holds the marks of a
+  /// unit an earlier save evicted. Counted as zero bytes, that unit came back as
+  /// retained with no file, so a successful checkpoint could not restore it.
+  func testCursorStoreRetryWritesOrEvictsAnUnchangedUnitWhoseFileIsGone() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let marks = [
+      "/buses/a.jsonl": cacheMark(10, projectionBytes: 1_000),
+      "/buses/b.jsonl": cacheMark(20, projectionBytes: 5_000),
+    ]
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    try FileManager.default.removeItem(
+      at: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl"))
+
+    let retained = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: marks, changed: [])
+    XCTAssertEqual(retained, marks, "Within budget the missing unit is written again")
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
+
+    try FileManager.default.removeItem(
+      at: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl"))
+    let tight = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: marks, changed: [], budget: 2_000)
+    XCTAssertEqual(Set(tight.keys), ["/buses/a.jsonl"], "Over budget it is evicted, not kept")
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), tight)
+  }
+
+  func testCursorStoreDeletesTheUnitOfABusNoLongerInUse() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let active = cacheMark(10, projectionBytes: 400)
+    try OverlayDeliveryCursorStore.save(
+      root: fixture.root,
+      marks: [
+        "/buses/active.jsonl": active,
+        "/buses/unused.jsonl": cacheMark(20, projectionBytes: 400),
+      ])
+    let activeUnit = OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/active.jsonl")
+    let activeBytes = try Data(contentsOf: activeUnit)
+
+    let retained = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: ["/buses/active.jsonl": active], changed: [])
+    XCTAssertEqual(retained, ["/buses/active.jsonl": active])
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/unused.jsonl")
+          .path))
+    XCTAssertEqual(try Data(contentsOf: activeUnit), activeBytes)
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
   }
 
   func testPartialRowNeverAdvancesTheCheckpointPastItsSafeBoundary() async throws {
@@ -651,6 +1347,147 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(
       changed.conversations.first?.messages.map(\.text),
       initial.conversations.first?.messages.map(\.text))
+  }
+
+  /// Sample 2026-10-18 on div0: a channel-0 take is projected on every
+  /// recipient's bus, while each ACK names its owner's bus. More of those
+  /// foreign receipts than the 256-entry parse cache were reopened and
+  /// reparsed on every 500 ms poll.
+  func testForeignAcknowledgmentsAreNotReparsedUntilTheyChange() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    var peer = fixture.recipient()
+    peer["lease_id"] = String(repeating: "e", count: 32)
+    peer["provider_session_id"] = "peer-session"
+    peer["bus"] = fixture.root.appendingPathComponent("buses/channel-2.jsonl").path
+    peer["channel"] = "2"
+    peer["name"] = "jamie"
+    var rows: [[String: Any]] = []
+    for sequence in 1...200 {
+      var row = fixture.seal(sequence)
+      row["recipients"] = [fixture.recipient(), peer]
+      rows.append(row)
+      try fixture.append(row)
+    }
+    var projection = OverlayChannelDelivery.Bus()
+    for row in rows { projection.consume(row) }
+    var coordinates: [String: OverlayConversationOwner] = [:]
+    for _ in 0..<4 {
+      for coordinate in projection.receiptCoordinates() {
+        coordinates[coordinate.owner.leaseID + "/" + coordinate.delivery] = coordinate.owner
+      }
+    }
+    XCTAssertEqual(coordinates.count, 400)
+    let foreign = fixture.root.appendingPathComponent("foreign.jsonl").path
+    for (file, owner) in coordinates {
+      let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try fixture.write(
+        [
+          "lease_id": owner.leaseID, "delivery_id": url.deletingPathExtension().lastPathComponent,
+          "bus": foreign,
+        ], to: url)
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    // 128 coordinates per tick: four polls read every receipt once.
+    for _ in 0..<4 { _ = try await reader.readSnapshot() }
+    let opens = await reader.metadataFileOpens
+    for _ in 0..<8 { _ = try await reader.readSnapshot() }
+    let steadyOpens = await reader.metadataFileOpens
+    XCTAssertEqual(steadyOpens, opens, "An unchanged foreign ACK is not reopened every poll")
+    // Positive control: the same receipt rewritten for this bus settles it.
+    let (file, owner) = try XCTUnwrap(
+      coordinates.first { $0.value.leaseID == Fixture.leaseID })
+    let delivery = String(file.split(separator: "/").last ?? "")
+    var envelope = fixture.recipient()
+    envelope.merge(["kind": "seal", "delivery_id": delivery]) { _, new in new }
+    try fixture.write(
+      [
+        "lease_id": owner.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ], to: fixture.root.appendingPathComponent("acknowledgments/\(file).json"))
+    var settled: OverlayConversationRecipient?
+    for _ in 0..<4 {
+      settled = try await reader.readSnapshot().conversations.flatMap(\.messages)
+        .flatMap(\.recipients).first { $0.owner.id == owner.id && $0.deliveryID == delivery }
+    }
+    XCTAssertEqual(settled?.acknowledged, true, "A changed receipt is read again")
+  }
+
+  /// Sample 2026-10-19 on div0: after the stamp memo, foreign channel-0
+  /// coordinates still cost one `fstatat` each per tick plus the enumeration,
+  /// about 40 % of the reader. A receipt naming another bus this reader polls
+  /// settles there, so this bus stops asking for it.
+  func testCoordinatesAcknowledgedOnAnotherPolledBusLeaveThePoll() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let peerLease = String(repeating: "e", count: 32)
+    let peerBus = fixture.root.appendingPathComponent("peer.jsonl")
+    try Data().write(to: peerBus)
+    try fixture.write(
+      [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": peerLease,
+        "provider": "codex", "provider_session_id": "peer-session", "bus": peerBus.path,
+        "pending": [],
+      ], to: fixture.root.appendingPathComponent("leases/\(peerLease).json"))
+    var peer = fixture.recipient()
+    peer["lease_id"] = peerLease
+    peer["provider_session_id"] = "peer-session"
+    peer["bus"] = peerBus.path
+    peer["channel"] = "2"
+    peer["name"] = "jamie"
+    var rows: [[String: Any]] = []
+    for sequence in 1...210 {
+      var row = fixture.seal(sequence)
+      row["recipients"] = sequence <= 200 ? [peer] : [fixture.recipient()]
+      rows.append(row)
+      try fixture.append(row)
+    }
+    var projection = OverlayChannelDelivery.Bus()
+    for row in rows { projection.consume(row) }
+    var coordinates: [String: OverlayConversationOwner] = [:]
+    for _ in 0..<4 {
+      for coordinate in projection.receiptCoordinates() {
+        coordinates[coordinate.owner.leaseID + "/" + coordinate.delivery] = coordinate.owner
+      }
+    }
+    XCTAssertEqual(coordinates.count, 210)
+    for (file, owner) in coordinates where owner.leaseID == peerLease {
+      let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try fixture.write(
+        [
+          "lease_id": peerLease, "delivery_id": url.deletingPathExtension().lastPathComponent,
+          "bus": peerBus.path,
+        ], to: url)
+    }
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    // 128 coordinates per tick: two polls read every receipt once.
+    for _ in 0..<2 { _ = try await reader.readSnapshot() }
+    let coldProbes = await reader.receiptProbes
+    for _ in 0..<4 { _ = try await reader.readSnapshot() }
+    let steadyProbes = await reader.receiptProbes - coldProbes
+    // Ten own coordinates, each a wakeup and an acknowledgment probe.
+    XCTAssertEqual(steadyProbes, 4 * 10 * 2, "Only coordinates that can settle here are polled")
+    // Positive control: this bus still settles its own owner's receipt.
+    let (file, owner) = try XCTUnwrap(
+      coordinates.first { $0.value.leaseID == Fixture.leaseID })
+    let delivery = String(file.split(separator: "/").last ?? "")
+    var envelope = fixture.recipient()
+    envelope.merge(["kind": "seal", "delivery_id": delivery]) { _, new in new }
+    let url = fixture.root.appendingPathComponent("acknowledgments/\(file).json")
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fixture.write(
+      [
+        "lease_id": owner.leaseID, "delivery_id": delivery, "bus": fixture.bus.path,
+        "envelope": envelope,
+      ], to: url)
+    let settled = try await reader.readSnapshot().conversations.flatMap(\.messages)
+      .flatMap(\.recipients).first { $0.owner.id == owner.id && $0.deliveryID == delivery }
+    XCTAssertEqual(settled?.acknowledged, true, "An own receipt still settles on its bus")
   }
 
   /// Screen recording 2026-10-13 09:46: a test host reading the live agent
@@ -1036,35 +1873,30 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       .readSnapshot()
     let replies = try messages(initial)
     XCTAssertEqual(replies.map(\.text), ["Taki sam tekst", "Taki sam tekst"])
-    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, false])
+    XCTAssertEqual(replies.map(\.supportsSpeechPlayback), [true, true])
     let restarted = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
     let restored = try await restarted.readSnapshot()
     XCTAssertEqual(try messages(restored), replies)
     let consumed = await restarted.consumedBytes
     XCTAssertEqual(consumed, 0)
 
-    let cacheURL = OverlayDeliveryCursorStore.url(root: fixture.root)
-    var cache = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL))
-        as? [String: Any])
-    var buses = try XCTUnwrap(cache["buses"] as? [String: [String: Any]])
-    for path in Array(buses.keys) {
-      var entry = try XCTUnwrap(buses[path])
-      let encoded = try XCTUnwrap(entry["projection"] as? String)
+    var marks = OverlayDeliveryCursorStore.load(root: fixture.root)
+    for path in Array(marks.keys) {
+      var mark = try XCTUnwrap(marks[path])
       var projection = try XCTUnwrap(
-        JSONSerialization.jsonObject(
-          with: XCTUnwrap(Data(base64Encoded: encoded))) as? [String: Any])
+        JSONSerialization.jsonObject(with: XCTUnwrap(mark.projection)) as? [String: Any])
       var cachedMessages = try XCTUnwrap(projection["messages"] as? [String: [String: Any]])
       for id in Array(cachedMessages.keys) {
-        cachedMessages[id]?.removeValue(forKey: "supportsSpeechPlayback")
+        cachedMessages[id]?["supportsSpeechPlayback"] = false
+        cachedMessages[id]?.removeValue(forKey: "provider")
+        cachedMessages[id]?.removeValue(forKey: "providerSessionID")
       }
+      projection.removeValue(forKey: "speechProjectionVersion")
       projection["messages"] = cachedMessages
-      entry["projection"] = try JSONSerialization.data(withJSONObject: projection)
-        .base64EncodedString()
-      buses[path] = entry
+      mark.projection = try JSONSerialization.data(withJSONObject: projection)
+      marks[path] = mark
     }
-    cache["buses"] = buses
-    try fixture.write(cache, to: cacheURL)
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
     let upgraded = OverlayChannelDeliveryReader(root: fixture.root, sharedBus: shared)
     let rebuilt = try await upgraded.readSnapshot()
     XCTAssertEqual(try messages(rebuilt), replies)
@@ -1409,7 +2241,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var consumed = await first.consumedBytes
     XCTAssertEqual(consumed, size, "a bus smaller than the window is read from byte zero")
 
-    let cursorURL = OverlayDeliveryCursorStore.url(root: fixture.root)
+    let cursorURL = OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
     XCTAssertTrue(FileManager.default.fileExists(atPath: cursorURL.path))
     let attributes = try FileManager.default.attributesOfItem(atPath: cursorURL.path)
     let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
@@ -1485,6 +2317,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   }
 
   func testLoudOpenStateShowsPanelAndRefusesHideWithoutChangingTranscript() throws {
+    let savedSize = DictationOverlayWindow.restoredContentSize()
+    defer { DictationOverlayWindow.persist(size: savedSize) }
     let state = OverlayState.previewFormatted()
     let transcript = state.activeText
     var shown = 0
@@ -1549,7 +2383,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(
-      header.range(of: ".modifier(OverlayControlGlass())")
+      header.range(of: "OverlayControlGlass(")
     )
     XCTAssertLessThan(drag.lowerBound, glass.lowerBound)
     let status = try String(
@@ -1557,8 +2391,13 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         "Codescribe/Screens/Overlay/OverlayChannelStatusView.swift"), encoding: .utf8)
     XCTAssertTrue(status.contains("Microphone active"))
     XCTAssertFalse(status.contains(".popover("))
-    XCTAssertTrue(view.contains("channelStatusView.monitorBody"))
-    XCTAssertTrue(status.contains("overlay-channel-delivery-"))
+    // The column installs the same status view, with its corner buttons.
+    XCTAssertTrue(
+      view.contains("var roster = channelStatusView") && view.contains("roster.monitorBody("))
+    let rosterLabel = try String(
+      contentsOf: root.appendingPathComponent(
+        "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift"), encoding: .utf8)
+    XCTAssertTrue(rosterLabel.contains("overlay-channel-delivery-"))
     XCTAssertTrue(status.contains("Divider("), "saved histories retain their own section")
     XCTAssertFalse(status.contains("glassEffect("))
     // The header shows one glyph, never the microphone: mic = recording only.
@@ -1568,10 +2407,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       status.components(separatedBy: "antenna.radiowaves").count - 1, 1,
       "one antenna in the status view: the shared channel's dot")
     let statusDot = try XCTUnwrap(status.range(of: "struct OverlayAgentStatusDot: View"))
-    let pillStack = try XCTUnwrap(status.range(of: "struct OverlayAgentPillStack: View"))
+    let dotEnd = try XCTUnwrap(
+      status.range(of: "\n}\n", range: statusDot.upperBound..<status.endIndex))
     let antenna = try XCTUnwrap(status.range(of: "antenna.radiowaves"))
     XCTAssertTrue(
-      statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < pillStack.lowerBound,
+      statusDot.lowerBound < antenna.lowerBound && antenna.lowerBound < dotEnd.lowerBound,
       "the antenna is drawn by OverlayAgentStatusDot, not by the header")
     XCTAssertFalse(status.contains("hasOpenChannel ? \"mic.fill\""))
     // Passive navigation and capture ownership are exercised by
@@ -1591,7 +2431,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       channels: [], unavailable: false, palette: .dark, animates: false,
       onToggleChannel: { calls.append($0) })
     let closed = OverlayChannelDelivery(
-      channel: "1", agent: "klaudiusz", deliveryID: nil, stage: nil, isOpen: false)
+      channel: "1", agent: "ada", deliveryID: nil, stage: nil, isOpen: false)
     let open = OverlayChannelDelivery(
       channel: "3", agent: "roman", deliveryID: nil, stage: nil, isOpen: true)
     view.toggle(closed)
@@ -1813,7 +2653,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         contentRect: .init(x: 0, y: 0, width: 440, height: 320),
         styleMask: [.titled], backing: .buffered, defer: false)
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
@@ -1848,7 +2688,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
         contentRect: .init(x: 0, y: 0, width: 336, height: maximumHeight), styleMask: [.titled],
         backing: .buffered, defer: false)
       window.contentView = host
-      window.orderFrontRegardless()
+      BackgroundTestWindow.present(window)
       defer { window.orderOut(nil) }
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.15))
@@ -1899,7 +2739,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   func testLiveAndUnknownFollowerKeepTheExistingDeliveryCopy() {
     let channel = OverlayChannelDelivery(
-      channel: "1", agent: "klaudiusz", deliveryID: "delivery-1", stage: .received,
+      channel: "1", agent: "ada", deliveryID: "delivery-1", stage: .received,
       isOpen: false)
     let live = OverlayChannelStatusView(
       channels: [channel], unavailable: false, palette: .light, animates: false,
@@ -2290,7 +3130,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     } catch {
       XCTAssertFalse(
         FileManager.default.fileExists(
-          atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path),
+          atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path),
         "invalid storage cannot advance a durable cursor")
     }
   }
@@ -2360,7 +3200,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       } catch {
         XCTAssertFalse(
           FileManager.default.fileExists(
-            atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path))
+            atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path)
+              .path))
       }
     }
   }
@@ -2382,7 +3223,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     } catch {
       XCTAssertFalse(
         FileManager.default.fileExists(
-          atPath: OverlayDeliveryCursorStore.url(root: fixture.root).path))
+          atPath: OverlayDeliveryCursorStore.url(root: fixture.root, bus: fixture.bus.path).path))
     }
   }
 
@@ -2415,6 +3256,106 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(first.first?.isOpen, true)
     let bytes = await reader.consumedBytes
     XCTAssertLessThanOrEqual(bytes, OverlayChannelDeliveryReader.tailWindow)
+  }
+
+  /// Rolls the hot file into a second closed generation the way the bus
+  /// writer does: the same root path gets a new inode and the manifest is
+  /// replaced with the longer chain.
+  private func rollSyntheticGeneration(_ fixture: Fixture) throws {
+    let receipt = URL(fileURLWithPath: fixture.bus.path + ".generations.json")
+    var manifest = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(contentsOf: receipt)) as? [String: Any])
+    var closed = try XCTUnwrap(manifest["segments"] as? [[String: Any]])
+    let start = try XCTUnwrap((manifest["active"] as? [String: Any])?["start"] as? NSNumber)
+    let hot = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    let length = try fixture.busSize()
+    let archive = fixture.root.appendingPathComponent("events/2026_1003/rolled.jsonl")
+    try FileManager.default.createDirectory(
+      at: archive.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.moveItem(at: fixture.bus, to: archive)
+    try Data().write(to: fixture.bus, options: .atomic)
+    let next = try FileManager.default.attributesOfItem(atPath: fixture.bus.path)
+    closed.append([
+      "id": "rolled", "path": archive.path, "start": start, "length": length,
+      "dev": try XCTUnwrap(hot[.systemNumber] as? NSNumber),
+      "ino": try XCTUnwrap(hot[.systemFileNumber] as? NSNumber), "day": "2026_1003",
+      "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
+    ])
+    manifest["segments"] = closed
+    manifest["active"] = [
+      "id": "active", "path": fixture.bus.path, "start": start.uint64Value + length,
+      "length": 0, "dev": try XCTUnwrap(next[.systemNumber] as? NSNumber),
+      "ino": try XCTUnwrap(next[.systemFileNumber] as? NSNumber), "day": "2026_1004",
+      "compressed": false, "sha256": NSNull(), "superseded": NSNull(),
+    ]
+    try fixture.write(manifest, to: receipt)
+  }
+
+  /// Idle passes reuse the verified generations manifest. A grown hot file, a
+  /// manifest rewritten in place to the same size, and a rollover to a new hot
+  /// inode each reach the reader in the pass that follows.
+  func testIdlePollsReuseTheGenerationManifestUntilItOrTheHotFileChanges() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try pinSyntheticGeneration(fixture)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let opened = try await reader.read()
+    XCTAssertNotEqual(opened.first?.stage, .sent)
+    let cold = await reader.generationManifestReads
+    XCTAssertGreaterThan(cold, 0, "the first pass verifies the manifest")
+    for _ in 0..<10 { _ = try await reader.read() }
+    var reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold, "idle passes reuse the verified manifest")
+
+    // The hot file grows under the same inode: no manifest read, new row seen.
+    var consumed = await reader.consumedBytes
+    var hotSize = try fixture.busSize()
+    try fixture.append(fixture.seal(1))
+    let grown = try await reader.read()
+    XCTAssertEqual(grown.first?.stage, .sent, "a row appended to the hot file arrives")
+    var delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize() - hotSize)
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold, "growth of the hot file needs no manifest read")
+
+    // Same inode, same size, new modification time: the stamp changed.
+    let receipt = URL(fileURLWithPath: fixture.bus.path + ".generations.json")
+    let bytes = try Data(contentsOf: receipt)
+    let inodeBefore =
+      try FileManager.default.attributesOfItem(atPath: receipt.path)[.systemFileNumber]
+      as? NSNumber
+    let handle = try FileHandle(forWritingTo: receipt)
+    try handle.seek(toOffset: 0)
+    try handle.write(contentsOf: bytes)
+    try handle.close()
+    try FileManager.default.setAttributes(
+      [.modificationDate: Date(timeIntervalSinceNow: 60)], ofItemAtPath: receipt.path)
+    let rewritten = try FileManager.default.attributesOfItem(atPath: receipt.path)
+    XCTAssertEqual(rewritten[.systemFileNumber] as? NSNumber, inodeBefore)
+    XCTAssertEqual((rewritten[.size] as? NSNumber)?.intValue, bytes.count)
+    consumed = await reader.consumedBytes
+    hotSize = try fixture.busSize()
+    try fixture.append(fixture.seal(2))
+    _ = try await reader.read()
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 1, "a same-size rewrite with a new mtime is reread")
+    delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize() - hotSize, "the row arrives in that pass")
+
+    // Rollover: the root path gets a new inode and the manifest a longer chain.
+    try rollSyntheticGeneration(fixture)
+    XCTAssertEqual(try fixture.busSize(), 0)
+    consumed = await reader.consumedBytes
+    try fixture.append(fixture.seal(3))
+    _ = try await reader.read()
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 2, "a rollover rereads the manifest")
+    delta = await reader.consumedBytes - consumed
+    XCTAssertEqual(delta, try fixture.busSize(), "the row after the rollover arrives in that pass")
+    for _ in 0..<5 { _ = try await reader.read() }
+    reads = await reader.generationManifestReads
+    XCTAssertEqual(reads, cold + 2, "the new chain is reused again")
   }
 
   // MARK: - Saved Conversation Search & Sorting Tests
@@ -3228,11 +4169,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
     }
     func cursorOffsets() throws -> [String: UInt64] {
-      let data = try Data(contentsOf: OverlayDeliveryCursorStore.url(root: root))
-      guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let buses = object["buses"] as? [String: [String: Any]]
-      else { return [:] }
-      return buses.compactMapValues { ($0["offset"] as? NSNumber)?.uint64Value }
+      OverlayDeliveryCursorStore.load(root: root).mapValues(\.offset)
     }
     /// Bulk evidence rows with a 30 KB pseudo-random payload each, the same
     /// shape that filled the Founder's bus, so the tail-window tests measure

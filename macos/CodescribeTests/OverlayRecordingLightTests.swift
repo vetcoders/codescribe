@@ -37,37 +37,22 @@ final class OverlayRecordingLightTests: XCTestCase {
       ).ordered, [])
   }
 
-  func testTechnicalCoverageRequiresBothDeveloperBuildAndLabToggle() {
-    for developerBuild in [false, true] {
-      for labEnabled in [false, true] {
-        let power = DeveloperSurface.isPowerModeEnabled(
-          labMode: labEnabled, surfaceEnabled: developerBuild)
-        let slots = OverlayBottomChromeSlots(
-          mode: .coverageRefused, hasPresentationStatus: false, isCollapsed: false,
-          showsDiagnostics: power)
-        XCTAssertEqual(
-          slots.ordered,
-          developerBuild && labEnabled ? [.rail, .coverageWarning] : [.rail],
-          "developer build=\(developerBuild), lab=\(labEnabled)")
-        let quiet = OverlayBottomChromeSlots(
-          mode: .listening, hasPresentationStatus: false, isCollapsed: false,
-          hasLowInputSignal: true, showsDiagnostics: power)
-        XCTAssertEqual(quiet.ordered, [.rail, .coverageWarning])
-      }
-    }
-  }
-
-  func testDeveloperCoverageDiagnosticsRespectCollapseAndActionableStatus() {
+  /// Maciej, 2026-10-19: ledger coverage ("Ledger: 1177.0 s to verify ·
+  /// ranges: 139") belongs in Voice Lab, so no build and no lab toggle puts it
+  /// in the bar; only the measured quiet microphone still does.
+  func testLedgerCoverageNeverTakesTheBar() {
     for collapsed in [false, true] {
       for actionableStatus in [false, true] {
         let slots = OverlayBottomChromeSlots(
           mode: .coverageRefused, hasPresentationStatus: actionableStatus,
-          isCollapsed: collapsed, showsDiagnostics: true)
-        XCTAssertEqual(
-          slots.ordered,
-          collapsed ? [] : actionableStatus ? [.rail] : [.rail, .coverageWarning])
+          isCollapsed: collapsed)
+        XCTAssertEqual(slots.ordered, collapsed ? [] : [.rail])
       }
     }
+    let quiet = OverlayBottomChromeSlots(
+      mode: .listening, hasPresentationStatus: false, isCollapsed: false,
+      hasLowInputSignal: true)
+    XCTAssertEqual(quiet.ordered, [.rail, .coverageWarning])
   }
 
   func testDiagnosticVisibilityDoesNotChangeTranscriptAuthorityOrRecoveryActions() {
@@ -88,16 +73,13 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertFalse(text.isEmpty)
     XCTAssertTrue(state.isTranscriptEditable)
     XCTAssertNotNil(notice)
-    for power in [false, true] {
-      _ = OverlayBottomChromeSlots(
-        mode: state.mode, hasPresentationStatus: false,
-        isCollapsed: false, showsDiagnostics: power)
-      XCTAssertEqual(state.activeText, text)
-      XCTAssertEqual(state.revision, revision)
-      XCTAssertEqual(state.coverageRefusalNotice, notice)
-      XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), intents)
-      XCTAssertTrue(state.isTranscriptEditable)
-    }
+    _ = OverlayBottomChromeSlots(
+      mode: state.mode, hasPresentationStatus: false, isCollapsed: false)
+    XCTAssertEqual(state.activeText, text)
+    XCTAssertEqual(state.revision, revision)
+    XCTAssertEqual(state.coverageRefusalNotice, notice)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), intents)
+    XCTAssertTrue(state.isTranscriptEditable)
   }
 
   // MARK: One table: state → colour → name
@@ -171,7 +153,10 @@ final class OverlayRecordingLightTests: XCTestCase {
     }
   }
 
-  func testBusCaptureUsesAgentLightOverSettledOrdinaryTakeAndQuietMeter() {
+  /// Maciej, 2026-10-19 08:52: the header microphone records dictation only;
+  /// an agent's capture lives on the Agents button. The waveform keeps the
+  /// agent accent because it draws that capture's audio.
+  func testBusCaptureLeavesTheHeaderLightToDictationOverSettledTakeAndQuietMeter() {
     let state = OverlayState()
     state.applyTranscriptProjection(
       transcriptProjection(
@@ -191,10 +176,10 @@ final class OverlayRecordingLightTests: XCTestCase {
     ])
     XCTAssertTrue(state.audioCaptureActive)
     XCTAssertTrue(state.usesAgentAccent)
-    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertNil(state.recordingLight, "the header microphone stays ready for dictation")
     feed(state, db: -60, from: 0, seconds: 2)
     XCTAssertTrue(state.levelMeter.isSilent)
-    XCTAssertEqual(state.recordingLight, .agent)
+    XCTAssertNil(state.recordingLight)
     XCTAssertEqual(state.activeText, text)
     XCTAssertEqual(state.revision, revision)
     state.applyChannelRoster([])
@@ -204,7 +189,7 @@ final class OverlayRecordingLightTests: XCTestCase {
     XCTAssertEqual(state.activeText, text)
   }
 
-  func testBroadcastAndNamedBusStayVioletDuringOrdinaryFinalization() {
+  func testBroadcastAndNamedBusLeaveOrdinaryFinalizationOnTheHeaderLight() {
     for channel in ["0", "4"] {
       let state = OverlayState()
       state.applyTranscriptProjection(
@@ -224,7 +209,7 @@ final class OverlayRecordingLightTests: XCTestCase {
       ])
       XCTAssertTrue(state.channelAudioCaptureActive)
       XCTAssertTrue(state.usesAgentAccent)
-      XCTAssertEqual(state.recordingLight, .agent)
+      XCTAssertEqual(state.recordingLight, .processing, "dictation's own phase, not the bus")
       XCTAssertEqual(state.activeText, text)
       XCTAssertEqual(state.revision, revision)
       state.applyChannelRoster([])

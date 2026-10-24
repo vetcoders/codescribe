@@ -115,6 +115,7 @@ struct OverlayTranscriptHistory: View {
           Divider()
         }
       }
+      .csAutohidingScrollers()
     }
     .frame(height: 280)
   }

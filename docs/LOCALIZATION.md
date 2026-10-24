@@ -44,7 +44,10 @@
   The initial step occupies resume slot zero. Setup has nine semantic chapters;
   Rust writes v3 resume markers and maps v2 and bare markers into the matching
   chapter. All permissions share chapter two; the optional local-model chapter
-  follows the dictation-language choice.
+  follows the dictation-language choice. The resume slot is not the number the
+  “Step N of M” header shows: that counter and the progress bar run over the
+  chapters the chosen lane actually displays, so the Basic lane — which hides
+  Agentic Readiness — counts to eight and the Agentic lane to nine.
 - The dictation language (`CsLanguage`, `WHISPER_LANGUAGE`) is an STT setting.
   It is unrelated to the interface language and must stay unrelated.
 
@@ -303,22 +306,35 @@ is born localized at the place where it is written as a literal.**
 Founder decision 2026-10-06. These are the preferred terms throughout the UI,
 including buttons, settings, history, messages, help and accessibility copy.
 
-| Meaning                                                 | English                   | Polish                    |
-| ------------------------------------------------------- | ------------------------- | ------------------------- |
-| Basic operating mode                                    | Basic mode                | Tryb podstawowy           |
-| Agent operating mode                                    | Agent mode                | Tryb agentowy             |
-| Mode-row value: basic mode (License panel)              | Basic                     | Podstawowy                |
-| Mode-row value: agent mode (License panel)              | Agent                     | Agentowy                  |
-| License-row value: lifetime agent offer (License panel) | Agent · one-time purchase | Agent · zakup jednorazowy |
-| Converting audio to text                                | transcription             | transkrypcja              |
-| The resulting text                                      | transcript                | transkrypt                |
-| Command to convert audio to text                        | Transcribe                | Transkrybuj               |
+| Meaning                                                   | English                   | Polish                    |
+| --------------------------------------------------------- | ------------------------- | ------------------------- |
+| Basic operating mode                                      | Basic mode                | Tryb podstawowy           |
+| Agent operating mode                                      | Agent mode                | Tryb agentowy             |
+| Mode-row value: basic mode (License section)              | Basic                     | Podstawowy                |
+| Mode-row value: agent mode (License section)              | Agent                     | Agentowy                  |
+| License-row value: lifetime agent offer (License section) | Agent · one-time purchase | Agent · zakup jednorazowy |
+| Converting audio to text                                  | transcription             | transkrypcja              |
+| The resulting text                                        | transcript                | transkrypt                |
+| Command to convert audio to text                          | Transcribe                | Transkrybuj               |
+| Agent window's stored chat object                         | conversation              | rozmowa                   |
+
+Founder decision 2026-10-18: the Agent window's stored chat object — what code
+calls a thread — is named "conversation" / "rozmowa" everywhere a user reads
+it: buttons, search, menus, errors and accessibility copy (New thread → New
+conversation, Delete Thread → Delete Conversation, Nowy wątek → Nowa rozmowa,
+and so on). Mind the grammar: "wątek" is masculine and "rozmowa" is feminine,
+so every adjective and pronoun takes the new gender
+("Usunąć ten wątek?" → "Usunąć tę rozmowę?"). "chat" stays the name of the mode
+("Voice chat", "Continue in chat"); "session" / "sesja" stays reserved for
+dictation, the app session and bus agent sessions — neither is renamed by this
+decision. Code identifiers (`threadID`, `ThreadRail`, `ChatThread`,
+`search_threads`) are unaffected (R6).
 
 Mode names and license status describe different things. Do not call Basic
 mode "Unlicensed" / "Bez licencji", or Agent mode "Agent" / "Agentic".
-The one exception is the License panel's Mode row: its label already says
-"Mode" / "Tryb", so the value is the short form — Basic / Agent in English,
-Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
+The one exception is the Mode row of Settings › User › License: its label
+already says "Mode" / "Tryb", so the value is the short form — Basic / Agent in
+English, Podstawowy / Agentowy in Polish. In Polish the mode is never "Agent": that
 word is the name of the offer ("Agent · zakup jednorazowy").
 These display names do not rename persisted identifiers or bridge enums (R6).
 
@@ -403,13 +419,14 @@ to a count followed by an adjective or verb (`"\(n) configured"`).
 
 A sentence with several counts stays one key. In the catalog its text names a
 substitution per count (`%#@threads@`), and each substitution carries its own
-argument number and plural forms:
+argument number and plural forms. A substitution name is internal: `threads`
+kept its name when the visible words became conversations.
 
 ```text
-key   Moves %lld Agent threads and %lld Agent files to Trash.
+key   Moves %lld Agent conversations and %lld Agent files to Trash.
 en    Moves %#@threads@ and %#@files@ to Trash.
-        threads (arg 1): one "%arg Agent thread" · other "%arg Agent threads"
-        files   (arg 2): one "%arg Agent file"   · other "%arg Agent files"
+        threads (arg 1): one "%arg Agent conversation" · other "%arg Agent conversations"
+        files   (arg 2): one "%arg Agent file"         · other "%arg Agent files"
 ```
 
 English needs variations only where the singular differs. A language whose

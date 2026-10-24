@@ -279,18 +279,59 @@ extension CsCapabilityRow {
   }
 }
 
+/// Short human name of a canonical capability op (`core/agent/capabilities.rs`
+/// `CapabilityOp::as_str`) for the readiness card. An op this build does not
+/// know keeps its raw id, so a new core op is never dropped from the line.
+func capabilityDisplayName(_ op: String) -> String {
+  switch op {
+  case "fs.list": String(localized: "list folders", comment: "Capability name: fs.list")
+  case "fs.read": String(localized: "read files", comment: "Capability name: fs.read")
+  case "fs.search": String(localized: "search files", comment: "Capability name: fs.search")
+  case "fs.write": String(localized: "write files", comment: "Capability name: fs.write")
+  case "fs.patch": String(localized: "edit files", comment: "Capability name: fs.patch")
+  case "fs.move": String(localized: "move files", comment: "Capability name: fs.move")
+  case "repo.status": String(localized: "Git status", comment: "Capability name: repo.status")
+  case "repo.diff": String(localized: "Git diff", comment: "Capability name: repo.diff")
+  case "repo.log": String(localized: "Git history", comment: "Capability name: repo.log")
+  case "repo.commit": String(localized: "Git commit", comment: "Capability name: repo.commit")
+  case "process.run":
+    String(localized: "run processes", comment: "Capability name: process.run")
+  case "process.observe":
+    String(localized: "check processes", comment: "Capability name: process.observe")
+  case "process.stop":
+    String(localized: "stop processes", comment: "Capability name: process.stop")
+  case "project.build":
+    String(localized: "project build", comment: "Capability name: project.build")
+  case "project.test":
+    String(localized: "project tests", comment: "Capability name: project.test")
+  case "project.diagnostics":
+    String(localized: "project diagnostics", comment: "Capability name: project.diagnostics")
+  case "code.symbols":
+    String(localized: "code symbols", comment: "Capability name: code.symbols")
+  case "code.calls": String(localized: "code calls", comment: "Capability name: code.calls")
+  default: op
+  }
+}
+
 /// Counts per tier for the capability summary line.
 struct CapabilitySummary: Equatable {
   var native = 0
   var enhanced = 0
   var unavailable = 0
+  /// Which operations ended up unavailable, in matrix order. A bare count
+  /// ("3 capabilities have no provider") left the reader no way to judge
+  /// whether it matters, so the summary carries the names
+  /// (Founder review, 2026-10-18).
+  var unavailableOps: [String] = []
 
   init(rows: [CsCapabilityRow]) {
     for row in rows {
       switch row.tier.lowercased() {
       case "native": native += 1
       case "enhanced": enhanced += 1
-      default: unavailable += 1
+      default:
+        unavailable += 1
+        unavailableOps.append(row.op)
       }
     }
   }
@@ -394,6 +435,10 @@ struct AgentStatusSummary: Equatable {
   let facts: String
   /// Errors first, then warnings. Empty when there is nothing to act on.
   let notes: [Note]
+  /// How to read `notes`. "Configuration ready" above a warning read as a
+  /// contradiction, so the list says plainly whether its items block the Agent
+  /// (Founder review, 2026-10-18). Empty when there are no notes.
+  let notesCaption: String
 
   init(
     readiness: CsAgenticReadiness, capabilities: [CsCapabilityRow], servers: [McpServerLine],
@@ -429,10 +474,14 @@ struct AgentStatusSummary: Equatable {
 
     // ---- Key facts. A missing probe drops its fragment instead of showing 0. ----
     var facts: [String] = []
+    // "Provider", not "Model": `CsMcpStatusFacet` has no model facet, and the
+    // subject here is the provider display name — wire suffix and all. The
+    // resolved model per lane lives on Agent › AI models
+    // (Founder review, 2026-10-18).
     if let provider = row(.provider)?.subject, !provider.isEmpty {
       facts.append(
         String(
-          localized: "Model: \(provider)",
+          localized: "Provider: \(provider)",
           comment: "Diagnostics key fact; placeholder is a provider display name"))
     }
     if let tools = row(.nativeTools)?.count {
@@ -454,7 +503,8 @@ struct AgentStatusSummary: Equatable {
     let failedIntegrations = integrations.filter { $0.state == .failed }.count
     let awaiting = integrations.filter { $0.state == .configured }.count
     let serverSummary = McpServerSummary(lines: servers)
-    let unavailable = CapabilitySummary(rows: capabilities).unavailable
+    let capabilitySummary = CapabilitySummary(rows: capabilities)
+    let unavailable = capabilitySummary.unavailable
     let configRow =
       (mcpStatus.rows.first { $0.facet == .mcpConfig }) ?? row(.mcpConfig)
 
@@ -488,17 +538,35 @@ struct AgentStatusSummary: Equatable {
             comment: "Plural: optional integrations configured but not yet discovered")))
     }
     if unavailable > 0 {
+      // Short names on the card; the raw op ids stay on the capability rows
+      // under Agent tools. The list is joined outside the sentence.
+      let ops = capabilitySummary.unavailableOps.map(capabilityDisplayName).joined(
+        separator: " · ")
       warnings.append(
         Note(
           tone: .warn,
           text: String(
-            localized: "\(unavailable) capabilities have no provider",
-            comment: "Plural: capability operations no native tool or MCP server can serve")))
+            localized: "No provider for \(ops)",
+            comment:
+              "Diagnostics note; placeholder is a list of short capability names such as list folders"
+          )))
     }
     if let configRow, configRow.state == .note {
       warnings.append(Note(tone: configRow.tone, text: configRow.localizedValue))
     }
     notes = errors + warnings
+    if errors.isEmpty && warnings.isEmpty {
+      notesCaption = ""
+    } else if errors.isEmpty {
+      // The gate passed: these are optional pieces, not failures.
+      notesCaption = String(
+        localized: "Does not block the Agent",
+        comment: "Caption above diagnostics notes that are warnings only")
+    } else {
+      notesCaption = String(
+        localized: "Needs attention",
+        comment: "Caption above diagnostics notes that include an error")
+    }
   }
 }
 

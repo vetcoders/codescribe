@@ -47,11 +47,23 @@ If Settings is the only window exposed by the computer-use tool, open the widget
 from Settings and return to it; do not restart the app or start recording to make
 history visible. Use fresh accessibility state after each navigation action.
 
-If native access is unavailable, say that UI history has not been read. A verified
-read-only bus/archive reader may supply context, but do not invent a `--history`
-flag or concatenate compressed generations as plain text. `cs-bus --read-pending`
-and `codescribe_read` expose unread deliveries, not the complete acknowledged chat.
-An empty mailbox or missing UI row does not prove that historical bytes are gone.
+If native access is unavailable, say that UI history has not been read and read
+the retained channel conversation as Markdown instead:
+
+```bash
+cs-bus --history --since 1d            # or 6h, 90m, 2026-10-18, 2026-10-18T21:00
+cs-bus --history --channel 2 --since 2026-10-18 --until 2026-10-19
+```
+
+It reads every retained generation of the channel buses and prints each message
+once, oldest first: Founder voice seals, typed Founder messages and agent replies,
+with sender, recipients and local time. A broadcast fanned out to many mailboxes
+reads once; a held message reads in its last revision; one withdrawn before
+delivery is left out and counted. `--channel 0` keeps messages to everyone. It
+only reads and never ACKs. Do not concatenate bus generations as plain text:
+`cs-bus --read-pending` and `codescribe_read` expose unread deliveries, not the
+complete acknowledged chat. An empty mailbox or missing UI row does not prove
+that historical bytes are gone.
 
 ## Context is not a fresh delivery
 

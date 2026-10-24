@@ -54,10 +54,13 @@ final class CredentialPresentationTests: XCTestCase {
         model.selectedProviderKeySet, key,
         "global key-status flags cannot impersonate this provider's credential")
       XCTAssertEqual(engine.keyWrites, 0)
-      if account && !key {
-        XCTAssertEqual(model.selectedProviderAccountStatus, "Connected")
-        XCTAssertEqual(model.selectedProviderKeyStatus, "Not set")
-      }
+      // An account and a key are alternatives: whichever is missing reads
+      // "Optional" once the other covers the provider.
+      XCTAssertEqual(
+        model.selectedProviderAccountStatus,
+        account ? "Connected" : (key ? "Optional" : "Not connected"))
+      XCTAssertEqual(
+        model.selectedProviderKeyStatus, key ? "Set" : (account ? "Optional" : "Not set"))
       engine.provider.accountSignedIn = !account
       engine.provider.apiKeySet = !key
       model.refreshProviderAccess()
@@ -102,7 +105,7 @@ final class CredentialPresentationTests: XCTestCase {
       discovery: CsModelDiscovery(
         providerId: provider.id, status: "no_key", message: nil, models: []))
     XCTAssertFalse(lane.usesDiscoveredPicker)
-    XCTAssertTrue(lane.discoveryDescription.contains("connected account"))
+    XCTAssertTrue(lane.discoveryDescription.contains("needs an API key"))
     XCTAssertTrue(lane.discoveryDescription.contains("model ID"))
     XCTAssertEqual(lane.availabilityDescription, "Connected account")
     XCTAssertFalse(lane.discoveryFailed, "a missing key is not a failed fetch")
@@ -132,8 +135,9 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertEqual(lane.availabilityTint, CSColor.oliveLight)
     XCTAssertEqual(
       SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.oliveLight)
-    XCTAssertTrue(lane.discoveryDescription.contains("connected account covers model requests"))
-    XCTAssertTrue(lane.discoveryDescription.contains("model list needs"))
+    XCTAssertEqual(
+      lane.discoveryDescription,
+      "The model list needs an API key. You can enter a model ID by hand.")
     XCTAssertFalse(lane.discoveryDescription.contains("Formatting needs"))
     XCTAssertFalse(lane.usesDiscoveredPicker)
     provider.accountSignedIn = false
@@ -184,7 +188,7 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertEqual(rejectedWithAccount.availabilityDescription, "Connected account")
     XCTAssertEqual(
       rejectedWithAccount.discoveryDescription,
-      "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers."
+      "The API key was rejected, so there is no model list. The account still works."
     )
 
     // Any other failure is a plain fetch error: the key is never blamed on a guess.

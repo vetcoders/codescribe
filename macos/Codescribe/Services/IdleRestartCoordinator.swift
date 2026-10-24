@@ -24,6 +24,11 @@ final class IdleRestartCoordinator {
   private let ready: Ready
   private let acquireLease: @MainActor () async throws -> FileHandle
   private let reserveCapture: @MainActor () async throws -> Bool
+  /// The Founder talking to an agent includes typing to one: a focused
+  /// composer, keys within the typing horizon or an unsent draft refuse the
+  /// restart the same way a live take does (Maciej, 2026-10-23, after a
+  /// restart-if-idle quit the app under a long message he was writing).
+  private let founderComposing: @MainActor () -> Bool
   private let terminate: @MainActor () -> Void
   private var lease: FileHandle?
   private var handling = false
@@ -34,12 +39,14 @@ final class IdleRestartCoordinator {
     commit: String = Bundle.main.object(forInfoDictionaryKey: "CSBuildCommit") as? String ?? "",
     acquireLease: @escaping @MainActor () async throws -> FileHandle,
     reserveCapture: @escaping @MainActor () async throws -> Bool,
+    founderComposing: @escaping @MainActor () -> Bool = { false },
     terminate: @escaping @MainActor () -> Void
   ) throws {
     self.root = root
     self.ready = Ready(pid: pid, nonce: nonce, bundle: bundle.path, commit: commit)
     self.acquireLease = acquireLease
     self.reserveCapture = reserveCapture
+    self.founderComposing = founderComposing
     self.terminate = terminate
     try FileManager.default.createDirectory(
       at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -69,11 +76,19 @@ final class IdleRestartCoordinator {
     do {
       // Prove receipt storage works before closing capture admission.
       try receipt(id, status: "checking", reason: nil)
+      guard !founderComposing() else {
+        handling = false
+        try receipt(id, status: "refused", reason: "founder_composing")
+        return
+      }
       let heldLease = try await acquireLease()
-      guard try await reserveCapture() else {
+      // The lease wait is a window too: words typed during it count.
+      guard try await reserveCapture(), !founderComposing() else {
         try? heldLease.close()
         handling = false
-        try receipt(id, status: "refused", reason: "capture_busy_or_not_ready")
+        try receipt(
+          id, status: "refused",
+          reason: founderComposing() ? "founder_composing" : "capture_busy_or_not_ready")
         return
       }
       lease = heldLease

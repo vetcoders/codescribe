@@ -21,8 +21,8 @@ actor OverlayChannelDeliveryReader {
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
   private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
-  // This is a restart cache, not transcript or delivery authority. Checkpoint
-  // complete snapshots, rather than fsyncing the entire roster for each bus.
+  // This is a restart cache, not transcript or delivery authority. Checkpoints
+  // batch changed buses and fsync only their own cache units.
   private static let checkpointInterval: Duration = .seconds(30)
   private static let checkpointByteLag: UInt64 = 8 << 20
   private var lastCheckpoint: ContinuousClock.Instant?
@@ -44,6 +44,14 @@ actor OverlayChannelDeliveryReader {
   private(set) var consumedMetadataBytes: UInt64 = 0
   /// Opened metadata descriptors, including reads satisfied by the parse cache.
   private(set) var metadataFileOpens: UInt64 = 0
+  /// `.generations.json` documents opened and parsed. A manifest is reread
+  /// only when its own stamp or the hot file it names as active changes.
+  /// Before, every 500 ms pass reparsed each bus's manifest and re-stat'ed
+  /// every closed segment, a fifth of the reader at idle (sample of dfa35af17,
+  /// 2026-10-19 on div0).
+  private(set) var generationManifestReads: UInt64 = 0
+  private var generationInventories: [URL: GenerationStream.Inventory] = [:]
+  private static let generationInventoryEntries = 64
   private static let metadataCacheBudget = 8 << 20
   private static let metadataCacheEntries = 256
   private var metadataObjects: [URL: MetadataObject] = [:]
@@ -56,6 +64,24 @@ actor OverlayChannelDeliveryReader {
   private var pinnedCacheBytes = 0
   private static let pinnedCacheBudget = 8 << 20
   private static let pinnedCacheEntries = 24
+  /// Receipt files a bus already read without any projection change, keyed by
+  /// bus and receipt path, valued by file stamp. A channel-0 take is projected
+  /// on every recipient's bus, but each acknowledgment names its owner's bus,
+  /// so the other buses can never settle it. On div0 about 1,500 such files
+  /// outgrew the receipt cache and were reopened and reparsed every 500 ms, a
+  /// quarter of the app's busy samples (sample 2026-10-18).
+  private var unchangedReceipts: [String: MetadataObjectStamp] = [:]
+  private static let unchangedReceiptEntries = 1 << 14
+  /// Coordinates a bus stops polling: per bus, receipt file to the bus its
+  /// acknowledgment names. That bus is read too, its copy of the
+  /// delivery settles there, and the conversation merge carries the flag to
+  /// every copy. The stamp memo above still left one `fstatat` per foreign
+  /// coordinate and tick, plus the enumeration, about 40 % of the reader
+  /// (sample 2026-10-19 on div0, roughly 1,500 such coordinates).
+  private var acknowledgedElsewhere: [String: [String: String]] = [:]
+  /// `fstatat` calls on receipt paths. Tests use it to prove a settled
+  /// coordinate leaves the poll.
+  private(set) var receiptProbes: UInt64 = 0
   /// Conversation lists actually built. An idle poll reuses the previous list:
   /// rebuilding and re-sorting unchanged history every 500 ms held two reader
   /// threads at ~55 % of a core (sample of build 1004, 2026-10-14).
@@ -227,6 +253,8 @@ actor OverlayChannelDeliveryReader {
       }
     }
     var paths: [String] = sharedBus.map { [$0.path] } ?? []
+    let founderBus = root.appendingPathComponent("buses/channel-10.jsonl").path
+    if !paths.contains(founderBus) { paths.append(founderBus) }
     for channel in bindings.keys.sorted() {
       guard let binding = bindings[channel],
         let lease = leases.first(where: {
@@ -260,13 +288,69 @@ actor OverlayChannelDeliveryReader {
       paths.removeAll { $0 == archive.bus }
       paths.insert(archive.bus, at: 0)
     }
-    let usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
+    var usedBuses = Set(paths.prefix(16).map { URL(fileURLWithPath: $0).standardizedFileURL })
     for bus in usedBuses.sorted(by: { $0.path < $1.path }) {
       if FileManager.default.fileExists(atPath: bus.path) {
         try refresh(bus)
       } else if buses[bus] == nil, var restored = persistedCursor(for: bus) {
         adopt(&restored)
         buses[bus] = restored
+      }
+    }
+    // A staged receipt is copied to every frozen recipient bus, but its
+    // commit marker exists only on the selected primary bus. Pull that exact
+    // primary through this reader's generation-verified stream so archived
+    // secondary conversations can resolve the same durable stage after reopen.
+    let selectedArchivePath = selectedOwner.flatMap { selected in
+      archives.first(where: {
+        $0.owner.id == selected.id && $0.owner.channel == selected.channel
+      }).map { URL(fileURLWithPath: $0.bus).standardizedFileURL.path }
+    }
+    let boundBusPaths = Set(
+      bindings.values.compactMap { binding in
+        leases.first(where: {
+          $0["provider"] as? String == binding["provider"] as? String
+            && $0["provider_session_id"] as? String == binding["provider_session_id"] as? String
+        })?["bus"] as? String
+      })
+    var protectedBusPaths = boundBusPaths
+    protectedBusPaths.insert(URL(fileURLWithPath: founderBus).standardizedFileURL.path)
+    if let sharedBus { protectedBusPaths.insert(sharedBus.standardizedFileURL.path) }
+    if let selectedArchivePath { protectedBusPaths.insert(selectedArchivePath) }
+    var referencedCommitBuses: [String] = []
+    if let selectedArchivePath {
+      let selectedArchiveURL = URL(fileURLWithPath: selectedArchivePath).standardizedFileURL
+      if let selectedProjection = buses[selectedArchiveURL]?.projection {
+        referencedCommitBuses.append(
+          contentsOf:
+            selectedProjection.referencedCaptureAttachmentCommitBuses.sorted())
+      }
+    }
+    let allReferencedCommitBuses = usedBuses.reduce(into: Set<String>()) { result, bus in
+      result.formUnion(buses[bus]?.projection.referencedCaptureAttachmentCommitBuses ?? [])
+    }
+    let selectedCommitBuses = Set(referencedCommitBuses)
+    referencedCommitBuses.append(
+      contentsOf:
+        allReferencedCommitBuses.sorted().filter { !selectedCommitBuses.contains($0) })
+    for commitPath in referencedCommitBuses {
+      guard let commitBus = captureCommitBusURL(commitPath), !usedBuses.contains(commitBus) else {
+        continue
+      }
+      if usedBuses.count >= 16 {
+        guard
+          let evicted = usedBuses.filter({ !protectedBusPaths.contains($0.path) })
+            .sorted(by: { $0.path > $1.path }).first
+        else { continue }
+        usedBuses.remove(evicted)
+      }
+      usedBuses.insert(commitBus)
+      protectedBusPaths.insert(commitBus.path)
+      if FileManager.default.fileExists(atPath: commitBus.path) {
+        try refresh(commitBus)
+      } else if buses[commitBus] == nil, var restored = persistedCursor(for: commitBus) {
+        adopt(&restored)
+        buses[commitBus] = restored
       }
     }
     var deliveries: [OverlayChannelDelivery] = []
@@ -300,6 +384,7 @@ actor OverlayChannelDeliveryReader {
       let candidates = Set(rosterByID[id] ?? archivesByID[id] ?? [])
       return candidates.count == 1 ? candidates.first : nil
     }
+    let usedPaths = Set(usedBuses.map(\.path))
     for bus in usedBuses {
       guard var cursor = buses[bus] else { continue }
       for owner in verifiedOwners { cursor.projection.reconcileOwner(owner) }
@@ -310,32 +395,41 @@ actor OverlayChannelDeliveryReader {
       let wakeups = root.path + "/wakeups/"
       let acknowledgments = root.path + "/acknowledgments/"
       let skips = root.path + "/broadcast-skipped/"
-      for (owner, delivery, accepted, broadcast) in cursor.projection.receiptCoordinates() {
-        guard delivery.count == 24, delivery.allSatisfy({ "0123456789abcdef".contains($0) }) else {
-          continue
-        }
+      let busPath = bus.path
+      let elsewhere = acknowledgedElsewhere[busPath] ?? [:]
+      let coordinates = cursor.projection.receiptCoordinates { owner, delivery in
+        guard let home = elsewhere[owner.leaseID + "/" + delivery + ".json"] else { return false }
+        return usedPaths.contains(home)
+      }
+      for (owner, delivery, accepted, broadcast) in coordinates {
+        guard Self.isDeliveryID(delivery) else { continue }
+        let file = owner.leaseID + "/" + delivery + ".json"
         if !accepted {
-          let wakeup = URL(
-            fileURLWithPath: wakeups + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
-          if let receipt = try? object(at: wakeup) { cursor.projection.observeAcceptance(receipt) }
+          observeReceipt(atPath: wakeups + file, busPath: busPath, in: &cursor.projection) {
+            $0.observeAcceptance($1)
+          }
         }
         // Only an unaccepted channel-0 delivery can have been skipped; a
         // recorded skip drops the coordinate from the next poll. The
         // acknowledgment is still read below: a skip file naming another
         // owner marks nothing and must not hide a real ACK (Lena, 2026-10-17).
         if broadcast && !accepted {
-          let skip = URL(
-            fileURLWithPath: skips + owner.leaseID + "/" + delivery + ".json", isDirectory: false)
-          if let receipt = try? object(at: skip) {
-            cursor.projection.observeBroadcastSkip(receipt, owner: owner, delivery: delivery)
+          observeReceipt(atPath: skips + file, busPath: busPath, in: &cursor.projection) {
+            $0.observeBroadcastSkip($1, owner: owner, delivery: delivery)
           }
         }
-        let acknowledgment = URL(
-          fileURLWithPath: acknowledgments + owner.leaseID + "/" + delivery + ".json",
-          isDirectory: false)
-        if let receipt = try? object(at: acknowledgment) {
-          cursor.projection.observeAcknowledgment(
-            receipt, owner: owner, delivery: delivery, busPath: bus.path)
+        observeReceipt(atPath: acknowledgments + file, busPath: busPath, in: &cursor.projection) {
+          $0.observeAcknowledgment($1, owner: owner, delivery: delivery, busPath: busPath)
+          // The owner's own receipt for this delivery, naming another bus
+          // this reader also polls: that copy settles, this one stops asking.
+          guard $1["lease_id"] as? String == owner.leaseID,
+            $1["delivery_id"] as? String == delivery,
+            let named = $1["bus"] as? String, named.hasPrefix("/")
+          else { return }
+          let home = URL(fileURLWithPath: named).standardizedFileURL.path
+          if home != busPath, usedPaths.contains(home) {
+            acknowledgedElsewhere[busPath, default: [:]][file] = home
+          }
         }
       }
       buses[bus] = cursor
@@ -353,6 +447,9 @@ actor OverlayChannelDeliveryReader {
       deliveries[index] = status
     }
     buses = buses.filter { usedBuses.contains($0.key) }
+    acknowledgedElsewhere = acknowledgedElsewhere.filter {
+      usedPaths.contains($0.key) && $0.value.count <= Self.unchangedReceiptEntries
+    }
     persistenceAttempts = persistenceAttempts.filter { usedBuses.contains($0.key) }
     savedRevisions = savedRevisions.filter { usedBuses.contains($0.key) }
     let inputs = ConversationInputs(
@@ -374,9 +471,19 @@ actor OverlayChannelDeliveryReader {
       builtConversations = built
     }
     try checkpoint(at: checkpointTime)
+    var panelFocusResults: [String: OverlayPanelFocusResult] = [:]
+    for cursor in buses.values {
+      for (requestID, result) in cursor.projection.panelFocusResults {
+        panelFocusResults[requestID] = result
+      }
+    }
     return OverlayChannelDeliverySnapshot(
       deliveries: deliveries, conversations: built.conversations,
-      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs)
+      activeCaptureAttachmentSessions: Array(
+        Set(buses.values.flatMap { $0.projection.activeCaptureAttachmentSessions })
+      ).sorted { $0.id < $1.id },
+      archivedOwners: Set(archives.map(\.owner)), historyReplyIDs: built.historyReplyIDs,
+      panelFocusResults: panelFocusResults)
   }
 
   private func buildConversations(
@@ -385,12 +492,29 @@ actor OverlayChannelDeliveryReader {
     openedArchiveBus: URL?
   ) -> BuiltConversations {
     conversationBuilds &+= 1
+    var verifiedCaptureAttachmentCommits: [String: String] = [:]
+    var conflictingCaptureAttachmentCommits: Set<String> = []
+    for (bus, cursor) in buses {
+      for (stageID, commitBus) in cursor.projection.verifiedCaptureAttachmentCommitPaths
+      where commitBus == bus.path && captureCommitBusURL(commitBus) != nil {
+        guard !conflictingCaptureAttachmentCommits.contains(stageID) else { continue }
+        if let previous = verifiedCaptureAttachmentCommits[stageID], previous != commitBus {
+          verifiedCaptureAttachmentCommits.removeValue(forKey: stageID)
+          conflictingCaptureAttachmentCommits.insert(stageID)
+        } else {
+          verifiedCaptureAttachmentCommits[stageID] = commitBus
+        }
+      }
+    }
     var named: [String: OverlayConversation] = [:]
     var all: [String: OverlayConversationMessage] = [:]
     var historyReplyIDs: Set<String> = []
     for bus in buses.keys.sorted(by: { $0.path < $1.path }) {
       guard let cursor = buses[bus] else { continue }
-      for conversation in cursor.projection.conversations(busPath: bus.path) {
+      for conversation in cursor.projection.conversations(
+        busPath: bus.path,
+        verifiedCaptureAttachmentCommits: verifiedCaptureAttachmentCommits)
+      {
         if bus == openedArchiveBus { historyReplyIDs.formUnion(conversation.replyIDs) }
         if conversation.id == "0" {
           for message in conversation.messages {
@@ -445,6 +569,24 @@ actor OverlayChannelDeliveryReader {
     cursor.lineage = nextLineage
   }
 
+  /// Stage receipts can name only a canonical bus under this bridge's buses
+  /// directory. The returned URL is then read by `refresh`, which verifies its
+  /// generation manifest and stream identity before consuming any rows.
+  private func captureCommitBusURL(_ rawPath: String) -> URL? {
+    guard rawPath.hasPrefix("/"), rawPath.utf8.count <= 4096 else { return nil }
+    let candidate = URL(fileURLWithPath: rawPath).standardizedFileURL
+    guard candidate.path == rawPath else { return nil }
+    let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+    let resolvedBuses = resolvedRoot.appendingPathComponent("buses", isDirectory: true)
+      .resolvingSymlinksInPath().standardizedFileURL
+    let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+    guard resolvedCandidate.pathExtension == "jsonl",
+      resolvedCandidate.path == rawPath,
+      resolvedCandidate.path.hasPrefix(resolvedBuses.path + "/")
+    else { return nil }
+    return resolvedCandidate
+  }
+
   private static func merge(
     _ first: OverlayConversationMessage, _ second: OverlayConversationMessage
   )
@@ -467,6 +609,23 @@ actor OverlayChannelDeliveryReader {
       result.captureState = .finished
     }
     result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
+    // The shared capture stream can mirror the same document without the
+    // attachment receipt written on recipient buses. Revision/path ordering
+    // chooses the prose, but cannot discard independently committed pointers.
+    if let otherAttachments = other.attachments {
+      var paths = Set((result.attachments ?? []).map(\.path))
+      var attachments = result.attachments ?? []
+      for attachment in otherAttachments {
+        if let index = attachments.firstIndex(where: { $0.path == attachment.path }) {
+          if attachments[index].attachedAtSeconds == nil, attachment.attachedAtSeconds != nil {
+            attachments[index] = attachment
+          }
+        } else if paths.insert(attachment.path).inserted {
+          attachments.append(attachment)
+        }
+      }
+      result.attachments = attachments
+    }
     if let otherOccurrences = other.occurrenceIDs {
       var occurrences = result.occurrenceIDs ?? []
       for occurrence in otherOccurrences where !occurrences.contains(occurrence) {
@@ -493,6 +652,41 @@ actor OverlayChannelDeliveryReader {
       result.playback = playback
     }
     return result
+  }
+
+  /// Twenty-four lowercase hex digits, checked on UTF-8 bytes:
+  /// `String.contains(_:)` per character was a visible frame of the poll
+  /// (sample 2026-10-19).
+  private static func isDeliveryID(_ value: String) -> Bool {
+    value.utf8.count == 24
+      && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+  }
+
+  /// Applies one receipt file to a bus projection. An absent file costs one
+  /// `fstatat`. A file this bus already read without any projection change is
+  /// skipped until its stamp changes: every observer bumps the projection
+  /// revision when it changes state, and its outcome depends only on the
+  /// receipt, the coordinate encoded in the path, and the bus.
+  private func observeReceipt(
+    atPath path: String, busPath: String, in projection: inout OverlayChannelDelivery.Bus,
+    _ observe: (inout OverlayChannelDelivery.Bus, [String: Any]) -> Void
+  ) {
+    receiptProbes &+= 1
+    var metadata = stat()
+    guard fstatat(AT_FDCWD, path, &metadata, 0) == 0 else { return }
+    let stamp = MetadataObjectStamp(metadata)
+    let key = busPath + "\0" + path
+    guard unchangedReceipts[key] != stamp,
+      let receipt = try? object(at: URL(fileURLWithPath: path, isDirectory: false))
+    else { return }
+    let revision = projection.revision
+    observe(&projection, receipt)
+    if projection.revision != revision {
+      unchangedReceipts.removeValue(forKey: key)
+    } else {
+      if unchangedReceipts.count >= Self.unchangedReceiptEntries { unchangedReceipts.removeAll() }
+      unchangedReceipts[key] = stamp
+    }
   }
 
   private func pinsMetadata(_ url: URL) -> Bool {
@@ -580,8 +774,44 @@ actor OverlayChannelDeliveryReader {
     }
   }
 
+  /// The stream at `root` for this pass. A manifest version is verified once
+  /// against its hot file; later passes re-stat only that file and the
+  /// manifest. Closed segments are sealed while a manifest names them, and
+  /// `GenerationStream.read(_:)` still checks a segment's identity before
+  /// reading its bytes.
+  private func generationStream(_ root: URL) throws -> GenerationStream {
+    let current = try GenerationStream.metadata(root)
+    let receipt = URL(fileURLWithPath: root.path + ".generations.json")
+    var metadata = stat()
+    guard fstatat(AT_FDCWD, receipt.path, &metadata, 0) == 0 else {
+      generationInventories[root] = nil
+      return GenerationStream(unlinked: root, current: current)
+    }
+    let stamp = MetadataObjectStamp(metadata)
+    if let cached = generationInventories[root], cached.manifestStamp == stamp,
+      cached.activeInode == current.0, cached.activeDevice == current.1
+    {
+      return try GenerationStream(linked: root, inventory: cached, current: current)
+    }
+    generationInventories[root] = nil
+    generationManifestReads &+= 1
+    let handle = try FileHandle(forReadingFrom: receipt)
+    defer { try? handle.close() }
+    let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
+    let inventory = try GenerationStream.Inventory(
+      root: root, manifest: bytes, stamp: stamp, current: current)
+    // Never retain a parse whose file changed during that read.
+    if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
+      if generationInventories.count >= Self.generationInventoryEntries {
+        generationInventories.removeAll()
+      }
+      generationInventories[root] = inventory
+    }
+    return try GenerationStream(linked: root, inventory: inventory, current: current)
+  }
+
   private func refresh(_ url: URL) throws {
-    let file = try GenerationStream(url)
+    let file = try generationStream(url)
     let inode = file.inode
     let size = file.size
     // Explicit branches stay on this actor. Nil-coalescing would capture the
@@ -743,7 +973,10 @@ actor OverlayChannelDeliveryReader {
         if marks.count <= 16 { break }
       }
     }
-    persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
+    // Each bus is its own cache unit: only the changed units are encoded and
+    // written; unchanged units keep their files, and dropped marks lose them.
+    persisted = try OverlayDeliveryCursorStore.save(
+      root: root, marks: marks, changed: Set(changed.map { $0.0.path }))
     lastCheckpoint = time
     checkpointWrites &+= 1
     // Save failure leaves all fingerprints dirty for retry. Successful eviction
@@ -859,115 +1092,146 @@ actor OverlayChannelDeliveryReader {
     let coldStart: UInt64
     var offset: UInt64 = 0
 
-    init(_ root: URL) throws {
-      func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
-        var value = stat()
-        guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
-          throw CocoaError(.fileReadUnknown)
-        }
-        guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
-          throw CocoaError(.fileReadCorruptFile)
-        }
-        return (UInt64(value.st_ino), UInt64(value.st_dev), UInt64(value.st_size))
+    /// Identity and size of a regular file: (inode, device, size).
+    static func metadata(_ url: URL) throws -> (UInt64, UInt64, UInt64) {
+      var value = stat()
+      guard fstatat(AT_FDCWD, url.path, &value, 0) == 0 else {
+        throw CocoaError(.fileReadUnknown)
       }
-      let current = try metadata(root)
-      let receipt = URL(fileURLWithPath: root.path + ".generations.json")
-      if !FileManager.default.fileExists(atPath: receipt.path) {
-        segments = [
-          Segment(
-            url: root, start: 0, length: current.2, inode: current.0, dev: current.1, day: nil)
-        ]
-        inode = current.0
-        size = current.2
-        linked = false
-        streamID = "\(current.1):\(current.0)"
-        originalFileStreamID = streamID
-        coldStart =
-          current.2 > OverlayChannelDeliveryReader.tailWindow
-          ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
-        return
-      }
-      let handle = try FileHandle(forReadingFrom: receipt)
-      defer { try? handle.close() }
-      let bytes = try handle.read(upToCount: (4 << 20) + 1) ?? Data()
-      guard bytes.count <= 4 << 20,
-        let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-        Set(manifest.keys).subtracting(["volume_uuid"])
-          == Set([
-            "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
-            "segments", "active", "pending",
-          ]),
-        manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
-          || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
-        manifest["schema"] as? String == "codescribe.bus-generations.v1",
-        manifest["root"] as? String == root.path,
-        let stream = manifest["stream_inode"] as? NSNumber,
-        let streamDevice = manifest["stream_dev"] as? NSNumber,
-        let identity = manifest["stream_id"] as? String, !identity.isEmpty,
-        var active = manifest["active"] as? [String: Any],
-        var closed = manifest["segments"] as? [[String: Any]]
-      else { throw CocoaError(.fileReadCorruptFile) }
-      guard manifest["pending"] is NSNull || manifest["pending"] is [String: Any] else {
+      guard value.st_mode & S_IFMT == S_IFREG, value.st_size >= 0 else {
         throw CocoaError(.fileReadCorruptFile)
       }
-      if let pending = manifest["pending"] as? [String: Any] {
-        guard Set(pending.keys) == Set(["closed", "next"]),
-          let next = pending["next"] as? [String: Any],
-          let old = pending["closed"] as? [String: Any]
+      return (UInt64(value.st_ino), UInt64(value.st_dev), UInt64(value.st_size))
+    }
+
+    /// One verified reading of a manifest version, made against the hot file
+    /// it names as active. The hot file's length is not part of it.
+    struct Inventory {
+      let manifestStamp: MetadataObjectStamp
+      let activeInode: UInt64
+      let activeDevice: UInt64
+      let closedSegments: [Segment]
+      let activeStart: UInt64
+      let activeDay: String?
+      let streamInode: UInt64
+      let streamID: String
+      let originalFileStreamID: String
+
+      init(
+        root: URL, manifest bytes: Data, stamp: MetadataObjectStamp,
+        current: (UInt64, UInt64, UInt64)
+      ) throws {
+        guard bytes.count <= 4 << 20,
+          let manifest = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+          Set(manifest.keys).subtracting(["volume_uuid"])
+            == Set([
+              "schema", "root", "stream_id", "stream_inode", "stream_dev", "stream_birthtime",
+              "segments", "active", "pending",
+            ]),
+          manifest["volume_uuid"] == nil || manifest["volume_uuid"] is NSNull
+            || (manifest["volume_uuid"] as? String).flatMap(UUID.init(uuidString:)) != nil,
+          manifest["schema"] as? String == "codescribe.bus-generations.v1",
+          manifest["root"] as? String == root.path,
+          let stream = manifest["stream_inode"] as? NSNumber,
+          let streamDevice = manifest["stream_dev"] as? NSNumber,
+          let identity = manifest["stream_id"] as? String, !identity.isEmpty,
+          var active = manifest["active"] as? [String: Any],
+          var closed = manifest["segments"] as? [[String: Any]]
         else { throw CocoaError(.fileReadCorruptFile) }
-        if (next["ino"] as? NSNumber)?.uint64Value == current.0
-          && (next["dev"] as? NSNumber)?.uint64Value == current.1
-        {
-          closed.append(old)
-          active = next
-        } else if (active["ino"] as? NSNumber)?.uint64Value != current.0
-          || (active["dev"] as? NSNumber)?.uint64Value != current.1
-        {
+        guard manifest["pending"] is NSNull || manifest["pending"] is [String: Any] else {
           throw CocoaError(.fileReadCorruptFile)
         }
-      }
-      originalFileStreamID = "\(streamDevice.uint64Value):\(stream.uint64Value)"
-      let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
-      var expected: UInt64 = 0
-      var inventory: [Segment] = []
-      for entry in closed {
-        guard
-          Set(entry.keys)
-            == Set([
-              "id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256",
-              "superseded",
-            ]),
-          let path = entry["path"] as? String, path.hasPrefix(events),
-          URL(fileURLWithPath: path).standardizedFileURL.path == path,
-          let start = entry["start"] as? NSNumber, let length = entry["length"] as? NSNumber,
-          let ino = entry["ino"] as? NSNumber, let dev = entry["dev"] as? NSNumber,
-          start.uint64Value == expected
+        if let pending = manifest["pending"] as? [String: Any] {
+          guard Set(pending.keys) == Set(["closed", "next"]),
+            let next = pending["next"] as? [String: Any],
+            let old = pending["closed"] as? [String: Any]
+          else { throw CocoaError(.fileReadCorruptFile) }
+          if (next["ino"] as? NSNumber)?.uint64Value == current.0
+            && (next["dev"] as? NSNumber)?.uint64Value == current.1
+          {
+            closed.append(old)
+            active = next
+          } else if (active["ino"] as? NSNumber)?.uint64Value != current.0
+            || (active["dev"] as? NSNumber)?.uint64Value != current.1
+          {
+            throw CocoaError(.fileReadCorruptFile)
+          }
+        }
+        originalFileStreamID = "\(streamDevice.uint64Value):\(stream.uint64Value)"
+        let events = root.deletingLastPathComponent().appendingPathComponent("events").path + "/"
+        var expected: UInt64 = 0
+        var inventory: [Segment] = []
+        for entry in closed {
+          guard
+            Set(entry.keys)
+              == Set([
+                "id", "path", "start", "length", "dev", "ino", "day", "compressed", "sha256",
+                "superseded",
+              ]),
+            let path = entry["path"] as? String, path.hasPrefix(events),
+            URL(fileURLWithPath: path).standardizedFileURL.path == path,
+            let start = entry["start"] as? NSNumber, let length = entry["length"] as? NSNumber,
+            let ino = entry["ino"] as? NSNumber, let dev = entry["dev"] as? NSNumber,
+            start.uint64Value == expected
+          else { throw CocoaError(.fileReadCorruptFile) }
+          let url = URL(fileURLWithPath: path)
+          let actual = try GenerationStream.metadata(url)
+          guard actual.0 == ino.uint64Value, actual.1 == dev.uint64Value,
+            actual.2 == length.uint64Value,
+            expected <= UInt64.max - actual.2
+          else { throw CocoaError(.fileReadCorruptFile) }
+          inventory.append(
+            Segment(
+              url: url, start: expected, length: actual.2, inode: actual.0, dev: actual.1,
+              day: entry["day"] as? String))
+          expected += actual.2
+        }
+        guard (active["start"] as? NSNumber)?.uint64Value == expected,
+          (active["ino"] as? NSNumber)?.uint64Value == current.0,
+          (active["dev"] as? NSNumber)?.uint64Value == current.1
         else { throw CocoaError(.fileReadCorruptFile) }
-        let url = URL(fileURLWithPath: path)
-        let actual = try metadata(url)
-        guard actual.0 == ino.uint64Value, actual.1 == dev.uint64Value,
-          actual.2 == length.uint64Value,
-          expected <= UInt64.max - actual.2
-        else { throw CocoaError(.fileReadCorruptFile) }
-        inventory.append(
-          Segment(
-            url: url, start: expected, length: actual.2, inode: actual.0, dev: actual.1,
-            day: entry["day"] as? String))
-        expected += actual.2
+        manifestStamp = stamp
+        activeInode = current.0
+        activeDevice = current.1
+        closedSegments = inventory
+        activeStart = expected
+        activeDay = active["day"] as? String
+        streamInode = stream.uint64Value
+        streamID = identity
       }
-      guard (active["start"] as? NSNumber)?.uint64Value == expected,
-        (active["ino"] as? NSNumber)?.uint64Value == current.0,
-        (active["dev"] as? NSNumber)?.uint64Value == current.1, expected <= UInt64.max - current.2
-      else { throw CocoaError(.fileReadCorruptFile) }
-      inventory.append(
+    }
+
+    /// A stream without a generations manifest is its one file.
+    init(unlinked root: URL, current: (UInt64, UInt64, UInt64)) {
+      segments = [
         Segment(
-          url: root, start: expected, length: current.2, inode: current.0, dev: current.1,
-          day: active["day"] as? String))
-      segments = inventory
-      inode = stream.uint64Value
-      size = expected + current.2
+          url: root, start: 0, length: current.2, inode: current.0, dev: current.1, day: nil)
+      ]
+      inode = current.0
+      size = current.2
+      linked = false
+      streamID = "\(current.1):\(current.0)"
+      originalFileStreamID = streamID
+      coldStart =
+        current.2 > OverlayChannelDeliveryReader.tailWindow
+        ? current.2 - OverlayChannelDeliveryReader.tailWindow : 0
+    }
+
+    init(linked root: URL, inventory: Inventory, current: (UInt64, UInt64, UInt64)) throws {
+      guard inventory.activeStart <= UInt64.max - current.2 else {
+        throw CocoaError(.fileReadCorruptFile)
+      }
+      segments =
+        inventory.closedSegments + [
+          Segment(
+            url: root, start: inventory.activeStart, length: current.2, inode: current.0,
+            dev: current.1, day: inventory.activeDay)
+        ]
+      inode = inventory.streamInode
+      size = inventory.activeStart + current.2
       linked = true
-      streamID = identity
+      streamID = inventory.streamID
+      originalFileStreamID = inventory.originalFileStreamID
       // Cold observation is the newest tail of the whole logical stream, for
       // dated chains and an undated prefix alike. Inventory metadata above is
       // the check; historical segment bytes stay unread.

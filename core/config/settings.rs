@@ -201,6 +201,8 @@ pub struct UserSettings {
     /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget_shortcut: Option<String>,
     /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fn_tap_toggles_dictation: Option<bool>,
@@ -225,8 +227,9 @@ pub struct UserSettings {
     pub whisper_adaptive_buffer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub light_plus_sentence_pause_sec: Option<f32>,
+    /// Lab ledger slider, -100..=100. `None` keeps today's engine (0).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ai_formatting_enabled: Option<bool>,
+    pub ledger_sensitivity: Option<i32>,
     /// `CODESCRIBE_FORMAT_ON_DEVICE`: format on the Apple system model first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format_on_device: Option<bool>,
@@ -247,6 +250,9 @@ pub struct UserSettings {
     /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
+    /// Agent reasoning level; unset keeps the model's own reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_assistive_reasoning: Option<String>,
     /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
@@ -316,6 +322,9 @@ pub struct UserSettings {
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_formatting_model: Option<String>,
+    /// Opt-in reasoning level for the formatting lane; unset means `none`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_formatting_reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_local_stt: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -681,6 +690,9 @@ pub struct RuntimeLlmLane {
     /// credential part of `unavailable_reason`, a later Keychain save cannot
     /// repair it without a new settings generation.
     configuration_fault: Option<String>,
+    /// The level requests on this lane ask for. Formatting always carries one
+    /// (default `none`); the Agent lane carries one only when the user chose it.
+    reasoning: Option<crate::llm::provider::ReasoningEffort>,
 }
 
 impl RuntimeLlmLane {
@@ -700,7 +712,18 @@ impl RuntimeLlmLane {
             available: unavailable_reason.is_none(),
             unavailable_reason,
             configuration_fault,
+            reasoning: None,
         }
+    }
+
+    pub(super) fn with_reasoning(mut self, effort: crate::llm::provider::ReasoningEffort) -> Self {
+        self.reasoning = Some(effort);
+        self
+    }
+
+    /// The reasoning level requests on this lane ask for; `None` sends no field.
+    pub const fn reasoning(&self) -> Option<crate::llm::provider::ReasoningEffort> {
+        self.reasoning
     }
 
     pub const fn lane(&self) -> RuntimeLlmLaneKind {
@@ -1387,8 +1410,13 @@ impl RuntimeSettingsSnapshot {
     }
 
     /// Frozen persisted choice, shared by the producer and presentation owners.
+    /// Apple-only needs its recognizer without downloading local weights.
+    /// Other modes retain direct transcription unless Apple was explicitly enabled.
     pub fn apple_live_enabled(&self) -> bool {
-        self.user_settings.apple_live_enabled.unwrap_or(false)
+        self.user_settings.apple_live_enabled.unwrap_or_else(|| {
+            self.user_settings.resolved_asr_mode().mode
+                == super::cloud_asr::AsrProductMode::AppleOnly
+        })
     }
 
     /// Agent-channel send hold for this generation. Zero means immediate delivery.
@@ -1496,6 +1524,8 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     channel_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    widget_shortcut: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     fn_tap_toggles_dictation: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     middle_mouse_acts_as_fn: Option<bool>,
@@ -1578,6 +1608,8 @@ struct SpeechEngineV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     light_plus_sentence_pause_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    ledger_sensitivity: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
     // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
     // gateway session-mint endpoint it uses when cloud is armed.
@@ -1587,13 +1619,12 @@ struct SpeechEngineV2 {
     gateway_session_url: Option<String>,
 }
 
-/// LLM post-processing of the transcript: whether it runs, how aggressively,
-/// and on which provider + model. Legacy `llm_endpoint` is migration-only.
+/// LLM post-processing of the transcript: how aggressively (`level`, where
+/// `off` means not at all) and on which provider + model. Legacy
+/// `llm_endpoint` and the retired `enabled` switch are migration-only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FormattingV2 {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     on_device: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1606,6 +1637,8 @@ struct FormattingV2 {
     llm_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_reasoning: Option<String>,
 }
 
 /// The assistive lane's own provider + model. Separate from formatting so the
@@ -1618,6 +1651,8 @@ struct AssistiveV2 {
     provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_reasoning: Option<String>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -1766,6 +1801,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "WHISPER_ADAPTIVE_BUFFER",
     "CODESCRIBE_FORMAT_ON_DEVICE",
     "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
+    "CODESCRIBE_LEDGER_SENSITIVITY",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     "AGENT_CHANNEL_MODIFIER",
@@ -1773,7 +1809,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "MIDDLE_MOUSE_ACTS_AS_FN",
     "MIDDLE_MOUSE_AGENT_GESTURE",
     // AI / Formatting
-    "AI_FORMATTING_ENABLED",
     "PASTE_MODE",
     "TRANSCRIPT_TAGGING_ENABLED",
     "TRANSCRIPT_TAG_TEMPLATE",
@@ -1793,12 +1828,15 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "RESTORE_CLIPBOARD",
     "RESTORE_CLIPBOARD_DELAY_MS",
     "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
+    "WIDGET_SHORTCUT",
     // LLM lanes: provider reference + model per lane. Endpoints are not
     // settings — vendors pin them in code, custom rows carry their own.
     "LLM_FORMATTING_PROVIDER",
     "LLM_FORMATTING_MODEL",
+    "LLM_FORMATTING_REASONING",
     "LLM_ASSISTIVE_PROVIDER",
     "LLM_ASSISTIVE_MODEL",
+    "LLM_ASSISTIVE_REASONING",
     // Account-login OAuth client ids — non-secret app identities, so they live
     // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
@@ -1877,7 +1915,6 @@ macro_rules! typed_setting_writes {
 
 typed_setting_writes! {
     store_bool: bool, |value: &str| Some(matches!(value, "1" | "true" | "yes" | "on")) => {
-        "AI_FORMATTING_ENABLED" => ai_formatting_enabled,
         "TRANSCRIPT_TAGGING_ENABLED" => transcript_tagging_enabled,
         "BEEP_ON_START" => beep_on_start,
         "SHOW_DOCK_ICON" => show_dock_icon,
@@ -1904,6 +1941,9 @@ typed_setting_writes! {
         "AGENT_ENTER_SENDS" => agent_enter_sends,
         "AGENT_AUTO_SEND" => agent_auto_send,
         "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => stt_initial_prompt_enabled,
+    }
+    store_i32: i32, |value: &str| value.parse::<i32>().ok() => {
+        "CODESCRIBE_LEDGER_SENSITIVITY" => ledger_sensitivity => super::normalize_ledger_sensitivity,
     }
     store_u32: u32, |value: &str| value.parse::<u32>().ok() => {
         AGENT_SEND_HOLD_ENV => agent_send_hold_sec,
@@ -1947,6 +1987,7 @@ impl UserSettings {
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 channel_modifier: self.channel_modifier.clone(),
+                widget_shortcut: self.widget_shortcut.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
                 middle_mouse_agent_gesture: self.middle_mouse_agent_gesture,
@@ -1984,12 +2025,12 @@ impl UserSettings {
                         self.light_plus_sentence_pause_sec
                             .unwrap_or_else(super::default_light_plus_sentence_pause_sec),
                     ),
+                    ledger_sensitivity: self.ledger_sensitivity,
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                     asr_mode: self.asr_mode.clone(),
                     gateway_session_url: self.asr_gateway_url.clone(),
                 }),
                 formatting: Some(FormattingV2 {
-                    enabled: self.ai_formatting_enabled,
                     on_device: self.format_on_device,
                     transcript_tagging_enabled: self.transcript_tagging_enabled,
                     transcript_tag_template: self.transcript_tag_template.clone(),
@@ -2000,10 +2041,12 @@ impl UserSettings {
                         .map(|policy| policy.as_str().to_string()),
                     llm_provider: self.llm_formatting_provider.clone(),
                     llm_model: self.llm_formatting_model.clone(),
+                    llm_reasoning: self.llm_formatting_reasoning.clone(),
                 }),
                 assistive: Some(AssistiveV2 {
                     provider: self.llm_assistive_provider.clone(),
                     llm_model: self.llm_assistive_model.clone(),
+                    llm_reasoning: self.llm_assistive_reasoning.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -2107,6 +2150,7 @@ impl UserSettings {
             hold_exclusive: copy!(v2.interaction, hold, exclusive),
             hold_arm_modifier: cloned!(v2.interaction, hold, arm_modifier),
             channel_modifier: cloned!(v2.interaction, channel_modifier),
+            widget_shortcut: cloned!(v2.interaction, widget_shortcut),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
             middle_mouse_agent_gesture: copy!(v2.interaction, middle_mouse_agent_gesture),
@@ -2114,7 +2158,6 @@ impl UserSettings {
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
-            ai_formatting_enabled: copy!(v2.speech, formatting, enabled),
             format_on_device: copy!(v2.speech, formatting, on_device),
             paste_mode: copy!(v2.interaction, paste_mode),
             transcript_tagging_enabled: copy!(v2.speech, formatting, transcript_tagging_enabled),
@@ -2145,6 +2188,7 @@ impl UserSettings {
                 .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: cloned!(v2.speech, assistive, llm_model),
+            llm_assistive_reasoning: cloned!(v2.speech, assistive, llm_reasoning),
             llm_assistive_provider: cloned!(v2.speech, assistive, provider),
             chat_zoom: copy!(v2.ui, chat_zoom),
             show_dock_icon: copy!(v2.ui, show_dock_icon),
@@ -2160,6 +2204,7 @@ impl UserSettings {
             restore_clipboard: copy!(v2.interaction, restore_clipboard),
             restore_clipboard_delay_ms: copy!(v2.interaction, restore_clipboard_delay_ms),
             llm_formatting_model: cloned!(v2.speech, formatting, llm_model),
+            llm_formatting_reasoning: cloned!(v2.speech, formatting, llm_reasoning),
             use_local_stt: v2
                 .speech
                 .as_ref()
@@ -2208,6 +2253,7 @@ impl UserSettings {
             whisper_context_window_sec: copy!(v2.speech, engine, whisper_context_window_sec),
             whisper_adaptive_buffer: copy!(v2.speech, engine, whisper_adaptive_buffer),
             light_plus_sentence_pause_sec: copy!(v2.speech, engine, light_plus_sentence_pause_sec),
+            ledger_sensitivity: copy!(v2.speech, engine, ledger_sensitivity),
             backend_max_upload_mb: copy!(v2.speech, engine, cloud_max_upload_mb),
             stt_initial_prompt_enabled: copy!(v2.speech, engine, initial_prompt_enabled),
             asr_mode: cloned!(v2.speech, engine, asr_mode),
@@ -2446,6 +2492,7 @@ impl UserSettings {
             Ok(contents) => match super::repair::project_settings(&path, contents.as_bytes()) {
                 Ok(value) => {
                     let retired_paste_mode = Self::retired_auto_paste(&value);
+                    let retired_formatting_switch = Self::retired_formatting_switch(&value);
                     let value_for_legacy = value.clone();
                     if value.get("schema_version").is_some() {
                         match serde_json::from_value::<SettingsV2>(value) {
@@ -2456,6 +2503,12 @@ impl UserSettings {
                                 }
                                 debug!("Loaded settings V2 from {}", path.display());
                                 let mut settings = Self::from_v2(v2);
+                                // Fold before any save: `to_v2` never writes the
+                                // retired switch, so a save must already carry Off.
+                                Self::fold_retired_formatting_switch(
+                                    &mut settings,
+                                    retired_formatting_switch,
+                                );
                                 if let Some(mode) = retired_paste_mode {
                                     // One-shot: the saved V2 shape carries only
                                     // `paste_mode`, so the next load finds nothing.
@@ -2472,6 +2525,19 @@ impl UserSettings {
                                                 )
                                             }
                                         }
+                                    }
+                                } else if retired_formatting_switch.is_some() && persist_migrations
+                                {
+                                    // One-shot: the saved V2 shape carries only
+                                    // `formatting.level`, so the next load finds nothing.
+                                    match settings.save_unlocked() {
+                                        Ok(()) => info!(
+                                            formatting_level = ?settings.formatting_level,
+                                            "Migrated formatting enabled switch to formatting level"
+                                        ),
+                                        Err(error) => warn!(
+                                            "Failed to persist migrated formatting level: {error}"
+                                        ),
                                     }
                                 }
                                 Self::migrate_retired_llm_lanes_once(
@@ -2503,6 +2569,10 @@ impl UserSettings {
                                 if let Some(mode) = retired_paste_mode {
                                     settings.paste_mode.get_or_insert(mode);
                                 }
+                                Self::fold_retired_formatting_switch(
+                                    &mut settings,
+                                    retired_formatting_switch,
+                                );
                                 // Keep the legacy endpoint mapping until its durable key
                                 // relocation intent is part of the first V2 write.
                                 Self::migrate_retired_llm_lanes_once(
@@ -2568,6 +2638,25 @@ impl UserSettings {
             .or_else(|| raw.get("auto_paste_enabled"))
             .and_then(serde_json::Value::as_bool)
             .map(PasteMode::from_retired_auto_paste)
+    }
+
+    /// The one reader of the retired formatting master switch (V1 flat
+    /// `ai_formatting_enabled` or V2 `speech.formatting.enabled`), or `None`
+    /// when the key is gone. The formatting level is the only on/off switch
+    /// now; `to_v2` never writes the old key, so the first save retires it.
+    fn retired_formatting_switch(raw: &serde_json::Value) -> Option<bool> {
+        raw.pointer("/speech/formatting/enabled")
+            .or_else(|| raw.get("ai_formatting_enabled"))
+            .and_then(serde_json::Value::as_bool)
+    }
+
+    /// A switched-off master switch becomes level Off whatever level was
+    /// stored beside it: the old switch overrode the level. `true` or a
+    /// missing key leaves the level untouched.
+    fn fold_retired_formatting_switch(settings: &mut Self, switch: Option<bool>) {
+        if switch == Some(false) {
+            settings.formatting_level = Some(FormattingPolicy::Off.as_str().to_string());
+        }
     }
 
     /// Run the one-shot legacy LLM lane migration when the raw document still
@@ -3288,6 +3377,12 @@ impl UserSettings {
                 Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
                 Err(error) => {
                     return reject(format!("Rejected hold arm modifier write: {error}"), false);
+                }
+            },
+            "WIDGET_SHORTCUT" => match value.parse::<crate::config::WidgetShortcut>() {
+                Ok(shortcut) => self.widget_shortcut = Some(shortcut.wire_id()),
+                Err(error) => {
+                    return reject(format!("Rejected widget shortcut write: {error}"), false);
                 }
             },
             "AGENT_CHANNEL_MODIFIER" => match value.parse::<crate::config::ChannelModifier>() {

@@ -8,18 +8,18 @@ private struct BubbleOwnerNameButton: View {
   let textScale: CGFloat
   let messageID: String
   let action: () -> Void
-  @State private var hovered = false
 
   var body: some View {
     Button(action: action) {
       Text(verbatim: name)
         .font(.system(size: 10 * textScale, weight: .bold))
-        .foregroundStyle(hovered ? palette.primaryText.color : palette.mutedText.color)
     }
     .buttonStyle(.plain)
-    .onHover { hovered = $0 }
-    .background { OverlayMenuCursorRegion() }
+    .conversationActionHover(
+      restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+    )
     .accessibilityIdentifier("overlay-message-owner-\(messageID)")
+    .accessibilityLabel(Text(verbatim: name))
     .accessibilityHint(Text("Opens this agent's conversation"))
   }
 }
@@ -27,18 +27,20 @@ private struct BubbleOwnerNameButton: View {
 /// Maciej (2026-10-17): held controls hover like the owner name and Copy — muted at rest, brighter on hover.
 private struct OverlayHeldControlButton: View {
   let title: LocalizedStringKey
+  let hint: String
   let palette: OverlayAppearancePalette
   let action: () -> Void
-  @State private var hovered = false
-  @Environment(\.isEnabled) private var isEnabled
 
   var body: some View {
     Button(action: action) {
       Text(title)
-        .foregroundStyle(hovered && isEnabled ? palette.primaryText.color : palette.mutedText.color)
     }
     .buttonStyle(.plain)
-    .onHover { hovered = $0 }
+    .conversationActionHover(
+      restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+    )
+    .accessibilityLabel(Text(title))
+    .accessibilityHint(Text(verbatim: hint))
   }
 }
 
@@ -54,7 +56,13 @@ struct OverlayConversationView: View {
   let controlErrors: [String: String]
   let onControl: (OverlayConversationMessage, Bool) -> Void
   var focusRevision: UInt64 = 0
+  /// An explicit click in another native presentation can request the same
+  /// editor without selecting or expanding the main overlay.
+  var composerFocusRevision: UInt64 = 0
   var isPresented = true
+  /// The agents list covers the conversation. The scroll keeps following it
+  /// underneath; only the composer gives the keyboard up.
+  var isCovered = false
   @Binding var draft: String
   let sending: Bool
   let sendError: String?
@@ -67,20 +75,32 @@ struct OverlayConversationView: View {
   var onPlayback: () -> Void = {}
   var playbackError: String?
   var agentDescriptor: String? = nil
-  /// Opens the Agents roster from the name pill: the docked column focuses its
-  /// selected row, the narrow window toggles the pill stack (state decides).
-  var onShowAgents: (() -> Void)? = nil
+  /// Only a current owner with a detected Frame pane or terminal tab exposes a
+  /// navigation action.
+  var onFocusAgentPanel: (() -> Void)? = nil
+  /// What that action does, for its accessibility hint.
+  var focusAgentPanelHint: String? = nil
   /// Jumps to the sender's own conversation from the agent name in a reply bubble.
   var onOpenOwnerConversation: ((OverlayConversationOwner) -> Void)? = nil
-  /// The narrow-mode roster mounted under the name pill while it is open.
-  /// Nil whenever the stack is closed or the wide window docks the roster.
-  var agentPillStack: OverlayAgentPillStack? = nil
   /// Wide windows dock the roster column, which already names the agent and
   /// carries its microphone and speaker — the identity pill evacuates instead
   /// of repeating it (Maciej, 2026-10-17).
   var hidesNavigation = false
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
+
+  var replySelection: OverlayUserReplyReference? = nil
+  var onClearReply: () -> Void = {}
+  var draftMicrophoneRecording = false
+  var draftMicrophoneBusy = false
+  var onToggleDraftMicrophone: (() -> Void)? = nil
+  var onStageCaptureAttachments: (([String]) -> Bool)? = nil
+  var pendingCaptureAttachments: [String] = []
+  var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var captureAttachmentError: String? = nil
+  var onRetryCaptureAttachments: (() -> Void)? = nil
+  var onReply: ((OverlayConversationMessage) -> Void)? = nil
+  @State private var replyNavigationID: String?
 
   @State private var scrollFollow = StreamScrollFollowState()
   /// Conversation and presentation the focus handler last observed. Written
@@ -89,10 +109,15 @@ struct OverlayConversationView: View {
   @State private var scrollFocusWasPresented = false
   @State private var composerHeight: CGFloat = 0
   @State private var navigationHeight: CGFloat = 32
+  @State private var navigationPillHeight: CGFloat = 28
   /// Bumps the composer's focus after a held message returns to the draft.
   @State private var revisionFocus: UInt64 = 0
   @State private var pendingDeliveryControls: Set<String> = []
   @State private var deliveryControlErrors: [String: String] = [:]
+  /// First rendered message. Pinned by id so an arriving reply never drops a
+  /// row above someone reading; "Show earlier" moves it back a window.
+  @State private var windowStartID: String?
+  @State private var windowConversationID: String?
 
   var onDeliveryControl:
     (OverlayDeliveryControl, OverlayConversationMessage, OverlayConversationOwner?, String?)
@@ -107,8 +132,13 @@ struct OverlayConversationView: View {
   private var followsLatest: Bool { scrollFollow.followingLive }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
+  /// The window bound keeps a margin on the far side so leading and trailing
+  /// bubbles stay told apart; at 0.82 that margin was a sixth of the column
+  /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
+  /// 0.92 of the text column is the same cue at a tenth of the width. The
+  /// absolute 660 pt is a reading measure, not a margin, and does not move.
   static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
-    max(0, min(660 * textScale, (contentWidth - 40) * 0.82))
+    max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
   }
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
@@ -124,13 +154,23 @@ struct OverlayConversationView: View {
           maxBubbleWidth: Self.bubbleCap(
             contentWidth: geometry.size.width, textScale: textScale)
         )
+        .onChange(of: replyNavigationID) { _, id in
+          guard let id else { return }
+          proxy.scrollTo(id, anchor: .center)
+          replyNavigationID = nil
+        }
         // One ScrollView per conversation. `.initialOffset` then starts at the
         // bottom instead of reusing the previous list's offset through the morph.
-        .id(conversation.id)
+        // It places a list once, so the list is recreated when the history
+        // finishes loading and when a list born empty gets its first rows;
+        // otherwise it stayed at the top of everything that came after
+        // (Maciej, 2026-10-19). The composer stays put.
+        .id([
+          conversation.id, conversation.historyLoaded ? "loaded" : "loading",
+          orderedMessages.isEmpty ? "empty" : "rows",
+        ])
+
         .padding(.trailing, OverlayResizeHit.scrollbarInset)
-        // The open pill stack steals neither color nor scrolling (Maciej,
-        // 2026-10-17): the conversation keeps its full opacity and stays live;
-        // the pills' own glass carries their legibility.
         .transaction { transaction in
           // Keep retained message geometry stable during the panel's transition.
           transaction.animation = nil
@@ -158,7 +198,10 @@ struct OverlayConversationView: View {
               .modifier(OverlayAgentControlStyle())
               .csFocusOutline()
               .accessibilityLabel("Jump to current")
-              .help("Jump to the current reply")
+              .overlayFastHint(
+                String(localized: "Jump to the current reply"), palette: palette
+              )
+              .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
               .padding(.bottom, composerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -186,21 +229,10 @@ struct OverlayConversationView: View {
                   navigationHeight = $0
                 }
             }
-            if let pillStack = agentPillStack {
-              HStack {
-                Spacer(minLength: 0)
-                pillStack
-                  .frame(
-                    maxHeight: max(
-                      160, geometry.size.height - topInset - navigationHeight - 120))
-              }
-              .padding(.horizontal, 20)
-              .padding(.top, 2)
-              .onExitCommand { pillStack.onDismiss() }
-            }
           }
         }
         .onAppear {
+          settleMessageWindow(reset: true)
           scrollFocusConversationID = conversation.id
           scrollFocusWasPresented = isPresented
           if #available(macOS 15.0, *) {
@@ -211,6 +243,7 @@ struct OverlayConversationView: View {
           }
         }
         .onChange(of: conversation.id) { _, _ in
+          settleMessageWindow(reset: true)
           if #available(macOS 15.0, *) {
             // The new `.id` rebuilds the list at the bottom anchor. scrollTo on
             // this frame races that remeasurement.
@@ -254,6 +287,7 @@ struct OverlayConversationView: View {
           }
         }
         .onChange(of: orderedMessages.last) { _, _ in
+          settleMessageWindow()
           if #available(macOS 15.0, *) {
             // Size-change anchoring keeps the bottom while the morph grows the list.
             // scrollTo on the new last row races the lazy remeasurement.
@@ -276,8 +310,20 @@ struct OverlayConversationView: View {
           palette: palette, draft: $draft,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
-          focusRevision: revisionFocus,
-          placeholder: composerPlaceholder)
+          focusRevision: revisionFocus &+ composerFocusRevision,
+          isCovered: isCovered || !isPresented,
+          placeholder: composerPlaceholder,
+          replySelection: replySelection, onClearReply: onClearReply,
+          draftMicrophoneRecording: draftMicrophoneRecording,
+          draftMicrophoneBusy: draftMicrophoneBusy,
+          liveSpeechActive: microphoneOpen,
+          onToggleDraftMicrophone: onToggleDraftMicrophone,
+          onStageCaptureAttachments: onStageCaptureAttachments,
+          pendingCaptureAttachments: pendingCaptureAttachments,
+          onRemoveCaptureAttachment: onRemoveCaptureAttachment,
+          captureAttachmentError: captureAttachmentError,
+          onRetryCaptureAttachments: onRetryCaptureAttachments,
+          onNavigateReply: { navigateToReply(replySelection?.messageID) })
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)
@@ -311,11 +357,17 @@ struct OverlayConversationView: View {
               open: microphoneOpen, muted: playbackMuted,
               microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
               palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking
+              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+              diameter: navigationPillHeight
             )
             .fixedSize()
           }
           conversationNamePill
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              navigationPillHeight = max(28, $0)
+            }
         }
         // The gap between the controls and the name is not text either.
         .background { OverlayMenuCursorRegion() }
@@ -327,20 +379,38 @@ struct OverlayConversationView: View {
 
   @ViewBuilder
   private var conversationNamePill: some View {
-    if let onShowAgents {
-      // Interactive glass is the system's own hover and press feedback.
-      Button(action: onShowAgents) { namePillLabel }
-        .buttonStyle(.plain)
-        .csFocusOutline()
-        .accessibilityHint("Shows the agents list")
-        .accessibilityIdentifier("overlay-conversation-name")
-        .modifier(OverlayNamePillGlass(interactive: true))
-        .background { OverlayMenuCursorRegion() }
+    if let onFocusAgentPanel {
+      focusedNamePill(onFocusAgentPanel)
     } else {
       namePillLabel
+        .overlayFastHint(providerIdentity, palette: palette, enabled: !providerIdentity.isEmpty)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("overlay-conversation-name")
         .modifier(OverlayNamePillGlass(interactive: false))
+    }
+  }
+
+  private var providerIdentity: String {
+    conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" } ?? ""
+  }
+
+  /// Interactive glass is the system's own hover and press feedback.
+  @ViewBuilder
+  private func focusedNamePill(_ action: @escaping () -> Void) -> some View {
+    let focusHint = focusAgentPanelHint ?? OverlayAgentPanelFocusTarget.frame.help
+    let pill =
+      Button(action: action) { namePillLabel }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .overlayFastHint(focusHint, palette: palette)
+      .accessibilityHint(Text(verbatim: focusHint))
+      .accessibilityIdentifier("overlay-conversation-name")
+      .modifier(OverlayNamePillGlass(interactive: true))
+      .background { OverlayMenuCursorRegion() }
+    if providerIdentity.isEmpty {
+      pill
+    } else {
+      pill.accessibilityValue(Text(verbatim: providerIdentity))
     }
   }
 
@@ -353,10 +423,7 @@ struct OverlayConversationView: View {
           verbatim: conversation.channel.isEmpty
             ? conversation.name : "\(conversation.channel) · \(conversation.name)"
         )
-        .help(
-          Text(
-            verbatim: conversation.owner.map { "\($0.provider) · \($0.providerSessionID)" }
-              ?? ""))
+
         if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
           Text(verbatim: descriptor)
             .font(.system(size: 11 * textScale, weight: .regular))
@@ -373,8 +440,12 @@ struct OverlayConversationView: View {
     .truncationMode(.middle)
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
-    // The pill stack measures itself against this width (mockup: 224 × scale).
-    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale), alignment: .leading)
+    // Mockup: 224 × scale.
+    .frame(
+      width: conversation.channel == "0"
+        ? nil : OverlayAgentDrawerLayout.pillWidth(textScale: textScale),
+      alignment: .leading
+    )
     .frame(minHeight: 28)
     .contentShape(Capsule())
     .accessibilityElement(children: .combine)
@@ -401,10 +472,61 @@ struct OverlayConversationView: View {
     }
   }
 
+  /// Rows per window of the rendered list. Every rendered row is built and
+  /// measured: a LazyVStack sized the document from estimates, so a long thread
+  /// opened past its last bubble, and rows realized while scrolling changed the
+  /// document by thousands of points, which threw the reader off the bottom
+  /// and left an empty viewport (Maciej, 2026-10-19). The Agent window bounds
+  /// its list the same way; older rows wait behind "Show earlier".
+  static let messageWindow = 40
+
+  private var windowStart: Int {
+    guard windowConversationID == conversation.id, let windowStartID else {
+      return max(0, orderedMessages.count - Self.messageWindow)
+    }
+    // Only the oldest-row trim removes a pinned row, so its window starts at
+    // the top that is left rather than jumping to the newest rows.
+    return orderedMessages.firstIndex(where: { $0.id == windowStartID }) ?? 0
+  }
+
+  /// Pins the window to its current first row, or starts a fresh window at the
+  /// newest rows. A list following the live edge drops rows beyond two windows;
+  /// the bottom anchor keeps that removal out of sight.
+  private func settleMessageWindow(reset: Bool = false) {
+    let count = orderedMessages.count
+    guard count > 0 else {
+      windowStartID = nil
+      return
+    }
+    var start = reset ? max(0, count - Self.messageWindow) : windowStart
+    if followsLatest, count - start > 2 * Self.messageWindow {
+      start = count - Self.messageWindow
+    }
+    pinMessageWindow(at: start)
+  }
+
+  private func showEarlierMessages() {
+    pinMessageWindow(at: max(0, windowStart - Self.messageWindow))
+  }
+
+  private func pinMessageWindow(at start: Int) {
+    guard orderedMessages.indices.contains(start) else { return }
+    let id = orderedMessages[start].id
+    if windowStartID != id { windowStartID = id }
+    if windowConversationID != conversation.id { windowConversationID = conversation.id }
+  }
+
+  private func navigateToReply(_ id: String?) {
+    guard let id, let index = orderedMessages.firstIndex(where: { $0.id == id }) else { return }
+    pinMessageWindow(at: index)
+    replyNavigationID = id
+  }
+
   @ViewBuilder
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
+    let start = windowStart
     let list = ScrollView {
-      LazyVStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: 12) {
         if !conversation.historyLoaded {
           ProgressView()
             .controlSize(.small)
@@ -414,7 +536,14 @@ struct OverlayConversationView: View {
             .font(.system(size: 13 * textScale))
             .foregroundStyle(palette.mutedText.color)
         }
-        ForEach(orderedMessages) { message in
+        if start > 0 {
+          ShowEarlierButton(hiddenCount: start, window: Self.messageWindow) {
+            showEarlierMessages()
+          }
+          .frame(maxWidth: .infinity)
+          .accessibilityIdentifier("overlay-conversation-show-earlier")
+        }
+        ForEach(orderedMessages[start...]) { message in
           messageRow(message, maxBubbleWidth: maxBubbleWidth)
             .id(message.id)
         }
@@ -429,16 +558,34 @@ struct OverlayConversationView: View {
           _ = scrollFollow.handle(event)
         }
       }
+      .csAutohidingScrollers()
     }
-    .contentMargins(.top, topInset + navigationHeight)
     .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
     if #available(macOS 26.0, *) {
-      // The within-window material owns these edges; a second system shade doubles them.
-      list.scrollEdgeEffectHidden(true, for: [.top, .bottom])
-    } else {
+      // The header's glass alone is not a shade: bubbles stayed readable right
+      // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
+      // scroll edge effect, so the pinned header becomes a safe-area bar — an
+      // empty one, since the window's own header paints it — and the system's
+      // soft effect fades whatever runs under it. The bar replaces the top
+      // content margin; both named the same height.
       list
+        .safeAreaBar(edge: .top, spacing: 0) {
+          Color.clear
+            .frame(height: topInset + navigationHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        // The composer's glass sits on the floor with nothing pinned behind it.
+        .scrollEdgeEffectHidden(true, for: .bottom)
+    } else {
+      list.contentMargins(.top, topInset + navigationHeight)
     }
   }
+
+  /// How far a borderless-button menu sets its label in from its own leading
+  /// edge (measured through the accessibility frames, 2026-10-18).
+  static let receiptMenuLabelInset: CGFloat = 2
 
   static func receiptStatusText(for recipient: OverlayConversationRecipient) -> String {
     if recipient.acknowledged { return String(localized: "Read") }
@@ -465,7 +612,9 @@ struct OverlayConversationView: View {
   /// composer. The draft changes only after withdraw returns; a failure leaves
   /// the typing where it was and names the error on the bubble.
   private func edit(_ message: OverlayConversationMessage) {
-    guard message.holdSecondsRemaining != nil else { return }
+    // The painted countdown is a poll-time projection; a tap after the deadline
+    // must not pull back text the follower has already handed to the agent.
+    guard message.holdingSeconds(at: Date()) != nil else { return }
     let returning = message.text
     performDeliveryControl(.withdraw, message: message) {
       draft = draft.isEmpty ? returning : draft + "\n\n" + returning
@@ -533,12 +682,20 @@ struct OverlayConversationView: View {
         } label: {
           Text("Read \(readCount)/\(message.recipients.count)")
             .font(.system(size: 10 * textScale))
-            .foregroundStyle(palette.mutedText.color)
             .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
         .fixedSize()
-        .help("Show details")
+        // A borderless-button menu insets its label, so the expandable receipt
+        // started right of a plain one and the bubble footers no longer lined
+        // up (Founder, 2026-10-18). A plain-styled menu has no inset but leaves
+        // the accessibility tree as an unlabelled unknown element, so the
+        // native style stays and the frame steps back by its inset instead.
+        .padding(.leading, -Self.receiptMenuLabelInset)
+        .accessibilityHint(Text("Show details"))
         .accessibilityIdentifier("overlay-message-receipts-\(message.id)")
       } else {
         ForEach(message.recipients, id: \.owner.id) { recipient in
@@ -547,6 +704,31 @@ struct OverlayConversationView: View {
             .foregroundStyle(palette.mutedText.color)
         }
       }
+    }
+  }
+
+  /// Sender and audience from this delivery, including a message that is only
+  /// attachments. A speaker who is not the open conversation stays a button;
+  /// the arrow and the audience are text, so the hit target is only the name.
+  /// The open conversation does not choose the names.
+  @ViewBuilder
+  private func messageSpeaker(_ message: OverlayConversationMessage) -> some View {
+    let route = OverlayChannelStatusView.messageRoute(of: message)
+    let font = Font.system(size: 10 * textScale, weight: .bold)
+    if let owner = message.owner, let onOpenOwnerConversation,
+      owner.id != conversation.owner?.id, route.speaker == owner.name
+    {
+      HStack(spacing: 0) {
+        BubbleOwnerNameButton(
+          name: owner.name, palette: palette, textScale: textScale, messageID: message.id
+        ) { onOpenOwnerConversation(owner) }
+        if let audience = route.audience, !audience.isEmpty {
+          Text(verbatim: " → \(audience)").font(font)
+        }
+      }
+    } else {
+      let fallback = message.owner?.name ?? conversation.name
+      Text(verbatim: route.label.isEmpty ? fallback : route.label).font(font)
     }
   }
 
@@ -565,28 +747,35 @@ struct OverlayConversationView: View {
 
   func messageBubble(_ message: OverlayConversationMessage) -> some View {
     VStack(alignment: .leading, spacing: 5) {
-      HStack {
-        if message.kind == .user {
-          Text("You").font(.system(size: 10 * textScale, weight: .bold))
-        } else if let owner = message.owner, let onOpenOwnerConversation,
-          owner.id != conversation.owner?.id
-        {
-          BubbleOwnerNameButton(
-            name: owner.name, palette: palette, textScale: textScale, messageID: message.id
-          ) { onOpenOwnerConversation(owner) }
-        } else {
-          Text(verbatim: message.owner?.name ?? conversation.name)
-            .font(.system(size: 10 * textScale, weight: .bold))
-        }
-        if message.unsolicited && message.kind == .reply {
-          Text("Unsolicited reply").font(.system(size: 10 * textScale))
-        }
+      HStack(spacing: 0) {
+        messageSpeaker(message)
+        // Founder, 2026-10-18: whether a reply was asked for is routing truth,
+        // not a badge — `unsolicited` keeps steering the channels, unlabelled.
         Spacer(minLength: 8)
         MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
           .font(.system(size: 10 * textScale))
           .accessibilityIdentifier("overlay-message-time-\(message.id)")
       }
       .foregroundStyle(palette.mutedText.color)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("overlay-message-route-\(message.id)")
+      if let parent = message.userReplyTo {
+        Button {
+          navigateToReply(parent.messageID)
+        } label: {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: parent.author).fontWeight(.semibold)
+            Text(verbatim: parent.text).lineLimit(2)
+          }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10 * textScale))
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
+        .accessibilityHint(Text("Show the message this replies to"))
+        .accessibilityIdentifier("overlay-message-parent-\(message.id)")
+      }
       if let question = addressedQuestion(for: message) {
         Text("In reply to: \(String(question.text.prefix(100)))")
           .font(.system(size: 10 * textScale))
@@ -612,10 +801,21 @@ struct OverlayConversationView: View {
       if let attachments = message.attachments, !attachments.isEmpty {
         WrapLayout(spacing: 6) {
           ForEach(attachments, id: \.self) { pointer in
-            AttachmentChip(
-              attachment: MessageAttachment(
-                name: pointer.name, url: URL(fileURLWithPath: pointer.path),
-                type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+            HStack(spacing: 4) {
+              AttachmentChip(
+                attachment: MessageAttachment(
+                  name: ConversationAttachmentLabel.display(
+                    fileName: pointer.name, bytes: pointer.bytes),
+                  url: URL(fileURLWithPath: pointer.path),
+                  type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+              if message.captureState != .receiving, let time = pointer.attachmentTimeLabel {
+                Text(verbatim: time)
+                  .font(.system(size: 10 * textScale))
+                  .monospacedDigit()
+                  .foregroundStyle(palette.mutedText.color)
+                  .accessibilityIdentifier("overlay-attachment-time-\(message.id)-\(pointer.path)")
+              }
+            }
           }
         }
         .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
@@ -623,7 +823,24 @@ struct OverlayConversationView: View {
       if let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       }
-      messageFooter(message)
+      HStack {
+        messageFooter(message)
+        if let onReply, message.captureState != .receiving, message.withdrawn != true {
+          Spacer(minLength: 8)
+          Button("Reply", systemImage: "arrowshape.turn.up.left") {
+            onReply(message)
+            revisionFocus &+= 1
+          }
+          .buttonStyle(.plain)
+          .font(.system(size: 10 * textScale, weight: .semibold))
+          .conversationActionHover(
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+          )
+          .accessibilityHint(Text("Reply to this message"))
+          .accessibilityIdentifier("overlay-message-reply-\(message.id)")
+        }
+      }
+      .background { OverlayMenuCursorRegion() }
     }
     .padding(12)
     .background(
@@ -650,9 +867,13 @@ struct OverlayConversationView: View {
       HStack(spacing: 12) {
         // One control takes the message back: it leaves the clock and its text
         // returns to the composer, where deleting it is the plain withdraw.
-        OverlayHeldControlButton(title: "Cancel/Edit", palette: palette) { edit(message) }
-          .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
-        OverlayHeldControlButton(title: "Send now", palette: palette) {
+        OverlayHeldControlButton(
+          title: "Cancel/Edit", hint: String(localized: "Cancel/Edit"), palette: palette
+        ) { edit(message) }
+        .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
+        OverlayHeldControlButton(
+          title: "Send now", hint: String(localized: "Send now"), palette: palette
+        ) {
           performDeliveryControl(.release, message: message)
         }
         .accessibilityIdentifier("overlay-message-release-\(message.id)")
@@ -699,7 +920,6 @@ struct OverlayConversationView: View {
 }
 
 /// The name pill's capsule of glass; interactive when the pill is a button.
-/// The narrow-mode pill stack reuses the same capsule for its rows.
 struct OverlayNamePillGlass: ViewModifier {
   let interactive: Bool
 
@@ -728,6 +948,13 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
     message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
   }
 
+  /// The play control's hint follows the same states that enable or refuse it.
+  private var playHint: String {
+    if active { return String(localized: "Stop") }
+    if pending { return String(localized: "Requesting playback") }
+    return String(localized: "Play")
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 4) {
@@ -740,16 +967,19 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
               .frame(width: 24, alignment: .trailing)
               .contentShape(Rectangle())
           }
-          .buttonStyle(.borderless)
-          .accessibilityLabel(active ? Text("Stop") : Text("Play"))
-          .help(active ? Text("Stop") : Text("Play"))
-          .disabled(!active && (pending || message.owner == nil))
+          .buttonStyle(.plain)
+          .conversationActionHover(
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+          )
+          .disabled(!active && pending)
+          .accessibilityLabel(Text(verbatim: playHint))
+          .accessibilityHint(Text(verbatim: playHint))
           .accessibilityIdentifier("overlay-reply-\(active ? "stop" : "play")-\(message.id)")
           if let playback = message.playback {
             let label = ReplyPlaybackCopy.label(state: playback.state, reason: playback.reason)
             Text(verbatim: label)
               .lineLimit(1)
-              .help(label)
+              .accessibilityHint(Text(verbatim: label))
               .accessibilityIdentifier("overlay-playback-status-\(message.id)")
           } else if pending {
             Text("Requesting playback").lineLimit(1)
@@ -758,11 +988,12 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
         receipts
         Spacer(minLength: 8)
         CopyMessageButton(
-          text: message.text, labelFont: .system(size: 10 * textScale),
-          restingColor: palette.mutedText.color
+          text: message.text,
+          labelFont: .system(size: 10 * textScale, weight: .semibold),
+          restingColor: palette.mutedText.color,
+          palette: palette
         )
         .fixedSize()
-        .buttonStyle(.borderless)
         .accessibilityIdentifier("overlay-message-copy-\(message.id)")
       }
       // Play, receipts and Copy are controls: the arrow, never the I-beam.

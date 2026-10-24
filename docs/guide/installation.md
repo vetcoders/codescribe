@@ -42,9 +42,31 @@ make install-app      # Build + copy app to /Applications
 
 You'll see the Codescribe icon appear in your menu bar. It starts black (idle).
 
-The first-run setup wizard never downloads the local Whisper model on its own:
-its model step shows the model, its source, its size and where it would be
-stored. **Download model** asks to confirm first, naming the size and the
+The first-run setup wizard has nine steps: interface language, how you want to
+work, permissions, dictation language, local Whisper model, AI provider,
+shortcuts, agents (only when you choose **Dictation + AI agent**; the
+dictation-only path counts eight) and a summary. Every step has the same
+layout in one narrow column: the step's icon with its one question or
+instruction, a small category label under it (for example **INTERFACE
+LANGUAGE** or **OPERATING LANE**), the cards or rows, and a short note only
+where it adds something. The step counter and progress bar stay at the top and
+**Back** / **Skip** / **Continue** / **Finish** at the bottom. Permissions say
+"You can do this later in Settings." — the same checklist, with the same
+request and System Settings actions, is in **Settings › Creator ›
+Permissions**. The provider step's sentence names only the access the selected
+provider has: "account or API key" only where a signed-in account can make
+requests (OpenAI and xAI with account sign-in available), otherwise the API key,
+or that a key-optional server needs none. On the agents step each client card reads **Install the Codescribe
+skill**, or **Codescribe skill installed** once the skill is in that client's
+skills folder: Continue installs the skill, it does not join a running agent
+session. The summary's heading is **Codescribe is ready.** only when dictation
+and, on the agent path, the agent step are both ready; with dictation ready and
+the agent not, it reads **Dictation is ready.**
+
+The wizard never downloads the local Whisper model on its own: its model step
+shows one card with the model, its install state, its source, its size and
+where it is or would be stored; the summary shows the model name and state with
+the source and path under **Details**. **Download model** asks to confirm first, naming the size and the
 directory the files go to, and the transfer starts only once you confirm.
 While it runs, the step shows a progress bar, the file being fetched with the
 megabytes done, the rate and the time left, and a **Cancel download** button

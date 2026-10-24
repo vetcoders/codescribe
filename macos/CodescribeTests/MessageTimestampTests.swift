@@ -79,6 +79,83 @@ final class MessageTimestampTests: XCTestCase {
     XCTAssertEqual(MessageTimestamp.compactLabel(for: nil, now: Date()), "—")
   }
 
+  // MARK: - Day separators (round 4, UI-57)
+
+  func testDayLabelNamesTodayAndYesterdayInTheInterfaceLanguage() {
+    let now = instant("2026-10-11T16:00:00Z")
+    XCTAssertEqual(
+      MessageTimestamp.dayLabel(
+        for: instant("2026-10-11T06:00:00Z"), now: now, calendar: calendar(),
+        today: "Dzisiaj", yesterday: "Wczoraj"),
+      "Dzisiaj")
+    XCTAssertEqual(
+      MessageTimestamp.dayLabel(
+        for: instant("2026-10-10T20:05:00Z"), now: now, calendar: calendar(),
+        today: "Dzisiaj", yesterday: "Wczoraj"),
+      "Wczoraj")
+  }
+
+  func testDayLabelOlderDaysUseTheFullLabelsCalendarDate() {
+    let now = instant("2026-10-11T16:00:00Z")
+    let date = instant("2026-10-09T11:05:00Z")
+    let day = MessageTimestamp.dayLabel(for: date, now: now, calendar: calendar())
+    XCTAssertEqual(day, "2026-10-09")
+    XCTAssertTrue(
+      MessageTimestamp.label(
+        for: date, now: now, calendar: calendar(), locale: Locale(identifier: "en_GB")
+      ).hasPrefix(day),
+      "the separator and the full timestamp name the same day the same way")
+  }
+
+  func testDayLabelFollowsTheLocalCalendarDay() {
+    let date = instant("2026-10-10T23:30:00Z")
+    let now = instant("2026-10-11T00:30:00Z")
+    XCTAssertEqual(
+      MessageTimestamp.dayLabel(
+        for: date, now: now, calendar: calendar(), today: "Today", yesterday: "Yesterday"),
+      "Today")
+    XCTAssertEqual(
+      MessageTimestamp.dayLabel(
+        for: date, now: now, calendar: calendar("UTC"), today: "Today", yesterday: "Yesterday"),
+      "Yesterday")
+  }
+
+  func testNewDayStartsOnlyWhenTwoDatedTurnsCrossMidnight() {
+    let evening = instant("2026-10-10T21:50:00Z")  // 23:50 in Warsaw
+    let lateEvening = instant("2026-10-10T21:59:00Z")
+    let afterMidnight = instant("2026-10-10T22:10:00Z")  // 00:10 next day
+    XCTAssertFalse(
+      MessageTimestamp.startsNewDay(previous: evening, current: lateEvening, calendar: calendar()))
+    XCTAssertTrue(
+      MessageTimestamp.startsNewDay(
+        previous: lateEvening, current: afterMidnight, calendar: calendar()))
+    XCTAssertFalse(
+      MessageTimestamp.startsNewDay(previous: nil, current: afterMidnight, calendar: calendar()),
+      "the first turn opens no separator")
+    XCTAssertFalse(
+      MessageTimestamp.startsNewDay(previous: evening, current: nil, calendar: calendar()),
+      "a turn without a time never claims a day")
+  }
+
+  func testMessageListPutsOneSeparatorAboveTheFirstTurnOfEachNewDay() {
+    let first = ChatMessage(
+      role: .you, timestamp: instant("2026-10-09T09:00:00Z"), text: "Morning")
+    let sameDay = ChatMessage(
+      role: .assistant, timestamp: instant("2026-10-09T09:01:00Z"), text: "Reply")
+    let undated = ChatMessage(role: .tool, timestamp: nil, text: "")
+    let nextDay = ChatMessage(
+      role: .you, timestamp: instant("2026-10-10T08:00:00Z"), text: "Next day")
+    let nextDayReply = ChatMessage(
+      role: .assistant, timestamp: instant("2026-10-10T08:00:30Z"), text: "Reply")
+    let breaks = MessageList.dayBreaks(
+      in: [first, sameDay, undated, nextDay, nextDayReply], calendar: calendar())
+    XCTAssertEqual(breaks.count, 1)
+    XCTAssertEqual(breaks[nextDay.id], nextDay.timestamp)
+    XCTAssertNil(breaks[first.id], "the opening turn carries its date in the tooltip")
+    XCTAssertNil(breaks[undated.id])
+    XCTAssertTrue(MessageList.dayBreaks(in: [ChatMessage](), calendar: calendar()).isEmpty)
+  }
+
   func testYesterdayAcrossDaylightSavingIsNotTwentyFourHoursAgo() {
     XCTAssertEqual(
       MessageTimestamp.label(

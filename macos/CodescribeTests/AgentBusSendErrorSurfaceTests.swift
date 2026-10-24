@@ -139,4 +139,66 @@ final class AgentBusSendErrorSurfaceTests: XCTestCase {
     XCTAssertEqual(result.code, 3)
     XCTAssertEqual(result.description.components(separatedBy: "\n").last, refusal)
   }
+
+  // MARK: - Message bounds (website polish round, 2026-10-18)
+
+  /// Sends `text` through the helper installed under `home`; `nil` on success.
+  private static func send(text: String, home: URL) async -> NSError? {
+    do {
+      try await RealAgentBridgeInstaller.sendBusText(
+        owner: nil, text: text, holdSeconds: 0,
+        installer: RealAgentBridgeInstaller(
+          resourceRoot: nil, homeDirectory: home, environment: [:]))
+      return nil
+    } catch {
+      return error as NSError
+    }
+  }
+
+  /// Revises a held draft with `text` through the helper under `home`.
+  private static func revise(text: String, home: URL) async -> NSError? {
+    do {
+      try await RealAgentBridgeInstaller.controlBusMessage(
+        .revise, identity: "draft-1", owner: nil, busPath: "/tmp/codescribe-test-bus.jsonl",
+        text: text,
+        installer: RealAgentBridgeInstaller(
+          resourceRoot: nil, homeDirectory: home, environment: [:]))
+      return nil
+    } catch {
+      return error as NSError
+    }
+  }
+
+  /// The 64 KiB bound used to throw `fileWriteOutOfSpace`, which macOS words
+  /// as "not enough space": the Founder read a full disk with 14 GiB free.
+  /// The bound counts UTF-8 bytes, so a Polish letter costs two.
+  func testMessageAtTheBoundSendsAndOneByteMoreSaysItIsTooLong() async throws {
+    let home = try installFakeHelper(stderr: "", status: 0)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let tooLong = String(localized: "The message is too long (64 KB limit).")
+    let atBound = await Self.send(text: String(repeating: "a", count: 65_536), home: home)
+    XCTAssertNil(atBound, "exactly 64 KiB is allowed")
+    let overResult = await Self.send(text: String(repeating: "a", count: 65_537), home: home)
+    let over = try XCTUnwrap(overResult)
+    XCTAssertEqual(over.localizedDescription, tooLong)
+    XCTAssertNotEqual(over.domain, NSCocoaErrorDomain, "a long message is not a disk error")
+    let polishResult = await Self.send(text: String(repeating: "ą", count: 32_769), home: home)
+    let polish = try XCTUnwrap(polishResult)
+    XCTAssertEqual(polish.localizedDescription, tooLong, "65 538 bytes in 32 769 letters")
+  }
+
+  func testRevisionNamesAnEmptyOrOversizedTextInsteadOfADiskError() async throws {
+    let home = try installFakeHelper(stderr: "", status: 0)
+    defer { try? FileManager.default.removeItem(at: home) }
+    let emptyResult = await Self.revise(text: " \n ", home: home)
+    let empty = try XCTUnwrap(emptyResult)
+    XCTAssertEqual(
+      empty.localizedDescription, String(localized: "The revised message cannot be empty."))
+    let overResult = await Self.revise(text: String(repeating: "a", count: 65_537), home: home)
+    let over = try XCTUnwrap(overResult)
+    XCTAssertEqual(
+      over.localizedDescription, String(localized: "The message is too long (64 KB limit)."))
+    let revised = await Self.revise(text: "poprawka", home: home)
+    XCTAssertNil(revised, "a real revision passes")
+  }
 }

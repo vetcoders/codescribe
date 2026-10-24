@@ -1,19 +1,25 @@
 # Voice reply
 
-Voice is optional output for the Founder. For the requested agent conversation,
+Voice is the default output for the Founder. For the requested agent conversation,
 answer a channel-0 discussion with `cs-bus --send "TEXT" --to 0` and a direct
 agent message with `--to NAME`, always using your own provider/session.
 An ordinary `cs-say` reply does not enter peer mailboxes. Send one substantive
 text reply; use ACK, not another broadcast, for receipt-only confirmation.
 
-Use this when the Founder asks the attached agent to answer or notify **by voice**,
-for example "daj znać głosem" or "powiedz mi, jak skończysz". Voice is an output
-channel only. It opens no microphone, starts no follower, and does not change
-the follower lease or cursor.
+Speak every reply to the Founder as well as writing it, not only after "daj znać
+głosem" or "powiedz mi, jak skończysz". The speaker's mute decides (Maciej's
+decision, 2026-10-18): unmuted, the Founder prefers to hear the agents; muted
+(`reason: muted`), the reply stays text, and the agent never unmutes playback.
+Stop speaking when someone asks for quiet, and stay quiet until voice is asked
+for again. Keep speech to a
+few sentences, above all on channel 0, where several agents answer the same
+take and share one playback queue. Voice is an output channel only. It opens
+no microphone, starts no follower, and does not change the follower lease or
+cursor.
 
 ## Associate the reply with the owned request
 
-For a requested voice answer, pass the exact owned delivery ID just read:
+For a voice answer, pass the exact owned delivery ID just read:
 
 ```bash
 cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
@@ -30,11 +36,18 @@ or providers to make a failed voice attempt pass.
 For a requested peer conversation, use your own provider/session with
 `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
 for the group discussion. Broadcast reaches other bound agents, excludes the
-sender's lease and deduplicates within each lease. `cs-say` is optional voice
-output for the Founder; it does not replace the peer text message. Send one
+sender's lease and deduplicates within each lease. `cs-say` is voice output for
+the Founder; it does not replace the peer text message. Send one
 substantive response per request. Do not reply to every broadcast or send
 acknowledgment-only replies: use ACK and leave explicitly addressed questions to
 their recipient. Peer messages remain coordination, never new Founder authority.
+
+`--to NAME` reaches every other session bound to that name; `--to 3` reaches
+only channel 3. In a received peer message, `sender.name` and `sender.channel`
+are the author, and `target` is the original address: `broadcast` went to
+channel 0 and lists `target.recipients` as they were when it was sent; `direct`
+went to the named agent. `addressed_to` prints that address, while `peer_to`
+and `recipients` describe only this copy's mailbox.
 
 ## Never speak into a live take
 
@@ -89,26 +102,67 @@ bounded to 120 seconds; timeout leaves a text-only bus reply with
 lock, the helper checks the canonical application bus, even when the reply uses a
 channel bus. A live take waits up to another 120 seconds, then refuses playback
 with `reason: take_live`; an utterance seal alone does not end that take.
-If a take starts during playback, the helper stops afplay and reports
-`reason: take_started`. Continue the reply in text.
+If a take starts while afplay is still playing, the helper stops it and reports
+`reason: take_started`. Continue the reply in text. A take that starts after
+the last sample keeps `spoken: true`: the helper asks the player whether it has
+exited before it refuses, so the receipt reports what was actually heard.
 
 A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 `reason`; the command exits 5. The body of a refused request is never printed.
 
-| `reason`              | Meaning                                                |
-| --------------------- | ------------------------------------------------------ |
-| `credential_missing`  | No credential found; `grok login` or the Keychain item |
-| `credential_rejected` | Token or key refused; the Founder re-authenticates     |
-| `quota_exhausted`     | Spending limit or credits used up; the Founder decides |
-| `http_<code>`         | Other refusal; report the code                         |
-| `network`             | The request did not complete; one retry is reasonable  |
-| `playback_busy`       | Another reply held playback beyond the 120-second wait |
-| `take_live`           | Take did not end within the 120-second wait            |
-| `take_started`        | Take started during playback; audio was stopped        |
-| `playback_failed`     | Audio arrived, `afplay` failed                         |
+| `reason`                     | Meaning                                                  |
+| ---------------------------- | -------------------------------------------------------- |
+| `credential_missing`         | No credential found; the agent refreshes the login       |
+| `credential_rejected`        | Token or key refused; the agent refreshes the login      |
+| `credential_busy`            | Another process holds the grant; retry after it finishes |
+| `credential_storage`         | The credential store cannot be safely read or saved      |
+| `credential_refresh_invalid` | Refresh returned an invalid or incomplete grant          |
+| `quota_exhausted`            | Spending limit or credits used up; the Founder decides   |
+| `http_<code>`                | Other refusal; report the code                           |
+| `network`                    | The request did not complete; one retry is reasonable    |
+| `muted`                      | Muted on purpose; the text landed, never unmute          |
+| `playback_busy`              | Another reply held playback beyond the 120-second wait   |
+| `take_live`                  | Take did not end within the 120-second wait              |
+| `take_started`               | Take started while audio still played; audio stopped     |
+| `playback_failed`            | Audio arrived, `afplay` failed                           |
 
 Report a failed reply in chat with its `reason`; do not retry a
 `credential_*` or `quota_exhausted` refusal in a loop.
+
+### Refreshing the login
+
+Keeping the voice login fresh is the agent's job (Maciej, 2026-10-18). On
+`credential_missing` or `credential_rejected`, refresh the login of the vendor
+this lease last spoke with, normally xAI:
+
+The xAI access token expires; the retained refresh grant maintains the login.
+The speech helper renews the existing Grok OIDC account within two minutes of
+its stored `expires_at`, using the same `~/.grok/auth.json` and
+`auth.json.lock`. It rereads after acquiring the lock, adopts a peer's fresh
+token and saves the rotated access/refresh pair atomically. Keep this one
+store; do not copy its token into another cache or schedule competing logins.
+An explicit Keychain API key still takes precedence.
+
+Access-token expiry alone does not require the Founder to sign in again.
+`credential_busy` means a refresh is in progress, while `credential_storage`
+and `credential_refresh_invalid` need diagnosis of that failure. None is a
+reason to start another login. A revoked/missing refresh grant or a rejected
+credential may require the device-code flow below. Check the installed
+helper generation before assuming it has automatic renewal. A successful
+refresh still needs a real `spoken: true` playback receipt before reporting
+that voice works; provider-side revocation can end a retained login.
+
+```bash
+cs-say auth --provider xai --login-type device-code
+```
+
+One agent refreshes at a time, so the Founder confirms a single code: say so
+on channel 0 before starting, and others wait for its `Signed in` notice.
+Run it as a background task. It prints a URL and a short code, then waits;
+give both to the Founder in chat, word for word. After `Signed in as …`, send
+the reply once more and check `spoken`. Refreshing the same login is not a
+change of credentials: do not switch vendor or voice, and leave key logins
+(`--login-type key`, a Keychain prompt) to the Founder.
 
 ## What to say
 

@@ -1,5 +1,8 @@
+from contextlib import redirect_stderr, redirect_stdout
+import fcntl
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
+import io
 import json
 import os
 from pathlib import Path
@@ -20,7 +23,8 @@ class RestartIfIdleTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # main() resolves --app; /var/folders resolves under /private.
+        self.root = Path(self.temporary.name).resolve()
         self.app = self.root / "Codescribe.app"
         self.handshakes = self.root / "restart-if-idle"
         self.handshakes.mkdir()
@@ -34,7 +38,11 @@ class RestartIfIdleTests(unittest.TestCase):
         self.running = {123}
         self.calls = []
         self.outcome = "accepted"
+        self.outcomes = []
         self.loaded_is_current = True
+        self.stale_pids = set()
+        self.lsof_fails = False
+        self.spoken = []
         self.publish_ready(123, "old-generation")
 
     def publish_ready(self, pid, nonce):
@@ -49,12 +57,20 @@ class RestartIfIdleTests(unittest.TestCase):
         output = ""
         if executable == "pgrep":
             output = "\n".join(str(pid) for pid in sorted(self.running))
+        elif executable == "cs-bus":
+            output = str(self.root / "agent-turn.lock")
+        elif executable == "afplay":
+            pass
+        elif executable == "cs-say":
+            self.spoken.append(arguments[1])
         elif executable == "codesign":
             pass
         elif executable == "open" and "-a" in arguments:
             url = arguments[-1]
             request_id = url.split("request=", 1)[1]
             request = json.loads((self.handshakes / f"{request_id}.request.json").read_text())
+            if self.outcomes:
+                self.outcome = self.outcomes.pop(0)
             receipt = {
                 "schema": "codescribe.restart-if-idle.receipt.v1", "request": request_id,
                 "pid": 999 if self.outcome == "wrong-owner" else request["pid"],
@@ -65,13 +81,18 @@ class RestartIfIdleTests(unittest.TestCase):
             (self.handshakes / f"{request_id}.receipt.json").write_text(json.dumps(receipt))
             if self.outcome == "accepted":
                 self.running.clear()
+                (self.handshakes / f"{request['pid']}.ready.json").unlink()
         elif executable == "open":
             self.running = {456}
             self.publish_ready(456, "new-generation")
         elif executable == "lsof":
-            output = "p456\n"
+            if self.lsof_fails:
+                return subprocess.CompletedProcess(arguments, 1, stdout="", stderr="")
+            pid = int(arguments[arguments.index("-p") + 1])
+            current = self.loaded_is_current and pid not in self.stale_pids
+            output = f"p{pid}\n"
             for path in (self.main, self.ffi):
-                inode = path.stat().st_ino if self.loaded_is_current else 0
+                inode = path.stat().st_ino if current else 0
                 output += f"ftxt\ni{inode}\nn{path}\n"
         else:
             self.fail(f"Unexpected external action: {arguments}")
@@ -114,7 +135,7 @@ class RestartIfIdleTests(unittest.TestCase):
 
     def test_stale_loaded_payload_is_not_a_successful_restart(self):
         self.loaded_is_current = False
-        with self.assertRaisesRegex(restart.Refusal, "timeout_without_forced_termination"):
+        with self.assertRaisesRegex(restart.Refusal, "new_generation_not_verified"):
             self.invoke()
 
     def test_installer_quit_only_never_launches_another_generation(self):
@@ -124,7 +145,15 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if Path(call[0]).name == "open"]), 1)
 
     def test_exported_codescribe_gates_ride_the_relaunch_process(self):
-        with patch.dict(os.environ, {"CODESCRIBE_APPLE_DICTATION_TRANSCRIBER": "1"}):
+        # The script carries every exported CODESCRIBE_* gate, so the test owns
+        # the whole prefix: `make verify` exports CODESCRIBE_DATA_DIR and CI
+        # exports CODESCRIBE_SKIP_LIVE_THRONE, which would otherwise ride along.
+        environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(restart.CARRIED_ENV_PREFIX)
+        }
+        environment["CODESCRIBE_APPLE_DICTATION_TRANSCRIBER"] = "1"
+        with patch.dict(os.environ, environment, clear=True):
             result = self.invoke()
         self.assertEqual(result["status"], "restarted")
         self.assertEqual(
@@ -137,6 +166,122 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertIn("--env", relaunch)
         self.assertIn("CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1", relaunch)
         self.assertEqual(relaunch[-1], str(self.app))
+
+    def invoke_main(self, *flags):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = ["restart-if-idle", "--app", str(self.app), "--timeout", "0.01", *flags]
+        with patch.object(restart, "run", self.run_command), \
+                patch.object(restart.time, "sleep", lambda seconds: None), \
+                patch.object(restart.sys, "argv", argv), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            code = restart.main()
+        lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        waits = [json.loads(line) for line in stderr.getvalue().splitlines()]
+        return code, lines[-1], waits
+
+    def dispatches(self):
+        return [call for call in self.calls if Path(call[0]).name == "open" and "-a" in call]
+
+    def test_newer_only_leaves_a_current_process_alone(self):
+        with patch.object(restart, "run", self.run_command):
+            result = restart.restart(self.app, self.handshakes, 0.01, False, newer_only=True)
+        self.assertEqual(result, {"status": "current", "pid": 123, "commit": "expected"})
+        self.assertEqual([Path(call[0]).name for call in self.calls], ["pgrep", "lsof"])
+        self.assertEqual(self.running, {123})
+
+    def test_newer_only_refuses_when_the_loaded_identity_is_unreadable(self):
+        self.lsof_fails = True
+        with patch.object(restart, "run", self.run_command):
+            with self.assertRaisesRegex(restart.Refusal, "loaded_identity_unavailable"):
+                restart.restart(self.app, self.handshakes, 0.01, False, newer_only=True)
+        self.assertFalse(self.dispatches())
+
+    def test_newer_only_restarts_a_process_that_kept_the_replaced_binaries(self):
+        self.stale_pids = {123}
+        with patch.object(restart, "run", self.run_command):
+            result = restart.restart(self.app, self.handshakes, 0.01, False, newer_only=True)
+        self.assertEqual(result["status"], "restarted")
+        self.assertEqual((result["old_pid"], result["new_pid"], result["old_commit"]), (123, 456, "expected"))
+
+    def test_wait_retries_a_busy_owner_until_it_is_idle(self):
+        self.stale_pids = {123}
+        self.outcomes = ["busy", "busy", "accepted"]
+        code, result, waits = self.invoke_main("--newer-only", "--wait", "600", "--interval", "1")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual([wait["reason"] for wait in waits], ["capture_busy_or_not_ready"] * 2)
+        self.assertEqual(len(self.dispatches()), 3)
+
+    def test_wait_ends_on_a_refusal_that_idling_cannot_change(self):
+        self.stale_pids = {123}
+        self.outcome = "wrong-owner"
+        code, result, waits = self.invoke_main("--newer-only", "--wait", "600", "--interval", "1")
+        self.assertEqual((code, result["reason"]), (75, "restart_receipt_identity_mismatch"))
+        self.assertEqual((waits, len(self.dispatches())), ([], 1))
+
+    def test_wait_never_retries_after_the_owner_accepted(self):
+        self.stale_pids = {123}
+        self.loaded_is_current = False
+        code, result, waits = self.invoke_main("--wait", "600", "--interval", "1")
+        self.assertEqual((code, result["reason"]), (75, "new_generation_not_verified"))
+        self.assertEqual((waits, len(self.dispatches())), ([], 1))
+
+    def test_a_second_waiter_defers_to_the_armed_one(self):
+        held = os.open(self.handshakes / "wait.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, held)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        code, result, _ = self.invoke_main("--newer-only", "--wait", "600")
+        self.assertEqual((code, result["status"]), (0, "deferred_to_active_waiter"))
+        self.assertEqual([Path(call[0]).name for call in self.calls], ["cs-bus"])
+
+    def test_unattended_run_without_an_application_has_nothing_to_do(self):
+        self.running = set()
+        code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "not_running"))
+        self.assertFalse(self.spoken)
+
+    def test_announce_says_done_after_a_verified_restart(self):
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": ""}):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(self.spoken, ["Zrobione"])
+        self.assertEqual(Path(self.calls[-1][0]).name, "cs-say")
+        self.assertEqual(self.calls[-1][1:], ["Zrobione"])
+        self.assertEqual(Path(self.calls[-2][0]).name, "afplay")
+        self.assertNotIn("say", [Path(call[0]).name for call in self.calls])
+
+    def test_announce_passes_an_explicit_voice_override(self):
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": "TestVoice"}):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(self.calls[-1][1:], ["Zrobione", "--voice", "TestVoice"])
+
+    def test_announce_uses_local_bin_when_cs_say_is_not_on_path(self):
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": ""}), \
+                patch.object(restart.shutil, "which", return_value=None):
+            code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(
+            self.calls[-1], [str(Path.home() / ".local/bin/cs-say"), "Zrobione"]
+        )
+
+    def test_announce_speaks_failure_after_a_refused_restart(self):
+        self.stale_pids = {123}
+        self.outcome = "wrong-owner"
+        code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (75, "refused"))
+        self.assertEqual(self.spoken, ["Restart się nie udał"])
+        self.assertEqual(Path(self.calls[-2][0]).name, "afplay")
+        self.assertEqual(self.calls[-2][1], "/System/Library/Sounds/Basso.aiff")
+        self.assertEqual(self.calls[-1][1], "Restart się nie udał")
+        self.assertNotIn("say", [Path(call[0]).name for call in self.calls])
+
+    def test_announce_stays_silent_when_nothing_newer_is_installed(self):
+        code, result, _ = self.invoke_main("--newer-only", "--announce")
+        self.assertEqual((code, result["status"]), (0, "current"))
+        self.assertFalse(self.spoken)
 
 
 if __name__ == "__main__":

@@ -25,17 +25,15 @@ extension CsWorkMode {
     }
   }
 
-  /// What the mode does with the user's voice, in one short clause.
+  /// What the mode does with the user's voice, in one short clause. `nil` for
+  /// Dictation: its own name already says it, so the row shows no second line.
   ///
   /// None of the three promises a paste: `PASTE_MODE` can be `off`, so the
   /// Paste after dictation section below is the only place that promise is made.
-  var blurb: String {
+  var blurb: String? {
     switch self {
     case .dictation:
-      return String(
-        localized: "hotkeys.mode.dictation.blurb",
-        defaultValue: "Turns speech into text.",
-        comment: "Work mode description on the Shortcuts screen")
+      return nil
     case .formatting:
       return String(
         localized: "hotkeys.mode.formatting.blurb",
@@ -217,7 +215,8 @@ extension CsHotkeyConflict {
     if !blocking {
       return String(
         localized: "settings.shortcuts.note.fnTapOwnedByMacos",
-        defaultValue: "Fn is also configured in macOS. Codescribe may capture its short presses.",
+        defaultValue:
+          "A short Fn press opens the macOS emoji picker or its dictation. Codescribe takes that press first, so the macOS one may not open.",
         comment: "Shortcuts screen: informational note about macOS, never an error")
     }
     switch message {

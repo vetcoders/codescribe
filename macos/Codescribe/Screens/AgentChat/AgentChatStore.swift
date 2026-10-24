@@ -1418,7 +1418,8 @@ final class AgentChatStore: ObservableObject {
           real.isEmpty ? [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp)] : real
       } catch {
         seeded = [ChatThread(title: Self.newThreadTitle, meta: Self.nowTimestamp)]
-        initialThreadError = String(localized: "Could not load threads. Try refreshing the list.")
+        initialThreadError = String(
+          localized: "Could not load conversations. Try refreshing the list.")
       }
     } else {
       seeded = Self.seedThreads()  // no provider → mock seed
@@ -1475,7 +1476,7 @@ final class AgentChatStore: ObservableObject {
       } catch {
         if self.threadListRevision == revision {
           self.threadSearchError = String(
-            localized: "Could not load threads. Try refreshing the list.")
+            localized: "Could not load conversations. Try refreshing the list.")
         }
         return
       }
@@ -1648,7 +1649,7 @@ final class AgentChatStore: ObservableObject {
       if threadSearchError != nil { threadSearchError = nil }
     } catch {
       let message = String(
-        localized: "Could not refresh threads. The previous list is still shown.")
+        localized: "Could not refresh conversations. The previous list is still shown.")
       if threadSearchError != message { threadSearchError = message }
     }
   }
@@ -1726,7 +1727,7 @@ final class AgentChatStore: ObservableObject {
       activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
     guard trimmed.isEmpty || !hasActiveTurn else {
       threadSearchError = String(
-        localized: "Finish the current turn before changing the thread search.")
+        localized: "Finish the current turn before changing the conversation search.")
       return
     }
     if trimmed.isEmpty {
@@ -1745,7 +1746,7 @@ final class AgentChatStore: ObservableObject {
           keepLocalDrafts: true
         )
         threadSearchError = String(
-          localized: "Could not reload threads. The previous list was restored.")
+          localized: "Could not reload conversations. The previous list was restored.")
       }
       threadsBeforeSearch = nil
     } else {
@@ -1764,7 +1765,7 @@ final class AgentChatStore: ObservableObject {
         threadSearchError = nil
       } catch {
         threadSearchError = String(
-          localized: "Could not search threads. The previous list is still shown.")
+          localized: "Could not search conversations. The previous list is still shown.")
       }
     }
   }
@@ -3300,7 +3301,7 @@ final class AgentChatStore: ObservableObject {
   /// Default display title of a conversation nobody has named yet. Display
   /// copy only — no production path compares a thread title against it.
   static var newThreadTitle: String {
-    String(localized: "New thread", comment: "Default title of an unnamed conversation")
+    String(localized: "New conversation", comment: "Default title of an unnamed conversation")
   }
 
   /// Display timestamp for a thread or message created just now, before any

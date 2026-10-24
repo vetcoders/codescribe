@@ -2,14 +2,23 @@
 
 ## Overlay conversation viewing and speech
 
+The channel map in mini and compact is opt-in in Settings → Creator →
+**Channel map in the overlay**, off by default. With it off, mini keeps `cs` and
+its earlier 200 × 46 pt size (164 × 46 while an agent records); compact's natural
+width is 410 pt. An explicit user resize stays respected. The map geometry below
+applies when that switch is enabled. The switch changes presentation only.
+
 Overlay size is selected explicitly. Each ordinary preview-button click advances
 mini → compact (midi) → regular (full transcript) → mini. The upper-right corner
 is the shared pin: the strip grows leftward and the transcript grows downward,
 with display containment applied when the full target cannot fit. The context
-menu also selects any of the three modes directly. Mini is fixed; midi supports
-horizontal resize; regular supports edge and corner resize around that same pin.
-Settled native floors are mini 200 × 46 pt, midi 410 × 46 pt and regular
-320 × 260 pt. During a drag, the painted frame respects the current form's floor.
+menu also selects any of the three modes directly. Mini is not resizable and is
+as wide as its content; midi supports horizontal resize; regular supports edge
+and corner resize around that same pin. Settled native floors are mini
+130 × 46 pt (its controls), midi 410 × 46 pt and regular 320 × 260 pt. Screen
+anchors, the saved position and resize gestures reason in a 200 × 46 pt mini
+placement strip (`DictationOverlayWindow.miniPlacementSize`); mini is drawn at
+that strip's trailing edge. During a drag, the painted frame respects the current form's floor.
 The panel separately retains the requested gesture size: on release, requested
 height of at least 153 pt selects regular; below that, requested width below
 305 pt selects mini and larger width selects midi. Thus release-to-fold remains
@@ -18,6 +27,46 @@ forms settle to their strip sizes; regular retains its manual size above its
 readability floor. Moving the window relocates the pin. Pointer entry
 and departure preserve that selection. Hover still provides button feedback and
 pauses terminal auto-hide; it does not change the capture route or window size.
+
+Mini and compact carry the channel map (`docs/guide/chat-overlay.md`, "Channel
+map in the collapsed overlay"). Mini's header is the brand dot, the channel
+counter, the agents button, the microphone and the form control; it no longer
+reads "cs". Mini is as wide as its content (`DictationOverlayWindow.miniNaturalWidth`):
+its 130 pt floor (32 pt padding, the 9 pt dot, two 4 pt gaps around the closed
+centre, 81 pt of trailing controls) plus, with a channel on the map, 6 pt and
+the counter as drawn, the agent count with `▾` or the open channel's digit with
+the violet open-channel dot. It resizes in one step at its upper-right pin when the
+counter changes, opening and closing a microphone included; there is no
+separate width while an agent records. No two neighbouring controls stand
+further apart than the 8 pt between the trailing controls.
+Compact's map sits between the session timer and the header actions. The
+46 pt height, the 410 × 46 pt compact floor and the fold control's point are
+unchanged. Compact's natural width (`DictationOverlayWindow.midiNaturalWidth`)
+is that floor plus the map's gap, room for channel 0's digit chip (shown only
+while the microphone broadcasts) and the row of the first tier that fits the
+820 pt budget (`midiChannelMapBudget`, two floors): named chips, else
+digit-only chips with room for the selected conversation's name. The screen's
+visible width remains only a last cap; with no agent bound it is the floor.
+The floor already holds the header's level meter (its 56 pt
+`waveformMinWidth`) and the session timer, which compact lays out at rest as
+well as during a take, so starting a take changes neither the strip's width
+nor its chips' tier.
+Entering compact lands on it, and a roster change while compact is shown (an
+agent bound, archived or renamed) resizes the strip in one step at its
+upper-right pin, with display containment as for any morph; opening or closing
+a microphone, channel 0 included, does not. A manual horizontal resize gives
+the width to the user for the session: narrower than the natural width, it is
+kept and roster changes no longer resize the strip (the chips drop to digits
+or the counter); wider, it is kept and grows only when the natural width
+exceeds it. A map that cannot fit even its counter claims no width. Its
+shortcut hints read the Agent channel modifier from settings
+(`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and never assume Ctrl. A chip click is
+passive selection, like a rail pill. The counter click changes form or width
+only: in mini it selects compact, as the form control's "Expand to compact
+widget" does; in a compact strip the user narrowed it forgets that width so
+the strip settles to its natural width. Neither ever opens or closes a
+channel's microphone or retargets a running capture. The map adds no hotkey
+and no chord of its own.
 
 The overlay's channel menu separates **My dictation**, **0 · All**, and exact
 named-agent conversations from the explicit **Capture channels** controls.
@@ -40,6 +89,28 @@ terminal task then joins and publishes the final receipt; its words are retained
 For hold gestures, handover waits until the existing start delay has elapsed.
 The modifier alone can still become a channel chord or be released without a
 take; an explicit channel gesture cancels that pending ordinary hold.
+When the hold's base key is also the agent-channel modifier (`HoldFn` with
+`AGENT_CHANNEL_MODIFIER=fn`, `HoldCtrl` with `ctrl`) and a channel is open,
+the elapsed delay admits nothing: the hold stays the chord's prefix, the
+channel survives, no hang-up receipt is written, and the digit chord is the
+only way to close it (Founder, 2026-10-22: a Fn held past the delay before the
+digit hung up the channel, the digit reopened it, and the reopened microphone
+fed Whisper silence). Dictation on that key starts only once no channel is
+open; the toggle gestures and the other hold presets are unaffected.
+With no channel open, the same hold can already be admitted (`RecHold`) when
+the digit arrives. An explicit channel gesture then opens the channel beside
+that take and ends the take as the chord's prefix (Founder, 2026-10-23: the
+key-up after such a chord pasted a stray word into the terminal). The channel
+opens first so it shares the live capture instead of waiting out the take's
+stop grace and recognizer drain. The rule covers only a non-assistive Raw hold
+whose base key is the channel modifier, the same pairs as above. The recorder's
+discard stop releases the take's capture under the serial transition lock; the
+open channel keeps its pointer badge; nothing is pasted, copied, routed or sent to an agent,
+no session archive is written, and the Bus session ends with
+`end_reason: chord_prefix` (phase `no_speech`, every overlay action off), which
+the overlay receives as its lifecycle terminal. The controller is Idle again,
+so the later key-up is a no-op. Holds on another key, assistive holds and
+toggle takes keep running beside the opened channel as before.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
@@ -87,7 +158,14 @@ separate from resize. This source change does not certify absence of transient
 flicker on a live window.
 
 Opening a capture channel follows the exact provider/session conversation and
-scrolls to its newest message. New messages on that open channel keep the latest
+scrolls to its newest message. In mini and compact with the channel map on
+(Creator preference `codescribe.overlay.channel_map`), the chord keeps that
+form: the conversation is selected, the strip's chip or counter shows the open
+digit, and the overlay does not unfold onto the Agents canvas. With the map
+off, or when the overlay is already expanded, the Agents canvas unfolds onto
+the conversation (the overlay's expand-by-default preference permitting).
+Incoming replies, a dictation take start and the preferred expansion keep
+their own rules. New messages on that open channel keep the latest
 entry visible; a passive roster poll does not replace a manually selected thread.
 The newest messages are painted first without reordering the observer history.
 
@@ -135,6 +213,33 @@ repeat cannot emit duplicate commands.
 This fixed MVP chord is intentionally outside the configurable
 `WorkMode -> ShortcutBinding` contract.
 
+The widget chord (`WIDGET_SHORTCUT`, default `ctrl+shift+b`; Founder,
+2026-10-23: "B jak bus", and the user names their own) emits one
+`HotkeyEvent::ToggleWidget` per physical press of its key. The chord is any
+combination of Control, Option, Command and Shift plus one letter or Space,
+with at least one of Control, Option or Command (a plain or Shift-only letter
+types) and never `Command+Shift+Space` (the Agent summon above). Digits stay
+channel chords and Fn stays dictation, so neither can end the chord. The core
+(`WidgetShortcut`, core/config/types.rs) parses, validates and labels it; the
+detector matches the key with exactly those modifiers held and Fn up; the
+runtime atomics live-reload it on every settings write like the channel
+modifier. The bridge delivers the event to
+`CsAppActionListener::on_toggle_widget`; the overlay decides what it means: a
+hidden panel shows as the Tray's **Show widget** does, a visible idle panel
+hides through the human Close intent, and a panel that is recording or holds an
+open channel only comes forward — the chord never hides live capture. Like
+`ShowAgent` it touches no `RecordingController`, no lifecycle callback and no
+Idle state, and key-up re-arms it against key repeat. The tap does not claim
+the event, so a host app or Cocoa binding on the same chord (the default's
+`^⇧B` extends a text selection one character back) still sees it; the hold
+presets whose base is Ctrl+Shift are unaffected because the chord needs its
+key, which any hold start already treats as a key press during the modifier.
+Settings › Shortcuts › Extra shortcuts shows the chord as a pill: a click arms
+the recorder, the next key press becomes the chord, Escape keeps the old one,
+and a refused press keeps it and says why. The recorder mirrors the core's
+rules (`WidgetShortcutChord`, WidgetShortcutRecorder.swift) and the core
+refuses the write again on its own.
+
 Assistive bindings notify the same app-action plane to front/focus the Agent
 window, then deliver the recording event to the same `RecordingController` as
 Dictation. Agent, Assistive, and Dictation therefore share microphone, VAD, STT,
@@ -175,14 +280,18 @@ owns. A live hotkey, tray or overlay dictation reads as busy and is never ended
 by a composer press. `ToggleNormal`, `ToggleAssistive` and both hold gestures
 keep `CaptureTurnIntent::HandsFree` and their existing behaviour; the intent is
 reset to hands-free between takes, so a composer turn cannot leak into the next
-hands-free one.
+hands-free one. A composer take also leaves the overlay as it is: the
+take-start form preference and the dictation canvas belong to ordinary takes,
+so the conversation whose microphone was pressed stays on screen (Maciej,
+2026-10-23: the composer microphone folded the Agents view, "zamyka mi widok
+agenta").
 
 **Thread routing (operator contract 2026-08-13).** An assistive turn always
 lands in the thread the Agent rail currently has selected — the thread the
 user is looking at. The rail publishes every selection change through
 `CodescribeHotkeys.set_assistive_target_thread`; the controller rebinds its
 runtime (rejoin + rehydrate) when the target differs from the bound thread. A
-new thread is only ever minted by an explicit "+ New thread" (published as a
+new thread is only ever minted by an explicit "New conversation" (published as a
 `nil` target, consumed once — one press mints one thread, not one per
 utterance). If the Agent UI never published a selection (window never
 opened), the lane continues its bound conversation as before.

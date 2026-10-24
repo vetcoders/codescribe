@@ -14,6 +14,13 @@
 #   CODESCRIBE_VOICE_LAB_SRC      existing checkout (skips clone). Without it
 #                                 the Lab comes from the cache on main, never
 #                                 from a sibling checkout's current branch.
+#
+# Options (`make install-lab` passes both):
+#   --checkout-main     also fast-forward the cache to the sibling checkout's
+#                       local main: its commits, never its working tree or
+#                       current branch. Local merges install before a push.
+#   --restart-server    restart this runtime's running Lab server, the way
+#                       Codescribe spawns it, so new Python is live.
 #   App settings are merged by Codescribe at launch, never by this installer.
 #   HOME                          runtime dest ~/.codescribe/voice-lab
 #
@@ -147,6 +154,13 @@ ensure_checkout() {
       git -C "$src" fetch --tags origin
       git -C "$src" checkout --quiet main
       git -C "$src" merge --ff-only origin/main
+      if [[ "$FROM_CHECKOUT_MAIN" == 1 ]]; then
+        [[ -e "${SIBLING}/.git" ]] || fail "--checkout-main needs the voice-lab checkout at ${SIBLING}"
+        echo "==> main of ${SIBLING} → ${src}"
+        git -C "$src" fetch --quiet "$SIBLING" main
+        git -C "$src" merge --ff-only FETCH_HEAD ||
+          fail "main of ${SIBLING} and origin/main diverged; integrate them on main first"
+      fi
     else
       echo "==> using existing checkout ${src}"
     fi
@@ -209,19 +223,69 @@ verify_runtime() {
   echo "==> launcher ${LAUNCHER}"
 }
 
+# Codescribe leaves a live Lab alone, so new Python only loads when the running
+# server restarts. Only this runtime's server.py is touched; anything else
+# holding the port stays.
+restart_server() {
+  local port pid cwd i
+  port="$(tr -dc '0-9' < "${RUNTIME}/port" 2>/dev/null || true)"
+  port="${port:-8765}"
+  pid="$(lsof -tnP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$pid" ]]; then
+    echo "==> no Lab server on :${port}; Codescribe starts one when the Lab opens"
+    return
+  fi
+  cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+  if [[ "$(ps -o command= -p "$pid")" != *server.py* || "$cwd" != "$RUNTIME" ]]; then
+    echo "==> :${port} is not this Lab's server (pid ${pid}); left alone"
+    return
+  fi
+  kill "$pid"
+  for i in $(seq 1 25); do
+    lsof -tnP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+  # exec, and the redirects on the whole subshell: nothing but the server stays,
+  # and nothing holds the installer's stdout, so `make install-lab | …` ends.
+  (cd "$RUNTIME" && VOICE_LAB_REMOTE_HOST=off exec nohup /usr/bin/python3 ./server.py --port "$port") >/dev/null 2>&1 </dev/null &
+  for i in $(seq 1 50); do
+    pid="$(lsof -tnP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+    [[ -n "$pid" ]] && { echo "==> Lab server restarted on :${port} (pid ${pid})"; return; }
+    sleep 0.2
+  done
+  fail "Lab server did not come back on :${port}"
+}
+
 main() {
   local src
   src="$(resolve_src)"
-  if [[ "$src" == "$CACHE" && -e "${SIBLING}/.git" ]]; then
+  if [[ "$FROM_CHECKOUT_MAIN" == 1 ]]; then
+    [[ "$src" == "$CACHE" ]] || fail "--checkout-main installs through the cache; unset CODESCRIBE_VOICE_LAB_SRC"
+    echo "==> Voice Lab from main of ${SIBLING} (its working tree and branch stay out)"
+  elif [[ "$src" == "$CACHE" && -e "${SIBLING}/.git" ]]; then
     echo "==> ${SIBLING} not installed; Voice Lab comes from main (CODESCRIBE_VOICE_LAB_SRC=${SIBLING} installs that checkout)"
   fi
   ensure_checkout "$src"
   run_setup "$src"
   verify_runtime
+  if [[ "$RESTART_SERVER" == 1 ]]; then
+    restart_server
+  fi
 }
 
-if [[ "${1:-}" == "--verify-access" ]]; then
+FROM_CHECKOUT_MAIN=0
+RESTART_SERVER=0
+VERIFY_ACCESS=0
+for arg in "$@"; do
+  case "$arg" in
+    --verify-access) VERIFY_ACCESS=1 ;;
+    --checkout-main) FROM_CHECKOUT_MAIN=1 ;;
+    --restart-server) RESTART_SERVER=1 ;;
+    *) fail "unknown option ${arg}" ;;
+  esac
+done
+if [[ "$VERIFY_ACCESS" == 1 ]]; then
   verify_checkout_access "$(resolve_access_src)"
 else
-  main "$@"
+  main
 fi

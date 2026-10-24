@@ -17,9 +17,17 @@ MCP = load("address_authority_mcp", "bus-mcp.py")
 
 
 class BusAddressAuthorityTests(unittest.TestCase):
-    def test_private_peer_from_channel_zero_does_not_claim_all_audience(self):
+    def test_peer_broadcast_copy_is_addressed_to_channel_zero_not_its_recipient(self):
+        # send_peer_command gives each channel-0 copy its recipient's name in
+        # peer_to for routing; a direct message carries the recipient's digit.
         payload = {"channel": "0", "peer_to": "lena", "audience": "lena"}
-        self.assertEqual(DEMUX.delivery_address_label(payload), "0 (lena)")
+        self.assertEqual(DEMUX.delivery_address_label(payload), "0 (all audience)")
+        self.assertTrue(DEMUX.is_broadcast_delivery(payload))
+
+    def test_direct_peer_copy_names_its_recipient_channel(self):
+        payload = {"channel": "2", "peer_to": "lena", "audience": "lena"}
+        self.assertEqual(DEMUX.delivery_address_label(payload), "2 (lena)")
+        self.assertFalse(DEMUX.is_broadcast_delivery(payload))
 
     def test_founder_broadcast_keeps_source_channel_zero(self):
         payload = {"channel": "2", "origin_channel": "0", "audience": "*"}

@@ -47,6 +47,27 @@ struct LastServingVerdict: Equatable {
   let fallbackUsed: Bool
 }
 
+/// The one action a coding-agent row offers for its client.
+enum CreatorAgentBridgeAction: Equatable {
+  case install
+  case update
+  /// The installed skill is this app's generation; the button is disabled.
+  case upToDate
+}
+
+/// What Settings › Creator states before installing or updating the skill.
+struct CreatorAgentBridgeInstallPlan: Equatable, Identifiable {
+  let client: AgentBridgeClient
+  /// `.install` or `.update`, never `.upToDate`.
+  let action: CreatorAgentBridgeAction
+  let skillPath: String
+  let bundleVersion: String?
+  /// Other installed clients whose outdated copy the same install updates.
+  let alsoUpdated: [AgentBridgeClient]
+
+  var id: AgentBridgeClient { client }
+}
+
 /// The model preference row of the Engine tab: the model the selected mode
 /// actually loads. Nil when the mode has no model preference to show.
 struct SttModelRow: Equatable {
@@ -60,7 +81,7 @@ struct SttModelRow: Equatable {
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
     return String(
-      localized: "No transcription in this app session",
+      localized: "No transcription in this session",
       comment: "Last transcription engine row before the first transcription of this launch"
     )
   }
@@ -308,7 +329,6 @@ enum SettingsPanelDestination: Equatable {
   case audio
   case dictionary
   case lab
-  case license
   case user
 }
 
@@ -337,7 +357,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case audio
   case voiceLab
   case lab
-  case license
   case user
 
   var id: String { rawValue }
@@ -356,9 +375,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       return String(localized: "Dictionary", comment: "Settings section: custom vocabulary")
     case .lab:
       return String(localized: "Lab", comment: "Settings section: developer experiments")
-    case .license: return String(localized: "License", comment: "Settings section")
     case .user:
-      return String(localized: "About", comment: "Settings section: the app, its data and resets")
+      return String(
+        localized: "User",
+        comment: "Settings section: license, app version, local data and resets")
     }
   }
 
@@ -372,7 +392,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return .audio
     case .voiceLab: return .dictionary
     case .lab: return .lab
-    case .license: return .license
     case .user: return .user
     }
   }
@@ -381,7 +400,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .lab:
       return DeveloperSurface.isEnabled() ? .available : .hidden
-    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .license, .user:
+    case .creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab, .user:
       return .available
     }
   }
@@ -395,7 +414,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     switch self {
     case .creator, .shortcuts, .audio: return .setup
     case .keys, .agent, .engine, .voiceLab, .lab: return .intelligence
-    case .license, .user: return .account
+    case .user: return .account
     }
   }
 
@@ -411,8 +430,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .audio: return "mic"
     case .voiceLab: return "character.book.closed"
     case .lab: return "waveform.path.ecg"
-    case .license: return "checkmark.seal"
-    case .user: return "info.circle"
+    case .user: return "person.crop.circle"
     }
   }
 
@@ -488,22 +506,24 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .lab:
       // Developer surface: its names are not interface copy.
       settingsSearchTerms(fixed: ["lab", "voice lab", "three-judge", "seismograph"])
-    case .license:
-      settingsSearchTerms(
-        localized: String(
-          localized: "settings.search.section.license",
-          defaultValue: "subscription, activation, trial, billing",
-          comment:
-            "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
-        ))
     case .user:
+      // User carries the license since the License tab folded into it
+      // (Founder decision, 2026-10-19), so both alias lists land here.
       settingsSearchTerms(
         localized: String(
           localized: "settings.search.section.user",
-          defaultValue: "about, version, build, commit, data folder, privacy, reset, trash",
+          defaultValue:
+            "about, version, build, commit, updates, data folder, privacy, reset, trash",
           comment:
             "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
         ))
+        + settingsSearchTerms(
+          localized: String(
+            localized: "settings.search.section.license",
+            defaultValue: "license, license key, subscription, activation, trial, billing",
+            comment:
+              "Search aliases, comma-separated, never shown. List the words people would type to find this; add synonyms freely"
+          ))
     }
   }
 
@@ -614,7 +634,7 @@ func healthState(
         localized: "License verification unavailable",
         comment: "Settings health footer, sentence case"
       ),
-      targetSection: .license
+      targetSection: .user
     )
   }
   if keys == .missing {
@@ -662,7 +682,7 @@ func healthState(
         localized: "Checking license…",
         comment: "Settings health footer, sentence case"
       )
-      pendingSection = .license
+      pendingSection = .user
     } else {
       pendingMessage = nil
       pendingSection = nil
@@ -733,7 +753,8 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
   let threads = Int(preview.threads)
   let megabytes = String(format: "%.1f", Double(preview.totalBytes) / 1_048_576.0)
   return String(
-    localized: "\(recordings) recordings from \(days) days, \(threads) threads (\(megabytes) MB)",
+    localized:
+      "\(recordings) recordings from \(days) days, \(threads) conversations (\(megabytes) MB)",
     comment: "Reset impact; each count needs its own plural variation"
   )
 }
@@ -743,6 +764,8 @@ enum SettingsAnchor: String, Hashable {
   case audioReadiness
   case maxConsultation
   case providersCloudTranscription
+  /// The License section at the top of Settings › User.
+  case license
 }
 
 struct SettingsDeepLinkTarget: Equatable {
@@ -807,6 +830,22 @@ final class SettingsDeepLink {
   }
 }
 
+/// Reasoning levels a lane can ask for, lowest first; the ids are the core's
+/// `ReasoningEffort` words (oh-my-pi's thinking levels, `none` for its `off`).
+struct ReasoningLevel: Identifiable, Hashable {
+  let id: String
+  let title: String
+
+  static let all: [ReasoningLevel] = [
+    ReasoningLevel(id: "none", title: String(localized: "None", comment: "Reasoning level")),
+    ReasoningLevel(id: "minimal", title: String(localized: "Minimal", comment: "Reasoning level")),
+    ReasoningLevel(id: "low", title: String(localized: "Low", comment: "Reasoning level")),
+    ReasoningLevel(id: "medium", title: String(localized: "Medium", comment: "Reasoning level")),
+    ReasoningLevel(id: "high", title: String(localized: "High", comment: "Reasoning level")),
+    ReasoningLevel(id: "xhigh", title: String(localized: "Extra high", comment: "Reasoning level")),
+  ]
+}
+
 /// The two request lanes (D4: no Main fallback lane). A lane binds a provider
 /// reference (`vendor id` | `custom:<id>`) and a model; the endpoint is the
 /// provider's, never the lane's.
@@ -827,7 +866,9 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
   var subtitle: String {
     self == .assistive
       ? String(localized: "The Agent and voice assistant model")
-      : String(localized: "The transcript cleanup model")
+      : String(
+        localized: "Corrections and Smart. Max uses the Agent model.",
+        comment: "Formatting lane: the levels it serves; Max runs on the Agent lane")
   }
 
   var providerKey: String {
@@ -934,16 +975,12 @@ struct LLMLaneModel {
       }
       return String(localized: "using cached models", comment: "Model discovery status")
     case "no_key":
-      if runtime.accountAuth {
-        return String(
-          localized:
-            "The connected account covers model requests, but the model list needs this provider's API key. Keep the current model or enter a model ID below."
-        )
-      }
+      // Discovery authenticates with the stored API key only, never with an
+      // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
+      // so one sentence holds with or without a connected account. It names
+      // the list, not requests: an account still serves those.
       return String(
-        localized:
-          "Add this provider's API key under Providers to list its models, or enter a model ID below."
-      )
+        localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
@@ -953,7 +990,7 @@ struct LLMLaneModel {
       if runtime.accountAuth {
         return String(
           localized:
-            "Model list unavailable: the stored API key was rejected. The connected account still covers requests. Check the key under Providers.",
+            "The API key was rejected, so there is no model list. The account still works.",
           comment: "Model discovery failed while the provider account stays signed in"
         )
       }
@@ -1183,10 +1220,31 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var interfaceLanguageNotice: String?
   var onApplyInterfaceLanguage: ((@escaping @MainActor () -> Void) async throws -> Void)?
   private let languagePreference: InterfaceLanguagePreference
+  // Appearance applies through AppKit; sheet tokens observe their persisted
+  // preference directly, so all open views repaint without restarting.
+  @Published private(set) var appearanceChoice: AppAppearanceChoice
+  var sheetShadeDark: SheetShade { sheetShadePreference.current(dark: true) }
+  var sheetShadeLight: SheetShade { sheetShadePreference.current(dark: false) }
+  var onApplyAppearance: (() -> Void)?
+  private let appearancePreference: AppearancePreference
+  private let sheetShadePreference: SheetShadePreference
+  private let channelMapPreference: OverlayChannelMapPreference
+  var overlayIntercomMode: OverlayIntercomPresentationMode { channelMapPreference.mode }
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
   /// Called only after the Rust owner accepts a fresh consultation.
   var onNewMaxConsultation: (() -> Void)?
+  /// User-initiated update check. The app wires it to its one Sparkle owner
+  /// (`UpdaterService`); Settings never starts an updater of its own.
+  var onCheckForUpdates: () -> Void = {}
+  /// Mirrors `UpdaterService.canCheckForUpdates`: false while a check is in
+  /// flight or no updater runs, so the button cannot start a second check.
+  @Published var canCheckForUpdates = false
+  /// Re-open the first-run setup wizard from Settings › Creator. Bound by
+  /// App.swift to the onboarding window controller; `present()` always
+  /// fronts the window, mid-onboarding or after completion (Founder,
+  /// 2026-10-20: the tray row went away, the action lives in the Creator).
+  var onOpenSetupWizard: () -> Void = {}
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?
@@ -1208,6 +1266,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var mcpServers: [CsMcpServer] = []
   @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
   @Published private(set) var mcpTestPending: Set<String> = []
+  private var mcpTestGenerations: [String: UUID] = [:]
   @Published private(set) var toolCapabilities: [CsToolCapability] = []
   /// True while the tool catalog is being discovered. Discovery spawns every
   /// configured MCP server and waits for its `tools/list`, so the Tools tab
@@ -1225,6 +1284,9 @@ final class SettingsViewModel: ObservableObject {
   )
   @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
   @Published private(set) var keyProbePending: Set<String> = []
+  /// Settings › Formatting › Test: the last measured request, and whether one runs.
+  @Published private(set) var formattingProbe: CsFormattingProbe?
+  @Published private(set) var formattingProbePending = false
   @Published private(set) var qualityRecords: [CsQualityRecord] = []
   @Published private(set) var unchangedQualityTakes: UInt64 = 0
   /// Every saved correction, not just the page `refreshVoiceLab()` loads:
@@ -1393,6 +1455,14 @@ final class SettingsViewModel: ObservableObject {
       defaults: languagePreferences, preferredLanguages: preferredLanguages,
       processLanguage: processInterfaceLanguage)
     self.interfaceLanguage = languagePreference.current
+    self.appearancePreference = AppearancePreference(defaults: languagePreferences)
+    self.sheetShadePreference =
+      languagePreferences === UserDefaults.standard
+      ? .shared : SheetShadePreference(defaults: languagePreferences)
+    self.appearanceChoice = appearancePreference.current
+    self.channelMapPreference =
+      languagePreferences === UserDefaults.standard
+      ? .shared : OverlayChannelMapPreference(defaults: languagePreferences)
     self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.audioRecordingControlProvider =
       audioRecordingControlProvider ?? Self.liveAudioRecordingControlProvider(for: engine)
@@ -1475,11 +1545,50 @@ final class SettingsViewModel: ObservableObject {
     creatorAgentBridgeLaunchDetail = Self.agentBridgeLaunchNotice
   }
 
+  /// What the row's button would do for `client` under `status`. A client
+  /// whose installed skill is this app's generation has nothing to do, so its
+  /// button is disabled rather than offering a rewrite of identical files
+  /// (Founder decision, 2026-10-18).
+  static func creatorAgentBridgeAction(
+    for client: AgentBridgeClient, in status: AgentBridgeInstallationStatus
+  ) -> CreatorAgentBridgeAction {
+    guard status.installedClients.contains(client) else { return .install }
+    return status.clientsWithCurrentSkill.contains(client) ? .upToDate : .update
+  }
+
+  /// Everything the confirmation step has to say before a file is written:
+  /// the destination folder, whether it replaces this app's earlier copy and
+  /// which other installed clients the same transaction updates. `nil` when
+  /// there is nothing to do or no payload to install.
+  func creatorAgentBridgeInstallPlan(
+    for client: AgentBridgeClient
+  ) -> CreatorAgentBridgeInstallPlan? {
+    let status = creatorAgentBridgeStatus
+    guard status.payloadAvailable else { return nil }
+    let action = Self.creatorAgentBridgeAction(for: client, in: status)
+    guard action != .upToDate else { return nil }
+    // The installer rewrites every client already in its receipt; the ones
+    // whose copy is outdated change with this click too.
+    let alsoUpdated = status.installedClients.filter {
+      $0 != client && !status.clientsWithCurrentSkill.contains($0)
+    }
+    return CreatorAgentBridgeInstallPlan(
+      client: client,
+      action: action,
+      skillPath: client.skillPathLabel,
+      bundleVersion: status.bundleVersion,
+      alsoUpdated: alsoUpdated
+    )
+  }
+
   /// Add/update one client while preserving other managed clients. Creator
-  /// has no implicit deselection or deletion action.
+  /// has no implicit deselection or deletion action. The view calls this only
+  /// after the confirmation step; a client already up to date is left alone.
   func installCreatorAgentBridge(for client: AgentBridgeClient) {
     let current = creatorAgentBridge.status()
     creatorAgentBridgeStatus = current
+    // Nothing to do for a current client: the earlier notice stays on screen.
+    guard Self.creatorAgentBridgeAction(for: client, in: current) != .upToDate else { return }
     creatorAgentBridgeError = nil
     creatorAgentBridgeNotice = nil
     guard current.payloadAvailable else {
@@ -1549,7 +1658,7 @@ final class SettingsViewModel: ObservableObject {
     if section == .keys || engine?.shouldShowOnboarding() == false {
       refreshProviderAccess()
     }
-    if section == .license { refreshLicense() }
+    if section == .user { refreshLicense() }
     refreshDictationReadiness()
   }
 
@@ -1559,6 +1668,7 @@ final class SettingsViewModel: ObservableObject {
   /// no credential read.
   func refreshDictationReadiness() {
     refreshPermissions()
+    // Every sidebar click lands here: validate the model off the main actor.
     refreshWhisperModelStatus()
     guard engine != nil else { return }
     Task { @MainActor [weak self] in await self?.refreshAdmission() }
@@ -1987,6 +2097,30 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Edit the existing entry in place; the store preserves env and unknown
+  /// fields. An empty token retains the existing Keychain reference.
+  func updateMcpServer(
+    _ server: CsMcpServer, command: String, args: [String],
+    endpoint: String, token: String
+  ) -> MCPAddFailure? {
+    guard let mcpAdmin else { return nil }
+    do {
+      try mcpAdmin.updateServer(
+        name: server.name,
+        input: CsMcpServerInput(
+          name: server.name, command: command, args: args, enabled: server.enabled,
+          endpoint: endpoint, authRef: endpoint.isEmpty ? "" : server.authRef, token: token))
+      invalidateMcpTest(server.name)
+      reloadMcpServers()
+      refreshAgentStatus()
+      return nil
+    } catch {
+      let failure = MCPAddFailure(error)
+      lastError = failure.detail
+      return failure
+    }
+  }
+
   /// The server the Remove button asked about. While it is set the alert is
   /// up and nothing has been deleted: Cancel, Escape or closing the alert
   /// clears it, only the alert's destructive button removes.
@@ -2021,7 +2155,7 @@ final class SettingsViewModel: ObservableObject {
           endpoint: server.endpoint, authRef: server.authRef, token: ""
         )
       )
-      mcpTestResults[server.name] = nil
+      invalidateMcpTest(server.name)
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -2034,7 +2168,7 @@ final class SettingsViewModel: ObservableObject {
     guard let mcpAdmin else { return }
     do {
       try mcpAdmin.removeServer(name: name)
-      mcpTestResults[name] = nil
+      invalidateMcpTest(name)
       reloadMcpServers()
       refreshAgentStatus()
     } catch {
@@ -2061,11 +2195,20 @@ final class SettingsViewModel: ObservableObject {
     guard let mcpAdmin else { return }
     guard !mcpTestPending.contains(name) else { return }
     mcpTestPending.insert(name)
+    let generation = UUID()
+    mcpTestGenerations[name] = generation
     Task {
       let result = await mcpAdmin.testServer(name)
+      guard mcpTestGenerations[name] == generation else { return }
       mcpTestPending.remove(name)
       mcpTestResults[name] = result
     }
+  }
+
+  private func invalidateMcpTest(_ name: String) {
+    mcpTestGenerations[name] = UUID()
+    mcpTestPending.remove(name)
+    mcpTestResults[name] = nil
   }
 
   func select(_ target: SettingsSection) {
@@ -2193,7 +2336,7 @@ final class SettingsViewModel: ObservableObject {
         )
       : String(localized: "No Agent provider or MCP connector secrets are currently stored.")
     let moved = String(
-      localized: "Moves \(threads) Agent threads and \(files) Agent files to Trash.",
+      localized: "Moves \(threads) Agent conversations and \(files) Agent files to Trash.",
       comment: "Agent reset impact; each count needs its own plural variation"
     )
     let unchanged = String(
@@ -2338,7 +2481,7 @@ final class SettingsViewModel: ObservableObject {
   /// on-device. Max runs on the Agent lane (its readiness is the Agent's), and
   /// Apple needs no cloud credential.
   var cloudFormattingRequired: Bool {
-    guard settings.aiFormattingEnabled, !settings.formatOnDevice else { return false }
+    guard !settings.formatOnDevice else { return false }
     switch FormattingPolicyOption(storedValue: settings.formattingLevel) {
     case .correction, .smart: return true
     case .off, .max, nil: return false
@@ -2354,21 +2497,14 @@ final class SettingsViewModel: ObservableObject {
 
   func laneUsageDescription(_ lane: LLMLane) -> String {
     if lane == .assistive { return llmLane(lane).availabilityDescription }
-    if !settings.aiFormattingEnabled
-      || FormattingPolicyOption(storedValue: settings.formattingLevel) == .off
-    {
+    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .off {
       return String(localized: "Formatting is disabled. This lane is not required for readiness.")
     }
-    if FormattingPolicyOption(storedValue: settings.formattingLevel) == .max {
-      return String(
-        localized:
-          "Max uses the Agent model and endpoint. This lane serves Smart and Corrections only.",
-        comment: "Formatting lane usage while the Max level is selected")
-    }
     if settings.formatOnDevice {
+      // The engine row above already says Apple runs first; this line only
+      // adds the lane's role and its real access state.
       return String(
-        localized:
-          "Apple on-device formatting handles Smart and Corrections without a cloud credential. This lane is used when Apple fails. \(llmLane(lane).availabilityDescription)",
+        localized: "Used when Apple fails. \(llmLane(lane).availabilityDescription)",
         comment: "The placeholder is the resolved cloud lane availability")
     }
     return llmLane(lane).availabilityDescription
@@ -2418,6 +2554,19 @@ final class SettingsViewModel: ObservableObject {
     refreshAgentStatus()
   }
 
+  /// Persist the formatting lane's reasoning level. `none` is the default
+  /// and the core stores it as unset; higher levels are opt-in.
+  func setFormattingReasoning(_ level: String) {
+    settings.llmFormattingReasoning = level
+    persist("LLM_FORMATTING_REASONING", level)
+  }
+
+  /// Persist the Agent's reasoning level; `default` returns it to the model's.
+  func setAgentReasoning(_ level: String) {
+    settings.llmAssistiveReasoning = level
+    persist("LLM_ASSISTIVE_REASONING", level)
+  }
+
   /// Persist a model for one LLM lane. Empty clears the JSON override.
   func setLLMModel(_ value: String, for lane: LLMLane) {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2426,20 +2575,14 @@ final class SettingsViewModel: ObservableObject {
   }
 
   var formattingDescription: String {
-    guard settings.aiFormattingEnabled else {
-      return String(
-        localized: "disabled · AI formatting off",
-        comment: "Formatting status: the AI formatting master switch is off")
-    }
-    return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+    FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
       ?? String(localized: "invalid policy", comment: "Formatting status: stored level is unknown")
   }
 
   // MARK: - Creator mutations (write through the core router)
 
   var maxConsultationEnabled: Bool {
-    settings.aiFormattingEnabled
-      && FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
+    FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
   }
 
   func refreshMaxToolApprovals() async {
@@ -2546,6 +2689,25 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  // MARK: - Appearance and sheet shade
+
+  /// Saves and applies at once: AppKit repaints every window.
+  func selectAppearance(_ choice: AppAppearanceChoice) {
+    appearanceChoice = choice
+    appearancePreference.select(choice)
+    onApplyAppearance?()
+  }
+
+  /// Saves and invalidates every view reading the shared sheet tokens.
+  func selectSheetShade(_ shade: SheetShade) {
+    sheetShadePreference.select(shade)
+  }
+
+  func selectOverlayIntercomMode(_ mode: OverlayIntercomPresentationMode) {
+    objectWillChange.send()
+    channelMapPreference.selectMode(mode)
+  }
+
   func beginNewMaxConsultation() async {
     guard maxConsultationEnabled, !newMaxConsultationPending else { return }
     guard let engine else {
@@ -2572,11 +2734,6 @@ final class SettingsViewModel: ObservableObject {
   func setLanguage(_ lang: CsLanguage) {
     settings.whisperLanguage = lang
     persist("WHISPER_LANGUAGE", lang.shortCode)
-  }
-
-  func setFormattingEnabled(_ on: Bool) {
-    settings.aiFormattingEnabled = on
-    persist("AI_FORMATTING_ENABLED", on ? "1" : "0")
   }
 
   func setAgentAutoSend(_ on: Bool) {
@@ -2807,6 +2964,14 @@ final class SettingsViewModel: ObservableObject {
     let bounded = min(2.0, max(0.3, seconds))
     settings.lightPlusSentencePauseSec = bounded
     persist("LIGHT_PLUS_SENTENCE_PAUSE_SEC", String(format: "%.1f", bounded))
+  }
+
+  /// Lab ledger slider. Applies to the next recording; 0 is today's engine.
+  func setLedgerSensitivity(_ position: Int32) {
+    guard DeveloperSurface.isEnabled() else { return }
+    let bounded = min(100, max(-100, position))
+    settings.ledgerSensitivity = bounded
+    persist("CODESCRIBE_LEDGER_SENSITIVITY", String(bounded))
   }
 
   func setSoundFeedbackEnabled(_ enabled: Bool) {
@@ -3196,6 +3361,22 @@ final class SettingsViewModel: ObservableObject {
     settings.channelModifier = normalized
     writeHotkeySurface("AGENT_CHANNEL_MODIFIER", normalized) {
       try hotkeys?.setChannelModifier(normalized)
+    }
+  }
+
+  /// The widget chord from the canonical settings snapshot (`WIDGET_SHORTCUT`).
+  var widgetShortcut: WidgetShortcutChord {
+    WidgetShortcutChord(wireId: settings.widgetShortcut) ?? .default
+  }
+
+  /// Persists a recorded widget chord and live-reloads the detector. The core
+  /// validates the chord again and a refusal surfaces in `lastError`; the
+  /// snapshot keeps the previous chord in that case.
+  func setWidgetShortcut(_ chord: WidgetShortcutChord) {
+    settings.widgetShortcut = chord.wireId
+    settings.widgetShortcutLabel = chord.label
+    writeHotkeySurface("WIDGET_SHORTCUT", chord.wireId) {
+      try hotkeys?.setWidgetShortcut(chord.wireId)
     }
   }
 
@@ -3592,6 +3773,25 @@ final class SettingsViewModel: ObservableObject {
           message: error.userFacingMessage,
           probedEndpoint: nil
         )
+        self.lastError = error.userFacingMessage
+      }
+    }
+  }
+
+  /// Send one formatting request through the live formatter path. Errors
+  /// before the request (bridge, runtime) land in `lastError`; a provider
+  /// failure or a missed deadline comes back as the probe's status.
+  func testFormatting(sample: String) {
+    guard let engine, !formattingProbePending else { return }
+    formattingProbePending = true
+    let sample = sample.trimmingCharacters(in: .whitespacesAndNewlines)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.formattingProbePending = false }
+      do {
+        self.formattingProbe = try await engine.testFormattingAsync(sample: sample)
+      } catch {
+        self.formattingProbe = nil
         self.lastError = error.userFacingMessage
       }
     }

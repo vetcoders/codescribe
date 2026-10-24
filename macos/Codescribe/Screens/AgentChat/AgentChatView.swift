@@ -9,9 +9,13 @@ struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   private let maxPermissions: SettingsViewModel?
   /// Persist only the user's expanded/collapsed choice; the split view owns
-  /// column geometry inside the fixed `AgentSidebarMetrics` bounds.
+  /// column geometry inside the bounds `CSSidebarColumn` carries.
   @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
+  /// View state only: opening the context panel never touches the thread,
+  /// draft, model, recording or any agent call.
+  @AppStorage(AgentContextPanelPreference.defaultsKey) private var contextPanelOpen =
+    AgentContextPanelPreference.defaultIsOpen
 
   init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
@@ -19,27 +23,26 @@ struct AgentChatView: View {
   }
 
   var body: some View {
-    NavigationSplitView(columnVisibility: columnVisibility) {
+    NavigationSplitView(columnVisibility: sidebarVisibility) {
       ThreadRail(store: store)
-        .navigationSplitViewColumnWidth(
-          min: AgentSidebarMetrics.minimumWidth,
-          ideal: AgentSidebarMetrics.idealWidth,
-          max: AgentSidebarMetrics.maximumWidth
-        )
     } detail: {
-      ThreadDetail(store: store, maxPermissions: maxPermissions)
-        // Sized so the expanded columns fit the window floor exactly; the
-        // floor itself belongs to the window. A minimum on the whole split
-        // view makes an opening sidebar slide to half its width and jump.
-        .frame(minWidth: AgentWindowMetrics.detailMinWidth)
+      ThreadDetail(
+        store: store, maxPermissions: maxPermissions, isContextOpen: $contextPanelOpen
+      )
+      // Sized so the expanded columns fit the window floor exactly; the
+      // floor itself belongs to the window. A minimum on the whole split
+      // view makes an opening sidebar slide to half its width and jump.
+      .frame(minWidth: AgentWindowMetrics.detailFloorWidth(contextPanelOpen: contextPanelOpen))
     }
-    .modifier(AgentIntegratedChrome(store: store, isPinned: $isPinned))
-    .background { AgentSidebarShortcut(toggle: { toggleSidebar() }) }
+    .csSidebarToggle(expanded: $sidebarExpanded)
+    .modifier(
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
     .csFocusPolicy()
-    .developerPowerCorner(padding: 8)
-    .background(AgentWindowCapabilities(isPinned: isPinned))
+    .background(
+      AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
+    )
     .frame(
-      minWidth: AgentWindowMetrics.minWidth,
+      minWidth: AgentWindowMetrics.windowFloorWidth(contextPanelOpen: contextPanelOpen),
       idealWidth: AgentWindowMetrics.idealWidth,
       minHeight: AgentWindowMetrics.minHeight,
       idealHeight: AgentWindowMetrics.idealHeight
@@ -52,40 +55,10 @@ struct AgentChatView: View {
     }
   }
 
-  /// The system sidebar toggle, a divider drag to collapse and ⌃⌘S all write
-  /// through here, so every path persists the same choice.
-  private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-    Binding(
-      get: { sidebarExpanded ? .all : .detailOnly },
-      set: { sidebarExpanded = $0 != .detailOnly }
-    )
-  }
-
-  private func toggleSidebar() {
-    withAnimation {
-      sidebarExpanded.toggle()
-    }
-  }
-}
-
-/// ⌃⌘S without a second visible toggle. The split view's own toolbar toggle
-/// sits in the sidebar column while it is open and on the detail's leading
-/// edge while it is collapsed; it carries no key equivalent, and the
-/// accessory app has no View menu to lend one, so this zero-size button holds
-/// the shortcut only.
-private struct AgentSidebarShortcut: View {
-  let toggle: () -> Void
-
-  var body: some View {
-    Button(action: toggle) {
-      EmptyView()
-    }
-    .buttonStyle(.plain)
-    .keyboardShortcut("s", modifiers: [.command, .control])
-    .frame(width: 0, height: 0)
-    .opacity(0)
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
+  /// The toolbar toggle, a divider drag to collapse and ⌃⌘S all write the
+  /// one persisted flag, so every path keeps the same choice.
+  private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+    CSSidebarVisibility.binding(expanded: $sidebarExpanded)
   }
 }
 
@@ -98,33 +71,59 @@ private struct MaxPermissionPresentation: View {
       ScrollView {
         MaxApprovalCards(model: model)
           .padding(CSSpace.card)
+          .csAutohidingScrollers()
       }
       .frame(maxHeight: 260)
     }
   }
 }
 
-/// Desktop-utility window floor for Agent. Named so the split-view rail
-/// (expanded min 267) plus a usable detail column stay a single invariant:
-/// The root layout and the AppKit window agree on this floor, including when
-/// SwiftUI recomputes its window constraints after the sidebar collapses.
+/// Desktop-utility window floor for Agent. Named so the shared sidebar
+/// column (`CSSidebarWidth.navigation`, opening at its ideal 216) plus a
+/// usable detail column stay a single invariant: the root layout and the
+/// AppKit window agree on this floor, including when SwiftUI recomputes its
+/// window constraints after the sidebar collapses. The floor itself did not
+/// move when the rail narrowed; the conversation took the points the rail
+/// gave up.
+///
+/// The optional context panel never eats into the conversation: the
+/// conversation keeps `detailMinWidth` whether the panel is open or not, and
+/// an open panel raises the window floor by its own footprint instead
+/// (`windowFloorWidth(contextPanelOpen:)`). A window narrower than that floor
+/// widens when the panel opens (`AgentWindowChrome.apply`).
 enum AgentWindowMetrics {
   static let minWidth: CGFloat = 640
   static let minHeight: CGFloat = 440
   static let idealWidth: CGFloat = 840
   static let idealHeight: CGFloat = 520
-  /// Narrowest conversation column. With the rail at its minimum the window
-  /// lands exactly on `minWidth`.
-  static let detailMinWidth: CGFloat = minWidth - AgentSidebarMetrics.minimumWidth
-}
+  /// Narrowest conversation column. The split view opens the rail at its
+  /// ideal width, not its minimum, so the window lands exactly on `minWidth`
+  /// with the rail as it opens — the rule Settings already follows
+  /// (880 − 216). Sized from the 196 pt minimum, the columns overran the
+  /// 640 pt floor by 20 pt on both sides.
+  static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.ideal
+  /// The context panel is a fixed column (Founder, 2026-10-20: start at
+  /// 260 pt). Long titles wrap inside it; nothing in it widens the panel.
+  static let contextPanelWidth: CGFloat = 260
+  /// The hairline between the conversation and the panel.
+  static let contextPanelDividerWidth: CGFloat = 1
+  /// Points an open panel adds to the detail column.
+  static let contextPanelFootprint: CGFloat = contextPanelWidth + contextPanelDividerWidth
+  /// The context panel's header row ("Agent context" and its close button).
+  /// The conversation's own identity lives in the window bar, so the window
+  /// has one bar of the same height as Settings (founders, 2026-10-21).
+  static let panelHeaderHeight: CGFloat = 36
 
-/// Fixed bounds of the native sidebar column. Long thread titles truncate
-/// inside them; they never widen the column. Collapsing removes the whole
-/// column.
-enum AgentSidebarMetrics {
-  static let minimumWidth: CGFloat = 267
-  static let idealWidth: CGFloat = 267
-  static let maximumWidth: CGFloat = 360
+  /// Window floor: the closed-panel floor plus the panel footprint when open.
+  static func windowFloorWidth(contextPanelOpen: Bool) -> CGFloat {
+    contextPanelOpen ? minWidth + contextPanelFootprint : minWidth
+  }
+
+  /// Detail column floor: the conversation's `detailMinWidth`, plus the panel
+  /// when it is open. Still exactly the window floor minus the rail as it opens.
+  static func detailFloorWidth(contextPanelOpen: Bool) -> CGFloat {
+    windowFloorWidth(contextPanelOpen: contextPanelOpen) - CSSidebarWidth.navigation.ideal
+  }
 }
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
@@ -135,8 +134,35 @@ enum AgentWindowChrome {
     String(localized: "Agent", comment: "Agent window title")
   }
 
+  /// The one Agent window, built the same way for the app and its tests.
+  /// The window carries its final style mask before SwiftUI sees the content:
+  /// created from the controller first and given `.fullSizeContentView`
+  /// afterwards, it never gets the split view's sidebar toggle.
   @MainActor
-  static func apply(_ window: NSWindow) {
+  static func makeWindow(content: NSViewController) -> NSWindow {
+    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
+    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
+    // back into the style mask (Founder decision, 2026-10-10).
+    let window = HidingWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
+      styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+      backing: .buffered,
+      defer: false
+    )
+    window.contentViewController = content
+    window.setContentSize(NSSize(width: 1120, height: 720))
+    window.isReleasedWhenClosed = false
+    // LSUIElement accessory: join the active Space so a passive
+    // `orderFrontRegardless` is actually visible during voice delivery.
+    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    DockPresence.adopt(window)
+    // After adopt: style-mask repair must not leave a second painted "Agent" row.
+    apply(window)
+    return window
+  }
+
+  @MainActor
+  static func apply(_ window: NSWindow, contextPanelOpen: Bool = false) {
     window.title = title()
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
@@ -148,10 +174,29 @@ enum AgentWindowChrome {
     // The window owns the floor. The columns alone would let a collapsed
     // window shrink to the detail column, and a minimum on the split view
     // makes an opening sidebar slide and jump.
-    window.contentMinSize = NSSize(
-      width: AgentWindowMetrics.minWidth,
+    let floor = NSSize(
+      width: AgentWindowMetrics.windowFloorWidth(contextPanelOpen: contextPanelOpen),
       height: AgentWindowMetrics.minHeight
     )
+    window.contentMinSize = floor
+    growToFloor(window, floor: floor)
+  }
+
+  /// A raised floor does not resize a window by itself. When the context
+  /// panel opens in a window narrower than the new floor, the window widens by
+  /// the shortfall, keeping its leading edge unless that would leave the
+  /// screen. Closing the panel lowers the floor and leaves the width alone.
+  @MainActor
+  static func growToFloor(_ window: NSWindow, floor: NSSize) {
+    let content = window.contentRect(forFrameRect: window.frame)
+    let shortfall = floor.width - content.width
+    guard shortfall > 0.5 else { return }
+    var frame = window.frame
+    frame.size.width += shortfall
+    if let visible = (window.screen ?? NSScreen.main)?.visibleFrame, frame.maxX > visible.maxX {
+      frame.origin.x = max(visible.minX, visible.maxX - frame.width)
+    }
+    window.setFrame(frame, display: true)
   }
 }
 
@@ -165,6 +210,7 @@ enum AgentWindowLevelPolicy {
 
 private struct AgentWindowCapabilities: NSViewRepresentable {
   let isPinned: Bool
+  let contextPanelOpen: Bool
 
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
@@ -179,19 +225,22 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   private func configure(_ window: NSWindow?) {
     guard let window else { return }
     window.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
-    AgentWindowChrome.apply(window)
+    AgentWindowChrome.apply(window, contextPanelOpen: contextPanelOpen)
   }
 }
 
 // MARK: - Integrated titlebar
 
-/// The window's only painted header. The split view supplies the sidebar
-/// toggle; the wordmark, thread identity and pin/menu share the native
-/// toolbar. Rename, delete, and export alerts stay on this modifier: alerts
-/// attached to a toolbar item do not present.
+/// The window's native bar, the only bar the window has. The split view
+/// supplies the sidebar toggle; the leading group holds the wordmark and the
+/// conversation's identity (`AgentConversationHeader`: title, live status,
+/// "Agent · model"), the trailing cluster the Voice Lab mark, width, Context,
+/// pin and menu. No principal item. Rename, delete, and export alerts stay on
+/// this modifier: alerts attached to a toolbar item do not present.
 private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
+  @Binding var isContextOpen: Bool
   @Environment(\.openWindow) private var openWindow
   @State private var isRenaming = false
   @State private var renameText = ""
@@ -201,14 +250,13 @@ private struct AgentIntegratedChrome: ViewModifier {
     .rawValue
 
   private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
-  private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
 
   func body(content: Content) -> some View {
     content
       .toolbar { agentToolbar }
       .modifier(CSWindowHeaderChrome())
-      .alert("Rename thread", isPresented: $isRenaming) {
-        TextField("Thread title", text: $renameText)
+      .alert("Rename conversation", isPresented: $isRenaming) {
+        TextField("Conversation title", text: $renameText)
         Button("Rename") {
           if let thread = store.currentThread { store.rename(thread, to: renameText) }
         }
@@ -238,21 +286,33 @@ private struct AgentIntegratedChrome: ViewModifier {
       }
   }
 
-  /// Brand, identity and actions occupy one native bar, without separate
-  /// glass capsules. The bar stays visible as the turns scroll beneath it.
+  /// Brand and actions occupy one native bar, without separate glass
+  /// capsules. The bar stays visible as the turns scroll beneath it.
   @ToolbarContentBuilder
   private var agentToolbar: some ToolbarContent {
+    // Without a principal item the unified bar packs `.primaryAction` right
+    // after the wordmark (seen on the installed build, 2026-10-21); the
+    // flexible space in the group keeps pin and menu on the trailing edge.
     if #available(macOS 26.0, *) {
-      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
-        .sharedBackgroundVisibility(.hidden)
-      ToolbarItem(placement: .principal) { CSWindowHeaderItem { identityCluster } }
-        .sharedBackgroundVisibility(.hidden)
-      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
-        .sharedBackgroundVisibility(.hidden)
+      ToolbarItemGroup(placement: .navigation) {
+        CSWindowHeaderItem { wordmark }
+        identity
+      }
+      .sharedBackgroundVisibility(.hidden)
+      ToolbarItemGroup(placement: .primaryAction) {
+        Spacer()
+        CSWindowHeaderItem { trailingCluster }
+      }
+      .sharedBackgroundVisibility(.hidden)
     } else {
-      ToolbarItem(placement: .navigation) { CSWindowHeaderItem { wordmark } }
-      ToolbarItem(placement: .principal) { CSWindowHeaderItem { identityCluster } }
-      ToolbarItem(placement: .primaryAction) { CSWindowHeaderItem { trailingCluster } }
+      ToolbarItemGroup(placement: .navigation) {
+        CSWindowHeaderItem { wordmark }
+        identity
+      }
+      ToolbarItemGroup(placement: .primaryAction) {
+        Spacer()
+        CSWindowHeaderItem { trailingCluster }
+      }
     }
   }
 
@@ -261,40 +321,21 @@ private struct AgentIntegratedChrome: ViewModifier {
       .fixedSize(horizontal: true, vertical: false)
   }
 
-  private var identityCluster: some View {
-    HStack(spacing: 8) {
-      Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(14, .semibold))
-        .foregroundStyle(Color.primary)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .layoutPriority(1)
-
-      if turnCount > 0 {
-        Text(verbatim: "· \(turnCount)")
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-          .fixedSize()
-          .lineLimit(1)
-      }
-
-      if let model = store.currentThread?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !model.isEmpty
-      {
-        Text(verbatim: model)
-          .font(CSFont.mono(10, .medium))
-          .foregroundStyle(Color.secondary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-      }
-
-      liveStatusPill
-        .layoutPriority(2)
+  /// Title and "Agent · model" beside the wordmark; absent without a thread.
+  @ViewBuilder
+  private var identity: some View {
+    if store.currentThread != nil {
+      AgentConversationHeader(store: store)
+        .padding(.leading, 6)
     }
   }
 
   private var trailingCluster: some View {
     HStack(spacing: 12) {
+      DeveloperPowerMark()
+        .fixedSize()
+      AgentWidthModeButton()
+      AgentContextToggle(isOpen: $isContextOpen)
       pinToggle
       threadMenu
     }
@@ -358,7 +399,9 @@ private struct AgentIntegratedChrome: ViewModifier {
             store.toggleFavorite(thread)
           }
         } header: {
-          Text("Thread", comment: "Menu section header above the current thread's actions")
+          Text(
+            "Conversation",
+            comment: "Menu section header above the current conversation's actions")
         }
         if thread.backendId != nil {
           Section {
@@ -377,7 +420,7 @@ private struct AgentIntegratedChrome: ViewModifier {
           Button("Open settings") { openWindow.presentSettings() }
         }
         Section {
-          Button("Delete Thread", role: .destructive) { deleteCandidate = thread }
+          Button("Delete Conversation", role: .destructive) { deleteCandidate = thread }
         }
       }
     } label: {
@@ -390,18 +433,14 @@ private struct AgentIntegratedChrome: ViewModifier {
     .accessibilityLabel(String(localized: "More actions"))
   }
 
+  /// A `Picker` inside a `Menu` renders as a native submenu whose selected
+  /// row carries the system check mark. The previous `Button` list drew the
+  /// mark through a `Label` image, which macOS menus drop, so the submenu
+  /// never showed which width was active.
   private var widthModeMenu: some View {
-    Menu {
+    Picker(selection: $widthModeRaw) {
       ForEach(ChatWidthMode.allCases) { mode in
-        Button {
-          widthModeRaw = mode.rawValue
-        } label: {
-          if mode == widthMode {
-            Label(mode.label, systemImage: "checkmark")
-          } else {
-            Text(mode.label)
-          }
-        }
+        Text(mode.label).tag(mode.rawValue)
       }
     } label: {
       Text("Conversation width", comment: "Submenu of the Agent header menu")
@@ -425,68 +464,77 @@ private struct AgentIntegratedChrome: ViewModifier {
       exportOutcome = .failed(threadTitle: title, assistantOnly: assistantOnly)
     }
   }
-
-  /// Header phase comes from the store's lifecycle projection. Message
-  /// `isStreaming` stays sticky for the caret and must not choose this label.
-  @ViewBuilder
-  private var liveStatusPill: some View {
-    switch store.selectedHeaderActivity {
-    case .idle:
-      EmptyView()
-    case .thinking:
-      StatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.amber, rippling: true)
-    case .answering:
-      StatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.terracotta, rippling: true)
-    case .usingTools:
-      StatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.oliveLight, rippling: true)
-    case .awaitingApproval:
-      StaticStatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.amber)
-    case .stopping:
-      StaticStatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.textTertiary)
-    case .failed:
-      StaticStatusPill(
-        text: store.selectedHeaderActivity.statusLabel ?? "",
-        color: CSColor.terracotta)
-    }
-  }
 }
 
 // MARK: - Detail (messages under the composer dock)
 
-/// The conversation fills the whole column. Queued turns, approvals and the
-/// composer float above it in one bottom bar, so turns scroll beneath the
-/// toolbar and the composer glass instead of stopping at a separate strip.
+/// The conversation fills its column under the window bar; queued turns,
+/// approvals and the composer float above the turns in one bottom bar, so
+/// turns scroll beneath the bar's glass and the composer glass instead of
+/// stopping at a strip.
+///
+/// The optional context panel is a fixed trailing column beside the
+/// conversation, inside the detail column, never over the composer. Opening
+/// or closing it changes only the persisted flag.
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
   let maxPermissions: SettingsViewModel?
+  @Binding var isContextOpen: Bool
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
-    conversation
-      .modifier(AgentScrollBottomBar { composerDock })
-      .modifier(CSDetailHeaderGlass())
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(CSColor.sheet)
-      .alert(
-        "Speech unavailable",
-        isPresented: Binding(
-          get: { store.speechError != nil },
-          set: { if !$0 { store.speechError = nil } }
-        )
-      ) {
-        Button("OK") { store.speechError = nil }
-      } message: {
-        Text(store.speechError ?? "")
+    HStack(spacing: 0) {
+      conversationColumn
+      if isContextOpen {
+        HStack(spacing: 0) {
+          // Runs up through the titlebar like the sidebar edge: the header
+          // glass covers the conversation, not the panel.
+          Divider()
+            .frame(width: AgentWindowMetrics.contextPanelDividerWidth)
+            .ignoresSafeArea(.container, edges: .top)
+          AgentContextPanel(
+            thread: store.currentThread,
+            close: { isContextOpen = false },
+            openToolSettings: openToolSettings
+          )
+        }
+        .transition(.move(edge: .trailing).combined(with: .opacity))
       }
+    }
+    .animation(.easeOut(duration: 0.18), value: isContextOpen)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(CSColor.sheet)
+    .alert(
+      "Speech unavailable",
+      isPresented: Binding(
+        get: { store.speechError != nil },
+        set: { if !$0 { store.speechError = nil } }
+      )
+    ) {
+      Button("OK") { store.speechError = nil }
+    } message: {
+      Text(store.speechError ?? "")
+    }
+  }
+
+  /// The header glass is measured on the turns, so one plane covers the
+  /// window bar above the conversation and the turns scroll beneath it.
+  private var conversationColumn: some View {
+    conversation
+      .modifier(CSDetailHeaderGlass())
+      .modifier(AgentScrollBottomBar { composerDock })
+      .frame(
+        minWidth: AgentWindowMetrics.detailMinWidth,
+        maxWidth: .infinity,
+        maxHeight: .infinity
+      )
+  }
+
+  /// The one owner of tool configuration is Settings › Agent › Tools; the
+  /// panel only opens it.
+  private func openToolSettings() {
+    SettingsDeepLink.shared.present(tab: .agentTools)
+    openWindow.presentSettings()
   }
 
   @ViewBuilder
@@ -727,6 +775,7 @@ struct ToolApprovalCard: View {
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
+              .csAutohidingScrollers()
           }
           .frame(maxHeight: Self.argumentsMaxHeight)
         }
@@ -783,7 +832,7 @@ enum ThreadExportOutcome: Equatable {
           "Saved the Agent replies as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
         : Text(
-          "Saved the whole thread as \(file) in \(folder).",
+          "Saved the whole conversation as \(file) in \(folder).",
           comment: "Placeholders: file name, then folder path")
     case .failed(let threadTitle, _):
       return Text(

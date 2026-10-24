@@ -82,7 +82,7 @@ struct TextScaleRoot<Content: View>: View {
 // MARK: - Scaled font helpers
 
 extension View {
-  /// Space Grotesk UI font at `size`, multiplied by the surrounding `\.csTextScale`.
+  /// System UI font at `size`, multiplied by the surrounding `\.csTextScale`.
   func csFont(_ size: CGFloat, _ weight: Font.Weight = .regular) -> some View {
     modifier(CSScaledFont(size: size, weight: weight, mono: false))
   }

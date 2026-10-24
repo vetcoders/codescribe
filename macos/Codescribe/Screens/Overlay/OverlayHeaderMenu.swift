@@ -37,7 +37,7 @@ enum OverlayHeaderGlyph {
 }
 
 /// The header's secondary-click menu, shared by every header form (mini, midi,
-/// expanded): the agent roster, the transcription, Pin, the six anchors with
+/// expanded): the agent roster, the transcription, the six anchors with
 /// free motion, the take-start preference, and how long an expansion stays
 /// open. The visible header keeps only Agents, Transcription and the explicit Pin.
 @MainActor
@@ -65,27 +65,6 @@ struct OverlayHeaderMenu: View {
         Image(nsImage: OverlayHeaderGlyph.menuImage(OverlayHeaderGlyph.transcription))
       }
     }
-
-    Divider()
-
-    Button {
-      state.setKeepVisibleBetweenTakes(!state.keepVisibleBetweenTakes)
-    } label: {
-      if state.keepVisibleBetweenTakes {
-        Label {
-          Text("Unpin", comment: "Overlay header menu: stop keeping the overlay between takes")
-        } icon: {
-          Image(systemName: OverlayControlSymbols.pinned)
-        }
-      } else {
-        Label {
-          Text("Pin", comment: "Overlay header menu: keep the overlay visible between takes")
-        } icon: {
-          Image(systemName: OverlayControlSymbols.pin)
-        }
-      }
-    }
-    .accessibilityIdentifier("overlay-menu-pin")
 
     Divider()
 
@@ -125,7 +104,14 @@ struct OverlayHeaderMenu: View {
     )
     .help("New recordings open with the transcript. Turn off to show only the recording bar.")
     .accessibilityIdentifier("overlay-expanded-by-default")
-    Menu("Auto fold after…") {
+    // The intervals are a plain submenu with a checkmark on the chosen one.
+    // 70e88208 tried a palette picker to keep a hover-like tint (Maciej,
+    // 2026-10-19), but a palette in a macOS menu draws images only, so the plain
+    // Text intervals rendered as an empty row carrying just a checkmark. Maciej
+    // chose the plain checkmark submenu over repairing it (decyzja Macieja,
+    // 2026-10-20). The menu's own title names the current interval (Lena,
+    // release 0.17.2).
+    Menu {
       ForEach(Self.autoFoldIntervals, id: \.self) { seconds in
         Button {
           state.setAutoFoldSeconds(seconds)
@@ -141,10 +127,16 @@ struct OverlayHeaderMenu: View {
         autoFoldChoice("Never", selected: state.autoFoldSeconds == 0)
       }
       .accessibilityIdentifier("overlay-auto-fold-never")
+    } label: {
+      Text("Auto fold after… \(currentAutoFoldTitle)")
     }
   }
 
   private static let autoFoldIntervals: [UInt32] = [5, 10, 30, 60]
+
+  private var currentAutoFoldTitle: Text {
+    state.autoFoldSeconds == 0 ? Text("Never") : Text("\(Int(state.autoFoldSeconds)) s")
+  }
 
   @ViewBuilder
   private func autoFoldChoice(_ title: LocalizedStringKey, selected: Bool) -> some View {

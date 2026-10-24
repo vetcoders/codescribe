@@ -39,6 +39,10 @@ WAKE_EXIT = 75
 WAKE_SECONDS = 6 * 3600
 #: How long the PostToolUse probe waits for the ledger lock before staying silent.
 PROBE_LEDGER_WAIT_SECONDS = 2.0
+#: An announced delivery still unacknowledged after this long is announced once
+#: more. The ledger is written before the notice, so a notice can be lost after
+#: it: a remote waiter released by the local one, a dropped ssh, a killed hook.
+REMIND_SECONDS = 600
 
 
 def install_extension(demux, root, directory):
@@ -107,6 +111,28 @@ def ledger_lock_path(root, lease_id):
     return root / "runtime" / "native-wake" / f"{lease_id}.ledger.lock"
 
 
+def read_ledger(demux, record):
+    """The announced entries, each with the time it was first announced, and
+    the deliveries already reminded. An entry without a time (a ledger written
+    before reminders) counts from now, so an upgrade reminds nobody at once."""
+    saved = demux.read_json(record) or {}
+    entries = saved.get("announced")
+    stamps = saved.get("announced_at")
+    stamps = stamps if isinstance(stamps, dict) else {}
+    now = time.time()
+    announced = {entry: stamps[entry] if isinstance(stamps.get(entry), (int, float)) else now
+                 for entry in (entries if isinstance(entries, list) else []) if isinstance(entry, str)}
+    reminded = saved.get("reminded")
+    return announced, (set(reminded) & set(announced) if isinstance(reminded, list) else set())
+
+
+def write_ledger(demux, record, lease_id, announced, reminded=()):
+    entries = sorted(announced)
+    demux.atomic_json(record, {"lease_id": lease_id, "announced": entries,
+                               "announced_at": {entry: announced[entry] for entry in entries},
+                               "reminded": sorted(set(reminded) & set(announced))})
+
+
 def flock_within(descriptor, wait_seconds):
     """Take the exclusive lock; with a bound, give up after `wait_seconds`."""
     if wait_seconds is None:
@@ -137,11 +163,10 @@ def ledger_guard(path, *, wait_seconds=None):
         os.close(descriptor)
 
 
-def wake_armed(root, lease_id):
-    """True while a wake process holds this lease's lock; observing never arms."""
-    lock, _record = wake_paths(root, lease_id)
+def lock_held(path):
+    """True while another process holds `path`; observing never takes it."""
     try:
-        descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return False
     try:
@@ -151,6 +176,29 @@ def wake_armed(root, lease_id):
     finally:
         os.close(descriptor)
     return False
+
+
+def wake_armed(root, lease_id):
+    """True while a wake process holds this lease's lock; observing never arms."""
+    return lock_held(wake_paths(root, lease_id)[0])
+
+
+def announcer(demux, root, lease_id):
+    """`announce(ids)` for a live `--watch --until-event` task of this lease
+    (`demux.until_event_mark` holds its lock). The task calls it after reporting
+    deliveries and before it exits, so the ledger already holds them when the
+    waiter takes over: the waiter wakes neither alongside the task nor after it
+    for the same message. A task stopped before it reported anything leaves no
+    entry, and the waiter announces those deliveries itself."""
+    def announce(ids):
+        _lock, record = wake_paths(root, lease_id)
+        with ledger_guard(ledger_lock_path(root, lease_id)):
+            announced, reminded = read_ledger(demux, record)
+            now = time.time()
+            for identity in ids:
+                announced.setdefault(identity, now)
+            write_ledger(demux, record, lease_id, announced, reminded)
+    return announce
 
 
 def bound_channel(demux, root, provider, session):
@@ -270,9 +318,19 @@ def describe_wake(notice, provider, session, channel, name):
     if kind == "codescribe_listener_problem":
         return f"Codescribe: listener problem {notice.get('problem')} {where}. {notice.get('instructions')}"
     if kind == "codescribe_wait_idle":
-        return f"Codescribe: no message {where} in {notice.get('waited_seconds')} s. {notice.get('instructions')}"
-    ids = notice.get("new_delivery_ids") or []
+        # The OMP extension re-arms on this exact prefix without a model turn.
+        unacked = notice.get("unacked_delivery_ids") or []
+        still = (f"; {len(unacked)} earlier message(s) still unacknowledged: {', '.join(unacked)}"
+                 if unacked else "")
+        return f"Codescribe: no message {where} in {notice.get('waited_seconds')} s{still}. {notice.get('instructions')}"
     said = notice.get("addressed") or {}
+    if kind == "codescribe_mailbox_reminder":
+        ids = notice.get("unacked_delivery_ids") or []
+        listed = ", ".join(f"{identity} [{said[identity]}]" if identity in said else identity for identity in ids)
+        return (f"Codescribe: {len(ids)} message(s) {where} announced over {notice.get('announced_minutes')} min ago"
+                f" are still unacknowledged; pending {notice.get('pending_count')}; unacknowledged delivery ids: "
+                f"{listed}. {notice.get('instructions')}")
+    ids = notice.get("new_delivery_ids") or []
     problem = f"; problem: {notice['problem']}" if notice.get("problem") else ""
     listed = ", ".join(f"{identity} [{said[identity]}]" if identity in said else identity for identity in ids)
     return (f"Codescribe: {len(ids)} new message(s) {where}; pending {notice.get('pending_count')}"
@@ -294,8 +352,11 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
     The hook never reads, ACKs or replies. It wakes only the Claude Code
     conversation whose exported session id equals the hook payload, and only
     while that session owns a channel. One process per lease holds the lock;
-    a later Stop finds it armed and returns at once. Announced IDs are kept
-    until acknowledged, so a message left unread does not wake every turn.
+    a later Stop or tool call finds it armed and returns at once. Claude Code
+    runs no Stop hook after a user interrupt, and StopFailure instead of Stop
+    after an API error, so the plugin also arms after every tool call: a turn
+    the wake started cannot end without a waiter. Announced IDs are kept until
+    acknowledged, so a message left unread does not wake every turn.
     A channel attached on another Mac (`cs-bus --remote HOST --attach`) is
     waited on there, by that Mac's own waiter, in parallel with this one.
     """
@@ -327,7 +388,7 @@ def remote_wake_command(session):
         "(",
         f"  CLAUDE_CODE_SESSION_ID={shlex.quote(session)}",
         "  export CLAUDE_CODE_SESSION_ID",
-        f"  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
+        "  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
         json.dumps({"session_id": session}),
         "CODESCRIBE_WAKE",
         ") &",
@@ -482,8 +543,8 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        saved = (demux.read_json(record) or {}).get("announced")
-        seen = set(saved) if isinstance(saved, list) else set()
+        announced_at, reminded = read_ledger(demux, record)
+        seen = set(announced_at)
         args = SimpleNamespace(bridge_home=root, provider=provider, session=session,
                                bus=bus, bus_overridden=bus is not None)
         trigger = demux.BusEventTrigger(root / "leases" / f"{lease_id}.json", 0.1)
@@ -511,13 +572,29 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                     unread = [row["delivery_id"] for row in rows]
                     # A PostToolUse probe may have surfaced a delivery mid-turn; its
                     # ledger entry keeps this waiter from announcing it again.
-                    probed = (demux.read_json(record) or {}).get("announced")
-                    if isinstance(probed, list):
-                        seen |= set(probed)
-                    fresh = [identity for identity in unread if identity not in seen]
+                    probed, probed_reminded = read_ledger(demux, record)
+                    seen |= set(probed)
+                    for entry, stamp in probed.items():
+                        announced_at[entry] = min(stamp, announced_at.get(entry, stamp))
+                    reminded |= probed_reminded
+                    # A live `--watch --until-event` task of this lease reports its
+                    # deliveries itself and records them before it exits; waking
+                    # here as well would wake the conversation twice. The waiter
+                    # stays armed and takes over once the task is gone.
+                    watched = lock_held(demux.until_event_lock_path(root, lease_id))
+                    fresh = [] if watched else [identity for identity in unread if identity not in seen]
+                    # Announced long ago and still unread: the first notice may
+                    # never have reached the conversation. Each is reminded once.
+                    now = time.time()
+                    due = [] if watched or fresh else [
+                        identity for identity in unread if identity in seen and identity not in reminded
+                        and now - announced_at.get(identity, now) >= REMIND_SECONDS]
                     # After this pass every unread delivery is announced; an ACKed
-                    # delivery or a resolved problem leaves the set.
-                    prior, seen = seen, set(unread) | ({problem} if problem else set())
+                    # delivery or a resolved problem leaves the set. A delivery the
+                    # task has not reported yet stays unannounced.
+                    prior = seen
+                    seen = ((seen & set(unread)) if watched else set(unread)) | ({problem} if problem else set())
+                    announced_at = {entry: announced_at.get(entry, now) for entry in seen}
                     if fresh:
                         notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
                                   "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
@@ -526,13 +603,29 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                     elif problem and problem not in prior:
                         notice = {"kind": "codescribe_listener_problem", "problem": problem,
                                   "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
+                    elif due:
+                        reminded |= set(due)
+                        notice = {"kind": "codescribe_mailbox_reminder", "pending_count": len(unread),
+                                  "unacked_delivery_ids": due, "addressed": addressed(rows, due, demux),
+                                  "announced_minutes": max(1, round(REMIND_SECONDS / 60)),
+                                  "instructions": f"Their first notice may not have reached you. Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. Each delivery is reminded once."}
                     elif time.monotonic() >= deadline:
+                        if watched:
+                            # The task keeps waking this conversation; an idle
+                            # re-arm would only spend a model turn. The next turn
+                            # end or tool call arms a fresh waiter.
+                            return 0
+                        unacked = [identity for identity in unread if identity in seen]
                         notice = {"kind": "codescribe_wait_idle", "waited_seconds": window,
-                                  "instructions": "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms."}
+                                  **({"unacked_delivery_ids": unacked} if unacked else {}),
+                                  "instructions": ("No new message arrived. Nothing was read or acknowledged; "
+                                                   "read and ACK the earlier messages, then end the turn; this hook re-arms."
+                                                   if unacked else
+                                                   "No message arrived. Nothing was read or acknowledged; end the turn and this hook re-arms.")}
                     else:
                         notice = None
                     if notice is not None:
-                        demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen)})
+                        write_ledger(demux, record, lease_id, announced_at, reminded)
                 if notice is None:
                     trigger.wait(timeout=interval)
                     continue
@@ -583,12 +676,14 @@ def claude_code_probe(demux, root, bus, payload, environ):
         except (OSError, ValueError):
             return 0
         unread = [row["delivery_id"] for row in rows]
-        saved = (demux.read_json(record) or {}).get("announced")
-        seen = set(saved) if isinstance(saved, list) else set()
-        fresh = [identity for identity in unread if identity not in seen]
+        announced, reminded = read_ledger(demux, record)
+        fresh = [identity for identity in unread if identity not in announced]
         if not fresh:
             return 0
-        demux.atomic_json(record, {"lease_id": lease_id, "announced": sorted(seen | set(unread))})
+        now = time.time()
+        for identity in unread:
+            announced.setdefault(identity, now)
+        write_ledger(demux, record, lease_id, announced, reminded)
     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
               "addressed": addressed(rows, fresh, demux),
               "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}

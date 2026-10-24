@@ -42,6 +42,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Private inherited-FD exchange for scoped MCP signing keys (no stdout).
+    #[cfg(unix)]
+    McpEventKey {
+        #[arg(long)]
+        fd: i32,
+    },
     /// Inspect per-PCM-pin decision history (engine hypotheses are diagnostic)
     Trace {
         /// Session ID, or an explicit .trail.jsonl file for offline inspection
@@ -247,12 +253,28 @@ fn main() -> std::process::ExitCode {
     // lock has to be in place before ANY parsing — so the decision is made
     // from raw argv, exactly as the standalone binary made it from its first
     // statement. See `cli::corpus` for why this cannot be a typed check.
+    // Replay measures without credentials too (`cli::replay`).
     //
     // SAFETY: first executable statement of the process, before Clap, before
     // the tracing subscriber, before any thread or runtime exists.
-    if codescribe::cli::corpus::corpus_argv_requested() {
+    if codescribe::cli::corpus::corpus_argv_requested()
+        || codescribe::cli::replay::replay_argv_requested()
+    {
         unsafe {
             std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        }
+    }
+    // The CLI runs under a terminal, and TCC answers the bridge's Speech
+    // Recognition request for that terminal: a terminal without the Speech
+    // purpose string gets the bridge killed, one that has it gets a prompt in
+    // its own name. Every bridge the CLI spawns answers for itself instead,
+    // with the grant `make engine-auth` and the replay preflight ask for. An
+    // explicit value wins; anything but "1" keeps the inherited grant.
+    //
+    // SAFETY: still before Clap, tracing, threads or any runtime.
+    if std::env::var_os("CODESCRIBE_BRIDGE_DISCLAIM").is_none() {
+        unsafe {
+            std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
         }
     }
     // Rust starts with SIGPIPE ignored, so a `println!` into a closed pipe
@@ -268,8 +290,17 @@ fn main() -> std::process::ExitCode {
     // Engine warnings (a refused long-file span, a degraded lane) are the
     // CLI's only way to say "this transcript is missing something"; they go
     // to stderr, so `transcribe last` stdout stays verbatim for the widget.
+    let cli = Cli::parse();
+    #[cfg(unix)]
+    if let Command::McpEventKey { fd } = &cli.command {
+        return if event_key_exchange(*fd).is_ok() {
+            std::process::ExitCode::SUCCESS
+        } else {
+            std::process::ExitCode::FAILURE
+        };
+    }
     codescribe::logging::init_logging_with_default_filter("warn");
-    match dispatch(Cli::parse()) {
+    match dispatch(cli) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("codescribe: {error:#}");
@@ -286,6 +317,8 @@ fn main() -> std::process::ExitCode {
 fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
     let success = std::process::ExitCode::SUCCESS;
     match cli.command {
+        #[cfg(unix)]
+        Command::McpEventKey { fd } => event_key_exchange(fd).map(|()| success),
         Command::Transcribe {
             files,
             language,
@@ -2086,5 +2119,84 @@ mod native_queue_receipt_tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[cfg(unix)]
+fn event_key_exchange(fd: i32) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    use std::os::fd::FromRawFd;
+    anyhow::ensure!(fd >= 3, "private descriptor required");
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of_val(&address) as libc::socklen_t;
+    let connected = unsafe {
+        libc::getpeername(
+            fd,
+            (&mut address as *mut libc::sockaddr_un).cast(),
+            &mut size,
+        )
+    };
+    anyhow::ensure!(
+        connected == 0 && i32::from(address.sun_family) == libc::AF_UNIX,
+        "connected private Unix descriptor required"
+    );
+    let mut kind: libc::c_int = 0;
+    let mut kind_size = std::mem::size_of_val(&kind) as libc::socklen_t;
+    let typed = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut kind as *mut libc::c_int).cast(),
+            &mut kind_size,
+        )
+    };
+    anyhow::ensure!(
+        typed == 0 && kind == libc::SOCK_STREAM,
+        "private stream descriptor required"
+    );
+    // The process owns this inherited descriptor only; no listener or daemon.
+    let mut stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let mut request = Vec::new();
+    (&mut stream).take(2049).read_to_end(&mut request)?;
+    let response = codescribe_core::config::keychain::event_keys::request_json(&request);
+    let bytes = serde_json::to_vec(&response)?;
+    anyhow::ensure!(bytes.len() <= 32768, "bounded key response required");
+    stream.write_all(&bytes)?;
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod event_key_cli_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::os::fd::IntoRawFd;
+    #[test]
+    fn mcp_event_key_rejects_standard_descriptors() {
+        for fd in [0, 1, 2, -1] {
+            assert!(event_key_exchange(fd).is_err());
+        }
+    }
+    #[test]
+    fn mcp_event_key_private_fd_returns_disabled_without_keychain() {
+        let (mut client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            let probe = codescribe_core::config::keychain::CredentialAcquisitionProbe::forbid();
+            let result = event_key_exchange(server.into_raw_fd());
+            assert!(probe.attempts().is_empty());
+            result
+        });
+        let r = serde_json::json!({"version":1,"op":"list","namespace":format!("MCP_EVENTS_{}_","a".repeat(64))});
+        client.write_all(&serde_json::to_vec(&r).unwrap()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"ok":false,"error":"disabled"})
+        );
+        worker.join().unwrap().unwrap();
     }
 }

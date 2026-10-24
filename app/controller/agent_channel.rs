@@ -61,6 +61,15 @@ pub(crate) fn channel_presentation_emitter(
 /// Broadcast marker for Fn+0. Followers treat it as addressed to them.
 pub const BROADCAST_AUDIENCE: &str = "*";
 
+/// Permanent mailbox channel and audience for the Founder.
+pub const FOUNDER_CHANNEL: &str = "10";
+pub const FOUNDER_AUDIENCE: &str = "founder";
+
+/// Canonical bus path for the Founder's permanent mailbox (`channel-10.jsonl`).
+pub fn founder_bus_path_at(bridge_home: &Path) -> PathBuf {
+    bridge_home.join("buses").join("channel-10.jsonl")
+}
+
 /// Why a channel refused to open. The display string is the loud reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelOpenRefusal {
@@ -162,6 +171,41 @@ impl BindingEntry {
     }
 }
 
+/// An owner who unticked channel 0 (`policy: "off"`) never receives a
+/// broadcast, as the helper's peer send already decides (`bus-demux.py`
+/// `agent_broadcast_policy`). Like the helper, a missing or invalid receipt
+/// keeps the owner: a broken file must never cut an agent off.
+fn broadcast_policy_off(
+    root: &Path,
+    provider: &str,
+    session: &str,
+    lease_id: &str,
+    bus: &Path,
+) -> bool {
+    let bus = bus.to_string_lossy();
+    let identity = format!("{provider}\0{session}\0{bus}");
+    let key = &hex::encode(Sha256::digest(identity.as_bytes()))[..24];
+    let path = root
+        .join("runtime")
+        .join("broadcast-policy")
+        .join(format!("{key}.json"));
+    let row: serde_json::Value = (|| {
+        use std::io::{BufReader, Read};
+        let file = std::fs::File::open(&path).ok()?;
+        if file.metadata().ok()?.len() > 65536 {
+            return None;
+        }
+        serde_json::from_reader(BufReader::new(file.take(65536))).ok()
+    })()
+    .unwrap_or(serde_json::Value::Null);
+    row["schema"] == "codescribe.broadcast-policy.v1"
+        && row["provider"] == provider
+        && row["provider_session_id"] == session
+        && row["lease_id"] == lease_id
+        && row["bus"].as_str() == Some(bus.as_ref())
+        && row["policy"] == "off"
+}
+
 /// Freeze only concrete bridge owners admitted before this capture starts.
 /// Reading this snapshot never acknowledges a delivery or starts a follower.
 fn frozen_channel_recipients(
@@ -220,6 +264,7 @@ fn frozen_channel_recipients(
             || lease["lease_id"] != lease_id
             || lease["bus"].as_str() != bus.to_str()
             || !seen.insert(lease_id.clone())
+            || (digit == 0 && broadcast_policy_off(root, &provider, session, &lease_id, &bus))
         {
             continue;
         }
@@ -249,11 +294,32 @@ struct SpeechEdgeCursor {
     sample_rate_hz: u32,
 }
 
+/// Schema of the per-channel file the reply playback guard reads.
+const CHANNEL_SPEECH_NOW_SCHEMA: &str = "codescribe.channel-speech-now.v1";
+
+/// `bus-demux` starts an agent reply into an open channel only after this
+/// file reports measured quiet, so a reply waits for a pause, not for a seal.
+fn channel_speech_now_path(digit: u8) -> PathBuf {
+    active_names::bridge_home()
+        .join("runtime")
+        .join(format!("channel-speech-{digit}.json"))
+}
+
+#[derive(Debug)]
+struct SpeechNowFile {
+    path: PathBuf,
+    channel: u8,
+    session_id: String,
+    opened_at: SystemTime,
+    published: Option<&'static str>,
+}
+
 /// Cadence follows measured speech edges, never recognizer output timing.
 #[derive(Debug, Default)]
 pub(crate) struct ChannelSpeechClock {
     last_edge: Option<SpeechEdgeCursor>,
     phase: ChannelSpeechPhase,
+    now_file: Option<SpeechNowFile>,
 }
 
 impl ChannelSpeechClock {
@@ -303,6 +369,92 @@ impl ChannelSpeechClock {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// `fresh` has seen no edge since the session opened; `unmeasured` is a
+    /// broken edge chain and is never reported as quiet.
+    fn phase_label(&self) -> &'static str {
+        match (&self.phase, &self.last_edge) {
+            (ChannelSpeechPhase::Unmeasured, None) => "fresh",
+            (ChannelSpeechPhase::Unmeasured, Some(_)) => "unmeasured",
+            (ChannelSpeechPhase::Speaking, _) => "speaking",
+            (ChannelSpeechPhase::Quiet { .. }, _) => "quiet",
+        }
+    }
+
+    /// Publish this session's phase from now on.
+    fn publish_to(
+        &mut self,
+        path: PathBuf,
+        channel: u8,
+        session_id: String,
+        opened_at: SystemTime,
+    ) {
+        self.now_file = Some(SpeechNowFile {
+            path,
+            channel,
+            session_id,
+            opened_at,
+            published: None,
+        });
+        self.publish_now(SystemTime::now());
+    }
+
+    /// Rewrite the file when the phase changed. Runs under the clock lock, so
+    /// an earlier edge never overwrites a later one.
+    fn publish_now(&mut self, now: SystemTime) {
+        let phase = self.phase_label();
+        let since = match (&self.phase, &self.now_file) {
+            (ChannelSpeechPhase::Quiet { since }, _) => *since,
+            (ChannelSpeechPhase::Unmeasured, Some(file)) if self.last_edge.is_none() => {
+                file.opened_at
+            }
+            _ => now,
+        };
+        let Some(file) = self.now_file.as_mut() else {
+            return;
+        };
+        if file.published == Some(phase) {
+            return;
+        }
+        let since_ms = since
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let row = serde_json::json!({
+            "schema": CHANNEL_SPEECH_NOW_SCHEMA,
+            "channel": file.channel.to_string(),
+            "session_id": file.session_id,
+            "phase": phase,
+            "since_ms": since_ms,
+            "pid": std::process::id(),
+        });
+        let Some(name) = file.path.file_name().and_then(|name| name.to_str()) else {
+            return;
+        };
+        let staging = file
+            .path
+            .with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+        let written = file
+            .path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&staging, format!("{row}\n")))
+            .and_then(|()| std::fs::rename(&staging, &file.path));
+        match written {
+            Ok(()) => file.published = Some(phase),
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                tracing::warn!(%error, phase, "channel speech phase not published");
+            }
+        }
+    }
+
+    /// Stop publishing and remove this session's file; the channel is closing.
+    fn withdraw_now(&mut self) {
+        if let Some(file) = self.now_file.take() {
+            let _ = std::fs::remove_file(&file.path);
         }
     }
 
@@ -373,6 +525,21 @@ pub struct ChannelHudState {
     /// Whether the bound provider session has a live bridge follower
     /// (fresh lease heartbeat). `None` = the snapshot made no liveness claim.
     pub follower_alive: Option<bool>,
+    /// Whether that live follower's lease names a vc-frame pane, so a focus
+    /// request can land. `None` = no live follower or no claim.
+    pub frame_detected: Option<bool>,
+    /// Whether that live follower's lease names an iTerm2 or Terminal.app
+    /// tab the follower can bring to front. `None` = no live follower or no
+    /// claim.
+    pub terminal_detected: Option<bool>,
+    /// `codex://threads/<thread_id>` for a Codex follower whose lease names
+    /// its Codex app thread, live or not: the app opens that link itself, so
+    /// it needs no follower. `None` = no thread known or no claim.
+    pub codex_thread_url: Option<String>,
+    /// Whether the local Codex store holds that thread's rollout, so the
+    /// Codex app can open the link. `Some(false)` is a Codex Cloud thread.
+    /// `None` together with `codex_thread_url`.
+    pub codex_thread_local: Option<bool>,
     /// When the live follower's oldest unacknowledged delivery was emitted.
     /// A heartbeat proves the reader process, not the conversation behind
     /// it; a backlog that only grows is the overlay's "alive but not
@@ -486,7 +653,7 @@ pub(crate) enum ChannelOpenMode {
     Live,
     /// Register the subscriber and the open-channel record. No device start.
     /// Test seam: exercised by this module's tests; prod opens `Live`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     AttachedOnly,
 }
 
@@ -920,7 +1087,9 @@ impl RecordingController {
 
     /// Fn+digit toggle. A second press of the same digit hangs up: the
     /// session seals with `reason: hangup` and does not reopen. Dictation
-    /// state is not changed.
+    /// state is not changed, except that a hold admitted on the channel
+    /// modifier ends undelivered as this chord's prefix
+    /// (`abandon_chord_prefix_hold`).
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
         self.toggle_agent_channel_at(
             digit,
@@ -940,13 +1109,22 @@ impl RecordingController {
         mode: ChannelOpenMode,
     ) -> Result<bool> {
         let _serial = Arc::clone(&self.serial_lock).lock_owned().await;
-        if self.current_state().await == super::State::Idle {
+        let state = self.current_state().await;
+        if state == super::State::Idle {
             self.cancel_pending_hold_start().await;
         }
-        let opened = match self
+        let dispatched = self
             .dispatch_agent_channel(digit, binding_file, shared_bus, mode)
-            .await
-        {
+            .await;
+        // An ordinary hold already admitted on the channel modifier was this
+        // chord's prefix: it ends delivering nothing. It ends after the channel
+        // opened beside it, so the channel shares the live capture instead of
+        // waiting out the hold's stop grace and recognizer drain (about two
+        // seconds of the first words to the agent).
+        if state == super::State::RecHold {
+            self.abandon_chord_prefix_hold().await;
+        }
+        let opened = match dispatched {
             Ok(opened) => opened,
             Err(error) => {
                 self.answer_channel_refusal(digit, &error, mode).await;
@@ -1044,16 +1222,16 @@ impl RecordingController {
         let speech_clock = Arc::new(StdMutex::new(ChannelSpeechClock::default()));
         let last_text = Arc::new(StdMutex::new(String::new()));
         let refinement_warnings = Arc::new(StdMutex::new(Vec::new()));
-        let mut session_id = None;
-        let mut transcript_bus = None;
-        let mut capture_ledger = None;
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = recorder_guard.as_mut().ok_or_else(|| {
             anyhow!("agent channel refused: recording controller has no recorder")
         })?;
 
-        let subscriber = match mode {
-            ChannelOpenMode::AttachedOnly => recorder.register_channel_feed().id,
+        let (subscriber, session_id, transcript_bus, capture_ledger) = match mode {
+            #[cfg(test)]
+            ChannelOpenMode::AttachedOnly => {
+                (recorder.register_channel_feed().id, None, None, None)
+            }
             ChannelOpenMode::Live => {
                 let session_label = format!("agent-channel-{digit}-{}", uuid::Uuid::new_v4());
                 super::begin_audio_capture(
@@ -1061,9 +1239,8 @@ impl RecordingController {
                     runtime_settings.values().audio_retention,
                 )
                 .await?;
-                session_id = Some(session_label.clone());
                 let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
-                capture_ledger = Some(Arc::clone(&ledger));
+                let capture_ledger = Some(Arc::clone(&ledger));
                 let sentence_pause = runtime_settings.values().light_plus_sentence_pause_sec;
                 let language = runtime_settings
                     .values()
@@ -1091,7 +1268,7 @@ impl RecordingController {
                     "audience": bound.audience, "recipients": recipients,
                     "emitted_at": chrono::Utc::now().to_rfc3339(),
                 }));
-                transcript_bus = Some(Arc::clone(&bus));
+                let transcript_bus = Some(Arc::clone(&bus));
                 // The Pointer Indicator knob rules every badge path: Settings
                 // promises "Base size; Agent mode stays proportionally larger",
                 // so the channel dot is the persisted base times the Assistive
@@ -1116,10 +1293,11 @@ impl RecordingController {
                             hold_badge::update_transcript(cursor_token, text);
                         }))
                         .with_speech_activity_observer(Arc::new(move |evidence| {
-                            voice_clock
+                            let mut clock = voice_clock
                                 .lock()
-                                .unwrap_or_else(|error| error.into_inner())
-                                .observe(evidence, SystemTime::now());
+                                .unwrap_or_else(|error| error.into_inner());
+                            clock.observe(evidence, SystemTime::now());
+                            clock.publish_now(SystemTime::now());
                         }))
                         .with_cursor_observer(Arc::new(move |projection| {
                             hold_badge::update_voice_state(cursor_token, projection.voice);
@@ -1146,7 +1324,7 @@ impl RecordingController {
                 Self::configure_level_broadcast(recorder, self.event_broadcast.clone());
                 match recorder
                     .begin_channel_session(
-                        session_label,
+                        session_label.clone(),
                         runtime_settings,
                         sink,
                         language,
@@ -1155,12 +1333,12 @@ impl RecordingController {
                     )
                     .await
                 {
-                    Ok(id) => id,
+                    Ok(id) => (id, Some(session_label), transcript_bus, capture_ledger),
                     Err(error) => {
                         if opens_physical_capture {
                             recorder.set_level_callback(None);
                         }
-                        super::finish_audio_capture(session_id.as_deref());
+                        super::finish_audio_capture(Some(session_label.as_str()));
                         if channels.is_empty() {
                             hold_badge::hide_hold_badge();
                         }
@@ -1171,6 +1349,7 @@ impl RecordingController {
         };
 
         let audience = bound.audience.clone();
+        let published_clock = Arc::clone(&speech_clock);
         let receipt_session = session_id.clone();
         let receipt_provider = bound.provider.clone();
         let receipt_provider_session = bound.provider_session_id.clone();
@@ -1209,6 +1388,14 @@ impl RecordingController {
             );
         }
         if matches!(mode, ChannelOpenMode::Live) {
+            // Before the open receipt: the guard never sees this session open
+            // without its phase file.
+            if let Some(session) = receipt_session.clone() {
+                published_clock
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .publish_to(channel_speech_now_path(digit), digit, session, opened_at);
+            }
             let line = crate::presentation::agent_ack::channel_session_line(
                 &crate::presentation::agent_ack::ChannelSessionLine {
                     state: "open",
@@ -1271,6 +1458,10 @@ impl RecordingController {
         autoseal_secs: u64,
     ) -> Result<()> {
         let stopped_at = Instant::now();
+        open.speech_clock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .withdraw_now();
         let retained_capture =
             super::retainable_session_id(open.session_id.as_deref()).and_then(|id| {
                 codescribe_core::state::history::audio_retention::capture(&Config::config_dir(), id)
@@ -1412,6 +1603,10 @@ impl RecordingController {
         // retention can yield and before any non-open channel receipt flushes it.
         if let Some(bus) = open.transcript_bus.as_ref() {
             let settings = Config::load_startup_runtime_snapshot(false);
+            if let Some(ledger) = open.capture_ledger.as_ref() {
+                let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                bus.observe_channel_publication_evidence(&ledger);
+            }
             if let Err(error) = bus.publish_channel_closed(settings.agent_send_hold_sec()) {
                 tracing::warn!(%error, digit, "channel seal snapshot persistence failed");
             }
@@ -1529,6 +1724,13 @@ impl RecordingController {
         if self.channel_guards_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        // A reply `bus-demux` plays through afplay is the agent, not the
+        // Founder: channel feeds drop the microphone while it plays.
+        crate::audio::tts_duck::watch_external_playback(
+            active_names::bridge_home()
+                .join("runtime")
+                .join(crate::audio::tts_duck::EXTERNAL_PLAYBACK_MARKER),
+        );
         let controller = Arc::clone(self);
         handle.spawn(async move {
             let orphans = controller
@@ -1579,6 +1781,11 @@ impl RecordingController {
     /// Ordinary capture admission holds the controller's serial lock. Release
     /// each channel feed before admission; tracked tails join and publish its
     /// existing close receipt independently of the next capture.
+    /// Whether any agent channel is open right now.
+    pub(crate) async fn has_open_agent_channels(&self) -> bool {
+        !self.agent_channels.lock().await.is_empty()
+    }
+
     pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
         let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
         open.sort_by_key(|(digit, _)| *digit);
@@ -1606,6 +1813,29 @@ impl RecordingController {
             Some(error) => Err(error),
             None => Ok(()),
         }
+    }
+
+    /// Whether an ordinary hold's base key is also the agent-channel modifier.
+    ///
+    /// With `channel_modifier = fn` and `Dictation = HoldFn` (the Founder's
+    /// setup), a lone Fn press is the prefix of every channel chord. Once the
+    /// hold delay has elapsed the ordinary hold used to hang up the open channel
+    /// and admit dictation, and the digit that followed landed on a closed
+    /// channel and opened it again — a phantom hold, a reopened microphone and
+    /// Whisper hallucinating from silence (Founder, 2026-10-22 23:1x). While a
+    /// channel is open, such a hold is the chord's prefix, never dictation: the
+    /// digit chord closes the channel, and dictation starts only once no channel
+    /// is open. Ctrl behaves the same with `HoldCtrl` and `channel_modifier = ctrl`.
+    pub(crate) fn ordinary_hold_shares_channel_modifier(
+        dictation: crate::config::ShortcutBinding,
+        channel_modifier: crate::config::ChannelModifier,
+    ) -> bool {
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        matches!(
+            (dictation, channel_modifier),
+            (ShortcutBinding::HoldFn, ChannelModifier::Fn)
+                | (ShortcutBinding::HoldCtrl, ChannelModifier::Ctrl)
+        )
     }
 
     /// Quiet delivery contract (Founder seal cc6c8248): silence seals and
@@ -1689,6 +1919,10 @@ impl RecordingController {
                     provider: open.provider.clone(),
                     provider_session_id: open.provider_session_id.clone(),
                     follower_alive: None,
+                    frame_detected: None,
+                    terminal_detected: None,
+                    codex_thread_url: None,
+                    codex_thread_local: None,
                     unread_since: None,
                 })
             })
@@ -1716,7 +1950,7 @@ impl RecordingController {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|duration| duration.as_secs_f64())
             .unwrap_or(0.0);
-        let live = codescribe_core::stt::active_names::live_follower_sessions_at(
+        let live = codescribe_core::stt::active_names::live_follower_hosts_at(
             bridge_home,
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
@@ -1726,13 +1960,43 @@ impl RecordingController {
             now,
             codescribe_core::stt::active_names::LEASE_TTL_SECONDS,
         );
+        let codex_threads = codescribe_core::stt::active_names::codex_threads_at(bridge_home);
         let alive = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
             match (provider.as_deref(), session.as_deref()) {
                 (Some(provider), Some(session)) => {
-                    Some(live.contains(&(provider.to_lowercase(), session.to_string())))
+                    Some(live.contains_key(&(provider.to_lowercase(), session.to_string())))
                 }
                 _ => None,
             }
+        };
+        let framed = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return None;
+            };
+            live.get(&(provider.to_lowercase(), session.to_string()))
+                .map(|hosts| hosts.frame_pane)
+        };
+        let terminal = |provider: &Option<String>, session: &Option<String>| -> Option<bool> {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return None;
+            };
+            live.get(&(provider.to_lowercase(), session.to_string()))
+                .map(|hosts| hosts.terminal_tab)
+        };
+        let codex_thread = |provider: &Option<String>,
+                            session: &Option<String>|
+         -> (Option<String>, Option<bool>) {
+            let (Some(provider), Some(session)) = (provider.as_deref(), session.as_deref()) else {
+                return (None, None);
+            };
+            codex_threads
+                .get(&(provider.to_lowercase(), session.to_string()))
+                .map_or((None, None), |thread| {
+                    (
+                        Some(format!("codex://threads/{}", thread.thread_id)),
+                        Some(thread.rollout),
+                    )
+                })
         };
         let unread_since = |provider: &Option<String>,
                             session: &Option<String>|
@@ -1747,6 +2011,10 @@ impl RecordingController {
         let mut states = self.channel_hud_states().await;
         for state in &mut states {
             state.follower_alive = alive(&state.provider, &state.provider_session_id);
+            state.frame_detected = framed(&state.provider, &state.provider_session_id);
+            state.terminal_detected = terminal(&state.provider, &state.provider_session_id);
+            (state.codex_thread_url, state.codex_thread_local) =
+                codex_thread(&state.provider, &state.provider_session_id);
             state.unread_since = unread_since(&state.provider, &state.provider_session_id);
         }
         if !states.iter().any(|state| state.channel == "0") {
@@ -1764,6 +2032,10 @@ impl RecordingController {
                 provider: None,
                 provider_session_id: None,
                 follower_alive: None,
+                frame_detected: None,
+                terminal_detected: None,
+                codex_thread_url: None,
+                codex_thread_local: None,
                 unread_since: None,
             });
         }
@@ -1781,6 +2053,7 @@ impl RecordingController {
             let provider = Some(entry.provider.trim().to_string()).filter(|s| !s.is_empty());
             let session =
                 Some(entry.provider_session_id.trim().to_string()).filter(|s| !s.is_empty());
+            let (codex_thread_url, codex_thread_local) = codex_thread(&provider, &session);
             states.push(ChannelHudState {
                 open: false,
                 loud: false,
@@ -1793,6 +2066,10 @@ impl RecordingController {
                 opened_at: SystemTime::UNIX_EPOCH,
                 utterance_silence_ms: 0,
                 follower_alive: alive(&provider, &session),
+                frame_detected: framed(&provider, &session),
+                terminal_detected: terminal(&provider, &session),
+                codex_thread_url,
+                codex_thread_local,
                 unread_since: unread_since(&provider, &session),
                 provider,
                 provider_session_id: session,
@@ -2462,6 +2739,236 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_ordinary_hold_shares_the_channel_modifier_only_on_the_same_key() {
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        assert!(RecordingController::ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldFn,
+            ChannelModifier::Fn
+        ));
+        assert!(RecordingController::ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldCtrl,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldFn,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::HoldCtrlShift,
+            ChannelModifier::Ctrl
+        ));
+        assert!(!RecordingController::ordinary_hold_shares_channel_modifier(
+            ShortcutBinding::DoubleCtrl,
+            ChannelModifier::Ctrl
+        ));
+    }
+
+    /// Founder, 2026-10-22 23:1x: with Fn as the channel modifier, holding Fn
+    /// past the delay before the digit hung up the open channel, the digit
+    /// reopened it, and the phantom hold plus the reopened microphone fed
+    /// Whisper silence ("*piękne*"). Past the delay the hold must now admit
+    /// nothing while a channel is open: the channel survives, no hang-up
+    /// receipt is written, and the release leaves Idle untouched.
+    #[tokio::test]
+    #[serial]
+    async fn fn_modifier_hold_past_the_delay_keeps_the_open_channel_and_admits_nothing() {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::config::{ChannelModifier, ShortcutBinding};
+        use crate::os::hotkeys::{
+            ModeHotkeyBindings, get_channel_modifier, get_hold_start_delay_ms,
+            get_mode_hotkey_bindings, set_channel_modifier, set_mode_hotkey_bindings,
+        };
+
+        let previous_bindings = get_mode_hotkey_bindings();
+        let previous_modifier = get_channel_modifier();
+        set_mode_hotkey_bindings(ModeHotkeyBindings {
+            dictation: ShortcutBinding::HoldFn,
+            ..previous_bindings
+        });
+        set_channel_modifier(ChannelModifier::Fn);
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        open_stamped(
+            &controller,
+            &binding,
+            &shared_bus,
+            "agent-channel-3-fn-modifier",
+        )
+        .await;
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        tokio::time::sleep(Duration::from_millis(get_hold_start_delay_ms() + 700)).await;
+
+        let channel_preserved = controller.agent_channel_snapshot(3).await.is_some();
+        let state_after_delay = controller.current_state().await;
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Up))
+            .await
+            .expect("release");
+        let state_after_release = controller.current_state().await;
+        let rows = bus_rows(&channel_bus);
+        controller.reset().await;
+        set_mode_hotkey_bindings(previous_bindings);
+        set_channel_modifier(previous_modifier);
+
+        assert!(
+            channel_preserved,
+            "Fn is the channel modifier: a hold past the delay must not hang up the open channel"
+        );
+        assert_eq!(
+            state_after_delay,
+            State::Idle,
+            "no phantom hold is admitted"
+        );
+        assert_eq!(state_after_release, State::Idle);
+        assert!(rows.is_empty(), "no hang-up receipt: {rows:?}");
+    }
+
+    async fn admit_hold_then_chord(
+        dictation: crate::config::ShortcutBinding,
+        modifier: crate::config::ChannelModifier,
+    ) -> ChordOutcome {
+        use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+        use crate::os::hotkeys::{
+            ModeHotkeyBindings, get_channel_modifier, get_mode_hotkey_bindings,
+            set_channel_modifier, set_mode_hotkey_bindings,
+        };
+
+        let previous_bindings = get_mode_hotkey_bindings();
+        let previous_modifier = get_channel_modifier();
+        set_mode_hotkey_bindings(ModeHotkeyBindings {
+            dictation,
+            ..previous_bindings
+        });
+        set_channel_modifier(modifier);
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        let dir = tempfile::tempdir().expect("temp");
+        let (binding, _channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared.jsonl");
+        let event = |action| HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        };
+        controller
+            .handle_hotkey_event(event(HotkeyAction::Down))
+            .await
+            .expect("arm hold");
+        let admitted = tokio::time::timeout(Duration::from_secs(5), async {
+            while controller.current_state().await != State::RecHold {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+
+        let opened = controller
+            .toggle_agent_channel_at(3, &binding, &shared_bus, ChannelOpenMode::AttachedOnly)
+            .await
+            .expect("the chord opens the channel");
+        let outcome = ChordOutcome {
+            admitted,
+            opened,
+            state_after_chord: controller.current_state().await,
+            session_after_chord: controller.session_id.read().await.clone(),
+            channel_open: controller.agent_channel_snapshot(3).await.is_some(),
+            state_after_release: State::Idle,
+            session_after_release: None,
+        };
+        let outcome = if outcome.state_after_chord == State::Idle {
+            controller
+                .handle_hotkey_event(event(HotkeyAction::Up))
+                .await
+                .expect("release");
+            ChordOutcome {
+                state_after_release: controller.current_state().await,
+                session_after_release: controller.session_id.read().await.clone(),
+                ..outcome
+            }
+        } else {
+            outcome
+        };
+        controller.reset().await;
+        set_mode_hotkey_bindings(previous_bindings);
+        set_channel_modifier(previous_modifier);
+        outcome
+    }
+
+    struct ChordOutcome {
+        admitted: bool,
+        opened: bool,
+        state_after_chord: super::super::State,
+        session_after_chord: Option<String>,
+        channel_open: bool,
+        state_after_release: super::super::State,
+        session_after_release: Option<String>,
+    }
+
+    /// Founder, 2026-10-23 01:14Z: with Fn as the channel modifier and no
+    /// channel open, a slow Fn+digit admitted a hold before the digit, and the
+    /// Fn release pasted a stray word into the terminal. The digit now opens
+    /// the channel beside the hold and ends the hold as the chord's prefix:
+    /// Idle with no session, the channel open, and the release a no-op.
+    #[tokio::test]
+    #[serial]
+    async fn fn_modifier_hold_admitted_before_the_digit_ends_as_the_chords_prefix() {
+        use super::super::State;
+        use crate::config::{ChannelModifier, ShortcutBinding};
+
+        let outcome = admit_hold_then_chord(ShortcutBinding::HoldFn, ChannelModifier::Fn).await;
+
+        assert!(
+            outcome.admitted,
+            "the hold is admitted past the delay with no channel open"
+        );
+        assert!(outcome.opened);
+        assert_eq!(
+            outcome.state_after_chord,
+            State::Idle,
+            "the hold ended as the chord's prefix"
+        );
+        assert_eq!(outcome.session_after_chord, None);
+        assert!(outcome.channel_open);
+        assert_eq!(outcome.state_after_release, State::Idle);
+        assert_eq!(
+            outcome.session_after_release, None,
+            "the release starts nothing"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_hold_on_another_key_keeps_running_beside_the_opened_channel() {
+        use super::super::State;
+        use crate::config::{ChannelModifier, ShortcutBinding};
+
+        let outcome = admit_hold_then_chord(ShortcutBinding::HoldFn, ChannelModifier::Ctrl).await;
+
+        assert!(outcome.admitted);
+        assert!(outcome.opened);
+        assert_eq!(outcome.state_after_chord, State::RecHold);
+        assert!(outcome.session_after_chord.is_some());
+        assert!(outcome.channel_open);
+    }
+
     #[tokio::test]
     #[serial]
     async fn hold_release_while_scheduling_waits_preserves_channel_and_cancels_take() {
@@ -3108,6 +3615,46 @@ mod tests {
         );
     }
 
+    /// A Codex app follower is usually dead between turns; its row still
+    /// carries the thread link the app opens itself, built here once.
+    #[tokio::test]
+    async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
+        const THREAD: &str = "c0ffee01-0000-7000-8000-000000000001";
+        let dir = tempfile::tempdir().expect("temp");
+        let binding = dir.path().join("binding.json");
+        std::fs::write(
+            &binding,
+            format!(
+                r#"{{"schema":"vc.agent-audience-binding.v1","bindings":{{"1":{{"audience":"Ada","provider":"claude-code","provider_session_id":"ada-session"}},"3":{{"audience":"Leon","provider":"codex","provider_session_id":"{THREAD}"}}}}}}"#,
+            ),
+        )
+        .expect("binding");
+        let bridge = dir.path().join("bridge");
+        std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+        std::fs::write(
+            bridge.join("leases/leon.json"),
+            format!(
+                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+            ),
+        )
+        .expect("lease");
+
+        let controller = RecordingController::new_without_keychain();
+        let roster = controller.channel_roster_states_at(&binding, &bridge).await;
+
+        assert_eq!(roster.len(), 3, "{roster:?}");
+        assert_eq!(roster[2].channel, "3");
+        assert_eq!(roster[2].follower_alive, Some(false));
+        assert_eq!(
+            roster[2].codex_thread_url.as_deref(),
+            Some(format!("codex://threads/{THREAD}").as_str())
+        );
+        assert_eq!(roster[2].codex_thread_local, Some(true));
+        assert_eq!(roster[1].codex_thread_url, None, "no lease, no thread");
+        assert_eq!(roster[1].codex_thread_local, None);
+        assert_eq!(roster[0].codex_thread_url, None);
+    }
+
     #[test]
     fn frozen_broadcast_admits_heartbeats_refreshed_during_large_lease_read() {
         use std::io::Write;
@@ -3265,6 +3812,85 @@ mod tests {
             std::fs::write(&path, bytes).expect("invalid lease");
             assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
         }
+    }
+
+    /// Maciej unticked channel 0 for John at 08:06:58Z on 2026-10-18; his
+    /// next channel-0 take was still written to John's bus and overwrote his
+    /// row preview. An owner with `policy: "off"` leaves the broadcast only.
+    #[test]
+    fn frozen_broadcast_skips_owner_who_unticked_channel_zero() {
+        let dir = tempfile::tempdir().expect("temp");
+        let bus = dir.path().join("bus.jsonl");
+        std::fs::write(&bus, "").expect("bus");
+        let bus = bus.canonicalize().expect("canonical bus");
+        std::fs::create_dir(dir.path().join("leases")).expect("leases");
+        let session = "unticked-channel-zero";
+        let lease =
+            hex::encode(Sha256::digest(format!("codex\0{session}").as_bytes()))[..32].to_string();
+        let heartbeat = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs_f64();
+        std::fs::write(
+            dir.path().join("leases").join(format!("{lease}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1", "lease_id": lease,
+                "provider": "codex", "provider_session_id": session, "active": true,
+                "heartbeat_unix": heartbeat, "bus": bus
+            }))
+            .expect("json"),
+        )
+        .expect("lease");
+        let binding = write_binding(
+            dir.path(),
+            &serde_json::json!({
+                "schema": BINDING_SCHEMA, "bindings": {
+                    "6": {"audience": "john", "provider": "codex", "provider_session_id": session}
+                }
+            })
+            .to_string(),
+        );
+        let key = hex::encode(Sha256::digest(
+            format!("codex\0{session}\0{}", bus.display()).as_bytes(),
+        ))[..24]
+            .to_string();
+        let policies = dir.path().join("runtime").join("broadcast-policy");
+        std::fs::create_dir_all(&policies).expect("policies");
+        let receipt = serde_json::json!({
+            "schema": "codescribe.broadcast-policy.v1", "provider": "codex",
+            "provider_session_id": session, "lease_id": lease, "bus": bus,
+            "origin_channel": "0", "policy": "off"
+        });
+        let path = policies.join(format!("{key}.json"));
+        std::fs::write(&path, serde_json::to_vec(&receipt).expect("json")).expect("policy");
+        assert!(frozen_channel_recipients(0, &binding, &bus).is_empty());
+        assert_eq!(
+            frozen_channel_recipients(6, &binding, &bus).len(),
+            1,
+            "leaving channel 0 never blocks words addressed to the agent"
+        );
+        for (field, value) in [
+            ("policy", serde_json::json!("quiet")),
+            ("policy", serde_json::json!("on")),
+            ("schema", serde_json::json!("wrong-schema")),
+            ("lease_id", serde_json::json!("another-lease")),
+            ("bus", serde_json::json!("/tmp/not-owned.jsonl")),
+        ] {
+            let mut kept = receipt.clone();
+            kept[field] = value.clone();
+            std::fs::write(&path, serde_json::to_vec(&kept).expect("json")).expect("policy");
+            assert_eq!(
+                frozen_channel_recipients(0, &binding, &bus).len(),
+                1,
+                "{field}={value}"
+            );
+        }
+        std::fs::write(&path, b"{").expect("broken policy");
+        assert_eq!(
+            frozen_channel_recipients(0, &binding, &bus).len(),
+            1,
+            "a broken receipt fails open, as the helper does"
+        );
     }
 
     #[test]
@@ -4298,6 +4924,52 @@ mod channel_transcription_controls_tests {
         );
     }
 
+    /// The playback guard reads the phase file: a fresh session reports quiet
+    /// since it opened, speech holds it, a broken edge chain is never quiet,
+    /// and closing the channel removes the file.
+    #[test]
+    fn capture_clock_publishes_its_phase_for_the_playback_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runtime").join("channel-speech-3.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+        };
+        let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let t = opened + Duration::from_secs(2);
+        let mut clock = ChannelSpeechClock::default();
+        clock.publish_now(t);
+        assert!(
+            !path.exists(),
+            "nothing is published before the session opens"
+        );
+        clock.publish_to(path.clone(), 3, "agent-channel-3-x".into(), opened);
+        let row = read();
+        assert_eq!(row["schema"], CHANNEL_SPEECH_NOW_SCHEMA);
+        assert_eq!(row["channel"], "3");
+        assert_eq!(row["session_id"], "agent-channel-3-x");
+        assert_eq!(row["phase"], "fresh");
+        assert_eq!(row["since_ms"], 1_000_000);
+        assert_eq!(row["pid"], std::process::id());
+        clock.observe(&measured_clock_edge(1, 0, true), t);
+        clock.publish_now(t);
+        assert_eq!(read()["phase"], "speaking");
+        clock.observe(&measured_clock_edge(2, 16_000, false), t);
+        clock.publish_now(t + Duration::from_secs(9));
+        let row = read();
+        assert_eq!(row["phase"], "quiet");
+        assert_eq!(
+            row["since_ms"], 1_002_000,
+            "quiet dates from the measured end"
+        );
+        clock.observe(&measured_clock_edge(3, 32_000, false), t);
+        clock.publish_now(t);
+        assert_eq!(read()["phase"], "unmeasured");
+        clock.withdraw_now();
+        assert!(!path.exists());
+        clock.publish_now(t);
+        assert!(!path.exists(), "a closed session never writes again");
+    }
+
     #[tokio::test]
     async fn capture_clock_real_emitter_forwards_only_the_opened_captures_sideband() {
         use crate::presentation::emitter::PresentationEmitter;
@@ -4351,5 +5023,16 @@ mod channel_transcription_controls_tests {
             Some(t + Duration::from_secs(5))
         );
         emitter.finish().await;
+    }
+
+    #[test]
+    fn founder_channel_10_constants_and_bus_path() {
+        let root = Path::new("/tmp/agent-bridge");
+        assert_eq!(FOUNDER_CHANNEL, "10");
+        assert_eq!(FOUNDER_AUDIENCE, "founder");
+        assert_eq!(
+            founder_bus_path_at(root),
+            PathBuf::from("/tmp/agent-bridge/buses/channel-10.jsonl")
+        );
     }
 }

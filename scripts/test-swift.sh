@@ -15,6 +15,7 @@ shift 6
 : "${CODESCRIBE_DATA_DIR:?test-swift requires an isolated test data directory}"
 export TEST_RUNNER_CODESCRIBE_DATA_DIR="$CODESCRIBE_DATA_DIR"
 export TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1
+export TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI="${CODESCRIBE_TEST_ISOLATED_GUI:-0}"
 # The host's overlay polls the agent bridge and its Rust core answers the
 # channel roster from it. A live ~/.codescribe/agent-bridge drew a second
 # overlay with the real conversations during a take (2026-10-13).
@@ -78,6 +79,9 @@ if [[ "$(cat "$CODESCRIBE_DATA_DIR/ax-probe/ready")" != trusted ]]; then
 fi
 
 echo "=== Swift front-end tests (CodescribeTests) ==="
+if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" != 1 ]]; then
+  echo "test-swift: invisible fixtures; native window/AX acceptance is explicitly skipped (isolated GUI opt-in required)."
+fi
 cd macos || exit $?
 # Prefer the selected dylib at runtime while retaining bundled framework lookup.
 xcodebuild test \
@@ -118,7 +122,7 @@ if [ "$rc" -eq 0 ] && [ -n "$secs" ] && \
   echo "test-swift: here has meant the core is doing real (blocking) work for a test run," >&2
   echo "test-swift: not that the machine is busy. Check the slowest test above, then" >&2
   echo "test-swift: core/config/keychain.rs::in_xctest_host and macos/CodescribeTests/README.md." >&2
-  echo "test-swift: if the host really is loaded: make test-swift SWIFT_TEST_MAX_SECONDS=90" >&2
+  echo "test-swift: investigate before choosing an explicit SWIFT_TEST_MAX_SECONDS override." >&2
   rc=4
 fi
 exit $rc

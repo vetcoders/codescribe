@@ -70,7 +70,7 @@ class ReleaseVersionTests(unittest.TestCase):
         changelog = (self.root / "CHANGELOG.md").read_text()
         self.assertIn("## Unreleased\n\nNo changes recorded yet.", changelog)
         self.assertIn("Human-authored feature explanation.", changelog)
-        self.assertIn("Keep original PCM", changelog)
+        self.assertNotIn("- Keep original PCM", changelog)
         receipt = json.loads((self.root / "docs/releases/0.1.1-commits.json").read_text())
         self.assertEqual(len(receipt["commits"]), 1)
         self.assertEqual(receipt["commits"][0]["squash_headings"], ["fix: Keep original PCM"])
@@ -95,6 +95,47 @@ class ReleaseVersionTests(unittest.TestCase):
         receipt = json.loads((self.root / "docs/releases/0.1.2-commits.json").read_text())
         self.assertEqual([c["subject"] for c in receipt["commits"]], ["fix: Release microphone promptly"])
 
+    def test_committed_untagged_version_can_advance(self):
+        self.run_release()
+        self.commit("chore: Prepare the first local version")
+        (self.root / "feature.txt").write_text("next local source\n")
+        self.commit("fix: Keep the widget visible during interaction")
+
+        self.run_release()
+
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "0.1.2")
+        receipt = json.loads((self.root / "docs/releases/0.1.2-commits.json").read_text())
+        self.assertEqual(receipt["version"], "0.1.2")
+        before = self.snapshot()
+        self.run_release()
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_different_requested_bump_is_not_silently_ignored(self):
+        self.run_release()
+        pending = self.snapshot()
+
+        with self.assertRaisesRegex(ValueError, "Uncommitted version.*not a major bump"):
+            self.run_release(kind="major")
+        self.assertEqual(pending, self.snapshot())
+
+    def test_pending_explicit_retarget_keeps_notes_and_inventory_untouched(self):
+        self.run_release()
+        pending = self.snapshot()
+
+        with self.assertRaisesRegex(ValueError, "[Uu]ncommitted|[Pp]ending"):
+            self.run_release(kind="major", to_version="1.0.0")
+        self.assertEqual(pending, self.snapshot())
+
+    def test_explicit_target_from_committed_version_is_honored(self):
+        self.run_release(kind="major", to_version="1.0.0")
+        self.assertEqual(release.cargo_version((self.root / "Cargo.toml").read_text()), "1.0.0")
+        receipt = json.loads((self.root / "docs/releases/1.0.0-commits.json").read_text())
+        self.assertEqual(len(receipt["commits"]), 1)
+        self.assertIn("Human-authored feature explanation.", (self.root / "CHANGELOG.md").read_text())
+        before = self.snapshot()
+        self.run_release(kind="major")
+        self.assertEqual(before, self.snapshot())
+
     def test_existing_human_summary_is_preserved_on_refresh(self):
         text = (self.root / "CHANGELOG.md").read_text()
         text += "\n## [0.1.1] - 2026-10-08\n\nA concise human description.\n"
@@ -105,6 +146,29 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual(first, self.snapshot())
         self.assertIn("A concise human description.", (self.root / "CHANGELOG.md").read_text())
         self.assertNotIn("### Fixed", (self.root / "CHANGELOG.md").read_text())
+
+    def test_refresh_keeps_the_recorded_history_start(self):
+        # A release assembled on a feature line can have a deliberately chosen
+        # boundary newer than the previous published tag. A refresh must not
+        # silently count all the older merged history again.
+        boundary = self.git("rev-parse", "HEAD")
+        (self.root / "feature.txt").write_text("next change\n")
+        self.commit("fix: Correct the selected menu item")
+        self.run_release(since=boundary)
+        before = self.snapshot()
+        self.run_release()
+        self.assertEqual(before, self.snapshot())
+        receipt = json.loads((self.root / "docs/releases/0.1.1-commits.json").read_text())
+        self.assertEqual(receipt["from_sha"], boundary)
+        self.assertEqual(len(receipt["commits"]), 1)
+
+    def test_bump_does_not_publish_commit_subjects_as_verified_fixes(self):
+        self.run_release()
+        changelog = (self.root / "CHANGELOG.md").read_text()
+        self.assertNotIn("### Fixed", changelog)
+        self.assertNotIn("- Keep original PCM", changelog)
+        self.assertIn("Human-authored feature explanation.", changelog)
+        self.assertIn("Source history: 1 commits", changelog)
 
     def test_invalid_boundary_and_disagreeing_manifest_leave_files_untouched(self):
         before = self.snapshot()

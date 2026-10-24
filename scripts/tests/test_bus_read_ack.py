@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +79,8 @@ class ReadAckTests(unittest.TestCase):
         self.assertNotIn("Iwo", result.stdout)
         self.assertEqual((self.root / "leases" / f"{self.lease}.json").read_bytes(), before)
         self.assertFalse((self.root / "acknowledgments").exists())
+        # Codex has no native waiter to coordinate with: no mark, no ledger.
+        self.assertFalse((self.root / "runtime" / "native-wake").exists())
 
     def test_bounded_watch_ignores_acked_messages_and_drafts(self):
         self.ack(self.ids)
@@ -123,6 +126,32 @@ class ReadAckTests(unittest.TestCase):
              "--provider", "codex", "--session", self.session,
              "--bridge-home", str(self.root)],
             capture_output=True, text=True, timeout=timeout)
+
+    def status(self):
+        result = subprocess.run(
+            [sys.executable, str(SOURCE), "--status", "--provider", "codex", "--session", self.session,
+             "--bridge-home", str(self.root)], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["listener"]
+
+    def test_status_reports_a_live_until_event_task_for_any_provider(self):
+        self.ack(self.ids)
+        self.save()
+        self.assertFalse(self.status()["until_event_alive"])
+        watch = subprocess.Popen(
+            [sys.executable, str(SOURCE), "--watch", "--until-event", "--provider", "codex",
+             "--session", self.session, "--bridge-home", str(self.root)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: watch.poll() is None and watch.kill())
+        deadline = time.monotonic() + 5
+        while not self.status()["until_event_alive"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.status()["until_event_alive"])
+        watch.kill()
+        watch.wait(timeout=5)
+        self.assertFalse(self.status()["until_event_alive"])
+        # Codex has no native waiter: the mark is no ledger.
+        self.assertFalse((self.root / "runtime" / "native-wake").exists())
 
     def test_open_watch_never_ends_on_an_empty_mailbox(self):
         self.ack(self.ids)
@@ -417,6 +446,16 @@ class ReadAckTests(unittest.TestCase):
         self.assertTrue(all(r["native_queue_settled"] for r in receipts))
         for identity in self.ids:
             self.assertTrue(DEMUX.read_json(self.root / "acknowledgments" / self.lease / f"{identity}.json")["read_at"])
+        self.assertEqual(json.loads(self.cli().stdout)["deliveries"], [])
+
+    def test_repeated_ack_flags_acknowledge_every_listed_delivery(self):
+        read = json.loads(self.cli().stdout)
+        repeated = [item for identity in read["read_delivery_ids"] for item in ("--ack", identity)]
+        ack = subprocess.run([sys.executable, str(SOURCE), "--provider", "codex", "--session", self.session,
+                              "--bridge-home", str(self.root), "--bus", str(self.bus), *repeated],
+                             capture_output=True, text=True)
+        self.assertEqual(ack.returncode, 0, ack.stderr)
+        self.assertEqual([json.loads(line)["delivery_id"] for line in ack.stdout.splitlines()], self.ids)
         self.assertEqual(json.loads(self.cli().stdout)["deliveries"], [])
 
     def test_read_never_combines_with_mutation(self):

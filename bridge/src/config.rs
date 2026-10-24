@@ -108,6 +108,8 @@ pub struct CsSettings {
     pub seal_ledger_enabled: bool,
     pub apple_live_enabled: bool,
     pub light_plus_sentence_pause_sec: f32,
+    /// Lab ledger slider, -100 (strict) ..= 100 (loose); 0 is today's engine.
+    pub ledger_sensitivity: i32,
     /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
@@ -115,6 +117,10 @@ pub struct CsSettings {
     /// Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
     /// Command is not a value.
     pub channel_modifier: String,
+    /// The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
+    pub widget_shortcut: String,
+    /// The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
+    pub widget_shortcut_label: String,
     /// Quick Fn press below the hold delay toggles dictation. Default off.
     pub fn_tap_toggles_dictation: bool,
     /// Middle mouse button follows Fn press/release. Default off.
@@ -126,7 +132,6 @@ pub struct CsSettings {
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
-    pub ai_formatting_enabled: bool,
     /// Automatic paste policy (`PASTE_MODE`). Written back via `update_config`.
     pub paste_mode: CsPasteMode,
     /// `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
@@ -178,8 +183,12 @@ pub struct CsSettings {
     /// Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
     pub llm_formatting_provider: Option<String>,
     pub llm_formatting_model: Option<String>,
+    /// Formatting reasoning level: `none` (default), `low`, `medium`, `high`.
+    pub llm_formatting_reasoning: String,
     pub llm_assistive_provider: Option<String>,
     pub llm_assistive_model: Option<String>,
+    /// Agent reasoning level: `default` (the model's own) or a chosen level.
+    pub llm_assistive_reasoning: String,
     pub formatting_level: Option<String>,
     pub whisper_model: Option<String>,
     /// Read-only diagnostic env override captured by the runtime snapshot.
@@ -243,13 +252,15 @@ impl CsSettings {
             seal_ledger_enabled: runtime.seal_ledger_enabled(),
             apple_live_enabled: runtime.apple_live_enabled(),
             light_plus_sentence_pause_sec: config.light_plus_sentence_pause_sec,
+            ledger_sensitivity: config.ledger_sensitivity,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
+            widget_shortcut: config.widget_shortcut.wire_id(),
+            widget_shortcut_label: config.widget_shortcut.label(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
             whisper_language: CsLanguage::from(config.whisper_language),
-            ai_formatting_enabled: config.ai_formatting_enabled,
             paste_mode: config.paste_mode.into(),
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
             transcript_tagging_enabled: config.transcript_tagging_enabled,
@@ -294,8 +305,21 @@ impl CsSettings {
                 .or_else(|| Some(formatting.provider().as_string())),
             llm_formatting_model: setting_string(settings.llm_formatting_model.clone())
                 .or_else(|| Some(formatting.model().to_string())),
+            llm_formatting_reasoning: settings
+                .llm_formatting_reasoning
+                .as_deref()
+                .and_then(codescribe_core::llm::provider::ReasoningEffort::parse)
+                .unwrap_or_default()
+                .as_str()
+                .to_string(),
             llm_assistive_model: setting_string(settings.llm_assistive_model.clone())
                 .or_else(|| Some(assistive.model().to_string())),
+            llm_assistive_reasoning: settings
+                .llm_assistive_reasoning
+                .as_deref()
+                .and_then(codescribe_core::llm::provider::ReasoningEffort::parse)
+                .map_or("default", |effort| effort.as_str())
+                .to_string(),
             llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
                 .or_else(|| Some(assistive.provider().as_string())),
             formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
@@ -449,6 +473,45 @@ pub struct CsApiKeyProbeResult {
     pub status: CsApiKeyProbeStatus,
     pub message: String,
     pub probed_endpoint: Option<String>,
+}
+
+/// One Settings › Formatting › Test request, measured. `status` is one of
+/// `applied`, `unchanged`, `skipped`, `failed`, `timed_out`. Never a secret.
+#[derive(uniffi::Record)]
+pub struct CsFormattingProbe {
+    pub status: String,
+    pub input: String,
+    pub output: String,
+    pub elapsed_ms: u64,
+    /// The live formatter job's deadline the request had to meet.
+    pub deadline_ms: u64,
+    pub provider: String,
+    pub model: String,
+    /// The reasoning effort sent; `None` when the request carried no field.
+    pub reasoning: Option<String>,
+}
+
+impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormattingProbe {
+    fn from(probe: codescribe_core::llm::ai_formatting::FormattingProbe) -> Self {
+        use codescribe_core::llm::ai_formatting::FormattingProbeStatus as Status;
+        Self {
+            status: match probe.status {
+                Status::Applied => "applied",
+                Status::Unchanged => "unchanged",
+                Status::Skipped => "skipped",
+                Status::Failed => "failed",
+                Status::TimedOut => "timed_out",
+            }
+            .to_string(),
+            input: probe.input,
+            output: probe.output,
+            elapsed_ms: u64::try_from(probe.elapsed.as_millis()).unwrap_or(u64::MAX),
+            deadline_ms: u64::try_from(probe.deadline.as_millis()).unwrap_or(u64::MAX),
+            provider: probe.provider,
+            model: probe.model,
+            reasoning: probe.reasoning.map(str::to_string),
+        }
+    }
 }
 
 /// One selectable model for a provider (id sent on the wire + display label).
@@ -1049,6 +1112,27 @@ impl CodescribeConfig {
         Ok(probe_api_key_liveness(&account, provider.as_ref()).into())
     }
 
+    /// Settings › Formatting › Test: format `sample` once through the live
+    /// formatter path (empty `sample` sends the built-in raw transcript).
+    /// Blocks for up to the live deadline; Swift calls it off MainActor.
+    pub fn test_formatting(&self, sample: String) -> Result<CsFormattingProbe, CsError> {
+        let runtime = load_runtime_snapshot_for_lane();
+        let language = runtime
+            .values()
+            .whisper_language
+            .whisper_hint()
+            .map(str::to_string);
+        let probe = application_runtime::block_on(async move {
+            codescribe_core::llm::ai_formatting::probe_formatting(
+                Some(&sample),
+                language.as_deref(),
+                &runtime,
+            )
+            .await
+        })?;
+        Ok(probe.into())
+    }
+
     /// Explicit credential acquisition. Swift executes this off MainActor.
     ///
     /// This is the only authorized path that fills the process credential
@@ -1529,7 +1613,10 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Save one explicit formatting policy prompt through the shared owner.
@@ -1543,7 +1630,10 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Overwrite the BASE assistive prompt file (`assistive.txt`).
@@ -1553,13 +1643,19 @@ impl CodescribeConfig {
             &content,
             PromptWriteReason::SettingsSave,
         )
-        .map_err(CsError::from)
+        .map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore only the formatting base prompt after explicit UI confirmation:
     /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
-        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
+        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore one explicit formatting policy prompt after UI confirmation:
@@ -1568,19 +1664,28 @@ impl CodescribeConfig {
         &self,
         level: String,
     ) -> Result<(), CsError> {
-        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)
+        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Restore only the assistive base prompt after explicit UI confirmation:
     /// the override is backed up and removed, so the built-in text is in use.
     pub fn restore_assistive_prompt_to_default(&self) -> Result<(), CsError> {
-        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)
+        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Reset both BASE prompt files to their built-in defaults
     /// (`reset_to_defaults`). Does not touch `*_tuning.txt`.
     pub fn reset_prompts_to_defaults(&self) -> Result<(), CsError> {
-        reset_to_defaults().map_err(CsError::from)
+        reset_to_defaults().map_err(CsError::from)?;
+        invalidate_runtime_snapshot_cache();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
     }
 
     /// Built-in default formatting prompt (`DEFAULT_FORMATTING_PROMPT`).
@@ -2874,7 +2979,7 @@ mod reset_tests {
             assert_eq!(projected.apple_live_enabled, apple);
             let unchanged = super::CsSettings::from_runtime_snapshot(&original);
             assert!(!unchanged.seal_ledger_enabled);
-            assert!(!unchanged.apple_live_enabled);
+            assert!(unchanged.apple_live_enabled);
         }
     }
 
@@ -4227,6 +4332,67 @@ mod settings_snapshot_tests {
             CsSettings::from_runtime_snapshot(&normal).layered_transcription,
             None
         );
+    }
+
+    /// Settings shows the level the formatting lane will send: `none` until
+    /// the user opts in, and never a word that is not a level.
+    #[test]
+    fn formatting_reasoning_projects_its_level_with_none_as_default() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/formatting-reasoning"),
+            1_700_000_000_000,
+        );
+        for (stored, shown) in [
+            (None, "none"),
+            (Some("high"), "high"),
+            (Some("turbo"), "none"),
+        ] {
+            input.user_settings.llm_formatting_reasoning = stored.map(str::to_string);
+            let runtime = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(
+                CsSettings::from_runtime_snapshot(&runtime).llm_formatting_reasoning,
+                shown,
+                "{stored:?}"
+            );
+            let lane_level = runtime
+                .llm_lanes()
+                .formatting()
+                .reasoning()
+                .map(|effort| effort.as_str());
+            assert_eq!(lane_level, Some(shown), "{stored:?}");
+        }
+    }
+
+    /// The Agent shows `default` until a level is chosen, `none` included.
+    #[test]
+    fn assistive_reasoning_projects_default_until_chosen() {
+        use codescribe_core::config::CapturedRuntimeInputs;
+
+        let mut input = CapturedRuntimeInputs::defaults_at(
+            std::path::PathBuf::from("/fixture/assistive-reasoning"),
+            1_700_000_000_000,
+        );
+        for (stored, shown, lane) in [
+            (None, "default", None),
+            (Some("none"), "none", Some("none")),
+            (Some("xhigh"), "xhigh", Some("xhigh")),
+        ] {
+            input.user_settings.llm_assistive_reasoning = stored.map(str::to_string);
+            let runtime = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(
+                CsSettings::from_runtime_snapshot(&runtime).llm_assistive_reasoning,
+                shown,
+                "{stored:?}"
+            );
+            let lane_level = runtime
+                .llm_lanes()
+                .assistive()
+                .reasoning()
+                .map(|effort| effort.as_str());
+            assert_eq!(lane_level, lane, "{stored:?}");
+        }
     }
 
     /// C15D falsifier (source-level; W2 does not execute): Settings UI projection

@@ -24,6 +24,11 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+// WHY: `build.rs` compiles `whisper_weights.rs` as a sibling module to share
+// bundle validation with `codescribe_core`, but only the runtime crate calls
+// `validate_whisper_safetensors_bytes` (in `core/stt/whisper/engine.rs`).
+// WHEN: Whenever `core/build.rs` is compiled as the Cargo build-script binary.
+// WHERE: `core/build.rs` path-module inclusion of `core/whisper_weights.rs`.
 #[path = "whisper_weights.rs"]
 #[allow(dead_code)]
 mod whisper_weights;

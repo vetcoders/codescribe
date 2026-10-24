@@ -16,10 +16,10 @@ struct OAuthClientIdEditor: View {
         "\(accountBrand) OAuth client id",
         comment: "Popover title; the placeholder is a vendor brand, e.g. ChatGPT"
       )
-      .font(CSFont.ui(12.5, .semibold))
+      .font(SettingsScale.settingName)
       .foregroundStyle(Color.primary)
       Text("Optional override (settings.json) — empty restores the shipped default.")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 8) {
@@ -35,7 +35,7 @@ struct OAuthClientIdEditor: View {
         )
       }
     }
-    .padding(CSSpace.card)
+    .padding(SettingsScale.cardPadding)
     .frame(minWidth: 360)
   }
 }

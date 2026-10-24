@@ -26,7 +26,8 @@ final class OverlayClipboardPasteTests: XCTestCase {
     let text = try XCTUnwrap(editor(in: host))
     XCTAssertTrue(panel.makeFirstResponder(text))
     XCTAssertTrue(panel.firstResponder === text)
-    XCTAssertFalse(panel.allowsKeyForTranscript, "Preselection is not a user request for keyboard focus")
+    XCTAssertFalse(
+      panel.allowsKeyForTranscript, "Preselection is not a user request for keyboard focus")
     XCTAssertFalse(panel.canBecomeKey)
     XCTAssertEqual(text.string, "Retained draft")
   }
@@ -55,7 +56,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
       content.addSubview(canvas)
       content.addSubview(host)
       panel.contentView = content
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       defer {
         panel.makeFirstResponder(nil)
         panel.close()
@@ -68,6 +69,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
       }
       let text = try XCTUnwrap(editor(in: host))
       XCTAssertTrue(panel.makeFirstResponder(canvas))
+      try BackgroundTestWindow.requireIsolatedGUI()
       panel.takeKeyForTranscript()
       XCTAssertTrue(panel.isKeyWindow)
 

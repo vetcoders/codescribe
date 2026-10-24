@@ -49,6 +49,11 @@ extension SettingsViewModel {
     set { setLightPlusSentencePauseSeconds(Float(newValue)) }
   }
 
+  var ledgerSensitivitySlider: Double {
+    get { Double(settings.ledgerSensitivity) }
+    set { setLedgerSensitivity(Int32(newValue.rounded())) }
+  }
+
   var readOnlyDefaultPicker: String {
     get { permissionPolicy.readOnlyDefault }
     set { setPermissionDefault(kind: .readOnly, level: newValue) }

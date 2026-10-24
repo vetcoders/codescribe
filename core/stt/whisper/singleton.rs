@@ -523,35 +523,6 @@ fn file_transcription_initial_prompt() -> Option<String> {
     None
 }
 
-/// Like [`with_engine`] but never blocks: if the engine is busy, return an error
-/// instead of waiting. Used by best-effort correction passes.
-fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
-    let mut guard = slot()
-        .try_lock()
-        .map_err(|_| anyhow!("Whisper engine busy, skipping correction"))?;
-    let mut model_load_ms = 0u64;
-    let cold_load = guard.engine.is_none();
-    if cold_load {
-        let load_started = Instant::now();
-        let (engine, identity) = load_engine()?;
-        guard.engine = Some(engine);
-        guard.loaded_identity = Some(identity);
-        PENDING_SWITCH.store(false, Ordering::Release);
-        model_load_ms = load_started.elapsed().as_millis() as u64;
-        ensure_reaper();
-        record_residency_load(model_load_ms);
-    }
-    // try_lock never waits, so lock_wait is 0 by construction.
-    super::timing::record_engine_acquire(0, model_load_ms, cold_load);
-    let engine = guard
-        .engine
-        .as_mut()
-        .ok_or_else(|| anyhow!("Engine not initialized"))?;
-    let result = f(engine);
-    guard.last_used = Instant::now();
-    result
-}
-
 /// Initialize the global engine (call once at startup).
 ///
 /// Embedded Whisper is the product-default truth. Runtime path resolution is a
@@ -680,29 +651,6 @@ pub fn transcribe_file_verdict_observed(
 /// Detect language from audio samples
 pub fn detect_language(samples: &[f32], sample_rate: u32) -> Result<String> {
     with_engine(|engine| engine.detect_language(samples, sample_rate))
-}
-
-/// Transcribe with a non-blocking engine acquisition (best-effort correction).
-///
-/// Returns an error instead of waiting if the engine is busy with another
-/// transcription.
-pub fn try_transcribe_with_segments(
-    samples: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<RawTranscript> {
-    try_with_engine(|engine| {
-        engine.transcribe_long_with_language_segments(samples, sample_rate, language)
-    })
-}
-
-/// Transcribe a single (already-windowed) chunk, blocking on the engine.
-pub fn transcribe_chunk(
-    samples: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<String> {
-    with_engine(|engine| engine.transcribe_with_language(samples, sample_rate, language))
 }
 
 /// Whisper singleton: prompt opt-in, idle unload, model path precedence, load.
@@ -869,7 +817,6 @@ mod tests {
     /// a minute of audio. Skip reason when the model file is absent is printed
     /// before return. Run with `--ignored`.
     #[test]
-    #[ignore = "loads the real Whisper weights and decodes 60s on Metal"]
     #[serial]
     fn whisper_metal_pool_footprint_with_resident_weights() {
         let _ttl = EnvGuard::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import OSLog
+import Observation
 import SwiftUI
 
 /// Agent-surface performance breadcrumbs (app bootstrap, first agent open,
@@ -81,6 +82,7 @@ final class AppModel: ObservableObject {
         guard edge == .settingsWritten else { return }
         overlay.state.canonicalConfigurationDidChange()
       }
+    overlay.startIntercomPresentation()
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
 }
@@ -95,7 +97,15 @@ final class OverlayController: ObservableObject {
   /// key). Separate from the chat scale so a distance-readable transcript and an
   /// up-close chat can be tuned independently.
   let textScale = TextScaleController(key: "DictationOverlayPanel.textScale.v1")
+  /// The Intercom's own scale, ⌘+/-/0 while one of its windows is key. It
+  /// shared the overlay's, so a distance-readable overlay made the small
+  /// conversation as large with no way to shrink it (Maciej, 2026-10-23: "czy
+  /// ten tekst zawsze będzie taki wielki … na małej rozmowie. I w normalnym
+  /// rozmiarze"). It starts at the normal size.
+  let intercomTextScale = TextScaleController(key: "IntercomPanel.textScale.v1")
   private var panel: NSPanel?
+  private var intercomWidget: OverlayIntercomWidgetController?
+  private var intercomPresentationStarted = false
   private let overlayEnabledProvider: () -> Bool
   private let assistiveStatusProvider: () -> Bool
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
@@ -126,7 +136,7 @@ final class OverlayController: ObservableObject {
   static let pinReleaseFadeSeconds: TimeInterval = 0.6
   /// A direct edge resize is the user's size decision for the current session.
   /// The next recording may breathe again from that persisted starting point.
-  private var automaticContentSizingEnabled = true
+  private var automaticTranscriptionSizingEnabled = true
   /// Latched across the session (preparing → started → stopped) because the
   /// Rust controller clears its assistive flag right after the stop pipeline —
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
@@ -200,7 +210,7 @@ final class OverlayController: ObservableObject {
     // identity-less lifecycle paint cannot revoke an admitted composer request.
     state.onRecordingPreparing = { [weak self] in
       guard let self else { return }
-      self.automaticContentSizingEnabled = true
+      self.automaticTranscriptionSizingEnabled = true
       self.sessionWasAssistive = false
       self.refreshAssistiveLatch()
       self.showForRecording()
@@ -270,7 +280,11 @@ final class OverlayController: ObservableObject {
           panel.alphaValue = 1
           self.orderPanelFront(panel)
           self.resizeForProjectedContent()
-        } else {
+        } else if !(self.state.channelMapPreference.enabled
+          && self.state.channelMapPreference.layout == .vertical)
+        {
+          // The independent Intercom already presents channel activity. An
+          // explicit Show in Agents action still opens the main overlay.
           self.show()
         }
       } else {
@@ -302,10 +316,56 @@ final class OverlayController: ObservableObject {
     }
     state.onPlacementChanged = { [weak self] in self?.applyPlacement() }
     state.autoCollapseExternalHold = { [weak self] in self?.windowHoldsAutoCollapse ?? false }
-    transientInteractions.onInteractionEnded = { [weak state] in
-      state?.noteAutoCollapseActivity()
+    transientInteractions.onInteractionChanged = { [weak state] in
+      state?.presentationInteractionDidChange()
     }
     state.attach()
+  }
+
+  /// Only the production composition root starts desktop presentation; state
+  /// fixtures and standalone overlay controllers do not create widget windows.
+  func startIntercomPresentation() {
+    guard !intercomPresentationStarted else { return }
+    intercomPresentationStarted = true
+    syncIntercomPresentation()
+  }
+
+  func stopIntercomPresentation() {
+    intercomPresentationStarted = false
+    state.onRevealIntercom = nil
+    state.agentChooserHost = nil
+    intercomWidget?.invalidate()
+    intercomWidget = nil
+  }
+
+  private func syncIntercomPresentation() {
+    guard intercomPresentationStarted else { return }
+    let preference = state.channelMapPreference
+    // Track only the presentation choice. Roster updates are projected by the
+    // widget's SwiftUI view; no second inventory, timer or event reader lives here.
+    let wantsWidget = withObservationTracking {
+      preference.enabled && preference.layout == .vertical
+    } onChange: { [weak self] in
+      Task { @MainActor [weak self] in self?.syncIntercomPresentation() }
+    }
+    if wantsWidget, intercomWidget == nil {
+      intercomWidget = OverlayIntercomWidgetController(
+        state: state, textScale: intercomTextScale,
+        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
+      // Mini's stacked counter leads here in the vertical layout.
+      state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
+    }
+    // The middle-click chooser lives where the agents do: on the Intercom
+    // while it stands, on the big overlay's list otherwise.
+    state.agentChooserHost =
+      wantsWidget
+      ? intercomWidget.map { widget in
+        OverlayState.AgentChooserHost(
+          targets: { [weak widget] in widget?.chooserTargets() ?? [] },
+          open: { [weak widget] id in widget?.openChosenConversation(id) })
+      } : nil
+    intercomWidget?.setVisible(wantsWidget, relativeTo: panel)
+    state.channelMapPreferenceChanged()
   }
 
   /// Window-side interactions the state cannot see: a hidden panel, an edge
@@ -328,6 +388,22 @@ final class OverlayController: ObservableObject {
     show()
   }
 
+  /// The global widget chord (⌃⇧B, `HotkeyEvent::ToggleWidget`): a hidden
+  /// panel shows as the Tray entry does; a visible idle panel hides through
+  /// the human Close intent; a panel that is recording or holds an open
+  /// channel only comes forward, so the chord can never hide live capture.
+  func toggleWidget() {
+    guard let panel, panel.isVisible else {
+      showWidget()
+      return
+    }
+    if state.recording || state.hasOpenChannel {
+      show(preserveVisiblePosition: true)
+      return
+    }
+    dismiss()
+  }
+
   /// Show the overlay for a dictation session, honouring the "Transcription
   /// Overlay" toggle. When disabled, dictation runs headless — hold the hotkey,
   /// dictate, and the text lands at the cursor (+ clipboard) with no window.
@@ -340,13 +416,25 @@ final class OverlayController: ObservableObject {
   /// bubble ten seconds later (Maciej, 2026-10-14). Only a take the composer
   /// itself captures stays headless; its words stream into the composer field.
   func showForRecording() {
+    if state.draftCapture.hasRequest {
+      let preference = state.channelMapPreference
+      if OverlayIntercomPresentation.shouldShowMainOverlayForDraftCapture(
+        verticalIntercomActive: preference.enabled && preference.layout == .vertical,
+        mainPanelVisible: panel?.isVisible == true,
+        conversationPresentedInIntercom:
+          intercomWidget?.presentsConversation(state.draftCapture.conversationID) == true)
+      {
+        show(preserveVisiblePosition: true)
+      }
+      return
+    }
     refreshAssistiveLatch()
     if sessionWasAssistive {
       if composerOwnsCapture() {
         hide()
       } else {
         readOverlayPreference()
-        show()
+        show(preserveVisiblePosition: true)
       }
       return
     }
@@ -355,7 +443,7 @@ final class OverlayController: ObservableObject {
       if panel != nil { hide() }
       return
     }
-    show()
+    show(preserveVisiblePosition: true)
   }
 
   /// The "Transcription Overlay" preference was written (tray toggle, Settings
@@ -385,7 +473,7 @@ final class OverlayController: ObservableObject {
     return enabled
   }
 
-  func show() {
+  func show(preserveVisiblePosition: Bool = false) {
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
     if let floating = panel as? FloatingOverlayPanel {
@@ -400,12 +488,16 @@ final class OverlayController: ObservableObject {
       }
       floating.onUserResize = { [weak self] in
         guard let self, !Self.isApplyingFrame else { return }
-        self.automaticContentSizingEnabled = false
+        let surface =
+          (self.panel as? FloatingOverlayPanel)?.contentSurface
+          ?? self.state.windowContentSurface
+        if surface == .transcription { self.automaticTranscriptionSizingEnabled = false }
         self.state.userResizedOverlay()
       }
       floating.onUserResizeEnded = { [weak self] in
         guard let self else { return }
         self.state.noteAutoCollapseActivity()
+        (self.panel as? FloatingOverlayPanel)?.persistContentSize()
         if self.state.freeMotion, let floating = self.panel as? FloatingOverlayPanel {
           OverlayPlacement.persistOrigin(floating.originForPersistence)
         }
@@ -431,11 +523,12 @@ final class OverlayController: ObservableObject {
         // can still grow the settled panel; an equal height writes nothing.
         self.resizeForProjectedContent()
       }
+      floating.setContentSurface(state.windowContentSurface)
       floating.setPresentationMode(state.presentationMode)
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
-    applyPlacement()
+    if !preserveVisiblePosition || !panel.isVisible { applyPlacement() }
     panelPresented = true
     orderPanelFront(panel)
     resizeForProjectedContent()
@@ -476,7 +569,9 @@ final class OverlayController: ObservableObject {
     let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let size: NSSize
     switch state.presentationMode {
-    case .mini: size = DictationOverlayWindow.collapsedSize
+    // Anchors and the saved origin describe the resting mini strip; mini is
+    // drawn at its natural width at that strip's trailing edge (below).
+    case .mini: size = DictationOverlayWindow.miniPlacementSize
     case .midi:
       size = NSSize(
         width: min(
@@ -493,14 +588,21 @@ final class OverlayController: ObservableObject {
     } else {
       origin = OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
     }
+    // Mini is as wide as its content (bus intercom spec §13.4).
+    let drawn =
+      state.presentationMode == .mini
+      ? (panel as? FloatingOverlayPanel)?.miniSize ?? size : size
     guard let origin else {
       OverlayPresentationTrace.shared.record(
         .placementApplied, mode: state.presentationMode, frame: panel.frame,
-        target: NSRect(origin: panel.frame.origin, size: size), note: "content_size_only")
-      panel.setContentSize(size)
+        target: NSRect(origin: panel.frame.origin, size: drawn), note: "content_size_only")
+      panel.setContentSize(drawn)
       return
     }
-    let frame = NSRect(origin: origin, size: size)
+    // The placement strip's trailing edge is the shared upper-right pin.
+    let frame = NSRect(
+      x: origin.x + size.width - drawn.width, y: origin.y, width: drawn.width,
+      height: drawn.height)
     OverlayPresentationTrace.shared.record(
       .placementApplied, mode: state.presentationMode, frame: panel.frame, target: frame,
       note: state.freeMotion ? "free_motion" : "anchor=\(state.placementAnchor)")
@@ -532,7 +634,9 @@ final class OverlayController: ObservableObject {
   /// Grow-only expanded height for `width`. Nil keeps the remembered frame
   /// when the user owns the size or the transcript editor is open.
   private func qualifiedExpandedContentHeight(for width: CGFloat) -> CGFloat? {
-    guard automaticContentSizingEnabled, !state.isEditingTranscript,
+    guard state.windowContentSurface == .transcription,
+      (panel as? FloatingOverlayPanel)?.contentSurface != .agents,
+      automaticTranscriptionSizingEnabled, !state.isEditingTranscript,
       !state.isRevisionDraftDirty
     else { return nil }
     let screen = panel?.screen ?? NSScreen.main
@@ -550,12 +654,19 @@ final class OverlayController: ObservableObject {
   }
 
   private func resizeForProjectedContent() {
+    guard let panel else { return }
     if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
       contentSizeAfterUserResize = true
       return
     }
-    guard !state.isCollapsed, let panel else { return }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
+    if let floating = panel as? FloatingOverlayPanel {
+      floating.setContentSurface(
+        state.windowContentSurface,
+        animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      guard !floating.isFrameTransitioning else { return }
+    }
+    guard !state.isCollapsed else { return }
     guard let targetHeight = qualifiedExpandedContentHeight(for: panel.frame.width) else { return }
     guard targetHeight > panel.frame.height + 0.5 else { return }
     let screen = panel.screen ?? NSScreen.main
@@ -563,17 +674,11 @@ final class OverlayController: ObservableObject {
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
     let size = NSSize(width: panel.frame.width, height: targetHeight)
-    let origin: NSPoint
-    if state.freeMotion, let visible = screen?.visibleFrame {
-      origin = OverlayPlacement.clampOrigin(
-        NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight),
-        size: size,
-        in: visible
-      )
-    } else {
-      origin =
-        OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
-        ?? NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight)
+    // Placement chooses where a panel first appears. Subsequent growth shares
+    // the morph's upper-right anchor, where the fold control is parked.
+    var origin = NSPoint(x: panel.frame.maxX - size.width, y: panel.frame.maxY - size.height)
+    if let visible = screen?.visibleFrame {
+      origin = OverlayPlacement.clampOrigin(origin, size: size, in: visible)
     }
     let grown = NSRect(origin: origin, size: size)
     OverlayPresentationTrace.shared.record(
@@ -588,10 +693,16 @@ final class OverlayController: ObservableObject {
 
   /// The middle-click agent chooser is a summons by hand: it brings the panel
   /// on screen as fresh channel evidence does, without re-anchoring a visible
-  /// one. Every other gesture input only moves state.
+  /// one. Every other gesture input only moves state. In the vertical layout
+  /// the Intercom is summoned instead and the big overlay stays as it was.
   func handleAgentGesture(_ input: CsAgentGestureInput) {
+    let wasChoosing = state.agentChooserOpen
     state.handleAgentGesture(input)
     guard state.agentChooserOpen else { return }
+    if state.agentChooserHost != nil, let intercomWidget {
+      if !wasChoosing { intercomWidget.presentChooser() }
+      return
+    }
     if let panel, panel.isVisible {
       panel.alphaValue = 1
       orderPanelFront(panel)
@@ -655,8 +766,11 @@ final class OverlayController: ObservableObject {
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
     if let panel {
-      DictationOverlayWindow.persist(
-        size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
+      if let floating = panel as? FloatingOverlayPanel {
+        floating.persistContentSize()
+      } else {
+        DictationOverlayWindow.persist(size: panel.frame.size, surface: state.windowContentSurface)
+      }
       if state.freeMotion {
         OverlayPlacement.persistOrigin(
           (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
@@ -678,7 +792,8 @@ final class OverlayController: ObservableObject {
   /// keeps it on screen.
   func hideAfterPinRelease() {
     fadeOut(duration: Self.pinReleaseFadeSeconds) { [weak self] in
-      self?.state.keepVisibleBetweenTakes == false
+      guard let self else { return false }
+      return !self.state.keepVisibleBetweenTakes && !self.state.presentationInteractionHeld
     }
   }
 
@@ -689,8 +804,11 @@ final class OverlayController: ObservableObject {
   ) {
     guard !state.hasOpenChannel else { return }
     guard let panel, panel.isVisible else { return }
-    DictationOverlayWindow.persist(
-      size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
+    if let floating = panel as? FloatingOverlayPanel {
+      floating.persistContentSize()
+    } else {
+      DictationOverlayWindow.persist(size: panel.frame.size, surface: state.windowContentSurface)
+    }
     if state.freeMotion {
       OverlayPlacement.persistOrigin(
         (panel as? FloatingOverlayPanel)?.originForPersistence ?? panel.frame.origin)
@@ -720,6 +838,9 @@ final class OverlayController: ObservableObject {
           self.panelPresented = false
           self.state.suspendAutoCollapse()
         }
+        // Like `orderOut()`: a faded-out panel stops watching for screenshot
+        // chords, or the next ⌘⇧3/4/5 brings the hidden overlay back.
+        (fadedPanel as? FloatingOverlayPanel)?.invalidatePresence()
         self.orderPanelOut(fadedPanel)
       }
     )

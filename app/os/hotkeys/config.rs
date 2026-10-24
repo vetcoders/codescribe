@@ -17,7 +17,9 @@ use crate::config::{
     UserSettings, WorkMode,
 };
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{
+    AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering as AtomicOrdering,
+};
 use std::time::{Duration, Instant};
 
 /// Packed slot: no gesture armed for that mode.
@@ -230,6 +232,55 @@ fn decode_deferred_insert_shortcut(value: u8) -> DeferredInsertShortcut {
     }
 }
 
+// Boot default matches `WidgetShortcut::default()` (⌃⇧B).
+/// Live widget chord, packed by `encode_widget_shortcut`.
+static WIDGET_SHORTCUT: AtomicU32 = AtomicU32::new(WIDGET_SHORTCUT_DEFAULT);
+/// `ctrl | shift` modifier bits plus the letter B in the key byte.
+const WIDGET_SHORTCUT_DEFAULT: u32 = (1 << 8) | (1 << 11) | b'B' as u32;
+
+/// Pack a widget chord: modifier bits 8..=11 (ctrl, option, cmd, shift) and
+/// the key in the low byte (ASCII letter, or 0 for Space).
+fn encode_widget_shortcut(shortcut: crate::config::WidgetShortcut) -> u32 {
+    use crate::config::WidgetShortcutKey;
+    let key = match shortcut.key {
+        WidgetShortcutKey::Space => 0,
+        WidgetShortcutKey::Letter(letter) => letter as u32,
+    };
+    (shortcut.ctrl as u32) << 8
+        | (shortcut.option as u32) << 9
+        | (shortcut.cmd as u32) << 10
+        | (shortcut.shift as u32) << 11
+        | key
+}
+
+/// Unpack a widget chord; an unknown key byte falls back to the default.
+fn decode_widget_shortcut(value: u32) -> crate::config::WidgetShortcut {
+    use crate::config::{WidgetShortcut, WidgetShortcutKey};
+    let key = match (value & 0xFF) as u8 {
+        0 => WidgetShortcutKey::Space,
+        letter @ b'A'..=b'Z' => WidgetShortcutKey::Letter(letter),
+        _ => return WidgetShortcut::default(),
+    };
+    WidgetShortcut {
+        ctrl: value & (1 << 8) != 0,
+        option: value & (1 << 9) != 0,
+        cmd: value & (1 << 10) != 0,
+        shift: value & (1 << 11) != 0,
+        key,
+    }
+}
+
+/// Arm the chord that shows or hides the collapsed widget.
+pub fn set_widget_shortcut(shortcut: crate::config::WidgetShortcut) {
+    WIDGET_SHORTCUT.store(encode_widget_shortcut(shortcut), AtomicOrdering::SeqCst);
+    tracing::info!(label = %shortcut.label(), "Widget shortcut set");
+}
+
+/// Currently armed widget chord.
+pub fn get_widget_shortcut() -> crate::config::WidgetShortcut {
+    decode_widget_shortcut(WIDGET_SHORTCUT.load(AtomicOrdering::SeqCst))
+}
+
 /// Arm (or disable) the chord that triggers deferred insert.
 pub fn set_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) {
     DEFERRED_INSERT_SHORTCUT.store(
@@ -381,6 +432,8 @@ pub struct HotkeyRuntimeConfig {
     pub deferred_insert_shortcut: DeferredInsertShortcut,
     /// Digit chord modifier. Command cannot be stored here.
     pub channel_modifier: ChannelModifier,
+    /// The user's chord that shows or hides the collapsed widget.
+    pub widget_shortcut: crate::config::WidgetShortcut,
     /// Quick Fn press below [`Self::hold_start_delay_ms`] toggles dictation.
     pub fn_tap_toggles_dictation: bool,
     /// Mouse button 2 is delivered as an Fn edge.
@@ -428,6 +481,7 @@ impl From<&Config> for HotkeyRuntimeConfig {
             double_tap_interval_ms: config.double_tap_interval_ms,
             deferred_insert_shortcut: config.deferred_insert_shortcut,
             channel_modifier: config.channel_modifier,
+            widget_shortcut: config.widget_shortcut,
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,
@@ -445,6 +499,7 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
         double_tap_interval_ms: get_double_tap_interval_ms(),
         deferred_insert_shortcut: get_deferred_insert_shortcut(),
         channel_modifier: get_channel_modifier(),
+        widget_shortcut: get_widget_shortcut(),
         fn_tap_toggles_dictation: get_fn_tap_toggles_dictation(),
         middle_mouse_acts_as_fn: get_middle_mouse_acts_as_fn(),
         middle_mouse_agent_gesture: get_middle_mouse_agent_gesture(),
@@ -477,6 +532,7 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_double_tap_interval_ms(normalized.double_tap_interval_ms);
     set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
     set_channel_modifier(normalized.channel_modifier);
+    set_widget_shortcut(normalized.widget_shortcut);
     set_fn_tap_toggles_dictation(normalized.fn_tap_toggles_dictation);
     set_middle_mouse_acts_as_fn(normalized.middle_mouse_acts_as_fn);
     set_middle_mouse_agent_gesture(normalized.middle_mouse_agent_gesture);
@@ -546,6 +602,7 @@ mod tests {
             double_tap_interval_ms: 260,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
             channel_modifier: ChannelModifier::Fn,
+            widget_shortcut: crate::config::WidgetShortcut::default(),
             fn_tap_toggles_dictation: true,
             middle_mouse_acts_as_fn: true,
             middle_mouse_agent_gesture: true,
@@ -591,6 +648,7 @@ mod tests {
             double_tap_interval_ms: 999,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
             channel_modifier: ChannelModifier::Ctrl,
+            widget_shortcut: crate::config::WidgetShortcut::default(),
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
             middle_mouse_agent_gesture: false,
@@ -630,6 +688,7 @@ mod tests {
             double_tap_interval_ms: 200,
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             channel_modifier: config.channel_modifier,
+            widget_shortcut: crate::config::WidgetShortcut::default(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
             middle_mouse_acts_as_fn: config.middle_mouse_acts_as_fn,
             middle_mouse_agent_gesture: config.middle_mouse_agent_gesture,

@@ -48,6 +48,9 @@ targets:
         CSBuildNumber: $(CS_BUILD_NUMBER)
         CSBuildCommit: $(CS_BUILD_COMMIT)
         CSBuiltAt: $(CS_BUILT_AT)
+        # "nightly" for every non-release profile (scripts/build-app.sh); the
+        # release DMG stays "stable" (verify-dmg-payload.sh).
+        CSBuildChannel: $(CS_BUILD_CHANNEL)
         # Sparkle 2 update channel. Feed lives in site/public, served from
         # codescribe.vetcoders.io (Caddy on the ops VPS — the GitHub Pages
         # path was never live and 404'd in every shipped bundle); enclosures
@@ -89,6 +92,7 @@ targets:
         # release pipeline overrides this via scripts/build-app.sh.
         SPARKLE_ED_PUBLIC_KEY: ""
         CS_DEVELOPER_SURFACE: "0"
+        CS_BUILD_CHANNEL: stable
         # String Catalog extraction: the Swift compiler emits one .stringsdata
         # per source file; `make l10n-sync` folds them into Localizable.xcstrings
         # (CLI builds never update the catalog on their own).

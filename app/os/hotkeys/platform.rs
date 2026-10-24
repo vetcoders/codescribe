@@ -672,7 +672,12 @@ mod macos {
             K_VK_FUNCTION => HotkeyPhysicalKey::Fn,
             K_VK_SPACE => HotkeyPhysicalKey::Space,
             K_VK_V => HotkeyPhysicalKey::V,
-            _ => HotkeyPhysicalKey::Other,
+            _ => match crate::config::WidgetShortcutKey::from_keycode(keycode) {
+                Some(crate::config::WidgetShortcutKey::Letter(letter)) => {
+                    HotkeyPhysicalKey::Letter(letter)
+                }
+                _ => HotkeyPhysicalKey::Other,
+            },
         }
     }
 
@@ -1362,8 +1367,8 @@ mod stop_preemption_tests {
         };
         assert!(!claims.claim(&down(Default::default()), config));
         let modifiers = match config.channel_modifier {
-            codescribe_core::config::ChannelModifier::Ctrl => ctrl,
-            codescribe_core::config::ChannelModifier::Fn => HotkeyModifierSnapshot {
+            crate::config::ChannelModifier::Ctrl => ctrl,
+            crate::config::ChannelModifier::Fn => HotkeyModifierSnapshot {
                 fn_key: true,
                 ..Default::default()
             },
@@ -1402,6 +1407,7 @@ mod stop_preemption_tests {
             },
             HotkeyEvent::AttachSelection,
             HotkeyEvent::ShowAgent,
+            HotkeyEvent::ToggleWidget,
             HotkeyEvent::InsertHere,
             HotkeyEvent::AgentGesture(crate::os::hotkeys::AgentGestureInput::MiddleClick),
         ] {

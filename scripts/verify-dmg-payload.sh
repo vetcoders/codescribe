@@ -340,6 +340,13 @@ if [[ -n "${APP_PATH:-}" ]]; then
     else
       ok "CSDeveloperSurface is off"
     fi
+
+    BUILD_CHANNEL=$(/usr/libexec/PlistBuddy -c 'Print :CSBuildChannel' "$PLIST" 2>/dev/null || echo stable)
+    if [[ "${BUILD_CHANNEL//[[:space:]]/}" == "nightly" ]]; then
+      fail "CSBuildChannel is nightly — the production DMG must be stable"
+    else
+      ok "CSBuildChannel is not nightly"
+    fi
   fi
 
   # Deep codesign on the app bundle

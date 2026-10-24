@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab install-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
@@ -19,6 +19,11 @@ SHELL := /bin/bash
 # Git's common directory belongs to the main checkout, including in worktrees.
 export CARGO_TARGET_DIR := $(abspath $(dir $(shell git rev-parse --git-common-dir))/target)
 export CARGO_BUILD_BUILD_DIR := $(CARGO_TARGET_DIR)
+# Workspace crates get the same artifact names in every worktree and Cargo
+# trusts source mtimes, so a build from another checkout can stand in for this
+# one. The guard reads where each crate was compiled from its metadata and
+# touches this checkout's crate roots when it was compiled elsewhere.
+TARGET_SOURCE_GUARD := $(shell bash scripts/target-source-guard.sh "$(CARGO_TARGET_DIR)")
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
 # Operator tests may source the daily dotenv for real-API credentials, but the
@@ -154,6 +159,9 @@ release-qube: dist-preflight
 
 release: release-codescribe release-qube
 
+CARGO_INSTALL_ROOT ?= $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)
+CARGO_BIN ?= $(CARGO_INSTALL_ROOT)/bin
+
 install:
 	@echo "Installing qube tools + codescribe CLI (Silero embedded; Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
@@ -161,6 +169,9 @@ install:
 	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
 	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		bash ./scripts/codesign-binaries.sh "$(CARGO_BIN)"; \
+	fi
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -171,6 +182,9 @@ install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		bash ./scripts/codesign-binaries.sh "$(CARGO_BIN)"; \
+	fi
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
@@ -194,6 +208,12 @@ site-dev:
 install-voice-lab:
 	@./scripts/install-voice-lab.sh
 
+# The Lab alone, without building the app: commits on the voice-lab checkout's
+# local main (not its working tree or branch), then the running Lab server
+# restarts so new Python is live.
+install-lab:
+	@./scripts/install-voice-lab.sh --checkout-main --restart-server
+
 .PHONY: install-bus verify-install-bus
 install-bus:
 	@./scripts/install-bus.sh
@@ -206,9 +226,17 @@ verify-install-bus:
 install-if-idle:
 	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
+# Restart the installed app at its first idle moment, only when the running
+# process did not load the installed binaries, then say "Zrobione". The
+# waiter runs in the background; install-app arms it too (Maciej, 2026-10-22).
+RESTART_IDLE_WAIT ?= 21600
+RESTART_IDLE_INTERVAL ?= 30
+RESTART_AFTER_INSTALL ?= 1
+RESTART_IF_IDLE = ./scripts/restart-if-idle --newer-only --wait $(RESTART_IDLE_WAIT) --interval $(RESTART_IDLE_INTERVAL) --announce --detach
+
 .PHONY: restart-if-idle
 restart-if-idle:
-	@./scripts/restart-if-idle
+	@$(RESTART_IF_IDLE)
 
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
@@ -254,6 +282,14 @@ install-app: install-voice-lab
 	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
+	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
+	if [ -n "$$version" ]; then echo "Build $$version zainstalowany"; "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi
+	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
+	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \
+		$(RESTART_IF_IDLE) || echo "Restart not armed; run 'make restart-if-idle' at an idle moment."; \
+	else \
+		echo "Restart not armed (RESTART_AFTER_INSTALL=$(RESTART_AFTER_INSTALL)); the running app keeps its build."; \
+	fi
 
 # ============================================================================
 # Run
@@ -963,14 +999,15 @@ smoke-macos27:
 # budget stays because the next such regression should be a red gate, not
 # folklore about an unexplained hang.
 #
-# In the 2026-09-25 suite (663 tests), three runs took 30.6-31.4 s. Designed
-# waits dominate: OverlayRefusalLayoutHangTests takes 14.4 s and the slowest
-# individual test takes 5.4 s. A 10 s per-test ceiling catches a stalled test;
-# the 60 s suite budget remains a coarse ~2x backstop. Raise the suite budget
-# for a genuinely busy box:
-#   make test-swift SWIFT_TEST_MAX_SECONDS=90
+# Rebaselined 2026-10-19 for 1774 tests: 192.6 s, versus 1608 tests / 160.4 s
+# on 2026-10-16. The 1588 common tests took 156.3 s then and 155.5 s now;
+# coverage growth, rather than slower existing tests, outgrew the 60 s budget
+# set for 663 tests in September. A 240 s suite ceiling leaves ~25% headroom.
+# Keep the independent 10 s per-test ceiling: the old blocking Keychain fault
+# manifested as one 43 s test. Investigate either ceiling breach before an
+# explicit override; more coverage never waives assertion failures.
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
-SWIFT_TEST_MAX_SECONDS ?= 60
+SWIFT_TEST_MAX_SECONDS ?= 240
 SWIFT_TEST_MAX_TEST_SECONDS ?= 10
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
@@ -1158,6 +1195,7 @@ verify:
 	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
 	python3 -m unittest scripts/tests/test_install_if_idle.py; \
+	python3 -m unittest scripts/tests/test_restart_if_idle.py; \
 	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
 	python3 -m unittest scripts/tests/test_bus_listener_recovery.py; \
 	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
@@ -1170,7 +1208,10 @@ verify:
 	python3 -m unittest scripts/tests/test_bus_address_authority.py; \
 	python3 -m unittest scripts/tests/test_bus_broadcast_policy.py; \
 	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
+	python3 -m unittest scripts/tests/test_bus_history.py; \
 	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
+	python3 -m unittest scripts/tests/test_bus_moon_policy.py; \
+	python3 -m unittest scripts/tests/test_bus_panel_focus.py; \
 	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
 	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \
@@ -1305,6 +1346,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Local-release install to /Applications'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-voice-lab' 'Install the private developer console when this machine can reach it'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-lab' 'Voice Lab alone from the voice-lab checkout'"'"'s main, no app build'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'site-dev' 'Astro site at site/ (http://localhost:4321) — not make site:dev'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-stable' 'Everyday: notarize slim DMG + install that stapled .app'
 	@printf '\n'
