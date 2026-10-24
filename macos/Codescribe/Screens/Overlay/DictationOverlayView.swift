@@ -1602,8 +1602,8 @@ struct DictationOverlayView: View {
   }
 }
 
-/// Only reports the hosting window's visibility; it owns no capture state.
-private struct OverlayRenderVisibility: NSViewRepresentable {
+/// Only reports the hosting window/view visibility; it owns no capture state.
+struct OverlayRenderVisibility: NSViewRepresentable {
   let onHidden: () -> Void
   let onChange: (Bool) -> Void
 
@@ -1629,6 +1629,8 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
     var onHidden: (() -> Void)?
     var onChange: ((Bool) -> Void)?
 
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       NotificationCenter.default.removeObserver(self)
@@ -1637,6 +1639,16 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
           self, selector: #selector(visibilityChanged(_:)),
           name: NSWindow.didChangeOcclusionStateNotification, object: window)
       }
+      publishVisibility()
+    }
+
+    override func viewDidHide() {
+      super.viewDidHide()
+      publishVisibility()
+    }
+
+    override func viewDidUnhide() {
+      super.viewDidUnhide()
       publishVisibility()
     }
 
@@ -1652,7 +1664,9 @@ private struct OverlayRenderVisibility: NSViewRepresentable {
         // Occlusion during a frame morph suppresses painting, but does not
         // dismiss the widget or cancel the hover that is growing it.
         if window?.isVisible != true { onHidden?() }
-        onChange?(window?.isVisible == true && window?.occlusionState.contains(.visible) == true)
+        onChange?(
+          window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+            && !isHiddenOrHasHiddenAncestor)
       }
     }
   }

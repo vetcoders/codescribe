@@ -475,6 +475,7 @@ private struct OverlayFlatControlButtonStyle: ButtonStyle {
 /// Identical controls in the roster and conversation; neither owns capture or playback.
 struct OverlayAgentAudioControls: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var renderVisible = false
   let open: Bool
   let muted: Bool?
   let microphoneEnabled: Bool
@@ -507,6 +508,12 @@ struct OverlayAgentAudioControls: View {
   static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
     speaking && muted == false && !open
   }
+
+  /// Decorative motion follows the existing open input and this actual host.
+  /// Reduced motion and hidden windows retain the static open-state outline.
+  static func microphoneWavesActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool {
+    open && renderVisible && !reduceMotion
+  }
   private var showsSpeaker: Bool {
     !shared || Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
   }
@@ -524,16 +531,40 @@ struct OverlayAgentAudioControls: View {
   /// The broadcast row speaks through a left-facing outline megaphone; agent
   /// rows wear the live-speech glyph, a microphone with a waveform (Maciej,
   /// 2026-10-23: "to jest ewidentnie symbol dyktowania live"). The plain
-  /// microphone is the composer's dictation verb. Open state keeps its pulse
-  /// and takes the same violet as a speaker that is playing a reply.
+  /// microphone is the composer's dictation verb. Open state takes the same
+  /// violet as a speaker that is playing a reply, with radiating activity.
   static let liveSpeechSymbol = "waveform.badge.mic"
 
   var microphoneSymbol: String {
     broadcast ? "megaphone" : Self.liveSpeechSymbol
   }
 
-  /// Recording shares the active-speaker accent. The pulse is unchanged.
+  /// Recording shares the appearance-aware active-speaker accent.
   private var recordingAccent: Color { palette.agentAccent.color }
+  private var microphoneActivityDiameter: CGFloat { (diameter ?? 22) * controlScale }
+  private var microphoneOutlineDiameter: CGFloat {
+    max(Self.controlFrame * controlScale, microphoneActivityDiameter * 0.58)
+  }
+
+  private var microphoneActivity: some View {
+    ZStack {
+      if open {
+        Circle().strokeBorder(recordingAccent, lineWidth: 1.5)
+          .frame(width: microphoneOutlineDiameter, height: microphoneOutlineDiameter)
+        if Self.microphoneWavesActive(
+          open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
+        {
+          OverlayMicrophoneWaves(
+            color: recordingAccent,
+            initialScale: microphoneOutlineDiameter / microphoneActivityDiameter)
+        }
+      }
+    }
+    .frame(width: microphoneActivityDiameter, height: microphoneActivityDiameter)
+    .clipped()
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
+  }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -635,10 +666,10 @@ struct OverlayAgentAudioControls: View {
             .overlayMirrored(broadcast)
             .font(.system(size: glyphSize, weight: .semibold))
             .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
-            .symbolEffect(.pulse, isActive: open && !reduceMotion)
             .frame(
               width: Self.controlFrame * controlScale,
               height: Self.controlFrame * controlScale)
+            .overlay { microphoneActivity }
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
         .tint(Self.litGlass(open ? recordingAccent : nil))
@@ -669,6 +700,36 @@ struct OverlayAgentAudioControls: View {
     // They float above message and transcript text, whose tracking set the
     // text cursor; the pair and its gap claim the arrow like the drawer does.
     .background { OverlayMenuCursorRegion() }
+    .background {
+      OverlayRenderVisibility(
+        onHidden: { renderVisible = false }, onChange: { renderVisible = $0 }
+      )
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
+    }
+  }
+}
+
+/// Mounted only while an open microphone is actually visible and motion is
+/// allowed. Removing this subtree removes its repeating animations; no timer,
+/// audio-meter reader or task loop survives in a cached hidden window.
+private struct OverlayMicrophoneWaves: View {
+  let color: Color
+  let initialScale: CGFloat
+  @State private var expanded = false
+
+  var body: some View {
+    ZStack {
+      ForEach(0..<2) { index in
+        Circle().strokeBorder(color, lineWidth: 1.25)
+          .scaleEffect(expanded ? 0.95 : initialScale)
+          .opacity(expanded ? 0 : 0.65)
+          .animation(
+            .easeOut(duration: 1.4).repeatForever(autoreverses: false)
+              .delay(Double(index) * 0.7), value: expanded)
+      }
+    }
+    .onAppear { expanded = true }
   }
 }
 
