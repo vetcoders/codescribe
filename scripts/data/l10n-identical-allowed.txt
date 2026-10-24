@@ -70,5 +70,8 @@ OK
 # Appearance choice that follows macOS: "System" is the same word in Polish.
 System
 
+# Founder-named appearance theme; retain the name Nightly in Polish.
+Nightly
+
 # Agent window header line: the product word "Agent" plus a model identifier, in Polish the same.
 Agent · %@

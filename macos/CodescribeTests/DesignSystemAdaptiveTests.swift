@@ -249,6 +249,49 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
+  func testNightlyAddsIndependentLightAndDarkChoicesWithoutReplacingDefaults() throws {
+    let oldDark: [SheetShade] = [.todayDark, .softGraphite, .warmCarbon]
+    let oldLight: [SheetShade] = [.todayLight, .limestone, .travertine]
+    XCTAssertTrue(oldDark.allSatisfy(SheetShade.darkChoices.contains))
+    XCTAssertTrue(oldLight.allSatisfy(SheetShade.lightChoices.contains))
+    let dark = try XCTUnwrap(SheetShade(rawValue: "070707"))
+    let light = try XCTUnwrap(SheetShade(rawValue: "F0F0F0"))
+    XCTAssertTrue(SheetShade.darkChoices.contains(dark))
+    XCTAssertTrue(SheetShade.lightChoices.contains(light))
+    XCTAssertTrue(dark.isDark)
+    XCTAssertFalse(light.isDark)
+    XCTAssertEqual(dark.hex, 0x070707)
+    XCTAssertEqual(light.hex, 0xF0F0F0)
+    let suite = "CodescribeTests.nightly-shade.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preference = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(preference.darkShade, .todayDark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
+    preference.select(dark)
+    XCTAssertEqual(preference.darkShade, dark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
+    preference.select(light)
+    let restored = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(restored.darkShade, dark)
+    XCTAssertEqual(restored.lightShade, light)
+    restored.select(.todayDark)
+    XCTAssertEqual(restored.darkShade, .todayDark)
+    XCTAssertEqual(restored.lightShade, light)
+    XCTAssertNil(defaults.object(forKey: SheetShadePreference.darkKey))
+  }
+
+  func testSheetPreferenceRejectsTheOppositeAppearanceEvenForNightly() throws {
+    let suite = "CodescribeTests.nightly-polarity.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set("F0F0F0", forKey: SheetShadePreference.darkKey)
+    defaults.set("070707", forKey: SheetShadePreference.lightKey)
+    let preference = SheetShadePreference(defaults: defaults)
+    XCTAssertEqual(preference.darkShade, .todayDark)
+    XCTAssertEqual(preference.lightShade, .todayLight)
+  }
+
   // MARK: - One sheet for every content area
 
   func testSheetIsTheOverlayCanvasInBothAppearances() {
