@@ -856,11 +856,11 @@ final class OverlayChannelMapTests: XCTestCase {
       "one drawing of the open-channel dot")
     let pillView = try section(
       of: pill, from: "struct OverlayChannelPill: View", to: "// MARK: Header metrics")
-    // The one symbol is the vertical counter's stacked cards, which replace
-    // the figure (Maciej, 2026-10-23); none sits on a digit.
+    // Symbols replace a figure: the stacked counter and the numberless human
+    // mailbox. Neither adds a glyph to a numbered agent's digit.
     XCTAssertEqual(
-      pillView.components(separatedBy: "Image(systemName:").count - 1, 1,
-      "no symbol on the digit or the pill beyond the stacked counter")
+      pillView.components(separatedBy: "Image(systemName:").count - 1, 2,
+      "only the stacked counter and numberless mailbox carry symbols")
     XCTAssertTrue(pillView.contains("Image(systemName: Self.stackedCardsSymbol)"))
     XCTAssertFalse(pillView.contains("mic.fill"), "the microphone glyph left the digit")
     XCTAssertFalse(pillView.contains("megaphone"), "the megaphone stays on the Agents button")

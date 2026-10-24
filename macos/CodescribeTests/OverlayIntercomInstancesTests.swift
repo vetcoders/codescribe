@@ -28,7 +28,7 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertTrue(human.matches(inbox))
     XCTAssertTrue(human.ownerID.isEmpty)
     XCTAssertEqual(human.displayDigit, "")
-    XCTAssertEqual(human.displayTitle, "Your Inbox")
+    XCTAssertEqual(human.displayTitle, String(localized: "Your Inbox"))
     XCTAssertTrue(restored.groupRows(of: [identity]).isEmpty)
     var closed = human
     closed.closed = true

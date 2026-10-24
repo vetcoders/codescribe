@@ -1327,6 +1327,9 @@ struct OverlayChannelStatusView: View {
           if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
             railPill(broadcast, channel: nil)
           }
+          if let inbox = currentConversations.first(where: \.isHumanInbox) {
+            railPill(inbox, channel: nil)
+          }
           ForEach(channels) { channel in
             railPill(conversation(for: channel), channel: channel)
           }
@@ -1351,10 +1354,12 @@ struct OverlayChannelStatusView: View {
   private func railPill(
     _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
   ) -> some View {
-    let digit = channel?.channel ?? "0"
-    let selected = conversation != nil && conversation?.id == selectedConversationID
-    let unread = conversation.flatMap { unreadCounts[$0.id] } ?? 0
-    let title = channel.map { notificationTitle(for: $0) } ?? broadcastHeader
+    let inbox = conversation?.isHumanInbox == true
+    let digit = channel?.channel ?? conversation?.channel ?? "0"
+    let title =
+      inbox
+      ? conversation?.name ?? String(localized: "Your Inbox")
+      : channel.map { notificationTitle(for: $0) } ?? broadcastHeader
     let canOpen = conversation != nil && onSelectConversation != nil
     let hint =
       canOpen
@@ -1365,17 +1370,30 @@ struct OverlayChannelStatusView: View {
         comment: "Disabled mini-rail channel pill")
     return OverlayChannelPill(
       form: .rail,
-      display: OverlayChannelPill.Display(
-        figure: digit, dot: channel.map { statusDotKind(for: $0) } ?? .broadcast,
-        disconnected: channel.map { hasDeadFollower($0) } ?? false, unread: unread > 0,
-        selected: selected, enabled: canOpen),
+      display: railPillDisplay(conversation, channel: channel),
       hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
       palette: palette, textScale: textScale
     ) {
       if let conversation { onSelectConversation?(conversation.id) }
     }
     .accessibilityHint(Text(verbatim: hint))
-    .modifier(agentPillMenu(for: digit))
+    .modifier(
+      inbox
+        ? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+        : agentPillMenu(for: digit))
+  }
+
+  func railPillDisplay(
+    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
+  ) -> OverlayChannelPill.Display {
+    let inbox = conversation?.isHumanInbox == true
+    return OverlayChannelPill.Display(
+      figure: inbox ? "" : channel?.channel ?? "0", symbol: inbox ? "tray" : nil,
+      dot: inbox ? nil : channel.map { statusDotKind(for: $0) } ?? .broadcast,
+      disconnected: channel.map { hasDeadFollower($0) } ?? false,
+      unread: (conversation.flatMap { unreadCounts[$0.id] } ?? 0) > 0,
+      selected: conversation != nil && conversation?.id == selectedConversationID,
+      enabled: conversation != nil && onSelectConversation != nil)
   }
 
   /// The collapsed overlay's channel map: another surface of this roster's

@@ -51,7 +51,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
+        "Text(verbatim: identity.displayDigit)", "OverlayReceptionMarks(",
+        "OverlayIntercomStatusMark(",
         "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
@@ -61,7 +62,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let drawn = try XCTUnwrap(instance.range(of: "return HStack(spacing: 3) {"))
     try assertOrder(
       [
-        "Text(verbatim: instance.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
+        "Text(verbatim: instance.displayDigit)", "OverlayReceptionMarks(",
+        "OverlayIntercomStatusMark(",
         "if mini {", "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
       ], in: String(instance[drawn.lowerBound...]))
   }
@@ -149,7 +151,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     // 2026-10-23 20:31Z: "pomija — to bardzo źle") and wears the same ring.
     let targets = try sourceSection(
       "OverlayIntercomWidget.swift", from: "func chooserTargets()", to: "func presentChooser()")
-    XCTAssertTrue(targets.contains("identities.compactMap"))
+    XCTAssertTrue(targets.contains("identities.filter { !$0.isHumanInbox }.compactMap"))
     XCTAssertFalse(targets.contains("groupIdentities"))
     let detached = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func headerRow(",

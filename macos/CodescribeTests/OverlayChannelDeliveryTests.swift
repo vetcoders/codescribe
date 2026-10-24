@@ -7,13 +7,45 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testHumanInboxRailUsesMailboxGlyphAndSelectionWithoutAgentCommands() {
+    let inbox = OverlayConversation.humanInbox()
+    var selected: [String?] = []
+    var microphones: [UInt8] = []
+    let roster = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      onToggleChannel: { microphones.append($0) }, conversations: [inbox],
+      selectedConversationID: inbox.id, unreadCounts: [inbox.id: 2],
+      onSelectConversation: { selected.append($0) })
+    let display = roster.railPillDisplay(inbox, channel: nil)
+    XCTAssertEqual(display.figure, "")
+    XCTAssertEqual(display.symbol, "tray")
+    XCTAssertNil(display.dot, "the human has no agent presence status")
+    XCTAssertTrue(display.selected)
+    XCTAssertTrue(display.unread)
+    XCTAssertTrue(display.enabled)
+    XCTAssertNil(roster.agentPillMenu(for: "10").agentActions)
+    roster.selectChannelConversation("10")
+    XCTAssertEqual(selected, [inbox.id])
+    XCTAssertTrue(microphones.isEmpty)
+    let unavailable = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      conversations: [inbox])
+    XCTAssertFalse(unavailable.railPillDisplay(inbox, channel: nil).enabled)
+    let agent = OverlayChannelDelivery(
+      channel: "2", agent: "Ada", deliveryID: nil, stage: nil, isOpen: false)
+    let agentDisplay = roster.railPillDisplay(nil, channel: agent)
+    XCTAssertEqual(agentDisplay.figure, "2")
+    XCTAssertNil(agentDisplay.symbol, "numbered agents retain the digit and status dot")
+  }
+
   func testHumanInboxIsEmptySelectableAndNeverAnAgentTarget() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
     let inbox = try XCTUnwrap(snapshot.conversations.first(where: \.isHumanInbox))
-    XCTAssertEqual(inbox.name, "Your Inbox")
-    XCTAssertEqual(inbox.displayTitle, "Your Inbox")
+    let localizedTitle = String(localized: "Your Inbox")
+    XCTAssertEqual(inbox.name, localizedTitle)
+    XCTAssertEqual(inbox.displayTitle, localizedTitle)
     XCTAssertEqual(inbox.channel, "10", "the internal human route stays unchanged")
     XCTAssertNil(inbox.owner)
     XCTAssertTrue(inbox.messages.isEmpty)
@@ -36,7 +68,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(state.channelMapLayoutModel.chips.contains { $0.digit == "10" })
     let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
     let human = try XCTUnwrap(identities.first(where: \.isHumanInbox))
-    XCTAssertEqual(human.name, "Your Inbox")
+    XCTAssertEqual(human.name, localizedTitle)
     XCTAssertEqual(human.displayDigit, "")
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
     state.publishConversationText = { _, _, _ in XCTFail("The inbox is read-only") }
