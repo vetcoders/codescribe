@@ -6,6 +6,46 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  func testHumanAndBroadcastMailboxesActuallyExpandWithoutBecomingAgents() {
+    let inbox = OverlayConversation.humanInbox()
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    var presentation = OverlayIntercomPresentation()
+    for conversation in [inbox, all] {
+      let identity = OverlayIntercomCardIdentity(
+        digit: conversation.channel, conversation: conversation)
+      presentation.expand(identity)
+      XCTAssertEqual(
+        presentation.expanded, [identity], "a mailbox click must reach the content state")
+      XCTAssertNil(conversation.owner, "opening a mailbox never creates an agent")
+      presentation.close(identity)
+      XCTAssertTrue(presentation.expanded.isEmpty)
+    }
+    for channel in ["0", "2", "10"] {
+      let unknown = OverlayConversation(
+        id: "unknown", channel: channel, name: "Unbound", owner: nil, messages: [])
+      presentation.expand(.init(digit: channel, conversation: unknown))
+      XCTAssertTrue(presentation.expanded.isEmpty, "arbitrary ownerless routes remain forbidden")
+    }
+  }
+
+  func testDraggingTheGroupBelowTheScreenKeepsItsHeaderWithoutMovingItBackUp() {
+    for screen in [
+      CGRect(x: 0, y: 0, width: 1440, height: 900),
+      CGRect(x: -1680, y: -90, width: 1680, height: 1050),
+    ] {
+      let proposed = CGRect(
+        x: screen.minX + 100, y: screen.minY + 120, width: 400, height: 30)
+      let result = Layout.clampedHeader(
+        proposed, count: 5, visibleFrame: screen, cardHeight: 260)
+      XCTAssertEqual(result, proposed, "the group body may cross the display's lower edge")
+      let lostHeader = proposed.offsetBy(dx: 0, dy: -1000)
+      let recovered = Layout.clampedHeader(
+        lostHeader, count: 5, visibleFrame: screen, cardHeight: 260)
+      XCTAssertEqual(recovered.minY, screen.minY, "the entire header stays reachable")
+      XCTAssertTrue(screen.contains(recovered))
+    }
+  }
+
   func testMeasuredWidthSelectsTheWholeGroupsContentAtThreeTextScales() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(
