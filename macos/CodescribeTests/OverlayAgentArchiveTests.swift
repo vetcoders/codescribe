@@ -345,6 +345,79 @@ final class OverlayAgentArchiveTests: XCTestCase {
     }
   }
 
+  func testUnchangedArchivePollsDoNotReopenOrReparseMetadata() async throws {
+    let fixture = try ArchiveFixture()
+    defer { fixture.remove() }
+    try fixture.writeArchive()
+    try fixture.writeBinding(session: "replacement")
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = try await reader.readSnapshot()
+    XCTAssertEqual(first.archivedOwners, [fixture.owner])
+    let opens = await reader.metadataFileOpens
+    let bytes = await reader.consumedMetadataBytes
+    XCTAssertGreaterThan(opens, 0)
+    XCTAssertGreaterThan(bytes, 0)
+    for _ in 0..<5 {
+      let next = try await reader.readSnapshot()
+      XCTAssertEqual(next.archivedOwners, first.archivedOwners)
+      XCTAssertEqual(next.conversations, first.conversations)
+    }
+    let finalOpens = await reader.metadataFileOpens
+    let finalBytes = await reader.consumedMetadataBytes
+    XCTAssertEqual(finalOpens, opens, "Stable archives must reuse their parsed metadata")
+    XCTAssertEqual(finalBytes, bytes, "Stable polling must read no metadata bytes")
+  }
+
+  func testArchiveCacheDetectsSameSizeInPlaceAndAtomicReplacement() async throws {
+    let fixture = try ArchiveFixture()
+    defer { fixture.remove() }
+    try fixture.writeArchive()
+    try fixture.writeBinding(session: "replacement")
+    let path = fixture.root.appendingPathComponent("archives/\(fixture.owner.leaseID)-4.json")
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let first = try await reader.readSnapshot()
+    XCTAssertEqual(first.archivedOwners.first?.name, "adam")
+    let original = try Data(contentsOf: path)
+    let changed = Data(
+      try XCTUnwrap(String(data: original, encoding: .utf8))
+        .replacingOccurrences(of: "adam", with: "edam").utf8)
+    XCTAssertEqual(changed.count, original.count)
+    // A retained inode and equal byte count still invalidate the cached parse.
+    try await Task.sleep(for: .milliseconds(2))
+    try changed.write(to: path)
+    let second = try await reader.readSnapshot()
+    XCTAssertEqual(second.archivedOwners.first?.name, "edam")
+    try original.write(to: path, options: .atomic)
+    let third = try await reader.readSnapshot()
+    XCTAssertEqual(third.archivedOwners.first?.name, "adam")
+    try fixture.writeBinding(session: fixture.owner.providerSessionID)
+    let rebound = try await reader.readSnapshot()
+    XCTAssertTrue(rebound.archivedOwners.isEmpty, "A cached archive cannot hide a rebound owner")
+  }
+
+  func testArchiveMetadataRetainsExact64KiBBoundary() async throws {
+    let fixture = try ArchiveFixture(includeMessage: false)
+    defer { fixture.remove() }
+    try fixture.writeArchive()
+    try fixture.writeBinding(session: "replacement")
+    let path = fixture.root.appendingPathComponent("archives/\(fixture.owner.leaseID)-4.json")
+    var bytes = try Data(contentsOf: path)
+    XCTAssertLessThan(bytes.count, 65_536)
+    bytes.append(Data(repeating: 32, count: 65_536 - bytes.count))
+    try bytes.write(to: path, options: .atomic)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let accepted = try await reader.readSnapshot()
+    XCTAssertEqual(accepted.archivedOwners, [fixture.owner])
+    bytes.append(32)
+    try bytes.write(to: path, options: .atomic)
+    let refused = try await reader.readSnapshot()
+    XCTAssertTrue(refused.archivedOwners.isEmpty, "A formerly cached file over 64 KiB is refused")
+    bytes.removeLast()
+    try bytes.write(to: path, options: .atomic)
+    let recovered = try await reader.readSnapshot()
+    XCTAssertEqual(recovered.archivedOwners, [fixture.owner])
+  }
+
   private func roster(
     session: String = "archive-session", alive: Bool? = false, open: Bool = false,
     unreadSince: Date? = nil

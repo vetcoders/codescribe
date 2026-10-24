@@ -42,7 +42,7 @@ actor OverlayChannelDeliveryReader {
   private(set) var consumedBytes: UInt64 = 0
   /// Metadata bytes actually read, independent of the incremental bus cursor.
   private(set) var consumedMetadataBytes: UInt64 = 0
-  /// Opened metadata descriptors, including reads satisfied by the parse cache.
+  /// Metadata open attempts after a parse-cache miss.
   private(set) var metadataFileOpens: UInt64 = 0
   /// `.generations.json` documents opened and parsed. A manifest is reread
   /// only when its own stamp or the hot file it names as active changes.
@@ -198,10 +198,7 @@ actor OverlayChannelDeliveryReader {
         at: archivesURL, includingPropertiesForKeys: nil
       ).sorted(by: { $0.path < $1.path })
       where file.pathExtension == "json" {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { continue }
-        defer { try? handle.close() }
-        guard let data = try? handle.read(upToCount: 65537), data.count <= 65536,
-          let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let row = try? object(at: file, maxBytes: 65_536),
           row["schema"] as? String == "codescribe.agent-archive.v1",
           row["released"] as? Bool == true, let owner = OverlayConversationOwner(row: row),
           owner.channel.count == 1, "123456789".contains(owner.channel),
@@ -695,7 +692,7 @@ actor OverlayChannelDeliveryReader {
     return url.deletingLastPathComponent().lastPathComponent == "leases"
   }
 
-  private func object(at url: URL) throws -> [String: Any] {
+  private func object(at url: URL, maxBytes: Int = 16 << 20) throws -> [String: Any] {
     let pinned = pinsMetadata(url)
     do {
       var metadata = stat()
@@ -705,12 +702,14 @@ actor OverlayChannelDeliveryReader {
       let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
       if pinned {
-        if var cached = pinnedObjects[url], cached.stamp == pathStamp {
+        if var cached = pinnedObjects[url], cached.stamp == pathStamp, cached.bytes <= maxBytes {
           cached.access = metadataAccess
           pinnedObjects[url] = cached
           return cached.value
         }
-      } else if var cached = metadataObjects[url], cached.stamp == pathStamp {
+      } else if var cached = metadataObjects[url], cached.stamp == pathStamp,
+        cached.bytes <= maxBytes
+      {
         cached.access = metadataAccess
         metadataObjects[url] = cached
         return cached.value
@@ -727,9 +726,9 @@ actor OverlayChannelDeliveryReader {
       } else if let old = metadataObjects.removeValue(forKey: url) {
         metadataCacheBytes -= old.bytes
       }
-      let data = try handle.read(upToCount: (16 << 20) + 1) ?? Data()
+      let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
-      guard data.count <= 16 << 20,
+      guard data.count <= maxBytes,
         let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
       else { throw CocoaError(.fileReadCorruptFile) }
       // The open descriptor observes atomic replacement and follows symlinks.
