@@ -1177,8 +1177,14 @@ mod tests {
                 .unwrap();
             first.abort();
             assert!(first.await.unwrap_err().is_cancelled());
-            assert!(state.refresh.try_lock().is_err(), "rotation still owns serialization");
-            assert!(state.mutation.try_lock().is_err(), "persistence is inside mutation");
+            assert!(
+                state.refresh.try_lock().is_err(),
+                "rotation still owns serialization"
+            );
+            assert!(
+                state.mutation.try_lock().is_err(),
+                "persistence is inside mutation"
+            );
 
             let (second_started, started) = tokio::sync::oneshot::channel();
             let second = tokio::spawn({
@@ -1209,7 +1215,10 @@ mod tests {
             release_tx.send(()).unwrap();
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(5), second)
-                    .await.unwrap().unwrap().unwrap(),
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
                 "rotated"
             );
             assert_eq!(rotations.load(Ordering::SeqCst), 1);
@@ -1246,14 +1255,20 @@ mod tests {
                 },
             ));
             tokio::time::timeout(Duration::from_secs(5), entered_rx)
-                .await.unwrap().unwrap();
-            state.replace_with(|| {
-                *store.lock().unwrap() = None;
-                Ok(())
-            }).unwrap();
+                .await
+                .unwrap()
+                .unwrap();
+            state
+                .replace_with(|| {
+                    *store.lock().unwrap() = None;
+                    Ok(())
+                })
+                .unwrap();
             release_tx.send(()).unwrap();
             let result = tokio::time::timeout(Duration::from_secs(5), refresh)
-                .await.unwrap().unwrap();
+                .await
+                .unwrap()
+                .unwrap();
             assert!(matches!(result, Err(AccountAuthError::NotSignedIn(_))));
             assert!(store.lock().unwrap().is_none());
             assert_eq!(writes.load(Ordering::SeqCst), 0);
@@ -1269,22 +1284,26 @@ mod tests {
             let refresh = std::thread::spawn({
                 let state = Arc::clone(&state);
                 let store = Arc::clone(&store);
-                move || state.commit_with(PROVIDER, &epoch, || {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    *store.lock().unwrap() = Some(tokens("rotated", false));
-                    Ok(())
-                })
+                move || {
+                    state.commit_with(PROVIDER, &epoch, || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        *store.lock().unwrap() = Some(tokens("rotated", false));
+                        Ok(())
+                    })
+                }
             });
             entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(state.mutation.try_lock().is_err());
             let clear = std::thread::spawn({
                 let state = Arc::clone(&state);
                 let store = Arc::clone(&store);
-                move || state.replace_with(|| {
-                    *store.lock().unwrap() = None;
-                    Ok(())
-                })
+                move || {
+                    state.replace_with(|| {
+                        *store.lock().unwrap() = None;
+                        Ok(())
+                    })
+                }
             });
             release_tx.send(()).unwrap();
             refresh.join().unwrap().unwrap();
@@ -1297,14 +1316,18 @@ mod tests {
             let state = ProviderAuthState::default();
             let store = Arc::new(Mutex::new(Some(tokens("same-value", true))));
             let (old, epoch) = state.snapshot_with(|| load(&store)).unwrap();
-            state.replace_with(|| {
-                *store.lock().unwrap() = None;
-                Ok(())
-            }).unwrap();
-            state.replace_with(|| {
-                *store.lock().unwrap() = Some(old.clone());
-                Ok(())
-            }).unwrap();
+            state
+                .replace_with(|| {
+                    *store.lock().unwrap() = None;
+                    Ok(())
+                })
+                .unwrap();
+            state
+                .replace_with(|| {
+                    *store.lock().unwrap() = Some(old.clone());
+                    Ok(())
+                })
+                .unwrap();
             let stale = state.commit_with(PROVIDER, &epoch, || {
                 *store.lock().unwrap() = Some(tokens("stale-rotation", false));
                 Ok(())
