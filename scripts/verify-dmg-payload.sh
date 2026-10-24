@@ -342,8 +342,10 @@ if [[ -n "${APP_PATH:-}" ]]; then
     fi
 
     BUILD_CHANNEL=$(/usr/libexec/PlistBuddy -c 'Print :CSBuildChannel' "$PLIST" 2>/dev/null || echo stable)
-    # The app trims and lowercases the channel (BuildChannel.isNightly), so NIGHTLY is nightly too.
-    BUILD_CHANNEL=$(printf '%s' "${BUILD_CHANNEL//[[:space:]]/}" | tr '[:upper:]' '[:lower:]')
+    # Match BuildChannel.isNightly: trim the boundaries, preserving interior whitespace.
+    BUILD_CHANNEL="${BUILD_CHANNEL#"${BUILD_CHANNEL%%[![:space:]]*}"}"
+    BUILD_CHANNEL="${BUILD_CHANNEL%"${BUILD_CHANNEL##*[![:space:]]}"}"
+    BUILD_CHANNEL=$(printf '%s' "$BUILD_CHANNEL" | tr '[:upper:]' '[:lower:]')
     if [[ "$BUILD_CHANNEL" == "nightly" ]]; then
       fail "CSBuildChannel is nightly — the production DMG must be stable"
     else
