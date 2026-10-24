@@ -14,36 +14,40 @@ struct OverlayAgentRosterLabel: View {
   let dot: OverlayAgentDotKind
   let statusLabel: String
   let statusDetail: String
-  let broadcastPolicy: AgentBroadcastPolicy?
+  /// The row whose antenna and moon are drawn, clickable, before the status dot;
+  /// nil for the All row, which has no reception of its own.
+  let reception: OverlayChannelDelivery?
+  var receptionEnabled = true
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
 
   var body: some View {
     HStack(alignment: .top, spacing: 6) {
-      OverlayAgentStatusDot(kind: dot, palette: palette)
-        .padding(.top, 5 * textScale)
-        .accessibilityLabel(Text(verbatim: statusLabel))
-        .accessibilityValue(Text(verbatim: statusDetail))
-        .accessibilityIdentifier(
-          channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
-        )
       VStack(alignment: .leading, spacing: 1) {
         HStack(spacing: 6) {
+          if let channel {
+            Text(verbatim: channel)
+              .font(.system(size: 11 * textScale, weight: .medium, design: .monospaced))
+              .foregroundStyle(palette.mutedText.color)
+              .accessibilityIdentifier("overlay-agent-digit-\(channel)")
+          }
+          if let reception {
+            OverlayReceptionMarks(
+              channel: reception, palette: palette, textScale: textScale,
+              enabled: receptionEnabled)
+          }
+          OverlayAgentStatusDot(kind: dot, palette: palette)
+            .accessibilityLabel(Text(verbatim: statusLabel))
+            .accessibilityValue(Text(verbatim: statusDetail))
+            .accessibilityIdentifier(
+              channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
+            )
           Text(verbatim: title)
             .font(.system(size: 13.5 * textScale, weight: .semibold))
             .lineLimit(1)
             .truncationMode(.tail)
             .layoutPriority(1)
             .accessibilityIdentifier("overlay-agent-title-\(channel ?? "0")")
-          if let broadcastPolicy, let channel {
-            Image(systemName: broadcastPolicy.statusSymbol)
-              .font(.system(size: 10 * textScale))
-              .foregroundStyle(
-                broadcastPolicy == .on ? palette.agentAccent.color : palette.mutedText.color
-              )
-              .accessibilityLabel(Text(verbatim: broadcastPolicy.statusHelp))
-              .accessibilityIdentifier("overlay-broadcast-policy-\(channel)")
-          }
           Spacer(minLength: 4)
           if unreadCount > 0, let conversationID {
             OverlayAgentUnreadBadge(count: unreadCount, palette: palette, textScale: textScale)

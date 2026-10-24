@@ -86,6 +86,7 @@ fn runtime_settings_with_local_buddy() -> (
 /// Run with: make test-sse
 #[tokio::test]
 #[serial]
+#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_real_formatting() {
     let (_temp, runtime_settings) = runtime_settings_with_local_buddy();
     let lane = runtime_settings.llm_lanes().formatting();
@@ -111,6 +112,7 @@ async fn e2e_sse_streaming_real_formatting() {
 /// Run with: make test-sse
 #[tokio::test]
 #[serial]
+#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_streaming_real_assistive() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new("codescribe_core::llm=debug"))
@@ -169,6 +171,7 @@ async fn e2e_sse_streaming_kurier_mode() {
 /// Direct SSE parsing test - validates raw stream handling
 #[tokio::test]
 #[serial]
+#[ignore = "Requires real API key - run with make test-sse"]
 async fn e2e_sse_direct_stream_parsing() {
     use futures_util::StreamExt;
     use reqwest::Client;

@@ -3407,6 +3407,15 @@ mod tests {
                 })
                 .expect("operator home")
                 .join(".codescribe/data_assets/01_no-to-dobra.wav");
+            if !path.is_file() {
+                // Operator-local corpus acceptance: the hosted runner has no
+                // data_assets, and a missing fixture is not a VAD regression.
+                eprintln!(
+                    "skipping test_vad_gate_live_chunk_sizes: private corpus not present at {}",
+                    path.display()
+                );
+                return;
+            }
             (path, false)
         };
 
