@@ -1269,7 +1269,8 @@ struct DictationOverlayView: View {
       meter: state.levelMeter,
       inactiveColor: palette.border.color,
       compact: true,
-      stretches: true
+      stretches: true,
+      isVisible: overlayVisible
     )
     .accessibilityIdentifier("overlay-chrome-waveform")
     .accessibilityLabel("Live audio level")
