@@ -1,3 +1,4 @@
+import CoreFoundation
 import CryptoKit
 import Foundation
 
@@ -39,6 +40,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private(set) var destinationVersion: Int? = 1
     /// A pre-hold checkpoint must replay its source rows to recover hold metadata.
     private var holdProjectionVersion: Int = 1
+    /// Synthesized Decodable requires this key. Older checkpoints fail decode
+    /// and the reader replays its bounded source tail to recover Play metadata.
+    private var speechProjectionVersion: Int = 1
     private var receiptCursor: Int = 0
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
@@ -58,7 +62,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       case captureRecipients, historicalOwners, playbackByReply, retiredPlaybackTickets,
         messageSequence, messageRevisions, deliveryOrigins, captureAttachmentStages,
         captureAttachmentCommits, revision, sessionOpenedAt,
-        destinationVersion, holdProjectionVersion
+        destinationVersion, holdProjectionVersion, speechProjectionVersion
     }
     private static let historyLimit = 256
     private static let historyByteLimit = 16 << 20
@@ -554,6 +558,16 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func consumeConversation(_ row: [String: Any]) {
       let schema = row["schema"] as? String
+      if schema == "codescribe.transcript.v1" || schema == "codescribe.transcript-evidence.v1",
+        let session = row["session_id"] as? String,
+        let key = Self.channelMessageKey(session),
+        let rate = Self.captureSampleRateHz(row), var message = messages[key]
+      {
+        // A terminal coverage receipt may be the first row that carries the
+        // capture rate. Keep it for every committed chip of this same take.
+        message.captureSampleRateHz = rate
+        messages[key] = message
+      }
       if schema == "codescribe.capture-attachment.v1",
         row["kind"] as? String == "capture_attachment"
       {
@@ -568,6 +582,22 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
       if schema == "codescribe.delivery-control.v1" {
         consumeDeliveryControl(row)
+        return
+      }
+      // Agent-authored text shares the reply presentation and playback owner.
+      // A typed Founder message may name channel 10 as its sender, but remains
+      // a user message routed through its recipient coordinates.
+      if schema == "codescribe.agent-user-message.v1",
+        row["kind"] as? String == "agent_user_message", row["source"] as? String != "typed",
+        row["sender"] is [String: Any],
+        let identity = row["message_id"] as? String, identity.count == 24,
+        identity.allSatisfy({ "0123456789abcdef".contains($0) })
+      {
+        var reply = row
+        reply["schema"] = "codescribe.agent-reply.v1"
+        reply["kind"] = "agent_reply"
+        reply["reply_id"] = identity
+        consumeConversation(reply)
         return
       }
       if schema == "codescribe.agent-user-message.v1",
@@ -760,11 +790,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         if row["sender"] != nil {
           message.sourceChannel = destination
         }
-        message.supportsSpeechPlayback =
-          messages[key]?.supportsSpeechPlayback == true
-          || (["xai", "openai"].contains(row["tts_vendor"] as? String ?? "")
-            && !(row["voice"] as? String ?? "")
-              .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        message.supportsSpeechPlayback = true
+        message.provider = owner.provider
+        message.providerSessionID = owner.providerSessionID
         if addressed, let session = row["session_id"] as? String,
           let messageKey = Self.channelMessageKey(session)
         {
@@ -959,7 +987,8 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           reducerRevision: UInt64(Self.coordinate(row["reducer_revision"])) ?? 0,
           documentIndex: Self.coordinate(row["document_index"]),
           audience: audience,
-          recipientIDs: owners.map(\.id))
+          recipientIDs: owners.map(\.id),
+          sampleRateHz: Self.captureSampleRateHz(row))
         var segments = messages[key]?.captureAttachmentSegments ?? []
         if let index = segments.firstIndex(where: {
           $0.occurrenceID == segment.occurrenceID
@@ -981,6 +1010,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         ?? (components.count > 2 && components[0] == "agent" && components[1] == "channel"
           ? String(components[2]) : nil)
       message.captureSessionID = session
+      message.captureAudience = audience
+      message.captureSampleRateHz =
+        Self.captureSampleRateHz(row) ?? messages[key]?.captureSampleRateHz
       let utterance = Self.coordinate(row["utterance_id"])
       message.controlIdentity = utterance.isEmpty ? session : utterance
       // Ledger previews are not deliveries, even when they carry hold metadata.
@@ -1069,29 +1101,51 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       commits: [String: String],
       stages: [String: OverlayCaptureAttachmentReceipt]
     ) {
-      guard message.kind == .user, let session = message.captureSessionID,
-        let segments = message.captureAttachmentSegments, !segments.isEmpty
-      else { return }
+      guard message.kind == .user, let session = message.captureSessionID else { return }
+      let segments = message.captureAttachmentSegments ?? []
+      let recipients = Set(message.recipients.map { $0.owner.id })
       var paths = Set((message.attachments ?? []).map(\.path))
       var attachments = message.attachments ?? []
       for (stageID, commitBus) in commits.sorted(by: { $0.key < $1.key }) {
         guard let stage = stages[stageID], stage.stageID == stageID,
           stage.commitBus == commitBus, stage.captureSessionID == session,
           stage.recipientBusPaths.contains(commitBus),
-          let segment = segments.first(where: {
-            $0.occurrenceID == stage.occurrenceID
-              && $0.captureEpoch == stage.captureEpoch
-              && $0.sourceSequence == stage.sourceSequence
-              && $0.reducerRevision == stage.reducerRevision
-          }),
-          segment.occurrenceSessionID == stage.occurrenceSessionID,
-          segment.sampleStart == stage.sampleStart, segment.sampleEnd == stage.sampleEnd,
-          let segmentDocumentIndex = UInt64(segment.documentIndex),
-          segmentDocumentIndex == stage.documentIndex,
-          segment.audience == stage.audience,
-          segment.recipientIDs == stage.recipientIDs
+          stage.audience == message.captureAudience,
+          !recipients.isEmpty, Set(stage.recipientIDs) == recipients
         else { continue }
-        for attachment in stage.attachments where paths.insert(attachment.path).inserted {
+        let sourceRows = segments.filter {
+          $0.captureEpoch == stage.captureEpoch && $0.sourceSequence == stage.sourceSequence
+        }
+        var attachedAtSample: UInt64 = 0
+        var attachedAtSeconds: Double = 0
+        if !sourceRows.isEmpty {
+          // An observed coordinate must agree exactly. Missing history can
+          // lose timing, but a conflicting source cannot lend this stage trust.
+          guard
+            let segment = sourceRows.first(where: {
+              $0.occurrenceID == stage.occurrenceID
+                && $0.reducerRevision == stage.reducerRevision
+                && $0.occurrenceSessionID == stage.occurrenceSessionID
+                && $0.sampleStart == stage.sampleStart && $0.sampleEnd == stage.sampleEnd
+                && UInt64($0.documentIndex) == stage.documentIndex
+                && $0.audience == stage.audience && $0.recipientIDs == stage.recipientIDs
+            })
+          else { continue }
+          let origin =
+            segments.filter { $0.captureEpoch == segment.captureEpoch }
+            .map(\.sampleStart).min() ?? segment.sampleStart
+          let rate = segment.sampleRateHz ?? message.captureSampleRateHz
+          attachedAtSample = segment.sampleStart
+          attachedAtSeconds =
+            rate.map {
+              Double(segment.sampleStart - min(origin, segment.sampleStart)) / $0
+            } ?? 0
+        }
+        // A verified commit remains a visible pointer when its exact source
+        // row fell outside retained history. The shared contract paints 0:00.
+        for var attachment in stage.attachments where paths.insert(attachment.path).inserted {
+          attachment.attachedAtSample = attachedAtSample
+          attachment.attachedAtSeconds = attachedAtSeconds
           attachments.append(attachment)
         }
       }
@@ -1319,6 +1373,19 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
     }
 
+    private static func captureSampleRateHz(_ row: [String: Any]) -> Double? {
+      let raw: Any?
+      if row["schema"] as? String == "codescribe.transcript-evidence.v1" {
+        raw = (row["seal_coverage"] as? [String: Any])?["sample_rate_hz"]
+      } else {
+        raw = row["sample_rate_hz"]
+      }
+      guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+        number.doubleValue.isFinite, number.doubleValue > 0
+      else { return nil }
+      return number.doubleValue
+    }
+
     private static func coordinate(_ value: Any?) -> String {
       if let string = value as? String { return string }
       if let number = value as? NSNumber { return number.stringValue }
@@ -1460,6 +1527,8 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var holdUntil: Date? = nil
   var controlIdentity: String? = nil
   var captureSessionID: String? = nil
+  var captureAudience: String? = nil
+  var captureSampleRateHz: Double? = nil
   var captureAttachmentSegments: [OverlayCaptureAttachmentSegment]? = nil
   var activeCaptureAttachmentOccurrenceID: String? = nil
   var activeCaptureAttachmentSourceSequence: UInt64? = nil
@@ -1524,8 +1593,13 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     result.holdSecondsRemaining = holdingSeconds(at: now)
     return result
   }
-  /// Canonical reply synthesis metadata, independent of playback outcome.
+  /// An agent-authored row can resolve a voice when Play is requested.
   var supportsSpeechPlayback = false
+  /// Durable row coordinates let historical replies play after their lease ends.
+  var provider: String? = nil
+  var providerSessionID: String? = nil
+  var playbackProvider: String? { provider ?? owner?.provider }
+  var playbackProviderSessionID: String? { providerSessionID ?? owner?.providerSessionID }
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
   /// The bubble body. `cs-bus --send-text` appends one generated
   /// `[attachment] name (type, bytes): /path` line per pointer to the published
@@ -1553,6 +1627,7 @@ struct OverlayCaptureAttachmentSegment: Codable, Equatable, Sendable {
   let documentIndex: String
   let audience: String
   let recipientIDs: [String]
+  var sampleRateHz: Double? = nil
 }
 
 struct OverlayCaptureAttachmentSession: Equatable, Hashable, Sendable {
@@ -1612,9 +1687,22 @@ struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
   let path: String
   let mediaType: String
   let bytes: Int
+  var attachedAtSample: UInt64? = nil
+  var attachedAtSeconds: Double? = nil
 
-  /// The line `cs-bus --send-text` appends for this pointer, byte for byte.
-  var publishedLine: String { "[attachment] \(name) (\(mediaType), \(bytes) bytes): \(path)" }
+  var attachmentTimeLabel: String? {
+    guard let attachedAtSeconds, attachedAtSeconds.isFinite, attachedAtSeconds >= 0 else {
+      return nil
+    }
+    let seconds = Int(min(attachedAtSeconds, Double(Int32.max)).rounded(.down))
+    return "\(seconds / 60):" + String(format: "%02d", seconds % 60)
+  }
+
+  /// The pointer line published to the agent, byte for byte.
+  var publishedLine: String {
+    let marker = attachmentTimeLabel.map { "[attachment @ \($0)]" } ?? "[attachment]"
+    return "\(marker) \(name) (\(mediaType), \(bytes) bytes): \(path)"
+  }
 
   static func pointers(_ value: Any?) -> [OverlayMessageAttachment]? {
     guard let entries = value as? [[String: Any]] else { return nil }
@@ -1626,7 +1714,13 @@ struct OverlayMessageAttachment: Codable, Equatable, Hashable, Sendable {
       return OverlayMessageAttachment(
         name: name?.isEmpty == false ? name! : (path as NSString).lastPathComponent,
         path: path, mediaType: entry["media_type"] as? String ?? "",
-        bytes: (entry["bytes"] as? NSNumber)?.intValue ?? 0)
+        bytes: (entry["bytes"] as? NSNumber)?.intValue ?? 0,
+        attachedAtSample: (entry["attached_at_sample"] as? NSNumber).flatMap {
+          UInt64($0.stringValue)
+        },
+        attachedAtSeconds: (entry["attached_at_seconds"] as? NSNumber).flatMap {
+          $0.doubleValue.isFinite && $0.doubleValue >= 0 ? $0.doubleValue : nil
+        })
     }
     return pointers.isEmpty ? nil : pointers
   }

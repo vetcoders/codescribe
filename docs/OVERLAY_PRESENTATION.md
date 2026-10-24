@@ -175,7 +175,8 @@ Preferences live at `DictationOverlayPanel.contentSize.v7.transcription` and
 only: it may be a full-screen bus. Transcription starts at 470 × 280 until sized
 independently, then restores its own last size. Manual resizing of agents does
 not disable transcript growth. A new ordinary capture selects transcription
-before it unfolds; an agent take retains its channel surface.
+before it unfolds; an agent take retains its channel surface. A composer take
+keeps both the surface and the form (`applyTakeStartPresentation`).
 
 The fold button has the same top/trailing inset and header row height in every
 form. Native morphs, canvas switches and transcript growth preserve that screen
@@ -269,7 +270,24 @@ to its own compact width at the stored window's top-right corner; clicking the
 fiszka restores it, and hover reveals the close control in its fixed place, so
 the audio pair never moves. Closing records the fiszka as closed and the group
 row returns to its live state; detaching the same conversation again reopens
-that saved window instead of minting a duplicate. The Intercom header's
+that saved window instead of minting a duplicate. A fiszka's audio pair is
+`OverlayAgentAudioControls`, the roster's: monochrome at rest, the accent and
+a pulse when lit, one control height (channel 0 keeps the megaphone without
+the roster's larger tarcza) — painted flat on the fiszka with `chrome: false`,
+since the fiszka is the surface, not in glass circles of its own (Maciej,
+2026-10-23: "robisz to prosto na powierzchni fiszki"). Its status is one
+`OverlayAgentStatusDot` from `statusDotKind`, before the figure; after the
+name sit the agent's two reception marks (`OverlayReceptionMarks`): the
+channel-0 antenna (`broadcastPolicy.statusSymbol`, lit for a member) and the
+do-not-disturb moon (`quietSymbol`, filled while lit). Both are one-click
+switches that issue the helper's `--broadcast`/`--quiet` command for that
+lease, the same view the agents list draws after its title; the axes are
+independent (Maciej, 2026-10-23). After the pair comes the list's focus button,
+drawn from the pill menu's `focus` action (`agentPillMenuActions`); the archive
+X stays in the full view only. The bar wears the All row's antenna before
+**Intercom** — a state icon, no status verb — and the wordmark keeps one line
+(the controller measures the antenna, both marks and the focus slot into the
+resting width). The Intercom header's
 context menu lists the saved closed fiszki, the explicit road back when the
 channel's owner is no longer in the group. Resizing an expanded group card is
 an explicit independent placement and turns it into a fiszka with its own

@@ -730,6 +730,133 @@ print("reopened_cached_reply")
         self.assertEqual(row["tts_error"], "tts request failed (403)")
 
 
+class SystemSayTests(unittest.TestCase):
+    """System replies use the durable owner and the same live-take guard."""
+
+    setUp = SayReplyTests.setUp
+    global_mute = SayReplyTests.global_mute
+
+    def say_system(self, *, mock_speaker=True, flags=(), bus_override=True):
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {
+                "CS_SAY_VOICE": "", "CS_SAY_SPEED": "", "CS_SAY_TTS_VENDOR": "",
+            }))
+            stack.enter_context(patch.object(sys, "argv", [
+                "cs-bus", "--say", "Zrobione", "--bridge-home", str(self.home),
+                *(["--bus", str(self.bus)] if bus_override else []), *flags,
+            ]))
+            stack.enter_context(patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            spoken = (stack.enter_context(patch.object(DEMUX, "_speak_xai",
+                      return_value=(True, None, None))) if mock_speaker else None)
+            code = DEMUX.main()
+        rows = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.outcome = rows[-1]
+        return code, next(row for row in rows if row["kind"] == "agent_reply"), spoken
+
+    def test_system_reply_is_durable_and_plays_under_mute_all_without_unmuting_agents(self):
+        self.global_mute()
+        mute = self.home / "runtime/playback-mutes/global.json"
+        before = mute.read_bytes()
+        code, reply, spoken = self.say_system()
+        self.assertEqual(code, 0)
+        self.assertEqual((reply["provider"], reply["provider_session_id"], reply["name"]),
+                         ("codescribe", "system", "Codescribe"))
+        self.assertEqual((reply["system"], reply["association"], reply["voice"],
+                          reply["speed"], reply["tts_vendor"]),
+                         (True, "unsolicited", "carina", 1.0, "xai"))
+        spoken.assert_called_once_with("Zrobione", "carina", 1.0,
+                                       playback_root=self.home, bus=self.bus, control=ANY)
+        self.assertEqual(self.outcome["state"], "spoken")
+        self.assertEqual(mute.read_bytes(), before)
+        source = json.loads((self.home / "runtime/reply-sources" / f"{reply['reply_id']}.json").read_text())
+        raw = self.bus.read_bytes()
+        offset, length = source["source"]["offset"], source["source"]["length"]
+        self.assertEqual(json.loads(raw[offset:offset + length]), reply)
+        self.assertEqual(source["bus"], str(self.bus.resolve()))
+
+    def test_default_system_bus_cannot_be_redirected_by_an_agent_lease(self):
+        other = self.root / "other-channel.jsonl"
+        lease_id = DEMUX.lease_identifier("codescribe", "system")
+        DEMUX.atomic_json(self.home / "leases" / f"{lease_id}.json", {
+            "schema": DEMUX.LEASE_SCHEMA, "provider": "codescribe",
+            "provider_session_id": "system", "lease_id": lease_id,
+            "bus": str(other.resolve()), "pending": [],
+        })
+        code, _, _ = self.say_system(bus_override=False)
+        self.assertEqual(code, 0)
+        self.assertFalse(other.exists())
+        self.assertEqual(json.loads(self.bus.read_text().splitlines()[0])["kind"], "agent_reply")
+
+    def test_addressed_reply_still_requires_an_explicit_agent_identity(self):
+        with self.assertRaises(SystemExit) as refused, contextlib.redirect_stderr(io.StringIO()):
+            self.say_system(flags=("--reply-to", "a" * 24))
+        self.assertEqual(refused.exception.code, 2)
+        self.assertEqual(self.bus.read_text(), "")
+
+    def test_muted_system_reply_reaches_the_serialized_player_and_keeps_cached_audio(self):
+        self.global_mute()
+        player = MagicMock()
+        player.poll.return_value = 0
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch("subprocess.Popen", return_value=player) as play,
+        ):
+            code, reply, _ = self.say_system(mock_speaker=False)
+        self.assertEqual((code, self.outcome["state"]), (0, "spoken"))
+        self.assertEqual(play.call_args.args[0][0], "afplay")
+        sidecar, = (self.home / "speech").glob("*.json")
+        self.assertEqual(json.loads(sidecar.read_text())["reply_id"], reply["reply_id"])
+
+    def test_system_marker_bypasses_mute_flips_but_keeps_its_stop_ticket(self):
+        _, reply, _ = self.say_system()
+        control = DEMUX.ReplyPlaybackControl(
+            DEMUX.argparse.Namespace(bridge_home=self.home), self.bus, reply,
+            "e" * 24, automatic=True)
+        try:
+            self.global_mute()
+            self.assertFalse(control.stopped())
+            self.assertFalse(control.mute_snapshot()["effective_muted"])
+            DEMUX.atomic_json(control.stop_path, {"schema": DEMUX.REPLY_CONTROL_SCHEMA,
+                              **control.owner(), "playback_ticket": control.ticket})
+            self.assertTrue(control.stopped())
+        finally:
+            control.close()
+
+    def test_system_reply_refuses_a_live_take_even_when_agents_are_muted(self):
+        self.global_mute()
+        self.bus.write_text(json.dumps({"status": "session_started", "session_id": "live-take"}) + "\n")
+        with (
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch.object(DEMUX, "TAKE_WAIT_SECONDS", 0.05),
+            patch("subprocess.Popen") as player,
+        ):
+            code, reply, _ = self.say_system(mock_speaker=False)
+        self.assertEqual(code, 5)
+        self.assertTrue(reply["system"])
+        self.assertEqual((self.outcome["state"], self.outcome["reason"], self.outcome["spoken"]),
+                         ("refused", "take_live", False))
+        player.assert_not_called()
+        self.assertTrue((self.home / "runtime/reply-sources" / f"{reply['reply_id']}.json").exists())
+
+    def test_system_reply_with_private_bus_still_observes_the_app_capture_bus(self):
+        canonical = self.root / "app-bus.jsonl"
+        canonical.write_text(json.dumps({"status": "session_started", "session_id": "app-take"}) + "\n")
+        with (
+            patch.object(DEMUX, "bus_path", return_value=canonical),
+            patch.object(DEMUX, "_xai_speech_key", return_value="fixture-only"),
+            patch.object(DEMUX, "_tts_exchange", return_value=(b"\x01\x00", None, None)),
+            patch.object(DEMUX, "TAKE_WAIT_SECONDS", 0.05),
+            patch("subprocess.Popen") as player,
+        ):
+            code, _, _ = self.say_system(mock_speaker=False)
+        self.assertEqual((code, self.outcome["reason"]), (5, "take_live"))
+        player.assert_not_called()
+
+
 def queued_say(
     home,
     bus,
@@ -744,6 +871,8 @@ def queued_say(
     take_wait_seconds=0.15,
     scan_delay=0.0,
     slow_scans=None,
+    finish_in_scan=None,
+    take_in_scan=False,
 ):
     """Real --say and flock in a process; only synthesis and afplay are replaced."""
     DEMUX.PLAYBACK_WAIT_SECONDS = wait_seconds
@@ -755,8 +884,26 @@ def queued_say(
     probe = DEMUX.installation_idle
 
     delayed = [0]
+    scans = [0]
+    ended = [False]
 
     def delayed_probe(*args, **kwargs):
+        if not sentinel.exists():
+            waiting.set()
+        if sentinel.exists():
+            scans[0] += 1
+            if scans[0] == finish_in_scan:
+                # The player exits while this scan runs, after the loop's last
+                # poll; with take_in_scan a take starts right after the last sample.
+                ended[0] = True
+                if take_in_scan:
+                    with Path(speech_bus or bus).open("a") as stream:
+                        stream.write(
+                            json.dumps(
+                                {"status": "session_started", "session_id": "channel-3-take"}
+                            )
+                            + "\n"
+                        )
         # Delay the real safety probe only after playback has started; with
         # slow_scans set, only that many scans are slow.
         if scan_delay and sentinel.exists() and (slow_scans is None or delayed[0] < slow_scans):
@@ -795,7 +942,7 @@ def queued_say(
         def poll(self):
             if self.result is not None:
                 return self.result
-            if release is None or release.is_set():
+            if ended[0] or release is None or release.is_set():
                 return self.finish(0)
             return None
 
@@ -871,6 +1018,8 @@ class PlaybackQueueTests(unittest.TestCase):
         take_wait_seconds=0.15,
         scan_delay=0.0,
         slow_scans=None,
+        finish_in_scan=None,
+        take_in_scan=False,
     ):
         events = [self.context.Event() for _ in range(3)]
         child = self.context.Process(
@@ -887,6 +1036,8 @@ class PlaybackQueueTests(unittest.TestCase):
                 take_wait_seconds,
                 scan_delay,
                 slow_scans,
+                finish_in_scan,
+                take_in_scan,
             ),
         )
         child.start()
@@ -1005,6 +1156,43 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertEqual(reply["reason"], "take_started")
         self.assertFalse(reply["spoken"])
         self.assertIn('["filip", "terminate"]', (self.home / "playback.jsonl").read_text())
+
+    def test_take_after_the_last_sample_keeps_a_spoken_receipt(self):
+        # Founder, 2026-10-23 (Miksa ch6 20:12Z, Hania ch4 21:08Z): she heard the
+        # whole reply, pressed Fn+4 right after it, and the receipt said
+        # refused/take_started. The player had already exited inside the scan
+        # that saw the take, so nothing was cut and the reply was spoken.
+        canonical = self.home / "canonical-bus.jsonl"
+        canonical.touch()
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, speech_bus=canonical, finish_in_scan=1, take_in_scan=True
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], reply)
+        self.assertEqual(reply["state"], "spoken")
+        log = [
+            json.loads(line)
+            for line in (self.home / "playback.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(log, [["filip", "start"], ["filip", "end"]])
+
+    def test_unfinished_scans_after_the_player_ended_keep_a_spoken_receipt(self):
+        # Three over-budget scans stop a voice that is still playing (see
+        # test_scan_beyond_budget_still_terminates_playback), not one that ended.
+        release = self.context.Event()
+        child, (_, _, playing) = self.start_say(
+            "filip", release, scan_delay=0.6, finish_in_scan=3
+        )
+        self.assertTrue(playing.wait(5))
+        self.join(child)
+        (reply,) = self.outcomes()
+        self.assertTrue(reply["spoken"], reply)
+        self.assertNotIn(
+            '["filip", "terminate"]', (self.home / "playback.jsonl").read_text()
+        )
 
     def test_take_started_while_waiting_is_checked_after_acquisition(self):
         lock = self.hold_lock()
@@ -1275,8 +1463,18 @@ class PlaybackQueueTests(unittest.TestCase):
     def last_outcome(self):
         return self.outcomes()[-1]
 
+    def bind(self, name, channel):
+        path = self.home / "vc.agent-audience-binding.v1.json"
+        state = (json.loads(path.read_text()) if path.exists()
+                 else {"schema": "vc.agent-audience-binding.v1", "bindings": {}})
+        state["bindings"][channel] = {
+            "audience": name, "provider": "codex", "provider_session_id": name,
+        }
+        path.write_text(json.dumps(state))
+
     def test_quiet_open_channel_admits_the_reply(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         marker = self.home / "runtime" / "agent-playback-now.json"
         for phase in ("quiet", "fresh"):
@@ -1291,6 +1489,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_speech_or_an_unproven_phase_holds_the_reply(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         gone = subprocess.Popen(["true"])
         gone.wait()
@@ -1316,6 +1515,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_reply_survives_the_seal_and_reopen_of_its_quiet_channel(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-first", "open")
         self.speech_now("agent-channel-1-first", "quiet")
         release = self.context.Event()
@@ -1333,6 +1533,57 @@ class PlaybackQueueTests(unittest.TestCase):
         self.assertTrue(self.last_outcome()["spoken"], self.last_outcome())
         self.assert_playback_ended()
 
+    def test_pause_in_a_take_for_another_agent_holds_the_reply(self):
+        # 2026-10-23 06:57: Roman (channel 3) started speaking one second into
+        # a pause of Monika's open take for hania (channel 4).
+        self.bind("filip", "3")
+        channel = self.home / "buses" / "channel-4.jsonl"
+        self.channel_row(channel, "agent-channel-4-first", "open")
+        self.speech_now("agent-channel-4-first", "quiet")
+        child, (_, waiting, playing) = self.start_say("filip")
+        self.assertTrue(waiting.wait(5))
+        self.join(child)
+        self.assertFalse(playing.is_set(), "a pause in a message to hania is not room for filip")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
+        # The take seals and the channel reopens with nothing said yet.
+        self.channel_row(channel, "agent-channel-4-first", "sealed")
+        self.channel_row(channel, "agent-channel-4-second", "open")
+        self.speech_now("agent-channel-4-second", "fresh")
+        child, (_, _, playing) = self.start_say("filip")
+        self.join(child)
+        self.assertTrue(playing.is_set())
+        self.assertTrue(self.last_outcome()["spoken"])
+
+    def test_ineligible_foreign_reply_does_not_hold_the_player_lock(self):
+        self.bind("filip", "3")
+        self.bind("hania", "4")
+        channel = self.home / "buses" / "channel-4.jsonl"
+        self.channel_row(channel, "agent-channel-4-first", "open")
+        self.speech_now("agent-channel-4-first", "quiet")
+        foreign, (_, waiting, foreign_playing) = self.start_say(
+            "filip", take_wait_seconds=1.5)
+        self.assertTrue(waiting.wait(5))
+        own, (_, _, own_playing) = self.start_say("hania")
+        self.assertTrue(own_playing.wait(1), "an ineligible reply must not occupy playback.lock")
+        self.assertFalse(foreign_playing.is_set())
+        self.join(own)
+        self.join(foreign)
+
+    def test_rebound_quiet_channel_revokes_the_waiting_agents_ownership(self):
+        self.bind("filip", "3")
+        channel = self.home / "buses" / "channel-3.jsonl"
+        self.channel_row(channel, "agent-channel-3-first", "open")
+        self.speech_now("agent-channel-3-first", "speaking")
+        child, (_, waiting, playing) = self.start_say("filip", take_wait_seconds=0.8)
+        self.assertTrue(waiting.wait(5))
+        self.bind("hania", "3")
+        self.channel_row(channel, "agent-channel-3-first", "sealed")
+        self.channel_row(channel, "agent-channel-3-second", "open")
+        self.speech_now("agent-channel-3-second", "quiet")
+        self.join(child)
+        self.assertFalse(playing.is_set(), "ownership must be read again at admission")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
+
     def assert_playback_ended(self):
         marker = json.loads((self.home / "runtime" / "agent-playback-now.json").read_text())
         self.assertTrue(marker["ended"])
@@ -1341,6 +1592,7 @@ class PlaybackQueueTests(unittest.TestCase):
     def test_quiet_restarts_when_the_previous_reply_ends(self):
         # Back-to-back replies: the channel heard nothing under the first one.
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         self.speech_now("agent-channel-1-live", "quiet", age=30.0)
         marker = self.home / "runtime" / "agent-playback-now.json"
@@ -1356,6 +1608,7 @@ class PlaybackQueueTests(unittest.TestCase):
 
     def test_a_person_stops_a_reply_by_key_or_by_measured_speech(self):
         channel = self.home / "buses" / "channel-1.jsonl"
+        self.bind("filip", "1")
         self.channel_row(channel, "agent-channel-1-live", "open")
         for how in ("key take", "speech"):
             with self.subTest(how):
@@ -1689,6 +1942,190 @@ class InstallCheckpointTests(unittest.TestCase):
         self.append("session_started")
         self.append(DEMUX.SEALED)
         self.assertTrue(self.idle())
+
+
+
+class StreamingSpeechTests(unittest.TestCase):
+    def test_sentence_chunks_preserve_polish_abbreviations_numbers_and_code(self):
+        first = 'Sprawdziliśmy np. lek. wet. wynik 1.25 oraz 23.10.2026 w opisie.'
+        second = 'Następne zdanie zawiera `x = 1. A. B.` i kończy się tutaj.'
+        third = 'Ostatnie zdanie jest wystarczająco długie do osobnej porcji.'
+        self.assertEqual(DEMUX.speech_sentence_chunks(' '.join((first, second, third))),
+                         [first, second, third])
+        self.assertEqual(DEMUX.speech_sentence_chunks('Krótko.'), ['Krótko.'])
+        self.assertEqual(DEMUX.speech_sentence_chunks('To tj. objaśnienie np. liczby.'),
+                         ['To tj. objaśnienie np. liczby.'])
+        fenced = 'Przykład kodu:\n```python\nx = "Pierwsze. Drugie."\n```\nTo jest jego wyjaśnienie.'
+        self.assertEqual(DEMUX.speech_sentence_chunks(fenced), [fenced])
+        self.assertTrue(all(len(chunk) >= 40 for chunk in DEMUX.speech_sentence_chunks(
+            'Tak. ' + first + ' Koniec.')))
+
+    def test_http_pcm_is_delivered_before_eof_and_handles_split_samples(self):
+        import urllib.request
+        response = MagicMock(status=200)
+        response.read1.side_effect = [b'\x01', b'\x02\x03', b'\x04', b'']
+        seen = []
+        def receive(pcm):
+            seen.append((pcm, response.read1.call_count))
+        with patch('urllib.request.OpenerDirector') as factory:
+            factory.return_value.open.return_value.__enter__.return_value = response
+            pcm, error, reason = DEMUX._tts_exchange(
+                urllib.request.Request('https://api.x.ai/v1/tts'), receive)
+        self.assertEqual((pcm, error, reason), (b'\x01\x02\x03\x04', None, None))
+        self.assertEqual(seen, [(b'\x01\x02', 2), (b'\x03\x04', 3)])
+        self.assertTrue(all(call.args == (16384,) for call in response.read1.call_args_list))
+
+    def test_stream_failure_does_not_write_partial_cache(self):
+        import urllib.request
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            emitted = []
+            fields = {'text': 'incomplete'}
+            def synthesize():
+                emitted.append(b'\x00\x00')
+                return None, 'connection lost', 'network'
+            result = DEMUX._cached_speech(root, fields, synthesize)
+            self.assertEqual(result, (None, 'connection lost', 'network'))
+            self.assertEqual(list((root / 'speech').glob('*.wav')), [])
+
+    def exercise_pipeline(self, *, stop_after_first=False, fail_second=False, take_after_first=False):
+        import threading
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        bus = root / 'bus.jsonl'
+        bus.touch()
+        first = 'Pierwsze zdanie ma wystarczająco wiele znaków, by zacząć mówić od razu.'
+        second = 'Drugie zdanie będzie generowane jeszcze podczas odtwarzania pierwszego.'
+        text = first + ' ' + second
+        started = threading.Event()
+        finished = threading.Event()
+        stopped = threading.Event()
+        order, audio, states, requests = [], [], [], []
+        class Player:
+            def __init__(self):
+                order.append('player')
+                self.returncode = None
+                self.eof = False
+            def enqueue(self, pcm):
+                audio.append(pcm)
+                started.set()
+                order.append('audio')
+                if stop_after_first:
+                    stopped.set()
+            def can_enqueue(self):
+                return True
+            def finish(self):
+                self.eof = True
+            def poll(self):
+                return 0 if self.eof else self.returncode
+            def terminate(self):
+                self.returncode = -15
+            def kill(self):
+                self.returncode = -9
+            def wait(self, timeout=None):
+                return self.returncode
+        def exchange(request, on_pcm=None):
+            chunk = json.loads(request.data)['text']
+            requests.append(chunk)
+            order.append('synthesize')
+            if fail_second and len(requests) == 2:
+                return None, 'fixture failure', 'network'
+            if on_pcm:
+                on_pcm(b'\x01\x00')
+                # The first PCM must play while the first HTTP response is open.
+                if len(requests) == 1:
+                    if not started.wait(3):
+                        raise AssertionError('player waited for response EOF')
+            finished.set()
+            order.append('synthesized')
+            return b'\x01\x00', None, None
+        reply = {'reply_id': 'a' * 24, 'provider': 'codex', 'provider_session_id': 'fixture',
+                 'lease_id': DEMUX.lease_identifier('codex', 'fixture'), 'tts_vendor': 'xai',
+                 'text': text, 'voice': 'carina', 'speed': 1.0}
+        original_stopped = DEMUX.ReplyPlaybackControl.stopped
+        def should_stop(control):
+            return stopped.is_set() or original_stopped(control)
+        with (patch.object(DEMUX, 'PCMStreamPlayer', Player),
+              patch.object(DEMUX, '_xai_speech_key', return_value='test-only-key'),
+              patch.object(DEMUX, '_tts_exchange', side_effect=exchange),
+              patch.object(DEMUX, 'bus_path', return_value=bus),
+              patch.object(DEMUX, '_wait_for_take_end', return_value=True),
+              patch.object(DEMUX, 'installation_idle', side_effect=lambda *a, **k:
+                           not (take_after_first and started.is_set())),
+              patch.object(DEMUX, '_cursor_holds_take', return_value=True),
+              patch.object(DEMUX, '_acquire_playback_lock', return_value=True) as lock,
+              patch.object(DEMUX.ReplyPlaybackControl, 'stopped', should_stop),
+              patch.object(DEMUX, 'publish_reply_event', side_effect=fixture_publish),
+              patch.object(DEMUX, 'emit', side_effect=lambda event: states.append(event)),
+              patch.object(DEMUX, 'PLAYBACK_POLL_SECONDS', 0.005)):
+            code = DEMUX.speak_published_reply(DEMUX.argparse.Namespace(bridge_home=root),
+                                              bus, reply, 'b' * 24)
+        self.assertEqual(lock.call_count, 1)
+        self.assertEqual(order.count('player'), 1)
+        self.assertLess(order.index('audio'), order.index('synthesized'))
+        self.assertEqual([event['state'] for event in states[:2]], ['waiting', 'playing'])
+        self.assertEqual(sum(event['state'] not in ('waiting', 'playing') for event in states), 1)
+        self.assertEqual(len({event['playback_ticket'] for event in states}), 1)
+        self.assertTrue(finished.is_set())
+        return code, audio, states[-1], requests, root
+
+    def test_pipeline_streams_and_prefetches_under_one_ticket_and_lock(self):
+        code, audio, terminal, requests, root = self.exercise_pipeline()
+        self.assertEqual((code, terminal['state']), (0, 'spoken'))
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(audio), 2)
+        self.assertEqual(len(list((root / 'speech').glob('*.wav'))), 2)
+
+    def test_sentence_cache_replay_needs_no_network_or_credential(self):
+        _, _, _, chunks, root = self.exercise_pipeline()
+        received = []
+        def consume(stream, **kwargs):
+            stream.start()
+            try:
+                while True:
+                    event = stream.queue.get(timeout=2)
+                    if event[0] == 'done':
+                        return event[1]
+                    received.append(event[1])
+            finally:
+                stream.close()
+        with (patch.object(DEMUX, '_play_pcm_24k', side_effect=consume),
+              patch.object(DEMUX, '_xai_speech_key', side_effect=AssertionError('credential on hit')),
+              patch.object(DEMUX, '_tts_exchange', side_effect=AssertionError('network on hit'))):
+            self.assertEqual(DEMUX._speak_xai(' '.join(chunks), 'carina', 1.0,
+                                            playback_root=root), (True, None, None))
+        self.assertEqual(received, [b'\x01\x00', b'\x01\x00'])
+
+    def test_stream_cancel_interrupts_active_https_read_and_cache_lock_wait(self):
+        import socket
+        stream = DEMUX.SpeechPCMStream([], lambda *args: None)
+        response = MagicMock()
+        stream._response_opened(response)
+        stream.close()
+        response.fp.raw._sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = DEMUX._cached_speech(root, {'text': 'cancelled'},
+                                          lambda: self.fail('cancelled synthesis started'),
+                                          cancelled=lambda: True)
+            self.assertEqual(result, (None, 'playback stopped', 'stopped'))
+
+    def test_stop_between_chunks_has_one_stopped_terminal(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(stop_after_first=True)
+        self.assertEqual((code, terminal['state'], terminal['reason']), (5, 'stopped', 'stopped'))
+        self.assertEqual(len(audio), 1)
+
+    def test_take_started_between_chunks_refuses_without_more_audio(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(take_after_first=True)
+        self.assertEqual((code, terminal['state'], terminal['reason']), (5, 'refused', 'take_started'))
+        self.assertEqual(len(audio), 1)
+
+    def test_second_chunk_failure_never_claims_spoken(self):
+        code, audio, terminal, _, _ = self.exercise_pipeline(fail_second=True)
+        self.assertEqual((code, terminal['state']), (5, 'failed'))
+        self.assertFalse(terminal['spoken'])
+        self.assertEqual(len(audio), 1)
 
 
 if __name__ == "__main__":

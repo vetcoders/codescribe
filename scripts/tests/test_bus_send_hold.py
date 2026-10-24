@@ -437,6 +437,40 @@ class SendHoldTests(unittest.TestCase):
                     DEMUX.delivery_control_command(args)
                 self.assertEqual(publish.call_count, 1)
 
+    def test_control_cli_refuses_withdraw_or_revise_once_the_deadline_delivered(self):
+        # 23 X 10:15: a withdraw written 1.2 s after hold_until exited 0, the
+        # composer took the text back, and the agent had already received it.
+        self.lease()
+        DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
+        message = {"schema": DEMUX.AGENT_USER_MESSAGE_SCHEMA, "message_id": "b" * 24,
+                   "text": "Iwo", "hold_until": stamp(NOW + 10)}
+        self.bus.write_text(json.dumps(message) + "\n")
+        def control(kind, at):
+            args = self.args(revise=None, withdraw=None, release=None)
+            setattr(args, kind, "b" * 24)
+            with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+                    mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                    mock.patch.object(DEMUX, "emit"), \
+                    mock.patch.object(DEMUX.time, "time", return_value=at), \
+                    mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"revision"))):
+                try:
+                    return DEMUX.delivery_control_command(args), publish.call_count
+                except ValueError as refused:
+                    return str(refused), publish.call_count
+        self.assertEqual(control("withdraw", NOW + 5), (0, 1))
+        for kind in ("withdraw", "revise"):
+            for at in (NOW + 9.6, NOW + 11.2):
+                self.assertEqual(control(kind, at),
+                                 ("message already delivered; it can no longer be changed", 0))
+        # Releasing an already delivered row stays a harmless no-op.
+        self.assertEqual(control("release", NOW + 11.2), (0, 1))
+        # An explicit release hands the row over before its deadline, too.
+        with self.bus.open("a") as bus:
+            bus.write(json.dumps({"schema": DEMUX.DELIVERY_CONTROL_SCHEMA, "kind": "release",
+                                  "identity": "b" * 24, "lease_id": self.lease_id}) + "\n")
+        self.assertEqual(control("withdraw", NOW + 2),
+                         ("message already delivered; it can no longer be changed", 0))
+
     def test_broadcast_controls_fan_out_and_send_text_carries_one_deadline(self):
         self.lease()
         DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))

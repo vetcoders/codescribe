@@ -1,6 +1,8 @@
 import AppKit
+import Observation
 import SwiftUI
 import XCTest
+import os
 
 @testable import Codescribe
 
@@ -488,6 +490,86 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.draftCapture.hasRequest)
     XCTAssertEqual(sends, 0)
     XCTAssertEqual(state.selectedConversation?.id, other.id)
+  }
+
+  /// Maciej, 2026-10-23: the composer microphone closed the Agent view it was
+  /// dictating into. The take-start form must not fold a draft's conversation.
+  func testComposerMicrophoneTakeKeepsItsConversationExpanded() async throws {
+    let state = OverlayState()
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    await state.toggleDraftMicrophone(in: origin)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertFalse(state.draftMicrophoneBusy(in: origin), "its own Stop stays reachable")
+  }
+
+  /// Maciej, 2026-10-23 (take 0250cc19, ElevenLabs): the composer microphone
+  /// "zamyka mi widok agenta". With expand-by-default off, take 89e47c0e folded
+  /// the expanded Agents canvas to the strip at its start, and the composer
+  /// the words were going to left the screen. A composer take keeps the
+  /// conversation and its form; an ordinary take still folds
+  /// (`testTakeStartHonorsOptOutAfterLocalExpansion`).
+  func testComposerTakeStartKeepsTheExpandedConversationOnScreen() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    state.openConversation(for: origin.owner!)
+    state.setPresentationMode(.expanded)
+    var modes: [OverlayPresentationMode] = []
+    state.onPresentationModeChanged = { modes.append($0) }
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertTrue(state.recording)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertTrue(modes.isEmpty, "a composer take never morphs the overlay")
+    XCTAssertEqual(state.selectedConversation?.id, origin.id)
+    XCTAssertTrue(engine.expansionWrites.isEmpty)
+    state.finishControllerRecording()
+  }
+
+  /// Take 2a350ca4 (2026-10-23 09:36): a composer take started beside a mini
+  /// overlay grew it to the strip. The card owns that take; mini stays mini.
+  func testComposerTakeStartLeavesAMiniOverlayAlone() async throws {
+    let engine = OverlayChromePolicyEngine()
+    engine.expanded = false
+    let state = OverlayState()
+    state.engine = engine
+    state.attach()
+    XCTAssertEqual(state.presentationMode, .mini)
+    let surface = DraftCaptureFixture()
+    state.draftCapture = OverlayDraftCapture(controller: surface)
+    let origin = try navigationConversation()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [origin]))
+    surface.onStart = { [weak state] in
+      state?.handleRecordingPreparing()
+      state?.handleRecordingStarted()
+    }
+    await state.toggleDraftMicrophone(in: origin)
+    XCTAssertTrue(state.draftCapture.hasRequest)
+    XCTAssertEqual(state.presentationMode, .mini)
+    state.finishControllerRecording()
   }
 
   func testDraftTerminalBeforeStartReplyJoinsOnlyAdmittedCapture() async throws {
@@ -2505,6 +2587,31 @@ final class OverlayStateTests: XCTestCase {
         consultationPresentations: consultationPresentations
       )
     )
+  }
+
+  /// UI-88: through a take the main thread sat 94-98% busy because every
+  /// transcript tick re-ran the root overlay body, header, channel map and
+  /// intercom included (Silver samples, 23 X). A tick may re-render the scoped
+  /// slots that read the live transcript, never the root body.
+  func testLiveTickDoesNotInvalidateTheOverlayRootBody() {
+    let state = OverlayState()
+    projectText("Dzień", to: state)
+    let root = OSAllocatedUnfairLock(initialState: false)
+    let rail = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = DictationOverlayView(state: state).body
+    } onChange: {
+      root.withLock { $0 = true }
+    }
+    withObservationTracking {
+      _ = state.transcriptVersions
+      _ = OverlayIntentRail.projectedIntents(for: state)
+    } onChange: {
+      rail.withLock { $0 = true }
+    }
+    projectText("Dzień dobry", to: state)
+    XCTAssertTrue(rail.withLock { $0 }, "the tick must reach what reads the transcript")
+    XCTAssertFalse(root.withLock { $0 }, "a live tick re-ran the root overlay body")
   }
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
@@ -8460,5 +8567,77 @@ final class OverlayAgentGestureTests: XCTestCase {
     XCTAssertEqual(f.state.agentGesturePhase, .idle)
     XCTAssertFalse(f.state.showsAgentMonitor)
     XCTAssertEqual(f.captures.calls, [false, false])
+  }
+
+  // MARK: The vertical Intercom hosts the chooser (Maciej, 2026-10-23 seal)
+
+  private final class OpenLog { var ids: [String] = [] }
+
+  /// The widget's order, not the roster's: Olek's row stands above Lena's.
+  private func host(_ f: Fixture, order: [OverlayConversation]) -> OpenLog {
+    let log = OpenLog()
+    f.state.agentChooserHost = .init(targets: { order }, open: { log.ids.append($0) })
+    return log
+  }
+
+  func testAHostedChooserWalksTheWidgetRowsAndLeavesTheBigOverlayAlone() throws {
+    let f = try fixture()
+    let opened = host(f, order: [f.all, f.olek, f.lena])
+
+    f.state.handleAgentGesture(.middleClick)
+    XCTAssertFalse(f.state.showsAgentMonitor, "the big overlay's list stays closed")
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.all.id))
+    f.state.handleAgentGesture(.scroll(steps: 1))
+    XCTAssertEqual(f.state.agentGestureFocusID, f.olek.id, "the wheel follows the widget")
+    XCTAssertFalse(f.state.showsAgentMonitor, "the wheel does not summon the list either")
+
+    f.state.handleAgentGesture(.leftClick)
+
+    XCTAssertEqual(opened.ids, [f.olek.id], "the widget opens the row")
+    XCTAssertNil(f.state.selectedConversationID, "the big overlay selects nothing")
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.captures.calls, [true, true, false])
+  }
+
+  func testEscapeOnAHostedChooserOnlyGivesTheWheelBack() throws {
+    let f = try fixture()
+    f.state.selectConversation(f.lena.id)
+    let opened = host(f, order: [f.all, f.lena, f.olek])
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.handleAgentGesture(.cancel)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .idle)
+    XCTAssertEqual(f.state.selectedConversationID, f.lena.id, "the big overlay keeps its form")
+    XCTAssertTrue(opened.ids.isEmpty)
+    XCTAssertEqual(f.captures.calls, [true, false])
+  }
+
+  func testAHostedChooserSurvivesTheBigOverlayCollapsing() throws {
+    let f = try fixture()
+    _ = host(f, order: [f.all, f.lena])
+    f.state.handleAgentGesture(.middleClick)
+
+    f.state.setPresentationMode(.mini)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .choosing(focus: f.all.id))
+  }
+
+  func testAHostedTakeKeepsTheBigOverlayOffTheAgent() async throws {
+    let f = try fixture()
+    _ = host(f, order: [f.all, f.lena, f.olek])
+    f.engine.rosterSnapshot = [
+      roster("0", "all"), roster("2", "lena", open: true), roster("3", "olek"),
+    ]
+    f.state.handleAgentGesture(.middleClick)
+    f.state.handleAgentGesture(.scroll(steps: 1))
+
+    f.state.handleAgentGesture(.middleClick)
+
+    XCTAssertEqual(f.state.agentGesturePhase, .talking(channel: "2"))
+    await settle { f.state.channelHudStates["2"]?.open == true }
+    XCTAssertEqual(f.engine.toggledDigits, [2])
+    XCTAssertNil(f.state.selectedConversationID, "the take stays on the Intercom row")
+    XCTAssertFalse(f.state.showsAgentMonitor)
   }
 }
