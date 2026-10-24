@@ -2003,10 +2003,16 @@ class StreamingSpeechTests(unittest.TestCase):
         stopped = threading.Event()
         order, audio, states, requests = [], [], [], []
         class Player:
+            PREFILL_SECONDS = 0.3
             def __init__(self):
                 order.append('player')
+                self._operations = threading.RLock()
                 self.returncode = None
                 self.eof = False
+            def begin_prefill(self):
+                return time.monotonic()
+            def start_if_ready(self, *, force=False):
+                pass  # Native duration/deadline semantics have their own fixture.
             def enqueue(self, pcm):
                 audio.append(pcm)
                 started.set()
