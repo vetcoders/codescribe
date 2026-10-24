@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Agent voice replies: a reply heard to its last sample no longer reports `refused` / `take_started` with `spoken: false` when a take starts right after it (Fn+4 pressed as the reply ends) or when bus scans overran while the player was exiting. The helper asks the player whether it has exited before refusing, so the receipt and the overlay match what was heard; a take that starts while audio is still playing still stops it.
+
+- Overlay: the agent conversation cache no longer rewrites every conversation every 30 seconds. Each conversation source now has its own cache file and a checkpoint saves only the ones that changed, which cuts the disk writes macOS had flagged Codescribe for: on the machine that reported it, a checkpoint wrote 14 MB for eleven channels and now writes about 2 MB per changed conversation. The previous single cache file is removed on the first save; the conversations themselves are unaffected.
 - Held agent messages: Cancel/Edit pressed after the hold has run out no longer pulls the text back into the composer while the agent already has the message. The app checks the clock at the tap, and `cs-bus --withdraw` / `--revise` refuse with “message already delivered” within half a second of the deadline or after Send now, instead of reporting success.
 - Agents list: a click on the All row's message preview opens the broadcast conversation, as an agent row's preview does; before, only the title line above it reacted.
 - Settings › Shortcuts: the Fn tap switch no longer reads as if holding Fn needed it. It is now „Tap Fn to toggle dictation” (PL „Stuknięcie Fn włącza i wyłącza dyktowanie”), and its note says a short tap starts or stops a take while holding Fn always records.
