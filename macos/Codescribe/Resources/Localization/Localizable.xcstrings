@@ -1,13 +1,24 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Hide all" : {
+    "Dock all agents" : {
       "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Schowaj wszystkie"
+            "value" : "Zadokuj wszystkich"
+          }
+        }
+      }
+    },
+    "Restore window layout" : {
+      "comment" : "Global Intercom action: restore the window presentation from before docking all fiszki.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć układ okien"
           }
         }
       }

@@ -17,16 +17,18 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     .init(digit: "3", conversation: try conversation(session: session, name: name))
   }
 
-  private func conversation(session: String = "first", name: String = "Roman") throws
+  private func conversation(
+    session: String = "first", name: String = "Roman", channel: String = "3"
+  ) throws
     -> OverlayConversation
   {
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
         "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
-        "channel": "3", "name": name,
+        "channel": channel, "name": name,
       ]))
-    return .init(id: owner.id, channel: "3", name: name, owner: owner, messages: [])
+    return .init(id: owner.id, channel: channel, name: name, owner: owner, messages: [])
   }
 
   private func settle() async throws {
@@ -34,19 +36,32 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(30))
   }
 
-  func testHideAllReturnsDetachedWindowsToOneBarWithoutChangingConversations() throws {
+  func testGroupFoldLeavesDetachedWindowsAndGlobalDockRestoresThePreviousLayout() async throws {
     let suite = "CodescribeTests.hide-all.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let store = OverlayIntercomDesktopStore(defaults: defaults)
     let agentConversation = try conversation()
+    let groupedConversation = try conversation(session: "grouped", name: "Marek", channel: "4")
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
     let agent = OverlayIntercomCardIdentity(digit: "3", conversation: agentConversation)
     let previousOwner = try identity(session: "previous")
     let inbox = OverlayIntercomCardIdentity(digit: "10", conversation: .humanInbox())
     let state = OverlayState()
     state.applyConversationSnapshot(
       .init(
-        deliveries: [], conversations: [agentConversation, .humanInbox()]))
+        deliveries: [],
+        conversations: [broadcast, agentConversation, groupedConversation, .humanInbox()]))
+    state.applyChannelRoster(
+      [broadcast, agentConversation, groupedConversation].map {
+        .init(
+          channel: $0.channel, audience: $0.name,
+          provider: $0.owner?.provider, providerSessionId: $0.owner?.providerSessionID,
+          open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+          unreadSinceUnixMs: nil)
+      })
+    XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.digit), ["3", "4"])
     state.conversationDrafts = [agentConversation.id: "unfinished reply", "10": "private draft"]
     state.publishConversationText = { _, _, _ in XCTFail("Hiding windows must not send") }
     var desktop = OverlayIntercomDesktopState()
@@ -71,16 +86,36 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     let generation = state.captureGeneration
     let selected = state.selectedConversationID
     let conversations = state.conversations.map(\.id)
+    let initialDesktop = store.load()
+    let visibleBeforeFold = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
+    controller.toggleGroup()
+    for _ in 0..<50 {
+      if ownedWindows.filter(\.isVisible).count == visibleBeforeFold.count - 1 { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let foldedVisible = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
+    XCTAssertEqual(foldedVisible.count, visibleBeforeFold.count - 1, "Only the grouped row folds")
+    XCTAssertGreaterThan(foldedVisible.count, 1, "Detached windows remain visible")
+    XCTAssertEqual(store.load(), initialDesktop, "Folding the group never docks detached windows")
     let reconciliations = controller.reconciliationRequests
-
-    controller.hideAll()
+    XCTAssertFalse(controller.canRestoreDockedLayout)
+    controller.toggleDockAll()
 
     let saved = store.load()
-    var expected = desktop
-    expected.groupTier = saved.groupTier
+    var expected = initialDesktop
     for index in expected.instances.indices { expected.instances[index].closed = true }
     XCTAssertEqual(saved, expected, "Only open presentation records become closed")
     XCTAssertEqual(ownedWindows.filter(\.isVisible).count, 1, "Only the Intercom bar remains")
+    XCTAssertTrue(controller.canRestoreDockedLayout)
+    let bar = try XCTUnwrap(ownedWindows.first(where: \.isVisible)?.contentView)
+    bar.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(bar.bitmapImageRepForCachingDisplay(in: bar.bounds))
+    bar.cacheDisplay(in: bar.bounds, to: bitmap)
+    let image = try XCTUnwrap(bitmap.cgImage)
+    let attachment = XCTAttachment(image: NSImage(cgImage: image, size: bar.bounds.size))
+    attachment.name = "Intercom separate group and global docking controls"
+    attachment.lifetime = .keepAlways
+    add(attachment)
     XCTAssertEqual(controller.reconciliationRequests, reconciliations + 1)
     XCTAssertEqual(state.conversationDrafts, drafts)
     XCTAssertEqual(state.captureGeneration, generation)
@@ -91,6 +126,47 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     controller.hideAll()
     XCTAssertEqual(store.load(), saved, "Repeated recovery preserves exact saved windows")
     XCTAssertEqual(ownedWindows.filter(\.isVisible).count, 1)
+
+    controller.toggleGroup()
+    try await settle()
+    controller.toggleDockAll()
+    for _ in 0..<50 {
+      let visible = Set(
+        NSApp.windows.filter {
+          !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+        }.map(ObjectIdentifier.init))
+      if visible == foldedVisible { break }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(controller.canRestoreDockedLayout)
+    XCTAssertEqual(
+      Set(
+        NSApp.windows.filter {
+          !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+        }.map(ObjectIdentifier.init)), foldedVisible,
+      "Global restore returns the exact detached windows and the previously folded group")
+    XCTAssertEqual(store.load(), initialDesktop, "Closed history and exact geometry are restored")
+    XCTAssertEqual(state.conversationDrafts, drafts)
+    XCTAssertEqual(state.captureGeneration, generation)
+
+    controller.toggleDockAll()
+    XCTAssertTrue(controller.canRestoreDockedLayout)
+    XCTAssertEqual(store.load(), saved)
+    XCTAssertEqual(
+      NSApp.windows.filter {
+        !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+      }.count, 1)
+
+    controller.openMailbox("0")
+    let newWindow = try XCTUnwrap(store.load().instances.first { $0.conversationID == "0" })
+    controller.toggleDockAll()
+    let restoredWithNewWindow = store.load()
+    XCTAssertEqual(restoredWithNewWindow.instances.first { $0.id == newWindow.id }, newWindow)
+    XCTAssertEqual(
+      restoredWithNewWindow.instances.filter { $0.id != newWindow.id }, initialDesktop.instances,
+      "Restoring a snapshot preserves windows created after docking")
+    XCTAssertEqual(state.conversationDrafts, drafts)
+    XCTAssertEqual(state.captureGeneration, generation)
   }
 
   func testRepeatedHostingUpdatesDoNotRepeatNativePlacement() async throws {

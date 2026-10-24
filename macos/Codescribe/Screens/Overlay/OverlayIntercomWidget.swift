@@ -47,6 +47,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The durable desktop: detached fiszki and the group's content geometry.
   fileprivate private(set) var desktop: OverlayIntercomDesktopState
   fileprivate private(set) var instanceFocusRevisions: [UUID: UInt64] = [:]
+  private struct DockedLayout {
+    let desktop: OverlayIntercomDesktopState
+    let presentation: OverlayIntercomPresentation
+    let rowOffset: Int
+    let sizes: [OverlayIntercomCardIdentity: CGSize]
+  }
+  private var dockedLayout: DockedLayout?
+
+  var canRestoreDockedLayout: Bool { dockedLayout != nil }
 
   init(
     state: OverlayState, textScale: TextScaleController,
@@ -69,11 +78,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate private(set) var headerControlsVisible = true
   fileprivate private(set) var groupWidth: CGFloat = 0
-  fileprivate var hideAllWidth: CGFloat {
+  private var groupControlWidth: CGFloat {
     let font = NSFont.systemFont(ofSize: 11 * effectiveScale, weight: .semibold)
     return ceil(
-      (String(localized: "Hide all") as NSString).size(withAttributes: [.font: font]).width)
-      + 10
+      (String(localized: "Intercom") as NSString).size(withAttributes: [.font: font]).width)
+      + 12 * effectiveScale + 8
   }
   private var headerPagingWidth: CGFloat {
     let compactRows = OverlayIntercomWidgetLayout.visibleRange(
@@ -82,10 +91,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     return !presentation.folded && compactRows.count < groupIdentities.count
       ? 32 * max(1, effectiveScale) + 16 : 0
   }
-  /// Fold, Inbox and All keep equal hit slots. The recovery action keeps its
-  /// visible label even when names, counts and audio controls yield space.
+  /// Keep the group's wordmark plus Inbox, All and the separate dock action.
   var minimumHeaderWidth: CGFloat {
-    3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + hideAllWidth + 24
+    groupControlWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + 24
       + headerPagingWidth
   }
   fileprivate var stacksGroupControls: Bool {
@@ -195,7 +203,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       + (String(localized: "All") as NSString).size(withAttributes: [.font: nameFont]).width
       + ("0" as NSString).size(withAttributes: [.font: digitFont]).width + 36 * scale + 16
       + 12 * scale + 8
-      + hideAllWidth + 8
+      + OverlayIntercomWidgetLayout.controlHeight(scale: scale) + 8
       + (hasOverflow && !presentation.folded ? 32 * max(1, scale) + 16 : 0)
     let defaultWidth = max(
       contentMetrics.actionsWidth,
@@ -599,9 +607,33 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
-  fileprivate func toggleGroup() {
+  func toggleGroup() {
     presentation.folded.toggle()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+  }
+
+  /// Separate from group folding: the global control returns to the window
+  /// presentation from before docking, without snapshotting conversation truth.
+  func toggleDockAll() {
+    guard !invalidated else { return }
+    if let previous = dockedLayout {
+      dockedLayout = nil
+      let previousIDs = Set(previous.desktop.instances.map(\.id))
+      let newInstances = desktop.instances.filter { !previousIDs.contains($0.id) }
+      desktop = previous.desktop
+      for instance in newInstances { desktop.upsert(instance) }
+      presentation = previous.presentation
+      rowOffset = previous.rowOffset
+      sizes = previous.sizes
+      materializeInstances()
+      reconcile(
+        chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
+      saveDesktop()
+    } else {
+      dockedLayout = DockedLayout(
+        desktop: desktop, presentation: presentation, rowOffset: rowOffset, sizes: sizes)
+      hideAll()
+    }
   }
 
   /// Dock every open fiszka and fold the group in one presentation transaction.
@@ -1018,19 +1050,11 @@ private struct OverlayIntercomHeader: View {
         controller.toggleGroup()
       } label: {
         HStack(spacing: 8) {
-          // The shared channel's mark is the antenna the agents list wears on
-          // its All row — a state icon, not a status verb (Maciej,
-          // 2026-10-23: "Intercom też nie potrzebuje verba stanu"). It takes
-          // the place of the grid glyph so the wordmark keeps one line.
           OverlayAgentStatusDot(kind: .broadcast, palette: palette)
-          if controller.headerControlsVisible {
-            Text("Intercom").csFont(11, .semibold).lineLimit(1).fixedSize()
-          }
+          Text("Intercom").csFont(11, .semibold).lineLimit(1).fixedSize()
         }
         .contentShape(Capsule())
         .frame(
-          width: !controller.headerControlsVisible
-            ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil,
           height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
       .buttonStyle(.plain)
@@ -1038,6 +1062,11 @@ private struct OverlayIntercomHeader: View {
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
       .accessibilityLabel(
+        controller.presentation.folded
+          ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
+      )
+      .accessibilityIdentifier("overlay-intercom-group-visibility")
+      .help(
         controller.presentation.folded
           ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
       )
@@ -1064,11 +1093,11 @@ private struct OverlayIntercomHeader: View {
       mailboxControl(inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette)
       mailboxControl(broadcast, title: String(localized: "All"), digit: "0", palette: palette)
       Button {
-        controller.hideAll()
+        controller.toggleDockAll()
       } label: {
-        Text("Hide all").csFont(11, .semibold).lineLimit(1).fixedSize()
+        Image(systemName: "sidebar.right").csFont(12, .medium)
           .frame(
-            width: controller.hideAllWidth,
+            width: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
             height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
           )
           .contentShape(Capsule())
@@ -1077,7 +1106,14 @@ private struct OverlayIntercomHeader: View {
       .conversationActionHover(
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
-      .accessibilityIdentifier("overlay-intercom-hide-all")
+      .accessibilityIdentifier("overlay-intercom-dock-all")
+      .accessibilityLabel(
+        controller.canRestoreDockedLayout
+          ? String(localized: "Restore window layout") : String(localized: "Dock all agents")
+      )
+      .help(
+        controller.canRestoreDockedLayout
+          ? String(localized: "Restore window layout") : String(localized: "Dock all agents"))
       if controller.headerControlsVisible {
         Spacer(minLength: 4)
         Text(verbatim: chips.count.formatted()).csMono(10).allowsHitTesting(false)
