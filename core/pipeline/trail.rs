@@ -769,46 +769,68 @@ impl TrailSink {
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                let mut file = options.open(path)?;
-                let mut write = |record: &TrailRecord| -> io::Result<()> {
-                    serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
-                    file.write_all(b"\n")
-                };
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session: session.clone(),
-                    capture_epoch: epoch,
-                    observed_ns: 0,
-                    event: TrailEvent::Start {
-                        sample_clock: "capture_samples".into(),
+                // serde_json writes token by token: unbuffered, every token was
+                // its own write(2), ~10-14% of a core during a take (hania on
+                // Silver, 23 X: 9.2 MB in 116 s, 18 records/s).
+                let mut file = io::BufWriter::new(options.open(path)?);
+                let write =
+                    |file: &mut io::BufWriter<fs::File>, record: &TrailRecord| -> io::Result<()> {
+                        serde_json::to_writer(&mut *file, record).map_err(io::Error::other)?;
+                        file.write_all(b"\n")
+                    };
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session: session.clone(),
+                        capture_epoch: epoch,
+                        observed_ns: 0,
+                        event: TrailEvent::Start {
+                            sample_clock: "capture_samples".into(),
+                        },
                     },
-                })?;
+                )?;
+                file.flush()?;
                 let mut last_ns = 0;
                 let mut record_count = 0;
-                for record in receiver {
+                while let Ok(record) = receiver.recv() {
                     last_ns = record.observed_ns;
-                    write(&record)?;
+                    write(&mut file, &record)?;
                     record_count += 1;
+                    // Write what is already queued, then flush once: one write(2)
+                    // per burst, and the file is never behind an idle queue.
+                    while let Ok(record) = receiver.try_recv() {
+                        last_ns = record.observed_ns;
+                        write(&mut file, &record)?;
+                        record_count += 1;
+                    }
+                    file.flush()?;
                 }
                 let count = dropped.load(Ordering::Relaxed);
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session: session.clone(),
-                    capture_epoch: epoch,
-                    observed_ns: last_ns,
-                    event: TrailEvent::Checkpoint { record_count },
-                })?;
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session,
-                    capture_epoch: epoch,
-                    observed_ns: last_ns,
-                    event: TrailEvent::End {
-                        dropped_records: count,
-                        persistence_complete: count == 0,
-                        evidence_complete: false,
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session: session.clone(),
+                        capture_epoch: epoch,
+                        observed_ns: last_ns,
+                        event: TrailEvent::Checkpoint { record_count },
                     },
-                })?;
+                )?;
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session,
+                        capture_epoch: epoch,
+                        observed_ns: last_ns,
+                        event: TrailEvent::End {
+                            dropped_records: count,
+                            persistence_complete: count == 0,
+                            evidence_complete: false,
+                        },
+                    },
+                )?;
                 file.flush()
             })?;
         sinks.insert(key.clone(), Arc::downgrade(&state));
