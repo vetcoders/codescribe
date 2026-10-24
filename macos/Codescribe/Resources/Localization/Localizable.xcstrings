@@ -7197,16 +7197,6 @@
         }
       }
     },
-    "Dictation control" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Sterowanie dyktowaniem"
-          }
-        }
-      }
-    },
     "Dictation is ready." : {
       "comment" : "Setup final heading: dictation passed its checks, the Agent lane is not ready yet",
       "localizations" : {
@@ -8269,6 +8259,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lewitujące pigułki agentów (eksperymentalne)"
+          }
+        }
+      }
+    },
+    "Fn and Agent channels" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fn i kanały Agenta"
           }
         }
       }

@@ -180,7 +180,7 @@ shows the "cs" wordmark.
 Pointing at a chip names the channel, the agent and the chord, for example
 `5 · Kuba · Ctrl+5`. Pointing at the counter lists the agents, for example
 `3 Igor · 4 Hania · 6 Konfig`. The modifier is the one chosen in Settings ›
-Shortcuts › Extra shortcuts › **Agent channel** (Ctrl or Fn); the map reads it
+Shortcuts › Fn and Agent channels › **Agent channel** (Ctrl or Fn); the map reads it
 when it appears and when you point at it.
 
 Clicking a chip opens that agent's conversation on the **Agents** canvas, as its

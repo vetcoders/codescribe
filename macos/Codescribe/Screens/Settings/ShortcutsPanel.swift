@@ -34,7 +34,7 @@ struct ShortcutsPanel: View {
       }
 
       modeSection.padding(.top, SettingsScale.sectionGap)
-      dictationControlSection.padding(.top, SettingsScale.sectionGap)
+      fnAndChannelsSection.padding(.top, SettingsScale.sectionGap)
       dictationContextSection.padding(.top, SettingsScale.sectionGap)
       extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
       pasteModeSection.padding(.top, SettingsScale.sectionGap)
@@ -320,14 +320,16 @@ struct ShortcutsPanel: View {
     )
   }
 
-  // MARK: Dictation control — Fn tap, middle mouse
+  // MARK: Fn and Agent channels — Fn tap, channel modifier, middle mouse
 
-  /// Two switches that steer how recording is driven. They sit directly under
-  /// the mode table because they shape the same gestures; they are not extra
-  /// app modes. Both write on change and default off.
-  private var dictationControlSection: some View {
+  /// Everything that decides what Fn does, side by side: the Fn tap, the
+  /// Agent channel modifier (whose Fn option is greyed out while Fn records,
+  /// with the one sentence that says what frees it), and the middle button,
+  /// which can act as Fn. Sits directly under the mode table because it shapes
+  /// the same gestures. Every control writes on change.
+  private var fnAndChannelsSection: some View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
-      SettingsSectionLabel(String(localized: "Dictation control"))
+      SettingsSectionLabel(String(localized: "Fn and Agent channels"))
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Tap Fn to toggle dictation",
@@ -337,37 +339,6 @@ struct ShortcutsPanel: View {
             .settingsSwitch()
         }
         divider
-        inputSurfaceRow(
-          title: "Middle mouse acts as Fn",
-          detail: "Works like Fn. Custom mouse-button mappings can block it."
-        ) {
-          Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
-            .settingsSwitch()
-        }
-        divider
-        inputSurfaceRow(
-          title: "Middle click picks an agent",
-          detail:
-            "Middle click opens the list, scroll chooses, left click opens the conversation, middle click starts and ends talking."
-        ) {
-          Toggle("Middle click picks an agent", isOn: middleGestureBinding)
-            .settingsSwitch()
-        }
-      }
-      .settingsGroupedInset(padding: 0)
-    }
-  }
-
-  // MARK: Extra shortcuts — channel chord, paste transcript
-
-  /// Shortcuts beyond the three modes: the Agent channel chord and the
-  /// deferred-insert paste. Both write on change; the paste picker mirrors the
-  /// closed core `DeferredInsertShortcut` set and stays off by default because
-  /// the tap is listen-only (core/config/types.rs).
-  private var extraShortcutsSection: some View {
-    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
-      SettingsSectionLabel(String(localized: "Extra shortcuts"))
-      VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Agent channel",
           detail: "Ctrl or Fn plus a digit switches the Agent channel."
@@ -394,6 +365,37 @@ struct ShortcutsPanel: View {
             .padding(.bottom, SettingsScale.rowInsetV)
         }
         divider
+        inputSurfaceRow(
+          title: "Middle mouse acts as Fn",
+          detail: "Works like Fn. Custom mouse-button mappings can block it."
+        ) {
+          Toggle("Middle mouse acts as Fn", isOn: middleMouseBinding)
+            .settingsSwitch()
+        }
+        divider
+        inputSurfaceRow(
+          title: "Middle click picks an agent",
+          detail:
+            "Middle click opens the list, scroll chooses, left click opens the conversation, middle click starts and ends talking."
+        ) {
+          Toggle("Middle click picks an agent", isOn: middleGestureBinding)
+            .settingsSwitch()
+        }
+      }
+      .settingsGroupedInset(padding: 0)
+    }
+  }
+
+  // MARK: Extra shortcuts — widget chord, paste transcript
+
+  /// Shortcuts beyond the three modes and Fn: the widget chord and the
+  /// deferred-insert paste. Both write on change; the paste picker mirrors the
+  /// closed core `DeferredInsertShortcut` set and stays off by default because
+  /// the tap is listen-only (core/config/types.rs).
+  private var extraShortcutsSection: some View {
+    VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
+      SettingsSectionLabel(String(localized: "Extra shortcuts"))
+      VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Show or hide the widget",
           detail:
