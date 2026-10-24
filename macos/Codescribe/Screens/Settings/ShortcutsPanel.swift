@@ -34,7 +34,7 @@ struct ShortcutsPanel: View {
       }
 
       modeSection.padding(.top, SettingsScale.sectionGap)
-      dictationControlSection.padding(.top, SettingsScale.sectionGap)
+      fnAndChannelsSection.padding(.top, SettingsScale.sectionGap)
       dictationContextSection.padding(.top, SettingsScale.sectionGap)
       extraShortcutsSection.padding(.top, SettingsScale.sectionGap)
       pasteModeSection.padding(.top, SettingsScale.sectionGap)
@@ -320,14 +320,16 @@ struct ShortcutsPanel: View {
     )
   }
 
-  // MARK: Dictation control — Fn tap, middle mouse
+  // MARK: Fn and Agent channels — Fn tap, channel modifier, middle mouse
 
-  /// Two switches that steer how recording is driven. They sit directly under
-  /// the mode table because they shape the same gestures; they are not extra
-  /// app modes. Both write on change and default off.
-  private var dictationControlSection: some View {
+  /// Everything that decides what Fn does, side by side: the Fn tap, the
+  /// Agent channel modifier (whose Fn option is greyed out while Fn records,
+  /// with the one sentence that says what frees it), and the middle button,
+  /// which can act as Fn. Sits directly under the mode table because it shapes
+  /// the same gestures. Every control writes on change.
+  private var fnAndChannelsSection: some View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
-      SettingsSectionLabel(String(localized: "Dictation control"))
+      SettingsSectionLabel(String(localized: "Fn and Agent channels"))
       VStack(alignment: .leading, spacing: 0) {
         inputSurfaceRow(
           title: "Tap Fn to toggle dictation",
@@ -335,6 +337,32 @@ struct ShortcutsPanel: View {
         ) {
           Toggle("Tap Fn to toggle dictation", isOn: fnTapBinding)
             .settingsSwitch()
+        }
+        divider
+        inputSurfaceRow(
+          title: "Agent channel",
+          detail: "Ctrl or Fn plus a digit switches the Agent channel."
+        ) {
+          // One key, one role: a key that records dictation is greyed out
+          // here, and the core already resolved the modifier in effect.
+          Picker("Agent channel modifier", selection: channelModifierBinding) {
+            Text(verbatim: "Ctrl").tag("ctrl")
+              .disabled(!model.channelModifierCtrlAvailable)
+            Text(verbatim: "Fn").tag("fn")
+              .disabled(!model.channelModifierFnAvailable)
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .frame(maxWidth: 160)
+        }
+        if let note = model.channelModifierRecordingNote {
+          Text(note)
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, SettingsScale.rowInsetH)
+            .padding(.bottom, SettingsScale.rowInsetV)
         }
         divider
         inputSurfaceRow(
@@ -358,9 +386,9 @@ struct ShortcutsPanel: View {
     }
   }
 
-  // MARK: Extra shortcuts — channel chord, paste transcript
+  // MARK: Extra shortcuts — widget chord, paste transcript
 
-  /// Shortcuts beyond the three modes: the Agent channel chord and the
+  /// Shortcuts beyond the three modes and Fn: the widget chord and the
   /// deferred-insert paste. Both write on change; the paste picker mirrors the
   /// closed core `DeferredInsertShortcut` set and stays off by default because
   /// the tap is listen-only (core/config/types.rs).
@@ -368,19 +396,6 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Extra shortcuts"))
       VStack(alignment: .leading, spacing: 0) {
-        inputSurfaceRow(
-          title: "Agent channel",
-          detail: "Ctrl or Fn plus a digit switches the Agent channel."
-        ) {
-          Picker("Agent channel modifier", selection: channelModifierBinding) {
-            Text(verbatim: "Ctrl").tag("ctrl")
-            Text(verbatim: "Fn").tag("fn")
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .frame(maxWidth: 160)
-        }
-        divider
         inputSurfaceRow(
           title: "Show or hide the widget",
           detail:

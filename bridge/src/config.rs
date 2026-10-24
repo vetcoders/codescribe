@@ -114,9 +114,20 @@ pub struct CsSettings {
     /// from the canonical merged config snapshot. `"disabled"` is the
     /// product default when no persisted choice exists.
     pub deferred_insert_shortcut: String,
-    /// Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
-    /// Command is not a value.
+    /// Agent-channel modifier in effect (`ChannelModifier::as_str()`): `"ctrl"`
+    /// or `"fn"`, or `"off"` when both keys record dictation. A key that
+    /// records is never the channel modifier (one key, one role), so this can
+    /// differ from the stored choice. Command is not a value.
     pub channel_modifier: String,
+    /// Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
+    /// no Fn channel modifier.
+    pub fn_records_dictation: bool,
+    /// A binding (Hold Fn/Globe) records with Fn, so freeing Fn takes a
+    /// rebinding and not only turning the Fn tap off.
+    pub fn_binding_records_dictation: bool,
+    /// A Ctrl gesture records dictation, so Settings offers no Ctrl channel
+    /// modifier.
+    pub ctrl_records_dictation: bool,
     /// The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
     pub widget_shortcut: String,
     /// The same chord with macOS glyphs (`WidgetShortcut::label()`), e.g. `"⌃⇧B"`.
@@ -231,6 +242,7 @@ impl CsSettings {
     fn from_runtime_snapshot(runtime: &RuntimeSettingsSnapshot) -> Self {
         let config = runtime.values();
         let settings = runtime.user_settings();
+        let recording_keys = Config::recording_keys(settings, config.fn_tap_toggles_dictation);
         let formatting = runtime.llm_lanes().formatting();
         let assistive = runtime.llm_lanes().assistive();
         let mut agent_workspace_roots = normalize_agent_workspace_roots(
@@ -255,6 +267,9 @@ impl CsSettings {
             ledger_sensitivity: config.ledger_sensitivity,
             deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             channel_modifier: config.channel_modifier.as_str().to_string(),
+            fn_records_dictation: recording_keys.fn_key,
+            fn_binding_records_dictation: recording_keys.fn_binding,
+            ctrl_records_dictation: recording_keys.ctrl,
             widget_shortcut: config.widget_shortcut.wire_id(),
             widget_shortcut_label: config.widget_shortcut.label(),
             fn_tap_toggles_dictation: config.fn_tap_toggles_dictation,
