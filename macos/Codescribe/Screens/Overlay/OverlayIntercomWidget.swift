@@ -555,15 +555,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     cards[identity]?.makeKeyAndOrderFront(nil)
   }
 
-  /// Mailbox buttons use the existing conversation surface, without creating
-  /// a group row, capture target or message delivery.
+  /// Mailbox buttons select the exact ownerless conversation and present its
+  /// fiszka when visible, without changing capture or message delivery.
   func openMailbox(_ conversationID: String) {
     guard let conversation = state.conversations.first(where: { $0.id == conversationID }),
       conversation.owner == nil,
       OverlayIntercomCardIdentity(digit: conversation.channel, conversation: conversation).canExpand
     else { return }
+    let identity = OverlayIntercomCardIdentity(
+      digit: conversation.channel, conversation: conversation)
     state.chooseConversation(conversation.id)
-    revealConversation()
+    if let open = desktop.openInstance(for: identity) {
+      showInstance(open.id)
+      return
+    }
+    if let saved = desktop.instances.first(where: {
+      $0.closed && $0.conversationID == identity.conversationID
+        && $0.ownerID == (identity.ownerID ?? "")
+    }) {
+      reopenInstance(saved.id)
+      showInstance(saved.id)
+      return
+    }
+    guard let id = detachIntoInstance(identity) else { return }
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    showInstance(id)
   }
 
   fileprivate func close(_ identity: OverlayIntercomCardIdentity) {

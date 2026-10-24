@@ -122,7 +122,76 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(view.draft, "retained draft")
   }
 
-  func testIntercomMailboxCommandRevealsTheSelectedSurfaceWithoutSendingOrRecording() async throws {
+  func testIntercomFullPanelRequiresExplicitMenuAction() async throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "menu-session", "name": "james", "channel": "1",
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(
+          provider: "codex", session: "menu-session"),
+      ]))
+    let state = OverlayState()
+    state.applyChannelRoster([
+      .init(
+        channel: "1", audience: owner.name, provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    state.applyConversationSnapshot(
+      .init(
+        deliveries: [],
+        conversations: [
+          .init(
+            id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [])
+        ]))
+    var reveals = 0
+    let roster = OverlayChannelStatusView.intercomRoster(
+      state: state, palette: .dark, animates: false,
+      onRevealConversation: { reveals += 1 })
+    let channel = try XCTUnwrap(roster.channels.first)
+    let conversation = try XCTUnwrap(roster.conversation(for: channel))
+    let generation = state.captureGeneration
+    state.conversationDrafts[conversation.id] = "retain my draft"
+    state.publishConversationText = { _, _, _ in XCTFail("Menu presentation is not sending") }
+    let action = try XCTUnwrap(roster.onShowAgentInMonitor)
+    action(channel.channel)
+    XCTAssertEqual(reveals, 1)
+    XCTAssertEqual(state.selectedConversationID, conversation.id)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    XCTAssertEqual(state.conversationDrafts[conversation.id], "retain my draft")
+  }
+
+  func testIntercomMailboxReopensItsSavedClosedFiszkaWithExactGeometry() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot())
+    let conversation = try XCTUnwrap(state.conversations.first { $0.id == "0" })
+    let identity = OverlayIntercomCardIdentity(digit: "0", conversation: conversation)
+    let saved = OverlayIntercomInstance(
+      identity: identity, frame: CGRect(x: 100, y: 100, width: 380, height: 360), closed: true)
+    let suite = "CodescribeTests.mailbox-reopen.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+    var desktop = OverlayIntercomDesktopState()
+    desktop.upsert(saved)
+    store.save(desktop)
+    var reveals = 0
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      revealConversation: { reveals += 1 }, desktopStore: store)
+    defer { controller.invalidate() }
+    controller.openMailbox("0")
+    let restored = try XCTUnwrap(store.load().openInstance(for: identity))
+    XCTAssertEqual(restored.id, saved.id)
+    XCTAssertEqual(restored.frame, saved.frame)
+    XCTAssertEqual(store.load().instances.count, 1)
+    XCTAssertEqual(reveals, 0)
+  }
+
+  func testIntercomMailboxCommandOpensFiszkiWithoutSendingOrRecording() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let state = OverlayState()
@@ -136,6 +205,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       state: state, textScale: TextScaleController(key: suite),
       revealConversation: { reveals += 1 },
       desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
     let generation = state.captureGeneration
     state.publishConversationText = { _, _, _ in XCTFail("Opening is not sending") }
     state.conversationDrafts["0"] = "shared draft"
@@ -146,9 +216,17 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       XCTAssertEqual(state.captureGeneration, generation)
       XCTAssertTrue(state.pendingTextMessages.isEmpty)
     }
-    XCTAssertEqual(reveals, 2, "both buttons must reach the existing conversation surface")
+    XCTAssertEqual(reveals, 0, "Ordinary Intercom clicks must not reveal the full panel")
+    let saved = OverlayIntercomDesktopStore(defaults: defaults).load()
+    XCTAssertEqual(Set(saved.instances.map(\.conversationID)), Set(["0", "10"]))
+    XCTAssertEqual(saved.instances.count, 2)
+    controller.openMailbox("10")
+    controller.openMailbox("0")
+    XCTAssertEqual(
+      OverlayIntercomDesktopStore(defaults: defaults).load(), saved,
+      "Repeated clicks reuse the exact existing fiszki")
     controller.openMailbox("unknown")
-    XCTAssertEqual(reveals, 2)
+    XCTAssertEqual(reveals, 0)
     XCTAssertEqual(state.conversationDrafts["0"], "shared draft")
     XCTAssertEqual(state.conversationDrafts["10"], "private retained text")
   }
