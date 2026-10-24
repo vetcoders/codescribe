@@ -56,3 +56,107 @@ final class WaveformBarCountTests: XCTestCase {
     XCTAssertEqual(WaveformView.resampledLevels(samples, count: 34), samples)
   }
 }
+
+/// UI-88: the moving waveform runs on Core Animation, not a per-frame SwiftUI timeline.
+@MainActor
+final class WaveformMotionTests: XCTestCase {
+  private func configuration(
+    bars count: Int = 12, transcribing: Bool = false, meter: AudioLevelMeter?
+  ) -> WaveformMotionStrip.Configuration {
+    WaveformMotionStrip.Configuration(
+      bars: (0..<count).map {
+        WaveformMotionStrip.Bar(
+          sweepDuration: 0.7 + Double(($0 * 7) % 9) / 10, sweepDelay: Double($0) / 14,
+          silhouette: 0.3 + CGFloat($0) / 40, color: .red)
+      },
+      barWidth: 1.5, gap: 2, maxBarHeight: 18, minScale: 0.35, transcribing: transcribing,
+      inactiveColor: .gray, meter: meter)
+  }
+
+  private func strip(
+    transcribing: Bool = false, meter: AudioLevelMeter?
+  ) -> WaveformMotionView {
+    let view = WaveformMotionView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+    view.apply(
+      WaveformMotionStrip.Configuration(
+        bars: (0..<12).map {
+          WaveformMotionStrip.Bar(
+            sweepDuration: 0.7 + Double(($0 * 7) % 9) / 10, sweepDelay: Double($0) / 14,
+            silhouette: 0.3 + CGFloat($0) / 40, color: .red)
+        },
+        barWidth: 1.5, gap: 2, maxBarHeight: 18, minScale: 0.35, transcribing: transcribing,
+        inactiveColor: .gray, meter: meter))
+    return view
+  }
+
+  func testLiveBarsSweepOnTheRenderServerAndScaleWithTheMeasuredGain() throws {
+    let meter = AudioLevelMeter()
+    meter.push(rms: 0.05)
+    let gain = try XCTUnwrap(meter.gain)
+    let view = strip(meter: meter)
+    let movers = try XCTUnwrap(view.movers.sublayers)
+    XCTAssertEqual(movers.count, 12)
+    XCTAssertEqual(view.cores.sublayers?.count, 12)
+    for mover in movers {
+      let sweep = try XCTUnwrap(mover.animation(forKey: "sweep") as? CABasicAnimation)
+      XCTAssertEqual(sweep.keyPath, "transform.scale.y")
+      XCTAssertEqual(sweep.repeatCount, .infinity)
+      XCTAssertTrue(sweep.autoreverses)
+      XCTAssertEqual(sweep.fromValue as? CGFloat, 0.35)
+      XCTAssertEqual(sweep.toValue as? CGFloat, 1)
+    }
+    XCTAssertFalse(view.movers.isHidden)
+    XCTAssertEqual(view.movers.sublayerTransform.m22, 0.35 + CGFloat(gain) * 0.65, accuracy: 1e-6)
+
+    meter.push(rms: 0.3)
+    view.refreshGain()
+    XCTAssertEqual(
+      view.movers.sublayerTransform.m22, 0.35 + CGFloat(try XCTUnwrap(meter.gain)) * 0.65,
+      accuracy: 1e-6)
+  }
+
+  func testWithoutAMeasuredLevelOnlyTheFlatRestingLineShows() throws {
+    let view = strip(meter: AudioLevelMeter())
+    XCTAssertTrue(view.movers.isHidden, "No RMS yet: motion would be decoration, not evidence")
+    let cores = try XCTUnwrap(view.cores.sublayers)
+    XCTAssertEqual(cores.count, 12)
+    XCTAssertEqual(cores[0].frame.height, 18 * 0.35, accuracy: 1e-6)
+  }
+
+  func testTranscribingStripBreathesAsOneOverItsFrozenSilhouette() throws {
+    let view = strip(transcribing: true, meter: nil)
+    let breath = try XCTUnwrap(view.movers.animation(forKey: "breath") as? CABasicAnimation)
+    XCTAssertEqual(breath.keyPath, "sublayerTransform.scale.y")
+    XCTAssertEqual(breath.fromValue as? Double, 0.86)
+    XCTAssertEqual(breath.repeatCount, .infinity)
+    let movers = try XCTUnwrap(view.movers.sublayers)
+    XCTAssertEqual(movers[3].transform.m22, 0.3 + 3.0 / 40, accuracy: 1e-6)
+    XCTAssertNil(movers[3].animation(forKey: "sweep"))
+    XCTAssertEqual(view.cores.sublayers?.count ?? 0, 0)
+  }
+
+  func testAWideningStripKeepsItsBarsAndTheirRunningSweeps() throws {
+    let meter = AudioLevelMeter()
+    meter.push(rms: 0.05)
+    let view = WaveformMotionView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+    view.apply(configuration(bars: 12, meter: meter))
+    XCTAssertEqual(view.sweepsAdded, 12)
+    let bars = try XCTUnwrap(view.movers.sublayers).map(ObjectIdentifier.init)
+
+    view.setFrameSize(NSSize(width: 70, height: 22))
+    view.layoutSubtreeIfNeeded()
+    view.apply(configuration(bars: 14, meter: meter))
+    XCTAssertEqual(view.sweepsAdded, 14, "Only the two new bars get a sweep")
+    let widened = try XCTUnwrap(view.movers.sublayers)
+    XCTAssertEqual(widened.count, 14)
+    XCTAssertEqual(Array(widened.prefix(12)).map(ObjectIdentifier.init), bars)
+    XCTAssertEqual(view.cores.sublayers?.count, 14)
+
+    view.apply(configuration(bars: 10, meter: meter))
+    view.needsLayout = true
+    view.layoutSubtreeIfNeeded()
+    XCTAssertEqual(view.sweepsAdded, 14, "Narrowing and a same-size layout attach nothing")
+    XCTAssertEqual(view.movers.sublayers?.map(ObjectIdentifier.init), Array(bars.prefix(10)))
+    XCTAssertEqual(view.cores.sublayers?.count, 10)
+  }
+}
