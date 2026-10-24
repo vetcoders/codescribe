@@ -103,7 +103,7 @@ fi
 
 echo "=== Swift front-end tests (CodescribeTests) ==="
 if [[ "${CODESCRIBE_TEST_ISOLATED_GUI:-0}" != 1 ]]; then
-  echo "test-swift: invisible fixtures; native window/AX acceptance is explicitly skipped (isolated GUI opt-in required)."
+  echo "test-swift: AX sidecar disabled; guarded GUI cases skip. Shared-desktop runs require a non-presenting test selection; owner tests can still open native windows."
 fi
 cd macos || exit $?
 # Prefer the selected dylib at runtime while retaining bundled framework lookup.

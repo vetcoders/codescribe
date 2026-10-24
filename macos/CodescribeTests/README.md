@@ -370,3 +370,13 @@ The standalone fold case also fails on the exact older `0adb8214` source (one
 test, five assertions), even though that version previously passed it in a
 full run. That aggregate pass is not independent native acceptance. The exact
 ordering or fixture dependency remains undiagnosed.
+
+### Shared-desktop boundary
+
+`CODESCRIBE_TEST_ISOLATED_GUI=0` disables the AX sidecar and skips cases that
+call `BackgroundTestWindow.requireIsolatedGUI()`. Tests using
+`BackgroundTestWindow.present` use its invisible fixture policy. Controller
+tests that call their real window owner can still order native windows;
+`OverlayIntercomProjectionTests` is one such selection. On a shared desktop,
+select non-presenting tests explicitly. The mode flag alone does not isolate
+window presentation. Installed-app and physical-input acceptance stay separate.

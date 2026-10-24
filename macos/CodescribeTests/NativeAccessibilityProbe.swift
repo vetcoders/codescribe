@@ -74,7 +74,8 @@ enum NativeAccessibilityProbe {
       outcome: passed ? "PASS" : (failure is CancellationError ? "CANCELLED" : "FAIL"),
       axStatus: status, postcondition: observed, cleanup: cleaned)
     guard passed else {
-      XCTFail("Synthetic test-host AX action requires transport, explicit postcondition and cleanup")
+      XCTFail(
+        "Synthetic test-host AX action requires transport, explicit postcondition and cleanup")
       throw failure ?? ProbeError.verificationFailed
     }
   }
@@ -164,7 +165,8 @@ enum NativeAccessibilityProbe {
     }
     let value = try JSONDecoder().decode(Reception.self, from: Data(contentsOf: output))
     guard value.requestID == requestID, value.trusted, value.errorCode == nil else {
-      XCTFail("Independent AX client refused the request or lacks existing accessibility permission")
+      XCTFail(
+        "Independent AX client refused the request or lacks existing accessibility permission")
       throw ProbeError.refused
     }
     return value

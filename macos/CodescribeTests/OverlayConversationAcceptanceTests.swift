@@ -660,14 +660,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       message.supportsSpeechPlayback = source.supportsSpeechPlayback
       message.provider = source.provider
       message.providerSessionID = source.providerSessionID
-      var requested = false
+      var callbackCount = 0
+      var callbackIdentityMatches = false
+      var callbackStop = false
       let view = OverlayConversationView(
         conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
         pendingControls: [], controlErrors: [:],
         onControl: { selected, stop in
-          XCTAssertEqual(selected.id, message.id)
-          XCTAssertFalse(stop)
-          requested = true
+          callbackCount += 1
+          callbackIdentityMatches = selected.id == message.id
+          callbackStop = stop
         }, draft: .constant(""), sending: false, sendError: nil, onSend: {})
       let host = NSHostingView(rootView: view.messageFooter(message).frame(width: 400))
       let window = NSWindow(
@@ -680,9 +682,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       host.layoutSubtreeIfNeeded()
       let identifier = "overlay-reply-play-\(message.id)"
       XCTAssertFalse(try NativeAccessibilityProbe.waitForElements(identifier).elements.isEmpty)
-      let pressed = try NativeAccessibilityProbe.query(identifier, press: true)
-      XCTAssertEqual(pressed.pressStatus, 0, "The Play control must be enabled: \(schema)")
-      XCTAssertTrue(requested)
+      try NativeAccessibilityProbe.verifyPress(
+        .voicelessReplyPlay,
+        testMethod: "OverlayConversationAcceptanceTests.\(#function)",
+        postcondition: { callbackCount == 1 && callbackIdentityMatches && !callbackStop },
+        cleanup: {
+          window.close()
+          window.contentView = nil
+          RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+          return !window.isVisible && !window.isKeyWindow && host.window == nil
+        })
     }
   }
 
