@@ -21,8 +21,8 @@ actor OverlayChannelDeliveryReader {
   private var persisted: [String: OverlayDeliveryCursorMark]?
   private var savedRevisions: [URL: UInt64] = [:]
   private var persistenceAttempts: [URL: PersistenceAttempt] = [:]
-  // This is a restart cache, not transcript or delivery authority. Checkpoint
-  // complete snapshots, rather than fsyncing the entire roster for each bus.
+  // This is a restart cache, not transcript or delivery authority. Checkpoints
+  // batch changed buses and fsync only their own cache units.
   private static let checkpointInterval: Duration = .seconds(30)
   private static let checkpointByteLag: UInt64 = 8 << 20
   private var lastCheckpoint: ContinuousClock.Instant?
@@ -615,8 +615,14 @@ actor OverlayChannelDeliveryReader {
     if let otherAttachments = other.attachments {
       var paths = Set((result.attachments ?? []).map(\.path))
       var attachments = result.attachments ?? []
-      for attachment in otherAttachments where paths.insert(attachment.path).inserted {
-        attachments.append(attachment)
+      for attachment in otherAttachments {
+        if let index = attachments.firstIndex(where: { $0.path == attachment.path }) {
+          if attachments[index].attachedAtSeconds == nil, attachment.attachedAtSeconds != nil {
+            attachments[index] = attachment
+          }
+        } else if paths.insert(attachment.path).inserted {
+          attachments.append(attachment)
+        }
       }
       result.attachments = attachments
     }
@@ -967,7 +973,10 @@ actor OverlayChannelDeliveryReader {
         if marks.count <= 16 { break }
       }
     }
-    persisted = try OverlayDeliveryCursorStore.save(root: root, marks: marks)
+    // Each bus is its own cache unit: only the changed units are encoded and
+    // written; unchanged units keep their files, and dropped marks lose them.
+    persisted = try OverlayDeliveryCursorStore.save(
+      root: root, marks: marks, changed: Set(changed.map { $0.0.path }))
     lastCheckpoint = time
     checkpointWrites &+= 1
     // Save failure leaves all fingerprints dirty for retry. Successful eviction

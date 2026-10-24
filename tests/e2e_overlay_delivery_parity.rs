@@ -1010,6 +1010,7 @@ fn init_e2e_tracing() {
 }
 
 #[tokio::test]
+#[ignore = "needs the private data_assets corpus and a local Whisper model — CODESCRIBE_E2E_STT=1 cargo test --test e2e_overlay_delivery_parity -- --ignored"]
 async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
     init_e2e_tracing();
 

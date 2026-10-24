@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 
 #[test]
+#[ignore = "needs a local Whisper model and CODESCRIBE_STREAM_TEST_WAV longer than one window — cargo test --test cli_streaming -- --ignored"]
 fn file_stream_emits_before_completion_and_matches_the_plain_verdict() {
     let operator_home = std::env::var("HOME")
         .map(std::path::PathBuf::from)

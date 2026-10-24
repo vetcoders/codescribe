@@ -1496,7 +1496,9 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let cursor = runtime.appendingPathComponent("agent-ack-cursor.json")
     let cursorBytes = Data("{\"cursor\": 41}\n".utf8)
     try cursorBytes.write(to: cursor)
-    let overlayCursor = runtime.appendingPathComponent("overlay-delivery-cursor.v1.json")
+    let overlayCache = runtime.appendingPathComponent("overlay-delivery-cursor", isDirectory: true)
+    try FileManager.default.createDirectory(at: overlayCache, withIntermediateDirectories: true)
+    let overlayCursor = overlayCache.appendingPathComponent("0123456789abcdef0123456789abcdef.json")
     let overlayBytes = Data("{\"sealed\": 7}\n".utf8)
     try overlayBytes.write(to: overlayCursor)
     let installer = RealAgentBridgeInstaller(
@@ -1516,8 +1518,10 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(preserved.contains("followers"), preserved.joined(separator: ","))
     XCTAssertTrue(preserved.contains("followers/filip.log"), preserved.joined(separator: ","))
     XCTAssertTrue(preserved.contains("agent-ack-cursor.json"), preserved.joined(separator: ","))
+    XCTAssertTrue(preserved.contains("overlay-delivery-cursor"), preserved.joined(separator: ","))
     XCTAssertTrue(
-      preserved.contains("overlay-delivery-cursor.v1.json"), preserved.joined(separator: ","))
+      preserved.contains("overlay-delivery-cursor/0123456789abcdef0123456789abcdef.json"),
+      preserved.joined(separator: ","))
 
     // A content-identical reinstall preserves the same state again.
     _ = try installer.install(selectedClients: [.codex])

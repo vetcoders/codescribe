@@ -805,6 +805,12 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         });
+        // The incident recording is operator-private (never in the repo, never
+        // on a CI runner). Without it this witness has nothing to replay.
+        if !Path::new(&wav).is_file() {
+            eprintln!("skipping forensic live PCM replay: fixture not present at {wav}");
+            return;
+        }
         assert_eq!(
             hex::encode(Sha256::digest(std::fs::read(&wav).unwrap())),
             "bbc3a7e22ad871e7f733a857d53c372143367b8d7ad58f7d98f607e63146df6b",
@@ -1019,6 +1025,12 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         });
+        // Same contract as tests/assets/data_assets/README.md: a private clip
+        // that is absent on this host (every CI runner) skips, it does not fail.
+        if !Path::new(&wav).is_file() {
+            eprintln!("skipping forensic saved PCM projection: fixture not present at {wav}");
+            return;
+        }
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || runtime.block_on(async move {
             let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav))

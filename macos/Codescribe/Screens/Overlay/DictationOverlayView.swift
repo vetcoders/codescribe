@@ -378,27 +378,30 @@ struct DictationOverlayView: View {
 
   var body: some View {
     OverlayCanvasSurface(palette: palette) {
+      // The rail reads the live transcript (intents, versions, history
+      // refusal). Scoped, a capture tick re-renders the rail, not the root.
       canvasStack(
-        OverlayIntentRail(
-          phase: state.statusText,
-          intents: railIntents,
-          palette: palette,
-          formatLevel: state.autoFormatLevel,
-          cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
-          retranscribeUnavailableReason: state.retranscribeUnavailableReason,
-          historyOpenRefusal: state.archiveOpenRefusal,
-          recoverSupersededLabel: state.supersededRecoveryActionLabel,
-          admitHistoryOpen: { state.admitHistoryOpen() },
-          onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
-          onHistoryDismiss: { state.invalidateHistoryOpens() },
-          versions: state.transcriptVersions,
-          onVersionsOpened: { state.refreshTranscriptVersions() },
-          onSelectVersion: { state.selectDocumentVersion($0) },
-          onIntent: state.relayIntent,
-          onRetranscribe: { state.retranscribe(pass: $0) },
-          onFormatOnce: { state.formatTranscript(at: $0) }
-        )
-      )
+        OverlayObservationScope {
+          OverlayIntentRail(
+            phase: state.statusText,
+            intents: railIntents,
+            palette: palette,
+            formatLevel: state.autoFormatLevel,
+            cloudRetranscribeConfigured: state.cloudRetranscribeConfigured,
+            retranscribeUnavailableReason: state.retranscribeUnavailableReason,
+            historyOpenRefusal: state.archiveOpenRefusal,
+            recoverSupersededLabel: state.supersededRecoveryActionLabel,
+            admitHistoryOpen: { state.admitHistoryOpen() },
+            onOpenArchive: { state.openArchivedTranscript($0, admission: $1) },
+            onHistoryDismiss: { state.invalidateHistoryOpens() },
+            versions: state.transcriptVersions,
+            onVersionsOpened: { state.refreshTranscriptVersions() },
+            onSelectVersion: { state.selectDocumentVersion($0) },
+            onIntent: state.relayIntent,
+            onRetranscribe: { state.retranscribe(pass: $0) },
+            onFormatOnce: { state.formatTranscript(at: $0) }
+          )
+        })
     }
     .coordinateSpace(name: "overlay-canvas")
     .csFocusPolicy()
@@ -655,10 +658,14 @@ struct DictationOverlayView: View {
               .padding(.vertical, 2)
               .accessibilityIdentifier("overlay-continue-max-chat")
             }
-            if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
-              footerMessageRow
-                .frame(height: 18)
-                .padding(.horizontal, 20)
+            // The footer reads the draft's dirty state, which moves with
+            // every capture tick; scoped, only this slot re-renders.
+            OverlayObservationScope {
+              if footerMessage != nil || bottomChromeSlots.showsCoverageWarning {
+                footerMessageRow
+                  .frame(height: 18)
+                  .padding(.horizontal, 20)
+              }
             }
 
           }
@@ -1030,7 +1037,8 @@ struct DictationOverlayView: View {
     let mini = density == .mini
     // Mini's row gaps are half the 8 pt between its trailing controls, so the
     // gap across its closed centre matches them (`DictationOverlayWindow.miniFloorWidth`).
-    let mapEnabled = state.channelMapInHeader
+    // Every use below is mini's: one mini in both layouts.
+    let mapEnabled = state.channelMapInMini
     let horizontalMap = density == .midi && channelMap != nil
     return HStack(spacing: mini ? (mapEnabled ? DictationOverlayWindow.miniRowSpacing : 6) : 10) {
       // The shared lockup, with the close button in the brand dot's place.
@@ -1164,9 +1172,12 @@ struct DictationOverlayView: View {
   /// selects its conversation through the roster, as a rail pill does; the
   /// counter switches mini to compact, or returns a narrowed compact strip to
   /// its natural width (spec §13.4). Wide named chips have separate audio and
-  /// panel controls. Internal so tests can drive the header's same values.
+  /// panel controls. The vertical layout keeps mini's counter, as stacked
+  /// cards that open the Intercom group, and has no chips in compact.
+  /// Internal so tests can drive the header's same values.
   var channelMap: OverlayChannelMapView? {
-    guard state.channelMapInHeader else { return nil }
+    let mini = state.presentationMode == .mini
+    guard mini ? state.channelMapInMini : state.channelMapInHeader else { return nil }
     let roster = channelStatusView
     let model = roster.channelMapModel
     guard !model.chips.isEmpty else { return nil }
@@ -1196,7 +1207,7 @@ struct DictationOverlayView: View {
         focusFailed: focusState?.isFailed == true)
     }
     return OverlayChannelMapView(
-      model: model, placement: state.presentationMode == .mini ? .mini : .strip,
+      model: model, placement: mini ? .mini : .strip,
       modifier: state.agentChannelModifier, palette: palette,
       textScale: textScale, animates: overlayVisible,
       onSelectChannel: { roster.selectChannelConversation($0) },
@@ -1216,7 +1227,8 @@ struct DictationOverlayView: View {
         else { return }
         roster.onFocusAgentPanel?(owner)
       },
-      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) })
+      agentPillMenu: { roster.agentPillMenu(for: $0, showsInlineError: false) },
+      stacked: state.channelMapCounterStacked)
   }
 
   /// Hints name the chord with the stored modifier, which no settings event
@@ -1779,3 +1791,14 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     }
   }
 #endif
+
+/// Evaluates its content in a body of its own. Observation attributes the
+/// content's reads to this node, so a value that moves with every capture tick
+/// re-renders this slot instead of the whole overlay. Unscoped, each tick re-ran
+/// the root body, header, channel map and intercom included: the main thread
+/// sat 94-98% busy through a take (UI-88, Silver samples, 23 X).
+struct OverlayObservationScope<Content: View>: View {
+  @ViewBuilder let content: () -> Content
+
+  var body: some View { content() }
+}

@@ -1803,6 +1803,27 @@ reload = "hot"
 category = "llm"
 description = "OpenAI assistant speech model; xAI accepts no model field."
 
+[vars.CS_SAY_VOICE]
+default = "carina"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Voice for cs-say TEXT without provider/session; --voice wins. Does not change agent profiles. Read at helper invocation."
+
+[vars.CS_SAY_SPEED]
+default = "1.0"
+type = "f32"
+reload = "restart"
+category = "agent"
+description = "Positive finite speed for the cs-say system voice; --speed wins. Read at helper invocation."
+
+[vars.CS_SAY_TTS_VENDOR]
+default = "xai"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""
 type = "string"

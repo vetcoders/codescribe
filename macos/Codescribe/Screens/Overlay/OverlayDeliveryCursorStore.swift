@@ -16,31 +16,54 @@ struct OverlayDeliveryCursorMark: Equatable {
   var dropsCutRow = false
 }
 
-/// Persistence for OverlayChannelDeliveryReader positions: one small JSON at
-/// `<bridge home>/runtime/overlay-delivery-cursor.v1.json`, written atomically
-/// (tmp file + rename) with owner-only permissions. The file is a cache: a
-/// missing or corrupt cursor costs one bounded tail-window read, never a full
-/// replay. The root is injected, so tests never touch the real bridge home.
+/// Persistence for OverlayChannelDeliveryReader positions. Each bus is one
+/// cache unit (cursor plus projection) in its own JSON file under
+/// `<bridge home>/runtime/overlay-delivery-cursor/`, named by a digest of the
+/// bus path, which the file also stores. A checkpoint rewrites only the units
+/// that changed, each atomically (tmp file + rename) with owner-only
+/// permissions. The files are a cache: a missing or corrupt unit costs one
+/// bounded tail-window read, never a full replay. The root is injected, so
+/// tests never touch the real bridge home.
 enum OverlayDeliveryCursorStore {
-  static let schema = "codescribe.overlay-delivery-cursor.v1"
-  static let filename = "overlay-delivery-cursor.v1.json"
+  static let schema = "codescribe.overlay-delivery-cursor-unit.v1"
+  static let directoryName = "overlay-delivery-cursor"
+  /// The earlier single-file cache held every bus in one document and was
+  /// rewritten whole on each checkpoint. It is never read; the first
+  /// successful save deletes it.
+  static let singleFileCacheName = "overlay-delivery-cursor.v1.json"
+  /// Total bytes of all unit files together.
+  static let budget = 128 << 20
 
-  static func url(root: URL) -> URL {
+  static func directory(root: URL) -> URL {
     root.appendingPathComponent("runtime", isDirectory: true)
-      .appendingPathComponent(filename)
+      .appendingPathComponent(directoryName, isDirectory: true)
+  }
+
+  static func filename(bus: String) -> String {
+    SHA256.hash(data: Data(bus.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+      + ".json"
+  }
+
+  static func url(root: URL, bus: String) -> URL {
+    directory(root: root).appendingPathComponent(filename(bus: bus))
   }
 
   static func load(root: URL) -> [String: OverlayDeliveryCursorMark] {
-    guard let handle = try? FileHandle(forReadingFrom: url(root: root)) else { return [:] }
-    defer { try? handle.close() }
-    guard let data = try? handle.read(upToCount: (128 << 20) + 1), data.count <= 128 << 20,
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      object["schema"] as? String == schema,
-      let buses = object["buses"] as? [String: [String: Any]]
+    guard
+      let files = try? FileManager.default.contentsOfDirectory(
+        at: directory(root: root), includingPropertiesForKeys: nil)
     else { return [:] }
     var marks: [String: OverlayDeliveryCursorMark] = [:]
-    for (path, entry) in buses {
-      guard let offset = entry["offset"] as? NSNumber,
+    for file in files
+    where file.pathExtension == "json" && !file.lastPathComponent.hasPrefix(".") {
+      guard let handle = try? FileHandle(forReadingFrom: file) else { continue }
+      defer { try? handle.close() }
+      guard let data = try? handle.read(upToCount: budget + 1), data.count <= budget,
+        let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        entry["schema"] as? String == schema,
+        let path = entry["bus"] as? String,
+        file.lastPathComponent == filename(bus: path),
+        let offset = entry["offset"] as? NSNumber,
         let inode = entry["inode"] as? NSNumber,
         let length = entry["length"] as? NSNumber,
         let headHash = entry["head_hash"] as? String
@@ -57,37 +80,81 @@ enum OverlayDeliveryCursorStore {
     return marks
   }
 
+  /// Persists `marks` as the complete set of cache units. Only the units named
+  /// in `changed` are encoded and written (`nil` writes every unit); the others
+  /// keep their files untouched. Units absent from `marks`, or evicted by the
+  /// budget, lose their files. Returns the retained marks.
   @discardableResult
-  static func save(root: URL, marks: [String: OverlayDeliveryCursorMark]) throws
-    -> [String: OverlayDeliveryCursorMark] {
-    let directory = root.appendingPathComponent("runtime", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    var retained = marks
-    func encode(_ values: [String: OverlayDeliveryCursorMark]) throws -> Data {
-      let buses = values.mapValues { mark in
-        [
-          "offset": mark.offset, "inode": mark.inode,
-          "length": mark.length, "head_hash": mark.headHash,
-          "projection": mark.projection?.base64EncodedString() ?? "",
-          "head_length": mark.headLength, "stream_id": mark.streamID ?? "",
-          "discards_leading_parts": mark.discardsLeadingParts, "drops_cut_row": mark.dropsCutRow,
-        ] as [String: Any]
+  static func save(
+    root: URL, marks: [String: OverlayDeliveryCursorMark], changed: Set<String>? = nil,
+    budget: Int = OverlayDeliveryCursorStore.budget
+  ) throws -> [String: OverlayDeliveryCursorMark] {
+    let folder = Self.directory(root: root)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    var encoded: [String: Data] = [:]
+    var sizes: [String: Int] = [:]
+    for (path, mark) in marks {
+      // An unchanged unit keeps its file only while that file exists. A retry
+      // after an earlier eviction finds it gone: it is written again or evicted
+      // again, never returned as retained with nothing on disk to restore.
+      if changed?.contains(path) == false,
+        let attributes = try? FileManager.default.attributesOfItem(
+          atPath: url(root: root, bus: path).path),
+        let size = attributes[.size] as? NSNumber
+      {
+        sizes[path] = size.intValue
+      } else {
+        let data = try encode(bus: path, mark: mark)
+        encoded[path] = data
+        sizes[path] = data.count
       }
-      return try JSONSerialization.data(
-        withJSONObject: ["schema": schema, "buses": buses] as [String: Any], options: [.sortedKeys])
     }
-    var data = try encode(retained)
+    var retained = marks
+    var total = sizes.values.reduce(0, +)
     // A cache unit is projection plus cursor. Budget pressure evicts whole units,
     // so a restart replays their bounded tail rather than resuming with no history.
-    while data.count > 128 << 20, let largest = retained.max(by: {
-      ($0.value.projection?.count ?? 0) < ($1.value.projection?.count ?? 0)
-    }) {
+    while total > budget,
+      let largest = retained.max(by: {
+        ($0.value.projection?.count ?? 0) < ($1.value.projection?.count ?? 0)
+      })
+    {
       retained.removeValue(forKey: largest.key)
-      data = try encode(retained)
+      total -= sizes[largest.key] ?? 0
     }
-    let temporary = directory.appendingPathComponent(".\(filename).\(UUID().uuidString).tmp")
-    guard FileManager.default.createFile(
-      atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+    for (path, data) in encoded.sorted(by: { $0.key < $1.key }) where retained[path] != nil {
+      try write(data, to: url(root: root, bus: path), in: folder)
+    }
+    let kept = Set(retained.keys.map { filename(bus: $0) })
+    for file in try FileManager.default.contentsOfDirectory(
+      at: folder, includingPropertiesForKeys: nil)
+    where file.pathExtension == "json" && !kept.contains(file.lastPathComponent) {
+      try removeIfPresent(file)
+    }
+    try removeIfPresent(
+      root.appendingPathComponent("runtime", isDirectory: true)
+        .appendingPathComponent(singleFileCacheName))
+    return retained
+  }
+
+  private static func encode(bus: String, mark: OverlayDeliveryCursorMark) throws -> Data {
+    let unit: [String: Any] = [
+      "schema": schema, "bus": bus,
+      "offset": mark.offset, "inode": mark.inode,
+      "length": mark.length, "head_hash": mark.headHash,
+      "projection": mark.projection?.base64EncodedString() ?? "",
+      "head_length": mark.headLength, "stream_id": mark.streamID ?? "",
+      "discards_leading_parts": mark.discardsLeadingParts, "drops_cut_row": mark.dropsCutRow,
+    ]
+    return try JSONSerialization.data(withJSONObject: unit, options: [.sortedKeys])
+  }
+
+  private static func write(_ data: Data, to destination: URL, in directory: URL) throws {
+    let temporary = directory.appendingPathComponent(
+      ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+    guard
+      FileManager.default.createFile(
+        atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600])
+    else {
       throw CocoaError(.fileWriteUnknown)
     }
     do {
@@ -100,15 +167,23 @@ enum OverlayDeliveryCursorStore {
         try? handle.close()
         throw error
       }
-      // rename(2) replaces an existing cursor atomically, unlike moveItem.
-      guard rename(temporary.path, url(root: root).path) == 0 else {
+      // rename(2) replaces an existing unit atomically, unlike moveItem.
+      guard rename(temporary.path, destination.path) == 0 else {
         throw CocoaError(.fileWriteUnknown)
       }
     } catch {
       try? FileManager.default.removeItem(at: temporary)
       throw error
     }
-    return retained
+  }
+
+  /// A failed removal throws, so the reader keeps its state dirty and retries.
+  private static func removeIfPresent(_ file: URL) throws {
+    do {
+      try FileManager.default.removeItem(at: file)
+    } catch CocoaError.fileNoSuchFile {
+      // Already absent: nothing to remove.
+    }
   }
 
   /// SHA256 of the first ≤256 bytes — the same head fingerprint `BusMark`
