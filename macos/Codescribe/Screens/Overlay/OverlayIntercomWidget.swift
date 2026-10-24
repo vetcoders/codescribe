@@ -69,9 +69,23 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate private(set) var headerControlsVisible = true
   fileprivate private(set) var groupWidth: CGFloat = 0
-  /// Fold, Inbox and All remain three equal hit slots even at the icon tier.
+  fileprivate var hideAllWidth: CGFloat {
+    let font = NSFont.systemFont(ofSize: 11 * effectiveScale, weight: .semibold)
+    return ceil((String(localized: "Hide all") as NSString).size(withAttributes: [.font: font]).width)
+      + 10
+  }
+  private var headerPagingWidth: CGFloat {
+    let compactRows = OverlayIntercomWidgetLayout.visibleRange(
+      count: groupIdentities.count, offset: 0, visibleHeight: availableHeight,
+      scale: effectiveScale, cardHeight: contentMetrics.iconSide)
+    return !presentation.folded && compactRows.count < groupIdentities.count
+      ? 32 * max(1, effectiveScale) + 16 : 0
+  }
+  /// Fold, Inbox and All keep equal hit slots. The recovery action keeps its
+  /// visible label even when names, counts and audio controls yield space.
   var minimumHeaderWidth: CGFloat {
-    3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + 16
+    3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + hideAllWidth + 24
+      + headerPagingWidth
   }
   fileprivate var stacksGroupControls: Bool {
     groupTier == .actions && groupWidth < contentMetrics.actionsWidth
@@ -141,7 +155,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     header = nil
   }
 
-  fileprivate func reconcile(chips: [OverlayChannelMapChip], scale: CGFloat) {
+  fileprivate func reconcile(
+    chips: [OverlayChannelMapChip], scale: CGFloat, persistTier: Bool = true
+  ) {
     #if DEBUG
       reconciliationRequests += 1
     #endif
@@ -178,6 +194,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       + (String(localized: "All") as NSString).size(withAttributes: [.font: nameFont]).width
       + ("0" as NSString).size(withAttributes: [.font: digitFont]).width + 36 * scale + 16
       + 12 * scale + 8
+      + hideAllWidth + 8
       + (hasOverflow && !presentation.folded ? 32 * max(1, scale) + 16 : 0)
     let defaultWidth = max(
       contentMetrics.actionsWidth,
@@ -200,7 +217,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     groupTier = contentMetrics.tier(width: width, cardHeight: groupCardHeight)
     if desktop.groupTier != groupTier {
       desktop.groupTier = groupTier
-      saveDesktop()
+      if persistTier { saveDesktop() }
     }
     let frame = CGRect(
       x: header.frame.maxX - width, y: header.frame.minY,
@@ -584,6 +601,30 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate func toggleGroup() {
     presentation.folded.toggle()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+  }
+
+  /// Dock every open fiszka and fold the group in one presentation transaction.
+  /// Closed records retain their exact owners, geometry and saved-window road
+  /// back. Drafts, sessions and recording remain owned by OverlayState.
+  func hideAll() {
+    guard !invalidated else { return }
+    for index in desktop.instances.indices where !desktop.instances[index].closed {
+      desktop.instances[index].closed = true
+    }
+    presentation.expanded.removeAll()
+    presentation.folded = true
+    rowOffset = 0
+    groupResizeGesture = nil
+    resizeHandoff = nil
+    groupDrag = nil
+    for panel in instancePanels.values { panel.resignKey() }
+    for panel in cards.values {
+      panel.resignKey()
+      panel.setPresented(false, animated: false)
+    }
+    materializeInstances()
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
+    saveDesktop()
   }
 
   // MARK: Middle-click chooser host
@@ -987,7 +1028,7 @@ private struct OverlayIntercomHeader: View {
         }
         .contentShape(Capsule())
         .frame(
-          width: controller.groupTier == .icon
+          width: !controller.headerControlsVisible
             ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil,
           height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
@@ -1021,14 +1062,24 @@ private struct OverlayIntercomHeader: View {
       }
       mailboxControl(inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette)
       mailboxControl(broadcast, title: String(localized: "All"), digit: "0", palette: palette)
-      if controller.groupTier != .icon
-        && (!controller.hasOverflow || controller.headerControlsVisible)
-      {
+      Button {
+        controller.hideAll()
+      } label: {
+        Text("Hide all").csFont(11, .semibold).lineLimit(1).fixedSize()
+          .frame(
+            width: controller.hideAllWidth,
+            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+      .accessibilityIdentifier("overlay-intercom-hide-all")
+      if controller.headerControlsVisible {
         Spacer(minLength: 4)
         Text(verbatim: chips.count.formatted()).csMono(10).allowsHitTesting(false)
       }
-      if controller.hasOverflow && !controller.presentation.folded && controller.groupTier != .icon
-      {
+      if controller.hasOverflow && !controller.presentation.folded {
         Button("Previous agents", systemImage: "chevron.up") { controller.scrollGroup(-1) }
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasPrevious)
           .frame(width: 16 * max(1, scale))
@@ -1044,7 +1095,7 @@ private struct OverlayIntercomHeader: View {
       }
     }
     .foregroundStyle(palette.mutedText.color)
-    .padding(.horizontal, controller.groupTier == .icon ? 0 : 12)
+    .padding(.horizontal, controller.headerControlsVisible ? 12 : 0)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     // Any free spot on the bar moves the group — not a grip that showed a
     // finger drawing (Maciej, 2026-10-23). Buttons above it keep their
@@ -1094,7 +1145,7 @@ private struct OverlayIntercomHeader: View {
   ) -> some View {
     let unread = conversation.map { state.unreadReplies(in: $0) } ?? 0
     let selected = conversation != nil && state.selectedConversationID == conversation?.id
-    let compact = controller.groupTier == .icon
+    let compact = !controller.headerControlsVisible
     return Button {
       if let conversation { controller.openMailbox(conversation.id) }
     } label: {
