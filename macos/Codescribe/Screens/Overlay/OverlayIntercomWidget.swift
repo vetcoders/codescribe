@@ -76,25 +76,22 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate private(set) var groupTier: IntercomContentTier = .actions
   fileprivate private(set) var groupCardHeight: CGFloat = 30
 
-  fileprivate private(set) var headerControlsVisible = true
   fileprivate private(set) var groupWidth: CGFloat = 0
-  private var groupControlWidth: CGFloat {
-    let font = NSFont.systemFont(ofSize: 11 * effectiveScale, weight: .semibold)
-    return ceil(
-      (String(localized: "Intercom") as NSString).size(withAttributes: [.font: font]).width)
-      + 12 * effectiveScale + 8
+  fileprivate var headerMetrics: IntercomHeaderMetrics {
+    let inbox = state.conversations.first(where: \.isHumanInbox)
+    let broadcast = intercomConversation(state: state, digit: "0")
+    return IntercomHeaderMetrics(
+      agentCount: state.channelMapLayoutModel.agents.count,
+      inboxUnread: inbox.map { state.unreadReplies(in: $0) } ?? 0,
+      broadcastUnread: broadcast.map { state.unreadReplies(in: $0) } ?? 0,
+      scale: effectiveScale)
   }
-  private var headerPagingWidth: CGFloat {
-    let compactRows = OverlayIntercomWidgetLayout.visibleRange(
-      count: groupIdentities.count, offset: 0, visibleHeight: availableHeight,
-      scale: effectiveScale, cardHeight: contentMetrics.iconSide)
-    return !presentation.folded && compactRows.count < groupIdentities.count
-      ? 32 * max(1, effectiveScale) + 16 : 0
+  fileprivate var headerNeedsPaging: Bool {
+    !presentation.folded && hasOverflow
   }
-  /// Keep the group's wordmark plus Inbox, All and the separate dock action.
+  /// Keep every compact command, including both global audio controls.
   var minimumHeaderWidth: CGFloat {
-    groupControlWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + 24
-      + headerPagingWidth
+    headerMetrics.minimumWidth(paging: headerNeedsPaging)
   }
   fileprivate var stacksGroupControls: Bool {
     groupTier == .actions && groupWidth < contentMetrics.actionsWidth
@@ -190,38 +187,27 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
     }
-    let nameFont = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
-    let digitFont = CSFont.nsMono(10 * scale)
     // Every agent's name sizes the group, standing in it or not, so detaching
     // a fiszka or handing it back never reflows the column.
     contentMetrics = IntercomContentMetrics(
       names: identities.map(\.name), digits: identities.map(\.displayDigit), scale: scale)
-    let titleWidth =
-      (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
-      + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
-      + (String(localized: "Your Inbox") as NSString).size(withAttributes: [.font: nameFont]).width
-      + (String(localized: "All") as NSString).size(withAttributes: [.font: nameFont]).width
-      + ("0" as NSString).size(withAttributes: [.font: digitFont]).width + 36 * scale + 16
-      + 12 * scale + 8
-      + OverlayIntercomWidgetLayout.controlHeight(scale: scale) + 8
-      + (hasOverflow && !presentation.folded ? 32 * max(1, scale) + 16 : 0)
-    let defaultWidth = max(
-      contentMetrics.actionsWidth,
-      OverlayIntercomWidgetLayout.restingWidth(headerText: titleWidth, agentText: 0, scale: scale))
-    let width = max(
-      min(minimumHeaderWidth, screenFrame.width),
-      contentMetrics.fittedWidth(
-        CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width))
+    // Establish the actual row budget before measuring optional pager slots.
+    // A display too narrow for names retains the existing icon-row geometry.
     groupCardHeight =
-      width < contentMetrics.minimumNameWidth
+      screenFrame.width < contentMetrics.minimumNameWidth
       ? contentMetrics.iconSide
       : contentMetrics.fittedCardHeight(
         CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)),
         count: groupIdentities.count, available: screenFrame.height)
-    headerControlsVisible =
-      width
-      >= OverlayIntercomWidgetLayout.restingWidth(
-        headerText: titleWidth, agentText: 0, scale: scale)
+    let headerMetrics = self.headerMetrics
+    let defaultWidth = headerMetrics.width(
+      showsLabels: false, showsCount: true, paging: headerNeedsPaging)
+    let width = max(
+      // If the screen itself is narrower, the native window clips the row;
+      // no audio-hidden tier or claim that all commands fit is introduced.
+      min(headerMetrics.minimumWidth(paging: headerNeedsPaging), screenFrame.width),
+      contentMetrics.fittedWidth(
+        CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width))
     groupWidth = width
     groupTier = contentMetrics.tier(width: width, cardHeight: groupCardHeight)
     if desktop.groupTier != groupTier {
@@ -1033,17 +1019,19 @@ private struct OverlayIntercomHeader: View {
     // its existing microphone and reply controls in this header.
     let broadcast = intercomConversation(state: state, digit: "0")
     let inbox = state.conversations.first(where: \.isHumanInbox)
-    HStack(spacing: 8) {
+    let metrics = controller.headerMetrics
+    let content = metrics.content(width: controller.groupWidth, paging: controller.headerNeedsPaging)
+    HStack(spacing: IntercomHeaderMetrics.spacing) {
       Button {
         controller.toggleGroup()
       } label: {
-        HStack(spacing: 8) {
+        HStack(spacing: IntercomHeaderMetrics.spacing) {
           OverlayAgentStatusDot(kind: .broadcast, palette: palette)
           Text("Intercom").csFont(11, .semibold).lineLimit(1).fixedSize()
         }
         .contentShape(Capsule())
         .frame(
-          height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          width: metrics.groupWidth, height: metrics.controlHeight)
       }
       .buttonStyle(.plain)
       .conversationActionHover(
@@ -1078,15 +1066,20 @@ private struct OverlayIntercomHeader: View {
           }
         }
       }
-      mailboxControl(inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette)
-      mailboxControl(broadcast, title: String(localized: "All"), digit: "0", palette: palette)
+      mailboxControl(
+        inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette,
+        compact: !content.showsLabels,
+        width: content.showsLabels ? metrics.inboxWidth : metrics.controlHeight)
+      mailboxControl(
+        broadcast, title: String(localized: "All"), digit: "0", palette: palette,
+        compact: !content.showsLabels,
+        width: content.showsLabels ? metrics.broadcastWidth : metrics.controlHeight)
       Button {
         controller.toggleDockAll()
       } label: {
         Image(systemName: "sidebar.right").csFont(12, .medium)
           .frame(
-            width: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
-            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+            width: metrics.controlHeight, height: metrics.controlHeight
           )
           .contentShape(Capsule())
       }
@@ -1102,27 +1095,27 @@ private struct OverlayIntercomHeader: View {
       .help(
         controller.canRestoreDockedLayout
           ? String(localized: "Restore window layout") : String(localized: "Dock all agents"))
-      if controller.headerControlsVisible {
-        Spacer(minLength: 4)
-        Text(verbatim: chips.count.formatted()).csMono(10).allowsHitTesting(false)
+      if content.showsCount {
+        Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
+        Text(verbatim: chips.count.formatted()).csMono(10)
+          .frame(width: metrics.countWidth).allowsHitTesting(false)
       }
-      if controller.hasOverflow && !controller.presentation.folded {
+      if controller.headerNeedsPaging {
         Button("Previous agents", systemImage: "chevron.up") { controller.scrollGroup(-1) }
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasPrevious)
-          .frame(width: 16 * max(1, scale))
+          .frame(width: metrics.pagingControlWidth)
         Button("Next agents", systemImage: "chevron.down") { controller.scrollGroup(1) }
           .labelStyle(.iconOnly).buttonStyle(.plain).disabled(!controller.hasNext)
-          .frame(width: 16 * max(1, scale))
+          .frame(width: metrics.pagingControlWidth)
       }
-      if controller.headerControlsVisible {
-        OverlayIntercomAudioControls(
-          state: state, conversation: broadcast, digit: "0", palette: palette,
-          open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false,
-          speaking: broadcast?.replySpeaking == true)
-      }
+      OverlayIntercomAudioControls(
+        state: state, conversation: broadcast, digit: "0", palette: palette,
+        open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false,
+        speaking: broadcast?.replySpeaking == true)
+        .frame(width: metrics.audioWidth)
     }
     .foregroundStyle(palette.mutedText.color)
-    .padding(.horizontal, controller.headerControlsVisible ? 12 : 0)
+    .padding(.horizontal, content.horizontalInset)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     // Any free spot on the bar moves the group — not a grip that showed a
     // finger drawing (Maciej, 2026-10-23). Buttons above it keep their
@@ -1168,15 +1161,14 @@ private struct OverlayIntercomHeader: View {
 
   private func mailboxControl(
     _ conversation: OverlayConversation?, title: String, digit: String?,
-    palette: OverlayAppearancePalette
+    palette: OverlayAppearancePalette, compact: Bool, width: CGFloat
   ) -> some View {
     let unread = conversation.map { state.unreadReplies(in: $0) } ?? 0
     let selected = conversation != nil && state.selectedConversationID == conversation?.id
-    let compact = !controller.headerControlsVisible
     return Button {
       if let conversation { controller.openMailbox(conversation.id) }
     } label: {
-      HStack(spacing: 3) {
+      HStack(spacing: IntercomHeaderMetrics.mailboxSpacing) {
         if compact {
           if let digit {
             Text(verbatim: digit).csMono(10)
@@ -1189,8 +1181,8 @@ private struct OverlayIntercomHeader: View {
           if unread > 0 { Text(verbatim: unread.formatted()).csMono(10) }
         }
       }
-      .padding(.horizontal, compact ? 0 : 5)
-      .frame(width: compact ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil)
+      .padding(.horizontal, compact ? 0 : IntercomHeaderMetrics.mailboxInset)
+      .frame(width: width)
       .frame(minHeight: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       .contentShape(Capsule())
       .overlay(alignment: .topTrailing) {

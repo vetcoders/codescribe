@@ -18,6 +18,77 @@ struct IntercomCompactPreviewLayout: Equatable {
   let showsContext: Bool
 }
 
+struct IntercomHeaderContent: Equatable {
+  let showsLabels: Bool
+  let showsCount: Bool
+  var horizontalInset: CGFloat { showsLabels ? 12 : 6 }
+}
+
+/// The header's actual children, measured independently of agent-row chrome.
+/// Audio, mailbox and dock hit regions never yield to optional text.
+struct IntercomHeaderMetrics: Equatable {
+  static let spacing: CGFloat = 8
+  static let mailboxSpacing: CGFloat = 3
+  static let mailboxInset: CGFloat = 5
+  static let spacerMinimum: CGFloat = 4
+  let groupWidth: CGFloat
+  let controlHeight: CGFloat
+  let audioWidth: CGFloat
+  let countWidth: CGFloat
+  let inboxWidth: CGFloat
+  let broadcastWidth: CGFloat
+  let pagingControlWidth: CGFloat
+
+  init(agentCount: Int, inboxUnread: Int, broadcastUnread: Int, scale: CGFloat) {
+    let font = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
+    let mono = CSFont.nsMono(10 * scale)
+    func textWidth(_ text: String, font: NSFont) -> CGFloat {
+      ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+    func mailboxWidth(title: String, digit: String?, unread: Int) -> CGFloat {
+      let parts = 1 + (digit == nil ? 0 : 1) + (unread > 0 ? 1 : 0)
+      return textWidth(title, font: font)
+        + (digit.map { textWidth($0, font: mono) } ?? 0)
+        + (unread > 0 ? textWidth(unread.formatted(), font: mono) : 0)
+        + CGFloat(parts - 1) * Self.mailboxSpacing + 2 * Self.mailboxInset
+    }
+    groupWidth = textWidth(String(localized: "Intercom"), font: font) + 12 * scale + Self.spacing
+    controlHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    // OverlayAgentAudioControls: two flat diameter-sized buttons, 6pt apart.
+    audioWidth = 2 * controlHeight + 6
+    countWidth = textWidth(agentCount.formatted(), font: mono)
+    inboxWidth = mailboxWidth(title: String(localized: "Your Inbox"), digit: nil, unread: inboxUnread)
+    broadcastWidth = mailboxWidth(
+      title: String(localized: "All"), digit: "0", unread: broadcastUnread)
+    pagingControlWidth = 16 * max(1, scale)
+  }
+
+  func width(showsLabels: Bool, showsCount: Bool, paging: Bool) -> CGFloat {
+    let content = IntercomHeaderContent(showsLabels: showsLabels, showsCount: showsCount)
+    // Wordmark, Inbox, All, Dock, audio; optional spacer/count and two pagers.
+    let children = 5 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
+    return ceil(
+      groupWidth + (showsLabels ? inboxWidth + broadcastWidth : 2 * controlHeight)
+        + controlHeight + audioWidth + 2 * content.horizontalInset
+        + CGFloat(children - 1) * Self.spacing
+        + (showsCount ? countWidth + Self.spacerMinimum : 0)
+        + (paging ? 2 * pagingControlWidth : 0))
+  }
+
+  func minimumWidth(paging: Bool) -> CGFloat {
+    width(showsLabels: false, showsCount: false, paging: paging)
+  }
+
+  func content(width: CGFloat, paging: Bool) -> IntercomHeaderContent {
+    if width >= self.width(showsLabels: true, showsCount: true, paging: paging) {
+      return IntercomHeaderContent(showsLabels: true, showsCount: true)
+    }
+    return IntercomHeaderContent(
+      showsLabels: false,
+      showsCount: width >= self.width(showsLabels: false, showsCount: true, paging: paging))
+  }
+}
+
 /// What a one-line row shows beside its digit, dot and name, counted from its
 /// right edge as on the agents list (Maciej, 2026-10-23 seal: in a narrow row
 /// the microphone comes first, then the speaker that mutes an agent talking
