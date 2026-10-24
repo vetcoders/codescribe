@@ -1161,6 +1161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private func textScaleController(for window: NSWindow?) -> TextScaleController? {
     guard let window else { return nil }
     if window is FloatingOverlayPanel { return model.overlay.textScale }
+    if window is OverlayIntercomPanel { return model.overlay.intercomTextScale }
     if window == agentWindow { return model.chatTextScale }
     return nil
   }

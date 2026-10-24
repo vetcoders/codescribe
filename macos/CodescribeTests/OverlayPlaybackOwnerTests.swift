@@ -46,6 +46,41 @@ final class OverlayPlaybackOwnerTests: XCTestCase {
           + String(RealAgentBridgeInstaller.playbackOutcomePublishedStatus)))
   }
 
+  func testHistoricalOwnerlessReplyControlsItsOwnRowCoordinatesAndTicket() async throws {
+    let state = OverlayState()
+    var message = OverlayConversationMessage(
+      id: "reply:" + String(repeating: "d", count: 24), kind: .reply,
+      text: "A historical agent message", order: 1, emittedAt: "2026-10-23T10:00:00Z",
+      owner: nil, recipients: [], deliveryID: nil, replyTo: nil,
+      unsolicited: true, playback: nil, busPath: "/fixture/historical.jsonl")
+    message.supportsSpeechPlayback = true
+    message.provider = "codex"
+    message.providerSessionID = "expired-session"
+    var tickets: [String] = []
+    var stops: [Bool] = []
+    state.controlBusReply = { replyID, ticket, provider, session, busPath, stop in
+      XCTAssertEqual(replyID, String(repeating: "d", count: 24))
+      XCTAssertEqual(provider, "codex")
+      XCTAssertEqual(session, "expired-session")
+      XCTAssertEqual(busPath, "/fixture/historical.jsonl")
+      XCTAssertTrue(state.pendingReplyControls.contains(message.id))
+      tickets.append(ticket)
+      stops.append(stop)
+    }
+    await state.controlReply(message, stop: false)
+    XCTAssertEqual(tickets.first?.count, 24)
+    message.playback = OverlayReplyPlayback(
+      replyID: String(repeating: "d", count: 24), ticket: try XCTUnwrap(tickets.first),
+      state: "playing", reason: nil, spoken: false, emittedAt: "2026-10-23T10:00:01Z")
+    await state.controlReply(message, stop: false)
+    await state.controlReply(message, stop: true)
+    XCTAssertEqual(tickets.count, 2, "A repeated Play cannot start a second active ticket")
+    XCTAssertEqual(tickets.first, tickets.last, "Stop addresses the active playback ticket")
+    XCTAssertEqual(stops, [false, true])
+    XCTAssertTrue(state.pendingReplyControls.isEmpty)
+    XCTAssertTrue(state.replyControlErrors.isEmpty)
+  }
+
   func testBroadcastMirrorCannotOwnMuteAndReusedChannelCannotBorrowThePriorSession() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
