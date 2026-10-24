@@ -15,7 +15,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-use codescribe_core::config::Config;
+use codescribe_core::config::{Config, churn};
 
 /// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
@@ -39,15 +39,56 @@ pub fn init_logging() {
 /// warning (it installed no subscriber at all before 2026-09-06).
 pub fn init_logging_with_default_filter(default_filter: &str) {
     INIT.call_once(|| {
-        init_tracing(default_filter);
+        let test_process = runtime_is_test_process();
+        // The high-churn move runs before the file sink opens: the sink's
+        // folder is one of the moved entries, and every app or CLI process
+        // passes here before it touches any of them. Test harnesses get no
+        // file sink and move nothing.
+        let churn_moves = (!test_process).then(churn::migrate_churn_data_at_startup);
+        init_tracing(default_filter, test_process);
+        report_churn_moves(churn_moves.as_deref().unwrap_or_default());
         install_panic_hook();
     });
+}
+
+/// Log the startup move into `data.noindex` once the subscriber exists. A
+/// refusal is an error on every start until someone resolves it by hand:
+/// both locations are kept and nothing is merged.
+fn report_churn_moves(moves: &[churn::ChurnMove]) {
+    for item in moves {
+        let (from, to) = (item.from.display(), item.to.display());
+        match &item.outcome {
+            churn::ChurnMoveOutcome::NothingToMove | churn::ChurnMoveOutcome::AlreadyMigrated => {}
+            churn::ChurnMoveOutcome::Moved => {
+                tracing::info!(target: "churn_data", %from, %to, "moved high-churn data into data.noindex");
+            }
+            churn::ChurnMoveOutcome::RefusedBothPresent => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                "high-churn data exists at both locations; nothing moved, merge by hand"
+            ),
+            churn::ChurnMoveOutcome::RefusedCrossVolume => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                "high-churn data is on another volume; not copied, move it by hand"
+            ),
+            churn::ChurnMoveOutcome::Failed(error) => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                %error,
+                "moving high-churn data into data.noindex failed; nothing removed"
+            ),
+        }
+    }
 }
 
 /// Build and install the subscriber: a stderr layer always, plus a file layer
 /// when the log file can be opened. An unopenable log file degrades to
 /// stderr-only rather than losing tracing altogether.
-fn init_tracing(default_filter: &str) {
+fn init_tracing(default_filter: &str, test_process: bool) {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{EnvFilter, fmt};
 
@@ -69,7 +110,7 @@ fn init_tracing(default_filter: &str) {
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file = log_file_path(&Config::config_dir(), runtime_is_test_process())
+    let file = log_file_path(&Config::config_dir(), test_process)
         .and_then(|path| open_file_log(&path).ok());
 
     if let Some(file) = file {
