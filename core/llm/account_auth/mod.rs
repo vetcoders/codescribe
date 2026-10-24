@@ -1109,6 +1109,226 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    // Exercise the real refresh transaction with memory-only I/O. None of these
+    // witnesses reads environment credentials, opens the Keychain or uses HTTP.
+    mod mutation_races {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const PROVIDER: ProviderKind = ProviderKind::OpenAiResponses;
+
+        fn tokens(access: &str, expired: bool) -> AccountTokens {
+            let mut tokens = AccountTokens::new(
+                PROVIDER,
+                access.into(),
+                Some("synthetic-refresh".into()),
+                None,
+                None,
+                None,
+            );
+            tokens.expires_at_unix = expired.then_some(0);
+            tokens
+        }
+
+        type Store = Arc<Mutex<Option<AccountTokens>>>;
+
+        fn load(store: &Store) -> Result<AccountTokens, AccountAuthError> {
+            store
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| AccountAuthError::NotSignedIn(PROVIDER.as_str().into()))
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn caller_cancellation_keeps_refresh_serialized_until_blocking_persist_finishes() {
+            let state = Arc::new(ProviderAuthState::default());
+            let store = Arc::new(Mutex::new(Some(tokens("old", true))));
+            let rotations = Arc::new(AtomicUsize::new(0));
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let first = tokio::spawn(access_token_with(
+                PROVIDER,
+                Arc::clone(&state),
+                {
+                    let store = Arc::clone(&store);
+                    move || load(&store)
+                },
+                {
+                    let rotations = Arc::clone(&rotations);
+                    move |_| async move {
+                        rotations.fetch_add(1, Ordering::SeqCst);
+                        Ok(tokens("rotated", false))
+                    }
+                },
+                {
+                    let store = Arc::clone(&store);
+                    move |tokens| {
+                        let _ = entered_tx.send(());
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        *store.lock().unwrap() = Some(tokens.clone());
+                        Ok(())
+                    }
+                },
+            ));
+            tokio::time::timeout(Duration::from_secs(5), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            assert!(state.refresh.try_lock().is_err(), "rotation still owns serialization");
+            assert!(state.mutation.try_lock().is_err(), "persistence is inside mutation");
+
+            let (second_started, started) = tokio::sync::oneshot::channel();
+            let second = tokio::spawn({
+                let state = Arc::clone(&state);
+                let store = Arc::clone(&store);
+                let rotations = Arc::clone(&rotations);
+                async move {
+                    let _ = second_started.send(());
+                    let read_store = Arc::clone(&store);
+                    access_token_with(
+                        PROVIDER,
+                        state,
+                        move || load(&read_store),
+                        move |_| async move {
+                            rotations.fetch_add(1, Ordering::SeqCst);
+                            Ok(tokens("unexpected-second-rotation", false))
+                        },
+                        move |tokens| {
+                            *store.lock().unwrap() = Some(tokens.clone());
+                            Ok(())
+                        },
+                    )
+                    .await
+                }
+            });
+            started.await.unwrap();
+            assert!(!second.is_finished());
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), second)
+                    .await.unwrap().unwrap().unwrap(),
+                "rotated"
+            );
+            assert_eq!(rotations.load(Ordering::SeqCst), 1);
+            assert_eq!(load(&store).unwrap().access_token, "rotated");
+        }
+
+        #[tokio::test]
+        async fn signout_during_network_rotation_cannot_be_undone_by_stale_persistence() {
+            let state = Arc::new(ProviderAuthState::default());
+            let store = Arc::new(Mutex::new(Some(tokens("old", true))));
+            let writes = Arc::new(AtomicUsize::new(0));
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let refresh = tokio::spawn(access_token_with(
+                PROVIDER,
+                Arc::clone(&state),
+                {
+                    let store = Arc::clone(&store);
+                    move || load(&store)
+                },
+                move |_| async move {
+                    let _ = entered_tx.send(());
+                    release_rx.await.unwrap();
+                    Ok(tokens("stale-rotation", false))
+                },
+                {
+                    let store = Arc::clone(&store);
+                    let writes = Arc::clone(&writes);
+                    move |tokens| {
+                        writes.fetch_add(1, Ordering::SeqCst);
+                        *store.lock().unwrap() = Some(tokens.clone());
+                        Ok(())
+                    }
+                },
+            ));
+            tokio::time::timeout(Duration::from_secs(5), entered_rx)
+                .await.unwrap().unwrap();
+            state.replace_with(|| {
+                *store.lock().unwrap() = None;
+                Ok(())
+            }).unwrap();
+            release_tx.send(()).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(5), refresh)
+                .await.unwrap().unwrap();
+            assert!(matches!(result, Err(AccountAuthError::NotSignedIn(_))));
+            assert!(store.lock().unwrap().is_none());
+            assert_eq!(writes.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn signout_waits_for_an_already_committing_refresh_then_removes_it() {
+            let state = Arc::new(ProviderAuthState::default());
+            let store = Arc::new(Mutex::new(Some(tokens("old", true))));
+            let (_, epoch) = state.snapshot_with(|| load(&store)).unwrap();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let refresh = std::thread::spawn({
+                let state = Arc::clone(&state);
+                let store = Arc::clone(&store);
+                move || state.commit_with(PROVIDER, &epoch, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    *store.lock().unwrap() = Some(tokens("rotated", false));
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(state.mutation.try_lock().is_err());
+            let clear = std::thread::spawn({
+                let state = Arc::clone(&state);
+                let store = Arc::clone(&store);
+                move || state.replace_with(|| {
+                    *store.lock().unwrap() = None;
+                    Ok(())
+                })
+            });
+            release_tx.send(()).unwrap();
+            refresh.join().unwrap().unwrap();
+            clear.join().unwrap().unwrap();
+            assert!(store.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn identical_relogin_values_do_not_revive_the_previous_account_epoch() {
+            let state = ProviderAuthState::default();
+            let store = Arc::new(Mutex::new(Some(tokens("same-value", true))));
+            let (old, epoch) = state.snapshot_with(|| load(&store)).unwrap();
+            state.replace_with(|| {
+                *store.lock().unwrap() = None;
+                Ok(())
+            }).unwrap();
+            state.replace_with(|| {
+                *store.lock().unwrap() = Some(old.clone());
+                Ok(())
+            }).unwrap();
+            let stale = state.commit_with(PROVIDER, &epoch, || {
+                *store.lock().unwrap() = Some(tokens("stale-rotation", false));
+                Ok(())
+            });
+            assert!(matches!(stale, Err(AccountAuthError::NotSignedIn(_))));
+            assert_eq!(load(&store).unwrap(), old);
+        }
+
+        #[test]
+        fn failed_explicit_mutation_preserves_storage_error_but_invalidates_old_refresh() {
+            let state = ProviderAuthState::default();
+            let (_, epoch) = state.snapshot_with(|| Ok(tokens("old", true))).unwrap();
+            let failure = state.replace_with::<()>(|| {
+                Err(AccountAuthError::Storage("synthetic-delete-refusal".into()))
+            });
+            assert!(matches!(failure, Err(AccountAuthError::Storage(ref reason))
+                if reason == "synthetic-delete-refusal"));
+            let stale: Result<(), AccountAuthError> = state.commit_with(PROVIDER, &epoch, || {
+                panic!("a failed explicit mutation still supersedes the old refresh")
+            });
+            assert!(matches!(stale, Err(AccountAuthError::NotSignedIn(_))));
+        }
+    }
+
     /// Point the settings store at an isolated scratch dir so these tests never
     /// read (or depend on) the operator's real settings.json.
     fn isolated_settings_dir(tag: &str) -> (EnvGuard, tempfile::TempDir) {
