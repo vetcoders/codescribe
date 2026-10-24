@@ -77,7 +77,7 @@ use crate::audio::speech_input::{
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
-    AiFormatResult, AiFormatStatus, format_text_with_status_for_policy,
+    AiFormatResult, AiFormatStatus, TakeFormatterChain, format_text_with_status_for_policy,
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 #[cfg(test)]
@@ -691,6 +691,7 @@ fn formatter_job(
     mut request: FormatterRequest,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     language: Option<String>,
+    chain: Arc<TakeFormatterChain>,
 ) -> BoxFuture<'static, FormatterCompletion> {
     request.policy = runtime_settings.formatting_policy();
     Box::pin(async move {
@@ -698,17 +699,20 @@ fn formatter_job(
             .ai_execution()
             .request_timing()
             .attempt_timeout();
-        let result = bound_formatter_reply(
-            &request.existing_label,
-            deadline,
-            format_text_with_status_for_policy(
+        // The deadline starts when this job's turn does, not while it waits
+        // behind the take's earlier fragment.
+        let result = chain
+            .next_turn(bound_formatter_reply(
                 &request.existing_label,
-                language.as_deref(),
-                runtime_settings.as_ref(),
-                None,
-            ),
-        )
-        .await;
+                deadline,
+                format_text_with_status_for_policy(
+                    &request.existing_label,
+                    language.as_deref(),
+                    runtime_settings.as_ref(),
+                    None,
+                ),
+            ))
+            .await;
         FormatterCompletion::from_result(request, result)
     })
 }
@@ -778,6 +782,7 @@ struct RetainedFormatterJobs {
     jobs: FuturesOrdered<BoxFuture<'static, FormatterCompletion>>,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     language: Option<String>,
+    chain: Arc<TakeFormatterChain>,
     event_sink: Arc<dyn EventSink>,
     stream_log_path: Option<PathBuf>,
 }
@@ -816,6 +821,7 @@ impl RetainedFormatterJobs {
                             request,
                             Arc::clone(&self.runtime_settings),
                             self.language.clone(),
+                            Arc::clone(&self.chain),
                         ));
                     }
                     Some(completion) = self.jobs.next() => {
@@ -1325,6 +1331,9 @@ pub(crate) async fn apple_stream_transcription_session(
              silence-delimited fragment can open a paid provider slot"
         );
     }
+    // This take's own formatter conversation: its fragments go in order, each
+    // with the ones before it, and none of it reaches another take.
+    let formatter_chain = TakeFormatterChain::new();
     let mut formatter_jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
     let formatter_runtime_settings = Arc::clone(&runtime_settings);
     let formatter_language = language.clone();
@@ -1757,6 +1766,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     request,
                     Arc::clone(&formatter_runtime_settings),
                     formatter_language.clone(),
+                    Arc::clone(&formatter_chain),
                 ));
                 event_sink.on_formatter_pending(true);
             }
@@ -1816,6 +1826,7 @@ pub(crate) async fn apple_stream_transcription_session(
         jobs: formatter_jobs,
         runtime_settings: Arc::clone(&formatter_runtime_settings),
         language: formatter_language.clone(),
+        chain: formatter_chain,
         event_sink: Arc::clone(&event_sink),
         stream_log_path: stream_log_path.clone(),
     }
@@ -8675,6 +8686,46 @@ fn terminal_witness_windows(
         .collect()
 }
 
+/// Pending owners a live DT question may name now.
+///
+/// DT follows the Whisper tank (Maciej, 2026-10-22: Apple live, then the
+/// Whisper windows, then DT, then the seal). A word sits in up to three
+/// 9 s windows on the 3 s grid; while a submitted, queued or not yet planned
+/// window may still cover an owner whose Whisper reservation is open, that
+/// owner is not asked. Asked earlier, DT answered about 0.5 s after the owner
+/// closed, and on 39 replays 57 Whisper corrections then landed on owners DT
+/// had already answered (base: 0). The owner becomes askable when `close_admission_horizon`
+/// returns its Whisper reservation, in `finish_whisper_frontier`, before that
+/// return can seal it.
+fn live_witness_askable_owners(
+    state: &AppleSealState,
+    pending_owners: Vec<OccurrenceIdentity>,
+    sealed_end: u64,
+) -> Vec<OccurrenceIdentity> {
+    let max_len = u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS);
+    let ledger = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending_owners
+        .into_iter()
+        .filter(|owner| {
+            live_witness_may_ask(
+                (owner.sample_start, owner.sample_end),
+                sealed_end,
+                max_len,
+                &state.dictation_witness_attempts,
+            ) && ledger.frontier_of(owner).is_some_and(|frontier| {
+                !frontier.is_closed()
+                    && !(frontier
+                        .open_producers()
+                        .contains(&LedgerObservationProducer::Whisper)
+                        && state.whisper_work_may_cover(owner))
+            })
+        })
+        .collect()
+}
+
 /// Reserve independent lexical work before producer return can seal an owner.
 /// One live request is in flight; each owner gets one protected live question.
 /// Terminal reconciliation owns retry work and its common time budget.
@@ -8703,25 +8754,7 @@ fn maybe_spawn_utterance_witness(
     // covers yet is the live head Apple has not finalized; a live answer
     // admitted there landed beside Apple's later final for the same audio
     // (fe468a53: whole DT phrases doubled). Gaps belong to the terminal pass.
-    let pending_owners = {
-        let ledger = state
-            .acoustic_ledger
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pending_owners
-            .into_iter()
-            .filter(|owner| {
-                live_witness_may_ask(
-                    (owner.sample_start, owner.sample_end),
-                    sealed_end,
-                    u64::from(state.sample_rate).saturating_mul(DICTATION_WITNESS_MAX_WINDOW_SECS),
-                    &state.dictation_witness_attempts,
-                ) && ledger
-                    .frontier_of(owner)
-                    .is_some_and(|frontier| !frontier.is_closed())
-            })
-            .collect::<Vec<_>>()
-    };
+    let pending_owners = live_witness_askable_owners(state, pending_owners, sealed_end);
 
     let mut targets: Vec<(u64, u64)> = pending_owners
         .iter()
@@ -12663,6 +12696,7 @@ mod c13a_lifecycle_tests {
             jobs,
             runtime_settings: settings,
             language: None,
+            chain: TakeFormatterChain::new(),
             event_sink: sink.clone(),
             stream_log_path: None,
         }
@@ -12720,6 +12754,7 @@ mod c13a_lifecycle_tests {
             jobs,
             runtime_settings: settings,
             language: None,
+            chain: TakeFormatterChain::new(),
             event_sink: sink.clone(),
             stream_log_path: None,
         }
@@ -12882,6 +12917,61 @@ mod c13a_lifecycle_tests {
         state.complete_whisper_window(&tx, no_payload_completion(request), 2.0);
         assert_eq!(state.tail_patch_awaiting_completion(), 0);
         assert!(event_rx.try_recv().is_err(), "replay emits no second seal");
+    }
+
+    // 76d0 (2026-10-23, DT asked through Stop): DT answered about 0.5 s after
+    // an owner closed, and a Whisper window still due then corrected over that
+    // answer. DT follows the tank: an owner is asked once no window may still
+    // cover it, and then once.
+    #[test]
+    fn live_witness_asks_an_owner_once_after_its_last_whisper_window_returns() {
+        let (tx, _event_rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel::<TailPatchRequest>(4);
+        let mut state = state_for_session("tank-then-dt");
+        state.tail_patch = Some(tail_tx);
+        let owner = OccurrenceIdentity::new("tank-then-dt", 1, 0, 16_000);
+        place_pcm_through(&mut state, 16_000);
+        stage_pending_occurrence(&mut state, &tx, 1, owner.clone(), "Iwo");
+        let ask = |state: &AppleSealState| {
+            live_witness_askable_owners(state, vec![owner.clone()], 16_000)
+        };
+        assert!(
+            ask(&state).is_empty(),
+            "no Whisper window over the owner is planned yet"
+        );
+
+        place_pcm_through(&mut state, 144_000);
+        let offered = offer_capture_windows(&mut state, &tx, &mut tail_rx, false);
+        assert_eq!(offered.len(), 1, "the first 9 s window");
+        assert!(
+            ask(&state).is_empty(),
+            "the window over the owner has not returned"
+        );
+
+        state.complete_whisper_window(&tx, no_payload_completion(&offered[0]), 2.0);
+        assert_eq!(ask(&state), vec![owner.clone()]);
+
+        record_dictation_witness_attempts(
+            &mut state.dictation_witness_attempts,
+            &[(0, 16_000)],
+            0,
+            16_000,
+            480_000,
+        );
+        assert!(ask(&state).is_empty(), "an owner is asked once");
+    }
+
+    #[test]
+    fn live_witness_without_a_whisper_lane_asks_a_closed_owner_at_once() {
+        let (tx, _event_rx) = mpsc::unbounded_channel();
+        let mut state = state_for_session("no-tank");
+        let owner = OccurrenceIdentity::new("no-tank", 1, 0, 16_000);
+        place_pcm_through(&mut state, 16_000);
+        stage_pending_occurrence(&mut state, &tx, 1, owner.clone(), "Iwo");
+        assert_eq!(
+            live_witness_askable_owners(&state, vec![owner.clone()], 16_000),
+            vec![owner]
+        );
     }
 
     /// W3B falsifier for the retired concat-space remap.

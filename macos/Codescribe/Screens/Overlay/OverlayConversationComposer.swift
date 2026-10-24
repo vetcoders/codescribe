@@ -433,6 +433,7 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
     coordinator.scrollerPin.detach()
+    coordinator.undoHistory.removeAllActions()
   }
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -507,9 +508,14 @@ private struct ConversationMessageField: NSViewRepresentable {
     var focusRevision: UInt64 = 0
     var isCovered = false
     let scrollerPin = CSScrollerPin()
+    /// The overlay panel outlives every composer it shows, so typing undo must
+    /// not land on the panel's undo manager (see `ComposerTextView.Coordinator`).
+    let undoHistory = UndoManager()
     private var pendingHeight: CGFloat?
     private var heightUpdateScheduled = false
     init(_ parent: ConversationMessageField) { self.parent = parent }
+
+    func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
 
     func updateHeight(_ height: CGFloat) {
       pendingHeight = height

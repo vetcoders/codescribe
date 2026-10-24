@@ -155,6 +155,8 @@ TAKE_WAIT_SECONDS = 120.0
 PLAYBACK_POLL_SECONDS = 0.5
 # A hold control must reach the follower before the row's deadline releases it.
 HOLD_CONTROL_MARGIN_SECONDS = 0.5
+# A withdraw or revision counts only once the owner's follower has applied it.
+HOLD_CONTROL_CONFIRM_SECONDS = 5.0
 PLAYBACK_SCAN_SECONDS = 0.5
 # A scan cut short by its budget proved nothing either way. Playback resumes the
 # cursor on the next tick and stops only after this many in a row.
@@ -6640,16 +6642,44 @@ def channel_speech_now(runtime: Path, channel: str, session_id: str) -> dict[str
     return row
 
 
-def channel_quiet_for_playback(runtime: Path) -> Callable[[str, str], bool]:
+def reply_channels(root: Path, control: ReplyPlaybackControl | None) -> frozenset[str]:
+    """The channels bound to the agent whose reply is about to play.
+
+    An unknown speaker, or an unreadable binding file, owns no channel.
+    """
+    if control is None:
+        return frozenset()
+    state = read_json(root / AUDIENCE_BINDING_FILENAME)
+    bindings = state.get("bindings") if state and state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return frozenset()
+    provider = str(control.reply["provider"]).casefold()
+    session = control.reply["provider_session_id"]
+    return frozenset(
+        channel for channel, binding in bindings.items()
+        if isinstance(binding, dict)
+        and str(binding.get("provider", "")).casefold() == provider
+        and binding.get("provider_session_id") == session
+    )
+
+
+def channel_quiet_for_playback(
+    runtime: Path, own_channels: frozenset[str] = frozenset()
+) -> Callable[[str, str], bool]:
     """An open channel admits a reply after measured quiet.
 
     ``fresh`` is a session whose voice detector has reported no speech since
     it opened (the reopen after a silence seal); ``unmeasured`` is a broken
-    edge chain and never counts as quiet.
+    edge chain and never counts as quiet. ``quiet`` follows speech inside the
+    take and admits only the agent that channel addresses: a pause in a
+    message to one agent is not room for another (Monika, 2026-10-23 06:58,
+    UI-86: "Roman na 3 kanale zaczął odtwarzać swoją wiadomość głosową").
     """
     def released(channel: str, session_id: str) -> bool:
         row = channel_speech_now(runtime, channel, session_id)
         if row is None or row["phase"] not in ("fresh", "quiet"):
+            return False
+        if row["phase"] == "quiet" and channel not in own_channels:
             return False
         # The channel heard nothing while the previous reply played, so quiet
         # is measured again from that reply's end.
@@ -6770,6 +6800,17 @@ def _wait_for_take_end(
     return False
 
 
+def _playback_finished(player: Any, streaming: bool, stream_finished: bool) -> bool:
+    """True once the player has exited, so every queued sample was heard.
+
+    A stream counts only after its last chunk arrived; the player's own poll
+    decides, never the elapsed PCM duration.
+    """
+    if player is None or (streaming and not stream_finished):
+        return False
+    return player.poll() is not None
+
+
 def _stop_playback(player: Any) -> None:
     import subprocess
 
@@ -6827,7 +6868,7 @@ def _play_pcm_24k(
         cursor: dict[str, Any] = {}
         if not _wait_for_take_end(
             speech_bus, cursor, bridge_root=root, control=control,
-            channel_released=channel_quiet_for_playback(runtime),
+            channel_released=channel_quiet_for_playback(runtime, reply_channels(root, control)),
         ):
             return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
         if control is not None and control.stopped():
@@ -6855,20 +6896,24 @@ def _play_pcm_24k(
                 deadline=scan_deadline, channel_released=kept,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
+            refuse = False
             if idle:
                 incomplete_scans = 0
             elif time.monotonic() < scan_deadline and _cursor_holds_take(cursor, kept):
                 # The scan finished inside its budget and found a live take.
-                _stop_playback(player)
-                return False, "take started during playback", "take_started"
+                refuse = True
             else:
                 # A loaded machine or a bus that grew mid-scan, not a take:
                 # the retained cursor resumes next tick. Only a run of
                 # unfinished scans stops the voice.
                 incomplete_scans += 1
-                if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
-                    _stop_playback(player)
-                    return False, "take started during playback", "take_started"
+                refuse = incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT
+            if refuse and not _playback_finished(player, streaming, stream_finished):
+                _stop_playback(player)
+                return False, "take started during playback", "take_started"
+            # A player that ended before the refusal played every sample: a take
+            # that starts after the last sample cannot unsay the reply, so the
+            # result below reports what the player did (Founder, 2026-10-23).
             if streaming and not stream_finished and (player is None or player.can_enqueue()):
                 event = pcm.poll_audio()
                 if event is not None:
@@ -8112,16 +8157,14 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             source_identity = identity
             voice_sessions: set[str] = set()
             deadline: float | None = None
-            released = False
+            releases: list[tuple[str, Any]] = []
             storage = ChunkDecoder()
             for raw in replay(Path(owner["bus"])):
                 source = parse_line(raw)
                 source = storage.feed(source) if source is not None else None
                 if source and source.get("schema") == DELIVERY_CONTROL_SCHEMA:
-                    # A release already handed the message over; nothing is held any more.
-                    released = released or (
-                        source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]
-                        and str(source.get("identity", "")) in (identity, source_identity))
+                    if source.get("kind") == "release" and source.get("lease_id") == owner["lease_id"]:
+                        releases.append((str(source.get("identity", "")), source.get("session_id")))
                     continue
                 if source and source.get("schema") in (AGENT_USER_MESSAGE_SCHEMA, CLEAN_SCHEMA, EVIDENCE_SCHEMA):
                     key = "message_id" if source["schema"] == AGENT_USER_MESSAGE_SCHEMA else "utterance_id"
@@ -8138,6 +8181,13 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                             source_identity = str(source[key])
             if len(voice_sessions) > 1:
                 raise ValueError("voice identity is ambiguous; select its capture session")
+            # A release already handed the message over; nothing is held any more.
+            # Voice captures reuse numeric labels, so a release counts only for the
+            # capture session it names, as the follower's control_delivery matches it.
+            released = any(
+                label in (identity, source_identity)
+                and (not session or not target.get("session_id") or session == target["session_id"])
+                for label, session in releases)
             # The follower hands a held row over at its deadline without waiting
             # for controls; a control written after that would report a withdraw
             # or revision the agent never sees. Refuse it while it can still be said.
@@ -8155,9 +8205,45 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 event["text"] = text
             source = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
             receipts.append({**owner, "source": source})
+        if kind != "release":
+            # The append receipt is not the agent's view: a control that lands after
+            # the follower handed the row over is ignored there. Report success only
+            # once every owner's follower has applied this control.
+            waiting = [owner["lease_id"] for owner, _, _ in plans]
+            confirm_by = time.monotonic() + HOLD_CONTROL_CONFIRM_SECONDS
+            while True:
+                waiting = [lease for lease in waiting
+                           if not held_control_applied(root, lease, kind, control_id, text)]
+                if not waiting or time.monotonic() >= confirm_by:
+                    break
+                time.sleep(0.1)
+            if waiting:
+                raise ValueError(
+                    "message already delivered; it can no longer be changed" if len(waiting) == len(plans)
+                    else f"message already delivered to {len(waiting)} of {len(plans)} agents")
     emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
           "control_id": control_id, "recipients": receipts, "skipped": skipped})
     return 0
+
+
+def held_control_applied(root: Path, lease_id: str, kind: str, control_id: str,
+                         text: str | None = None) -> bool:
+    """True once the lease's follower has applied this withdraw or revision.
+
+    Promotion strips `hold_controls`, so a revision applied just before its
+    deadline is also recognized by the handed-over row carrying its text.
+    """
+    lease = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if kind == "withdraw":
+        receipts = lease.get("withdrawn_held")
+        return isinstance(receipts, dict) and any(
+            isinstance(row, dict) and row.get("control_id") == control_id for row in receipts.values())
+    held = lease.get("held")
+    pending = lease.get("pending")
+    rows = [*(held.values() if isinstance(held, dict) else []), *(pending if isinstance(pending, list) else [])]
+    return any(isinstance(row, dict) and (control_id in (row.get("hold_controls") or [])
+               or text is not None and row.get("hold_until") is not None and row.get("text") == text)
+               for row in rows)
 
 
 def send_peer_command(args: argparse.Namespace) -> int:

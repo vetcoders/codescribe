@@ -324,6 +324,17 @@
         }
       }
     },
+    "%@ · %@" : {
+      "comment" : "Saved-fiszki menu item: channel digit and agent name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
     "%@ · %@ / %@ MB" : {
       "comment" : "Download progress: file name, megabytes received, megabytes expected",
       "localizations" : {
@@ -14692,6 +14703,16 @@
         }
       }
     },
+    "Redo" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć"
+          }
+        }
+      }
+    },
     "Refresh" : {
       "localizations" : {
         "pl" : {
@@ -19786,6 +19807,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niesklasyfikowane"
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cofnij"
           }
         }
       }
