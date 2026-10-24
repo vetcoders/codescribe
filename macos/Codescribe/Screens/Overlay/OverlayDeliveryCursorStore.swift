@@ -94,14 +94,19 @@ enum OverlayDeliveryCursorStore {
     var encoded: [String: Data] = [:]
     var sizes: [String: Int] = [:]
     for (path, mark) in marks {
-      if changed?.contains(path) ?? true {
+      // An unchanged unit keeps its file only while that file exists. A retry
+      // after an earlier eviction finds it gone: it is written again or evicted
+      // again, never returned as retained with nothing on disk to restore.
+      if changed?.contains(path) == false,
+        let attributes = try? FileManager.default.attributesOfItem(
+          atPath: url(root: root, bus: path).path),
+        let size = attributes[.size] as? NSNumber
+      {
+        sizes[path] = size.intValue
+      } else {
         let data = try encode(bus: path, mark: mark)
         encoded[path] = data
         sizes[path] = data.count
-      } else {
-        let attributes = try? FileManager.default.attributesOfItem(
-          atPath: url(root: root, bus: path).path)
-        sizes[path] = (attributes?[.size] as? NSNumber)?.intValue ?? 0
       }
     }
     var retained = marks
