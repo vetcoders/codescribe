@@ -206,8 +206,8 @@ settings.json is not rewritten: it applies again as soon as its key stops
 recording. The loader logs `agent channel modifier resolved` once per distinct
 outcome.
 
-Settings › Shortcuts › Extra shortcuts greys out the key that records in the
-Agent channel picker, selects the modifier in effect and adds one sentence
+Settings › Shortcuts › Fn and Agent channels greys out the key that records in
+the Agent channel picker, selects the modifier in effect and adds one sentence
 that says what frees the key, naming only what records with it now: for Fn
 "Fn records dictation — to use it for channels, assign dictation to another
 shortcut and turn off the Fn tap." (either clause alone when only the Hold
