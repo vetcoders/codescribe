@@ -161,6 +161,7 @@ struct WaveformView: View {
   /// primary bar without competing with transcript words.
   var compact: Bool = false
   var stretches: Bool = false
+  var isVisible: Bool = true
 
   private var barWidth: CGFloat { compact ? 1.5 : 2 }
   private var gap: CGFloat { compact ? 2 : 3 }
@@ -237,7 +238,7 @@ struct WaveformView: View {
           color: transcribing ? CSColor.modeProcessing.opacity(0.55) : liveColor(for: index))
       },
       barWidth: barWidth, gap: gap, maxBarHeight: maxBarHeight, minScale: minScale,
-      transcribing: transcribing, inactiveColor: inactiveColor, meter: meter)
+      transcribing: transcribing, inactiveColor: inactiveColor, meter: meter, isVisible: isVisible)
   }
 
   private func waveform(at now: TimeInterval, reducedMotion: Bool, count: Int) -> some View {
@@ -339,12 +340,13 @@ struct WaveformMotionStrip: NSViewRepresentable {
     var transcribing: Bool
     var inactiveColor: Color
     var meter: AudioLevelMeter?
+    var isVisible: Bool = true
 
     func drawsLike(_ other: Configuration) -> Bool {
       bars == other.bars && barWidth == other.barWidth && gap == other.gap
         && maxBarHeight == other.maxBarHeight && minScale == other.minScale
         && transcribing == other.transcribing && inactiveColor == other.inactiveColor
-        && meter === other.meter
+        && meter === other.meter && isVisible == other.isVisible
     }
   }
 
@@ -382,7 +384,7 @@ final class WaveformMotionView: NSView {
   private var laidOutSize: CGSize?
   private var shownGain: Double?
   private var hasShownGain = false
-  private var gainTimer: Timer?
+  private(set) var gainTimer: Timer?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -544,7 +546,7 @@ final class WaveformMotionView: NSView {
   /// Read the meter and scale the sweep: a bar peaks at the measured level and
   /// never drops below the resting core, so silence stays a flat line.
   func refreshGain() {
-    guard let configuration, !configuration.transcribing else { return }
+    guard let configuration, configuration.isVisible, !configuration.transcribing else { return }
     showGain(configuration.meter?.gain, animated: true)
   }
 
@@ -572,7 +574,8 @@ final class WaveformMotionView: NSView {
 
   private func updateGainPolling() {
     let polls =
-      window != nil && configuration?.meter != nil && configuration?.transcribing == false
+      window != nil && configuration?.isVisible == true && configuration?.meter != nil
+        && configuration?.transcribing == false
     guard polls != (gainTimer != nil) else { return }
     if !polls {
       stopGainPolling()
