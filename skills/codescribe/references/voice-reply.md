@@ -102,8 +102,10 @@ bounded to 120 seconds; timeout leaves a text-only bus reply with
 lock, the helper checks the canonical application bus, even when the reply uses a
 channel bus. A live take waits up to another 120 seconds, then refuses playback
 with `reason: take_live`; an utterance seal alone does not end that take.
-If a take starts during playback, the helper stops afplay and reports
-`reason: take_started`. Continue the reply in text.
+If a take starts while afplay is still playing, the helper stops it and reports
+`reason: take_started`. Continue the reply in text. A take that starts after
+the last sample keeps `spoken: true`: the helper asks the player whether it has
+exited before it refuses, so the receipt reports what was actually heard.
 
 A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 `reason`; the command exits 5. The body of a refused request is never printed.
@@ -121,7 +123,7 @@ A failed synthesis still lands the row, with `spoken: false`, `tts_error` and a
 | `muted`                      | Muted on purpose; the text landed, never unmute          |
 | `playback_busy`              | Another reply held playback beyond the 120-second wait   |
 | `take_live`                  | Take did not end within the 120-second wait              |
-| `take_started`               | Take started during playback; audio was stopped          |
+| `take_started`               | Take started while audio still played; audio stopped     |
 | `playback_failed`            | Audio arrived, `afplay` failed                           |
 
 Report a failed reply in chat with its `reason`; do not retry a
