@@ -237,11 +237,19 @@ struct DictionaryRecentTakes: View {
       if take.ledgerOpen {
         Group {
           if let anchored = take.anchoredSpeechPercent {
-            Text(
-              "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
-            )
-          } else {
+            if openLab != nil {
+              Text(
+                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
+              )
+            } else {
+              Text(
+                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take."
+              )
+            }
+          } else if openLab != nil {
             Text("The ledger did not close this take. Open Lab to see where.")
+          } else {
+            Text("The ledger did not close this take.")
           }
         }
         .font(CSFont.ui(11))
