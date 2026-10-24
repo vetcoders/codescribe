@@ -1435,6 +1435,13 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func cancelAccountLogin()
 
     /**
+     * Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+     * resolved by `Config::churn_dir`. Swift places its diagnostic log and
+     * overlay caches here instead of rebuilding the path.
+     */
+    func churnDir()  -> String
+
+    /**
      * Delete an API key from the Keychain. `account` must be a known
      * `KEYCHAIN_ACCOUNTS` entry.
      */
@@ -1918,6 +1925,19 @@ open func cancelAccountLogin()  {try! rustCall() {
             self.uniffiCloneHandle(),$0
     )
 }
+}
+
+    /**
+     * Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+     * resolved by `Config::churn_dir`. Swift places its diagnostic log and
+     * overlay caches here instead of rebuilding the path.
+     */
+open func churnDir() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_churn_dir(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
     /**
@@ -21655,6 +21675,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cancel_account_login() != 44575) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_churn_dir() != 37576) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_clear_api_key() != 28388) {
