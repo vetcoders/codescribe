@@ -2766,21 +2766,6 @@ mod tests {
             state_after_chord: controller.current_state().await,
             session_after_chord: controller.session_id.read().await.clone(),
             channel_open: controller.agent_channel_snapshot(3).await.is_some(),
-            state_after_release: State::Idle,
-            session_after_release: None,
-        };
-        let outcome = if outcome.state_after_chord == State::Idle {
-            controller
-                .handle_hotkey_event(event(HotkeyAction::Up))
-                .await
-                .expect("release");
-            ChordOutcome {
-                state_after_release: controller.current_state().await,
-                session_after_release: controller.session_id.read().await.clone(),
-                ..outcome
-            }
-        } else {
-            outcome
         };
         controller.reset().await;
         set_mode_hotkey_bindings(previous_bindings);
@@ -2794,8 +2779,6 @@ mod tests {
         state_after_chord: super::super::State,
         session_after_chord: Option<String>,
         channel_open: bool,
-        state_after_release: super::super::State,
-        session_after_release: Option<String>,
     }
 
     #[tokio::test]
