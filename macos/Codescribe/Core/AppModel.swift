@@ -106,6 +106,7 @@ final class OverlayController: ObservableObject {
   private var panel: NSPanel?
   private var intercomWidget: OverlayIntercomWidgetController?
   private var intercomPresentationStarted = false
+  private let intercomDesktopStore: OverlayIntercomDesktopStore
   private let overlayEnabledProvider: () -> Bool
   private let assistiveStatusProvider: () -> Bool
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
@@ -156,6 +157,7 @@ final class OverlayController: ObservableObject {
     state: OverlayState? = nil,
     engine: DictationEngine? = nil,
     composer: AgentChatStore? = nil,
+    intercomDesktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
     overlayEnabledProvider: @escaping () -> Bool = {
       DictationOverlayGate.shouldShowOverlay(
         trayEnabled: CodescribeConfig().trayToggles().transcriptionOverlayEnabled
@@ -174,6 +176,7 @@ final class OverlayController: ObservableObject {
   ) {
     let state = state ?? OverlayState()
     self.state = state
+    self.intercomDesktopStore = intercomDesktopStore
     self.overlayEnabledProvider = overlayEnabledProvider
     self.assistiveStatusProvider = assistiveStatusProvider
     self.composerOwnsCapture =
@@ -351,7 +354,8 @@ final class OverlayController: ObservableObject {
     if wantsWidget, intercomWidget == nil {
       intercomWidget = OverlayIntercomWidgetController(
         state: state, textScale: intercomTextScale,
-        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) })
+        revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) },
+        desktopStore: intercomDesktopStore)
       // Mini's stacked counter leads here in the vertical layout.
       state.onRevealIntercom = { [weak self] in self?.intercomWidget?.revealGroup() }
     }

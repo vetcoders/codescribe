@@ -7,6 +7,95 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testIntercomFollowsPersistedOverlayPreferenceWithoutCreatingTheMainPanel() async throws {
+    let suite = "CodescribeTests.intercom-visibility.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(.vertical)
+    let state = OverlayState()
+    state.channelMapPreference = preference
+    let inbox = OverlayConversation.humanInbox()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [inbox]))
+    state.conversationDrafts["0"] = "retained draft"
+    let store = OverlayIntercomDesktopStore(defaults: defaults)
+    var desktop = OverlayIntercomDesktopState()
+    desktop.instances = [
+      .init(
+        identity: OverlayIntercomCardIdentity(digit: "10", conversation: inbox),
+        frame: CGRect(x: 100, y: 100, width: 380, height: 360), minimized: true)
+    ]
+    store.save(desktop)
+    var persistedEnabled = true
+    var preferenceReads = 0
+    let priorWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+    let controller = OverlayController(
+      state: state, intercomDesktopStore: store,
+      overlayEnabledProvider: {
+        preferenceReads += 1
+        return persistedEnabled
+      }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in
+        XCTFail("Changing Intercom visibility must not create a main overlay")
+        return NSPanel()
+      })
+    defer { controller.stopIntercomPresentation() }
+    let generation = state.captureGeneration
+    controller.startIntercomPresentation()
+    let windows = NSApp.windows.filter {
+      $0 is OverlayIntercomPanel && !priorWindows.contains(ObjectIdentifier($0))
+    }
+    XCTAssertGreaterThanOrEqual(windows.count, 2, "header and the saved detached inbox")
+    XCTAssertTrue(windows.allSatisfy(\.isVisible))
+    let staleReveal = try XCTUnwrap(state.onRevealIntercom)
+    let staleChooser = try XCTUnwrap(state.agentChooserHost)
+    let reads = preferenceReads
+
+    persistedEnabled = false
+    controller.overlayPreferenceChanged()
+    XCTAssertEqual(preferenceReads, reads + 1, "one persisted snapshot per notification")
+    XCTAssertNil(state.agentChooserHost)
+    XCTAssertTrue(windows.allSatisfy { !$0.isVisible })
+    staleReveal()
+    staleChooser.open("0")
+    XCTAssertTrue(windows.allSatisfy { !$0.isVisible }, "stale actions cannot revive windows")
+    preference.selectMode(.horizontal)
+    for _ in 0..<5 { await Task.yield() }
+    preference.selectMode(.vertical)
+    for _ in 0..<5 { await Task.yield() }
+    XCTAssertTrue(windows.allSatisfy { !$0.isVisible }, "layout observation keeps Off")
+
+    persistedEnabled = true
+    controller.overlayPreferenceChanged()
+    XCTAssertTrue(windows.allSatisfy(\.isVisible))
+    controller.overlayPreferenceChanged()  // A rejected Off write still reads true.
+    XCTAssertTrue(windows.allSatisfy(\.isVisible))
+    XCTAssertEqual(store.load(), desktop)
+    XCTAssertEqual(state.conversationDrafts["0"], "retained draft")
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+  }
+
+  func testIntercomStartsHiddenWhenPersistedOverlayPreferenceIsOff() throws {
+    let suite = "CodescribeTests.intercom-hidden-start.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    state.channelMapPreference = OverlayChannelMapPreference(defaults: defaults)
+    state.channelMapPreference.selectMode(.vertical)
+    let priorWindows = Set(NSApp.windows.map(ObjectIdentifier.init))
+    let controller = OverlayController(
+      state: state, intercomDesktopStore: OverlayIntercomDesktopStore(defaults: defaults),
+      overlayEnabledProvider: { false }, assistiveStatusProvider: { false })
+    defer { controller.stopIntercomPresentation() }
+    controller.startIntercomPresentation()
+    XCTAssertNil(state.agentChooserHost)
+    XCTAssertFalse(
+      NSApp.windows.contains {
+        $0 is OverlayIntercomPanel && !priorWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+      })
+  }
+
   func testIntercomPreviewBoundsRowsWithoutChangingTheConversationOrStandardDefaults() {
     let messages = (0..<6).map { index in
       OverlayConversationMessage(
