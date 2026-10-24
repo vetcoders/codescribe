@@ -88,30 +88,11 @@ through their normal hangup path before admitting dictation (Founder delivery
 Each channel releases its PCM feed before dictation admission. Its retained
 terminal task then joins and publishes the final receipt; its words are retained.
 For hold gestures, handover waits until the existing start delay has elapsed.
-The modifier alone can still become a channel chord or be released without a
-take; an explicit channel gesture cancels that pending ordinary hold.
-When the hold's base key is also the agent-channel modifier (`HoldFn` with
-`AGENT_CHANNEL_MODIFIER=fn`, `HoldCtrl` with `ctrl`) and a channel is open,
-the elapsed delay admits nothing: the hold stays the chord's prefix, the
-channel survives, no hang-up receipt is written, and the digit chord is the
-only way to close it (Founder, 2026-10-22: a Fn held past the delay before the
-digit hung up the channel, the digit reopened it, and the reopened microphone
-fed Whisper silence). Dictation on that key starts only once no channel is
-open; the toggle gestures and the other hold presets are unaffected.
-With no channel open, the same hold can already be admitted (`RecHold`) when
-the digit arrives. An explicit channel gesture then opens the channel beside
-that take and ends the take as the chord's prefix (Founder, 2026-10-23: the
-key-up after such a chord pasted a stray word into the terminal). The channel
-opens first so it shares the live capture instead of waiting out the take's
-stop grace and recognizer drain. The rule covers only a non-assistive Raw hold
-whose base key is the channel modifier, the same pairs as above. The recorder's
-discard stop releases the take's capture under the serial transition lock; the
-open channel keeps its pointer badge; nothing is pasted, copied, routed or sent to an agent,
-no session archive is written, and the Bus session ends with
-`end_reason: chord_prefix` (phase `no_speech`, every overlay action off), which
-the overlay receives as its lifecycle terminal. The controller is Idle again,
-so the later key-up is a no-op. Holds on another key, assistive holds and
-toggle takes keep running beside the opened channel as before.
+A hold key released inside the delay starts no take, and an explicit channel
+gesture during the delay (an agents-list click) cancels that pending hold.
+The channel modifier never records (one key, one role, below), so a hold or
+toggle take is never a channel chord's prefix. A take on another key keeps
+running beside a channel opened from the agents list.
 The same unified overlay then shows My dictation. Channel auto-reopening shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
