@@ -97,6 +97,9 @@ struct OverlayConversationView: View {
   /// A bounded text preview in a stretched group card; opening the full
   /// conversation restores the complete body without changing its document.
   var messagePreviewLineLimit: Int? = nil
+  /// Group previews bound eager row construction; full presentations retain
+  /// the ordinary history window. This slices the projection, never the source.
+  var messageWindowLimit: Int? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -139,7 +142,10 @@ struct OverlayConversationView: View {
           owner: owner, busPath: message.busPath, text: text)
       }
 
-  var orderedMessages: [OverlayConversationMessage] { conversation.messages }
+  var orderedMessages: [OverlayConversationMessage] {
+    guard let messageWindowLimit else { return conversation.messages }
+    return Array(conversation.messages.suffix(max(0, messageWindowLimit)))
+  }
   private var followsLatest: Bool { scrollFollow.followingLive }
   private var contentInset: CGFloat { presentation == .intercom ? 12 : 20 }
   private var visibleComposerHeight: CGFloat { showsComposer ? composerHeight : 0 }
@@ -269,6 +275,11 @@ struct OverlayConversationView: View {
             scrollToLatest(proxy)
           }
           rememberScrollFocusAnchor()
+        }
+        .onChange(of: messageWindowLimit) { _, _ in
+          // Opening a preview restores the ordinary history window instead of
+          // leaving its three-row start pinned inside the complete projection.
+          settleMessageWindow(reset: true)
         }
         .onChange(of: focusRevision) { _, _ in
           let reselectingOpenConversation =

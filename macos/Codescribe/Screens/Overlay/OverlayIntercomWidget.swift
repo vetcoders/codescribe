@@ -1444,7 +1444,8 @@ private struct OverlayIntercomCard: View {
       state: state, conversation: conversation, palette: palette,
       focusRevision: controller.focusRevisions[identity] ?? 0,
       presentation: .intercom, showsComposer: showsComposer,
-      messagePreviewLineLimit: preview ? 3 : nil)
+      messagePreviewLineLimit: preview ? 3 : nil,
+      messageWindowLimit: preview ? 3 : nil)
   }
 }
 
@@ -1622,6 +1623,7 @@ private struct OverlayIntercomConversationBody: View {
   var presentation: OverlayConversationPresentation = .standard
   var showsComposer = true
   var messagePreviewLineLimit: Int? = nil
+  var messageWindowLimit: Int? = nil
 
   var body: some View {
     OverlayConversationView(
@@ -1641,6 +1643,7 @@ private struct OverlayIntercomConversationBody: View {
       hidesNavigation: true,
       presentation: presentation, showsComposer: showsComposer,
       messagePreviewLineLimit: messagePreviewLineLimit,
+      messageWindowLimit: messageWindowLimit,
       onComposerEditorActive: { state.noteComposerEditorActive($0) },
       onComposerTypingActivity: { state.noteComposerTypingActivity() },
       replySelection: state.conversationReplies[conversation.id],
