@@ -359,6 +359,8 @@ struct WaveformMotionStrip: NSViewRepresentable {
   }
 
   static func dismantleNSView(_ view: WaveformMotionView, coordinator: ()) {
+    NotificationCenter.default.removeObserver(
+      view, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
     view.stopGainPolling()
   }
 }
@@ -383,6 +385,8 @@ final class WaveformMotionView: NSView {
   private var shownGain: Double?
   private var hasShownGain = false
   private var gainTimer: Timer?
+
+  var isPollingGain: Bool { gainTimer?.isValid == true }
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -411,8 +415,38 @@ final class WaveformMotionView: NSView {
     sync()
   }
 
+  override func viewWillMove(toWindow newWindow: NSWindow?) {
+    super.viewWillMove(toWindow: newWindow)
+    NotificationCenter.default.removeObserver(
+      self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+    stopGainPolling()
+  }
+
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
+    if let window {
+      // Cached panels keep their content when ordered out. Keep observing this
+      // window while hidden so ordering it front resumes the same strip.
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(windowVisibilityChanged(_:)),
+        name: NSWindow.didChangeOcclusionStateNotification, object: window)
+    }
+    updateGainPolling()
+  }
+
+  override func viewDidHide() {
+    super.viewDidHide()
+    updateGainPolling()
+  }
+
+  override func viewDidUnhide() {
+    super.viewDidUnhide()
+    updateGainPolling()
+  }
+
+  @objc private func windowVisibilityChanged(_ notification: Notification) {
+    // Read the current host; visibility of the main overlay says nothing about
+    // another explicitly visible window containing this view.
     updateGainPolling()
   }
 
@@ -572,12 +606,15 @@ final class WaveformMotionView: NSView {
 
   private func updateGainPolling() {
     let polls =
-      window != nil && configuration?.meter != nil && configuration?.transcribing == false
+      window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+      && !isHiddenOrHasHiddenAncestor
+      && configuration?.meter != nil && configuration?.transcribing == false
     guard polls != (gainTimer != nil) else { return }
     if !polls {
       stopGainPolling()
       return
     }
+    refreshGain()
     let timer = Timer(timeInterval: Self.gainPollInterval, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.refreshGain() }
     }
