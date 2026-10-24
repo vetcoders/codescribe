@@ -111,6 +111,9 @@ ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
 EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
 ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
 AGENT_USER_MESSAGE_SCHEMA = "codescribe.agent-user-message.v1"
+# The Founder's own lane: typed words are sent from channel 10, never from the
+# recipient whose mailbox carries the copy.
+FOUNDER_SENDER = {"name": "founder", "channel": "10"}
 CAPTURE_ATTACHMENT_SCHEMA = "codescribe.capture-attachment.v1"
 CAPTURE_ATTACHMENT_COMMIT_SCHEMA = "codescribe.capture-attachment-commit.v1"
 DELIVERY_CONTROL_SCHEMA = "codescribe.delivery-control.v1"
@@ -1756,8 +1759,11 @@ def consider(
         audience = event.get("audience")
         if not isinstance(audience, str) or not name or audience.casefold() != name.casefold():
             return None
+        # The owner fields name the recipient; the delivery names who wrote it.
+        # Rows written before the sender existed get the same Founder sender.
         return {**event, "schema": EVENT_SCHEMA, "kind": "message",
                 "channel": event.get("origin_channel", event.get("channel")),
+                "name": FOUNDER_SENDER["name"], "sender": dict(FOUNDER_SENDER),
                 "producer_schema": AGENT_USER_MESSAGE_SCHEMA, "state_change_allowed": True,
                 "routing_match": "audience"}
     status = event.get("status")
@@ -6636,16 +6642,44 @@ def channel_speech_now(runtime: Path, channel: str, session_id: str) -> dict[str
     return row
 
 
-def channel_quiet_for_playback(runtime: Path) -> Callable[[str, str], bool]:
+def reply_channels(root: Path, control: ReplyPlaybackControl | None) -> frozenset[str]:
+    """The channels bound to the agent whose reply is about to play.
+
+    An unknown speaker, or an unreadable binding file, owns no channel.
+    """
+    if control is None:
+        return frozenset()
+    state = read_json(root / AUDIENCE_BINDING_FILENAME)
+    bindings = state.get("bindings") if state and state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return frozenset()
+    provider = str(control.reply["provider"]).casefold()
+    session = control.reply["provider_session_id"]
+    return frozenset(
+        channel for channel, binding in bindings.items()
+        if isinstance(binding, dict)
+        and str(binding.get("provider", "")).casefold() == provider
+        and binding.get("provider_session_id") == session
+    )
+
+
+def channel_quiet_for_playback(
+    runtime: Path, root: Path, control: ReplyPlaybackControl | None
+) -> Callable[[str, str], bool]:
     """An open channel admits a reply after measured quiet.
 
     ``fresh`` is a session whose voice detector has reported no speech since
     it opened (the reopen after a silence seal); ``unmeasured`` is a broken
-    edge chain and never counts as quiet.
+    edge chain and never counts as quiet. ``quiet`` follows speech inside the
+    take and admits only the agent that channel addresses: a pause in a
+    message to one agent is not room for another (Monika, 2026-10-23 06:58,
+    UI-86: "Roman na 3 kanale zaczął odtwarzać swoją wiadomość głosową").
     """
     def released(channel: str, session_id: str) -> bool:
         row = channel_speech_now(runtime, channel, session_id)
         if row is None or row["phase"] not in ("fresh", "quiet"):
+            return False
+        if row["phase"] == "quiet" and channel not in reply_channels(root, control):
             return False
         # The channel heard nothing while the previous reply played, so quiet
         # is measured again from that reply's end.
@@ -6732,6 +6766,7 @@ def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
     control: ReplyPlaybackControl | None = None,
     channel_released: Callable[[str, str], bool] | None = None,
+    save_cursor: bool = True,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
@@ -6748,7 +6783,8 @@ def _wait_for_take_end(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
             deadline=deadline, channel_released=channel_released,
         )
-        _save_lifecycle_cursor(bus, root, cursor)
+        if save_cursor:
+            _save_lifecycle_cursor(bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -6764,6 +6800,17 @@ def _wait_for_take_end(
             continue
         time.sleep(min(PLAYBACK_POLL_SECONDS, remaining))
     return False
+
+
+def _playback_finished(player: Any, streaming: bool, stream_finished: bool) -> bool:
+    """True once the player has exited, so every queued sample was heard.
+
+    A stream counts only after its last chunk arrived; the player's own poll
+    decides, never the elapsed PCM duration.
+    """
+    if player is None or (streaming and not stream_finished):
+        return False
+    return player.poll() is not None
 
 
 def _stop_playback(player: Any) -> None:
@@ -6815,17 +6862,31 @@ def _play_pcm_24k(
         lock_descriptor = os.open(
             runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
         )
-        if not _acquire_playback_lock(lock_descriptor, control):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
-        # A take may have started during synthesis or the lock wait. An open
-        # channel admits the reply once the app measures quiet on it.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(
-            speech_bus, cursor, bridge_root=root, control=control,
-            channel_released=channel_quiet_for_playback(runtime),
-        ):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+        released = channel_quiet_for_playback(runtime, root, control)
+        # Eligibility waits keep their parser progress private. Only the player
+        # lock holder writes the shared lifecycle checkpoint.
+        admission_deadline = time.monotonic() + TAKE_WAIT_SECONDS + PLAYBACK_WAIT_SECONDS
+        while True:
+            if time.monotonic() >= admission_deadline or not _wait_for_take_end(
+                speech_bus, cursor, bridge_root=root, control=control,
+                channel_released=released, save_cursor=False,
+            ):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+            if not _acquire_playback_lock(lock_descriptor, control):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
+            # Revalidate after lock contention; a new take or a changed binding
+            # sends this reply back to eligibility without blocking another one.
+            idle = installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+                deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
+                channel_released=released,
+            )
+            _save_lifecycle_cursor(speech_bus, root, cursor)
+            if idle:
+                break
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
         if control is not None and control.stopped():
             return False, "playback stopped", "stopped"
         kept = channel_keeps_playback(runtime, _open_channels(cursor))
@@ -6851,20 +6912,24 @@ def _play_pcm_24k(
                 deadline=scan_deadline, channel_released=kept,
             )
             _save_lifecycle_cursor(speech_bus, root, cursor)
+            refuse = False
             if idle:
                 incomplete_scans = 0
             elif time.monotonic() < scan_deadline and _cursor_holds_take(cursor, kept):
                 # The scan finished inside its budget and found a live take.
-                _stop_playback(player)
-                return False, "take started during playback", "take_started"
+                refuse = True
             else:
                 # A loaded machine or a bus that grew mid-scan, not a take:
                 # the retained cursor resumes next tick. Only a run of
                 # unfinished scans stops the voice.
                 incomplete_scans += 1
-                if incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT:
-                    _stop_playback(player)
-                    return False, "take started during playback", "take_started"
+                refuse = incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT
+            if refuse and not _playback_finished(player, streaming, stream_finished):
+                _stop_playback(player)
+                return False, "take started during playback", "take_started"
+            # A player that ended before the refusal played every sample: a take
+            # that starts after the last sample cannot unsay the reply, so the
+            # result below reports what the player did (Founder, 2026-10-23).
             if streaming and not stream_finished and (player is None or player.can_enqueue()):
                 event = pcm.poll_audio()
                 if event is not None:
@@ -8027,7 +8092,7 @@ def send_text_command(args: argparse.Namespace) -> int:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
                      "source": "typed", "text": text, "emitted_at": emitted_at,
-                     "recipients": [owner]}
+                     "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
             if user_reply is not None:
                 event["user_reply_to"] = user_reply
             if attachments:
