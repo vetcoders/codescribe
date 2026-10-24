@@ -20,6 +20,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
+  #if DEBUG
+    @ObservationIgnored private(set) var reconciliationRequests = 0
+  #endif
   /// Mouse deltas are absolute from mouse-down. Keep the whole group's frame
   /// as the baseline.
   @ObservationIgnored private var groupResizeGesture:
@@ -139,6 +142,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func reconcile(chips: [OverlayChannelMapChip], scale: CGFloat) {
+    #if DEBUG
+      reconciliationRequests += 1
+    #endif
     guard !invalidated, visible, let header else { return }
     if availableHeight != screenFrame.height { availableHeight = screenFrame.height }
     identities = intercomIdentities(state: state, chips: chips)
@@ -401,7 +407,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func focusInstance(_ id: UUID) {
-    guard visible, let panel = instancePanels[id], instance(for: id)?.minimized == false else { return }
+    guard visible, let panel = instancePanels[id], instance(for: id)?.minimized == false else {
+      return
+    }
     instanceFocusRevisions[id, default: 0] &+= 1
     panel.makeKeyAndOrderFront(nil)
   }
@@ -1122,17 +1130,87 @@ private struct OverlayIntercomHeader: View {
 
 /// Native placement observes the existing projection, including owner changes
 /// behind an unchanged digit/name. No callback, reader or poller is installed.
-private struct OverlayIntercomWindowProjection: NSViewRepresentable {
+struct OverlayIntercomWindowProjection: NSViewRepresentable {
   @Environment(\.csTextScale) private var scale
   let chips: [OverlayChannelMapChip]
   let identities: [OverlayIntercomCardIdentity]
   weak var controller: OverlayIntercomWidgetController?
 
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
   func makeNSView(context: Context) -> NSView { NSView() }
+
   func updateNSView(_ nsView: NSView, context: Context) {
-    let scale = scale
-    Task { @MainActor [weak controller] in
-      controller?.reconcile(chips: chips, scale: scale)
+    context.coordinator.submit(
+      chips: chips, identities: identities, scale: scale, controller: controller)
+  }
+
+  static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+    coordinator.cancel()
+  }
+
+  @MainActor
+  final class Coordinator {
+    private weak var controller: OverlayIntercomWidgetController?
+    private var chips: [OverlayChannelMapChip]?
+    private var identities: [OverlayIntercomCardIdentity]?
+    private var scale: CGFloat?
+    private var visibleFrames: [CGRect]?
+    private var pendingTask: Task<Void, Never>?
+    private var generation: UInt64 = 0
+
+    func submit(
+      chips: [OverlayChannelMapChip], identities: [OverlayIntercomCardIdentity], scale: CGFloat,
+      controller: OverlayIntercomWidgetController?, visibleFrames: [CGRect]? = nil
+    ) {
+      guard let controller else {
+        cancel()
+        return
+      }
+      let visibleFrames = visibleFrames ?? NSScreen.screens.map(\.visibleFrame)
+
+      // Card identity deliberately excludes its display name; placement also
+      // depends on the label's measured width.
+      let sameIdentities =
+        self.identities?.elementsEqual(identities) {
+          $0 == $1 && $0.name == $1.name
+        } ?? false
+      guard
+        self.controller !== controller || self.chips != chips
+          || !sameIdentities || self.scale != scale || self.visibleFrames != visibleFrames
+      else { return }
+
+      self.controller = controller
+      self.chips = chips
+      self.identities = identities
+      self.scale = scale
+      self.visibleFrames = visibleFrames
+      guard pendingTask == nil else { return }
+
+      generation &+= 1
+      let generation = generation
+      pendingTask = Task { @MainActor [weak self] in
+        // Let same-turn representable updates replace these inputs before the
+        // existing controller path performs its geometry reconciliation.
+        await Task.yield()
+        guard let self, !Task.isCancelled, self.generation == generation else { return }
+        self.pendingTask = nil
+        guard let controller = self.controller, let chips = self.chips,
+          let scale = self.scale
+        else { return }
+        controller.reconcile(chips: chips, scale: scale)
+      }
+    }
+
+    func cancel() {
+      generation &+= 1
+      pendingTask?.cancel()
+      pendingTask = nil
+      controller = nil
+      chips = nil
+      identities = nil
+      scale = nil
+      visibleFrames = nil
     }
   }
 }
