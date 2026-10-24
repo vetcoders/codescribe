@@ -12,6 +12,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let textScale: TextScaleController
   @ObservationIgnored private let revealConversation: () -> Void
   @ObservationIgnored private let desktopStore: OverlayIntercomDesktopStore
+  @ObservationIgnored private let diagnosticLog: DiagnosticLog?
   @ObservationIgnored private var header: OverlayIntercomPanel?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
   @ObservationIgnored private var instancePanels: [UUID: OverlayIntercomPanel] = [:]
@@ -40,12 +41,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// animation wins — the stack of fiszki left wide after a quick sweep
   /// (Maciej's recording, 2026-10-23 09:05). Compare against the target.
   @ObservationIgnored private var cardTargets: [OverlayIntercomCardIdentity: CGRect] = [:]
-  fileprivate private(set) var rowOffset = 0
+  private(set) var rowOffset = 0
   fileprivate private(set) var availableHeight: CGFloat = 900
-  fileprivate private(set) var presentation = OverlayIntercomPresentation()
+  private(set) var presentation = OverlayIntercomPresentation()
   fileprivate private(set) var focusRevisions: [OverlayIntercomCardIdentity: UInt64] = [:]
   /// The durable desktop: detached fiszki and the group's content geometry.
-  fileprivate private(set) var desktop: OverlayIntercomDesktopState
+  private(set) var desktop: OverlayIntercomDesktopState
   fileprivate private(set) var instanceFocusRevisions: [UUID: UInt64] = [:]
   private struct DockedLayout {
     let desktop: OverlayIntercomDesktopState
@@ -57,15 +58,25 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   var canRestoreDockedLayout: Bool { dockedLayout != nil }
 
+  /// Read the existing owner windows without creating or presenting a panel.
+  var interactionWindowCounts: (owned: Int, visible: Int, key: Int) {
+    let panels = [header].compactMap { $0 } + Array(cards.values) + Array(instancePanels.values)
+    return (
+      panels.count, panels.filter(\.isVisible).count, panels.filter(\.isKeyWindow).count
+    )
+  }
+
   init(
     state: OverlayState, textScale: TextScaleController,
     revealConversation: @escaping () -> Void = {},
-    desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore()
+    desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
+    diagnosticLog: DiagnosticLog? = nil
   ) {
     self.state = state
     self.textScale = textScale
     self.revealConversation = revealConversation
     self.desktopStore = desktopStore
+    self.diagnosticLog = diagnosticLog
     desktop = desktopStore.load()
     super.init()
   }
@@ -102,6 +113,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   private func saveDesktop() {
     desktopStore.save(desktop)
+  }
+
+  private func beginInteraction(action: StaticString) -> DiagnosticLog.Interaction {
+    diagnosticLog?.beginInteraction(action: action, surface: "intercom")
+      ?? DiagnosticLog.beginInteraction(action: action, surface: "intercom")
   }
 
   func setVisible(_ visible: Bool, relativeTo anchor: NSWindow?) {
@@ -373,13 +389,19 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// X is a window operation: the saved fiszka stays recorded as closed and
   /// detaching the same conversation reopens it. No disconnect, no archive.
   /// The agent's row comes back into the group.
-  fileprivate func closeInstance(_ id: UUID) {
-    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+  func closeInstance(_ id: UUID) {
+    let interaction = beginInteraction(action: "intercom.instance.dock")
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else {
+      interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .notFound)
+      return
+    }
+    let wasClosed = desktop.instances[index].closed
     instancePanels[id]?.resignKey()
     desktop.instances[index].closed = true
     saveDesktop()
     materializeInstances()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    interaction.finish(.unverified, effect: wasClosed ? .noChange : .stateChanged, cleanup: .pending)
   }
 
   fileprivate func resizeInstance(
@@ -424,12 +446,18 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     desktop.instances.filter(\.closed)
   }
 
-  fileprivate func reopenInstance(_ id: UUID) {
-    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+  func reopenInstance(_ id: UUID) {
+    let interaction = beginInteraction(action: "intercom.instance.reopenSaved")
+    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else {
+      interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .notFound)
+      return
+    }
+    let wasClosed = desktop.instances[index].closed
     desktop.instances[index].closed = false
     saveDesktop()
     materializeInstances()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    interaction.finish(.unverified, effect: wasClosed ? .stateChanged : .noChange, cleanup: .pending)
   }
 
   fileprivate func scrollGroup(_ steps: Int) {
@@ -582,14 +610,23 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   func toggleGroup() {
+    let action: StaticString = presentation.folded ? "intercom.group.unfold" : "intercom.group.fold"
+    let interaction = beginInteraction(action: action)
     presentation.folded.toggle()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
   }
 
   /// Separate from group folding: the global control returns to the window
   /// presentation from before docking, without snapshotting conversation truth.
   func toggleDockAll() {
-    guard !invalidated else { return }
+    let action: StaticString =
+      dockedLayout == nil ? "intercom.desktop.dock" : "intercom.desktop.restore"
+    let interaction = beginInteraction(action: action)
+    guard !invalidated else {
+      interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .lifetimeEnded)
+      return
+    }
     if let previous = dockedLayout {
       dockedLayout = nil
       let previousIDs = Set(previous.desktop.instances.map(\.id))
@@ -608,6 +645,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         desktop: desktop, presentation: presentation, rowOffset: rowOffset, sizes: sizes)
       hideAll()
     }
+    // Mutation is observed; native visibility/focus and animation cleanup are not.
+    interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
   }
 
   /// Dock every open fiszka and fold the group in one presentation transaction.
@@ -715,13 +754,21 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// Returns whether this card's panel became that window, so the grip knows
   /// whether there is anything to drag.
   @discardableResult
-  fileprivate func detach(_ identity: OverlayIntercomCardIdentity) -> Bool {
-    guard identity.canExpand else { return false }
-    if let open = desktop.openInstance(for: identity) {
-      close(identity)
-      showInstance(open.id)
+  func detach(_ identity: OverlayIntercomCardIdentity) -> Bool {
+    guard identity.canExpand else {
+      let interaction = beginInteraction(action: "intercom.instance.detach")
+      interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .ownerMismatch)
       return false
     }
+    if let open = desktop.openInstance(for: identity) {
+      let interaction = beginInteraction(action: "intercom.instance.revealExisting")
+      close(identity)
+      showInstance(open.id)
+      // An attempted reveal is not a verified raise, mini restore or focus.
+      interaction.finish(.unverified, effect: .unverified, cleanup: .unverified)
+      return false
+    }
+    let interaction = beginInteraction(action: "intercom.instance.detach")
     var frame = cards[identity]?.frame
     if !presentation.expanded.contains(identity), let current = frame {
       let size = OverlayIntercomWidgetLayout.conversationSize(scale: effectiveScale)
@@ -733,6 +780,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     let detached = detachIntoInstance(identity, frame: frame) != nil
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    interaction.finish(
+      detached ? .unverified : .refused, effect: detached ? .stateChanged : .noChange,
+      cleanup: detached ? .pending : .notRequired, reason: detached ? .none : .ownerMismatch)
     return detached
   }
 
