@@ -277,21 +277,29 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertLessThanOrEqual(Layout.gap, 4, "the stack reads as one list")
   }
 
-  func testScreenHeightLimitsControlStackingWithoutEnlargingTheGlyphs() {
+  func testTallCardsPageWithoutShrinkingTheirControlsToFitEverySibling() {
     let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
     let minimum = metrics.minimumGroupSize(count: 4)
     let row = metrics.fittedCardHeight(200, count: 4, available: minimum.height)
-    XCTAssertEqual(row, metrics.iconSide)
-    XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .name)
+    XCTAssertEqual(row, minimum.height - Layout.controlHeight(scale: 1) - Layout.gap)
+    XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: row), .actions)
+    XCTAssertEqual(metrics.nameFontSize, 11)
+    XCTAssertEqual(metrics.digitFontSize, 10)
     let tall = metrics.fittedCardHeight(200, count: 4, available: 700)
     XCTAssertGreaterThanOrEqual(tall, 2 * metrics.iconSide)
     let screen = CGRect(x: 0, y: 0, width: 1000, height: 700)
     let header = Layout.clampedHeader(
-      CGRect(x: 900, y: 10, width: 200, height: 30),
+      CGRect(x: 900, y: screen.maxY - 30, width: 200, height: 30),
       count: 4, visibleFrame: screen, cardHeight: tall)
-    for index in 0..<4 {
+    let shown = Layout.visibleRange(
+      count: 4, offset: 0, visibleHeight: screen.height, scale: 1, cardHeight: tall)
+    XCTAssertEqual(shown, 0..<3)
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 4, offset: 3, visibleHeight: screen.height, scale: 1, cardHeight: tall), 1..<4)
+    for index in 0..<shown.count {
       let frame = Layout.rowFrame(
-        index: index, header: header, count: 4,
+        index: index, header: header, count: shown.count,
         visibleFrame: screen, cardHeight: tall)
       XCTAssertTrue(screen.contains(frame))
       XCTAssertEqual(frame.height, tall)
@@ -461,7 +469,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           ).count
           XCTAssertGreaterThan(shown, 0)
           let header = Layout.clampedHeader(
-            CGRect(x: visible.maxX + 600, y: visible.minY - 200, width: 300, height: 30),
+            CGRect(x: visible.maxX + 600, y: visible.maxY + 200, width: 300, height: 30),
             count: shown, visibleFrame: visible, scale: scale)
           XCTAssertTrue(visible.contains(header))
           XCTAssertEqual(header.height, Layout.controlHeight(scale: scale))

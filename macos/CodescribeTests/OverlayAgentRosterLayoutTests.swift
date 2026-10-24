@@ -247,7 +247,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(body.contains("sides: true,"))
     XCTAssertTrue(
       body.contains("from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)"))
-    XCTAssertTrue(body.contains("alignment: expanded ? .top : .center"), "content in the middle")
+    XCTAssertTrue(
+      body.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)"),
+      "progressive content starts under the fixed header")
     let handles = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
       to: "private struct OverlayIntercomInstanceCard: View {")
