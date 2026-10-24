@@ -1213,6 +1213,33 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: kept), keptBytes)
   }
 
+  /// PR #197 review: a retry after a failed cleanup still holds the marks of a
+  /// unit an earlier save evicted. Counted as zero bytes, that unit came back as
+  /// retained with no file, so a successful checkpoint could not restore it.
+  func testCursorStoreRetryWritesOrEvictsAnUnchangedUnitWhoseFileIsGone() throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let marks = [
+      "/buses/a.jsonl": cacheMark(10, projectionBytes: 1_000),
+      "/buses/b.jsonl": cacheMark(20, projectionBytes: 5_000),
+    ]
+    try OverlayDeliveryCursorStore.save(root: fixture.root, marks: marks)
+    try FileManager.default.removeItem(
+      at: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl"))
+
+    let retained = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: marks, changed: [])
+    XCTAssertEqual(retained, marks, "Within budget the missing unit is written again")
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), retained)
+
+    try FileManager.default.removeItem(
+      at: OverlayDeliveryCursorStore.url(root: fixture.root, bus: "/buses/b.jsonl"))
+    let tight = try OverlayDeliveryCursorStore.save(
+      root: fixture.root, marks: marks, changed: [], budget: 2_000)
+    XCTAssertEqual(Set(tight.keys), ["/buses/a.jsonl"], "Over budget it is evicted, not kept")
+    XCTAssertEqual(OverlayDeliveryCursorStore.load(root: fixture.root), tight)
+  }
+
   func testCursorStoreDeletesTheUnitOfABusNoLongerInUse() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
