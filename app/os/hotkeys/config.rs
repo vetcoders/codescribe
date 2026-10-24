@@ -312,7 +312,8 @@ pub fn get_double_tap_interval_ms() -> u64 {
 // Channel digits default to Ctrl so a passed-through chord does not type into
 // the frontmost app. Fn tap and middle-mouse-as-Fn stay off until chosen.
 
-/// 0 = Ctrl (default), 1 = Fn. Command is not a stored value.
+/// 0 = Ctrl (default), 1 = Fn, 2 = Off (both keys record; no digit chord).
+/// Command is not a stored value.
 static CHANNEL_MODIFIER: AtomicU8 = AtomicU8::new(0);
 /// Quick Fn press below the hold delay toggles dictation.
 static FN_TAP_TOGGLES_DICTATION: AtomicBool = AtomicBool::new(false);
@@ -325,12 +326,14 @@ fn encode_channel_modifier(modifier: ChannelModifier) -> u8 {
     match modifier {
         ChannelModifier::Ctrl => 0,
         ChannelModifier::Fn => 1,
+        ChannelModifier::Off => 2,
     }
 }
 
 fn decode_channel_modifier(value: u8) -> ChannelModifier {
     match value {
         1 => ChannelModifier::Fn,
+        2 => ChannelModifier::Off,
         _ => ChannelModifier::Ctrl,
     }
 }

@@ -59,8 +59,9 @@ the width to the user for the session: narrower than the natural width, it is
 kept and roster changes no longer resize the strip (the chips drop to digits
 or the counter); wider, it is kept and grows only when the natural width
 exceeds it. A map that cannot fit even its counter claims no width. Its
-shortcut hints read the Agent channel modifier from settings
-(`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn) and never assume Ctrl. A chip click is
+shortcut hints read the Agent channel modifier in effect
+(`AGENT_CHANNEL_MODIFIER` after the one-key-one-role rule, Ctrl or Fn) and never
+assume Ctrl. A chip click is
 passive selection, like a rail pill. The counter click changes form or width
 only: in mini it selects compact, as the form control's "Expand to compact
 widget" does; in a compact strip the user narrowed it forgets that width so
@@ -200,6 +201,41 @@ Canonical hotkey configuration is **mode-first**:
 - bindings are persisted in `~/Library/Application Support/Codescribe/settings.json`
 - legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
 - fixed application commands are a separate, non-configurable command plane and never become `WorkMode` bindings
+
+### One key, one role: recording keys are never the channel modifier
+
+The agent channel chord is a modifier (`AGENT_CHANNEL_MODIFIER`, Ctrl or Fn)
+plus a digit. A key that records dictation is never that modifier (Founder,
+2026-10-24: Fn+6 started a toggle dictation instead of channel 6).
+
+- Fn records when `Dictation=HoldFn` (Hold Fn/Globe) or the Fn tap
+  (`FN_TAP_TOGGLES_DICTATION`) is on.
+- Ctrl records when a work mode is bound to `HoldCtrl`, `HoldCtrlAlt`,
+  `HoldCtrlShift`, `HoldCtrlCmd` or `DoubleCtrl`.
+
+The loader applies the rule once, after every source (settings.json, `.env`,
+process env), when it resolves the configuration (`RecordingKeys`,
+core/config/types.rs; `Config::resolve_channel_modifier`,
+core/config/loader.rs). A requested key that records gives way to the other
+key. When both keys record, the modifier in effect is `off`: no digit chord
+opens a channel and the overlay's agents list is the way to open one. The
+hotkey detector, the controller, the overlay hints and Settings read the
+resolved value; none of them re-checks the rule. The stored choice in
+settings.json is not rewritten: it applies again as soon as its key stops
+recording. The loader logs `agent channel modifier resolved` once per distinct
+outcome.
+
+Settings › Shortcuts › Extra shortcuts greys out the key that records in the
+Agent channel picker, selects the modifier in effect and adds one sentence
+that says what frees the key, naming only what records with it now: for Fn
+"Fn records dictation — to use it for channels, assign dictation to another
+shortcut and turn off the Fn tap." (either clause alone when only the Hold
+Fn/Globe binding or only the Fn tap records; turning the tap off does not free
+Fn while dictation holds Fn), for Ctrl "Ctrl records dictation — to use it for
+channels, assign dictation to another shortcut.", and with both keys recording
+"Ctrl and Fn both record dictation, so open Agent channels from the agents
+list." Turning on a recording gesture on the channel key moves the channel to
+the other key through the same rule.
 
 ### Agent summon command (not a recording mode)
 

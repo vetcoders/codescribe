@@ -372,13 +372,26 @@ struct ShortcutsPanel: View {
           title: "Agent channel",
           detail: "Ctrl or Fn plus a digit switches the Agent channel."
         ) {
+          // One key, one role: a key that records dictation is greyed out
+          // here, and the core already resolved the modifier in effect.
           Picker("Agent channel modifier", selection: channelModifierBinding) {
             Text(verbatim: "Ctrl").tag("ctrl")
+              .disabled(!model.channelModifierCtrlAvailable)
             Text(verbatim: "Fn").tag("fn")
+              .disabled(!model.channelModifierFnAvailable)
           }
           .pickerStyle(.segmented)
           .labelsHidden()
           .frame(maxWidth: 160)
+        }
+        if let note = model.channelModifierRecordingNote {
+          Text(note)
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, SettingsScale.rowInsetH)
+            .padding(.bottom, SettingsScale.rowInsetV)
         }
         divider
         inputSurfaceRow(

@@ -1128,6 +1128,7 @@ pub(super) fn channel_chord_matches(
     match modifier {
         ChannelModifier::Ctrl => modifiers.ctrl && !modifiers.fn_key,
         ChannelModifier::Fn => modifiers.fn_key && !modifiers.ctrl,
+        ChannelModifier::Off => false,
     }
 }
 
@@ -3246,6 +3247,67 @@ mod tests {
                 mode: HoldMode::Raw,
             })
         );
+    }
+
+    /// The Founder's settings after the loader applied one key, one role:
+    /// Hold Fn/Globe and the Fn tap record, so the channel modifier in effect
+    /// is Ctrl. Fn+6 is never a channel chord and Ctrl+6 always is.
+    #[test]
+    fn resolved_ctrl_channel_beside_fn_recording_keeps_each_key_to_one_role() {
+        let mut config = fn_hold_double_option_config();
+        config.fn_tap_toggles_dictation = true;
+        let keys = crate::config::RecordingKeys::from_bindings(
+            [
+                config.mode_bindings.dictation,
+                config.mode_bindings.formatting,
+                config.mode_bindings.assistive,
+            ],
+            config.fn_tap_toggles_dictation,
+        );
+        config.channel_modifier = keys.channel_modifier(ChannelModifier::Fn);
+        assert_eq!(config.channel_modifier, ChannelModifier::Ctrl);
+
+        let base = Instant::now();
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(fn_edge(&mut detector, config, base, true), None);
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                base + Duration::from_millis(40),
+                6,
+                mods(false, false, false, false, true)
+            ),
+            None,
+            "Fn+6 is not a channel chord"
+        );
+        let mut detector = HotkeyDetector::default();
+        assert_eq!(
+            digit_down(
+                &mut detector,
+                config,
+                base,
+                6,
+                mods(true, false, false, false, false)
+            ),
+            Some(HotkeyEvent::AgentChannel { digit: 6 })
+        );
+    }
+
+    /// Both keys record: the snapshot carries `Off` and no digit chord opens
+    /// a channel, with either modifier.
+    #[test]
+    fn no_digit_chord_opens_a_channel_when_both_keys_record() {
+        let mut config = fn_hold_double_option_config();
+        config.channel_modifier = ChannelModifier::Off;
+        let base = Instant::now();
+        for modifiers in [
+            mods(true, false, false, false, false),
+            mods(false, false, false, false, true),
+        ] {
+            let mut detector = HotkeyDetector::default();
+            assert_eq!(digit_down(&mut detector, config, base, 6, modifiers), None);
+        }
     }
 
     fn middle(

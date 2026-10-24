@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Shortcuts: a key that records dictation is no longer also the Agent channel modifier. With Hold Fn/Globe or the Fn tap on, Fn+digit no longer starts a dictation instead of the channel: the channel uses Ctrl, and Settings › Shortcuts greys out Fn and says why in one sentence. The same holds for Ctrl when a Ctrl gesture records; with both keys recording, channels open from the agents list. Your stored choice is kept and applies again once its key stops recording.
 - Agent voice replies: a reply heard to its last sample no longer reports `refused` / `take_started` with `spoken: false` when a take starts right after it (Fn+4 pressed as the reply ends) or when bus scans overran while the player was exiting. The helper asks the player whether it has exited before refusing, so the receipt and the overlay match what was heard; a take that starts while audio is still playing still stops it.
 
 - Overlay: the agent conversation cache no longer rewrites every conversation every 30 seconds. Each conversation source now has its own cache file and a checkpoint saves only the ones that changed, which cuts the disk writes macOS had flagged Codescribe for: on the machine that reported it, a checkpoint wrote 14 MB for eleven channels and now writes about 2 MB per changed conversation. The previous single cache file is removed on the first save; the conversations themselves are unaffected.

@@ -1602,6 +1602,8 @@ mod stop_preemption_tests {
                 fn_key: true,
                 ..Default::default()
             },
+            // No digit chord exists while both keys record.
+            crate::config::ChannelModifier::Off => return,
         };
         assert!(claims.claim(&down(modifiers), config));
         assert!(claims.claim(&down(Default::default()), config));
