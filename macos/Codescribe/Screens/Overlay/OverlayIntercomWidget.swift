@@ -401,7 +401,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     saveDesktop()
     materializeInstances()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
-    interaction.finish(.unverified, effect: wasClosed ? .noChange : .stateChanged, cleanup: .pending)
+    interaction.finish(
+      .unverified, effect: wasClosed ? .noChange : .stateChanged, cleanup: .pending)
   }
 
   fileprivate func resizeInstance(
@@ -457,7 +458,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     saveDesktop()
     materializeInstances()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
-    interaction.finish(.unverified, effect: wasClosed ? .stateChanged : .noChange, cleanup: .pending)
+    interaction.finish(
+      .unverified, effect: wasClosed ? .stateChanged : .noChange, cleanup: .pending)
   }
 
   fileprivate func scrollGroup(_ steps: Int) {
