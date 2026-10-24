@@ -31,7 +31,7 @@ struct InterfaceLanguageStepView: View {
       // Both notes under the picker carry the same weight, so one text style
       // for both: the quieter secondary callout.
       .font(.callout)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       if model.interfaceLanguageNeedsRestart {
         Text(
@@ -41,11 +41,11 @@ struct InterfaceLanguageStepView: View {
               locale: model.interfaceLocale, comment: "Whole-app language application explanation"))
         )
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
-        Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
+        Text(error).font(.callout).foregroundStyle(CSColor.terracottaText)
           .accessibilityIdentifier("onboarding-interface-language-error")
       }
     }
@@ -70,13 +70,13 @@ struct OnboardingChoiceCard: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(isSelected ? CSColor.terracotta : Color.secondary)
+          .foregroundStyle(isSelected ? CSColor.terracottaText : CSColor.secondaryInk)
         VStack(alignment: .leading, spacing: 3) {
           Text(title).font(.body.weight(.semibold))
           if let subtitle {
             Text(subtitle)
               .font(.callout)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
@@ -120,7 +120,7 @@ private struct OnboardingStepNote: View {
   var body: some View {
     Text(text)
       .font(.callout)
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 4)
   }
@@ -315,7 +315,7 @@ struct AgenticReadinessStepView: View {
               comment: "Setup Agent readiness while the provider snapshot is loading"))
         )
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       } else if model.agentNeedsGlobalSetup {
         HStack(spacing: 10) {
           Text(
@@ -390,7 +390,7 @@ struct PermissionsStepView: View {
         )
       )
       .font(.callout)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       ForEach(PermissionKind.allCases) { kind in
         OnboardingPermissionRow(kind: kind, model: model)
@@ -443,13 +443,13 @@ private struct OnboardingPermissionRow: View {
                   comment: "Screen Recording and Full Disk Access never block setup completion"))
             )
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           }
         }
         if !compact || !state.isGranted {
           Text(kind.onboardingReason(locale: model.interfaceLocale))
             .font(.callout)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let note = model.permissionRepairNote(for: kind) {
@@ -464,7 +464,7 @@ private struct OnboardingPermissionRow: View {
       VStack(alignment: .trailing, spacing: 6) {
         Text(state.label(locale: model.interfaceLocale))
           .font(.caption.weight(.medium))
-          .foregroundStyle(state.isGranted ? CSColor.oliveLight : Color.secondary)
+          .foregroundStyle(state.isGranted ? CSColor.oliveLight : CSColor.secondaryInk)
         if !state.isGranted {
           let repair = kind.repair(for: state)
           if repair.requestsNatively {
@@ -514,7 +514,7 @@ struct LocalModelStepView: View {
               "Explain the benefit of the local transcription model"))
       )
       .font(.body)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       // One card holds the model: name and install state, source and size,
       // location, and the download control in whatever state it is in.
@@ -531,7 +531,7 @@ struct LocalModelStepView: View {
               comment: "Local power is the engine name; setup waits for its Whisper model"))
         )
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
       if downloads.inFlight {
@@ -544,7 +544,7 @@ struct LocalModelStepView: View {
                 "Whisper download never blocks navigation, closing the wizard or completing setup"))
         )
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -564,7 +564,7 @@ struct ApiKeyStepView: View {
         Text(description)
           .font(.body)
           .lineSpacing(3)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
 
@@ -592,7 +592,7 @@ struct ApiKeyStepView: View {
     HStack(spacing: 12) {
       Text("Provider")
         .font(CSFont.mono(12, .medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 72, alignment: .leading)
       Menu {
         ForEach(model.providers, id: \.id) { provider in
@@ -711,7 +711,7 @@ struct ApiKeyStepView: View {
                 comment: "Setup API key editor note shown while provider access is unavailable"))
           )
           .font(.callout)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
         }
         if let error = model.apiKeySaveError {
@@ -769,14 +769,14 @@ struct ApiKeyStepView: View {
     if model.providerAccessPending || model.providerAccessError != nil
       || model.selectedProviderAccountError != nil
     {
-      return CSColor.textFaint
+      return CSColor.secondaryInk
     }
-    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.textFaint
+    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.secondaryInk
   }
 
   private var keyStatusColor: Color {
-    if model.providerAccessPending || model.providerAccessError != nil { return CSColor.textFaint }
-    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.textFaint
+    if model.providerAccessPending || model.providerAccessError != nil { return CSColor.secondaryInk }
+    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.secondaryInk
   }
 
   private var accountActionTitle: String {
@@ -888,7 +888,7 @@ struct DoneStepView: View {
         Text(summary)
           .font(.body)
           .lineSpacing(3)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("onboarding-done-summary")
       }
@@ -907,7 +907,7 @@ struct DoneStepView: View {
               comment: "Setup Done chapter while not ready: closing keeps setup unfinished"))
         )
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
       }
       OnboardingStepNote(
@@ -963,7 +963,7 @@ struct DoneStepView: View {
                 comment: "Local power is the engine name; setup waits for its Whisper model"))
           )
           .font(.callout)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           Spacer(minLength: 0)
           Button(
@@ -994,7 +994,7 @@ struct DoneStepView: View {
           icon: state.done ? .checkCircleFill : .circleEmpty,
           size: 12,
           weight: .semibold,
-          color: state.done ? CSColor.oliveLight : CSColor.textFaint
+          color: state.done ? CSColor.oliveLight : CSColor.secondaryInk
         )
         .padding(.top, 3)
         VStack(alignment: .leading, spacing: 3) {
@@ -1007,7 +1007,7 @@ struct DoneStepView: View {
           if let detail = state.detail {
             Text(verbatim: detail)
               .font(.callout)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
               .textSelection(.enabled)
           }
@@ -1043,7 +1043,7 @@ struct DoneStepView: View {
 
     var tint: Color {
       if done { return CSColor.oliveLight }
-      return blocked ? CSColor.terracottaLight : Color.secondary
+      return blocked ? CSColor.terracottaLight : CSColor.secondaryInk
     }
   }
 
@@ -1135,7 +1135,7 @@ struct DoneStepView: View {
             comment: "Setup calibration instruction shown with the Calibrate microphone button"))
       )
       .font(.callout)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
       Button(calibrationTitle) { model.calibrateMicrophone() }
@@ -1166,7 +1166,7 @@ struct DoneStepView: View {
               locale: model.interfaceLocale))
         )
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       }
     }
     .accessibilityElement(children: .ignore)
@@ -1224,7 +1224,7 @@ struct DoneStepView: View {
   private func sectionLabel(_ text: String) -> some View {
     Text(text)
       .font(.subheadline.weight(.semibold))
-      .foregroundStyle(.secondary)
+      .foregroundStyle(CSColor.secondaryInk)
   }
 
   private func summaryRow(
@@ -1236,7 +1236,7 @@ struct DoneStepView: View {
         icon: done ? .checkCircleFill : .circleEmpty,
         size: 12,
         weight: .semibold,
-        color: done ? CSColor.oliveLight : CSColor.textFaint
+        color: done ? CSColor.oliveLight : CSColor.secondaryInk
       )
       Text(label)
         .font(CSFont.ui(13))
@@ -1252,7 +1252,7 @@ struct DoneStepView: View {
                   "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
       )
       .font(CSFont.mono(10, .semibold))
-      .foregroundStyle(done ? CSColor.oliveLight : CSColor.textFaint)
+      .foregroundStyle(done ? CSColor.oliveLight : CSColor.secondaryInk)
     }
   }
 }
