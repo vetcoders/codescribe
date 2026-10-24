@@ -4,6 +4,9 @@ import Foundation
 /// A restart request is admitted by the live capture owner, never by a stale bus read.
 @MainActor
 final class IdleRestartCoordinator {
+  typealias Finalization = @MainActor @Sendable () -> Void
+  typealias FinalizationScheduler = @MainActor (@escaping Finalization) -> Void
+
   struct Ready: Encodable {
     let schema = "codescribe.restart-if-idle.ready.v1"
     let pid: Int32
@@ -23,7 +26,8 @@ final class IdleRestartCoordinator {
   private let root: URL
   private let ready: Ready
   private let acquireLease: @MainActor () async throws -> FileHandle
-  private let reserveCapture: @MainActor () async throws -> Bool
+  private let reserveCapture: @MainActor () throws -> Bool
+  private let scheduleFinalization: FinalizationScheduler
   /// The Founder talking to an agent includes typing to one: a focused
   /// composer, keys within the typing horizon or an unsent draft refuse the
   /// restart the same way a live take does (Maciej, 2026-10-23, after a
@@ -38,14 +42,18 @@ final class IdleRestartCoordinator {
     nonce: String = UUID().uuidString, bundle: URL = Bundle.main.bundleURL,
     commit: String = Bundle.main.object(forInfoDictionaryKey: "CSBuildCommit") as? String ?? "",
     acquireLease: @escaping @MainActor () async throws -> FileHandle,
-    reserveCapture: @escaping @MainActor () async throws -> Bool,
+    reserveCapture: @escaping @MainActor () throws -> Bool,
     founderComposing: @escaping @MainActor () -> Bool = { false },
+    scheduleFinalization: @escaping FinalizationScheduler = { action in
+      RunLoop.main.perform { MainActor.assumeIsolated { action() } }
+    },
     terminate: @escaping @MainActor () -> Void
   ) throws {
     self.root = root
     self.ready = Ready(pid: pid, nonce: nonce, bundle: bundle.path, commit: commit)
     self.acquireLease = acquireLease
     self.reserveCapture = reserveCapture
+    self.scheduleFinalization = scheduleFinalization
     self.founderComposing = founderComposing
     self.terminate = terminate
     try FileManager.default.createDirectory(
@@ -91,21 +99,44 @@ final class IdleRestartCoordinator {
         try receipt(id, status: "refused", reason: "founder_composing")
         return
       }
-      guard try await reserveCapture() else {
-        try? heldLease.close()
-        handling = false
-        try receipt(id, status: "refused", reason: "capture_busy_or_not_ready")
-        return
+      // Leave the async MainActor job before terminate: enters its nested
+      // event loop. The callback owns the lease and keeps handling true; its
+      // final composing check and synchronous reservation cannot interleave
+      // with typing or another queued MainActor job.
+      scheduleFinalization { [self, heldLease] in
+        finalize(id, heldLease: heldLease)
       }
-      lease = heldLease
-      // Admission is now closed under the controller's start lock. Complete
-      // normal termination even if writing the final receipt fails.
-      try? receipt(id, status: "accepted", reason: nil)
-      terminate()
     } catch {
       handling = false
       try? receipt(id, status: "refused", reason: "idle_lease_unavailable")
     }
+  }
+
+  private func finalize(_ id: String, heldLease: FileHandle) {
+    guard !founderComposing() else {
+      try? heldLease.close()
+      handling = false
+      try? receipt(id, status: "refused", reason: "founder_composing")
+      return
+    }
+    do {
+      guard try reserveCapture() else {
+        try? heldLease.close()
+        handling = false
+        try? receipt(id, status: "refused", reason: "capture_busy_or_not_ready")
+        return
+      }
+    } catch {
+      try? heldLease.close()
+      handling = false
+      try? receipt(id, status: "refused", reason: "idle_lease_unavailable")
+      return
+    }
+    lease = heldLease
+    // Admission is now permanently closed. No refusal, await or dispatch
+    // follows a successful reservation; receipt failure cannot cancel Quit.
+    try? receipt(id, status: "accepted", reason: nil)
+    terminate()
   }
 
   func invalidate() {
