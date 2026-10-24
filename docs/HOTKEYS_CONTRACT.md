@@ -827,6 +827,50 @@ If **no** such line appears when you double-tap or arm, the OS never delivered
 the key event to Codescribe (permissions / focus / hardware) — that case is
 outside the detector.
 
+### Raw-input journal (INFO)
+
+To see what was pressed next to what the app understood, the event tap keeps a
+raw-input journal in `~/.codescribe/logs/codescribe.log` (the single log owner;
+no new file or setting). Each line holds the raw event and the detector's
+decision for it:
+
+```text
+hotkey_input kind=flags_changed|key_down|key_up key=fn|left_ctrl|right_ctrl|digit_N|… keycode=K t_ns=T fn=0|1 ctrl=0|1 option=0|1 shift=0|1 cmd=0|1 decision=…
+hotkey_input kind=hold_timer decision=hold_down
+hotkey_input kind=journal_overflow dropped=N
+```
+
+`t_ns` is the CoreGraphics event timestamp (monotonic, nanoseconds since
+boot). `decision` is `none`, `hold_down`, `hold_up`, `hold_update`,
+`attach_selection`, `toggle_raw`, `toggle_normal`, `toggle_assistive`,
+`agent_channel channel=N`, `double_tap_blocked` or `ui_command`.
+
+**Privacy filter** (inside the tap callback, before anything is queued): Fn
+flag changes, the channel modifier's own flag changes when it is Ctrl, and
+digit key-down/up only while the channel modifier is held or for a digit the
+tap claimed. Any other modifier change is journaled only when it produced a
+gesture. Every other key is dropped: no letters, no text, no
+keycodes of ordinary typing.
+
+**Tap cost:** the callback copies a small record (event kind, key, keycode,
+timestamp, flags, decision) into a bounded queue (256) with a non-blocking
+`try_send`; it never formats, writes a file or takes a lock shared with the
+UI. The `hotkey-journal` thread formats and logs. A full queue drops records
+and reports the count as `journal_overflow`.
+
+The controller adds one line per admitted gesture and per channel chord:
+
+```text
+hotkey_decision gesture=hold|toggle|conversation edge=down|up|press mode=dictation|raw|formatting|assistive state=idle|rec_hold|rec_toggle|busy|conversation|unknown action=start_toggle|stop_take|schedule_hold|cancel_pending_hold|start_conversation|stop_conversation|none
+hotkey_decision gesture=channel_chord channel=N state=… action=opened|closed|refused
+```
+
+Event-tap health (WARN): macOS disables a tap whose callback is slow or on
+some user input; the callback re-enables it at once and logs
+`hotkey_tap_health event=disabled reason=timeout|user_input rearmed=true|false`.
+Keys pressed while the tap was disabled never reach the journal, so a gap
+between two `hotkey_input` lines with this line in it explains a lost key.
+
 ---
 
 ## File Locations

@@ -5313,7 +5313,10 @@ impl RecordingController {
     /// PCM feed is closed and capture locks are released; terminal work remains
     /// owned by the same settlement task. Explicit stop APIs await completion.
     pub async fn admit_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
-        if !self.is_stop_gesture(&event)? {
+        let stop = self.is_stop_gesture(&event)?;
+        let state = self.state.try_read().ok().map(|state| *state);
+        info!("{}", event.decision_line(state, stop));
+        if !stop {
             return self.handle_hotkey_event(event).await;
         }
         match self.current_capture_stop() {
