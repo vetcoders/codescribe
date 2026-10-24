@@ -1091,14 +1091,25 @@ impl RecordingController {
     /// modifier ends undelivered as this chord's prefix
     /// (`abandon_chord_prefix_hold`).
     pub async fn toggle_agent_channel(&self, digit: u8) -> Result<()> {
-        self.toggle_agent_channel_at(
-            digit,
-            &binding_path(),
-            &crate::presentation::transcript_bus::transcript_bus_path(),
-            ChannelOpenMode::Live,
-        )
-        .await
-        .map(|_| ())
+        let state_before = self.current_state().await;
+        let result = self
+            .toggle_agent_channel_at(
+                digit,
+                &binding_path(),
+                &crate::presentation::transcript_bus::transcript_bus_path(),
+                ChannelOpenMode::Live,
+            )
+            .await;
+        let action = match &result {
+            Ok(true) => "opened",
+            Ok(false) => "closed",
+            Err(_) => "refused",
+        };
+        tracing::info!(
+            "hotkey_decision gesture=channel_chord channel={digit} state={} action={action}",
+            state_before.to_ipc_str()
+        );
+        result.map(|_| ())
     }
 
     async fn toggle_agent_channel_at(

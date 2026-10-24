@@ -89,6 +89,200 @@ fn claims_middle_button(
     config.middle_mouse_agent_gesture && matches!(input, HotkeyDetectorInput::MiddleButton { .. })
 }
 
+/// Privacy filter of the raw-input journal, applied in the tap callback before
+/// anything is written.
+///
+/// Admits Fn and the configured channel-modifier key's own flag changes, and a
+/// digit key-down/up only while the channel modifier is held or when the tap
+/// claimed that digit. Every other key is dropped: no letters, no text, no
+/// keycodes of ordinary typing. A modifier change the filter does not admit
+/// is still written when it produced a gesture
+/// (see [`TapJournalRecord::line`]).
+#[cfg(any(target_os = "macos", test))]
+fn tap_journal_admits(
+    input: &HotkeyDetectorInput,
+    claimed: bool,
+    config: super::config::HotkeyRuntimeConfig,
+) -> bool {
+    use crate::config::ChannelModifier;
+    match input {
+        HotkeyDetectorInput::FlagsChanged { key, .. } => match key {
+            HotkeyPhysicalKey::Fn => true,
+            HotkeyPhysicalKey::LeftControl | HotkeyPhysicalKey::RightControl => {
+                config.channel_modifier == ChannelModifier::Ctrl
+            }
+            _ => false,
+        },
+        HotkeyDetectorInput::KeyDown {
+            key: HotkeyPhysicalKey::Digit(_),
+            modifiers,
+            ..
+        }
+        | HotkeyDetectorInput::KeyUp {
+            key: HotkeyPhysicalKey::Digit(_),
+            modifiers,
+        } => claimed || super::detector::channel_chord_matches(config.channel_modifier, *modifiers),
+        _ => false,
+    }
+}
+
+/// Stable token for what the detector made of one input.
+#[cfg(any(target_os = "macos", test))]
+fn journal_decision(emitted: Option<&HotkeyEvent>) -> String {
+    use super::detector::HoldAction;
+    match emitted {
+        None => "none".to_string(),
+        Some(event) => match event {
+            HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                ..
+            } => "hold_down".to_string(),
+            HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                ..
+            } => "hold_up".to_string(),
+            HotkeyEvent::HoldUpdate { .. } => "hold_update".to_string(),
+            HotkeyEvent::AttachSelection => "attach_selection".to_string(),
+            HotkeyEvent::ToggleRaw => "toggle_raw".to_string(),
+            HotkeyEvent::ToggleNormal => "toggle_normal".to_string(),
+            HotkeyEvent::ToggleAssistive => "toggle_assistive".to_string(),
+            HotkeyEvent::AgentChannel { digit } => format!("agent_channel channel={digit}"),
+            HotkeyEvent::DoubleTapBlocked { .. } => "double_tap_blocked".to_string(),
+            HotkeyEvent::ShowAgent
+            | HotkeyEvent::ToggleWidget
+            | HotkeyEvent::InsertHere
+            | HotkeyEvent::AgentGesture(_) => "ui_command".to_string(),
+        },
+    }
+}
+
+/// One raw tap event as the journal keeps it: plain values copied in the
+/// callback and formatted later, off the tap thread, by
+/// [`drain_tap_journal`]. `input: None` is a decision the hold timer made
+/// without a key event.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone)]
+struct TapJournalRecord {
+    input: Option<HotkeyDetectorInput>,
+    /// Virtual keycode of a keyboard event; `-1` when there is none.
+    keycode: i64,
+    /// CoreGraphics event timestamp (monotonic, nanoseconds since boot).
+    event_ns: u64,
+    /// The privacy filter admitted the raw event ([`tap_journal_admits`]).
+    admitted: bool,
+    emitted: Option<HotkeyEvent>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl TapJournalRecord {
+    /// One `hotkey_input` line: the raw event (kind, key, keycode, event
+    /// timestamp, modifier flags) and the detector's decision for it, so what
+    /// was pressed and what the app understood sit on one line.
+    ///
+    /// `None` when the privacy filter dropped the event and it is not a
+    /// modifier change that produced a gesture.
+    fn line(&self) -> Option<String> {
+        let decision = journal_decision(self.emitted.as_ref());
+        let Some(input) = self.input else {
+            return Some(format!("hotkey_input kind=hold_timer decision={decision}"));
+        };
+        let (kind, key, modifiers) = match input {
+            HotkeyDetectorInput::FlagsChanged { key, modifiers, .. } => {
+                ("flags_changed", key, modifiers)
+            }
+            HotkeyDetectorInput::KeyDown { key, modifiers, .. } => ("key_down", key, modifiers),
+            HotkeyDetectorInput::KeyUp { key, modifiers } => ("key_up", key, modifiers),
+            _ => return None,
+        };
+        let gesture = self.emitted.is_some();
+        if !self.admitted && !(gesture && kind == "flags_changed") {
+            return None;
+        }
+        let key = match key {
+            HotkeyPhysicalKey::Fn => "fn".to_string(),
+            HotkeyPhysicalKey::LeftControl => "left_ctrl".to_string(),
+            HotkeyPhysicalKey::RightControl => "right_ctrl".to_string(),
+            HotkeyPhysicalKey::LeftOption => "left_option".to_string(),
+            HotkeyPhysicalKey::RightOption => "right_option".to_string(),
+            HotkeyPhysicalKey::Digit(digit) => format!("digit_{digit}"),
+            _ => "modifier".to_string(),
+        };
+        Some(format!(
+            "hotkey_input kind={kind} key={key} keycode={} t_ns={} fn={} ctrl={} option={} shift={} cmd={} decision={decision}",
+            self.keycode,
+            self.event_ns,
+            u8::from(modifiers.fn_key),
+            u8::from(modifiers.ctrl),
+            u8::from(modifiers.option),
+            u8::from(modifiers.shift),
+            u8::from(modifiers.cmd),
+        ))
+    }
+}
+
+/// Records the journal may queue before the drain thread catches up. Chord
+/// and Fn events are a few per gesture; a full queue means the drain stalled.
+#[cfg(target_os = "macos")]
+const TAP_JOURNAL_CAPACITY: usize = 256;
+
+/// The tap callback's handle on the raw-input journal.
+///
+/// The callback must stay fast: macOS disables a tap whose callback is slow,
+/// which is one way a key can be lost. So the callback only copies a
+/// [`TapJournalRecord`] into a bounded queue with `try_send` — no formatting,
+/// no file I/O, no lock shared with the UI, never a wait. A full or closed
+/// queue drops the record and counts it; the drain reports the count.
+#[cfg(any(target_os = "macos", test))]
+struct TapJournal {
+    tx: Sender<TapJournalRecord>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl TapJournal {
+    /// Bounded queue plus the `hotkey-journal` thread that drains it into the
+    /// log. The thread ends when the tap state, and so the sender, is dropped.
+    #[cfg(target_os = "macos")]
+    fn spawn() -> Self {
+        let (tx, rx) = crossbeam_channel::bounded(TAP_JOURNAL_CAPACITY);
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let drain_dropped = std::sync::Arc::clone(&dropped);
+        if let Err(error) = std::thread::Builder::new()
+            .name("hotkey-journal".to_string())
+            .spawn(move || drain_tap_journal(&rx, &drain_dropped))
+        {
+            tracing::warn!("hotkey input journal unavailable: {error}");
+        }
+        Self { tx, dropped }
+    }
+
+    /// Queue one record without waiting. Called from the tap callback.
+    fn record(&self, record: TapJournalRecord) {
+        if self.tx.try_send(record).is_err() {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Format and log queued records at INFO into `codescribe.log`, off the tap
+/// thread. Returns when every sender is gone.
+#[cfg(any(target_os = "macos", test))]
+fn drain_tap_journal(
+    rx: &crossbeam_channel::Receiver<TapJournalRecord>,
+    dropped: &std::sync::atomic::AtomicU64,
+) {
+    while let Ok(record) = rx.recv() {
+        let lost = dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if lost > 0 {
+            tracing::info!("hotkey_input kind=journal_overflow dropped={lost}");
+        }
+        if let Some(line) = record.line() {
+            tracing::info!("{line}");
+        }
+    }
+}
+
 // --- macOS CGEventTap Implementation using raw bindings ---
 
 /// The real implementation: a session-level CGEventTap driven on its own
@@ -336,6 +530,8 @@ mod macos {
         control: Arc<RuntimeControl>,
         /// The chooser took a left-button press, so its release is taken too.
         left_click_claimed: bool,
+        /// Raw-input journal: a bounded queue drained off this thread.
+        journal: TapJournal,
     }
 
     impl HotkeyState {
@@ -347,6 +543,7 @@ mod macos {
                 tx,
                 control,
                 left_click_claimed: false,
+                journal: TapJournal::spawn(),
             }
         }
     }
@@ -715,6 +912,15 @@ mod macos {
         }
         let runtime_config = get_hotkey_runtime_config();
         if let Some(event) = state.detector.poll(Instant::now(), runtime_config) {
+            // The timer decides without a key event: journal the decision so
+            // a Fn press that became a hold is visible next to its flags lines.
+            state.journal.record(TapJournalRecord {
+                input: None,
+                keycode: -1,
+                event_ns: 0,
+                admitted: true,
+                emitted: Some(event.clone()),
+            });
             deliver_event(state, event);
         }
     }
@@ -821,15 +1027,18 @@ mod macos {
         // ownership/teardown contract (swap-to-null in `request_stop`/`Drop`)
         // is preserved — after stop the pointer is null and we no-op.
         if is_tap_disabled_event(event_type) {
-            let reason = if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT {
-                "timeout (slow callback)"
+            // `hotkey_tap_health` is the grep-stable token next to the
+            // `hotkey_input` journal: input lost while the tap was disabled
+            // shows up as this line between two journal lines.
+            let (token, reason) = if event_type == K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT {
+                ("timeout", "timeout (slow callback)")
             } else {
-                "user input"
+                ("user_input", "user input")
             };
             let tap = state.control.tap.load(Ordering::SeqCst) as CFMachPortRef;
             if tap.is_null() {
                 tracing::warn!(
-                    "CGEventTap disabled by {reason} but tap port is null (shutting down); skipping re-arm"
+                    "hotkey_tap_health event=disabled reason={token} rearmed=false: CGEventTap disabled by {reason} but tap port is null (shutting down); skipping re-arm"
                 );
             } else {
                 unsafe {
@@ -839,7 +1048,7 @@ mod macos {
                     CGEventTapEnable(tap, true);
                 }
                 tracing::warn!(
-                    "CGEventTap disabled by {reason}; re-armed tap to keep hotkeys alive"
+                    "hotkey_tap_health event=disabled reason={token} rearmed=true: CGEventTap disabled by {reason}; re-armed tap to keep hotkeys alive"
                 );
             }
             return event;
@@ -950,7 +1159,28 @@ mod macos {
 
         let claimed = state.channel_keys.claim(&input, runtime_config)
             || claims_middle_button(&input, runtime_config);
-        if let Some(hotkey_event) = state.detector.feed(input, runtime_config) {
+        // Privacy filter first, on the raw event: only Fn, the channel
+        // modifier and channel digits may reach the journal.
+        let admitted = tap_journal_admits(&input, claimed, runtime_config);
+        let emitted = state.detector.feed(input, runtime_config);
+        // A modifier change outside the filter is kept only when it made a
+        // gesture; a non-admitted key never leaves this callback.
+        let modifier_gesture =
+            matches!(input, HotkeyDetectorInput::FlagsChanged { .. }) && emitted.is_some();
+        if admitted || modifier_gesture {
+            // Copy plain values only; the drain thread formats and writes.
+            // SAFETY: read-only field accessor on the callback-owned `event`.
+            let keycode =
+                unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+            state.journal.record(TapJournalRecord {
+                input: Some(input),
+                keycode,
+                event_ns,
+                admitted,
+                emitted: emitted.clone(),
+            });
+        }
+        if let Some(hotkey_event) = emitted {
             deliver_event(state, hotkey_event);
         }
 
@@ -1435,5 +1665,188 @@ mod stop_preemption_tests {
             modifiers: Default::default(),
         };
         assert!(!claims_middle_button(&digit, config));
+    }
+}
+
+#[cfg(test)]
+mod input_journal_tests {
+    use super::*;
+    use crate::config::ChannelModifier;
+
+    fn fn_config() -> super::super::config::HotkeyRuntimeConfig {
+        let mut config = get_hotkey_runtime_config();
+        config.channel_modifier = ChannelModifier::Fn;
+        config
+    }
+
+    fn with_fn() -> HotkeyModifierSnapshot {
+        HotkeyModifierSnapshot {
+            fn_key: true,
+            ..Default::default()
+        }
+    }
+
+    fn record(
+        input: HotkeyDetectorInput,
+        keycode: i64,
+        admitted: bool,
+        emitted: Option<HotkeyEvent>,
+    ) -> TapJournalRecord {
+        TapJournalRecord {
+            input: Some(input),
+            keycode,
+            event_ns: 42,
+            admitted,
+            emitted,
+        }
+    }
+
+    /// Privacy: only Fn, the channel modifier and channel digits reach the
+    /// journal. A letter typed with Fn held, or any key without it, never does.
+    #[test]
+    fn privacy_filter_admits_only_fn_channel_modifier_and_channel_digits() {
+        let config = fn_config();
+        let fn_down = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Fn,
+            modifiers: with_fn(),
+        };
+        assert!(tap_journal_admits(&fn_down, false, config));
+        let digit_with_fn = HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Digit(6),
+            modifiers: with_fn(),
+        };
+        assert!(tap_journal_admits(&digit_with_fn, false, config));
+        let bare_digit = HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Digit(6),
+            modifiers: Default::default(),
+        };
+        assert!(!tap_journal_admits(&bare_digit, false, config));
+        assert!(
+            tap_journal_admits(&bare_digit, true, config),
+            "a claimed digit release is journaled"
+        );
+        for key in [
+            HotkeyPhysicalKey::Letter(b'A'),
+            HotkeyPhysicalKey::V,
+            HotkeyPhysicalKey::Space,
+            HotkeyPhysicalKey::Other,
+        ] {
+            let typed = HotkeyDetectorInput::KeyDown {
+                now: Instant::now(),
+                key,
+                modifiers: with_fn(),
+            };
+            assert!(!tap_journal_admits(&typed, false, config), "{key:?}");
+            assert_eq!(record(typed, 0, false, None).line(), None);
+        }
+        let ctrl = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::LeftControl,
+            modifiers: HotkeyModifierSnapshot {
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        assert!(!tap_journal_admits(&ctrl, false, config));
+        let mut ctrl_config = config;
+        ctrl_config.channel_modifier = ChannelModifier::Ctrl;
+        assert!(tap_journal_admits(&ctrl, false, ctrl_config));
+    }
+
+    #[test]
+    fn journal_line_puts_the_raw_event_and_the_decision_on_one_line() {
+        let fn_up = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Fn,
+            modifiers: Default::default(),
+        };
+        assert_eq!(
+            record(fn_up, 63, true, None).line().as_deref(),
+            Some(
+                "hotkey_input kind=flags_changed key=fn keycode=63 t_ns=42 fn=0 ctrl=0 option=0 shift=0 cmd=0 decision=none"
+            )
+        );
+        assert_eq!(
+            record(fn_up, 63, true, Some(HotkeyEvent::ToggleRaw))
+                .line()
+                .as_deref(),
+            Some(
+                "hotkey_input kind=flags_changed key=fn keycode=63 t_ns=42 fn=0 ctrl=0 option=0 shift=0 cmd=0 decision=toggle_raw"
+            )
+        );
+        let digit = HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Digit(6),
+            modifiers: with_fn(),
+        };
+        assert_eq!(
+            record(
+                digit,
+                22,
+                true,
+                Some(HotkeyEvent::AgentChannel { digit: 6 }),
+            )
+            .line()
+            .as_deref(),
+            Some(
+                "hotkey_input kind=key_down key=digit_6 keycode=22 t_ns=42 fn=1 ctrl=0 option=0 shift=0 cmd=0 decision=agent_channel channel=6"
+            )
+        );
+        let option_tap = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::LeftOption,
+            modifiers: Default::default(),
+        };
+        assert_eq!(record(option_tap, 58, false, None).line(), None);
+        assert!(
+            record(option_tap, 58, false, Some(HotkeyEvent::ToggleNormal))
+                .line()
+                .is_some(),
+            "a modifier change that produced a gesture is journaled"
+        );
+        let timer = TapJournalRecord {
+            input: None,
+            keycode: -1,
+            event_ns: 0,
+            admitted: true,
+            emitted: Some(HotkeyEvent::Hold {
+                action: super::super::detector::HoldAction::Down,
+                mode: super::super::detector::HoldMode::Raw,
+            }),
+        };
+        assert_eq!(
+            timer.line().as_deref(),
+            Some("hotkey_input kind=hold_timer decision=hold_down")
+        );
+    }
+
+    /// The callback side never waits: a full queue drops and counts.
+    #[test]
+    fn a_full_journal_queue_drops_and_counts_without_blocking() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let journal = TapJournal {
+            tx,
+            dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
+        let fn_down = HotkeyDetectorInput::FlagsChanged {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::Fn,
+            modifiers: with_fn(),
+        };
+        journal.record(record(fn_down, 63, true, None));
+        journal.record(record(fn_down, 63, true, None));
+        journal.record(record(fn_down, 63, true, None));
+        assert_eq!(
+            journal.dropped.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+        assert_eq!(rx.len(), 1);
+        drop(journal);
+        let dropped = std::sync::atomic::AtomicU64::new(0);
+        drain_tap_journal(&rx, &dropped);
+        assert!(rx.is_empty(), "the drain consumes the queue and returns");
     }
 }
