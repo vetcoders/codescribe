@@ -6093,6 +6093,9 @@ class PCMStreamPlayer:
 
     BLOCK_BYTES = 16384
     MAX_PENDING = 8
+    BYTES_PER_SECOND = 48000
+    PREFILL_BYTES = 14400  # 300 ms of 24 kHz mono s16le, independent of fragments.
+    PREFILL_SECONDS = 0.3
     _IS_RUNNING = 0x6171726E  # AudioQueue.h: kAudioQueueProperty_IsRunning ('aqrn').
 
     def __init__(self, *, _library: Any = None) -> None:
@@ -6108,9 +6111,16 @@ class PCMStreamPlayer:
         # condition, so Dispose/Stop can invoke callbacks without deadlocking.
         self._operations = threading.RLock()
         self._queue = ctypes.c_void_p()
-        self._pending: dict[int, Any] = {}
+        self._pending: dict[int, tuple[Any, int]] = {}
+        self._pending_bytes = 0
         self._available: list[Any] = []
         self._tail = b""
+        self._prefill_at: float | None = None
+        self._start_reserve_bytes = 0
+        self._enqueued_bytes = 0
+        self._last_enqueue_at: float | None = None
+        self._max_enqueue_gap = 0.0
+        self._queue_empty_callbacks = 0
         self._started = False
         self._eof = False
         self._closed = False
@@ -6156,9 +6166,13 @@ class PCMStreamPlayer:
         # completed buffers; AudioQueueDispose releases all allocations later.
         address = ctypes.cast(buffer, ctypes.c_void_p).value
         with self._condition:
-            owned = self._pending.pop(address, None)
-            if owned is not None and not self._closed:
-                self._available.append(owned)
+            owned, size = self._pending.pop(address, (None, 0))
+            if owned is not None:
+                self._pending_bytes -= size
+                if not self._closed:
+                    self._available.append(owned)
+                    if self._started and not self._eof and not self._pending:
+                        self._queue_empty_callbacks += 1
             self._condition.notify_all()
 
     @property
@@ -6170,6 +6184,45 @@ class PCMStreamPlayer:
         with self._condition:
             return (not self._closed and not self._eof
                     and len(self._pending) < self.MAX_PENDING)
+
+    def begin_prefill(self) -> float:
+        with self._condition:
+            if self._prefill_at is None:
+                self._prefill_at = time.monotonic()
+            return self._prefill_at
+
+    def start_if_ready(self, *, force: bool = False) -> None:
+        """Start on PCM duration, the startup deadline, or a short stream's EOF.
+
+        The feeder calls this even without new PCM, so a slow response cannot
+        leave an already queued short prefix waiting indefinitely.
+        """
+        with self._operations:
+            with self._condition:
+                if self._closed or self._started or not self._pending:
+                    return
+                if not (force or self._pending_bytes >= self.PREFILL_BYTES or (
+                    self._prefill_at is not None
+                    and time.monotonic() - self._prefill_at >= self.PREFILL_SECONDS
+                )):
+                    return
+                reserve = self._pending_bytes
+            # No condition held: the native call is allowed to invoke callbacks.
+            self._check(self._api.AudioQueueStart(self._queue, None), "start")
+            with self._condition:
+                self._started = True
+                self._start_reserve_bytes = reserve
+
+    def diagnostics(self) -> dict[str, float | int]:
+        """Queue observations only; reusable buffers do not measure device underruns."""
+        with self._condition:
+            return {
+                "enqueued_pcm_ms": self._enqueued_bytes * 1000 / self.BYTES_PER_SECOND,
+                "pending_pcm_ms": self._pending_bytes * 1000 / self.BYTES_PER_SECOND,
+                "start_reserve_ms": self._start_reserve_bytes * 1000 / self.BYTES_PER_SECOND,
+                "max_enqueue_gap_ms": self._max_enqueue_gap * 1000,
+                "queue_empty_callbacks": self._queue_empty_callbacks,
+            }
 
     def enqueue(self, pcm: bytes) -> None:
         if len(pcm) > self.BLOCK_BYTES:
@@ -6185,6 +6238,8 @@ class PCMStreamPlayer:
                 data = data[:len(data) - len(self._tail)]
                 if not data:
                     return
+                if self._prefill_at is None:
+                    self._prefill_at = time.monotonic()
                 buffer = self._available.pop() if self._available else None
             if buffer is None:
                 buffer = _PCMQueueBufferRef()
@@ -6195,17 +6250,23 @@ class PCMStreamPlayer:
             buffer.contents.byte_size = len(data)
             address = ctypes.cast(buffer, ctypes.c_void_p).value
             with self._condition:
-                self._pending[address] = buffer
+                self._pending[address] = (buffer, len(data))
+                self._pending_bytes += len(data)
             status = self._api.AudioQueueEnqueueBuffer(self._queue, buffer, 0, None)
             if status:
                 with self._condition:
-                    owned = self._pending.pop(address, None)
+                    owned, size = self._pending.pop(address, (None, 0))
                     if owned is not None:
+                        self._pending_bytes -= size
                         self._available.append(owned)
                 self._check(status, "enqueue")
-            if not self._started:
-                self._check(self._api.AudioQueueStart(self._queue, None), "start")
-                self._started = True
+            with self._condition:
+                now = time.monotonic()
+                if self._last_enqueue_at is not None:
+                    self._max_enqueue_gap = max(self._max_enqueue_gap, now - self._last_enqueue_at)
+                self._last_enqueue_at = now
+                self._enqueued_bytes += len(data)
+            self.start_if_ready()
 
     def finish(self) -> None:
         with self._operations:
@@ -6215,6 +6276,7 @@ class PCMStreamPlayer:
                 if self._tail:
                     raise ValueError("PCM stream ended inside a 16-bit sample")
                 self._eof = True
+            self.start_if_ready(force=True)
             if self._started:
                 # Asynchronous drain. poll also checks IsRunning, since a buffer
                 # can become reusable before its last sample reaches hardware.
@@ -6231,6 +6293,7 @@ class PCMStreamPlayer:
         status = self._api.AudioQueueDispose(queue, True)
         with self._condition:
             self._pending.clear()
+            self._pending_bytes = 0
             self._available.clear()
             self._tail = b""
             self.returncode = result if not status else 1
@@ -6371,6 +6434,104 @@ class SpeechPCMStream:
             # Streaming connection/header waits are bounded at 10 s. Join so
             # no synthesis survives the request's terminal playback receipt.
             self.thread.join()
+
+
+class _PCMStreamFeed:
+    """Feed the single player without lifecycle, marker, or control filesystem I/O.
+
+    Transport fragments coalesce into 100 ms blocks. A partial block waits at
+    most 20 ms when native capacity is available; backpressure retains at most
+    one transport block plus a partial block here, in addition to the existing
+    bounded synthesis and native queues. Only the caller owns playback policy.
+    """
+
+    BLOCK_BYTES = 4800
+    PARTIAL_SECONDS = 0.02
+    WAIT_SECONDS = 0.005
+
+    def __init__(self, stream: SpeechPCMStream, player: PCMStreamPlayer, first: bytes):
+        self.stream, self.player, self.first = stream, player, first
+        self.cancelled = threading.Event()
+        self.finished = threading.Event()
+        self.input_finished = threading.Event()
+        self.result: tuple[bool, str | None, str | None] | None = None
+        self.thread = threading.Thread(target=self._feed, name="reply-pcm-feed", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _feed(self) -> None:
+        pending = bytearray(self.first)
+        self.first = b""
+        pending_since = time.monotonic()
+        source_finished = False
+        try:
+            prefill_deadline = self.player.begin_prefill() + self.player.PREFILL_SECONDS
+            while not self.cancelled.is_set():
+                self.player.start_if_ready()
+                if pending and self.player.can_enqueue() and (
+                    len(pending) >= self.BLOCK_BYTES or source_finished
+                    or time.monotonic() - pending_since >= self.PARTIAL_SECONDS
+                ):
+                    count = min(len(pending), self.BLOCK_BYTES)
+                    self.player.enqueue(bytes(pending[:count]))
+                    del pending[:count]
+                    continue
+                if source_finished and not pending:
+                    self.player.finish()
+                    self.input_finished.set()
+                    self.result = (True, None, None)
+                    return
+                if not source_finished and len(pending) < self.BLOCK_BYTES:
+                    event = self.stream.poll_audio()
+                    if event is not None:
+                        kind, value = event
+                        if kind == "pcm":
+                            if not pending:
+                                pending_since = time.monotonic()
+                            pending.extend(value)
+                        elif not value[0]:
+                            self.result = value
+                            self.player.terminate()
+                            return
+                        else:
+                            source_finished = True
+                        continue
+                # This wait never depends on filesystem work or a network read.
+                # Cancellation wakes it even when the native queue is full.
+                delay = self.WAIT_SECONDS
+                now = time.monotonic()
+                if now < prefill_deadline:
+                    delay = min(delay, prefill_deadline - now)
+                if pending and now < pending_since + self.PARTIAL_SECONDS:
+                    delay = min(delay, pending_since + self.PARTIAL_SECONDS - now)
+                self.cancelled.wait(delay)
+        except (OSError, ValueError, BufferError) as error:
+            if not self.cancelled.is_set():
+                reason = "invalid_audio" if isinstance(error, ValueError) else "playback_failed"
+                self.result = (False, f"PCM playback failed ({error.__class__.__name__})", reason)
+                self.player.terminate()
+        except Exception as error:
+            if not self.cancelled.is_set():
+                self.result = (False, f"PCM feed failed ({error.__class__.__name__})", "playback_failed")
+                self.player.terminate()
+        finally:
+            self.finished.set()
+
+    def close(self) -> None:
+        # Stop before joining: neither a full queue nor an in-flight callback
+        # can make cancellation wait for queued audio to play. Native Dispose
+        # is serialized by the player's operations lock, never its condition.
+        try:
+            # Publish cancellation under the same native-operation lock as
+            # enqueue/start. A feeder already waiting for it will see a closed
+            # player, so no native enqueue/start can follow this cancellation.
+            with self.player._operations:
+                self.cancelled.set()
+                _stop_playback(self.player)
+        finally:
+            if self.thread.ident is not None:
+                self.thread.join()
 
 
 def _speak_xai(
@@ -6841,6 +7002,7 @@ def _play_pcm_24k(
     wav_path = None
     lock_descriptor = None
     player = None
+    feeder = None
     marker = None
     streaming = isinstance(pcm, SpeechPCMStream)
     stream_finished = False
@@ -6904,14 +7066,16 @@ def _play_pcm_24k(
         incomplete_scans = 0
         while True:
             if control is not None and control.stopped():
-                _stop_playback(player)
+                if feeder is not None:
+                    feeder.close()
+                else:
+                    _stop_playback(player)
                 return False, "playback stopped", "stopped"
             scan_deadline = time.monotonic() + PLAYBACK_SCAN_SECONDS
             idle = installation_idle(
                 speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
                 deadline=scan_deadline, channel_released=kept,
             )
-            _save_lifecycle_cursor(speech_bus, root, cursor)
             refuse = False
             if idle:
                 incomplete_scans = 0
@@ -6924,32 +7088,41 @@ def _play_pcm_24k(
                 # unfinished scans stops the voice.
                 incomplete_scans += 1
                 refuse = incomplete_scans >= PLAYBACK_INCOMPLETE_SCANS_LIMIT
+            if feeder is not None:
+                stream_finished = feeder.input_finished.is_set()
             if refuse and not _playback_finished(player, streaming, stream_finished):
-                _stop_playback(player)
+                if feeder is not None:
+                    feeder.close()
+                else:
+                    _stop_playback(player)
                 return False, "take started during playback", "take_started"
+            # Stop on an observed take before any checkpoint filesystem write.
+            # A refused prefix can be replayed by the next admission scan.
+            _save_lifecycle_cursor(speech_bus, root, cursor)
             # A player that ended before the refusal played every sample: a take
             # that starts after the last sample cannot unsay the reply, so the
             # result below reports what the player did (Founder, 2026-10-23).
-            if streaming and not stream_finished and (player is None or player.can_enqueue()):
+            if streaming and feeder is None:
                 event = pcm.poll_audio()
                 if event is not None:
                     kind, value = event
                     if kind == "pcm":
-                        if player is None:
-                            player = PCMStreamPlayer()
-                            if control is not None:
-                                control.publish("playing")
-                            marker = _announce_playback(runtime, 10)
-                            marker_renewed = time.monotonic()
-                        player.enqueue(value)
+                        player = PCMStreamPlayer()
+                        if control is not None:
+                            control.publish("playing")
+                        marker = _announce_playback(runtime, 10)
+                        marker_renewed = time.monotonic()
+                        feeder = _PCMStreamFeed(pcm, player, value)
+                        feeder.start()
                     else:
-                        stream_finished = True
                         if not value[0]:
-                            _stop_playback(player)
                             return value
-                        if player is None:
-                            return False, "empty PCM response", "invalid_audio"
-                        player.finish()
+                        return False, "empty PCM response", "invalid_audio"
+            if feeder is not None and feeder.finished.is_set():
+                if feeder.result is None:
+                    return False, "PCM feed ended without a result", "playback_failed"
+                if not feeder.result[0]:
+                    return feeder.result
             if streaming and marker is not None and time.monotonic() - marker_renewed >= 5:
                 marker = _announce_playback(runtime, 10)
                 marker_renewed = time.monotonic()
@@ -6957,26 +7130,35 @@ def _play_pcm_24k(
             if result is not None:
                 if result != 0:
                     return False, "audio player failed", "playback_failed"
-                break
-            # Streaming must drain small network buffers faster than real
-            # time; the file player's half-second cadence would starve PCM.
+                if feeder is None or feeder.finished.is_set():
+                    break
+            # This loop owns cancellation and lifecycle only. PCM replenishment
+            # continues on the feeder even while a scan/checkpoint is slow.
             time.sleep(min(PLAYBACK_POLL_SECONDS, 0.02) if streaming else PLAYBACK_POLL_SECONDS)
     except OSError as error:
         return False, f"playback failed ({error.__class__.__name__})", "playback_failed"
     finally:
-        if player is not None and player.poll() is None:
-            _stop_playback(player)
-        if marker is not None:
-            _withdraw_playback(marker)
-        if lock_descriptor is not None:
-            os.close(lock_descriptor)
-        if streaming:
-            pcm.close()
-        if wav_path:
+        try:
+            if feeder is not None:
+                feeder.close()
+            elif player is not None and player.poll() is None:
+                _stop_playback(player)
+        finally:
             try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+                if streaming:
+                    pcm.close()
+            finally:
+                # Both feed and synthesis are joined before the announcement
+                # or the cross-agent playback lock can be handed to a successor.
+                if marker is not None:
+                    _withdraw_playback(marker)
+                if lock_descriptor is not None:
+                    os.close(lock_descriptor)
+                if wav_path:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
     return True, None, None
 
 
