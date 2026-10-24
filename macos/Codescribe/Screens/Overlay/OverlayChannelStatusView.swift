@@ -509,9 +509,10 @@ struct OverlayAgentAudioControls: View {
     speaking && muted == false && !open
   }
 
-  /// Decorative motion follows the existing open input and this actual host.
-  /// Reduced motion and hidden windows retain the static open-state outline.
-  static func microphoneWavesActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool {
+  /// Symbol activity follows the existing open input and this actual host.
+  /// Reduced motion and hidden windows retain the colored open-state glyph.
+  static func microphoneActivityActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool
+  {
     open && renderVisible && !reduceMotion
   }
   private var showsSpeaker: Bool {
@@ -532,7 +533,7 @@ struct OverlayAgentAudioControls: View {
   /// rows wear the live-speech glyph, a microphone with a waveform (Maciej,
   /// 2026-10-23: "to jest ewidentnie symbol dyktowania live"). The plain
   /// microphone is the composer's dictation verb. Open state takes the same
-  /// violet as a speaker that is playing a reply, with radiating activity.
+  /// violet and native layer activity as a speaker that is playing a reply.
   static let liveSpeechSymbol = "waveform.badge.mic"
 
   var microphoneSymbol: String {
@@ -541,30 +542,6 @@ struct OverlayAgentAudioControls: View {
 
   /// Recording shares the appearance-aware active-speaker accent.
   private var recordingAccent: Color { palette.agentAccent.color }
-  private var microphoneActivityDiameter: CGFloat { (diameter ?? 22) * controlScale }
-  private var microphoneOutlineDiameter: CGFloat {
-    max(Self.controlFrame * controlScale, microphoneActivityDiameter * 0.58)
-  }
-
-  private var microphoneActivity: some View {
-    ZStack {
-      if open {
-        Circle().strokeBorder(recordingAccent, lineWidth: 1.5)
-          .frame(width: microphoneOutlineDiameter, height: microphoneOutlineDiameter)
-        if Self.microphoneWavesActive(
-          open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
-        {
-          OverlayMicrophoneWaves(
-            color: recordingAccent,
-            initialScale: microphoneOutlineDiameter / microphoneActivityDiameter)
-        }
-      }
-    }
-    .frame(width: microphoneActivityDiameter, height: microphoneActivityDiameter)
-    .clipped()
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
-  }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -668,11 +645,15 @@ struct OverlayAgentAudioControls: View {
             .overlayMirrored(broadcast)
             .font(.system(size: glyphSize, weight: .semibold))
             .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
+            .symbolEffect(
+              .variableColor.iterative,
+              isActive: Self.microphoneActivityActive(
+                open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
+            )
             .frame(
               width: Self.controlFrame * controlScale,
               height: Self.controlFrame * controlScale
             )
-            .overlay { microphoneActivity }
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
         .tint(Self.litGlass(open ? recordingAccent : nil))
@@ -710,29 +691,6 @@ struct OverlayAgentAudioControls: View {
       .allowsHitTesting(false)
       .accessibilityHidden(true)
     }
-  }
-}
-
-/// Mounted only while an open microphone is actually visible and motion is
-/// allowed. Removing this subtree removes its repeating animations; no timer,
-/// audio-meter reader or task loop survives in a cached hidden window.
-private struct OverlayMicrophoneWaves: View {
-  let color: Color
-  let initialScale: CGFloat
-  @State private var expanded = false
-
-  var body: some View {
-    ZStack {
-      ForEach(0..<2) { index in
-        Circle().strokeBorder(color, lineWidth: 1.25)
-          .scaleEffect(expanded ? 0.95 : initialScale)
-          .opacity(expanded ? 0 : 0.65)
-          .animation(
-            .easeOut(duration: 1.4).repeatForever(autoreverses: false)
-              .delay(Double(index) * 0.7), value: expanded)
-      }
-    }
-    .onAppear { expanded = true }
   }
 }
 

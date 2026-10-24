@@ -45,7 +45,7 @@ final class OverlayRenderVisibilityTests: XCTestCase {
     try await settle()
     XCTAssertTrue(visible)
     XCTAssertTrue(
-      OverlayAgentAudioControls.microphoneWavesActive(
+      OverlayAgentAudioControls.microphoneActivityActive(
         open: true, renderVisible: visible, reduceMotion: false))
     window.exposed = false
     window.publish()
@@ -53,7 +53,7 @@ final class OverlayRenderVisibilityTests: XCTestCase {
     XCTAssertFalse(visible)
     XCTAssertEqual(hidden, 0, "Occlusion suppresses drawing, not widget state")
     XCTAssertFalse(
-      OverlayAgentAudioControls.microphoneWavesActive(
+      OverlayAgentAudioControls.microphoneActivityActive(
         open: true, renderVisible: visible, reduceMotion: false))
     window.exposed = true
     window.publish()
@@ -114,7 +114,7 @@ final class OverlayRenderVisibilityTests: XCTestCase {
     XCTAssertNil(observer.onHidden)
   }
 
-  func testReducedMotionAndClosedMicrophoneNeverRequestWavesInAnExposedHost() async throws {
+  func testReducedMotionAndClosedMicrophoneNeverAnimateInAnExposedHost() async throws {
     let (window, _, observer) = fixture()
     defer { window.contentView = nil }
     var visible = false
@@ -122,15 +122,64 @@ final class OverlayRenderVisibilityTests: XCTestCase {
     try await settle()
     XCTAssertTrue(visible)
     XCTAssertFalse(
-      OverlayAgentAudioControls.microphoneWavesActive(
+      OverlayAgentAudioControls.microphoneActivityActive(
         open: true, renderVisible: visible, reduceMotion: true))
     XCTAssertFalse(
-      OverlayAgentAudioControls.microphoneWavesActive(
+      OverlayAgentAudioControls.microphoneActivityActive(
         open: false, renderVisible: visible, reduceMotion: false))
   }
 
+  func testOpenMicrophoneAndMegaphoneKeepStaticActivityInBothAppearances() throws {
+    func rendered(open: Bool, broadcast: Bool, dark: Bool) throws -> (NSSize, Int) {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      let control = OverlayAgentAudioControls(
+        open: open, muted: false, microphoneEnabled: true, playbackEnabled: true,
+        palette: palette, onMicrophone: {}, onPlayback: {},
+        broadcast: broadcast, broadcastEmphasis: false, chrome: false, diameter: 30, shared: true
+      )
+      .padding(12)
+      .background(palette.desktopBackground.color)
+      .environment(\.colorScheme, dark ? .dark : .light)
+      .symbolEffectsRemoved()
+      let host = NSHostingView(rootView: control)
+      let size = host.fittingSize
+      let window = VisibilityWindow(
+        contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+        styleMask: [.borderless], backing: .buffered, defer: false)
+      window.contentView = host
+      defer { window.contentView = nil }
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let accent = try XCTUnwrap(palette.agentAccent.nsColor.usingColorSpace(.sRGB))
+      var accentPixels = 0
+      for y in 0..<bitmap.pixelsHigh {
+        for x in 0..<bitmap.pixelsWide {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+          if abs(color.redComponent - accent.redComponent) < 0.12,
+            abs(color.greenComponent - accent.greenComponent) < 0.12,
+            abs(color.blueComponent - accent.blueComponent) < 0.12
+          {
+            accentPixels += 1
+          }
+        }
+      }
+      return (size, accentPixels)
+    }
+    for dark in [false, true] {
+      for broadcast in [false, true] {
+        let closed = try rendered(open: false, broadcast: broadcast, dark: dark)
+        let open = try rendered(open: true, broadcast: broadcast, dark: dark)
+        XCTAssertEqual(open.0.width, closed.0.width, accuracy: 0.5)
+        XCTAssertEqual(open.0.height, closed.0.height, accuracy: 0.5)
+        XCTAssertGreaterThan(
+          open.1, closed.1 + 3, "An open input must stay visibly active without animation")
+      }
+    }
+  }
+
   func testMicrophoneStaticCueReviewSheetUsesTheActualControlInBothAppearances() throws {
-    func row(_ label: String, open: Bool, dark: Bool) -> some View {
+    func row(_ label: String, open: Bool, dark: Bool, broadcast: Bool = false) -> some View {
       let palette: OverlayAppearancePalette = dark ? .dark : .light
       let shade: SheetShade = dark ? .nightlyDark : .nightlyLight
       return HStack(spacing: 24) {
@@ -138,19 +187,24 @@ final class OverlayRenderVisibilityTests: XCTestCase {
         OverlayAgentAudioControls(
           open: open, muted: false, microphoneEnabled: true, playbackEnabled: true,
           palette: palette, onMicrophone: {}, onPlayback: {},
-          broadcastEmphasis: false, chrome: false, diameter: 30)
+          broadcast: broadcast, broadcastEmphasis: false, chrome: false, diameter: 30)
       }
       .foregroundStyle(palette.primaryText.color)
       .padding(16)
       .background(OverlayColorToken(shade.hex).color)
       .environment(\.colorScheme, dark ? .dark : .light)
+      .symbolEffectsRemoved()
       .transaction { $0.disablesAnimations = true }
     }
     let content = VStack(spacing: 0) {
       row("Light · closed", open: false, dark: false)
       row("Light · open", open: true, dark: false)
+      row("Light · all closed", open: false, dark: false, broadcast: true)
+      row("Light · all open", open: true, dark: false, broadcast: true)
       row("Dark · closed", open: false, dark: true)
       row("Dark · open", open: true, dark: true)
+      row("Dark · all closed", open: false, dark: true, broadcast: true)
+      row("Dark · all open", open: true, dark: true, broadcast: true)
     }
     // ImageRenderer substitutes warning tiles for the real NSView-backed
     // cursor/visibility backgrounds. Render through the actual AppKit host.
