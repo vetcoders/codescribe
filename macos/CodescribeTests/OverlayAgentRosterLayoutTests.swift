@@ -51,8 +51,8 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
-        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(conversation,",
+        "Text(verbatim: identity.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
+        "Text(verbatim: name)", "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
@@ -61,7 +61,7 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let drawn = try XCTUnwrap(instance.range(of: "return HStack(spacing: 3) {"))
     try assertOrder(
       [
-        "Text(verbatim: instance.digit)", "OverlayReceptionMarks(", "OverlayAgentStatusDot(",
+        "Text(verbatim: instance.digit)", "OverlayReceptionMarks(", "OverlayIntercomStatusMark(",
         "if mini {", "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
       ], in: String(instance[drawn.lowerBound...]))
   }
@@ -102,12 +102,6 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       XCTAssertEqual(
         OverlayIntercomWidgetLayout.minimizedInstanceWidth(text: measuredText, scale: scale),
         miniExpected, accuracy: 0.001)
-      let detachedWindowMark = 9 * scale + 5
-      XCTAssertEqual(
-        OverlayIntercomWidgetLayout.restingWidth(
-          headerText: 0, agentText: measuredText + detachedWindowMark, scale: scale),
-        expected + detachedWindowMark, accuracy: 0.001,
-        "the detached-window glyph keeps its own measured slot")
     }
   }
 
@@ -131,6 +125,164 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     }
   }
 
+  /// The middle-click chooser lives on the vertical Intercom (Maciej,
+  /// 2026-10-23 seal): its rows and its header carry the wheel's ring, and
+  /// the app hosts the chooser there instead of summoning the big overlay.
+  func testTheVerticalIntercomHostsTheMiddleClickChooser() throws {
+    let cardBody = try sourceSection(
+      "OverlayIntercomWidget.swift",
+      from: "let expanded = controller.presentation.expanded.contains(identity)",
+      to: "private func cardHeader(")
+    XCTAssertTrue(
+      cardBody.contains(
+        "focused: identity.conversationID != nil && state.agentGestureFocusID == identity.conversationID"
+      ))
+    XCTAssertTrue(cardBody.contains("onHover: { state.hoverAgentGestureTarget($0) }"))
+
+    let header = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
+      to: "private struct OverlayIntercomWindowProjection")
+    XCTAssertTrue(header.contains("state.agentGestureFocusID == broadcast?.id"))
+    XCTAssertTrue(header.contains("controller.revealChooserFocus(focus)"))
+
+    // An agent in its own window stays on the wheel's path (Maciej, seal
+    // 2026-10-23 20:31Z: "pomija — to bardzo źle") and wears the same ring.
+    let targets = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "func chooserTargets()", to: "func presentChooser()")
+    XCTAssertTrue(targets.contains("identities.compactMap"))
+    XCTAssertFalse(targets.contains("groupIdentities"))
+    let detached = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func headerRow(",
+      to: "private func instanceLayout(")
+    XCTAssertTrue(
+      detached.contains("focused: state.agentGestureFocusID == instance.conversationID"))
+
+    let app = try sourceSection(
+      "../../Core/AppModel.swift", from: "private func syncIntercomPresentation(",
+      to: "func handleAgentGesture(")
+    XCTAssertTrue(app.contains("state.agentChooserHost = wantsWidget"))
+    let stop = try sourceSection(
+      "../../Core/AppModel.swift", from: "func stopIntercomPresentation()",
+      to: "private func syncIntercomPresentation(")
+    XCTAssertTrue(stop.contains("state.agentChooserHost = nil"))
+    let gesture = try sourceSection(
+      "../../Core/AppModel.swift", from: "func handleAgentGesture(",
+      to: "if let panel, panel.isVisible")
+    XCTAssertTrue(gesture.contains("intercomWidget.presentChooser()"))
+  }
+
+  /// The small conversation shrinks on its own (Maciej, 2026-10-23: "czy ten
+  /// tekst zawsze będzie taki wielki"): ⌘+/-/0 in an Intercom window adjusts
+  /// the Intercom's scale, not the overlay's.
+  func testTheIntercomHasItsOwnTextScale() throws {
+    let model = try sourceSection(
+      "../../Core/AppModel.swift", from: "final class OverlayController",
+      to: "private func syncIntercomPresentation(")
+    XCTAssertTrue(
+      model.contains(
+        "let intercomTextScale = TextScaleController(key: \"IntercomPanel.textScale.v1\")"))
+    let sync = try sourceSection(
+      "../../Core/AppModel.swift", from: "private func syncIntercomPresentation(",
+      to: "func handleAgentGesture(")
+    XCTAssertTrue(sync.contains("state: state, textScale: intercomTextScale,"))
+    let shortcuts = try sourceSection(
+      "../../App.swift", from: "private func textScaleController(for window: NSWindow?)",
+      to: "func applicationShouldTerminateAfterLastWindowClosed(")
+    XCTAssertTrue(
+      shortcuts.contains(
+        "if window is OverlayIntercomPanel { return model.overlay.intercomTextScale }"))
+  }
+
+  /// Maciej, 2026-10-23: Igor, Wiktoria and Olga read white while nobody read
+  /// their channels; an inactive agent shows it explicitly. A follower that
+  /// heartbeats over a backlog nobody read counts like a dead one.
+  func testInactiveAgentsDimAndWearAnExplicitMark() throws {
+    let channel = OverlayChannelDelivery(
+      channel: "8", agent: "olga", deliveryID: "d8", stage: .received, isOpen: false)
+    func roster(alive: Bool?, unreadSince: Date? = nil) -> OverlayChannelStatusView {
+      OverlayChannelStatusView(
+        channels: [channel], unavailable: false, palette: .dark, animates: false,
+        hudStates: [
+          "8": OverlayChannelHudProjection(
+            open: false, loud: false, autosealDeadline: nil, followerAlive: alive,
+            unreadSince: unreadSince)
+        ])
+    }
+    let stale = Date().addingTimeInterval(-(OverlayState.followerStallHorizon + 60))
+    XCTAssertTrue(roster(alive: false).isInactive(channel), "a gone follower")
+    XCTAssertTrue(roster(alive: true, unreadSince: stale).isInactive(channel), "nobody reads")
+    XCTAssertEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
+    XCTAssertFalse(roster(alive: true).isInactive(channel), "a reading agent")
+    XCTAssertFalse(
+      roster(alive: true, unreadSince: Date()).isInactive(channel), "a fresh unread message")
+    XCTAssertFalse(roster(alive: nil).isInactive(channel), "no claim is not a claim of death")
+
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("roster.hasDeadFollower("), "every Intercom dim reads both")
+    XCTAssertEqual(
+      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: inactive)").count
+        - 1, 4)
+    XCTAssertEqual(widget.components(separatedBy: "OverlayIntercomStatusMark(").count - 1, 3)
+    XCTAssertFalse(widget.contains("OverlayAgentStatusDot( kind: intercomStatusDot("))
+  }
+
+  /// Rows drag the group and resize it by every edge; tear-off is gone
+  /// from rows (Maciej, 2026-10-23 dictation).
+  func testRowsMoveAndResizeTheGroupInsteadOfTearingOff() throws {
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("tearOff"))
+    XCTAssertFalse(widget.contains("tornOffTile"))
+    let move = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "fileprivate func moveGroup(",
+      to: "private func detachIntoInstance(")
+    XCTAssertTrue(move.contains("let pointer = NSEvent.mouseLocation"), "screen points")
+    XCTAssertTrue(move.contains("header.setFrameOrigin("), "the header carries the rows")
+    let body = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomCard: View {",
+      to: "private func cardHeader(")
+    XCTAssertTrue(body.contains(".onChanged { _ in controller.moveGroup() }"))
+    XCTAssertTrue(body.contains(".onEnded { _ in controller.moveGroup(ended: true) }"))
+    XCTAssertTrue(body.contains("sides: true,"))
+    XCTAssertTrue(
+      body.contains("from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)"))
+    XCTAssertTrue(body.contains("alignment: expanded ? .top : .center"), "content in the middle")
+    let handles = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
+      to: "private struct OverlayIntercomInstanceCard: View {")
+    for edge in [".left", ".right", ".top", ".bottom", ".bottomLeft", ".bottomRight"] {
+      XCTAssertTrue(handles.contains("OverlayIntercomResizeHandle(edge: \(edge),"), edge)
+    }
+    let header = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomHeader: View {",
+      to: "private struct OverlayIntercomWindowProjection:")
+    XCTAssertTrue(header.contains("OverlayIntercomResizeHandles(corners: false, right: true)"))
+  }
+
+  /// "Przydym też troszkę te hiperbiałe przyciski … nie tylko w pierwszym"
+  /// and "można by się tego fioletu pozbyć … na rzecz rozjaśnienia" (Maciej,
+  /// 2026-10-23): flat controls rest in the wordmark's muted ink, names rest
+  /// smoked and brighten instead of turning violet.
+  func testIntercomControlsRestSmokedAndNamesBrightenInsteadOfViolet() throws {
+    let roster = try overlaySource("OverlayChannelStatusView.swift")
+    XCTAssertFalse(roster.contains("AnyShapeStyle(.foreground)"), "an explicit ink is primary")
+    XCTAssertTrue(roster.contains("return chrome ? AnyShapeStyle(palette.primaryText.color) : nil"))
+    let focus = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomFocusButton: View {",
+      to: "private struct OverlayIntercomConversationBody: View {")
+    XCTAssertFalse(focus.contains("action.enabled ? palette.primaryText.color"))
+    XCTAssertTrue(
+      focus.contains(
+        "restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color"))
+    let widget = try overlaySource("OverlayIntercomWidget.swift")
+    XCTAssertFalse(widget.contains("speaking ? palette.agentAccent.color"))
+    XCTAssertFalse(widget.contains("hoverColor: palette.agentAccent.color"))
+    XCTAssertEqual(
+      widget.components(
+        separatedBy: "speaking ? palette.primaryText.color : palette.bodyText.color"
+      )
+      .count - 1, 3)
+  }
+
   func testDeadRowsDimAndDisableAudioWhileReceptionRemainsActionable() throws {
     let row = try sourceSection(
       "OverlayChannelStatusView.swift", from: "func channelRow(",
@@ -147,16 +299,57 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let card = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func cardHeader(",
       to: "private func audioSlot(")
-    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: dead || detached != nil)"))
-    XCTAssertTrue(card.contains("Image(systemName: \"macwindow\")"))
+    // An agent in its own window leaves the stack (Maciej 17:48Z): no row
+    // dims for a detached window, and the row carries no window glyph.
+    XCTAssertTrue(card.contains("OverlayDisconnectedRowDim(disconnected: inactive)"))
+    XCTAssertFalse(card.contains("detachedInstance"))
+    XCTAssertFalse(card.contains("Image(systemName: \"macwindow\")"))
+    // A collapsed row moves the group; it never tears off (Maciej,
+    // 2026-10-23: only an unrolled card detaches, by its grip).
+    XCTAssertEqual(card.components(separatedBy: ".simultaneousGesture(moveGesture").count - 1, 2)
+    XCTAssertFalse(card.contains("tearOff"))
+    XCTAssertTrue(
+      card.contains("if expanded { Button(\"Detach conversation\") { controller.detach(identity) }")
+    )
     XCTAssertTrue(
       card.contains(
         "OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)"))
+    // A narrow row keeps the microphone and speaker at its right edge; the
+    // antenna and moon wait for the width (Maciej, 2026-10-23 seal).
+    XCTAssertTrue(card.contains("if let channelRow, row.marks {"))
+    XCTAssertTrue(card.contains("shared: row.slots == 1)"))
+    // Hover moves no row out of the column and adds no preview line; the
+    // icon square names its agent in the hint panel instead.
+    XCTAssertFalse(card.contains("hovered"))
+    XCTAssertTrue(
+      card.contains(
+        "inactive ? name + \" · \" + roster.detail(for: $0) : nil } ?? name, palette: palette, leading: true"
+      ))
+    let cardBody = try sourceSection(
+      "OverlayIntercomWidget.swift",
+      from: "let expanded = controller.presentation.expanded.contains(identity)",
+      to: "private func cardHeader(")
+    XCTAssertFalse(cardBody.contains(".onHover"))
+    XCTAssertTrue(cardBody.contains("OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)"))
 
     let miniFrame = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private func instanceFrame(",
       to: "fileprivate func setInstanceMinimized(")
     XCTAssertTrue(miniFrame.contains("text: nameWidth + digitWidth"))
+    // A saved fiszka controls only its exact owner (Copilot on #183): once the
+    // digit is reassigned, its row belongs to the replacement agent.
+    let instanceHeader = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func headerRow(",
+      to: "private func instanceLayout(")
+    XCTAssertTrue(
+      instanceHeader.contains(
+        "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
+    let instanceControls = try sourceSection(
+      "OverlayIntercomWidget.swift", from: "private func instanceControls(",
+      to: "private struct OverlayIntercomResizeHandle")
+    XCTAssertTrue(
+      instanceControls.contains(
+        "let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     let dim = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
       to: "struct OverlayAgentsSidebarControls {")
@@ -257,6 +450,13 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         recorder.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1)
       XCTAssertNil(state.selectedConversationID)
     }
+  }
+
+  private func overlaySource(_ file: String) throws -> String {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens/Overlay/\(file)")
+    return try String(contentsOf: url, encoding: .utf8).split(whereSeparator: \.isWhitespace)
+      .joined(separator: " ")
   }
 
   private func sourceSection(_ file: String, from start: String, to end: String) throws -> String {

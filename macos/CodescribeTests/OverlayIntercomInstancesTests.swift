@@ -50,6 +50,39 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertNil(desktop.openInstance(for: lena), "closing frees the row for a fresh detach")
   }
 
+  /// Maciej, 17:48Z on the greyed ghost row: "likwidować, chować… jak ty
+  /// myślisz". An agent standing in its own window, open or mini, leaves the
+  /// group's rows; closing that window hands the row back in its place.
+  func testAnAgentInItsOwnWindowLeavesTheGroupUntilTheWindowCloses() throws {
+    let lena = try identity("lena", channel: "2", lease: "a")
+    let olga = try identity("olga", channel: "3", lease: "c")
+    let astra = try identity("astra", channel: "4", lease: "d")
+    let roster = [lena, olga, astra]
+    var desktop = OverlayIntercomDesktopState()
+    XCTAssertEqual(desktop.groupRows(of: roster), roster)
+
+    var torn = OverlayIntercomInstance(
+      identity: olga, frame: CGRect(x: 600, y: 400, width: 380, height: 360), minimized: true)
+    desktop.upsert(torn)
+    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "a mini stands outside the stack")
+
+    torn.minimized = false
+    desktop.upsert(torn)
+    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "so does the open window")
+
+    torn.closed = true
+    desktop.upsert(torn)
+    XCTAssertEqual(desktop.groupRows(of: roster), roster, "closing returns the row in order")
+
+    let usurper = try identity("olga", channel: "3", lease: "e")
+    desktop.upsert(
+      OverlayIntercomInstance(
+        identity: olga, frame: CGRect(x: 0, y: 0, width: 380, height: 360), minimized: true))
+    XCTAssertEqual(
+      desktop.groupRows(of: [lena, usurper, astra]), [lena, usurper, astra],
+      "a window of the old owner never hides a new owner's row")
+  }
+
   /// Restore is a UI operation: geometry, mini and closed come back exactly,
   /// and an instance follows its exact owner, never a digit or a name.
   func testDesktopSurvivesReopeningAndKeepsTheExactOwner() throws {

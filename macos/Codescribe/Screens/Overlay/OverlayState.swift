@@ -854,7 +854,8 @@ final class OverlayState {
       presentationMode = mode
       if mode != .expanded {
         showsAgentMonitor = false
-        endAgentChoosing()
+        // A hosted chooser lives on the Intercom, not on this panel's form.
+        if agentChooserHost == nil { endAgentChoosing() }
       }
       onPresentationModeChanged?(mode)
     }
@@ -1281,9 +1282,17 @@ final class OverlayState {
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
+  /// Compact's chips: the horizontal strip alone carries them in the header.
   var channelMapInHeader: Bool {
     channelMapEnabled && channelMapPreference.layout == .horizontal
   }
+  /// Mini is one widget in both layouts and keeps its channel counter; only
+  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
+  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
+  var channelMapInMini: Bool { channelMapEnabled }
+  /// The vertical layout's counter wears stacked cards and leads to the
+  /// Intercom group instead of compact.
+  var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
@@ -1301,6 +1310,9 @@ final class OverlayState {
   /// The window owner returns compact to its natural width, forgetting a
   /// width the user gave it (see `activateChannelMapCounter`).
   @ObservationIgnored var onRestoreMidiNaturalWidth: (() -> Void)?
+  /// The composition root brings the vertical layout's Intercom group forward
+  /// (see `activateChannelMapCounter`).
+  @ObservationIgnored var onRevealIntercom: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
@@ -1421,6 +1433,8 @@ final class OverlayState {
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
   /// Read-only paint from the helper's policy receipts; never persisted here.
   private var broadcastPolicies: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  /// Every reception change goes through this one owner; tests inject their own.
+  @ObservationIgnored var broadcastLedger = OverlayBroadcastPolicyLedger.shared
   private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
@@ -2014,6 +2028,7 @@ final class OverlayState {
 
   private func refreshPlaybackMutes() async {
     let revision = playbackPreferenceRevision
+    let broadcastRevision = broadcastLedger.revision
     let roster = channelRoster
     var candidates: [String: AgentPlaybackIdentity] = [:]
     for (channel, hud) in channelHudStates {
@@ -2035,13 +2050,26 @@ final class OverlayState {
       return
     }
     setAgentPanelFocusAvailable(panelFocusAvailable)
-    channelPlaybackAgents = bound
-    broadcastPolicies = broadcastSnapshot
-    if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
+    // This runs every 500 ms. An Observation write invalidates every reader
+    // even when the value is equal, and the open conversation reads its
+    // playback mute, so an unchanged poll re-evaluated it twice a second
+    // (UI-88, hania on Silver 23 X: 37% of a core at rest, 16% in mini).
+    if channelPlaybackAgents != bound { channelPlaybackAgents = bound }
+    // A reception change during this poll makes its receipts older than the
+    // change's read-back; the next poll paints them instead.
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
+      broadcastPolicies != broadcastSnapshot
+    {
+      broadcastPolicies = broadcastSnapshot
+    }
+    if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
+      globalPlaybackMuted = globalSnapshot
+    }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
-    playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
+    let mutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
       .merging(retained, uniquingKeysWith: { _, current in current })
+    if playbackMutes != mutes { playbackMutes = mutes }
   }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
@@ -2213,6 +2241,18 @@ final class OverlayState {
   }
 
   private(set) var agentGesturePhase: AgentGesturePhase = .idle
+
+  /// The vertical Intercom hosts the chooser instead of the big overlay: the
+  /// wheel walks its rows and a left click opens that row's conversation
+  /// there (Maciej, 2026-10-23 seal: "mieliśmy przenieść … na ten nowy
+  /// lewitujący widget, a to nie zostało zrobione"). The middle click and the
+  /// capture lease stay this machine's; only the surface changes.
+  struct AgentChooserHost {
+    /// The rows the widget shows, in its order.
+    let targets: () -> [OverlayConversation]
+    let open: (String) -> Void
+  }
+  @ObservationIgnored var agentChooserHost: AgentChooserHost?
   /// Test seam over the Rust capture lease. Each renewal holds it 30 s.
   @ObservationIgnored var agentChooserCapture: (Bool) -> Void = {
     setAgentChooserCapture(active: $0)
@@ -2232,8 +2272,10 @@ final class OverlayState {
   }
 
   /// What the list on screen shows, in its order: 0 · All, then the roster,
-  /// the conversation already open included, at every window width.
+  /// the conversation already open included, at every window width. A host
+  /// lists its own rows.
   var agentGestureTargets: [OverlayConversation] {
+    if let agentChooserHost { return agentChooserHost.targets() }
     let current = OverlayChannelStatusView.currentConversations(
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates)
@@ -2257,9 +2299,11 @@ final class OverlayState {
       moveAgentFocus(from: focus, by: Int(steps))
     case (.choosing(let focus), .leftClick):
       endAgentChoosing()
-      if let focus { chooseConversation(focus) }
+      guard let focus else { break }
+      if let agentChooserHost { agentChooserHost.open(focus) } else { chooseConversation(focus) }
     case (.choosing, .cancel):
-      hideAgentSidebar()
+      // The hosted chooser never opened the big overlay's list.
+      if agentChooserHost == nil { hideAgentSidebar() } else { endAgentChoosing() }
     case (_, .scroll), (_, .leftClick), (_, .cancel):
       // A lease that outlived its chooser: hand the input back now.
       agentChooserCapture(false)
@@ -2276,14 +2320,14 @@ final class OverlayState {
   }
 
   private func beginAgentChoosing() {
-    showAgentMonitor(expansion: .user)
+    if agentChooserHost == nil { showAgentMonitor(expansion: .user) }
     agentGesturePhase = .choosing(focus: agentGestureTargets.first?.id)
     renewAgentChooser()
   }
 
   private func moveAgentFocus(from focus: String?, by steps: Int) {
     // Something else took the surface while choosing: the wheel brings it back.
-    if !agentListOnScreen { showAgentMonitor(expansion: .user) }
+    if agentChooserHost == nil, !agentListOnScreen { showAgentMonitor(expansion: .user) }
     let targets = agentGestureTargets
     if !targets.isEmpty {
       let current = focus.flatMap { id in targets.firstIndex { $0.id == id } }
@@ -2335,8 +2379,10 @@ final class OverlayState {
     // A stale error must not end this talk when the toggle below returns early
     // behind one still pending; a failure of this toggle sets a fresh one.
     channelToggleError = nil
+    // A hosted take stays on the Intercom row; the big overlay follows nothing.
+    let hosted = agentChooserHost != nil
     Task {
-      await performAgentChannelToggle(digit, keepsAgentList: false)
+      await performAgentChannelToggle(digit, keepsAgentList: false, preservesPresentation: hosted)
       if channelToggleError != nil, agentGesturePhase == .talking(channel: channel) {
         agentGesturePhase = .idle
       }
@@ -2354,7 +2400,10 @@ final class OverlayState {
       beginAgentChoosing()
       return
     }
-    Task { await performAgentChannelToggle(digit, keepsAgentList: false) }
+    let hosted = agentChooserHost != nil
+    Task {
+      await performAgentChannelToggle(digit, keepsAgentList: false, preservesPresentation: hosted)
+    }
   }
 
   private func expandAgentSurface(cause: OverlayPresentationCause) {
@@ -2866,7 +2915,8 @@ final class OverlayState {
       var projected = row
       if let identity = playbackIdentity(for: row.channel) {
         projected.broadcastIdentity = identity
-        projected.broadcastPolicy = broadcastPolicies[identity] ?? .on
+        projected.broadcastPolicy = broadcastLedger.policy(
+          for: identity, polled: broadcastPolicies[identity] ?? .on)
       }
       return projected
     }.sorted { $0.channel < $1.channel }
@@ -3000,8 +3050,15 @@ final class OverlayState {
   /// compact, where the chips are clickable, as the form toggle's "Expand to
   /// compact widget" does. Compact shows the counter when the user narrowed
   /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. Neither selects a conversation nor touches capture.
+  /// chips come back. In the vertical layout the chips live in the Intercom
+  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
+  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
+  /// conversation or touches capture.
   func activateChannelMapCounter() {
+    if channelMapCounterStacked {
+      onRevealIntercom?()
+      return
+    }
     switch presentationMode {
     case .mini: setPresentationMode(.midi)
     case .midi: onRestoreMidiNaturalWidth?()

@@ -433,6 +433,33 @@ private struct OverlaySizedAudioButtonStyle: ButtonStyle {
   }
 }
 
+/// Sets a glyph's ink only when it has one of its own; nil inherits.
+struct OverlayGlyphInk: ViewModifier {
+  let ink: AnyShapeStyle?
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let ink { content.foregroundStyle(ink) } else { content }
+  }
+}
+
+/// Flat on an Intercom fiszka the audio pair rests in the muted ink of the
+/// glyphs beside it (minimise, dock, the bar's count) and brightens under the
+/// pointer as they do. Semibold primary ink read hyper-white there (Maciej,
+/// 2026-10-23: "Przydym też troszkę te hiperbiałe przyciski").
+private struct OverlayFlatAudioInk: ViewModifier {
+  let flat: Bool
+  let palette: OverlayAppearancePalette
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if flat {
+      content.conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+    } else {
+      content
+    }
+  }
+}
+
 /// The same square hit target without a surface of its own: the host's
 /// capsule is the surface.
 private struct OverlayFlatControlButtonStyle: ButtonStyle {
@@ -469,8 +496,23 @@ struct OverlayAgentAudioControls: View {
   /// The conversation header supplies its measured base height; All scales
   /// both controls together from that base.
   var diameter: CGFloat? = nil
+  /// A narrow Intercom row has one place for the pair (Maciej, 2026-10-23:
+  /// "może być na jednym miejscu z mikrofonem"): the microphone, which
+  /// yields to the speaker while the agent talks so it can be muted.
+  var shared = false
 
   private var speakingNow: Bool { speaking && muted == false }
+
+  /// An open microphone keeps the shared place: that take is still running.
+  static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
+    speaking && muted == false && !open
+  }
+  private var showsSpeaker: Bool {
+    !shared || Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
+  private var showsMicrophone: Bool {
+    !shared || !Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
 
   static let broadcastScale: CGFloat = 1.33
   static let controlFrame: CGFloat = 16
@@ -501,6 +543,17 @@ struct OverlayAgentAudioControls: View {
 
   static func litGlass(_ color: Color?) -> Color? {
     color?.opacity(litGlassOpacity)
+  }
+
+  /// A lit glyph keeps its whole colour. At rest a glass circle keeps the
+  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph sets
+  /// no ink and takes the one `OverlayFlatAudioInk` puts around it. An
+  /// explicit `.foreground` resolved to the full primary instead, so every
+  /// flat control read hyper-white beside the smoked wordmark (Maciej,
+  /// 2026-10-23: "przydym też troszkę te hiperbiałe przyciski").
+  private func glyphInk(lit: Color?) -> AnyShapeStyle? {
+    if let lit { return AnyShapeStyle(lit) }
+    return chrome ? AnyShapeStyle(palette.primaryText.color) : nil
   }
 
   private var microphoneLabel: String {
@@ -552,56 +605,62 @@ struct OverlayAgentAudioControls: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Button(action: onPlayback) {
-        Image(
-          systemName: muted == nil
-            ? "speaker.badge.exclamationmark"
-            : muted == true
-              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
-        )
-        .font(.system(size: glyphSize, weight: .semibold))
-        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
-        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-        .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
-      }
-      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-      .csFocusOutline()
-      .disabled(!playbackEnabled || muted == nil)
-      .overlayFastHint(speakerHint, palette: palette)
-      .accessibilityLabel(Text(verbatim: playbackLabel))
-      .accessibilityValue(Text(verbatim: playbackValue))
-      .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
-      .accessibilityIdentifier("overlay-agent-speaker")
-
-      Button(action: onMicrophone) {
-        Image(systemName: microphoneSymbol)
-          .overlayMirrored(broadcast)
+      if showsSpeaker {
+        Button(action: onPlayback) {
+          Image(
+            systemName: muted == nil
+              ? "speaker.badge.exclamationmark"
+              : muted == true
+                ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+          )
           .font(.system(size: glyphSize, weight: .semibold))
-          .foregroundStyle(open ? recordingAccent : palette.primaryText.color)
-          .symbolEffect(.pulse, isActive: open && !reduceMotion)
-          .frame(
-            width: Self.controlFrame * controlScale,
-            height: Self.controlFrame * controlScale)
+          .modifier(OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil)))
+          .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+          .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
+        .csFocusOutline()
+        .disabled(!playbackEnabled || muted == nil)
+        .overlayFastHint(speakerHint, palette: palette)
+        .accessibilityLabel(Text(verbatim: playbackLabel))
+        .accessibilityValue(Text(verbatim: playbackValue))
+        .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
+        .accessibilityIdentifier("overlay-agent-speaker")
       }
-      .tint(Self.litGlass(open ? recordingAccent : nil))
-      .csFocusOutline()
-      .disabled(!microphoneEnabled)
-      .overlayFastHint(microphoneLabel, palette: palette)
-      .accessibilityLabel(Text(verbatim: microphoneLabel))
-      .accessibilityValue(
-        Text(
-          verbatim: open
-            ? String(localized: "Microphone active") : String(localized: "Microphone off"))
-      )
-      .accessibilityHint(
-        Text(
-          verbatim: microphoneEnabled
-            ? microphoneLabel
-            : String(
-              localized: "Microphone unavailable",
-              comment: "Disabled agent microphone control"))
-      )
-      .accessibilityIdentifier("overlay-agent-microphone")
+
+      if showsMicrophone {
+        Button(action: onMicrophone) {
+          Image(systemName: microphoneSymbol)
+            .overlayMirrored(broadcast)
+            .font(.system(size: glyphSize, weight: .semibold))
+            .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
+            .symbolEffect(.pulse, isActive: open && !reduceMotion)
+            .frame(
+              width: Self.controlFrame * controlScale,
+              height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(open ? recordingAccent : nil))
+        .csFocusOutline()
+        .disabled(!microphoneEnabled)
+        .overlayFastHint(microphoneLabel, palette: palette)
+        .accessibilityLabel(Text(verbatim: microphoneLabel))
+        .accessibilityValue(
+          Text(
+            verbatim: open
+              ? String(localized: "Microphone active") : String(localized: "Microphone off"))
+        )
+        .accessibilityHint(
+          Text(
+            verbatim: microphoneEnabled
+              ? microphoneLabel
+              : String(
+                localized: "Microphone unavailable",
+                comment: "Disabled agent microphone control"))
+        )
+        .accessibilityIdentifier("overlay-agent-microphone")
+      }
     }
     .modifier(
       OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }, chrome: chrome)
@@ -632,6 +691,85 @@ struct OverlayAgentPillMenuActions {
   let archive: OverlayAgentPillMenuAction?
 }
 
+/// The one owner of reception changes (Copilot on #183). The marks, the pill
+/// menu and the Intercom each kept their own pending flag and built the next
+/// policy from the roster's cached receipt, which the poll refreshes only
+/// every 500 ms: the moon and then the antenna inside that window wrote `.off`
+/// over the lit moon. A change now starts from the latest read-back, holds
+/// every surface for that agent until the helper's new receipt is read back,
+/// and a poll that began before the write cannot paint the old receipt over it.
+@MainActor
+@Observable
+final class OverlayBroadcastPolicyLedger {
+  static let shared = OverlayBroadcastPolicyLedger()
+
+  private(set) var pending: Set<AgentPlaybackIdentity> = []
+  /// Receipts read back after this app's own writes, shown until a poll that
+  /// started after the last write reports.
+  private(set) var readBacks: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  @ObservationIgnored private(set) var revision: UInt64 = 0
+  @ObservationIgnored private let write:
+    @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws -> Void
+  @ObservationIgnored private let readBack:
+    @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy?
+
+  init(
+    write:
+      @escaping @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws ->
+      Void = { policy, identity in
+        try await OverlayBroadcastPolicyMenu.setPolicy(policy, for: identity)
+      },
+    readBack: @escaping @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy? = {
+      identity in
+      await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: [identity])[identity]
+    }
+  ) {
+    self.write = write
+    self.readBack = readBack
+  }
+
+  func policy(for identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy)
+    -> AgentBroadcastPolicy
+  {
+    readBacks[identity] ?? polled
+  }
+
+  func isPending(_ identity: AgentPlaybackIdentity?) -> Bool {
+    identity.map { pending.contains($0) } ?? false
+  }
+
+  /// Edits one axis of the latest policy. A second change while one is in
+  /// flight for the same agent, or an edit that changes nothing, writes
+  /// nothing.
+  func change(
+    _ identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy,
+    _ edit: (inout AgentBroadcastPolicy) -> Void
+  ) async throws {
+    guard !pending.contains(identity) else { return }
+    let base = policy(for: identity, polled: polled)
+    var next = base
+    edit(&next)
+    guard next != base else { return }
+    pending.insert(identity)
+    revision &+= 1
+    defer {
+      pending.remove(identity)
+      revision &+= 1
+    }
+    try await write(next, identity)
+    // Published before the hold lifts, so the next click starts from it.
+    readBacks[identity] = await readBack(identity) ?? next
+  }
+
+  /// A poll that started at `revision` may paint its receipts only when no
+  /// change began or ended meanwhile; it is then newer than every read-back.
+  func admitsPoll(startedAt revision: UInt64) -> Bool {
+    guard revision == self.revision, pending.isEmpty else { return false }
+    if !readBacks.isEmpty { readBacks = [:] }
+    return true
+  }
+}
+
 /// Wake policy lives on the agent's own row (Maciej, 2026-10-17, "Słowo"):
 /// a right-click context menu with a checkmark replaces the disclosure list
 /// that used to hang under 0 · All. A single member gives the row its own
@@ -644,7 +782,6 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var errorAlignment: HorizontalAlignment = .leading
   var agentActions: OverlayAgentPillMenuActions? = nil
   var showsInlineError = true
-  @State private var pending: Set<AgentPlaybackIdentity> = []
   @State private var commandError: String?
 
   @MainActor
@@ -725,15 +862,11 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     // light "w dowolnym momencie, nie tylko jeśli kanał 0 jest wyłączony").
     let locked =
       !enabled || channel.broadcastIdentity == nil
-      || channel.broadcastIdentity.map { pending.contains($0) } == true
+      || OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
     Toggle(
       isOn: Binding(
         get: { channel.broadcastPolicy.member },
-        set: { member in
-          var next = channel.broadcastPolicy
-          next.member = member
-          apply(next, to: channel)
-        }
+        set: { member in apply(to: channel) { $0.member = member } }
       )
     ) {
       Text("Channel 0", comment: "Pill context menu: membership in channel-zero broadcasts")
@@ -742,11 +875,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     Toggle(
       isOn: Binding(
         get: { channel.broadcastPolicy.moon },
-        set: { moon in
-          var next = channel.broadcastPolicy
-          next.moon = moon
-          apply(next, to: channel)
-        }
+        set: { moon in apply(to: channel) { $0.moon = moon } }
       )
     ) {
       Text(
@@ -758,16 +887,16 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     .disabled(locked)
   }
 
-  private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
-    guard policy != channel.broadcastPolicy, let identity = channel.broadcastIdentity,
-      !pending.contains(identity)
-    else { return }
-    pending.insert(identity)
+  private func apply(
+    to channel: OverlayChannelDelivery, _ edit: @escaping (inout AgentBroadcastPolicy) -> Void
+  ) {
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    guard let identity = channel.broadcastIdentity, !ledger.isPending(identity) else { return }
+    let polled = channel.broadcastPolicy
     commandError = nil
     Task { @MainActor in
-      defer { pending.remove(identity) }
       do {
-        try await Self.setPolicy(policy, for: identity)
+        try await ledger.change(identity, polled: polled, edit)
       } catch {
         commandError = String(localized: "Couldn't change broadcast reception.")
       }
@@ -785,9 +914,12 @@ struct OverlayReceptionMarks: View {
   let palette: OverlayAppearancePalette
   let textScale: CGFloat
   var enabled = true
-  @State private var pending = false
 
   private var policy: AgentBroadcastPolicy { channel.broadcastPolicy }
+  /// Any surface's change in flight holds these marks too.
+  private var pending: Bool {
+    OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
+  }
 
   var body: some View {
     HStack(spacing: 3) {
@@ -795,9 +927,7 @@ struct OverlayReceptionMarks: View {
         symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
       ) {
-        var next = policy
-        next.member.toggle()
-        apply(next)
+        apply { $0.member.toggle() }
       }
       // The moon speaks through its shape alone: a dimmed outline when clear,
       // a filled moon in the row's own text colour when lit. The amber of
@@ -808,9 +938,7 @@ struct OverlayReceptionMarks: View {
         unlitOpacity: 0.45,
         help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
       ) {
-        var next = policy
-        next.moon.toggle()
-        apply(next)
+        apply { $0.moon.toggle() }
       }
     }
     .accessibilityIdentifier("overlay-reception-marks-\(channel.channel)")
@@ -835,14 +963,13 @@ struct OverlayReceptionMarks: View {
     .accessibilityIdentifier(identifier)
   }
 
-  private func apply(_ next: AgentBroadcastPolicy) {
+  private func apply(_ edit: @escaping (inout AgentBroadcastPolicy) -> Void) {
     guard let identity = channel.broadcastIdentity, !pending else { return }
-    pending = true
+    let polled = policy
     Task { @MainActor in
-      defer { pending = false }
       // A refused command leaves the mark as the receipt still says; the pill
       // menu's inline error is the place that names the refusal.
-      try? await OverlayBroadcastPolicyMenu.setPolicy(next, for: identity)
+      try? await OverlayBroadcastPolicyLedger.shared.change(identity, polled: polled, edit)
     }
   }
 }
@@ -1044,6 +1171,12 @@ struct OverlayChannelStatusView: View {
 
   func hasDeadFollower(_ channel: OverlayChannelDelivery) -> Bool {
     hudStates[channel.channel]?.followerAlive == false
+  }
+
+  /// Nobody reads this channel: its follower is gone, or alive with a backlog
+  /// unread past the stall horizon.
+  func isInactive(_ channel: OverlayChannelDelivery) -> Bool {
+    hasDeadFollower(channel) || hasStalledFollower(channel)
   }
 
   func hasStalledFollower(_ channel: OverlayChannelDelivery) -> Bool {

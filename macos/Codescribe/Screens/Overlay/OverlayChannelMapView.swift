@@ -43,6 +43,9 @@ struct OverlayChannelMapView: View {
   var onFocusChannel: ((String) -> Void)? = nil
   /// The roster supplies the same menu as the rail and floating intercom.
   var agentPillMenu: ((String) -> OverlayBroadcastPolicyMenu)? = nil
+  /// The vertical layout's mini counter: stacked cards that open the
+  /// Intercom group. The header decides; the map only draws it.
+  var stacked = false
 
   private enum Actions: Equatable {
     case all, microphone, none
@@ -202,7 +205,8 @@ struct OverlayChannelMapView: View {
       form: .counter,
       display: OverlayChannelPill.Display(
         figure: String(model.count), microphoneOpen: model.microphoneOpen,
-        openDigits: model.openDigits, unread: model.anyUnread, animates: animates),
+        openDigits: model.openDigits, stacked: stacked, unread: model.anyUnread,
+        animates: animates),
       hint: model.counterHint,
       accessibilityText: String(
         localized: "Channel map",

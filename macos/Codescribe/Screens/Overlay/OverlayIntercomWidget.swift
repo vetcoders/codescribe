@@ -20,15 +20,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
-  /// Mouse deltas are absolute from mouse-down, including when the gesture
-  /// starts on a hovered card. Keep the whole group's frame as the baseline.
+  /// Mouse deltas are absolute from mouse-down. Keep the whole group's frame
+  /// as the baseline.
   @ObservationIgnored private var groupResizeGesture: (gesture: UUID, frame: CGRect)?
   @ObservationIgnored private var resizingGroup = false
   /// A card's resize that converted it into an instance hands the rest of
   /// that same gesture to the instance.
   @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
-  /// The pending hover-leave grace period; a fresh enter cancels it.
-  @ObservationIgnored private var hoverLeaveTask: Task<Void, Never>?
+  /// A row drag's pointer and header origin at its start, in screen points.
+  @ObservationIgnored private var groupDrag: (pointer: CGPoint, origin: CGPoint)?
   /// The frame each group card was last sent toward. A window animation
   /// does not move the frame until its first tick, so a fast crossing that
   /// retargets within that tick sees `panel.frame` still at the old frame;
@@ -68,6 +68,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate var stacksGroupControls: Bool {
     groupTier == .actions && groupWidth < contentMetrics.actionsWidth
   }
+  fileprivate var rowControls: IntercomRowControls {
+    contentMetrics.rowControls(width: groupWidth)
+  }
 
   private func saveDesktop() {
     desktopStore.save(desktop)
@@ -79,7 +82,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard visible else {
       // Reuse the same windows when the layout returns. Durable drafts never
       // belong to these views, and hiding never changes the capture route.
-      presentation.hovered = nil
       header?.orderOut(nil)
       for panel in cards.values { panel.setPresented(false, animated: false) }
       for panel in instancePanels.values { panel.setPresented(false, animated: false) }
@@ -144,7 +146,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     for identity in presentation.expanded where !identities.contains(identity) {
       detachIntoInstance(identity)
     }
-    let retained = Set(identities)
+    // A row whose agent now stands in a window (a reopened saved fiszka)
+    // leaves the stack like a gone agent's row.
+    let retained = Set(groupIdentities)
     for identity in Set(cards.keys).subtracting(retained) {
       let panel = cards.removeValue(forKey: identity)
       panel?.delegate = nil
@@ -153,13 +157,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       sizes.removeValue(forKey: identity)
       cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
-      presentation.leave(identity)
     }
     let nameFont = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
     let digitFont = CSFont.nsMono(10 * scale)
+    // Every agent's name sizes the group, standing in it or not, so detaching
+    // a fiszka or handing it back never reflows the column.
     contentMetrics = IntercomContentMetrics(
-      names: chips.map(\.name), digits: chips.map(\.digit), scale: scale,
-      hasDetached: identities.contains { detachedInstance(for: $0) != nil })
+      names: chips.map(\.name), digits: chips.map(\.digit), scale: scale)
     let titleWidth =
       (String(localized: "Intercom") as NSString).size(withAttributes: [.font: nameFont]).width
       + (chips.count.formatted() as NSString).size(withAttributes: [.font: digitFont]).width
@@ -171,20 +175,18 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let width = contentMetrics.fittedWidth(
       CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width)
     groupCardHeight = contentMetrics.fittedCardHeight(
-      CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)), count: visibleRows.count,
-      available: screenFrame.height)
+      CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)),
+      count: visibleRows.count, available: screenFrame.height)
     headerControlsVisible =
       width
       >= OverlayIntercomWidgetLayout.restingWidth(
         headerText: titleWidth, agentText: 0, scale: scale)
-    if width < contentMetrics.nameWidth { groupCardHeight = contentMetrics.iconSide }
     groupWidth = width
     groupTier = contentMetrics.tier(width: width, cardHeight: groupCardHeight)
     if desktop.groupTier != groupTier {
       desktop.groupTier = groupTier
       saveDesktop()
     }
-    if !groupTier.hoverPreviewEnabled { presentation.hovered = nil }
     let frame = CGRect(
       x: header.frame.maxX - width, y: header.frame.minY,
       width: width, height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
@@ -194,7 +196,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       visibleFrame: screenFrame, scale: scale, cardHeight: groupCardHeight)
     if header.frame != fitted { header.setFrame(fitted, display: true) }
     positioning = false
-    for (index, identity) in identities.enumerated() where cards[identity] == nil {
+    // An agent standing in its own window has no row to build.
+    for (index, identity) in groupIdentities.enumerated() where cards[identity] == nil {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
@@ -211,7 +214,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   private var screenFrame: CGRect { visibleFrame(for: header) }
 
-  private var groupIdentities: [OverlayIntercomCardIdentity] { identities }
+  private var groupIdentities: [OverlayIntercomCardIdentity] { desktop.groupRows(of: identities) }
 
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
@@ -277,6 +280,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         instancePanels[instance.id] = panel
       }
       panel.acceptsConversationFocus = !instance.minimized
+      // A detached window stands above the group it came from. On one shared
+      // level every group reconcile re-ordered the rows over it (Maciej,
+      // 2026-10-23: the detached Klaudiusz played hide-and-seek under row 1).
+      panel.level = OverlayIntercomPanel.detachedLevel
       positioning = true
       let fitted = instanceFrame(instance, for: panel)
       if panel.frame != fitted { panel.setFrame(fitted, display: true) }
@@ -305,18 +312,21 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     // width comes from its own content, never from the expanded conversation
     // (Astra, V3 — a 900 pt conversation must not leave a 900 pt mini). The
     // expanded frame survives untouched for restore.
-    let nameFont = NSFont.systemFont(ofSize: 11 * textScale.scale, weight: .semibold)
-    let nameWidth = (instance.name as NSString).size(withAttributes: [.font: nameFont]).width
-    let digitFont = CSFont.nsMono(10 * textScale.scale)
-    let digitWidth = (instance.digit as NSString).size(withAttributes: [.font: digitFont]).width
     let height = OverlayIntercomWidgetLayout.controlHeight(scale: textScale.scale)
-    let width = min(
-      stored.width,
-      OverlayIntercomWidgetLayout.minimizedInstanceWidth(
-        text: nameWidth + digitWidth, scale: textScale.scale))
+    let width = min(stored.width, minimizedWidth(name: instance.name, digit: instance.digit))
     return OverlayIntercomWidgetLayout.cardFrame(
       below: CGRect(x: stored.maxX - width, y: stored.maxY, width: width, height: 0),
       size: CGSize(width: width, height: height), visibleFrame: visibleFrame)
+  }
+
+  /// One measure for a mini's width, from its own name and digit.
+  private func minimizedWidth(name: String, digit: String) -> CGFloat {
+    let nameFont = NSFont.systemFont(ofSize: 11 * textScale.scale, weight: .semibold)
+    let nameWidth = (name as NSString).size(withAttributes: [.font: nameFont]).width
+    let digitFont = CSFont.nsMono(10 * textScale.scale)
+    let digitWidth = (digit as NSString).size(withAttributes: [.font: digitFont]).width
+    return OverlayIntercomWidgetLayout.minimizedInstanceWidth(
+      text: nameWidth + digitWidth, scale: textScale.scale)
   }
 
   fileprivate func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
@@ -333,12 +343,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   /// X is a window operation: the saved fiszka stays recorded as closed and
   /// detaching the same conversation reopens it. No disconnect, no archive.
+  /// The agent's row comes back into the group.
   fileprivate func closeInstance(_ id: UUID) {
     guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
     instancePanels[id]?.resignKey()
     desktop.instances[index].closed = true
     saveDesktop()
     materializeInstances()
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   fileprivate func resizeInstance(
@@ -364,16 +376,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     panel.makeKeyAndOrderFront(nil)
   }
 
-  /// The open fiszka of a group row's conversation, if one stands on the
-  /// desktop. The row then greys out and becomes the road to that window.
-  fileprivate func detachedInstance(for identity: OverlayIntercomCardIdentity)
-    -> OverlayIntercomInstance?
-  {
-    desktop.openInstance(for: identity)
-  }
-
-  /// A greyed row's click and a refused second detach both land here: the
-  /// open fiszka comes forward, restored from mini when it was folded.
+  /// A pill's click and a refused second detach both land here: the open
+  /// fiszka comes forward, restored from mini when it was folded.
   fileprivate func showInstance(_ id: UUID) {
     if instance(for: id)?.minimized == true {
       setInstanceMinimized(id, false)
@@ -394,13 +398,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     desktop.instances[index].closed = false
     saveDesktop()
     materializeInstances()
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
   fileprivate func scrollGroup(_ steps: Int) {
     guard visible, !presentation.folded else { return }
     rowOffset = min(
       max(0, visibleRows.lowerBound + steps), max(0, groupIdentities.count - visibleRows.count))
-    presentation.hovered = nil
     positionCards()
   }
 
@@ -440,27 +444,18 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           size: sizes[identity]
             ?? OverlayIntercomWidgetLayout.conversationSize(scale: effectiveScale),
           visibleFrame: screenFrame, scale: effectiveScale)
-      } else if presentation.hovered == identity && groupTier.hoverPreviewEnabled {
-        if groupTier == .icon {
-          frame = OverlayIntercomWidgetLayout.cardFrame(
-            below: row, size: CGSize(width: contentMetrics.nameWidth, height: row.height),
-            visibleFrame: screenFrame)
-        } else {
-          frame = OverlayIntercomWidgetLayout.previewFrame(
-            beside: row, visibleFrame: screenFrame, scale: effectiveScale)
-        }
       } else {
         // A grouped fiszka inherits the header's size — one row, the column's
-        // width. Only a detached instance owns its geometry (Maciej, 2026-10-23).
+        // width, hovered or not. Only a detached instance owns its geometry
+        // (Maciej, 2026-10-23).
         frame = row
       }
       if cardTargets[identity] != frame {
         cardTargets[identity] = frame
-        // Hover slides stay smooth, but they must CONVERGE: a new target
-        // retargets the running animation instead of queueing another, and
-        // the duration is fixed instead of distance-scaled. setFrame(animate:)
-        // did neither, so a fast crossing left the stack dancing long after
-        // the mouse stopped (Maciej, 2026-10-23).
+        // Slides must CONVERGE: a new target retargets the running animation
+        // instead of queueing another, and the duration is fixed instead of
+        // distance-scaled. setFrame(animate:) did neither, so a fast change
+        // left the stack dancing long after it settled (Maciej, 2026-10-23).
         if panel.isVisible && !resizingGroup
           && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         {
@@ -477,36 +472,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     // Geometry and hover leave the order of presented windows alone. Only an
     // explicit expand below (or a native click/focus) raises a conversation.
-  }
-
-  fileprivate func hover(_ identity: OverlayIntercomCardIdentity, inside: Bool) {
-    // A row whose conversation stands in its own window has nothing to slide
-    // out: the words are in that window.
-    guard visible, !presentation.folded, groupTier.hoverPreviewEnabled,
-      desktop.openInstance(for: identity) == nil
-    else { return }
-    // Enter lands immediately; leave waits a grace period. A cursor resting
-    // on a card's edge flips the hit test on every animated frame change and
-    // the card oscillates several times a second (Maciej's recording,
-    // 2026-10-23 08:50). Edge jitter shorter than the grace changes nothing,
-    // and a crossing leaves a soft tail of cards easing back.
-    if inside {
-      hoverLeaveTask?.cancel()
-      hoverLeaveTask = nil
-      let before = presentation.hovered
-      presentation.enter(identity)
-      guard presentation.hovered != before else { return }
-      positionCards()
-    } else {
-      guard presentation.hovered == identity else { return }
-      hoverLeaveTask?.cancel()
-      hoverLeaveTask = Task { @MainActor [weak self] in
-        try? await Task.sleep(nanoseconds: 220_000_000)
-        guard let self, !Task.isCancelled, self.presentation.hovered == identity else { return }
-        self.presentation.leave(identity)
-        self.positionCards()
-      }
-    }
   }
 
   fileprivate func expand(_ identity: OverlayIntercomCardIdentity) {
@@ -532,14 +497,73 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate func toggleGroup() {
     presentation.folded.toggle()
-    presentation.hovered = nil
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+  }
+
+  // MARK: Middle-click chooser host
+
+  /// The chooser's rows: the header's channel 0 first, as the agents list
+  /// leads with 0 · All, then every agent in roster order. An agent standing
+  /// in its own window is still an agent (Maciej, 2026-10-23 seal: "pomija —
+  /// to bardzo źle"): the wheel reaches its window too.
+  func chooserTargets() -> [OverlayConversation] {
+    let agents = identities.compactMap { identity in
+      state.conversations.first { identity.matches($0) }
+    }
+    return (intercomConversation(state: state, digit: "0").map { [$0] } ?? []) + agents
+  }
+
+  /// The middle click summons the group: unfolded, in front, and with no
+  /// conversation unrolled over the rows the wheel walks.
+  func presentChooser() {
+    for identity in presentation.expanded { close(identity) }
+    revealGroup()
+  }
+
+  /// A left click on the chooser's focus opens that row's conversation here.
+  /// Channel 0 has no card to unroll: the group in front is the answer.
+  func openChosenConversation(_ conversationID: String) {
+    revealGroup()
+    if let identity = identities.first(where: { $0.conversationID == conversationID }) {
+      expand(identity)
+    }
+  }
+
+  /// The focused row stays on screen: the group pages to it, and an agent in
+  /// its own window has that window brought above the others, never made key.
+  fileprivate func revealChooserFocus(_ conversationID: String?) {
+    if let conversationID,
+      let open = desktop.instances.first(where: {
+        !$0.closed && $0.conversationID == conversationID
+      })
+    {
+      instancePanels[open.id]?.orderFront(nil)
+      return
+    }
+    let group = groupIdentities
+    guard visible, !presentation.folded, let conversationID,
+      let index = group.firstIndex(where: { $0.conversationID == conversationID })
+    else { return }
+    let range = visibleRows
+    guard !range.contains(index) else { return }
+    let start = index < range.lowerBound ? index : index - range.count + 1
+    rowOffset = min(max(0, start), max(0, group.count - range.count))
+    positionCards()
+  }
+
+  /// The main overlay's mini counter in the vertical layout: the group
+  /// unfolds and stands in front, its detached windows still above it.
+  func revealGroup() {
+    if presentation.folded { toggleGroup() }
+    header?.orderFrontRegardless()
+    for panel in cards.values { panel.orderFrontRegardless() }
+    for panel in instancePanels.values where panel.isVisible { panel.orderFrontRegardless() }
   }
 
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). One agent keeps
   /// one open window (Maciej, 2026-10-23): while it stands somewhere, the
-  /// gesture shows it instead of minting a copy, and the group row stays in
-  /// the stack, greyed, as the road back to it — the group no longer folds.
+  /// gesture shows it instead of minting a copy, and the agent's row leaves
+  /// the stack until that window closes.
   /// Returns whether this card's panel became that window, so the grip knows
   /// whether there is anything to drag.
   @discardableResult
@@ -553,6 +577,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let detached = detachIntoInstance(identity) != nil
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
     return detached
+  }
+
+  /// Dragging a collapsed row moves the whole group under the pointer, as
+  /// the header does. Rows no longer tear off: a fiszka leaves the group only
+  /// from its unrolled card's grip (Maciej, 2026-10-23: "nie odrywamy na
+  /// każde pierdnięcie tych fiszek, tylko … dopiero po rozwinięciu"). Screen
+  /// coordinates, because the row's own window moves with the group.
+  fileprivate func moveGroup(ended: Bool = false) {
+    guard let header else { return }
+    let pointer = NSEvent.mouseLocation
+    let drag = groupDrag ?? (pointer: pointer, origin: header.frame.origin)
+    groupDrag = ended ? nil : drag
+    // The rows follow at once, as under a resize; their slide would trail
+    // the pointer by its 0.18 s.
+    resizingGroup = true
+    defer { resizingGroup = false }
+    positioning = true
+    header.setFrameOrigin(
+      CGPoint(
+        x: drag.origin.x + pointer.x - drag.pointer.x,
+        y: drag.origin.y + pointer.y - drag.pointer.y))
+    positioning = false
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    UserDefaults.standard.set(
+      [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
   }
 
   @discardableResult
@@ -586,7 +635,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       desktop.instances[index].frame = current
       id = desktop.instances[index].id
     } else {
-      let instance = OverlayIntercomInstance(identity: identity, frame: current)
+      let instance = OverlayIntercomInstance(
+        identity: identity, frame: current, minimized: false)
       desktop.upsert(instance)
       id = instance.id
     }
@@ -643,14 +693,25 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
-  /// Width reveals content; height can place controls below the name. Neither changes fonts.
+  /// Width reveals content; height stretches the tiles and, from two rows,
+  /// places controls below the name. Neither changes fonts. Every row's edges
+  /// resize the group (Maciej, 2026-10-23: "na każdy rząd, w lewo, w prawo, w
+  /// dół i w górę"); the edge a row is dragged by follows the pointer.
   fileprivate func resizeGroup(
-    from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge, gesture: UUID
+    from frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge,
+    row: OverlayIntercomCardIdentity? = nil, gesture: UUID
   ) {
     guard let header else { return }
     resizingGroup = true
     defer { resizingGroup = false }
     let count = presentation.folded ? 0 : visibleRows.count
+    let index = row.flatMap { groupIdentities.firstIndex(of: $0) }.map {
+      $0 - visibleRows.lowerBound
+    }
+    let delta = CGSize(
+      width: delta.width,
+      height: delta.height
+        * OverlayIntercomWidgetLayout.rowEdgeFactor(edge: edge, index: index, count: count))
     if groupResizeGesture?.gesture != gesture {
       let height =
         header.frame.height + CGFloat(count) * (groupCardHeight + OverlayIntercomWidgetLayout.gap)
@@ -665,7 +726,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let fitted = contentMetrics.resizedGroupFrame(
       base, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header))
     desktop.groupWidth = Double(fitted.width)
-    if count > 0 && edge != .left {
+    if count > 0 && edge.resizesHeight {
       desktop.groupRowHeight = Double(
         (fitted.height - header.frame.height) / CGFloat(count)
           - OverlayIntercomWidgetLayout.gap)
@@ -676,7 +737,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         x: fitted.minX, y: fitted.maxY - header.frame.height,
         width: fitted.width, height: header.frame.height), display: true)
     positioning = false
-    presentation.hovered = nil
     saveDesktop()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
     UserDefaults.standard.set(
@@ -714,8 +774,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
 /// No window spans the invisible desktop gaps. Only explicitly opened
 /// conversations may become key; nonactivating hover remains passive.
+/// Internal so the text-size shortcuts can name the Intercom's windows.
 @MainActor
-private final class OverlayIntercomPanel: NSPanel {
+final class OverlayIntercomPanel: NSPanel {
+  /// Group rows float; a detached conversation floats one level higher.
+  static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+
   var acceptsConversationFocus = false
   var onScroll: (CGFloat) -> Void = { _ in }
   private var presented = false
@@ -865,8 +929,21 @@ private struct OverlayIntercomHeader: View {
     .background(OverlayIntercomDragHandle(cursorHint: false))
     .background {
       OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency)
-        .clipShape(Capsule())
+        .clipShape(
+          RoundedRectangle(
+            cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+            style: .continuous))
     }
+    // The chooser's channel 0 is this bar: its ring lands here.
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: broadcast != nil && state.agentGestureFocusID == broadcast?.id,
+        shape: RoundedRectangle(
+          cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+          style: .continuous),
+        palette: palette, targetID: broadcast?.id,
+        onHover: { state.hoverAgentGestureTarget($0) })
+    )
     .background(
       OverlayIntercomWindowProjection(
         chips: chips,
@@ -880,9 +957,14 @@ private struct OverlayIntercomHeader: View {
     .overlay {
       // The group's left edge selects content for every attached fiszka.
       // The header's corners keep their buttons; pills carry the corners.
-      OverlayIntercomResizeHandles(corners: false) { frame, delta, edge, gesture in
+      OverlayIntercomResizeHandles(corners: false, right: true) { frame, delta, edge, gesture in
         controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
       }
+    }
+    // The header is always on screen while the group is: it pages the stack
+    // to the row the wheel focused.
+    .onChange(of: state.agentGestureFocusID) { _, focus in
+      controller.revealChooserFocus(focus)
     }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
   }
@@ -971,6 +1053,13 @@ private struct OverlayIntercomCard: View {
     state.conversations.first { identity.matches($0) }
   }
 
+  /// Dragging a collapsed row moves the group; a click still unrolls it.
+  private var moveGesture: some Gesture {
+    DragGesture(minimumDistance: 4)
+      .onChanged { _ in controller.moveGroup() }
+      .onEnded { _ in controller.moveGroup(ended: true) }
+  }
+
   private var name: String {
     conversation.map { OverlayChannelMapChip.displayName($0.name) } ?? identity.name
   }
@@ -978,9 +1067,12 @@ private struct OverlayIntercomCard: View {
   var body: some View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let expanded = controller.presentation.expanded.contains(identity)
-    let hovered = controller.presentation.hovered == identity
+    let corner =
+      expanded
+      ? OverlayIntercomWidgetLayout.conversationCornerRadius
+      : OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
     VStack(spacing: 0) {
-      cardHeader(palette: palette, expanded: expanded, hovered: hovered)
+      cardHeader(palette: palette, expanded: expanded)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       if expanded {
         if let conversation {
@@ -992,30 +1084,45 @@ private struct OverlayIntercomCard: View {
         }
       } else if controller.stacksGroupControls {
         stackedControls(palette: palette)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
     }
     .foregroundStyle(palette.primaryText.color)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    // A stretched row is a larger tile with its content in the middle, not a
+    // row with an empty bottom.
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: expanded ? .top : .center)
     .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
-    .clipShape(RoundedRectangle(cornerRadius: expanded ? 16 : 30 * max(1, scale)))
+    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
-      RoundedRectangle(cornerRadius: expanded ? 16 : 30 * max(1, scale))
+      RoundedRectangle(cornerRadius: corner, style: .continuous)
         .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
     }
+    // The middle-click chooser's focus, as on the agents list's rows; the
+    // pointer entering a row moves it there.
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: identity.conversationID != nil
+          && state.agentGestureFocusID == identity.conversationID,
+        shape: RoundedRectangle(cornerRadius: corner, style: .continuous), palette: palette,
+        targetID: identity.conversationID,
+        onHover: { state.hoverAgentGestureTarget($0) })
+    )
     .overlay {
       if expanded {
         OverlayIntercomResizeHandles { frame, delta, edge, gesture in
           controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
         }
       } else {
-        // Existing edges and corners resize the group. Audio keeps its hit
-        // target when present; compact cards have no trailing audio slot.
+        // Every edge and both bottom corners resize the group. Audio keeps
+        // its hit target when present; compact cards have no trailing audio.
         OverlayIntercomResizeHandles(
+          sides: true,
           trailingInset: controller.groupTier == .actions
             ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : 0
         ) { frame, delta, edge, gesture in
-          controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
+          controller.resizeGroup(
+            from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)
         }
       }
     }
@@ -1027,24 +1134,17 @@ private struct OverlayIntercomCard: View {
           ? nil : .spring(response: 0.28, dampingFraction: 0.86).delay(Double(index) * 0.025)
       ) { entered = true }
     }
-    .onHover { controller.hover(identity, inside: $0) }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-intercom-row-\(identity.digit)")
   }
 
   @ViewBuilder
-  private func cardHeader(
-    palette: OverlayAppearancePalette, expanded: Bool, hovered: Bool
-  ) -> some View {
+  private func cardHeader(palette: OverlayAppearancePalette, expanded: Bool) -> some View {
     let conversation = conversation
     let speaking = conversation?.replySpeaking == true
     let open = conversation.map { state.conversationMicrophoneOpen($0) } ?? false
     let current =
       intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
-    let info = current ? state.channelAgentDescriptors[identity.digit] : nil
-    // The conversation stands in its own window: the row stays in the group,
-    // greyed, and its click shows that window (Maciej, 2026-10-23).
-    let detached = controller.detachedInstance(for: identity)
     let roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: !reduceMotion,
       onRevealConversation: onRevealConversation,
@@ -1052,36 +1152,32 @@ private struct OverlayIntercomCard: View {
         if id == identity.conversationID { controller.expand(identity) }
       })
     let channelRow = intercomChannelRow(state: state, digit: identity.digit)
-    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
+    let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let tier = controller.groupTier
-    // Icon hover adds only the name to the left of the anchored square.
+    let row = expanded ? IntercomRowControls.all : controller.rowControls
+    // The icon square names its agent in the hint panel, beside the column;
+    // the card itself never grows under the pointer.
     if tier == .icon && !expanded {
       Button {
-        if let detached {
-          controller.showInstance(detached.id)
-        } else {
-          controller.expand(identity)
-        }
+        controller.expand(identity)
       } label: {
-        HStack(spacing: 0) {
-          if hovered {
-            Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-              .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 12)
-          }
-          HStack(spacing: 4) {
-            OverlayAgentStatusDot(
-              kind: intercomStatusDot(roster, state: state, digit: identity.digit), palette: palette
-            )
-            Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
-          }
-          .frame(
-            width: controller.contentMetrics.iconSide, height: controller.contentMetrics.iconSide)
+        HStack(spacing: 4) {
+          OverlayIntercomStatusMark(
+            roster: roster, channel: channelRow,
+            kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+            palette: palette, hints: false)
+          Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .modifier(OverlayDisconnectedRowDim(disconnected: dead || detached != nil))
+      .overlayFastHint(
+        channelRow.flatMap { inactive ? name + " · " + roster.detail(for: $0) : nil } ?? name,
+        palette: palette, leading: true
+      )
+      .simultaneousGesture(moveGesture)
+      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .accessibilityLabel(Text(verbatim: identity.digit + " · " + name))
       .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
     } else {
@@ -1098,67 +1194,56 @@ private struct OverlayIntercomCard: View {
         }
         HStack(spacing: 6) {
           Text(verbatim: identity.digit).csMono(10).foregroundStyle(palette.mutedText.color)
-          if let channelRow {
+          if let channelRow, row.marks {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
           }
-          OverlayAgentStatusDot(
+          OverlayIntercomStatusMark(
+            roster: roster, channel: channelRow,
             kind: intercomStatusDot(roster, state: state, digit: identity.digit),
             palette: palette)
           Button {
-            if let detached {
-              controller.showInstance(detached.id)
-            } else {
-              controller.expand(identity)
-            }
+            controller.expand(identity)
           } label: {
-            HStack(spacing: 5) {
-              VStack(alignment: .leading, spacing: 0) {
-                Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-                if hovered && tier == .name && !expanded && detached == nil {
-                  Text(
-                    verbatim: conversation?.messages.last.map {
-                      OverlayChannelStatusView.drawerPreview(message: $0)
-                    } ?? info ?? String(localized: "No messages yet")
-                  )
-                  .csFont(9).lineLimit(1).foregroundStyle(palette.mutedText.color)
-                }
-              }
-              if detached != nil {
-                Image(systemName: "macwindow").font(.system(size: 9 * scale))
-                  .frame(width: 9 * scale)
-              }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
+          .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
+          // Names rest lightly smoked; the agent talking brightens instead of
+          // turning violet (Maciej, 2026-10-23: "można by się tego fioletu
+          // pozbyć … na rzecz rozjaśnienia").
           .conversationActionHover(
-            restingColor: dead || detached != nil
+            restingColor: inactive
               ? palette.mutedText.color
-              : speaking ? palette.agentAccent.color : palette.primaryText.color,
-            hoverColor: dead || detached != nil
-              ? palette.mutedText.color : palette.agentAccent.color
+              : speaking ? palette.primaryText.color : palette.bodyText.color,
+            hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
           .disabled(conversation == nil || (identity.digit != "0" && conversation?.owner == nil))
-          .overlayFastHint(
-            String(localized: "Detached — click to show its window"), palette: palette,
-            enabled: detached != nil
-          )
-          .accessibilityLabel(
-            (detached != nil
-              ? String(localized: "Show detached fiszka") : String(localized: "Open conversation"))
-              + ": " + name
-          )
+          .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
+          // Detaching needs the unrolled card, for assistive technology too.
+          .accessibilityActions {
+            if expanded {
+              Button("Detach conversation") { controller.detach(identity) }
+            }
+          }
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
         }
         .padding(.leading, expanded ? 0 : 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // The road to the pane, then what I hear, then what I say.
-        if expanded || (tier == .actions && !controller.stacksGroupControls) {
-          OverlayIntercomFocusButton(
-            roster: roster, channel: channelRow,
-            palette: palette, diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          audioSlot(conversation, palette: palette, speaking: speaking, open: open)
+        // The road to the pane, then what I hear, then what I say, from the
+        // right edge: the microphone is the last to go, the focus the first.
+        if !controller.stacksGroupControls || expanded {
+          if row.slots >= 3 {
+            OverlayIntercomFocusButton(
+              roster: roster, channel: channelRow,
+              palette: palette, diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+          }
+          if row.slots >= 1 {
+            audioSlot(
+              conversation, palette: palette, speaking: speaking, open: open,
+              shared: row.slots == 1)
+          }
         }
         if expanded {
           // This folds the conversation back into its one-row fiszka. An X
@@ -1176,7 +1261,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
         }
       }
-      .modifier(OverlayDisconnectedRowDim(disconnected: dead || detached != nil))
+      .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
       .modifier(
         current
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
@@ -1192,7 +1277,7 @@ private struct OverlayIntercomCard: View {
         if id == identity.conversationID { controller.expand(identity) }
       })
     let channel = intercomChannelRow(state: state, digit: identity.digit)
-    let dead = channel.map { roster.hasDeadFollower($0) } ?? false
+    let inactive = channel.map { roster.isInactive($0) } ?? false
     return HStack(spacing: 3) {
       OverlayIntercomFocusButton(
         roster: roster, channel: channel, palette: palette,
@@ -1201,18 +1286,16 @@ private struct OverlayIntercomCard: View {
         conversation, palette: palette, speaking: conversation?.replySpeaking == true,
         open: conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
     }
-    .modifier(
-      OverlayDisconnectedRowDim(
-        disconnected: dead || controller.detachedInstance(for: identity) != nil))
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
   }
 
   private func audioSlot(
     _ conversation: OverlayConversation?, palette: OverlayAppearancePalette,
-    speaking: Bool, open: Bool
+    speaking: Bool, open: Bool, shared: Bool = false
   ) -> some View {
     OverlayIntercomAudioControls(
       state: state, conversation: conversation, digit: identity.digit, palette: palette,
-      open: open, speaking: speaking)
+      open: open, speaking: speaking, shared: shared)
   }
 
   private func conversationBody(
@@ -1242,6 +1325,7 @@ private struct OverlayIntercomAudioControls: View {
   let palette: OverlayAppearancePalette
   let open: Bool
   let speaking: Bool
+  var shared = false
 
   var body: some View {
     let muted = conversation.flatMap { state.conversationPlaybackMuted($0) }
@@ -1262,7 +1346,8 @@ private struct OverlayIntercomAudioControls: View {
       },
       broadcast: digit == "0", speaking: speaking, broadcastEmphasis: false,
       chrome: false,
-      diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale),
+      shared: shared
     )
     .fixedSize()
     .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
@@ -1302,6 +1387,38 @@ private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayCh
 /// The list's focus button, drawn flat on the fiszka from the pill menu's
 /// own `focus` action: the same destination, availability and callback. The
 /// slot is reserved even without a button so the audio pair never moves.
+/// The row's state mark: the activity dot while someone reads the channel,
+/// an explicit glyph once nobody does — the follower gone, or alive with a
+/// backlog nobody read past the stall horizon (Maciej, 2026-10-23: inactive
+/// agents "powinny mieć jawne disconnected"). The glyphs are the roster's
+/// own, so the overlay list and the Intercom say one thing.
+private struct OverlayIntercomStatusMark: View {
+  @Environment(\.csTextScale) private var textScale
+  let roster: OverlayChannelStatusView
+  let channel: OverlayChannelDelivery?
+  let kind: OverlayAgentDotKind
+  let palette: OverlayAppearancePalette
+  var hints = true
+
+  var body: some View {
+    if let channel, roster.isInactive(channel) {
+      let glyph = Image(systemName: roster.statusSymbol(for: channel))
+        .font(.system(size: 9 * textScale, weight: .semibold))
+        .foregroundStyle(palette.mutedText.color)
+        .frame(width: 12 * textScale, height: 10 * textScale)
+        .accessibilityLabel(Text(verbatim: roster.detail(for: channel)))
+        .accessibilityIdentifier("overlay-intercom-inactive-\(channel.channel)")
+      if hints {
+        glyph.overlayFastHint(roster.detail(for: channel), palette: palette)
+      } else {
+        glyph
+      }
+    } else {
+      OverlayAgentStatusDot(kind: kind, palette: palette)
+    }
+  }
+}
+
 private struct OverlayIntercomFocusButton: View {
   let roster: OverlayChannelStatusView
   let channel: OverlayChannelDelivery?
@@ -1323,18 +1440,23 @@ private struct OverlayIntercomFocusButton: View {
                   ?? (roster.hasCodexCloudThread(channel) ? .codexThread : nil))
             )
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(
-              focusState?.isSucceeded == true
-                ? palette.successStatus.color
-                : focusState?.isFailed == true
-                  ? palette.errorStatus.color
-                  : action.enabled ? palette.primaryText.color : palette.mutedText.color)
+            .modifier(
+              OverlayGlyphInk(
+                ink: focusState?.isSucceeded == true
+                  ? AnyShapeStyle(palette.successStatus.color)
+                  : focusState?.isFailed == true
+                    ? AnyShapeStyle(palette.errorStatus.color) : nil))
           }
         }
         .frame(width: diameter, height: diameter)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      // Smoked at rest like the wordmark and the audio pair, brighter under
+      // the pointer (Maciej, 2026-10-23: "nie tylko w pierwszym").
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
       .csFocusOutline()
       .disabled(!action.enabled)
       .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
@@ -1400,9 +1522,13 @@ private typealias OverlayIntercomResizeAction = (
 ) -> Void
 
 private struct OverlayIntercomResizeHandles: View {
-  /// The header keeps its corners for buttons; its left edge still resizes
-  /// the group. Pills and cards expose the left edge and both bottom corners.
+  /// The header keeps its corners for buttons; its side edges still resize
+  /// the group. Cards expose the left edge and both bottom corners.
   var corners = true
+  /// The right edge as well as the left.
+  var right = false
+  /// A group row's every edge: right, top and bottom beside the left.
+  var sides = false
   /// A pill's audio slot owns the true bottom-right corner, so its resize
   /// zone steps left by this much instead of covering the microphone.
   var trailingInset: CGFloat = 0
@@ -1416,6 +1542,19 @@ private struct OverlayIntercomResizeHandles: View {
       HStack {
         OverlayIntercomResizeHandle(edge: .left, resize: resize).frame(width: Self.edgeBand)
         Spacer(minLength: 0)
+        if right || sides {
+          OverlayIntercomResizeHandle(edge: .right, resize: resize).frame(width: Self.sideBand)
+        }
+      }
+      // Thin top and bottom bands keep clear of the controls, which sit in
+      // the middle of the row with a margin above and below.
+      if sides {
+        VStack {
+          OverlayIntercomResizeHandle(edge: .top, resize: resize).frame(height: Self.sideBand)
+          Spacer(minLength: 0)
+          OverlayIntercomResizeHandle(edge: .bottom, resize: resize).frame(height: Self.sideBand)
+        }
+        .padding(.horizontal, Self.edgeBand)
       }
       if corners {
         HStack {
@@ -1432,6 +1571,7 @@ private struct OverlayIntercomResizeHandles: View {
   }
 
   static let edgeBand: CGFloat = 8
+  static let sideBand: CGFloat = 5
   static let cornerBand: CGFloat = 18
 }
 
@@ -1461,6 +1601,10 @@ private struct OverlayIntercomInstanceCard: View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let conversation = state.conversations.first { instance.matches($0) }
     let mini = instance.minimized
+    let corner =
+      mini
+      ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+      : OverlayIntercomWidgetLayout.conversationCornerRadius
     return VStack(spacing: 0) {
       headerRow(instance, conversation: conversation, palette: palette)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
@@ -1488,9 +1632,9 @@ private struct OverlayIntercomInstanceCard: View {
     .foregroundStyle(palette.primaryText.color)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
-    .clipShape(RoundedRectangle(cornerRadius: mini ? 30 * max(1, scale) : 16))
+    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
-      RoundedRectangle(cornerRadius: mini ? 30 * max(1, scale) : 16)
+      RoundedRectangle(cornerRadius: corner, style: .continuous)
         .strokeBorder(palette.border.color, lineWidth: 1).allowsHitTesting(false)
     }
     .overlay {
@@ -1522,17 +1666,21 @@ private struct OverlayIntercomInstanceCard: View {
       onOpenConversation: { id in
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
-    let channelRow = intercomChannelRow(state: state, digit: instance.digit)
-    let dead = channelRow.map { roster.hasDeadFollower($0) } ?? false
+    // A digit whose owner changed belongs to the replacement agent: its marks
+    // and focus would act on that agent under this fiszka's name (Copilot on
+    // #183). Only the exact owner's row is this window's to control.
+    let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
+    let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     return HStack(spacing: 3) {
       Text(verbatim: instance.digit).csMono(10).foregroundStyle(palette.mutedText.color)
-      if layout.tier != .icon, let channelRow {
+      if layout.tier != .icon, layout.controls.marks, let channelRow {
         OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
       }
-      OverlayAgentStatusDot(
+      OverlayIntercomStatusMark(
+        roster: roster, channel: channelRow,
         kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
       // Mini restores on its name; an open window is already key under the
       // click, so its name is plain text and part of the drag surface.
@@ -1545,26 +1693,30 @@ private struct OverlayIntercomInstanceCard: View {
           }
           .buttonStyle(.plain)
           .conversationActionHover(
-            restingColor: speaking ? palette.agentAccent.color : palette.primaryText.color,
-            hoverColor: palette.agentAccent.color
+            restingColor: speaking ? palette.primaryText.color : palette.bodyText.color,
+            hoverColor: palette.primaryText.color
           )
           .accessibilityLabel(String(localized: "Restore fiszka") + ": " + instance.name)
         } else {
           // Glyphs would otherwise take the hit from the drag surface below:
           // the hosting view hands only text and buttons to SwiftUI.
           nameRow
-            .foregroundStyle(speaking ? palette.agentAccent.color : palette.primaryText.color)
+            .foregroundStyle(speaking ? palette.primaryText.color : palette.bodyText.color)
             .allowsHitTesting(false)
             .accessibilityLabel(Text(verbatim: instance.name))
         }
       }
-      if layout.tier == .actions && !layout.stacked {
-        OverlayIntercomFocusButton(
-          roster: roster, channel: channelRow, palette: palette,
-          diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-        OverlayIntercomAudioControls(
-          state: state, conversation: conversation, digit: instance.digit, palette: palette,
-          open: open, speaking: speaking)
+      if layout.tier != .icon && !layout.stacked {
+        if layout.controls.slots >= 3 {
+          OverlayIntercomFocusButton(
+            roster: roster, channel: channelRow, palette: palette,
+            diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+        }
+        if layout.controls.slots >= 1 {
+          OverlayIntercomAudioControls(
+            state: state, conversation: conversation, digit: instance.digit, palette: palette,
+            open: open, speaking: speaking, shared: layout.controls.slots == 1)
+        }
       }
       // Mini rests with the name, activity and the audio pair (Astra):
       // clicking the fiszka itself restores it, so no extra Restore button.
@@ -1582,18 +1734,23 @@ private struct OverlayIntercomInstanceCard: View {
       // The X keeps a fixed place so the audio slot never moves: a hover
       // only changes its visibility, never the row's geometry (Astra, V1 —
       // a reflow let a click aimed at the remembered microphone close the
-      // fiszka).
-      Button("Close", systemImage: "xmark") { controller.closeInstance(instanceID) }
-        .labelStyle(.iconOnly).buttonStyle(.plain)
-        .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
-        .conversationActionHover(
-          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-        )
-        .opacity(!mini || hovering ? 1 : 0)
-        .allowsHitTesting(!mini || hovering)
-        .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
+      // fiszka). Closing hands the conversation back to its group row, so it
+      // wears the overlay's dock glyph, not an X (Maciej, 2026-10-23: "dokładnie
+      // tym samym piktogramem Dock").
+      Button("Collapse", systemImage: OverlayControlSymbols.returnToMini) {
+        controller.closeInstance(instanceID)
+      }
+      .labelStyle(.iconOnly).buttonStyle(.plain)
+      .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
+      .opacity(!mini || hovering ? 1 : 0)
+      .allowsHitTesting(!mini || hovering)
+      .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
     }
-    .modifier(OverlayDisconnectedRowDim(disconnected: dead))
+    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
     .padding(.leading, 12)
     .padding(.trailing, 4)
     // Any free spot on the header moves the fiszka, not one grip on one side
@@ -1608,7 +1765,24 @@ private struct OverlayIntercomInstanceCard: View {
     // pill, not a glass of its own (Maciej, 2026-10-23). The drag surface
     // sits inside the glass: outside it, the glass takes the hit and no
     // drag reaches the window (Klaudiusz-div0's HID probe).
-    .modifier(OverlayControlGlass(cornerRadius: mini ? 30 * max(1, scale) : 16))
+    .modifier(
+      OverlayControlGlass(
+        cornerRadius: mini
+          ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+          : OverlayIntercomWidgetLayout.conversationCornerRadius)
+    )
+    // The wheel reaches an agent in its own window: the same ring as its row.
+    .modifier(
+      OverlayGestureFocusRing(
+        focused: state.agentGestureFocusID == instance.conversationID,
+        shape: RoundedRectangle(
+          cornerRadius: mini
+            ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+            : OverlayIntercomWidgetLayout.conversationCornerRadius,
+          style: .continuous),
+        palette: palette, targetID: instance.conversationID,
+        onHover: { state.hoverAgentGestureTarget($0) })
+    )
     // The same right-click menu as the row in the group: Show in Agents,
     // microphone, playback, archive. A detached fiszka had none.
     .modifier(
@@ -1620,7 +1794,7 @@ private struct OverlayIntercomInstanceCard: View {
   /// Detached windows derive their own content from their own saved frame.
   /// No group tier or group dimensions participate in this decision.
   private func instanceLayout(_ instance: OverlayIntercomInstance)
-    -> (tier: IntercomContentTier, stacked: Bool)
+    -> (tier: IntercomContentTier, stacked: Bool, controls: IntercomRowControls)
   {
     let metrics = IntercomContentMetrics(
       names: [instance.name], digits: [instance.digit], scale: scale)
@@ -1628,7 +1802,9 @@ private struct OverlayIntercomInstanceCard: View {
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
     let tier = metrics.tier(width: width, cardHeight: height)
-    return (tier, tier == .actions && width < metrics.actionsWidth)
+    return (
+      tier, tier == .actions && width < metrics.actionsWidth, metrics.rowControls(width: width)
+    )
   }
 
   private func instanceControls(
@@ -1641,7 +1817,10 @@ private struct OverlayIntercomInstanceCard: View {
       onOpenConversation: { id in
         if id == instance.conversationID { controller.focusInstance(instanceID) }
       })
-    let channel = intercomChannelRow(state: state, digit: instance.digit)
+    let current =
+      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
+      == true
+    let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
     return HStack(spacing: 3) {
       OverlayIntercomFocusButton(
         roster: roster, channel: channel, palette: palette,
@@ -1652,7 +1831,7 @@ private struct OverlayIntercomInstanceCard: View {
         speaking: conversation?.replySpeaking == true)
     }
     .modifier(
-      OverlayDisconnectedRowDim(disconnected: channel.map { roster.hasDeadFollower($0) } ?? false))
+      OverlayDisconnectedRowDim(disconnected: channel.map { roster.isInactive($0) } ?? false))
   }
 
 }
@@ -1706,7 +1885,13 @@ private final class OverlayIntercomResizeView: NSView {
     moved = false
   }
   override func resetCursorRects() {
-    addCursorRect(bounds, cursor: edge == .left ? .resizeLeftRight : .crosshair)
+    let cursor: NSCursor =
+      switch edge {
+      case .left, .right: .resizeLeftRight
+      case .top, .bottom: .resizeUpDown
+      case .bottomLeft, .bottomRight: .crosshair
+      }
+    addCursorRect(bounds, cursor: cursor)
   }
 }
 

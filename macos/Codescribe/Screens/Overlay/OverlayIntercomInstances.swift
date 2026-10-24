@@ -75,14 +75,22 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
   var instances: [OverlayIntercomInstance] = []
 
   /// The one open fiszka of this exact conversation, if any. A second detach
-  /// never mints a copy: it shows this window, and the group row stays as the
-  /// road back to it (Maciej, 2026-10-23). A closed record is a saved window,
-  /// not an open one; mini still counts as open.
+  /// never mints a copy: it shows this window (Maciej, 2026-10-23). A closed
+  /// record is a saved window, not an open one; mini still counts as open.
   func openInstance(for identity: OverlayIntercomCardIdentity) -> OverlayIntercomInstance? {
     instances.first {
       !$0.closed && $0.conversationID == identity.conversationID
         && $0.ownerID == (identity.ownerID ?? "")
     }
+  }
+
+  /// The group's rows: every agent except one standing in its own window.
+  /// Such an agent leaves the stack instead of greying in it; its window is
+  /// its one place, and closing the window hands the row back (Maciej,
+  /// 2026-10-23 17:48Z, on the collapsed ghost: "likwidować, chować… jak ty
+  /// myślisz"; leaving the stack is my answer, 17:49Z).
+  func groupRows(of identities: [OverlayIntercomCardIdentity]) -> [OverlayIntercomCardIdentity] {
+    identities.filter { openInstance(for: $0) == nil }
   }
 
   mutating func upsert(_ instance: OverlayIntercomInstance) {
