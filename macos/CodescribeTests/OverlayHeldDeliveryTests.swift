@@ -14,6 +14,26 @@ final class OverlayHeldDeliveryTests: XCTestCase {
   private let messageID = String(repeating: "a", count: 24)
   private let leaseID = String(repeating: "b", count: 32)
 
+  func testTypedFounderSenderRemainsAUserMessageAcrossRestore() throws {
+    var row = typed()
+    row["source"] = "typed"
+    row["sender"] = ["name": "founder", "channel": "10"]
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(row)
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try firstMessage(projection)
+      XCTAssertEqual(message.kind, .user)
+      XCTAssertEqual(message.text, "Pierwsza wiadomość")
+      XCTAssertEqual(message.recipients.count, 1)
+      XCTAssertEqual(message.recipients.first?.owner.channel, "1")
+      XCTAssertEqual(message.deliveryStage(at: now), .held)
+      XCTAssertFalse(message.supportsSpeechPlayback)
+    }
+  }
+
   func testTypedFutureHoldParsesMicrosecondsAndExpiresAtTheDeadline() throws {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(typed())
