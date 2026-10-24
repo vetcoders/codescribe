@@ -6,6 +6,27 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  func testResizeAndPresentationShareTheThreeMailboxHeaderSlots() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
+      let floor = 3 * Layout.controlHeight(scale: scale) + 16
+      let base = CGRect(x: -1000, y: 400, width: 400, height: 200)
+      let left = metrics.resizedGroupFrame(
+        base, delta: CGSize(width: 1000, height: 0), edge: .left,
+        count: 2, visibleFrame: screen, minimumWidth: floor)
+      XCTAssertEqual(left.width, floor)
+      XCTAssertEqual(left.maxX, base.maxX, "the opposite edge remains anchored")
+      let right = metrics.resizedGroupFrame(
+        base, delta: CGSize(width: -1000, height: 0), edge: .right,
+        count: 2, visibleFrame: screen, minimumWidth: floor)
+      XCTAssertEqual(right.width, floor)
+      XCTAssertEqual(right.minX, base.minX)
+      XCTAssertTrue(screen.contains(left))
+      XCTAssertTrue(screen.contains(right))
+    }
+  }
+
   func testHumanAndBroadcastMailboxesActuallyExpandWithoutBecomingAgents() {
     let inbox = OverlayConversation.humanInbox()
     let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])

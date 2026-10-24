@@ -103,12 +103,16 @@ struct IntercomContentMetrics: Equatable {
 
   func resizedGroupFrame(
     _ frame: CGRect, delta: CGSize, edge: OverlayIntercomWidgetLayout.ResizeEdge,
-    count: Int, visibleFrame: CGRect
+    count: Int, visibleFrame: CGRect, minimumWidth: CGFloat = 0
   ) -> CGRect {
+    var minimum = minimumGroupSize(count: count)
+    minimum.width = max(minimum.width, minimumWidth)
     var result = OverlayIntercomWidgetLayout.resizedFrame(
-      frame, delta: delta, edge: edge, minimum: minimumGroupSize(count: count),
+      frame, delta: delta, edge: edge, minimum: minimum,
       visibleFrame: visibleFrame)
-    let width = fittedWidth(result.width, available: visibleFrame.width)
+    let width = max(
+      min(minimumWidth, visibleFrame.width),
+      fittedWidth(result.width, available: visibleFrame.width))
     if !edge.anchorsLeft { result.origin.x = result.maxX - width }
     result.size.width = width
     return result

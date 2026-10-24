@@ -7,6 +7,37 @@ import XCTest
 
 @MainActor
 final class OverlayChannelDeliveryTests: XCTestCase {
+  func testIntercomMailboxCommandRevealsTheSelectedSurfaceWithoutSendingOrRecording() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot())
+    let suite = "CodescribeTests.mailbox-command.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    var reveals = 0
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      revealConversation: { reveals += 1 },
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    let generation = state.captureGeneration
+    state.publishConversationText = { _, _, _ in XCTFail("Opening is not sending") }
+    state.conversationDrafts["0"] = "shared draft"
+    state.conversationDrafts["10"] = "private retained text"
+    for route in ["10", "0"] {
+      controller.openMailbox(route)
+      XCTAssertEqual(state.selectedConversationID, route)
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    }
+    XCTAssertEqual(reveals, 2, "both buttons must reach the existing conversation surface")
+    controller.openMailbox("unknown")
+    XCTAssertEqual(reveals, 2)
+    XCTAssertEqual(state.conversationDrafts["0"], "shared draft")
+    XCTAssertEqual(state.conversationDrafts["10"], "private retained text")
+  }
+
   func testHumanInboxRailUsesMailboxGlyphAndSelectionWithoutAgentCommands() {
     let inbox = OverlayConversation.humanInbox()
     var selected: [String?] = []

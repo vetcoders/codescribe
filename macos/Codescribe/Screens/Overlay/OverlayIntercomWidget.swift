@@ -66,7 +66,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate private(set) var headerControlsVisible = true
   fileprivate private(set) var groupWidth: CGFloat = 0
   /// Fold, Inbox and All remain three equal hit slots even at the icon tier.
-  fileprivate var minimumHeaderWidth: CGFloat {
+  var minimumHeaderWidth: CGFloat {
     3 * OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale) + 16
   }
   fileprivate var stacksGroupControls: Bool {
@@ -315,7 +315,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         width: min(stored.width, visibleFrame.width),
         height: min(stored.height, visibleFrame.height))
       return OverlayIntercomWidgetLayout.movedFrame(
-        CGRect(x: stored.maxX - size.width, y: stored.maxY - size.height,
+        CGRect(
+          x: stored.maxX - size.width, y: stored.maxY - size.height,
           width: size.width, height: size.height),
         visibleFrame: visibleFrame,
         headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
@@ -511,7 +512,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       showInstance(open.id)
       return
     }
-    guard let conversation = state.conversations.first(where: { identity.matches($0) }) else { return }
+    guard let conversation = state.conversations.first(where: { identity.matches($0) }) else {
+      return
+    }
     if conversation.owner == nil {
       openMailbox(conversation.id)
       return
@@ -525,7 +528,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   /// Mailbox buttons use the existing conversation surface, without creating
   /// a group row, capture target or message delivery.
-  fileprivate func openMailbox(_ conversationID: String) {
+  func openMailbox(_ conversationID: String) {
     guard let conversation = state.conversations.first(where: { $0.id == conversationID }),
       conversation.owner == nil,
       OverlayIntercomCardIdentity(digit: conversation.channel, conversation: conversation).canExpand
@@ -771,7 +774,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     guard let base = groupResizeGesture?.frame else { return }
     let fitted = contentMetrics.resizedGroupFrame(
-      base, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header))
+      base, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header),
+      minimumWidth: minimumHeaderWidth)
     desktop.groupWidth = Double(fitted.width)
     if count > 0 && edge.resizesHeight {
       desktop.groupRowHeight = Double(
