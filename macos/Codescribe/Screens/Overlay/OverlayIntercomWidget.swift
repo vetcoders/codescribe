@@ -309,9 +309,16 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let stored = instance.frame
     let visibleFrame = visibleFrame(around: panel.frame == .zero ? stored : panel.frame)
     guard instance.minimized else {
-      return OverlayIntercomWidgetLayout.cardFrame(
-        below: CGRect(x: stored.minX, y: stored.maxY, width: stored.width, height: 0),
-        size: stored.size, visibleFrame: visibleFrame)
+      // A smaller replacement display still limits the restored size. Keep
+      // the saved top-right anchor, including an explicitly lowered body.
+      let size = CGSize(
+        width: min(stored.width, visibleFrame.width),
+        height: min(stored.height, visibleFrame.height))
+      return OverlayIntercomWidgetLayout.movedFrame(
+        CGRect(x: stored.maxX - size.width, y: stored.maxY - size.height,
+          width: size.width, height: size.height),
+        visibleFrame: visibleFrame,
+        headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
     }
     // Mini is a compact pill anchored at the stored window's top-right: its
     // width comes from its own content, never from the expanded conversation
@@ -418,10 +425,29 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   private func visibleFrame(around frame: CGRect) -> CGRect {
-    NSScreen.screens.max(by: {
-      $0.visibleFrame.intersection(frame).width * $0.visibleFrame.intersection(frame).height
-        < $1.visibleFrame.intersection(frame).width * $1.visibleFrame.intersection(frame).height
-    })?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+    // Elect the screen under the grip. A tall body on a vertically offset
+    // display must not pull its header back onto the body's display.
+    let height = min(frame.height, OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
+    let grip = CGRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
+    let screens = NSScreen.screens.map(\.visibleFrame)
+    let intersecting = screens.filter { $0.intersects(grip) }
+    if let visible = intersecting.max(by: {
+      $0.intersection(grip).width * $0.intersection(grip).height
+        < $1.intersection(grip).width * $1.intersection(grip).height
+    }) {
+      return visible
+    }
+    // A removed monitor or a pointer beyond an edge has no intersection.
+    // Recover onto the nearest display, including negative/offset origins.
+    let point = CGPoint(x: grip.midX, y: grip.midY)
+    return screens.min(by: {
+      hypot(
+        max($0.minX - point.x, 0, point.x - $0.maxX),
+        max($0.minY - point.y, 0, point.y - $0.maxY))
+        < hypot(
+          max($1.minX - point.x, 0, point.x - $1.maxX),
+          max($1.minY - point.y, 0, point.y - $1.maxY))
+    }) ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
   }
 
   private func positionCards() {
@@ -767,6 +793,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   func windowDidMove(_ notification: Notification) {
     guard !positioning, let panel = notification.object as? NSWindow else { return }
     if panel === header, let header {
+      // A native grip drag is the same direct movement as a row drag.
+      // Interpolating every row while AppKit delivers move notifications
+      // leaves the cards chasing successive header positions.
+      resizingGroup = true
+      defer { resizingGroup = false }
       // A destination display may fit fewer rows or only one control row.
       // Re-measure before placing, rather than clamping an oversized stack.
       reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
@@ -775,8 +806,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     } else if let id = instancePanels.first(where: { $0.value === panel })?.key,
       let index = desktop.instances.firstIndex(where: { $0.id == id })
     {
-      let fitted = OverlayIntercomWidgetLayout.cardFrame(
-        below: panel.frame, size: panel.frame.size, visibleFrame: visibleFrame(for: panel))
+      let fitted = OverlayIntercomWidgetLayout.movedFrame(
+        panel.frame, visibleFrame: visibleFrame(for: panel),
+        headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
       if panel.frame != fitted {
         positioning = true
         panel.setFrame(fitted, display: true)
@@ -1819,11 +1851,15 @@ private struct OverlayIntercomInstanceCard: View {
       // Mini rests with the name, activity and the audio pair (Astra):
       // clicking the fiszka itself restores it, so no extra Restore button.
       if !mini {
-        Button("Minimize", systemImage: "minus") {
+        Button {
           controller.setInstanceMinimized(instanceID, true)
+        } label: {
+          Label("Minimize", systemImage: "minus")
+            .labelStyle(.iconOnly)
+            .frame(width: 22 * max(1, scale), height: 30 * max(1, scale))
+            .contentShape(Rectangle())
         }
-        .labelStyle(.iconOnly).buttonStyle(.plain)
-        .frame(width: 22 * max(1, scale), height: 30 * max(1, scale))
+        .buttonStyle(.plain)
         .conversationActionHover(
           restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
         )
@@ -1835,11 +1871,15 @@ private struct OverlayIntercomInstanceCard: View {
       // fiszka). Closing hands the conversation back to its group row, so it
       // wears the overlay's dock glyph, not an X (Maciej, 2026-10-23: "dokładnie
       // tym samym piktogramem Dock").
-      Button("Collapse", systemImage: OverlayControlSymbols.returnToMini) {
+      Button {
         controller.closeInstance(instanceID)
+      } label: {
+        Label("Collapse", systemImage: OverlayControlSymbols.returnToMini)
+          .labelStyle(.iconOnly)
+          .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+          .contentShape(Rectangle())
       }
-      .labelStyle(.iconOnly).buttonStyle(.plain)
-      .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
+      .buttonStyle(.plain)
       .conversationActionHover(
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
