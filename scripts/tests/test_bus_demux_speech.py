@@ -888,6 +888,8 @@ def queued_say(
     ended = [False]
 
     def delayed_probe(*args, **kwargs):
+        if not sentinel.exists():
+            waiting.set()
         if sentinel.exists():
             scans[0] += 1
             if scans[0] == finish_in_scan:
@@ -1551,6 +1553,36 @@ class PlaybackQueueTests(unittest.TestCase):
         self.join(child)
         self.assertTrue(playing.is_set())
         self.assertTrue(self.last_outcome()["spoken"])
+
+    def test_ineligible_foreign_reply_does_not_hold_the_player_lock(self):
+        self.bind("filip", "3")
+        self.bind("hania", "4")
+        channel = self.home / "buses" / "channel-4.jsonl"
+        self.channel_row(channel, "agent-channel-4-first", "open")
+        self.speech_now("agent-channel-4-first", "quiet")
+        foreign, (_, waiting, foreign_playing) = self.start_say(
+            "filip", take_wait_seconds=1.5)
+        self.assertTrue(waiting.wait(5))
+        own, (_, _, own_playing) = self.start_say("hania")
+        self.assertTrue(own_playing.wait(1), "an ineligible reply must not occupy playback.lock")
+        self.assertFalse(foreign_playing.is_set())
+        self.join(own)
+        self.join(foreign)
+
+    def test_rebound_quiet_channel_revokes_the_waiting_agents_ownership(self):
+        self.bind("filip", "3")
+        channel = self.home / "buses" / "channel-3.jsonl"
+        self.channel_row(channel, "agent-channel-3-first", "open")
+        self.speech_now("agent-channel-3-first", "speaking")
+        child, (_, waiting, playing) = self.start_say("filip", take_wait_seconds=0.8)
+        self.assertTrue(waiting.wait(5))
+        self.bind("hania", "3")
+        self.channel_row(channel, "agent-channel-3-first", "sealed")
+        self.channel_row(channel, "agent-channel-3-second", "open")
+        self.speech_now("agent-channel-3-second", "quiet")
+        self.join(child)
+        self.assertFalse(playing.is_set(), "ownership must be read again at admission")
+        self.assertEqual(self.last_outcome()["reason"], "take_live")
 
     def assert_playback_ended(self):
         marker = json.loads((self.home / "runtime" / "agent-playback-now.json").read_text())

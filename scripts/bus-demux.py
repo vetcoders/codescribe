@@ -6656,7 +6656,7 @@ def reply_channels(root: Path, control: ReplyPlaybackControl | None) -> frozense
 
 
 def channel_quiet_for_playback(
-    runtime: Path, own_channels: frozenset[str] = frozenset()
+    runtime: Path, root: Path, control: ReplyPlaybackControl | None
 ) -> Callable[[str, str], bool]:
     """An open channel admits a reply after measured quiet.
 
@@ -6671,7 +6671,7 @@ def channel_quiet_for_playback(
         row = channel_speech_now(runtime, channel, session_id)
         if row is None or row["phase"] not in ("fresh", "quiet"):
             return False
-        if row["phase"] == "quiet" and channel not in own_channels:
+        if row["phase"] == "quiet" and channel not in reply_channels(root, control):
             return False
         # The channel heard nothing while the previous reply played, so quiet
         # is measured again from that reply's end.
@@ -6758,6 +6758,7 @@ def _wait_for_take_end(
     bus: Path, cursor: dict[str, Any], *, bridge_root: Path | None = None,
     control: ReplyPlaybackControl | None = None,
     channel_released: Callable[[str, str], bool] | None = None,
+    save_cursor: bool = True,
 ) -> bool:
     deadline = time.monotonic() + TAKE_WAIT_SECONDS
     root = bridge_root if bridge_root is not None else bridge_home()
@@ -6774,7 +6775,8 @@ def _wait_for_take_end(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
             deadline=deadline, channel_released=channel_released,
         )
-        _save_lifecycle_cursor(bus, root, cursor)
+        if save_cursor:
+            _save_lifecycle_cursor(bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
@@ -6852,17 +6854,31 @@ def _play_pcm_24k(
         lock_descriptor = os.open(
             runtime / "playback.lock", os.O_RDWR | os.O_CREAT, 0o600
         )
-        if not _acquire_playback_lock(lock_descriptor, control):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
-        # A take may have started during synthesis or the lock wait. An open
-        # channel admits the reply once the app measures quiet on it.
         speech_bus = bus if bus is not None else bus_path()
         cursor: dict[str, Any] = {}
-        if not _wait_for_take_end(
-            speech_bus, cursor, bridge_root=root, control=control,
-            channel_released=channel_quiet_for_playback(runtime, reply_channels(root, control)),
-        ):
-            return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+        released = channel_quiet_for_playback(runtime, root, control)
+        # Eligibility waits keep their parser progress private. Only the player
+        # lock holder writes the shared lifecycle checkpoint.
+        admission_deadline = time.monotonic() + TAKE_WAIT_SECONDS + PLAYBACK_WAIT_SECONDS
+        while True:
+            if time.monotonic() >= admission_deadline or not _wait_for_take_end(
+                speech_bus, cursor, bridge_root=root, control=control,
+                channel_released=released, save_cursor=False,
+            ):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "live take wait timed out", "take_live")
+            if not _acquire_playback_lock(lock_descriptor, control):
+                return (False, "playback stopped", "stopped") if control and control.stopped() else (False, "playback wait timed out", "playback_busy")
+            # Revalidate after lock contention; a new take or a changed binding
+            # sends this reply back to eligibility without blocking another one.
+            idle = installation_idle(
+                speech_bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
+                deadline=time.monotonic() + PLAYBACK_SCAN_SECONDS,
+                channel_released=released,
+            )
+            _save_lifecycle_cursor(speech_bus, root, cursor)
+            if idle:
+                break
+            fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
         if control is not None and control.stopped():
             return False, "playback stopped", "stopped"
         kept = channel_keeps_playback(runtime, _open_channels(cursor))
