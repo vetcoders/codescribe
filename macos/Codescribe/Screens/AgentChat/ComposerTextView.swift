@@ -206,6 +206,7 @@ struct ComposerTextView: NSViewRepresentable {
 
   static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
     coordinator.scrollerPin.detach()
+    coordinator.undoHistory.removeAllActions()
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
@@ -246,12 +247,18 @@ struct ComposerTextView: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ComposerTextView
     let scrollerPin = CSScrollerPin()
+    /// Typing undo lives with this text view, not with its window: the window's
+    /// undo manager outlives the composer, and Cmd+Z then sent a recorded
+    /// action to a freed target (crash 2026-10-23, `-[_NSUndoStack popAndInvoke]`).
+    let undoHistory = UndoManager()
     private var historyState = ComposerDraftHistoryState()
     private var applyingHistory = false
 
     init(parent: ComposerTextView) {
       self.parent = parent
     }
+
+    func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
 
     func updateParent(_ parent: ComposerTextView) {
       if self.parent.history != parent.history { historyState.reset() }
@@ -484,6 +491,11 @@ private final class ComposerNativeTextView: NSTextView {
     return resigned
   }
 
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if performUndoChord(with: event) { return true }
+    return super.performKeyEquivalent(with: event)
+  }
+
   override func keyDown(with event: NSEvent) {
     if onKeyDown?(event) == true { return }
     super.keyDown(with: event)
@@ -501,5 +513,27 @@ private final class ComposerNativeTextView: NSTextView {
       y: textContainerInset.height
     )
     placeholder.draw(at: origin, withAttributes: attributes)
+  }
+}
+
+extension NSTextView {
+  /// Cmd+Z and Cmd+Shift+Z answered by the focused text view itself, before
+  /// any menu: a nonactivating panel keeps another app's menu bar, and the
+  /// chord must reach this view's own undo history wherever it is hosted
+  /// (Maciej, 2026-10-23: the composer did not answer Cmd+Z at all).
+  func performUndoChord(with event: NSEvent) -> Bool {
+    guard event.type == .keyDown, window?.firstResponder === self, allowsUndo,
+      event.charactersIgnoringModifiers?.lowercased() == "z",
+      let undo = undoManager
+    else { return false }
+    switch event.modifierFlags.intersection([.command, .control, .option, .shift]) {
+    case .command:
+      if undo.canUndo { undo.undo() }
+    case [.command, .shift]:
+      if undo.canRedo { undo.redo() }
+    default:
+      return false
+    }
+    return true
   }
 }
