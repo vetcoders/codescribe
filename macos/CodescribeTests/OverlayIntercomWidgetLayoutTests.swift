@@ -25,28 +25,92 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testStretchedCardsRevealUsefulContentAtEachTextScale() {
-    for scale in [CGFloat(0.8), 1, 1.6] {
-      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
-      let factor = max(1, scale)
-      XCTAssertEqual(
-        metrics.cardContent(width: metrics.minimumNameWidth - 1, cardHeight: 2000), .header)
-      let width = max(metrics.minimumNameWidth, 220 * factor)
-      XCTAssertEqual(
-        metrics.cardContent(width: width, cardHeight: 54 * factor), .context)
-      XCTAssertEqual(
-        metrics.cardContent(width: width, cardHeight: 140 * factor), .preview)
-      XCTAssertEqual(
-        metrics.cardContent(
-          width: max(metrics.minimumNameWidth, 320 * factor), cardHeight: 240 * factor), .composer)
+  func testTallNarrowCardsUseTheirReadableSpaceForLatestMessage() throws {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(names: ["Long agent name"], digits: ["2"], scale: scale)
+      let width = max(metrics.minimumNameWidth, 175 * scale)
+      let preview = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: width, cardHeight: 260 * scale))
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 260 * scale), .preview)
+      XCTAssertGreaterThanOrEqual(preview.lineLimit, 1)
+      XCTAssertLessThanOrEqual(preview.lineLimit, 3)
+      XCTAssertGreaterThan(preview.textHeight, 0)
+      XCTAssertLessThan(preview.textHeight, 260 * scale)
     }
-    let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
-    XCTAssertEqual(
-      metrics.cardContent(
-        width: 500, cardHeight: metrics.fittedCardHeight(260, count: 1, available: 900)), .composer)
-    XCTAssertEqual(
-      metrics.cardContent(
-        width: 500, cardHeight: metrics.fittedCardHeight(260, count: 9, available: 900)), .context)
+  }
+
+  func testPreviewGrowsByMeasuredTextLinesWithoutClippingTheHeader() throws {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      let width = max(metrics.actionsWidth, 400 * scale)
+      let header = Layout.controlHeight(scale: scale)
+      let line = ceil(
+        NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13 * scale)))
+      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: header + line - 1))
+      let one = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: width, cardHeight: header + line + 8))
+      XCTAssertEqual(one.lineLimit, 1)
+      XCTAssertFalse(one.showsContext, "metadata yields to the first readable message line")
+      XCTAssertEqual(one.textHeight, line)
+      let two = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: width, cardHeight: header + 2 * line + 8))
+      XCTAssertEqual(two.lineLimit, 2)
+      XCTAssertFalse(two.showsContext)
+      XCTAssertEqual(two.textHeight, 2 * line)
+      let three = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: width, cardHeight: header + 3 * line + 8))
+      XCTAssertEqual(three.lineLimit, 3)
+      XCTAssertLessThanOrEqual(header + three.textHeight + 8, header + 3 * line + 8)
+    }
+  }
+
+  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      XCTAssertNil(metrics.compactPreviewLayout(width: metrics.iconSide, cardHeight: 2000))
+      XCTAssertNil(metrics.compactPreviewLayout(width: 500, cardHeight: metrics.iconSide))
+      XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: metrics.iconSide), .header)
+    }
+  }
+
+  func testHeaderPreservesBothAudioHitRegionsBeforeOptionalLabelsAndCount() {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      for paging in [false, true] {
+        let metrics = IntercomHeaderMetrics(
+          agentCount: 12, inboxUnread: 4, broadcastUnread: 3, scale: scale)
+        let minimum = metrics.minimumWidth(paging: paging)
+        let compact = metrics.content(width: minimum, paging: paging)
+        XCTAssertFalse(compact.showsLabels)
+        XCTAssertFalse(compact.showsCount)
+        XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
+        XCTAssertGreaterThan(
+          minimum, metrics.groupWidth + metrics.audioWidth + 3 * metrics.controlHeight)
+        let withCount = metrics.width(showsLabels: false, showsCount: true, paging: paging)
+        XCTAssertTrue(metrics.content(width: withCount, paging: paging).showsCount)
+        XCTAssertFalse(metrics.content(width: withCount - 0.1, paging: paging).showsCount)
+        let full = metrics.width(showsLabels: true, showsCount: true, paging: paging)
+        XCTAssertTrue(metrics.content(width: full, paging: paging).showsLabels)
+        XCTAssertFalse(metrics.content(width: full - 0.1, paging: paging).showsLabels)
+        XCTAssertGreaterThan(full, withCount)
+      }
+    }
+  }
+
+  func testHeaderBudgetRespondsToUnreadGrowthAndActualPagerPresence() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let empty = IntercomHeaderMetrics(
+        agentCount: 1, inboxUnread: 0, broadcastUnread: 0, scale: scale)
+      let busy = IntercomHeaderMetrics(
+        agentCount: 25, inboxUnread: 999, broadcastUnread: 999, scale: scale)
+      XCTAssertGreaterThan(busy.inboxWidth, empty.inboxWidth)
+      XCTAssertGreaterThan(busy.broadcastWidth, empty.broadcastWidth)
+      XCTAssertEqual(
+        empty.minimumWidth(paging: false), busy.minimumWidth(paging: false),
+        "metadata cannot take room from the mandatory commands")
+      XCTAssertGreaterThan(busy.minimumWidth(paging: true), busy.minimumWidth(paging: false))
+      let fullWithoutBadges = empty.width(showsLabels: true, showsCount: true, paging: false)
+      XCTAssertFalse(busy.content(width: fullWithoutBadges, paging: false).showsLabels)
+    }
   }
 
   func testPagingCountsActualTallCardsSoLowerAgentsRemainReachable() {

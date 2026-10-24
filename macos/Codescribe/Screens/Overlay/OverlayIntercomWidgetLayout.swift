@@ -57,7 +57,8 @@ struct IntercomHeaderMetrics: Equatable {
     // OverlayAgentAudioControls: two flat diameter-sized buttons, 6pt apart.
     audioWidth = 2 * controlHeight + 6
     countWidth = textWidth(agentCount.formatted(), font: mono)
-    inboxWidth = mailboxWidth(title: String(localized: "Your Inbox"), digit: nil, unread: inboxUnread)
+    inboxWidth = mailboxWidth(
+      title: String(localized: "Your Inbox"), digit: nil, unread: inboxUnread)
     broadcastWidth = mailboxWidth(
       title: String(localized: "All"), digit: "0", unread: broadcastUnread)
     pagingControlWidth = 16 * max(1, scale)

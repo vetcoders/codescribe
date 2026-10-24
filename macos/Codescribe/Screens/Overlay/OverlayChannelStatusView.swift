@@ -645,7 +645,9 @@ struct OverlayAgentAudioControls: View {
                 ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
           )
           .font(.system(size: glyphSize, weight: .semibold))
-          .modifier(OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil)))
+          .modifier(
+            OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
+          )
           .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
           .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
         }
@@ -668,7 +670,8 @@ struct OverlayAgentAudioControls: View {
             .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
             .frame(
               width: Self.controlFrame * controlScale,
-              height: Self.controlFrame * controlScale)
+              height: Self.controlFrame * controlScale
+            )
             .overlay { microphoneActivity }
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))

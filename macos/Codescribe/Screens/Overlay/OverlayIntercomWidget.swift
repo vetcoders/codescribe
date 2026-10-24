@@ -1020,7 +1020,8 @@ private struct OverlayIntercomHeader: View {
     let broadcast = intercomConversation(state: state, digit: "0")
     let inbox = state.conversations.first(where: \.isHumanInbox)
     let metrics = controller.headerMetrics
-    let content = metrics.content(width: controller.groupWidth, paging: controller.headerNeedsPaging)
+    let content = metrics.content(
+      width: controller.groupWidth, paging: controller.headerNeedsPaging)
     HStack(spacing: IntercomHeaderMetrics.spacing) {
       Button {
         controller.toggleGroup()
@@ -1111,8 +1112,9 @@ private struct OverlayIntercomHeader: View {
       OverlayIntercomAudioControls(
         state: state, conversation: broadcast, digit: "0", palette: palette,
         open: broadcast.map { state.conversationMicrophoneOpen($0) } ?? false,
-        speaking: broadcast?.replySpeaking == true)
-        .frame(width: metrics.audioWidth)
+        speaking: broadcast?.replySpeaking == true
+      )
+      .frame(width: metrics.audioWidth)
     }
     .foregroundStyle(palette.mutedText.color)
     .padding(.horizontal, content.horizontalInset)
@@ -1407,7 +1409,7 @@ private struct OverlayIntercomCard: View {
       if expanded {
         if let conversation {
           conversationBody(conversation, palette: palette)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
           Text("Conversation unavailable").csFont(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
