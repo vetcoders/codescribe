@@ -333,4 +333,41 @@ final class IdleRestartCoordinatorTests: XCTestCase {
       XCTAssertEqual(try receipt(root, retry)["status"] as? String, "accepted")
     }
   }
+
+  func testAcceptedReceiptWriteFailureStillTerminatesAndRetainsLease() async throws {
+    let root = try fixture()
+    let queue = FinalizationQueue()
+    let url = try request(root)
+    let id = try XCTUnwrap(
+      URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value)
+    let receiptURL = root.appendingPathComponent("\(id).receipt.json")
+    var terminated = false
+    var leaseFD: Int32 = -1
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        leaseFD = handle.fileDescriptor
+        return handle
+      },
+      reserveCapture: {
+        // Initial checking succeeded. Make only the later accepted write fail
+        // after admission has closed: a file cannot replace this directory.
+        try FileManager.default.removeItem(at: receiptURL)
+        try FileManager.default.createDirectory(at: receiptURL, withIntermediateDirectories: false)
+        return true
+      },
+      scheduleFinalization: { queue.actions.append($0) },
+      terminate: { terminated = true })
+    await coordinator.handle(url)
+    XCTAssertEqual(try receipt(root, url)["status"] as? String, "checking")
+    queue.runNext()
+    XCTAssertTrue(terminated, "receipt storage failure cannot undo accepted shutdown")
+    XCTAssertTrue(queue.actions.isEmpty)
+    XCTAssertGreaterThanOrEqual(fcntl(leaseFD, F_GETFD), 0, "accepted lease stays held")
+    var isDirectory: ObjCBool = false
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: receiptURL.path, isDirectory: &isDirectory))
+    XCTAssertTrue(isDirectory.boolValue, "accepted receipt could not replace the directory")
+  }
 }
