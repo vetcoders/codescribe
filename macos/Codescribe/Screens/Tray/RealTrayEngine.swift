@@ -32,15 +32,36 @@ final class RealTrayEngine: TrayEngine {
   func isRecording() async -> Bool { await hotkeys.isRecording() }
 
   func startRecording(assistive: Bool) async throws {
-    if assistive {
-      try await hotkeys.startAssistiveRecording()
-    } else {
-      try await hotkeys.startRecording()
+    let action: StaticString = assistive ? "recording.startAssistive" : "recording.startDictation"
+    let interaction = DiagnosticLog.beginInteraction(action: action, surface: "tray")
+    do {
+      if assistive {
+        try await hotkeys.startAssistiveRecording()
+      } else {
+        try await hotkeys.startRecording()
+      }
+      interaction.finish(.succeeded, effect: .callbackCompleted, cleanup: .notRequired)
+    } catch {
+      interaction.finish(
+        error is CancellationError ? .cancelled : .failed,
+        effect: .unverified, cleanup: .unverified, reason: .operationFailed)
+      throw error
     }
   }
 
   func stopRecording() async throws {
-    try await hotkeys.stopRecording()
+    let interaction = DiagnosticLog.beginInteraction(action: "recording.stop", surface: "tray")
+    do {
+      try await hotkeys.stopRecording()
+      // The bridge callback returned. This does not independently prove device
+      // release, delivery or UI cleanup; those require their owner receipts.
+      interaction.finish(.succeeded, effect: .callbackCompleted, cleanup: .unverified)
+    } catch {
+      interaction.finish(
+        error is CancellationError ? .cancelled : .failed,
+        effect: .unverified, cleanup: .unverified, reason: .operationFailed)
+      throw error
+    }
   }
 
   func currentToggles() -> (
@@ -71,40 +92,61 @@ final class RealTrayEngine: TrayEngine {
   }
 
   func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
-    try? config.updateConfig(key: toggle.configKey, value: enabled ? "1" : "0")
+    let action: StaticString
+    switch toggle {
+    case .showDockIcon: action = "settings.showDockIcon"
+    case .transcriptionOverlay: action = "settings.transcriptionOverlay"
+    }
+    _ = recordWrite(action: action) {
+      try config.updateConfig(key: toggle.configKey, value: enabled ? "1" : "0")
+    }
   }
 
   func setPasteMode(_ mode: CsPasteMode) {
-    _ = try? config.setPasteMode(mode: mode)
+    _ = recordWrite(action: "settings.pasteMode") { _ = try config.setPasteMode(mode: mode) }
   }
 
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {
-    _ = try? config.setAutoFormatLevel(level: level.rawValue)
+    _ = recordWrite(action: "settings.formatLevel") {
+      _ = try config.setAutoFormatLevel(level: level.rawValue)
+    }
   }
 
   func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
-    guard let size = option.size else {
-      return (try? config.updateConfig(key: "HOLD_INDICATOR", value: "0")) != nil
-    }
-    return
-      (try? config.updateConfigMany(entries: [
+    recordWrite(action: "settings.holdBadge") {
+      guard let size = option.size else {
+        try config.updateConfig(key: "HOLD_INDICATOR", value: "0")
+        return
+      }
+      try config.updateConfigMany(entries: [
         CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
         CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
-      ])) != nil
+      ])
+    }
   }
 
   func setNotesMode(_ enabled: Bool) -> Bool {
-    // One atomic two-key write (both flags together): a failure leaves the
-    // config unchanged rather than half-set. Returns false on failure so the
-    // UI can avoid faking success.
-    (try? config.setNotesMode(enabled: enabled)) != nil
+    // Preserve the owner's atomic two-key write and its failure result.
+    recordWrite(action: "settings.notesMode") { _ = try config.setNotesMode(enabled: enabled) }
   }
 
   func setStartInAssistive(_ enabled: Bool) -> Bool {
-    (try? config.updateConfig(
-      key: "TRAY_START_ASSISTIVE",
-      value: enabled ? "1" : "0"
-    )) != nil
+    recordWrite(action: "settings.startAssistive") {
+      try config.updateConfig(key: "TRAY_START_ASSISTIVE", value: enabled ? "1" : "0")
+    }
+  }
+
+  private func recordWrite(action: StaticString, _ write: () throws -> Void) -> Bool {
+    let interaction = DiagnosticLog.beginInteraction(action: action, surface: "tray")
+    do {
+      try write()
+      interaction.finish(.succeeded, effect: .callbackCompleted, cleanup: .notRequired)
+      return true
+    } catch {
+      interaction.finish(
+        .failed, effect: .unverified, cleanup: .notRequired, reason: .operationFailed)
+      return false
+    }
   }
 
   func latestHistoryPath() -> String? {
