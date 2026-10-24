@@ -146,6 +146,7 @@ fn test_whisper_embedded_readiness_contract() {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_tts_stt_round_trip_english() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
@@ -182,6 +183,7 @@ fn test_tts_stt_round_trip_english() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_tts_stt_round_trip_polish() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
@@ -212,6 +214,7 @@ fn test_tts_stt_round_trip_polish() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedding_round_trip_similarity() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
@@ -244,6 +247,7 @@ fn test_embedding_round_trip_similarity() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedding_preserves_meaning() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::embedder::init()?;
@@ -280,6 +284,7 @@ fn test_embedding_preserves_meaning() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_full_pipeline_double_round_trip() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
@@ -320,6 +325,7 @@ fn test_full_pipeline_double_round_trip() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_whisper_embedded_model_works() -> Result<()> {
     // Verify embedded model is being used
     let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
@@ -379,6 +385,7 @@ fn test_tts_embedded_model_works() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedded_model_works() -> Result<()> {
     let embedded = codescribe_core::embedder::embedded::is_embedded_available();
     eprintln!("Embedded model available: {}", embedded);
@@ -414,6 +421,7 @@ fn test_embedded_model_works() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_numbers_survive_round_trip() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
@@ -438,6 +446,7 @@ fn test_numbers_survive_round_trip() -> Result<()> {
 
 #[test]
 #[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_punctuation_handling() -> Result<()> {
     ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;

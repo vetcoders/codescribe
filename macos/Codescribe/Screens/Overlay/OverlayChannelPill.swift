@@ -38,6 +38,9 @@ struct OverlayChannelPill: View {
     var microphoneOpen = false
     /// The counter's circled digits while the microphone is open.
     var openDigits: [String] = []
+    /// The vertical layout's counter: stacked cards with the agent count as a
+    /// badge, the face of a button that opens the Intercom group.
+    var stacked = false
     var unread = false
     var selected = false
     var enabled = true
@@ -66,7 +69,9 @@ struct OverlayChannelPill: View {
     Button(action: action) {
       label
         .overlay(alignment: .topTrailing) {
-          if display.unread {
+          if stackedFace {
+            stackedBadge
+          } else if display.unread {
             Circle()
               .fill(palette.processingStatus.color)
               .frame(width: 6 * textScale, height: 6 * textScale)
@@ -93,6 +98,27 @@ struct OverlayChannelPill: View {
   }
 
   private var recording: Bool { display.microphoneOpen && form != .rail }
+
+  /// Recording keeps the circled digits in both layouts; at rest the stacked
+  /// counter shows its cards.
+  private var stackedFace: Bool { form == .counter && display.stacked && !recording }
+
+  /// The agent count over the cards' corner, in the unread yellow while a
+  /// reply waits, so the badge also carries the dot it replaces.
+  private var stackedBadge: some View {
+    Text(verbatim: display.figure)
+      .font(.system(size: Self.badgeSize * textScale, weight: .bold))
+      .monospacedDigit()
+      .foregroundStyle(display.unread ? palette.desktopBackground.color : palette.primaryText.color)
+      .padding(.horizontal, 3 * textScale)
+      .frame(minWidth: Self.badgeDiameter * textScale, minHeight: Self.badgeDiameter * textScale)
+      .background(
+        Capsule(style: .continuous)
+          .fill(display.unread ? palette.processingStatus.color : palette.border.color)
+      )
+      .offset(x: 4 * textScale, y: -4 * textScale)
+      .accessibilityHidden(true)
+  }
 
   /// Recording takes the active-speaker violet, as the roster's open
   /// microphone and the `.agent` light do (`OverlayAgentAudioControls`).
@@ -130,7 +156,12 @@ struct OverlayChannelPill: View {
         }
         .padding(.horizontal, Self.chipPadding * textScale)
       case .counter:
-        if display.microphoneOpen {
+        if stackedFace {
+          Image(systemName: Self.stackedCardsSymbol)
+            .font(.system(size: Self.nameSize * textScale, weight: .semibold))
+            .foregroundStyle(palette.agentAccent.color)
+            .frame(width: Self.headerHeight, height: Self.headerHeight)
+        } else if display.microphoneOpen {
           HStack(spacing: Self.counterGap * textScale) {
             ForEach(display.openDigits, id: \.self) { digit in
               circledDigit(digit)
@@ -238,6 +269,11 @@ extension OverlayChannelPill {
   /// A long agent name truncates instead of collapsing the whole map.
   static let maxNameWidth: CGFloat = 96
   static let caret = "\u{25BE}"
+  /// Three stacked cards: the Intercom group, as in Codex's first vertical
+  /// proposal (Maciej, 2026-10-23: "znaczek tych układnych").
+  static let stackedCardsSymbol = "rectangle.grid.1x3"
+  static let badgeSize: CGFloat = 8
+  static let badgeDiameter: CGFloat = 11
 
   static func headerScale(_ textScale: CGFloat) -> CGFloat {
     min(textScale, headerScaleCeiling)
@@ -271,9 +307,13 @@ extension OverlayChannelPill {
     return ceil(width)
   }
 
-  /// The counter's width: `4 ▾`, or the circled digits of the open channels.
+  /// The counter's width: `4 ▾`, the stacked cards (a header circle; the
+  /// badge overhangs it), or the circled digits of the open channels.
   @MainActor
-  static func counterWidth(figure: String, openDigitCount: Int, scale: CGFloat) -> CGFloat {
+  static func counterWidth(
+    figure: String, openDigitCount: Int, scale: CGFloat, stacked: Bool = false
+  ) -> CGFloat {
+    if stacked && openDigitCount == 0 { return headerHeight }
     guard openDigitCount == 0 else {
       let digits = CGFloat(openDigitCount)
       return ceil(

@@ -51,8 +51,9 @@ settlement of both sides. `--remote HOST --status` includes `local_native_queue`
 with monitor liveness and unsettled receipts; `--retry-wakeup ID` retries on the
 client Mac. Failed or ambiguous submissions are never automatically replayed.
 Retries first obtain source-side admission for the current mailbox and policy:
-`quiet` suppresses direct and broadcast wakeups, while `off` suppresses only
-broadcasts. Reading an envelope for context alone does not override that policy.
+the moon (`--quiet on`) suppresses direct and broadcast wakeups, while
+`--broadcast off` suppresses only broadcasts; the two are independent. Reading
+an envelope for context alone does not override that policy.
 Changing the policy to release eligible pending rows publishes them through the
 existing follower event stream; it never submits to the mailbox Mac's native
 queue when its follower wakeup is off.

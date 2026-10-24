@@ -28,6 +28,7 @@ class CaptureAttachmentTests(unittest.TestCase):
                             "channel": "1", "audience": "one", "bus": str(self.bus)}]
         self.pointer = {"path": str(Path(self.temp.name) / "image.png"), "name": "image.png",
                         "media_type": "image/png", "bytes": 13, "sha256": "a" * 64}
+        self.anchored_pointer = {**self.pointer, "attached_at_sample": 10, "attached_at_seconds": 0.0}
         self.stage = {"schema": DEMUX.CAPTURE_ATTACHMENT_SCHEMA, "kind": "capture_attachment",
                       "stage_id": "1" * 24, "session_id": self.session, "capture_epoch": 7,
                       "source_sequence": 0, "commit_bus": str(self.bus), "audience": "all",
@@ -66,11 +67,11 @@ class CaptureAttachmentTests(unittest.TestCase):
         self.commit()
         sealed = self.seal(normalizer)
         self.assertEqual(len(sealed), 1)
-        self.assertEqual(sealed[0]["attachments"], [self.pointer])
+        self.assertEqual(sealed[0]["attachments"], [self.anchored_pointer])
         self.assertEqual(sealed[0]["recipients"], self.recipients)
         self.assertEqual(sealed[0]["session_id"], self.session)
-        self.assertIn("Voice words\n[attachment] image.png", sealed[0]["text"])
-        self.assertEqual(DEMUX.slim(sealed[0], "all")["attachments"], [self.pointer])
+        self.assertIn("Voice words\n[attachment @ 0:00] image.png", sealed[0]["text"])
+        self.assertEqual(DEMUX.slim(sealed[0], "all")["attachments"], [self.anchored_pointer])
 
     def test_partial_fanout_or_foreign_commit_does_not_attach(self):
         for changes in (None, {"capture_epoch": 8}, {"source_sequence": 1}, {"stage_id": "2" * 24}):
@@ -94,7 +95,7 @@ class CaptureAttachmentTests(unittest.TestCase):
         normalizer.normalize(self.stage)
         self.commit()
         sealed = self.seal(normalizer)
-        self.assertEqual(sealed[0]["attachments"], [self.pointer])
+        self.assertEqual(sealed[0]["attachments"], [self.anchored_pointer])
         self.assertNotIn("capture_attachment_sources", sealed[0])
 
     def test_pasted_source_survives_restart_after_newer_projection(self):
@@ -106,7 +107,7 @@ class CaptureAttachmentTests(unittest.TestCase):
         restored.restore_channel_documents(json.loads(json.dumps(list(original.channel_documents().values()))))
         restored.normalize(self.stage)
         self.commit()
-        self.assertEqual(self.seal(restored)[0]["attachments"], [self.pointer])
+        self.assertEqual(self.seal(restored)[0]["attachments"], [self.anchored_pointer])
 
     def test_stale_target_or_recipient_change_cannot_retarget_file(self):
         self.commit()
@@ -128,7 +129,53 @@ class CaptureAttachmentTests(unittest.TestCase):
         restored = DEMUX.EvidenceNormalizer()
         restored.restore_channel_documents(list(original.channel_documents().values()))
         self.commit()
-        self.assertEqual(self.seal(restored)[0]["attachments"], [self.pointer])
+        self.assertEqual(self.seal(restored)[0]["attachments"], [self.anchored_pointer])
+
+    def test_two_stages_use_the_capture_rate_and_take_origin_for_different_anchors(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        rate = 48_000
+        first_sample = 12_000
+        normalizer.normalize(self.evidence(sample_start=first_sample, sample_end=24_000))
+        normalizer.normalize(self.stage)
+        normalizer.normalize(self.evidence(sequence=1, reducer_revision=2,
+                                          sample_start=first_sample + rate * 73,
+                                          sample_end=first_sample + rate * 74,
+                                          seal_coverage={"sample_rate_hz": rate}))
+        second = {**self.stage, "stage_id": "2" * 24, "source_sequence": 1,
+                  "attachments": [{**self.pointer, "name": "image2.png"}]}
+        normalizer.normalize(second)
+        first_commit = self.commit()
+        second_commit = {**first_commit, "stage_id": second["stage_id"], "source_sequence": 1}
+        self.bus.write_text(json.dumps(first_commit) + "\n" + json.dumps(second_commit) + "\n")
+        sealed = self.seal(normalizer)[0]
+        self.assertEqual([item["attached_at_sample"] for item in sealed["attachments"]],
+                         [first_sample, first_sample + rate * 73])
+        self.assertEqual([item["attached_at_seconds"] for item in sealed["attachments"]], [0.0, 73.0])
+        self.assertIn("[attachment @ 0:00] image.png", sealed["text"])
+        self.assertIn("[attachment @ 1:13] image2.png", sealed["text"])
+
+    def test_missing_source_keeps_committed_pointer_at_zero(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        normalizer.normalize(self.evidence())
+        stage = {**self.stage, "source_sequence": 99}
+        normalizer.normalize(stage)
+        self.commit(source_sequence=99)
+        sealed = self.seal(normalizer)[0]
+        self.assertEqual(sealed["attachments"],
+                         [{**self.pointer, "attached_at_sample": 0, "attached_at_seconds": 0.0}])
+        self.assertIn("[attachment @ 0:00] image.png", sealed["text"])
+
+    def test_unavailable_clock_never_assumes_the_vad_sample_rate(self):
+        normalizer = DEMUX.EvidenceNormalizer()
+        normalizer.normalize(self.evidence())
+        normalizer.normalize(self.evidence(sequence=2, reducer_revision=2,
+                                          sample_start=960_010, sample_end=1_008_010))
+        stage = {**self.stage, "source_sequence": 2}
+        normalizer.normalize(stage)
+        self.commit(source_sequence=2)
+        pointer = self.seal(normalizer)[0]["attachments"][0]
+        self.assertEqual(pointer["attached_at_sample"], 960_010)
+        self.assertEqual(pointer["attached_at_seconds"], 0.0)
 
     def test_exact_commit_is_read_through_storage_chunk_decoder(self):
         commit = self.commit()
