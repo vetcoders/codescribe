@@ -109,20 +109,20 @@ enum CSPalette {
   // chip on a card, the glass sheet measured at #DFDDD9, or the label's own
   // 12 % tint on that glass (a status pill in the tray). Contrast audit
   // 2026-10-24: #A94E2C read 4.06:1 on the glass, #8A5B00 4.33:1.
-  static let terracottaLight = adaptive(light: NSColor(hex: 0x8D4125), dark: NSColor(hex: 0xE9B79F))
+  static let terracottaLight = adaptive(light: NSColor(hex: 0x8B4024), dark: NSColor(hex: 0xE9B79F))
   static let assistiveLight = adaptive(light: NSColor(hex: 0x6338C1), dark: NSColor(hex: 0xC9B7FF))
   static let oliveLight = adaptive(light: NSColor(hex: 0x4D5D35), dark: NSColor(hex: 0x9DB178))
   static let eyebrowOlive = adaptive(light: NSColor(hex: 0x66744A), dark: NSColor(hex: 0x7F8C5E))
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
-  static let dangerLight = adaptive(light: NSColor(hex: 0xA5231C), dark: NSColor(hex: 0xFFAAA5))
+  static let dangerLight = adaptive(light: NSColor(hex: 0xA3221B), dark: NSColor(hex: 0xFFAAA5))
   /// Terracotta drawn as a word or an essential glyph (an error line, a
   /// destructive icon, a failed status). The brand hue reads 2.57:1 on a light
   /// card, so paper takes the label rung; ink keeps the solid brand hue, lifted
   /// only the 3 % it needs to clear 4.5:1 on its own 12 % tint. Settings keeps
   /// solid terracotta on ink by decision, which is why this is not
   /// `terracottaLight` (pale #E9B79F on ink).
-  static let terracottaText = adaptive(light: NSColor(hex: 0x8D4125), dark: NSColor(hex: 0xDA7B5C))
+  static let terracottaText = adaptive(light: NSColor(hex: 0x8B4024), dark: NSColor(hex: 0xDA7B5C))
   /// Secondary text: the system label ink at a strength that clears 4.5:1 on
   /// the app sheet, its cards, chips and bubbles. `secondaryLabelColor` (50 %)
   /// measured 3.82:1 for Settings helper text on a card (2026-10-24); the app
