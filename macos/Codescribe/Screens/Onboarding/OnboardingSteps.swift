@@ -775,7 +775,9 @@ struct ApiKeyStepView: View {
   }
 
   private var keyStatusColor: Color {
-    if model.providerAccessPending || model.providerAccessError != nil { return CSColor.secondaryInk }
+    if model.providerAccessPending || model.providerAccessError != nil {
+      return CSColor.secondaryInk
+    }
     return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.secondaryInk
   }
 

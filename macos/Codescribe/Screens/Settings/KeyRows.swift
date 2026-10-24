@@ -672,7 +672,8 @@ struct AccountLoginRow: View {
             .font(SettingsScale.controlLabel)
           }
           .foregroundStyle(
-            provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : CSColor.secondaryInk
+            provider.accountLoginEnabled && !loginPending
+              ? CSColor.oliveLight : CSColor.secondaryInk
           )
         }
         .help(provider.accountStatusMessage)
