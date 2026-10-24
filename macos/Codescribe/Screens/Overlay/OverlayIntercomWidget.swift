@@ -360,7 +360,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
-    guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
+    guard visible, let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
     desktop.instances[index].minimized = minimized
     if minimized { instancePanels[id]?.resignKey() }
     saveDesktop()
@@ -401,7 +401,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func focusInstance(_ id: UUID) {
-    guard let panel = instancePanels[id], instance(for: id)?.minimized == false else { return }
+    guard visible, let panel = instancePanels[id], instance(for: id)?.minimized == false else { return }
     instanceFocusRevisions[id, default: 0] &+= 1
     panel.makeKeyAndOrderFront(nil)
   }
@@ -528,7 +528,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func expand(_ identity: OverlayIntercomCardIdentity) {
-    guard identity.canExpand else { return }
+    guard visible, identity.canExpand else { return }
     if let open = desktop.openInstance(for: identity) {
       showInstance(open.id)
       return
@@ -585,6 +585,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The middle click summons the group: unfolded, in front, and with no
   /// conversation unrolled over the rows the wheel walks.
   func presentChooser() {
+    guard visible else { return }
     for identity in presentation.expanded { close(identity) }
     revealGroup()
   }
@@ -592,6 +593,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// A left click on the chooser's focus opens that row's conversation here.
   /// Channel 0 uses the same existing conversation surface as its header button.
   func openChosenConversation(_ conversationID: String) {
+    guard visible else { return }
     revealGroup()
     if let identity = identities.first(where: { $0.conversationID == conversationID }) {
       expand(identity)
@@ -603,6 +605,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The focused row stays on screen: the group pages to it, and an agent in
   /// its own window has that window brought above the others, never made key.
   fileprivate func revealChooserFocus(_ conversationID: String?) {
+    guard visible else { return }
     if let conversationID,
       let open = desktop.instances.first(where: {
         !$0.closed && $0.conversationID == conversationID
@@ -625,6 +628,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// The main overlay's mini counter in the vertical layout: the group
   /// unfolds and stands in front, its detached windows still above it.
   func revealGroup() {
+    guard visible else { return }
     if presentation.folded { toggleGroup() }
     raisePresentedGroup()
   }
