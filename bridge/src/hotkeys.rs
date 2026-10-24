@@ -3399,7 +3399,7 @@ mod mode_binding_tests {
     /// RED contract for the production-log pollution observed from this test
     /// module. A child test process gives `init_logging` a fresh `Once`, a fake
     /// HOME, and a distinct test data root; initialization must not create the
-    /// production-shaped `~/.codescribe/logs/codescribe.log` sink.
+    /// production-shaped `~/.codescribe/data.noindex/logs/codescribe.log` sink.
     #[test]
     #[serial]
     fn fleet_red_test_logging_isolated() {
@@ -3409,6 +3409,7 @@ mod mode_binding_tests {
                 std::env::var_os("HOME").expect("isolated child HOME must be set"),
             )
             .join(".codescribe")
+            .join("data.noindex")
             .join("logs")
             .join("codescribe.log");
 

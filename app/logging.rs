@@ -4,7 +4,8 @@
 //! deleted together with the legacy AppKit UI (commit 37efe51). The SwiftUI app
 //! enters exclusively through the UniFFI bridge and never had a `main()` that
 //! called it — so from that excision onward the app installed **no** tracing
-//! subscriber and stopped writing `~/.codescribe/logs/codescribe.log`.
+//! subscriber and stopped writing its log file, now
+//! `~/.codescribe/data.noindex/logs/codescribe.log`.
 //!
 //! [`init_logging`] restores that behaviour. It is safe to call from every FFI
 //! entry point: a [`Once`] guard makes it idempotent, so whichever bridge object
@@ -15,7 +16,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-use codescribe_core::config::Config;
+use codescribe_core::config::{Config, churn};
 
 /// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
@@ -24,7 +25,8 @@ static INIT: Once = Once::new();
 ///
 /// Idempotent: guarded by a [`Once`], so repeated calls across FFI boundaries
 /// are cheap no-ops. Production processes append to
-/// `~/.codescribe/logs/codescribe.log`, honouring `RUST_LOG` (falling back to
+/// `~/.codescribe/data.noindex/logs/codescribe.log` (`Config::churn_dir`, which
+/// Spotlight does not index), honouring `RUST_LOG` (falling back to
 /// legacy `LOG_LEVEL`, then `info`). Rust and XCTest harnesses are refused a
 /// file sink at runtime, including integration tests where this library is
 /// compiled without `cfg(test)`; they retain the stderr subscriber.
@@ -39,15 +41,56 @@ pub fn init_logging() {
 /// warning (it installed no subscriber at all before 2026-09-06).
 pub fn init_logging_with_default_filter(default_filter: &str) {
     INIT.call_once(|| {
-        init_tracing(default_filter);
+        let test_process = runtime_is_test_process();
+        // The high-churn move runs before the file sink opens: the sink's
+        // folder is one of the moved entries, and every app or CLI process
+        // passes here before it touches any of them. Test harnesses get no
+        // file sink and move nothing.
+        let churn_moves = (!test_process).then(churn::migrate_churn_data_at_startup);
+        init_tracing(default_filter, test_process);
+        report_churn_moves(churn_moves.as_deref().unwrap_or_default());
         install_panic_hook();
     });
+}
+
+/// Log the startup move into `data.noindex` once the subscriber exists. A
+/// refusal is an error on every start until someone resolves it by hand:
+/// both locations are kept and nothing is merged.
+fn report_churn_moves(moves: &[churn::ChurnMove]) {
+    for item in moves {
+        let (from, to) = (item.from.display(), item.to.display());
+        match &item.outcome {
+            churn::ChurnMoveOutcome::NothingToMove | churn::ChurnMoveOutcome::AlreadyMigrated => {}
+            churn::ChurnMoveOutcome::Moved => {
+                tracing::info!(target: "churn_data", %from, %to, "moved high-churn data into data.noindex");
+            }
+            churn::ChurnMoveOutcome::RefusedBothPresent => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                "high-churn data exists at both locations; nothing moved, merge by hand"
+            ),
+            churn::ChurnMoveOutcome::RefusedCrossVolume => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                "high-churn data is on another volume; not copied, move it by hand"
+            ),
+            churn::ChurnMoveOutcome::Failed(error) => tracing::error!(
+                target: "churn_data",
+                %from,
+                %to,
+                %error,
+                "moving high-churn data into data.noindex failed; nothing removed"
+            ),
+        }
+    }
 }
 
 /// Build and install the subscriber: a stderr layer always, plus a file layer
 /// when the log file can be opened. An unopenable log file degrades to
 /// stderr-only rather than losing tracing altogether.
-fn init_tracing(default_filter: &str) {
+fn init_tracing(default_filter: &str, test_process: bool) {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{EnvFilter, fmt};
 
@@ -69,7 +112,7 @@ fn init_tracing(default_filter: &str) {
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file = log_file_path(&Config::config_dir(), runtime_is_test_process())
+    let file = log_file_path(&Config::churn_dir(), test_process)
         .and_then(|path| open_file_log(&path).ok());
 
     if let Some(file) = file {
@@ -94,11 +137,12 @@ fn init_tracing(default_filter: &str) {
     }
 }
 
-/// Resolve the production file sink. Test harnesses deliberately receive no
-/// path: relying on a Makefile-exported data directory is insufficient because
-/// bare `cargo test` compiles integration-test dependencies without `cfg(test)`.
-fn log_file_path(config_dir: &Path, test_process: bool) -> Option<PathBuf> {
-    (!test_process).then(|| config_dir.join("logs").join("codescribe.log"))
+/// Resolve the production file sink under the high-churn folder. Test
+/// harnesses deliberately receive no path: relying on a Makefile-exported data
+/// directory is insufficient because bare `cargo test` compiles
+/// integration-test dependencies without `cfg(test)`.
+fn log_file_path(churn_dir: &Path, test_process: bool) -> Option<PathBuf> {
+    (!test_process).then(|| churn_dir.join("logs").join("codescribe.log"))
 }
 
 /// Open the production log with append semantics, creating only its parent.
@@ -140,7 +184,7 @@ fn runtime_is_test_process() -> bool {
 /// profile: `std::panic::set_hook` runs the hook BEFORE the abort, so even a
 /// panic crossing an `extern "C"` boundary — where `catch_unwind` is useless —
 /// leaves a symbolizable trace (payload + location + thread name + backtrace)
-/// in `~/.codescribe/logs/codescribe.log`.
+/// in `~/.codescribe/data.noindex/logs/codescribe.log`.
 ///
 /// MUST be installed AFTER `init_tracing()` (so a subscriber exists) and BEFORE
 /// the first task/thread is spawned, otherwise early panics would be silent.
@@ -211,6 +255,17 @@ mod tests {
     fn test_processes_are_refused_a_file_sink() {
         let root = Path::new("/tmp/codescribe-test-logging-contract");
         assert_eq!(log_file_path(root, true), None);
+    }
+
+    /// The production sink lives in the high-churn folder, which Spotlight
+    /// does not index, never directly under the data root.
+    #[test]
+    fn production_log_sink_resolves_under_data_noindex() {
+        let path = log_file_path(&Config::churn_dir(), false).expect("production file sink");
+        assert_eq!(
+            path,
+            Config::config_dir().join("data.noindex/logs/codescribe.log")
+        );
     }
 
     #[test]

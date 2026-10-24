@@ -285,6 +285,8 @@ Configuration is **tiered**:
 │   └── assistive.txt
 ├── history/          # Transcription history
 ├── reports/          # Quality reports
+└── data.noindex/     # Constantly rewritten data (logs, overlay caches);
+                      # the .noindex suffix keeps Spotlight from re-indexing it
 ```
 
 **Secrets** (API keys) are stored in **macOS Keychain** under service `com.vetcoders.codescribe`.

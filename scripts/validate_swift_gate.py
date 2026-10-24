@@ -97,7 +97,7 @@ CODESCRIBE_TEST_DATA_DIR="$$(mktemp -d "$$CODESCRIBE_TEST_TMP_ROOT/codescribe-te
 }; \
 export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR"; \
 cleanup_codescribe_test_data_dir() { \
-  isolated_log="$$CODESCRIBE_TEST_DATA_DIR/logs/codescribe.log"; \
+  isolated_log="$$CODESCRIBE_TEST_DATA_DIR/data.noindex/logs/codescribe.log"; \
   if [[ -f "$$isolated_log" ]]; then \
     isolated_bytes="$$(wc -c < "$$isolated_log" | tr -d ' ')"; \
     echo "test-data-dir: isolated-log=$$isolated_log bytes=$$isolated_bytes"; \

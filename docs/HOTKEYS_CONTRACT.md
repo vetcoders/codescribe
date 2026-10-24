@@ -837,7 +837,7 @@ Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 Every blocked double-tap and ignored arm attempt emits one **INFO** line with a
 stable `reason=` token (visibility only — routing is unchanged). Filter
-`~/.codescribe/logs/codescribe.log` (or the Diagnostics surface) for:
+`~/.codescribe/data.noindex/logs/codescribe.log` (or the Diagnostics surface) for:
 
 ```text
 blocked_double_tap gesture=left_option|right_option reason=binding_disabled|modifier_combo_active

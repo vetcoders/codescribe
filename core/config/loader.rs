@@ -70,6 +70,10 @@ static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// later rename silently erase the earlier field.
 static CONFIG_PERSISTENCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Name of the high-churn subfolder of the data root ([`Config::churn_dir`]).
+/// The `.noindex` suffix keeps Spotlight out of it.
+pub const CHURN_DIR_NAME: &str = "data.noindex";
+
 const AI_MAX_RETRIES_ENV: &str = "CODESCRIBE_AI_MAX_RETRIES";
 const AI_RETRY_DELAY_MS_ENV: &str = "CODESCRIBE_AI_RETRY_DELAY_MS";
 const AI_ATTEMPT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS";
@@ -2206,6 +2210,20 @@ impl Config {
         }
     }
 
+    /// High-churn data folder: `<data root>/data.noindex`. The data root is
+    /// [`Self::config_dir`], so `CODESCRIBE_DATA_DIR` and an embedding host's
+    /// data directory apply.
+    ///
+    /// Spotlight skips a `*.noindex` folder, also one nested inside an indexed
+    /// folder, so files rewritten constantly here are not re-imported on every
+    /// write. Only data without a path-identity role lives here; buses,
+    /// leases, bindings, archives, session audio and anything whose path is
+    /// persisted or compared stay directly under the data root. This is the
+    /// only resolver of the folder; Swift receives it through the bridge.
+    pub fn churn_dir() -> PathBuf {
+        Self::config_dir().join(CHURN_DIR_NAME)
+    }
+
     /// Get the full path to the .env file.
     pub fn env_path() -> PathBuf {
         if let Some(host) = super::runtime_host::selected() {
@@ -2255,6 +2273,24 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+
+    /// The high-churn folder follows the data root: the default root without
+    /// an override, `<override>/data.noindex` with `CODESCRIBE_DATA_DIR`.
+    #[test]
+    #[serial]
+    fn churn_dir_is_data_noindex_under_the_data_root_with_and_without_override() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let default_root = Config::config_dir();
+        assert_eq!(Config::churn_dir(), default_root.join("data.noindex"));
+        assert_eq!(CHURN_DIR_NAME, "data.noindex");
+
+        let dir = TempDir::new().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        let overridden = dir.path().canonicalize().unwrap();
+        assert_eq!(Config::config_dir(), overridden);
+        assert_eq!(Config::churn_dir(), overridden.join("data.noindex"));
+        assert_ne!(Config::churn_dir(), default_root.join("data.noindex"));
+    }
 
     #[test]
     #[serial]
