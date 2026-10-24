@@ -16,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location("bus_send_hold", HELPER)
 DEMUX = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
+APPLIED = DEMUX.held_control_applied
 
 NOW = 1792080000.0
 RECEIPT = {"stream_id": "fixture", "stream_dev": 1, "stream_inode": 2, "offset": 0, "length": 12}
@@ -40,6 +41,10 @@ class SendHoldTests(unittest.TestCase):
         metadata = mock.patch.object(DEMUX, "NativeProviderModelReader", return_value=None)
         metadata.start()
         self.addCleanup(metadata.stop)
+        # CLI tests stand in for the follower; the confirmation tests below use the real check.
+        applied = mock.patch.object(DEMUX, "held_control_applied", return_value=True)
+        applied.start()
+        self.addCleanup(applied.stop)
 
     def args(self, **overrides):
         values = dict(bridge_home=self.root, bus=self.bus, bus_overridden=True,
@@ -470,6 +475,70 @@ class SendHoldTests(unittest.TestCase):
                                   "identity": "b" * 24, "lease_id": self.lease_id}) + "\n")
         self.assertEqual(control("withdraw", NOW + 2),
                          ("message already delivered; it can no longer be changed", 0))
+
+    def test_a_release_of_one_capture_leaves_its_label_twin_held(self):
+        # Copilot on #182: two held takes share utterance label 42; releasing the
+        # first must not make a withdraw of the second report "already delivered".
+        self.lease()
+        DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
+        first, second = "agent-channel-2-first", "agent-channel-2-second"
+        rows = [{"schema": DEMUX.EVIDENCE_SCHEMA, "session_id": session, "utterance_id": 42,
+                 "status": DEMUX.SEALED, "hold_until": stamp(NOW + 10)} for session in (first, second)]
+        rows.append({"schema": DEMUX.DELIVERY_CONTROL_SCHEMA, "kind": "release", "identity": "42",
+                     "session_id": first, "lease_id": self.lease_id})
+        self.bus.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        args = self.args(revise=None, withdraw=second, release=None)
+        with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+                mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                mock.patch.object(DEMUX, "emit"), \
+                mock.patch.object(DEMUX.time, "time", return_value=NOW + 2):
+            self.assertEqual(DEMUX.delivery_control_command(args), 0)
+            self.assertEqual(publish.call_args.args[1]["session_id"], second)
+            args.withdraw = first
+            with self.assertRaisesRegex(ValueError, "message already delivered"):
+                DEMUX.delivery_control_command(args)
+            self.assertEqual(publish.call_count, 1)
+
+    def test_control_cli_reports_success_only_after_the_follower_applies_it(self):
+        # Copilot on #182: the append receipt is not the agent's view. A withdraw
+        # that lands after the follower handed the row over is ignored there.
+        self.lease()
+        DEMUX.write_channel_binding(self.root, "2", "lena", self.provider, self.session, str(self.bus))
+        for kind in ("withdraw", "revise"):
+            args = self.args(revise=None, withdraw=None, release=None)
+            setattr(args, kind, "a" * 24)
+            with mock.patch.object(DEMUX, "publish_reply_event", return_value=RECEIPT) as publish, \
+                    mock.patch.object(DEMUX, "live_follower_pid", return_value=321), \
+                    mock.patch.object(DEMUX, "emit") as emitted, \
+                    mock.patch.object(DEMUX, "HOLD_CONTROL_CONFIRM_SECONDS", 0.2), \
+                    mock.patch.object(DEMUX, "held_control_applied", return_value=False), \
+                    mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"revision"))):
+                with self.assertRaisesRegex(ValueError, "message already delivered"):
+                    DEMUX.delivery_control_command(args)
+                self.assertEqual(publish.call_count, 1)
+                emitted.assert_not_called()
+
+    def test_follower_state_confirms_only_the_control_it_applied(self):
+        lease = self.lease()
+        kept, gone = self.payload(lease, 1), self.payload(lease, 2)
+        revise = self.control(kept, "revise", 1, text="corrected")
+        withdraw = self.control(gone, "withdraw", 2)
+        with mock.patch.object(DEMUX.time, "time", return_value=NOW):
+            lease.queue_delivery(kept)
+            lease.queue_delivery(gone)
+            self.assertFalse(APPLIED(self.root, self.lease_id, "revise", revise["control_id"]))
+            lease.control_delivery(revise)
+            lease.control_delivery(withdraw)
+        self.assertTrue(APPLIED(self.root, self.lease_id, "revise", revise["control_id"]))
+        self.assertTrue(APPLIED(self.root, self.lease_id, "withdraw", withdraw["control_id"]))
+        self.assertFalse(APPLIED(self.root, self.lease_id, "withdraw", revise["control_id"]))
+        # The revision stays confirmed after its deadline hands the row over.
+        with mock.patch.object(DEMUX.time, "time", return_value=NOW + 11):
+            for ready in lease.ready_held():
+                lease.queue_delivery(ready)
+        self.assertEqual(lease.held, {})
+        self.assertTrue(APPLIED(self.root, self.lease_id, "revise", revise["control_id"], "corrected"))
+        self.assertFalse(APPLIED(self.root, self.lease_id, "revise", "c" * 24, "another revision"))
 
     def test_broadcast_controls_fan_out_and_send_text_carries_one_deadline(self):
         self.lease()
