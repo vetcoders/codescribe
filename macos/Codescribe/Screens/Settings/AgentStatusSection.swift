@@ -24,16 +24,16 @@ struct AgentStatusSection: View {
       summaryCard
 
       integrations
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       toolsAndServers
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       installations
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
 
       technicalDetails
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
     }
     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
@@ -50,7 +50,7 @@ struct AgentStatusSection: View {
   private var summaryCard: some View {
     let summary = summaryModel
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Agent status", comment: "Diagnostics section header")
       ) {
         SettingsRefreshButton(axLabel: "Refresh agent readiness") {
@@ -62,7 +62,7 @@ struct AgentStatusSection: View {
         statusLine(tone: summary.tone, text: summary.headline, prominent: true)
         if !summary.facts.isEmpty {
           Text(summary.facts)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 3)
@@ -70,23 +70,31 @@ struct AgentStatusSection: View {
         }
         if !summary.notes.isEmpty {
           Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
-            .padding(.vertical, 10)
-          VStack(alignment: .leading, spacing: 6) {
+            .padding(.vertical, SettingsScale.rowGap)
+          VStack(alignment: .leading, spacing: CSSpace.xs) {
+            // Says how to read the list, so a warning under "Configuration
+            // ready" is not taken for a failure.
+            if !summary.notesCaption.isEmpty {
+              Text(summary.notesCaption)
+                .font(SettingsScale.helper)
+                .foregroundStyle(Color.secondary)
+                .padding(.leading, 20)
+            }
             ForEach(Array(summary.notes.enumerated()), id: \.offset) { _, note in
               statusLine(tone: note.tone, text: note.text, prominent: false)
             }
           }
         }
       }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
+      .padding(.horizontal, SettingsScale.rowInsetH)
+      .padding(.vertical, SettingsScale.cardPadding)
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-summary")
     }
   }
@@ -95,12 +103,12 @@ struct AgentStatusSection: View {
   /// meaning, and the accessibility label repeats the status word so VoiceOver
   /// never depends on the colour.
   private func statusLine(tone: CsMcpRowTone, text: String, prominent: Bool) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
       CSIconView(icon: tone.statusIcon, size: 11, weight: .semibold, color: tone.dotColor)
         .frame(width: 12, alignment: .leading)
         .accessibilityHidden(true)
       Text(text)
-        .font(prominent ? CSFont.ui(13, .semibold) : CSFont.ui(11.5, .medium))
+        .font(prominent ? SettingsScale.settingName : SettingsScale.helper)
         .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -114,7 +122,7 @@ struct AgentStatusSection: View {
   private var integrations: some View {
     let lines = AgentIntegrationLine.lines(rows: model.agentReadiness.rows)
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Integrations", comment: "Diagnostics section header"))
       listCard {
         if lines.isEmpty {
@@ -137,7 +145,7 @@ struct AgentStatusSection: View {
           }
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-integrations")
     }
   }
@@ -148,71 +156,88 @@ struct AgentStatusSection: View {
     let capabilities = CapabilitySummary(rows: model.capabilityMatrix)
     let servers = McpServerSummary(lines: serverLines)
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Tools and servers", comment: "Diagnostics section header"))
       listCard {
         DisclosureGroup(isExpanded: $showingCapabilityRows) {
-          VStack(alignment: .leading, spacing: 8) {
+          VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
             Text("Native capabilities are served by Codescribe's built-in tools.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
             capabilityMatrixCard
             Text("Tool permissions are managed in the Tools tab.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
-          .padding(.top, 8)
+          .padding(.top, SettingsScale.rowGap)
         } label: {
           summaryLabel(
             title: String(localized: "Agent tools", comment: "Diagnostics collapsible section"),
-            detail: capabilities.line, tone: capabilities.unavailable > 0 ? .warn : .good)
+            detail: capabilities.line, tone: capabilities.unavailable > 0 ? .warn : .good,
+            expanded: showingCapabilityRows)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .disclosureGroupStyle(DiagnosticsSummaryDisclosureStyle())
+        .padding(.horizontal, SettingsScale.rowInsetH)
+        .padding(.vertical, SettingsScale.cardPadding)
         .accessibilityIdentifier("settings-diagnostics-capabilities")
 
         rowDivider
 
         DisclosureGroup(isExpanded: $showingServerRows) {
-          VStack(alignment: .leading, spacing: 8) {
+          VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
             if model.mcpServers.isEmpty {
               statusCard(rows: model.mcpStatus.rows)
             } else {
               serverTable(lines: serverLines)
             }
             Text("Servers are added, tested and removed in the MCP tab.")
-              .font(CSFont.ui(11.5))
+              .font(SettingsScale.helper)
               .foregroundStyle(Color.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
-          .padding(.top, 8)
+          .padding(.top, SettingsScale.rowGap)
         } label: {
           summaryLabel(
             title: String(localized: "MCP servers"),
             detail: model.mcpServers.isEmpty ? mcpConfigStateText : servers.line,
-            tone: model.mcpServers.isEmpty ? mcpConfigStateTone : servers.tone)
+            tone: model.mcpServers.isEmpty ? mcpConfigStateTone : servers.tone,
+            expanded: showingServerRows)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .disclosureGroupStyle(DiagnosticsSummaryDisclosureStyle())
+        .padding(.horizontal, SettingsScale.rowInsetH)
+        .padding(.vertical, SettingsScale.cardPadding)
         .accessibilityIdentifier("settings-diagnostics-mcp-servers")
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
     }
   }
 
-  /// Title + one quiet count line, the label of a collapsible summary.
-  private func summaryLabel(title: String, detail: String, tone: CsMcpRowTone) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(title)
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
-      HStack(spacing: 6) {
+  /// Title + one quiet count line, the label of a collapsible summary. Two
+  /// explicit lines in one grid: the chevron sits on the title's baseline and
+  /// the status icon on the first baseline of the description, in the same
+  /// leading column, so neither floats between the lines when the description
+  /// wraps or the group opens.
+  private func summaryLabel(
+    title: String, detail: String, tone: CsMcpRowTone, expanded: Bool
+  ) -> some View {
+    let disclosure = expanded ? String(localized: "Expanded") : String(localized: "Collapsed")
+    return Grid(alignment: .leading, horizontalSpacing: CSSpace.xs, verticalSpacing: 2) {
+      GridRow(alignment: .firstTextBaseline) {
+        CSIconView(
+          icon: expanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold,
+          color: Color.secondary
+        )
+        .gridColumnAlignment(.center)
+        Text(title)
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+      }
+      GridRow(alignment: .firstTextBaseline) {
         CSIconView(icon: tone.statusIcon, size: 10, weight: .semibold, color: tone.dotColor)
-          .accessibilityHidden(true)
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -220,7 +245,7 @@ struct AgentStatusSection: View {
     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(Text(verbatim: title))
-    .accessibilityValue(Text(verbatim: "\(tone.label), \(detail)"))
+    .accessibilityValue(Text(verbatim: "\(tone.label), \(detail), \(disclosure)"))
   }
 
   /// The `mcp.json` state itself, shown as the MCP summary when no server is
@@ -237,13 +262,13 @@ struct AgentStatusSection: View {
   private var mcpConfigStateTone: CsMcpRowTone { mcpConfigRow?.tone ?? .neutral }
 
   private var capabilityMatrixCard: some View {
-    VStack(spacing: 0) {
+    listCard {
       if model.capabilityMatrix.isEmpty {
         Text("no capability rows (refresh or start agent substrate)")
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 12)
+          .padding(.horizontal, SettingsScale.rowInsetH)
+          .padding(.vertical, SettingsScale.rowInsetV)
           .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       } else {
         ForEach(Array(model.capabilityMatrix.enumerated()), id: \.offset) { index, row in
@@ -252,11 +277,6 @@ struct AgentStatusSection: View {
         }
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 
   private var serverLines: [McpServerLine] {
@@ -267,7 +287,7 @@ struct AgentStatusSection: View {
 
   /// Name + exactly one status, one line per server.
   private func serverTable(lines: [McpServerLine]) -> some View {
-    VStack(spacing: 0) {
+    listCard {
       ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
         if index > 0 { rowDivider }
         compactRow(
@@ -275,11 +295,6 @@ struct AgentStatusSection: View {
           tooltip: nil)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 
   // MARK: Detected installations
@@ -290,7 +305,7 @@ struct AgentStatusSection: View {
   private var installations: some View {
     let status = model.creatorAgentBridgeStatus
     return VStack(alignment: .leading, spacing: 0) {
-      ProvidersSectionHeader(
+      SettingsSectionHeaderRow(
         String(localized: "Detected installations", comment: "Diagnostics section header"))
       listCard {
         if status.installedClients.isEmpty {
@@ -309,7 +324,7 @@ struct AgentStatusSection: View {
           }
         }
       }
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-installations")
     }
   }
@@ -333,47 +348,47 @@ struct AgentStatusSection: View {
     let status = model.creatorAgentBridgeStatus
     let paths = Array(zip(status.installedClients, status.installedPaths))
     return DisclosureGroup(isExpanded: $showingTechnicalDetails) {
-      VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
         ForEach(paths, id: \.0) { client, path in
           Text(verbatim: "\(client.displayName): \(tilde(path))")
-            .font(CSFont.mono(10, .medium))
+            .font(SettingsScale.metaKey)
             .foregroundStyle(Color.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         }
         Text(status.detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
         if let launchDetail = model.creatorAgentBridgeLaunchDetail {
           Text(verbatim: launchDetail)
-            .font(CSFont.mono(10, .medium))
+            .font(SettingsScale.metaKey)
             .foregroundStyle(Color.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("settings-diagnostics-launch-detail")
         }
-        HStack(spacing: 6) {
+        HStack(spacing: CSSpace.xs) {
           Text("Configuration source:")
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
           Text(tilde(model.mcpStatus.configPathDisplay))
-            .font(CSFont.mono(10, .medium))
+            .font(SettingsScale.metaKey)
             .foregroundStyle(Color.secondary)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
         }
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
           SettingsSectionLabel(String(localized: "Agent readiness"))
           statusCard(rows: model.agentReadiness.rows)
         }
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      .padding(.top, 10)
+      .padding(.top, SettingsScale.rowGap)
     } label: {
       Text("Technical details")
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
     }
     .accessibilityIdentifier("settings-diagnostics-technical-details")
@@ -398,28 +413,32 @@ struct AgentStatusSection: View {
   /// Name on the left, exactly one toned status on the right. Long names wrap
   /// instead of clipping, and the status keeps a bounded trailing column so a
   /// long error reason cannot push the name out of the pane.
+  ///
+  /// This row IS the page's list pattern (Founder review, 2026-10-18): every
+  /// other list on the page carries the same insets, rungs and dividers, and
+  /// the two wider tables add a column rather than a second row shape.
   private func compactRow(
     name: String, status: String, tone: CsMcpRowTone, tooltip: String?
   ) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
       Text(verbatim: name)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: CSSpace.xs) {
         CSIconView(icon: tone.statusIcon, size: 10, weight: .semibold, color: tone.dotColor)
           .accessibilityHidden(true)
         Text(status)
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.primary)
           .multilineTextAlignment(.trailing)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(minWidth: 0, maxWidth: 220, alignment: .trailing)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .help(Text(verbatim: tooltip ?? status))
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(Text(verbatim: name))
@@ -434,17 +453,12 @@ struct AgentStatusSection: View {
 
   @ViewBuilder
   private func statusCard(rows: [CsMcpStatusRow]) -> some View {
-    VStack(spacing: 0) {
+    listCard {
       ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
         if index > 0 { rowDivider }
         AgentStatusRow(row: row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
   }
 }
 
@@ -454,10 +468,10 @@ struct StatusToneMark: View {
   let tone: CsMcpRowTone
 
   var body: some View {
-    HStack(spacing: 5) {
+    HStack(spacing: CSSpace.xxs) {
       Circle().fill(tone.dotColor).frame(width: 7, height: 7)
       Text(tone.label)
-        .font(CSFont.mono(10, .medium))
+        .font(SettingsScale.statusBadge)
         .foregroundStyle(Color.secondary)
         .lineLimit(1)
     }
@@ -473,23 +487,23 @@ private struct AgentStatusRow: View {
   let row: CsMcpStatusRow
 
   var body: some View {
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .top, spacing: CSSpace.md) {
       Text(row.localizedLabel)
-        .font(CSFont.mono(12, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
-        .frame(width: 190, alignment: .leading)
+        .frame(width: 170, alignment: .leading)
       Text(row.localizedValue)
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
         .lineLimit(3)
         .fixedSize(horizontal: false, vertical: true)
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       StatusToneMark(tone: row.tone)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 12)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(Text(verbatim: "\(row.localizedLabel), \(row.tone.label)"))
     .accessibilityValue(row.localizedValue)
@@ -502,16 +516,16 @@ private struct CapabilityMatrixRow: View {
   let row: CsCapabilityRow
 
   var body: some View {
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .top, spacing: CSSpace.md) {
       Text(row.op)
-        .font(CSFont.mono(12, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.secondary)
-        .frame(width: 120, alignment: .leading)
+        .frame(width: 110, alignment: .leading)
       Text(row.localizedTier.uppercased())
-        .font(CSFont.mono(10, .semibold))
+        .font(SettingsScale.statusBadge)
         .tracking(0.3)
         .foregroundStyle(tierColor)
-        .padding(.horizontal, 7)
+        .padding(.horizontal, CSSpace.xs)
         .padding(.vertical, 2)
         .background(
           RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -521,26 +535,26 @@ private struct CapabilityMatrixRow: View {
           RoundedRectangle(cornerRadius: 5, style: .continuous)
             .strokeBorder(tierColor.opacity(0.28), lineWidth: 1)
         )
-        .frame(width: 110, alignment: .leading)
+        .frame(width: 100, alignment: .leading)
       VStack(alignment: .leading, spacing: 2) {
         if let qualifier = row.localizedQualifier {
           Text(qualifier)
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
         }
         if let detail = row.localizedDetail {
           Text(detail)
-            .font(CSFont.mono(10, .medium))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .lineLimit(1)
         }
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 12)
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
     .help(row.reason)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(Text(verbatim: "\(row.op), \(row.localizedTier)"))
@@ -579,6 +593,27 @@ extension CsMcpRowTone {
     case .warn: return .warning
     case .bad: return .error
     case .neutral: return .circleEmpty
+    }
+  }
+}
+
+/// The two Diagnostics summaries draw their own chevron inside the label's
+/// grid (`summaryLabel`), so the whole label is the toggle and the system
+/// chevron, centred on the label as a whole, is not drawn.
+private struct DiagnosticsSummaryDisclosureStyle: DisclosureGroupStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        configuration.isExpanded.toggle()
+      } label: {
+        configuration.label
+          .contentShape(Rectangle())
+      }
+      .csFocusRing()
+
+      if configuration.isExpanded {
+        configuration.content
+      }
     }
   }
 }

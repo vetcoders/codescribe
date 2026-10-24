@@ -2,7 +2,9 @@ import AppKit
 import SwiftUI
 
 // Typography — system UI + JetBrains Mono (mono/eyebrows/code).
-// Mono is used ONLY for eyebrows, meta, code, logs — never as the page voice.
+// Mono is used ONLY for time, versions, keyboard shortcuts, code/logs and
+// eyebrows. Buttons, statuses and sentences speak in the system face, and
+// SF Mono is never used (Founder, 2026-10-18).
 
 enum CSFont {
   // Display / UI — native system face

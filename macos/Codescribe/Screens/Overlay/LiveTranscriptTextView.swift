@@ -154,10 +154,11 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     scrollView.contentView.contentInsets = contentInsets
     scrollView.borderType = .noBorder
     scrollView.drawsBackground = false
-    scrollView.hasHorizontalScroller = false
     scrollView.hasVerticalScroller = true
     scrollView.scrollerInsets.right = OverlayResizeHit.scrollbarInset
-    scrollView.autohidesScrollers = true
+    // The scroller policy — overlay style, autohide, no horizontal scroller —
+    // belongs to `CSScrollerPin`, which the coordinator attaches below and
+    // re-applies when the system preference changes (Founder, 2026-10-18).
     scrollView.horizontalScrollElasticity = .none
     scrollView.documentView = textView
     context.coordinator.attach(to: scrollView)
@@ -392,11 +393,13 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     let uncertainWordPopover = UncertainWordPopoverPresenter()
     private weak var observedScrollView: NSScrollView?
     private var scrollObservers: [NSObjectProtocol] = []
+    private let scrollerPin = CSScrollerPin()
 
     func attach(to scrollView: NSScrollView) {
       guard observedScrollView !== scrollView else { return }
       detach()
       observedScrollView = scrollView
+      scrollerPin.attach(to: scrollView)
       let center = NotificationCenter.default
       scrollObservers = [
         center.addObserver(
@@ -432,6 +435,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     func detach() {
       for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
       scrollObservers.removeAll()
+      scrollerPin.detach()
       observedScrollView = nil
     }
 
@@ -606,6 +610,7 @@ final class LiveTranscriptScrollView: NSScrollView {
 /// An explicit click takes keyboard focus for native selection/copy.
 /// Editing opens a separate draft gate; resigning gives the keyboard back.
 final class LiveTranscriptNativeTextView: NSTextView {
+  static let activityTrailingSpace: CGFloat = 12
   private var activityUnderline: TranscriptActivityHostingView?
   private var positioningActivityUnderline = false
 
@@ -638,6 +643,14 @@ final class LiveTranscriptNativeTextView: NSTextView {
   }
 
   override func layout() {
+    // A growing bubble is measured at several proposed widths. The last
+    // proposal need not be the placed width; do not paint that stale wrapping.
+    if let container = textContainer, !container.widthTracksTextView, activityUnderline != nil {
+      let width = max(1, bounds.width - Self.activityTrailingSpace)
+      if container.containerSize.width != width {
+        container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+      }
+    }
     super.layout()
     positionActivityUnderline()
   }

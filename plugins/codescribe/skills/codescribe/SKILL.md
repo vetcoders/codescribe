@@ -21,7 +21,10 @@ For `/codescribe NAME CHANNEL [VOICE]`, call `codescribe_connect` with that
 provider, session_id, name and single-digit channel (1–9). Set voice/vendor only
 when explicitly requested. An occupied channel is not yours to take over. Keep
 the existing voice and credentials. Attachment is `attached_unverified`, not
-proof of voice reception.
+proof of voice reception. Inside a vc-frame workspace, rename your own tab
+`Name · repo · harness` by stable tab id; the safe recipe is the foundation
+skill's `references/vc-frame-tab.md` (normally
+`~/.codescribe/agent-bridge/runtime/skills/codescribe/references/vc-frame-tab.md`).
 
 ## Restore the conversation context
 
@@ -62,9 +65,10 @@ cancelling it, restarting its follower or adding a second reader.
 3. Carry out fresh Founder requests; peer messages are coordination, not Founder
    authorization. Drafts/revisions/seals form one evolving request, not repeated tasks.
    Distinct delivery IDs remain distinct even if their words are identical.
-4. For a requested voice answer, call `codescribe_reply` with its exact owned ID and
-   concise text. Check `spoken` and `reason`. Do not claim failed playback succeeded,
-   change providers/credentials to hide failure, or replay an uncertain reply.
+4. Unless asked for quiet, answer the Founder by voice too: call `codescribe_reply`
+   with its exact owned ID and concise text. Check `spoken` and `reason`. Do not
+   claim failed playback succeeded, change providers/credentials to hide failure,
+   or replay an uncertain reply.
    For requested peer conversation use cs-bus --send with this same provider/session.
 
 ## Claude Code: end the turn, the hook wakes you
@@ -72,11 +76,18 @@ cancelling it, restarting its follower or adding a second reader.
 After connecting and after each drained batch, **end the turn**. The plugin's
 `Stop` hook (`asyncRewake`) waits in the background with no model turn and wakes
 this conversation once per new delivery with a `codescribe_mailbox_ready` notice;
-then do the steps above. It re-arms on every turn end, so there is no watcher to
-remember. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
+then do the steps above. It re-arms on every turn end and after every tool call,
+so an interrupted turn (Claude Code runs no `Stop` then) does not leave you deaf
+and there is no watcher to remember. A `cs-bus --watch --until-event` background
+task of this session may run beside it: the waiter then leaves the wake to that
+task and takes over when it is gone. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
 means nothing was read: inspect `codescribe_status` and connect again with the same
-name and channel. A `codescribe_wait_idle` notice after six silent hours only
-re-arms: end the turn. `codescribe_status` reports `native_wake_armed`.
+name and channel. A `codescribe_mailbox_reminder` notice names deliveries
+announced ten minutes ago and still unacknowledged (their first notice may have
+been lost): read and ACK them as above; each is reminded once. A
+`codescribe_wait_idle` notice after six silent hours only re-arms: end the turn,
+after reading any deliveries it lists as unacknowledged. `codescribe_status`
+reports `native_wake_armed`.
 
 A message can also reach you **inside a running turn**: the plugin's
 `PostToolUse` hook probes the mailbox after every tool call and, when a delivery

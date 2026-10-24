@@ -36,6 +36,30 @@ final class OverlayAppearanceTests: XCTestCase {
     }
   }
 
+  /// Resting header glyphs are muted grey; a status a step away from that grey
+  /// makes a resting control read as "healthy" (the overlay's success once took
+  /// the app's label olive, 0.145 from the muted grey on ink, 2026-10-18).
+  func testStatusRolesStayClearOfTheMutedGreyOnBothAppearances() {
+    func distance(_ lhs: OverlayColorToken, _ rhs: OverlayColorToken) -> Double {
+      let a = lhs.components
+      let b = rhs.components
+      let red = a.red - b.red
+      let green = a.green - b.green
+      let blue = a.blue - b.blue
+      return (red * red + green * green + blue * blue).squareRoot()
+    }
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for (role, token) in [
+        ("success", palette.successStatus),
+        ("processing", palette.processingStatus),
+        ("agentAccent", palette.agentAccent),
+      ] {
+        XCTAssertGreaterThan(
+          distance(token, palette.mutedText), 0.2, "\(role) sits too near the muted grey")
+      }
+    }
+  }
+
   func testUncertainWordStaysDistinctFromPhaseStatusTokens() {
     for palette in [OverlayAppearancePalette.light, .dark] {
       XCTAssertNotEqual(palette.uncertainWord, palette.processingStatus)

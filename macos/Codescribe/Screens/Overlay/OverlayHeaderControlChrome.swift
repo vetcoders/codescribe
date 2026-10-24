@@ -45,6 +45,11 @@ struct OverlayHeaderControlChrome: ViewModifier {
   let accent: OverlayHeaderAccent?
   let palette: OverlayAppearancePalette
   var selected = false
+  var hintLeading = false
+  var hintWithinWindow = false
+  /// Header controls always hint. A reused anchor passes false while a popover
+  /// is open or the control has no title, so the shared panel withdraws.
+  var showsHint = true
   @State private var hovered = false
   @State private var anchor = OverlayHintAnchor()
 
@@ -80,14 +85,27 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .background {
         OverlayMenuCursorRegion { inside in
           hovered = inside
-          if inside { anchor.show(title, palette: palette) } else { anchor.hide() }
+          syncHint(inside: inside)
         }
       }
-      .onChange(of: title) { _, title in
-        if hovered { anchor.show(title, palette: palette) }
-      }
+      .onChange(of: title) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: showsHint) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintLeading) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintWithinWindow) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear { anchor.hide() }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+  }
+
+  /// One owner: the shared panel. Leave, a title change, or `showsHint`
+  /// becoming false withdraws only this anchor, so a neighbor that has since
+  /// taken the panel stays on screen.
+  private func syncHint(inside: Bool) {
+    guard showsHint, inside, !title.isEmpty else {
+      anchor.hide()
+      return
+    }
+    anchor.show(title, palette: palette, leading: hintLeading, withinWindow: hintWithinWindow)
   }
 }
 
@@ -96,9 +114,14 @@ struct OverlayHeaderControlChrome: ViewModifier {
 final class OverlayHintAnchor {
   weak var view: NSView?
 
-  func show(_ title: String, palette: OverlayAppearancePalette) {
+  func show(
+    _ title: String, palette: OverlayAppearancePalette, leading: Bool = false,
+    withinWindow: Bool = false
+  ) {
     guard let view else { return }
-    OverlayHintPanel.shared.show(title, palette: palette, below: view, owner: self)
+    OverlayHintPanel.shared.show(
+      title, palette: palette, below: view, owner: self, leading: leading,
+      withinWindow: withinWindow)
   }
 
   func hide() {
@@ -126,9 +149,9 @@ final class OverlayHintAnchorNSView: NSView {
   override func isAccessibilityElement() -> Bool { false }
 }
 
-/// One click-through hint window for the header, owned by the hovered control.
+/// One click-through hint window shared by header and rail controls.
 /// As a child window of the overlay panel it moves with a drag and leaves when
-/// the panel is ordered out, so no hint outlives its header.
+/// the panel is ordered out, so no hint outlives its overlay.
 @MainActor
 final class OverlayHintPanel {
   static let shared = OverlayHintPanel()
@@ -144,20 +167,40 @@ final class OverlayHintPanel {
   /// The window currently presenting a hint, for tests and diagnostics.
   var presentedPanel: NSPanel? { panel?.isVisible == true ? panel : nil }
 
+  /// The title the visible hint carries. The chip's hosting view hangs as a
+  /// child of the effect view, so a test cannot read it off the panel; the
+  /// owner says what it shows (Astra, 2026-10-22).
+  var presentedTitle: String? {
+    presentedPanel == nil ? nil : controller?.rootView.title
+  }
+
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
-    owner: OverlayHintAnchor
+    owner: OverlayHintAnchor, leading: Bool = false, withinWindow: Bool = false
   ) {
     guard let parent = anchor.window, parent.isVisible else { return }
     let chip = OverlayTooltipChip(title: title, palette: palette, filled: false)
     let (panel, controller) = presentation()
     controller.rootView = chip
-    let size = controller.sizeThatFits(
-      in: NSSize(width: OverlayTooltipLayout.maxHintWidth, height: 1_000))
     let anchorRect = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
     let visible = parent.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? parent.frame
+    let bounds = withinWindow ? parent.frame.intersection(visible) : visible
+    guard !bounds.isNull, bounds.width > 2 * Self.screenInset,
+      bounds.height > 2 * Self.screenInset
+    else {
+      hide(owner: owner)
+      return
+    }
+    let size = controller.sizeThatFits(
+      in: NSSize(
+        width: min(OverlayTooltipLayout.maxHintWidth, bounds.width - 2 * Self.screenInset),
+        height: bounds.height - 2 * Self.screenInset))
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
-    panel.setFrame(Self.frame(size: size, below: anchorRect, within: visible), display: true)
+    let frame =
+      leading
+      ? Self.frame(size: size, leading: anchorRect, within: bounds)
+      : Self.frame(size: size, below: anchorRect, within: bounds)
+    panel.setFrame(frame, display: true)
     if panel.parent !== parent {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)
@@ -181,6 +224,18 @@ final class OverlayHintPanel {
     if origin.y < visible.minY + screenInset { origin.y = anchor.maxY + gap }
     origin.x = min(
       max(origin.x, visible.minX + screenInset), visible.maxX - screenInset - size.width)
+    return NSRect(origin: origin, size: size)
+  }
+
+  /// Sidebar hints sit over the document, outside the rail's scroll clip.
+  static func frame(size: CGSize, leading anchor: NSRect, within visible: NSRect) -> NSRect {
+    let origin = NSPoint(
+      x: min(
+        max(anchor.minX - gap - size.width, visible.minX + screenInset),
+        visible.maxX - screenInset - size.width),
+      y: min(
+        max(anchor.midY - size.height / 2, visible.minY + screenInset),
+        visible.maxY - screenInset - size.height))
     return NSRect(origin: origin, size: size)
   }
 

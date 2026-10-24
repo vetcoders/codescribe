@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 import XCTest
 
@@ -33,6 +34,44 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
   private func settleRestart(_ settings: SettingsViewModel) async {
     for _ in 0..<50 where settings.applyingInterfaceLanguage { await Task.yield() }
     XCTAssertFalse(settings.applyingInterfaceLanguage)
+  }
+
+  /// Both appearance choices repaint immediately; only language restarts.
+  func testAppearanceAndSheetShadeApplyAtOnce() async throws {
+    try await withPreferences { preferences, _ in
+      let settings = model(preferences: preferences)
+      XCTAssertEqual(settings.appearanceChoice, .system)
+      var applied = 0
+      settings.onApplyAppearance = { applied += 1 }
+      settings.selectAppearance(.dark)
+      XCTAssertEqual(applied, 1)
+      XCTAssertEqual(preferences.string(forKey: AppearancePreference.key), "dark")
+      settings.selectAppearance(.system)
+      XCTAssertNil(
+        preferences.object(forKey: AppearancePreference.key), "system is the absence of a choice")
+
+      XCTAssertEqual(settings.sheetShadeDark, .todayDark)
+      XCTAssertEqual(settings.sheetShadeLight, .todayLight)
+      let changed = expectation(description: "The open shade picker observes its preference")
+      withObservationTracking {
+        _ = settings.sheetShadeDark
+      } onChange: {
+        changed.fulfill()
+      }
+      settings.selectSheetShade(.warmCarbon)
+      XCTAssertEqual(settings.sheetShadeDark, .warmCarbon)
+      XCTAssertEqual(
+        settings.sheetShadeLight, .todayLight, "a dark shade leaves the light one alone")
+      XCTAssertEqual(preferences.string(forKey: SheetShadePreference.darkKey), "201F1E")
+      await fulfillment(of: [changed], timeout: 1)
+
+      settings.selectSheetShade(.todayDark)
+      XCTAssertNil(preferences.object(forKey: SheetShadePreference.darkKey))
+      // A light raw value stored under the dark key is ignored, never painted.
+      preferences.set(SheetShade.limestone.rawValue, forKey: SheetShadePreference.darkKey)
+      XCTAssertEqual(SheetShadePreference(defaults: preferences).current(dark: true), .todayDark)
+      XCTAssertEqual(SheetShadePreference(defaults: preferences).current(dark: false), .todayLight)
+    }
   }
 
   func testPickerReadsTheSavedChoiceAndSavesWithoutTouchingDictation() async throws {
@@ -161,6 +200,26 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
   func testRelaunchIntentOnlyResumesSetupFromTheWizard() {
     XCTAssertEqual(InterfaceLanguageRelaunch.resumeSetup.launchArguments, ["--resume-onboarding"])
     XCTAssertEqual(InterfaceLanguageRelaunch.plain.launchArguments, [])
+    // A restart pressed in Settings comes back to the same section, in front.
+    XCTAssertEqual(
+      InterfaceLanguageRelaunch.reopenSettings(.agent).launchArguments,
+      ["--open-settings", "agent"])
+    XCTAssertEqual(
+      InterfaceLanguageRelaunch.settingsSection(arguments: [
+        "Codescribe", "--open-settings", "creator",
+      ]),
+      .creator)
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings"]))
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--open-settings", "nope"]))
+    XCTAssertNil(InterfaceLanguageRelaunch.settingsSection(arguments: ["--resume-onboarding"]))
+    let source = try? String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/App.swift"),
+      encoding: .utf8)
+    // The Settings language restart carries the section; the wizard keeps its intent.
+    XCTAssertEqual(source?.components(separatedBy: "relaunch: .reopenSettings(section)").count, 2)
+    XCTAssertEqual(source?.components(separatedBy: "relaunch: .plain").count, 1)
     // The relaunch script passes `--args` only when the intent carries any.
     XCTAssertTrue(AppDelegate.languageRelaunchScript.contains("if [ \"$#\" -gt 0 ]"))
     XCTAssertTrue(AppDelegate.languageRelaunchScript.contains("--args \"$@\""))

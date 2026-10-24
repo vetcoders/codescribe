@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Source version](https://img.shields.io/badge/version-0.17.1-6a9bcc)](Cargo.toml)
+[![Source version](https://img.shields.io/badge/version-0.18.0-6a9bcc)](Cargo.toml)
 [![Latest release](https://img.shields.io/github/v/release/vetcoders/codescribe?label=release&color=788c5d)](https://github.com/vetcoders/codescribe/releases/latest)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
@@ -21,19 +21,21 @@
 
 ## Overview
 
-Codescribe turns speech into delivered text: hold a key, talk, release — the
-transcript lands exactly where you pointed it, with a live overlay painting the
-words as you speak, entirely on-device by default. And dictation is only half
+Codescribe records dictation from a hotkey and shows a live transcript in a
+floating overlay. Delivery follows the destination and paste policy you select.
+Recognition runs on-device by default. And dictation is only half
 of it: nine numbered voice channels connect your microphone straight to AI
 agent sessions over a local bus — speak to an agent in its terminal, and it
 answers back in its own voice. The app is a SwiftUI shell over a Rust engine,
 with two explicit surfaces: settings and overlays.
 
-The transcription shape is layered and span-bound (see `docs/THE_ENGINE_CONTRACT.md`): Apple Speech is the instant
-letter-level live canvas; in Local Power mode, local Whisper transcribes partials on the go to repair weaker wording
-inside the same proven audio spans — it is not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
-human corrections feed the lexicon. Cloud STT is optional: live refinement requires explicit audio-egress consent;
-file retranscription is a separate action. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
+Choose Apple only, Local power (Whisper), or Cloud in Settings. A fresh install
+uses Apple only. By default the selected recognizer supplies the transcript
+directly; Apple live recognition alongside Local power or Cloud, and seal-ledger
+admission of words against measured audio, are separate developer options.
+They are not an obligatory four-layer relay. The lexicon applies configured
+corrections, and full-file retranscription is a separate action. Cloud STT
+requires audio-egress consent. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
 Settings or `~/.codescribe/.env`.
 
 ```mermaid
@@ -50,7 +52,7 @@ flowchart TB
         direction TB
         REC[Streaming Recorder]
         POST[Stream Postprocess]
-        STT[Apple Live + PCM-bound Whisper + Lexicon]
+        STT[Selected recognizer + Lexicon]
         LLM[Responses API Formatting / Assistive]
         QL[Quality Loop]
     end
@@ -73,17 +75,14 @@ flowchart TB
     CORE -.-> TOOLS
 ```
 
-> **How the engine thinks:** Apple Speech paints the overlay the instant you
-> speak. In Local Power mode, Whisper watches bounded windows of the same PCM
-> clock and repairs wording inside proven audio spans — measured evidence, not
-> guesswork, decides every correction. Cloud refinement is there when you want
-> it, behind an explicit audio-egress consent, and full-file Retranscribe is
-> its own deliberate action.
+> **Live text can change:** the preview contains recognition hypotheses, and
+> finishing a take can revise them. Recognition errors and words inferred from
+> quiet audio remain known problems; the audio guards do not establish perfect
+> transcription. Review the text before relying on it.
 
-> **Release status:** source is at `0.17.1`. Published builds are listed on
-> [GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest);
-> the [website download](https://codescribe.vetcoders.io/#install) always
-> serves the newest one.
+> **Development source:** [Cargo.toml](Cargo.toml) records the source version.
+> A version bump does not publish an app or certify its behavior. Published artifacts are
+> listed separately on [GitHub Releases](https://github.com/vetcoders/codescribe/releases/latest).
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -150,7 +149,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Agent voice channels** — nine numbered channels deliver spoken takes into live agent sessions (Claude Code, Codex, and friends) over a local bus; agents reply in their own TTS voices
-- **Whisper Live** — streaming transcription happens _during recording_ (bounded windows + overlap on one PCM clock), so `stop()` is near-instant
+- **Whisper Live** — Local power decodes bounded windows during recording; finishing the take also waits for outstanding work within its stop budget
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
 - **Slim DMG** — Published releases embed Silero VAD only; Whisper is downloaded from Settings → Dictation or HF cache. A `_full` build that also embeds Whisper for fully offline installs is a local build option (`make release-full`), not a published download.
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -167,18 +166,17 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 ## Tech Stack
 
-| Component        | Technology                        | Purpose                    |
-| ---------------- | --------------------------------- | -------------------------- |
-| Language         | Rust 2024 Edition                 | Native performance         |
-| ML Framework     | candle-core + candle-transformers | Whisper inference          |
-| GPU Acceleration | Metal (Apple Silicon)             | Hardware-accelerated STT   |
-| System Tray      | tray-icon + muda + tao            | Menu bar app               |
-| Hotkeys          | CGEventTap (core-graphics)        | Global key detection       |
-| Audio            | cpal + hound + symphonia          | Recording & format support |
-| HTTP Client      | reqwest                           | LLM API calls              |
-| API Format       | openai-harmony                    | Responses API support      |
-| Security         | cap-std                           | Path safety hardening      |
-| Embeddings       | candle-transformers (MiniLM)      | Local semantic gating      |
+| Component         | Technology                        | Purpose                        |
+| ----------------- | --------------------------------- | ------------------------------ |
+| Language          | Rust 2024 Edition                 | Native performance             |
+| ML Framework      | candle-core + candle-transformers | Whisper inference              |
+| GPU Acceleration  | Metal (Apple Silicon)             | Hardware-accelerated STT       |
+| macOS interface   | SwiftUI + AppKit + UniFFI         | Menu bar, windows, Rust bridge |
+| Hotkeys           | CGEventTap (core-graphics)        | Global key detection           |
+| Audio             | cpal + hound + symphonia          | Recording & format support     |
+| HTTP Client       | reqwest                           | LLM API calls                  |
+| Agent / formatter | Provider HTTP APIs                | Configured AI lanes            |
+| Security          | cap-std                           | Path safety hardening          |
 
 ## Installation
 
@@ -204,7 +202,7 @@ make app PROFILE=local-release
 # Install the app bundle into /Applications
 make install-app
 
-# Verify installation (prints the version)
+# Read the source version (this does not inspect the installed app)
 make version
 ```
 
@@ -223,7 +221,7 @@ No toolchain needed. Download the newest published build from
 4. Dictation works without a license key. The built-in Agent chat needs one:
    get a free open-beta key at
    [codescribe.vetcoders.io/license](https://codescribe.vetcoders.io/license/)
-   and paste it into **Settings → License**. Nothing is sold today.
+   and paste it into **Settings → User**. Nothing is sold today.
 
 Installed copies update in-app through Sparkle from
 `https://codescribe.vetcoders.io/appcast.xml`.
@@ -283,7 +281,7 @@ flowchart TD
     B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-    D -->|live chunks| E["Apple L0 + bounded Whisper L1"]
+    D -->|live chunks| E["Selected recognizer + lexicon"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
@@ -298,21 +296,18 @@ flowchart TD
 
 ### Transcription Pipeline
 
-Live transcription is a four-layer relay on one PCM timeline:
+The selected ASR mode determines the recognizer. Apple only enables Apple live
+recognition; Local power enables local Whisper; Cloud uses a consented remote
+session. In the default direct path, recognizer text goes through the lexicon
+to the presentation reducer. Silero observes speech and pauses on the capture
+clock. Optional formatting uses the configured formatting lane.
 
-1. **L0 Apple** paints fast, revisable hypotheses.
-2. **L1 Whisper** observes bounded overlapping PCM windows and may repair only
-   the matching occurrence behind the rewrite fence.
-3. **L2 Lexicon + Light+** performs deterministic, occurrence-preserving
-   shaping.
-4. **L3 Responses formatter** polishes stable spans through the configured
-   formatting lane.
-
-Silero supplies speech probability, boundaries, and pause/time evidence. The
-presentation reducer is the single transcript authority: overlay, delivery,
-history, Agent, and Transcript Bus all consume its committed events, so every
-surface shows the same words. Full-file retranscription is an explicit action
-you invoke when you want it — never a pass you wait for.
+Developer builds also expose independent Apple-live and seal-ledger switches.
+With ledger admission enabled, observations must qualify against acoustic
+occurrences before they can change the document. The detailed layered contracts
+describe that path; they do not mean every default recording runs every layer.
+The reducer owns the document projected into the overlay, history and delivery.
+Full-file retranscription is an explicit action.
 
 ### Recording Modes
 
@@ -348,7 +343,7 @@ DOUBLE_TAP_INTERVAL_MS=200           # Toggle gesture timing
 TOGGLE_SILENCE_SEC=5.0               # Apple epoch rest after this much silence (next recording)
 
 # AI Formatting
-AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
+FORMATTING_LEVEL=correction          # off=raw transcript, correction | smart | max
 
 # LLM lanes: a provider and a model per lane. The endpoint is the provider's
 # own; keys live in Settings › Providers (Keychain), env is only a fallback
@@ -392,12 +387,12 @@ qube-daemon --help
 
 ## Model
 
-Codescribe uses **whisper-large-v3-turbo** (mlx-community, fp16):
+Local power uses the Whisper model selected in Settings. The default download
+is **whisper-large-v3-turbo** (mlx-community, fp16):
 
 - 4-layer turbo architecture (vs 32 layers in full model)
 - fp16 weights (~1.6 GB): load without q8→F32 dequantization; quantized Whisper
   payloads are rejected before engine load
-- ~10x faster than whisper-large-v3
 - Metal GPU acceleration
 
 ### Runtime Whisper (Current)
@@ -538,7 +533,7 @@ Permissions apply to the features you use:
 - **Full Disk Access** — Optional access to protected files for the Agent
 
 The current setup completion check also includes Screen Recording, even for Basic mode; Full Disk Access is optional.
-See the [user tutorial](docs/codescribe-step-by-step-tutorial.html#permissions) for the permission steps and the distinction between closing the wizard and recording readiness. Microphone calibration and local Whisper availability are separate prerequisites described there.
+See the [user tutorial](docs/codescribe-step-by-step-tutorial.html#permissions) for the permission steps and the distinction between closing the wizard and recording readiness. The selected transcription mode determines whether a local Whisper model is needed. A microphone calibration is needed only with seal-ledger admission, which is off by default (see Recording readiness in [the Settings guide](docs/guide/settings.md)).
 
 ## Current Focus
 

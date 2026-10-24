@@ -8,14 +8,14 @@ This branch adds a more “power-user” chat overlay with two tabs: **Agent** a
 - **Selection context**: if you trigger the “selection” mode while text is selected in another app, the selected text is provided as context to the assistant.
 - **Type input**: the bottom text field supports typing. It starts compact and grows only when needed.
 - **Attachments (📎)**: attach files as extra context for the assistant.
-  - The attachment set is sent **once** per thread (unless you change/clear attachments).
+  - The attachment set is sent **once** per conversation (unless you change/clear attachments).
   - **Text files**: only **UTF-8 text** is inlined, with size limits to avoid huge prompts (large/binary files are skipped).
   - **Images** (`png/jpg/webp/gif/...`): sent as **vision input** when the configured LLM endpoint supports `input_image`.
-- **Export (↓ icon)**: exports the current Agent thread as Markdown:
+- **Export (↓ icon)**: exports the current Agent conversation as Markdown:
   - **All** → _Copy as Markdown_ / _Save as Markdown (to history)_
   - **Assistant only** → _Copy as Markdown_ / _Save as Markdown (to history)_
   - Saved exports go to `~/.codescribe/transcriptions/YYYY-MM-DD/` as `HHMMSS_chat.md` or `HHMMSS_chat-assistant.md`.
-- **More menu (…)**: utility actions like starting a new thread and copying/pasting the last response.
+- **More menu (…)**: utility actions like starting a new conversation and copying/pasting the last response.
 
 ## Drawer (history)
 

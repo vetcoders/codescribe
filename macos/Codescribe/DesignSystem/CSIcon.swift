@@ -67,6 +67,7 @@ enum CSIcon: CaseIterable {
   case close
   case check
   case more
+  case conversationWidth
   case star
   case starFill
   case checkboxOn
@@ -115,6 +116,7 @@ enum CSIcon: CaseIterable {
     case .close: "xmark"
     case .check: "checkmark"
     case .more: "ellipsis"
+    case .conversationWidth: "arrow.left.and.right"
     case .star: "star"
     case .starFill: "star.fill"
     case .checkboxOn: "checkmark.square.fill"

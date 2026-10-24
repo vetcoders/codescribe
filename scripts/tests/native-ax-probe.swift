@@ -5,6 +5,7 @@ import Foundation
 // Separate-process AX client for the isolated XCTest host. No input events,
 // screenshots, real app lookup or global accessibility configuration.
 struct Element: Codable {
+  let role: String?
   let label: String
   let value: String
   let x: Double
@@ -31,9 +32,21 @@ struct Request: Codable {
   let press: Bool
 }
 func query(_ request: Request) throws -> Reception {
-  let admittedIdentifier = request.identifier.hasPrefix("overlay-conversation-")
+  let admittedIdentifier =
+    request.identifier.hasPrefix("overlay-conversation-")
     || request.identifier.hasPrefix("overlay-view-conversation-")
+    || request.identifier.hasPrefix("overlay-agent-rail-")
+    || (!request.press && request.identifier.hasPrefix("overlay-intent-"))
+    || (!request.press
+      && ["overlay-agent-microphone", "overlay-agent-speaker"].contains(request.identifier))
+    || (!request.press
+      && ["overlay-history-menu", "overlay-versions-menu", "overlay-previous-take-menu"]
+        .contains(request.identifier))
     || request.identifier.hasPrefix("overlay-message-")
+    || (!request.press
+      && (request.identifier.hasPrefix("overlay-agent-title-")
+        || request.identifier.hasPrefix("overlay-agent-timestamp-")
+        || request.identifier.hasPrefix("overlay-agent-row-controls-")))
   guard request.pid > 0, admittedIdentifier,
     let bundle = NSRunningApplication(processIdentifier: request.pid)?.bundleURL?.path,
     bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/Codescribe.app")
@@ -70,6 +83,7 @@ func query(_ request: Request) throws -> Reception {
       _ = AXValueGetValue(value as! AXValue, .cgSize, &size)
     }
     return Element(
+      role: attribute(element, kAXRoleAttribute) as? String,
       label: attribute(element, kAXTitleAttribute) as? String
         ?? attribute(element, kAXDescriptionAttribute) as? String ?? "",
       value: attribute(element, kAXValueAttribute) as? String ?? "",

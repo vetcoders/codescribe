@@ -232,6 +232,12 @@
           "literal": "transcribe_selected_controlled(",
           "owners": [
             {
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "kind": "function",
+              "symbol": "apple_stream_transcription_session",
+              "count": 1
+            },
+            {
               "file": "core/pipeline/streaming/session.rs",
               "kind": "function",
               "symbol": "compute_tail_patch_job",
@@ -492,10 +498,14 @@
               "required_code": [
                 "snapshot.energy_calibration()",
                 ".for_capture_at(&capture, now_unix_ms)",
-                "if !seal_lane.armed",
-                "if !seal_lane.vad_available",
+                "let ledger_enabled = snapshot.seal_ledger_enabled();",
+                "let calibration = if ledger_enabled {",
+                "Some(calibration?)",
+                "calibration.ok()",
+                "if ledger_enabled && !seal_lane.armed",
+                "if ledger_enabled && !seal_lane.vad_available",
                 "Ok(AdmissionGrant {",
-                "calibration_version: calibration.version"
+                "calibration_version: calibration.map(|calibration| calibration.version)"
               ]
             },
             {
@@ -781,13 +791,19 @@
                 "acoustic_ledger",
                 "sample_rate",
                 "capture_device_name",
+                "let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();",
                 "let settings_digest = runtime_settings.digest().as_str().to_string()",
                 "apple_stream_worker(",
                 "AppleWorkerConfig {",
                 "session_id: worker_session_id",
                 "capture_epoch",
                 "runtime_settings",
-                "acoustic_ledger"
+                "acoustic_ledger",
+                "if seal_ledger_enabled { tail_patch_lane.push_request(req); } else { req.provider_request.language = tail_patch_lane.language.clone();",
+                "let receiver = tail_patch_lane.execution.spawn(move |control| { crate::stt::tail_provider::transcribe_selected_controlled( provider, &request, &audio, control, ) });",
+                "tail_patch_in_flight = true;",
+                "}, if !seal_ledger_enabled && tail_patch_in_flight => {",
+                "direct_decode_job = None; tail_patch_in_flight = false;"
               ]
             },
             {
@@ -961,12 +977,13 @@
               "file": "core/pipeline/streaming/apple_live_session.rs",
               "required_code": [
                 "let owners = self.unsealed_word_owners();",
-                "let envelope_start = owners.iter().map(|(_, owner)| owner.sample_start).min().unwrap_or(0);",
-                "let envelope_end = owners.iter().map(|(_, owner)| owner.sample_end).max().unwrap_or(0);",
+                "let mut by_start = owners.iter().map(|(_, owner)| owner).collect::<Vec<_>>();",
+                "by_start.sort_by_key(|owner| owner.sample_start);",
+                "*end = owner.sample_end.max(*end);",
                 "self.retained_word_decodes",
                 "let range = &payload.identity.range;",
-                "range.sample_start < envelope_end",
-                "envelope_start < range.sample_end",
+                "by_start.partition_point(|owner| owner.sample_start < range.sample_end);",
+                ".take_while(|&index| reach[index] > range.sample_start)",
                 "range_overlaps_occurrence(range, owner)",
                 "self.replayed_window_owners.contains(&(payload.identity.request_id, owner.clone()))",
                 "for payload in returned {",
@@ -1094,8 +1111,9 @@
                 "return false;",
                 "if window.samples.is_empty() {",
                 "return false;",
-                "let energy_integral = window",
-                "let mean_rms = (energy_integral / window.samples.len() as f64).sqrt();",
+                "let span_energy = energy(window.samples.as_slice());",
+                "let energy_integral = floor_clearing_energy(state, occurrence, &window).unwrap_or(span_energy);",
+                "let mean_rms = (span_energy / window.samples.len() as f64).sqrt();",
                 "let peak = window",
                 ".fold(0.0_f64, f64::max);",
                 "let evidence = AcousticEvidence {",
@@ -1648,7 +1666,7 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "required_code": [
                 "struct OverlayIntentRail: View",
-                "ForEach(OverlayDockLayout(projectedIntents: intents).visibleIntents, id: \\.self)",
+                "Self.actionAvailability(intents: intents, versions: versions)",
                 "dispatch(intent)",
                 "func dispatch(_ intent: OverlayIntent)",
                 "onIntent(intent)"
@@ -1882,9 +1900,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "dispatch",
+              "callee": "intentControl",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "dispatch",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "intentControl",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "minimum_count": 1
             },
@@ -2316,6 +2341,12 @@
               "ast_contract": "is_settled"
             },
             {
+              "symbol": "prepare_terminal_audio",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "prepare_terminal_audio"
+            },
+            {
               "symbol": "finish",
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
@@ -2531,6 +2562,13 @@
             },
             {
               "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "prepare_terminal_audio",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "prepare_terminal_audio",
               "caller_file": "core/audio/streaming_recorder.rs",
               "callee": "finalize_take_archive",
               "callee_file": "core/audio/streaming_recorder.rs",
@@ -2991,6 +3029,7 @@
                 "detach_closed_take",
                 "detach_take_state",
                 "is_settled",
+                "prepare_terminal_audio",
                 "finish",
                 "copy_stop_error",
                 "finalize_take_archive",

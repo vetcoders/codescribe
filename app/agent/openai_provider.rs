@@ -12,8 +12,9 @@
 //! the event first and mutates the chain second, and a dirty terminal resets it
 //! rather than resuming from a poisoned response.
 
+use std::collections::HashSet;
 use std::env;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -31,7 +32,7 @@ use codescribe_core::agent::{
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::account_auth;
-use codescribe_core::llm::provider::ProviderKind;
+use codescribe_core::llm::provider::{ProviderKind, ReasoningEffort, is_reasoning_param_rejection};
 use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
@@ -74,6 +75,31 @@ pub struct OpenAiProvider {
     /// Responses-family vendor, and reaching for OpenAI's Keychain slot by
     /// reflex would send an OpenAI token to `api.x.ai`.
     provider: ProviderKind,
+    /// Reasoning level the user chose for the Agent; `None` keeps the model's
+    /// own reasoning, as before the setting existed.
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Endpoint, model and level combinations refused by name in this process.
+/// The provider is rebuilt every turn, so the refusal is kept here: later
+/// turns send the model-default request instead of paying it again.
+static REFUSED_REASONING: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+
+fn refusal_key(endpoint: &str, model: &str, effort: ReasoningEffort) -> String {
+    format!("{endpoint}\n{model}\n{}", effort.as_str())
+}
+
+fn reasoning_refused(key: &str) -> bool {
+    REFUSED_REASONING
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|refused| refused.contains(key))
+}
+
+fn remember_reasoning_refusal(key: String) {
+    if let Ok(mut refused) = REFUSED_REASONING.get_or_init(Default::default).lock() {
+        refused.insert(key);
+    }
 }
 
 /// Test seam: the account backend override now lives with the account route.
@@ -119,6 +145,7 @@ impl OpenAiProvider {
         result.api_key_account = Some(lane.credential().key_account().to_string());
         result.use_account_auth = lane.credential().account_auth();
         result.provider = lane.vendor().unwrap_or_default();
+        result.reasoning_effort = lane.reasoning();
         result.use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
         Ok(result)
@@ -153,6 +180,7 @@ impl OpenAiProvider {
             inter_chunk_timeout,
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         })
     }
 }
@@ -225,8 +253,11 @@ impl AgentProvider for OpenAiProvider {
             self.inter_chunk_timeout.as_secs()
         );
 
-        let request = OpenAiResponsesRequest {
-            reasoning: reasoning_summary_request(&model),
+        let effort = self
+            .reasoning_effort
+            .filter(|effort| !reasoning_refused(&refusal_key(&self.endpoint, &model, *effort)));
+        let mut request = OpenAiResponsesRequest {
+            reasoning: reasoning_request(&model, effort),
             model,
             input: build_request_input(
                 &options.system_prompt,
@@ -308,7 +339,33 @@ impl AgentProvider for OpenAiProvider {
         .with_auth_header_mode(auth_header_mode)
         .with_extra_headers(extra_headers);
 
-        let provider_rx = manager.stream_agent(&request).await?;
+        let mut provider_rx = manager.stream_agent(&request).await?;
+        // A chosen level a server refuses by name (an HTTP 400 before any
+        // output) is asked again once without it; oh-my-pi does the same
+        // (`ai/src/providers/openai-reasoning-fallback.ts`). Only the opt-in
+        // path waits for the first event; the model-default path is unchanged.
+        if effort.is_some() {
+            let first = provider_rx.recv().await;
+            match first {
+                Some(AgentEvent::Error(message)) if is_reasoning_param_rejection(&message) => {
+                    warn!(
+                        model = request.model.as_str(),
+                        effort = effort.map_or("-", ReasoningEffort::as_str),
+                        "Agent provider refused its reasoning effort; asking again with the model default"
+                    );
+                    if let Some(effort) = effort {
+                        remember_reasoning_refusal(refusal_key(
+                            &self.endpoint,
+                            &request.model,
+                            effort,
+                        ));
+                    }
+                    request.reasoning = reasoning_request(&request.model, None);
+                    provider_rx = manager.stream_agent(&request).await?;
+                }
+                first => provider_rx = prepend_event(first, provider_rx),
+            }
+        }
 
         let account_model = (route == AuthRoute::Account).then(|| request.model.clone());
         if !chain_enabled && account_model.is_none() {
@@ -526,11 +583,71 @@ struct OpenAiResponsesRequest {
     stream: bool,
 }
 
-/// Opt-in request for the public reasoning-summary stream.
+/// The request's `reasoning` object: a chosen effort, the public summary
+/// stream, or both.
 #[derive(Debug, Serialize)]
 struct OpenAiReasoningRequest {
+    /// Chosen effort in the Responses API's words; absent keeps the model's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'static str>,
     /// Summary mode; `"auto"` is the only value sent.
-    summary: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'static str>,
+}
+
+/// The `reasoning` object for one request. Without a chosen level this is the
+/// summary request alone, as before. `none` turns reasoning off and asks for no
+/// summary, as oh-my-pi's forced-off request does. The o-series has no
+/// `minimal` or `xhigh`, so those clamp to its nearest level at or below,
+/// else its lowest (oh-my-pi `clampThinkingLevelForModel`).
+fn reasoning_request(
+    model: &str,
+    effort: Option<ReasoningEffort>,
+) -> Option<OpenAiReasoningRequest> {
+    let summary = reasoning_summary_request(model);
+    let Some(effort) = effort else {
+        return summary;
+    };
+    if effort == ReasoningEffort::None {
+        return Some(OpenAiReasoningRequest {
+            effort: Some("none"),
+            summary: None,
+        });
+    }
+    let lower = model.trim().to_ascii_lowercase();
+    let o_series = ["o1", "o3", "o4"]
+        .iter()
+        .any(|family| lower.starts_with(family));
+    let effort = match effort {
+        ReasoningEffort::Minimal if o_series => ReasoningEffort::Low,
+        ReasoningEffort::XHigh if o_series => ReasoningEffort::High,
+        effort => effort,
+    };
+    Some(OpenAiReasoningRequest {
+        effort: Some(effort.as_str()),
+        summary: summary.and(Some("auto")),
+    })
+}
+
+/// A receiver that yields `first` and then everything `rest` yields.
+fn prepend_event(
+    first: Option<AgentEvent>,
+    mut rest: mpsc::Receiver<AgentEvent>,
+) -> mpsc::Receiver<AgentEvent> {
+    let (tx, rx) = mpsc::channel(256);
+    tokio::spawn(async move {
+        if let Some(event) = first
+            && tx.send(event).await.is_err()
+        {
+            return;
+        }
+        while let Some(event) = rest.recv().await {
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// Ask for reasoning summaries, but only from models that emit them.
@@ -544,7 +661,10 @@ fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
         || model.starts_with("o1")
         || model.starts_with("o3")
         || model.starts_with("o4");
-    supports_reasoning.then_some(OpenAiReasoningRequest { summary: "auto" })
+    supports_reasoning.then_some(OpenAiReasoningRequest {
+        effort: None,
+        summary: Some("auto"),
+    })
 }
 
 /// Wire form of one callable tool.
@@ -935,8 +1055,10 @@ mod tests {
     use super::{
         AuthRoute, OpenAiProvider, ProviderKind, account_auth, auth_route, build_request_input,
         build_request_input_items, build_tool_payload, chained_instructions, format_tool_output,
-        forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
+        forward_events_and_track_chain, reasoning_request, reasoning_summary_request,
+        request_messages, to_data_uri,
     };
+    use codescribe_core::llm::provider::ReasoningEffort;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -945,7 +1067,7 @@ mod tests {
         ToolDefinition,
     };
     use reqwest::Client;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tokio::sync::{Mutex, mpsc};
 
     /// Offline Responses client bound to a stored chain. No socket is opened.
@@ -962,6 +1084,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         }
     }
 
@@ -995,6 +1118,93 @@ mod tests {
         endpoint.assert_async().await;
         assert!(completed);
         assert_eq!(chain.lock().await.as_deref(), Some("resp_current"));
+    }
+
+    /// A chosen level goes out as chosen, `none` without a summary, and the
+    /// o-series clamps the levels it lacks; no level keeps the old request.
+    #[test]
+    fn agent_reasoning_level_shapes_the_reasoning_object() {
+        let wire = |model: &str, effort| {
+            reasoning_request(model, effort).map(|request| serde_json::to_value(request).unwrap())
+        };
+        assert_eq!(wire("gpt-5.6", None), Some(json!({ "summary": "auto" })));
+        assert_eq!(wire("mtplx-9b", None), None);
+        assert_eq!(
+            wire("gpt-5.6", Some(ReasoningEffort::None)),
+            Some(json!({ "effort": "none" }))
+        );
+        assert_eq!(
+            wire("gpt-5.6", Some(ReasoningEffort::XHigh)),
+            Some(json!({ "effort": "xhigh", "summary": "auto" }))
+        );
+        assert_eq!(
+            wire("o3-mini", Some(ReasoningEffort::XHigh)),
+            Some(json!({ "effort": "high", "summary": "auto" }))
+        );
+        assert_eq!(
+            wire("o4-mini", Some(ReasoningEffort::Minimal)),
+            Some(json!({ "effort": "low", "summary": "auto" }))
+        );
+        assert_eq!(
+            wire("mtplx-9b", Some(ReasoningEffort::Low)),
+            Some(json!({ "effort": "low" }))
+        );
+    }
+
+    /// A server that refuses the chosen level by name is asked again without
+    /// it, and later turns skip the refused level.
+    #[tokio::test]
+    async fn refused_agent_reasoning_level_is_asked_again_without_it() {
+        let mut server = mockito::Server::new_async().await;
+        let mut provider = chained_test_provider(Arc::new(Mutex::new(None)));
+        provider.endpoint = format!("{}/v1/responses", server.url());
+        provider.default_model = "mtplx-9b".to_string();
+        provider.use_previous_response_id = false;
+        provider.reasoning_effort = Some(ReasoningEffort::None);
+        let refused = server
+            .mock("POST", "/v1/responses")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "reasoning": { "effort": "none" } }),
+            ))
+            .with_status(400)
+            .with_body(
+                r#"{"error":{"message":"reasoning_effort must be one of: auto, low, medium, high, xhigh"}}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let answered = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body.get("reasoning").is_none()
+            })
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n")
+            .expect(2)
+            .create_async()
+            .await;
+        let messages = [Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hej".into())],
+        )];
+        for _turn in 0..2 {
+            let mut events = provider
+                .stream(&messages, &[], &StreamOptions::default())
+                .await
+                .unwrap();
+            let mut completed = false;
+            while let Some(event) = events.recv().await {
+                assert!(!matches!(event, AgentEvent::Error(_)), "{event:?}");
+                if matches!(event, AgentEvent::ResponseDone { clean: true, .. }) {
+                    completed = true;
+                }
+            }
+            assert!(completed);
+        }
+        refused.assert_async().await;
+        answered.assert_async().await;
     }
 
     /// Reasoning summary requests apply only to reasoning-capable model families.
@@ -1439,6 +1649,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         };
 
         env.set(TEST_KEY_ACCOUNT, "synthetic-agent-key");
@@ -1523,6 +1734,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: true,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         };
         let body = [
             r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_codex"}}"#,
@@ -1624,6 +1836,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: true,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         };
         let body = [
             r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_codex_schema"}}"#,
@@ -1763,6 +1976,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -2137,6 +2351,7 @@ mod tests {
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: false,
             provider: ProviderKind::OpenAiResponses,
+            reasoning_effort: None,
         };
         let messages = vec![Message::new(
             Role::User,

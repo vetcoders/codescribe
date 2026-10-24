@@ -2128,8 +2128,21 @@ class NeutralAstTests(unittest.TestCase):
             ("release_capture_subscriber", "feed.id != id", "false"),
             ("finish_closed_capture", "self.terminal_take.as_mut()", "self.terminal_take.take()"),
             ("finish_closed_capture", "if take.is_settled()", "if true"),
-            ("finish", "self.archive_worker.as_mut()", "self.archive_worker.take()"),
+            ("prepare_terminal_audio", "self.archive_worker.as_mut()", "self.archive_worker.take()"),
+            ("prepare_terminal_audio", "let _ = sender.send(receipt);", ""),
+            ("finish", "self.prepare_terminal_audio().await;", ""),
             ("finish", "self.transcription_handle.as_mut()", "self.transcription_handle.take()"),
+            # Direct mode: success needs the recognizer's own completion, the
+            # close result is retained once and cleared, and the mode comes
+            # from the take's frozen settings with no completion yet.
+            ("finish", "self.direct_transcript && self.wait_live_finals_admitted().await",
+             "self.direct_transcript"),
+            ("finish", "return if direct_decoder_complete {", "return if true {"),
+            ("close_capture", "self.closed_capture_was_active = Some(was_active);", ""),
+            ("finish_closed_capture", "self.closed_capture_was_active = None;", ""),
+            ("detach_closed_take", "self.closed_capture_was_active = None;", ""),
+            ("detach_take_state", "direct_decoder_complete: None", "direct_decoder_complete: Some(true)"),
+            ("detach_take_state", "!snapshot.seal_ledger_enabled()", "true"),
             ("is_settled", "&& self.event_sink.is_none()", ""),
             ("is_settled", "&& self.archive_worker.is_none()", ""),
             ("finalize_take_archive", "count as u64 == expected_samples", "true"),
@@ -2178,7 +2191,7 @@ class NeutralAstTests(unittest.TestCase):
             ("incomplete_success_decoy", "finish", "if empty_capture {", "if empty_capture || bypass {"),
             ("audio_receipt_removed", "finish", "                    finality,\n                    audio_path,", "                    finality,"),
             ("committed_receipt_removed", "finish", "                    committed_text: transcript,", ""),
-            ("shutdown_bypass", "finish", "if let Some(sender)", "if bypass { return Ok((String::new(), None)); } if let Some(sender)"),
+            ("shutdown_bypass", "prepare_terminal_audio", "if let Some(sender)", "if bypass { return; } if let Some(sender)"),
             ("shutdown_order", "finish", "self.transcription_handle = None;", ""),
             ("stop_bypass", "stop", "let was_active =", "if bypass { return Ok((String::new(), None)); } let was_active ="),
         ]
@@ -2510,7 +2523,8 @@ class NeutralAstTests(unittest.TestCase):
             contracts.append({"name": corridor["name"], "hops": hops,
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
-                    {"execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"}]})
+                    {"execute_clipboard_paste", "paste_to_stop_target", "finish",
+                     "prepare_terminal_audio", "terminal_finality"}]})
         return contracts
 
     def test_overlay_noop_constructor_is_proven_by_its_body_not_its_name(self):
@@ -2564,8 +2578,9 @@ class NeutralAstTests(unittest.TestCase):
         live = VERIFIER.StructuralVerifier(self.repo)
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
-        self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 4)
-        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish", "terminal_finality"):
+        self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 5)
+        for symbol in ("execute_clipboard_paste", "paste_to_stop_target", "finish",
+                       "prepare_terminal_audio", "terminal_finality"):
             original = live.occurrences(symbol)
             missing = copy.deepcopy(original)
             missing["occurrences"] = [row for row in missing["occurrences"] if row.get("match_role") != "reference"]
@@ -2785,10 +2800,14 @@ class CurrentChainMutantTests(unittest.TestCase):
         cases = [
             ("foreign_decode_range", "let range = &payload.identity.range;",
              "let range = &foreign.identity.range;"),
-            ("lower_bound_uses_maximum", ".min()", ".max()"),
-            ("upper_bound_uses_minimum", ".max()", ".min()"),
-            ("lower_envelope_removed", "range.sample_start < envelope_end", "true"),
-            ("upper_envelope_removed", "envelope_start < range.sample_end", "true"),
+            ("lower_bound_uses_end", "by_start.sort_by_key(|owner| owner.sample_start);",
+             "by_start.sort_by_key(|owner| owner.sample_end);"),
+            ("upper_bound_uses_minimum", "*end = owner.sample_end.max(*end);",
+             "*end = owner.sample_end.min(*end);"),
+            ("lower_envelope_removed", ".take_while(|&index| reach[index] > range.sample_start)",
+             ".take_while(|_| true)"),
+            ("upper_envelope_removed", "by_start.partition_point(|owner| owner.sample_start < range.sample_end);",
+             "by_start.len();"),
             ("owner_overlap_removed", "range_overlaps_occurrence(range, owner)", "true"),
             ("foreign_owner_receipt", ".contains(&(payload.identity.request_id, owner.clone()))",
              ".contains(&(payload.identity.request_id, foreign_owner.clone()))"),
@@ -2859,6 +2878,69 @@ class CurrentChainMutantTests(unittest.TestCase):
                 self.assertTrue(failures, name)
                 self.assertTrue(
                     any("settings_to_capture_admission" in failure and obligation in failure
+                        for failure in failures), (name, failures))
+
+    def test_ledger_admission_guards_cannot_be_bypassed(self):
+        """Direct transcription opts out of the ledger; the ledger keeps its gate.
+
+        The choice comes from the frozen snapshot, a calibration refusal still
+        refuses a ledger take, and the lane and detector guards still apply to
+        it. Each bypass must be refused at the admission hop itself.
+        """
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = "evaluate_probed_admission_at", "app/controller/admission.rs"
+        cases = [
+            ("ledger_choice_forged", "let ledger_enabled = snapshot.seal_ledger_enabled();",
+             "let ledger_enabled = false;"),
+            ("ledger_calibration_refusal_swallowed", "Some(calibration?)", "calibration.ok()"),
+            ("lane_guard_inverted", "if ledger_enabled && !seal_lane.armed",
+             "if !ledger_enabled && !seal_lane.armed"),
+            ("vad_guard_inverted", "if ledger_enabled && !seal_lane.vad_available",
+             "if !ledger_enabled && !seal_lane.vad_available"),
+            ("calibration_version_forged",
+             "calibration_version: calibration.map(|calibration| calibration.version)",
+             "calibration_version: None"),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertTrue(
+                    any("settings_to_capture_admission" in failure and symbol in failure
+                        for failure in failures), (name, failures))
+
+    def test_direct_decode_is_the_ledger_lanes_alternative_not_a_second_writer(self):
+        """One frozen choice routes each admitted request to one decoder path.
+
+        Ledger mode queues the request on the tail-patch lane; direct mode runs
+        the same request on the same retained executor, and only direct mode
+        reads the direct completion. Running both, reading the direct result in
+        ledger mode, deciding outside the take's snapshot, decoding off the
+        retained executor or dropping the single in-flight gate is refused.
+        """
+        self.assertEqual(self.positive_failures, [])
+        symbol, file = ("apple_stream_transcription_session",
+                        "core/pipeline/streaming/apple_live_session.rs")
+        cases = [
+            ("both_paths_run",
+             "if seal_ledger_enabled {\n                    tail_patch_lane.push_request(req);\n"
+             "                } else {",
+             "tail_patch_lane.push_request(req);\n                {"),
+            ("direct_completion_read_in_ledger_mode",
+             "}, if !seal_ledger_enabled && tail_patch_in_flight => {",
+             "}, if tail_patch_in_flight => {"),
+            ("choice_not_from_the_take_snapshot",
+             "let seal_ledger_enabled = runtime_settings.seal_ledger_enabled();",
+             "let seal_ledger_enabled = false;"),
+            ("direct_decode_off_the_retained_executor",
+             "let receiver = tail_patch_lane.execution.spawn(move |control| {",
+             "let receiver = spawn_detached_decoder(move |control| {"),
+            ("single_flight_gate_dropped", "                tail_patch_in_flight = true;\n", ""),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                failures = self.run_mutated(symbol, file, old, new)
+                self.assertTrue(
+                    any("capture_to_ledger" in failure and symbol in failure
                         for failure in failures), (name, failures))
 
     def test_inline_take_archive_ownership_cannot_be_removed_or_reordered(self):
@@ -3220,6 +3302,45 @@ class CurrentDeliveryProjectionMutantTests(unittest.TestCase):
             mutant, [contract]
         )
         self.assertTrue(any("competing or missing owners" in row for row in failures))
+
+    def test_whisper_decode_has_four_owners_and_refuses_a_fifth_or_a_lost_direct_lane(self):
+        """The direct lane is the ledger lane's alternative, not a fifth writer.
+
+        `transcribe_selected_controlled(` is declared once, wrapped once, and
+        called by the ledger lane's job builder and by the direct-mode branch
+        of `apple_stream_transcription_session`. Another caller is refused, and
+        so is the owner set with the direct lane gone.
+        """
+        literal = "transcribe_selected_controlled("
+        manifest = json.loads((self.repo / VERIFIER.DEFAULT_MANIFEST).read_text())
+        contract = next(
+            row for row in manifest["stages"]["wired"]["exclusive_production_literal_owners"]
+            if row["literal"] == literal
+        )
+        _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+            self.seed, [contract]
+        )
+        self.assertEqual(failures, [])
+        rows = copy.deepcopy(VERIFIER.require_complete_literal_evidence(
+            self.seed.literal_occurrences(literal), literal
+        ))
+        direct = "core/pipeline/streaming/apple_live_session.rs"
+        cases = [
+            ("fifth_caller", rows + [occurrence(
+                literal, file=direct, line=99_999, enclosing_symbol="parallel_whisper_writer",
+            )]),
+            ("direct_lane_lost", [row for row in rows if row["file"] != direct]),
+        ]
+        for name, mutated in cases:
+            with self.subTest(mutation=name):
+                mutant = StubVerifier(
+                    self.repo, literal_responses={literal: literal_payload(literal, *mutated)}
+                )
+                _, failures = VERIFIER.verify_exclusive_production_literal_owners(
+                    mutant, [contract]
+                )
+                self.assertTrue(any("competing or missing owners" in row for row in failures),
+                                (name, failures))
 
     def test_stop_paste_requires_both_identity_checks_and_optional_epoch(self):
         for label, old, new in (

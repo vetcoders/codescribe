@@ -221,6 +221,36 @@ out="$("$tree/codescribe/scripts/install-voice-lab.sh" 2>&1)"
   exit 1
 }
 
+# --checkout-main (make install-lab) takes the sibling's local main through the
+# cache, after origin/main: committed local work installs before a push, and the
+# sibling's working tree and current branch never do.
+export HOME="$WORKDIR/home-checkout-main"
+make_pack "$HOME/.codescribe/src/voice-lab" cache
+: >"$WORKDIR/git.log"
+out="$("$tree/codescribe/scripts/install-voice-lab.sh" --checkout-main 2>&1)"
+[[ "$out" == *ran-setup-cache* && "$out" != *ran-setup-sibling* ]] || {
+  echo "--checkout-main must install through the cache, got: $out" >&2
+  exit 1
+}
+log="$(cat "$WORKDIR/git.log")"
+[[ "$log" == *"merge --ff-only origin/main in $HOME/.codescribe/src/voice-lab"*"fetch --quiet $tree/voice-lab main in $HOME/.codescribe/src/voice-lab"*"merge --ff-only FETCH_HEAD in $HOME/.codescribe/src/voice-lab"* ]] || {
+  echo "cache must take origin/main, then the checkout's main: $log" >&2
+  exit 1
+}
+set +e
+out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$tree/codescribe/scripts/install-voice-lab.sh" --checkout-main 2>&1)"
+status=$?
+set -e
+[[ "$status" -ne 0 && "$out" == *"installs through the cache"* ]] || {
+  echo "a named checkout must refuse --checkout-main: $out" >&2
+  exit 1
+}
+set +e
+out="$("$tree/codescribe/scripts/install-voice-lab.sh" --bogus 2>&1)"
+status=$?
+set -e
+[[ "$status" -ne 0 && "$out" == *"unknown option --bogus"* ]] || { echo "unknown options must fail: $out" >&2; exit 1; }
+
 # Before the first install the sibling still proves org access.
 export HOME="$WORKDIR/home-fresh"
 mkdir -p "$HOME"

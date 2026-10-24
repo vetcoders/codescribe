@@ -381,6 +381,11 @@ pub struct TailProviderEvidence {
     /// Word when every segment is a measured word pin. Phrase otherwise.
     #[serde(default)]
     pub segment_grain: TailSegmentGrain,
+    /// Request samples this provider's own VAD selected before decoding.
+    /// `Some(0)` is a measured "no speech in this window"; `None` means the
+    /// provider never measured, which says nothing about speech.
+    #[serde(default)]
+    pub vad_selected_samples: Option<u64>,
 }
 
 /// Grain of one tail segment. Phrase is a timestamp-token span. Word is a
@@ -608,11 +613,25 @@ impl InProcessTailProvider {
         // VAD gates empty speech, as in file transcription. Decode the original
         // bounded PCM window: compaction can discard quiet onsets and joins
         // physically separated speech before the model and word alignment.
-        let (speech, _) = crate::vad::extract_speech(pcm, request.sample_rate);
-        execution.record_vad_selection(speech.len());
+        let (speech, vad) = crate::vad::extract_speech(pcm, request.sample_rate);
+        let vad_measured = vad.total_windows > 0;
+        if vad_measured {
+            execution.record_vad_selection(speech.len());
+        }
+        let vad_selected_samples = vad_measured.then_some(speech.len() as u64);
+        let no_speech =
+            speech.is_empty() && vad.no_speech_reason.as_deref() == Some("vad_no_speech_detected");
         let execution_control = execution.execution_control(control);
         control.check()?;
-        let (raw, word_segments) = if speech.is_empty() {
+        let (raw, word_segments) = if no_speech {
+            tracing::info!(
+                session_id = %request.identity.range.session,
+                capture_epoch = request.identity.range.capture_epoch,
+                request_id = request.identity.request_id,
+                sample_start = request.identity.range.sample_start,
+                sample_end = request.identity.range.sample_end,
+                "decode_skipped_no_speech"
+            );
             (RawTranscript::default(), None)
         } else {
             super::candle_transcribe_tail_window(
@@ -702,6 +721,7 @@ impl InProcessTailProvider {
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
                 segment_grain,
+                vad_selected_samples,
             },
         };
         payload.validate()?;
@@ -1465,6 +1485,7 @@ impl TailProvider for RemoteTailProvider {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: response.avg_logprob,
+                vad_selected_samples: None,
             },
         };
         payload.validate()?;
@@ -2109,6 +2130,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::CompactedSpeechRelative,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         payload
@@ -2189,6 +2211,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: Some(-0.21),
+                vad_selected_samples: None,
             },
         };
         let fake = FakeTailProvider::new(payload.clone()).unwrap();
@@ -2275,6 +2298,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         assert!(
@@ -2315,6 +2339,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
+                vad_selected_samples: None,
             },
         };
         payload.validate().expect("phrase grain");
@@ -2475,6 +2500,7 @@ mod tests {
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: response.avg_logprob,
+                vad_selected_samples: None,
             },
         }
         .validate()

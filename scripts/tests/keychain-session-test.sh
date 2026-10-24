@@ -424,10 +424,10 @@ setup_env
 test_case "the login session's default keychain is never taken by default"
 LOGIN="$HOME/Library/Keychains/login.keychain-db"
 seed_list "$LOGIN"
-# shellcheck disable=SC2016  # the $(...) is for the child shell, not this one
 run_child 'keychain_session_begin codescribe-signing >/dev/null
-           printf "%s" "$(cat "'"$FAKE_SECURITY_STATE"'/default")" > "'"$ROOT"'/default-during.txt"
+           cp "'"$FAKE_SECURITY_STATE"'/default" "'"$ROOT"'/default-during.txt"
            keychain_session_end' >/dev/null
+sed -i '' -e '$ s/\n$//' "$ROOT/default-during.txt" 2>/dev/null || true
 if [[ "$(cat "$ROOT/default-during.txt")" == "$LOGIN" ]]; then
   ok "default keychain untouched WHILE the session is active"
 else
@@ -450,10 +450,10 @@ test_case "KEYCHAIN_SESSION_SET_DEFAULT=1 takes the default and gives it back"
 LOGIN="$HOME/Library/Keychains/login.keychain-db"
 seed_list "$LOGIN"
 export KEYCHAIN_SESSION_SET_DEFAULT=1
-# shellcheck disable=SC2016  # the $(...) is for the child shell, not this one
 run_child 'keychain_session_begin codescribe-signing >/dev/null
-           printf "%s" "$(cat "'"$FAKE_SECURITY_STATE"'/default")" > "'"$ROOT"'/default-during.txt"
+           cp "'"$FAKE_SECURITY_STATE"'/default" "'"$ROOT"'/default-during.txt"
            keychain_session_end' >/dev/null 2>&1
+sed -i '' -e '$ s/\n$//' "$ROOT/default-during.txt" 2>/dev/null || true
 unset KEYCHAIN_SESSION_SET_DEFAULT
 DUR="$(cat "$ROOT/default-during.txt")"
 if [[ "$DUR" != "$LOGIN" && -n "$DUR" ]]; then

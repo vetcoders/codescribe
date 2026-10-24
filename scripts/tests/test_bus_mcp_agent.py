@@ -302,7 +302,9 @@ class ScopeContractTests(Fixture):
         # The speech credential the BUS helper itself consumes before Keychain.
         for name in ("LLM_OPENAI_API_KEY", "PATH", "HOME", "LANG", "LC_ALL", "TZ"):
             self.assertEqual(seen[name], planted[name])
-        allowed = AGENT.CHILD_ENVIRONMENT | set(DEMUX.BUS_PATH_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}
+        allowed = AGENT.CHILD_ENVIRONMENT | set(DEMUX.BUS_PATH_ENV_KEYS) | {
+            "__CF_USER_TEXT_ENCODING", "PYTHONNOUSERSITE", "PYTHONDONTWRITEBYTECODE", "VIBECRAFTED_RUNTIME_ROOT",
+        }
         self.assertTrue({k for k in seen if not k.startswith("LC_")} <= allowed)
 
     def test_bus_helper_children_resolve_the_same_canonical_bus_as_the_agent(self):

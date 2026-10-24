@@ -739,14 +739,31 @@ impl Config {
         }
         let credential =
             RuntimeLlmCredential::seal(provider.key_account.clone(), api_key, account_auth);
-        RuntimeLlmLane::seal(
+        let sealed = RuntimeLlmLane::seal(
             lane,
             provider,
             model,
             credential,
             configuration_fault,
             unavailable_reason,
-        )
+        );
+        match lane {
+            RuntimeLlmLaneKind::Formatting => sealed.with_reasoning(
+                settings
+                    .llm_formatting_reasoning
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .unwrap_or_default(),
+            ),
+            RuntimeLlmLaneKind::Assistive => match settings
+                .llm_assistive_reasoning
+                .as_deref()
+                .and_then(crate::llm::provider::ReasoningEffort::parse)
+            {
+                Some(effort) => sealed.with_reasoning(effort),
+                None => sealed,
+            },
+        }
     }
 
     fn runtime_provider_reference(
@@ -1049,9 +1066,9 @@ impl Config {
 
     /// Resolve the effective formatting policy from fresh runtime truth.
     ///
-    /// Explicit process env wins. Values seeded internally during bootstrap are
-    /// ignored after bootstrap so a Settings write takes effect without restart.
-    /// Loader-boundary helper for UI/tests that do not already hold a snapshot.
+    /// An explicit `FORMATTING_LEVEL` in the launch environment wins; config
+    /// never writes that key itself, so a Settings write takes effect without
+    /// restart. Loader-boundary helper for UI/tests that do not already hold a snapshot.
     /// Resolves policy only through the canonical sealed snapshot — never by a
     /// second `UserSettings::load` + process-env reconstruct.
     pub fn formatting_policy() -> anyhow::Result<FormattingPolicy> {
@@ -1184,6 +1201,7 @@ impl Config {
         env_flag!("HOLD_EXCLUSIVE", self.hold_exclusive);
         env_parse!("HOLD_ARM_MODIFIER", self.hold_arm_modifier);
         env_parse!("AGENT_CHANNEL_MODIFIER", self.channel_modifier);
+        env_parse!("WIDGET_SHORTCUT", self.widget_shortcut);
         env_flag!("FN_TAP_TOGGLES_DICTATION", self.fn_tap_toggles_dictation);
         env_flag!("MIDDLE_MOUSE_ACTS_AS_FN", self.middle_mouse_acts_as_fn);
         env_flag!(
@@ -1202,6 +1220,7 @@ impl Config {
             "LIGHT_PLUS_SENTENCE_PAUSE_SEC",
             self.light_plus_sentence_pause_sec
         );
+        env_parse!("CODESCRIBE_LEDGER_SENSITIVITY", self.ledger_sensitivity);
         env_parse!(
             "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
             self.deferred_insert_shortcut
@@ -1210,8 +1229,8 @@ impl Config {
         // Language
         env_parse!("WHISPER_LANGUAGE", self.whisper_language);
 
-        // AI Formatting
-        env_flag_enabled!("AI_FORMATTING_ENABLED", self.ai_formatting_enabled);
+        // AI Formatting. FORMATTING_LEVEL is the only on/off switch; a stale
+        // AI_FORMATTING_ENABLED line in `.env` has no reader.
         env_flag!("CODESCRIBE_FORMAT_ON_DEVICE", self.format_on_device);
         env_parse!("PASTE_MODE", self.paste_mode);
         env_parse!("TRANSCRIPT_SEND_MODE", self.transcript_send_mode);
@@ -1432,6 +1451,11 @@ impl Config {
             settings.light_plus_sentence_pause_sec
         );
         apply_copy!(
+            "CODESCRIBE_LEDGER_SENSITIVITY",
+            self.ledger_sensitivity,
+            settings.ledger_sensitivity
+        );
+        apply_copy!(
             "HOLD_EXCLUSIVE",
             self.hold_exclusive,
             settings.hold_exclusive
@@ -1465,11 +1489,6 @@ impl Config {
         );
         // AI
         apply_copy!(
-            "AI_FORMATTING_ENABLED",
-            self.ai_formatting_enabled,
-            settings.ai_formatting_enabled
-        );
-        apply_copy!(
             "CODESCRIBE_FORMAT_ON_DEVICE",
             self.format_on_device,
             settings.format_on_device
@@ -1485,14 +1504,12 @@ impl Config {
             self.transcript_tag_template,
             settings.transcript_tag_template
         );
-        if Self::config_runtime_env_var("FORMATTING_LEVEL").is_err()
-            && let Some(ref v) = settings.formatting_level
-        {
-            match FormattingPolicy::parse(v) {
-                Ok(policy) => Self::safe_set_env("FORMATTING_LEVEL", policy.as_str()),
-                Err(error) => warn!("Ignoring invalid persisted formatting policy: {error}"),
-            }
-        }
+        // The formatting level is never seeded into process env. The snapshot
+        // resolves it from `settings.formatting_level` plus a genuine launch
+        // override (`FormattingPolicy::resolve`). A copy in this process's env
+        // would be inherited by every child, a self-relaunch included, where
+        // it reads as an operator override and pins the old level over later
+        // Settings changes.
         // Sound
         apply_copy!("BEEP_ON_START", self.beep_on_start, settings.beep_on_start);
         apply_copy!(
@@ -1531,6 +1548,14 @@ impl Config {
             && let Ok(shortcut) = raw.parse::<DeferredInsertShortcut>()
         {
             self.deferred_insert_shortcut = shortcut;
+        }
+        if Self::config_runtime_env_var("WIDGET_SHORTCUT").is_err()
+            && let Some(raw) = settings.widget_shortcut.as_deref()
+        {
+            match raw.parse::<super::types::WidgetShortcut>() {
+                Ok(shortcut) => self.widget_shortcut = shortcut,
+                Err(error) => warn!("Ignoring invalid persisted widget shortcut: {error}"),
+            }
         }
         if Self::config_runtime_env_var("TRAY_START_ASSISTIVE").is_err()
             && let Some(v) = settings.tray_start_assistive
@@ -1768,14 +1793,31 @@ impl Config {
 
     /// Save multiple configuration values in a single batch.
     ///
-    /// This reduces repeated settings.json writes and .env rewrites, and
-    /// minimizes redundant work when updating several fields at once.
+    /// The ASR mode/consent pair is one settings.json write; validation and save
+    /// failures are returned without committing a partial choice. Other batches
+    /// retain their per-tier persistence and committed-prefix behavior.
     pub fn save_to_env_many(&self, entries: &[(&str, &str)]) -> anyhow::Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _persistence = config_persistence_guard();
+
+        if entries.len() == 2
+            && entries.iter().any(|(key, _)| *key == "CODESCRIBE_ASR_MODE")
+            && entries
+                .iter()
+                .any(|(key, _)| *key == "CODESCRIBE_CLOUD_CONSENT")
+        {
+            let mut settings = super::settings::UserSettings::load_for_edit()?;
+            for (key, value) in entries {
+                anyhow::ensure!(
+                    settings.assign_wire(key, value, true)?,
+                    "Rejected ASR choice setting: {key}"
+                );
+            }
+            return settings.save();
+        }
 
         let mut settings: Option<super::settings::UserSettings> = None;
         let mut env_vars: Option<HashMap<String, String>> = None;
@@ -1880,8 +1922,25 @@ impl Config {
         match key {
             "LLM_FORMATTING_PROVIDER" => settings.llm_formatting_provider = normalized,
             "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = normalized,
+            // `none` is the default, so it is stored as unset; a word that is
+            // not a level is refused rather than kept.
+            "LLM_FORMATTING_REASONING" => {
+                settings.llm_formatting_reasoning = normalized
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .filter(|effort| *effort != crate::llm::provider::ReasoningEffort::None)
+                    .map(|effort| effort.as_str().to_string())
+            }
             "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider = normalized,
             "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model = normalized,
+            // Every level is a choice here, `none` included; `default` or a
+            // word that is not a level returns the lane to the model's own.
+            "LLM_ASSISTIVE_REASONING" => {
+                settings.llm_assistive_reasoning = normalized
+                    .as_deref()
+                    .and_then(crate::llm::provider::ReasoningEffort::parse)
+                    .map(|effort| effort.as_str().to_string())
+            }
             _ => return false,
         }
         true
@@ -2400,6 +2459,79 @@ mod tests {
         assert!(!refused.seal_lane_armed());
     }
 
+    /// Founder, 2026-10-22 (UI-79): the level stayed on Max after Settings chose
+    /// another. The bootstrap copied the persisted level into process env, a
+    /// self-relaunch inherited it, and there it outranked every later Settings
+    /// write as if the operator had exported it.
+    #[test]
+    #[serial]
+    fn formatting_level_is_not_seeded_and_follows_settings_after_reload() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _format = TestEnvGuard::unset("FORMATTING_LEVEL");
+        let dir = tempfile::tempdir().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        remove_env_for_test("FORMATTING_LEVEL");
+        fs::write(dir.path().join(".env"), "").unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":3,"speech":{"formatting":{"level":"max"}}}"#,
+        )
+        .unwrap();
+
+        let first = Config::load_runtime_snapshot().unwrap();
+        assert_eq!(first.formatting_policy(), FormattingPolicy::Max);
+        assert!(
+            std::env::var("FORMATTING_LEVEL").is_err(),
+            "the persisted level never reaches process env, so no child inherits it"
+        );
+
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"schema_version":3,"speech":{"formatting":{"level":"smart"}}}"#,
+        )
+        .unwrap();
+        let second = Config::load_runtime_snapshot().unwrap();
+        assert_eq!(second.formatting_policy(), FormattingPolicy::Smart);
+        let receipt = serde_json::to_string(second.repair_receipt()).unwrap();
+        assert!(
+            !receipt.contains("FORMATTING_LEVEL"),
+            "no precedence note without an operator override: {receipt}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_exported_formatting_level_still_outranks_settings() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _format = TestEnvGuard::unset("FORMATTING_LEVEL");
+        let dir = tempfile::tempdir().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        set_env_for_test("FORMATTING_LEVEL", "off");
+        fs::write(dir.path().join(".env"), "").unwrap();
+        for level in ["max", "smart"] {
+            fs::write(
+                dir.path().join("settings.json"),
+                format!(
+                    r#"{{"schema_version":3,"speech":{{"formatting":{{"level":"{level}"}}}}}}"#
+                ),
+            )
+            .unwrap();
+            let snapshot = Config::load_runtime_snapshot().unwrap();
+            assert_eq!(
+                snapshot.formatting_policy(),
+                FormattingPolicy::Off,
+                "{level}"
+            );
+            let receipt = serde_json::to_string(snapshot.repair_receipt()).unwrap();
+            assert!(receipt.contains("FORMATTING_LEVEL"), "{level}: {receipt}");
+            assert_eq!(std::env::var("FORMATTING_LEVEL").as_deref(), Ok("off"));
+        }
+    }
+
     /// Set a var for the current test case.
     fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
         // SAFETY: these tests are marked `serial` and do not start background workers,
@@ -2913,12 +3045,67 @@ mod tests {
     }
 
     #[test]
+    fn fresh_apple_only_mode_has_an_enabled_recognizer_without_weights() {
+        use crate::config::cloud_asr::AsrProductMode;
+
+        let input = CapturedRuntimeInputs::defaults_at(
+            PathBuf::from("/fixture/fresh-install-no-models"),
+            1_700_000_000_000,
+        );
+        let snapshot = Config::runtime_snapshot_from_captured(input);
+        assert_eq!(
+            snapshot.user_settings().resolved_asr_mode().mode,
+            AsrProductMode::AppleOnly
+        );
+        let (layer1, _) = crate::asr_session::layer1_decision(&snapshot);
+        assert!(!layer1.is_armed());
+        assert!(!snapshot.seal_ledger_enabled());
+        assert!(
+            snapshot.apple_live_enabled(),
+            "Apple-only must retain its recognizer on a clean install without Whisper weights"
+        );
+    }
+
+    #[test]
+    fn apple_live_defaults_follow_resolved_mode_and_preserve_explicit_choices() {
+        for (mode, consent, legacy_local, expected) in [
+            (None, None, None, true),
+            (Some("apple_only"), None, Some(true), true),
+            (Some("local_power"), None, None, false),
+            (Some("cloud"), Some("granted"), None, false),
+            (Some("cloud"), None, None, true),
+            (Some("cloud"), Some("denied"), None, true),
+            (None, None, Some(true), false),
+            (None, None, Some(false), false),
+            (Some("unknown"), None, None, true),
+        ] {
+            let mut input = CapturedRuntimeInputs::defaults_at(
+                PathBuf::from("/fixture/recognizer-defaults"),
+                1_700_000_000_000,
+            );
+            input.user_settings.asr_mode = mode.map(str::to_owned);
+            input.user_settings.cloud_consent = consent.map(str::to_owned);
+            input.user_settings.use_local_stt = legacy_local;
+            let default = Config::runtime_snapshot_from_captured(input.clone());
+            assert_eq!(default.apple_live_enabled(), expected, "mode={mode:?}");
+            assert_eq!(default.user_settings().apple_live_enabled, None);
+            for explicit in [false, true] {
+                input.user_settings.apple_live_enabled = Some(explicit);
+                let snapshot = Config::runtime_snapshot_from_captured(input.clone());
+                assert_eq!(snapshot.apple_live_enabled(), explicit);
+                assert_eq!(default.apple_live_enabled(), expected);
+                assert!(!snapshot.seal_ledger_enabled());
+            }
+        }
+    }
+
+    #[test]
     #[serial]
     fn transcription_controls_are_independent_and_frozen_for_the_take() {
         let _tmp = setup_isolated_data_dir();
         let original = Config::load_runtime_snapshot_without_keychain().unwrap();
         assert!(!original.seal_ledger_enabled());
-        assert!(!original.apple_live_enabled());
+        assert!(original.apple_live_enabled());
         for (ledger, apple) in [(false, false), (false, true), (true, false), (true, true)] {
             Config::default()
                 .save_to_env_many(&[
@@ -2939,7 +3126,7 @@ mod tests {
             assert_eq!(next.seal_ledger_enabled(), ledger);
             assert_eq!(next.apple_live_enabled(), apple);
             assert!(!original.seal_ledger_enabled());
-            assert!(!original.apple_live_enabled());
+            assert!(original.apple_live_enabled());
             assert_ne!(next.digest(), original.digest());
         }
     }
@@ -3313,6 +3500,52 @@ mod tests {
                 "/speech/assistive/llm_model",
             ),
         ]
+    }
+
+    /// The Agent keeps `none` as a choice; `default` clears it.
+    #[test]
+    #[serial]
+    fn assistive_reasoning_level_saves_every_level_and_clears_on_default() {
+        for batch in [false, true] {
+            for (written, stored) in [
+                ("xhigh", Some("xhigh")),
+                ("none", Some("none")),
+                ("off", Some("none")),
+                ("Minimal", Some("minimal")),
+                ("default", None),
+                ("", None),
+            ] {
+                let saved = save_snapshot("LLM_ASSISTIVE_REASONING", written, batch);
+                assert_eq!(
+                    saved.llm_assistive_reasoning.as_deref(),
+                    stored,
+                    "{written:?} batch={batch}"
+                );
+            }
+        }
+    }
+
+    /// `none` is the default and is stored as unset; a word that is not a
+    /// level never reaches settings.json.
+    #[test]
+    #[serial]
+    fn formatting_reasoning_level_saves_only_opt_in_levels() {
+        for batch in [false, true] {
+            for (written, stored) in [
+                ("high", Some("high")),
+                ("Low", Some("low")),
+                ("none", None),
+                ("turbo", None),
+                ("", None),
+            ] {
+                let saved = save_snapshot("LLM_FORMATTING_REASONING", written, batch);
+                assert_eq!(
+                    saved.llm_formatting_reasoning.as_deref(),
+                    stored,
+                    "{written:?} batch={batch}"
+                );
+            }
+        }
     }
 
     /// Write one key via single or batch path, then reload `UserSettings` for compare.
@@ -4104,28 +4337,28 @@ mod tests {
     #[serial]
     fn test_load_prefers_settings_json_over_promoted_env_file_values() {
         let _tmp = setup_isolated_data_dir();
-        let previous = std::env::var("AI_FORMATTING_ENABLED").ok();
-        remove_env_for_test("AI_FORMATTING_ENABLED");
+        let previous = std::env::var("HOLD_EXCLUSIVE").ok();
+        remove_env_for_test("HOLD_EXCLUSIVE");
 
         let mut settings = UserSettings::load();
-        settings.ai_formatting_enabled = Some(false);
+        settings.hold_exclusive = Some(false);
         settings.save().expect("save settings");
 
         let env_path = Config::env_path();
         fs::create_dir_all(env_path.parent().expect("env dir")).expect("create env dir");
-        fs::write(&env_path, "AI_FORMATTING_ENABLED=1\n").expect("write .env");
+        fs::write(&env_path, "HOLD_EXCLUSIVE=1\n").expect("write .env");
 
         let config = Config::load();
         assert!(
-            !config.ai_formatting_enabled,
+            !config.hold_exclusive,
             ".env should not override promoted settings.json keys"
         );
         assert!(
-            std::env::var("AI_FORMATTING_ENABLED").is_err(),
+            std::env::var("HOLD_EXCLUSIVE").is_err(),
             "promoted .env key must not be injected into process env"
         );
 
-        restore_env_for_test("AI_FORMATTING_ENABLED", previous);
+        restore_env_for_test("HOLD_EXCLUSIVE", previous);
     }
 
     /// Non-promoted env-managed keys (e.g. STT_FILE_API_KEY) still load from optional .env.
@@ -4155,21 +4388,21 @@ mod tests {
             fs::remove_file(&env_path).expect("scrub stale .env");
         }
 
-        set_env_for_test("AI_FORMATTING_ENABLED", "1");
+        set_env_for_test("HOLD_EXCLUSIVE", "1");
 
         let config = Config::load();
-        assert!(config.ai_formatting_enabled);
+        assert!(config.hold_exclusive);
         assert!(
             !UserSettings::settings_path().exists(),
             "explicit runtime env should not synthesize settings.json"
         );
         let reloaded = UserSettings::load();
         assert_eq!(
-            reloaded.ai_formatting_enabled, None,
+            reloaded.hold_exclusive, None,
             "runtime env must not be persisted into settings.json on subsequent load"
         );
 
-        remove_env_for_test("AI_FORMATTING_ENABLED");
+        remove_env_for_test("HOLD_EXCLUSIVE");
     }
 }
 

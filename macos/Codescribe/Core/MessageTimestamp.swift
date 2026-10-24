@@ -111,24 +111,88 @@ enum MessageTimestamp {
         date: .numeric, time: .omitted, locale: locale, calendar: calendar,
         timeZone: calendar.timeZone))
   }
+
+  /// Day separator between conversation turns: the word for today and
+  /// yesterday, otherwise the calendar date of the full `label` path. It names
+  /// the day once, so the turns themselves can carry the compact time.
+  static func dayLabel(
+    for date: Date, now: Date, calendar: Calendar = .autoupdatingCurrent,
+    today: String = String(localized: "Today", comment: "Day separator between conversation turns"),
+    yesterday: String = String(localized: "Yesterday", comment: "Message sent yesterday")
+  ) -> String {
+    if calendar.isDate(date, inSameDayAs: now) { return today }
+    if let previousDay = calendar.date(byAdding: .day, value: -1, to: now),
+      calendar.isDate(date, inSameDayAs: previousDay)
+    {
+      return yesterday
+    }
+    return date.formatted(
+      Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day())
+  }
+
+  /// A turn opens a new day when it and the previous dated turn fall on
+  /// different calendar days. A missing time never starts or breaks a day.
+  static func startsNewDay(
+    previous: Date?, current: Date?, calendar: Calendar = .autoupdatingCurrent
+  ) -> Bool {
+    guard let previous, let current else { return false }
+    return !calendar.isDate(previous, inSameDayAs: current)
+  }
 }
 
 struct MessageTimestampLabel: View {
   let date: Date?
-  /// Tight places (the sidebar roster) take the short form.
+  /// Tight places (the sidebar roster, the turn meta rows) take the short
+  /// form; the full date and time stay in its tooltip and accessibility label.
   var compact: Bool = false
 
   var body: some View {
     // History left open across midnight must acquire its new day label.
     TimelineView(.periodic(from: .now, by: 60)) { context in
-      Text(
-        verbatim: compact
-          ? MessageTimestamp.compactLabel(for: date, now: context.date)
-          : MessageTimestamp.label(for: date, now: context.date)
-      )
-        .monospacedDigit()
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
+      let full = MessageTimestamp.label(for: date, now: context.date)
+      if compact {
+        Text(verbatim: MessageTimestamp.compactLabel(for: date, now: context.date))
+          .monospacedDigit()
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
+          .help(full)
+          .accessibilityLabel(Text(verbatim: full))
+      } else {
+        Text(verbatim: full)
+          .monospacedDigit()
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
+      }
     }
+  }
+}
+
+/// Names the calendar day once where the conversation crosses midnight, so
+/// each turn can show only its compact time. Same quiet mono caption as the
+/// turn meta rows, between two hairlines of the bubbles' border tone.
+struct MessageDaySeparator: View {
+  let date: Date
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 60)) { context in
+      HStack(spacing: 10) {
+        hairline
+        Text(verbatim: MessageTimestamp.dayLabel(for: date, now: context.date))
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
+          .lineLimit(1)
+          .fixedSize()
+        hairline
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+    }
+  }
+
+  private var hairline: some View {
+    Rectangle()
+      .fill(Color.primary.opacity(0.07))
+      .frame(height: 1)
+      .frame(maxWidth: .infinity)
   }
 }

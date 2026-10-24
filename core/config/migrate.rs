@@ -130,9 +130,13 @@ pub(super) fn prepare_env_import(
         settings.whisper_model = Some(v);
     }
 
-    // Migrate boolean settings
-    if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED") {
-        settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    // Migrate boolean settings. The retired formatting master switch has no
+    // field of its own: a switched-off `.env` value becomes level Off, which
+    // overrides any FORMATTING_LEVEL imported above, as the switch did.
+    if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED")
+        && !(v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        settings.formatting_level = Some(FormattingPolicy::Off.as_str().to_string());
     }
     if let Some(v) = migrated_value(file_env, "PASTE_MODE") {
         match v.parse::<super::types::PasteMode>() {
@@ -424,9 +428,9 @@ mod tests {
         let mut file_env = HashMap::new();
         file_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
 
-        set_env_for_test("AI_FORMATTING_ENABLED", "1");
+        set_env_for_test("HOLD_EXCLUSIVE", "1");
         migrate_if_needed(Some(&file_env), true);
-        remove_env_for_test("AI_FORMATTING_ENABLED");
+        remove_env_for_test("HOLD_EXCLUSIVE");
 
         let path = UserSettings::settings_path();
         assert!(path.exists(), "non-empty .env snapshot triggers migration");
@@ -438,7 +442,7 @@ mod tests {
             ".env-supplied promoted key migrates"
         );
         assert_eq!(
-            persisted.ai_formatting_enabled, None,
+            persisted.hold_exclusive, None,
             "runtime env value must not leak into migrated settings.json"
         );
 

@@ -26,7 +26,8 @@ pub use defaults::{
     default_whisper_context_window_sec, normalize_whisper_context_window_sec,
 };
 pub use defaults::{
-    default_light_plus_sentence_pause_sec, normalize_light_plus_sentence_pause_sec,
+    default_light_plus_sentence_pause_sec, normalize_ledger_sensitivity,
+    normalize_light_plus_sentence_pause_sec,
 };
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
@@ -71,7 +72,8 @@ pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
 // Re-export types
 pub use types::{
     AudioRetention, ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding,
-    OverlayPositionMode, PasteMode, ShortcutBinding, TranscriptSendMode, WorkMode,
+    OverlayPositionMode, PasteMode, ShortcutBinding, TranscriptSendMode, WidgetShortcut,
+    WidgetShortcutKey, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use cloud_asr::{
@@ -126,7 +128,6 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.whisper_language, Language::Auto);
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
-        assert!(!config.ai_formatting_enabled);
         assert!(!config.transcript_tagging_enabled);
         assert_eq!(config.double_tap_interval_ms, 200);
         assert_eq!(config.toggle_silence_sec, 5.0);

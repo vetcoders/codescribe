@@ -2,6 +2,12 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
+/// The two canvases share a panel and fold control, but remember their own size.
+enum OverlayContentSurface: String, CaseIterable, Hashable, Sendable {
+  case transcription
+  case agents
+}
+
 // Borderless floating window host for the dictation overlay.
 //
 // This is a FACTORY ONLY. Summon/dismiss wiring (hotkey, placement, focus handoff,
@@ -39,8 +45,45 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var pendingResizePoint: NSPoint?
   private var resizePaintTask: Task<Void, Never>?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
-  private var expandedSize: NSSize?
+  private var expandedSizes: [OverlayContentSurface: NSSize] = [:]
+  fileprivate(set) var contentSurface: OverlayContentSurface = .transcription
+  var contentSizeDefaults: UserDefaults = .standard
+  private var expandedSize: NSSize? {
+    get { expandedSizes[contentSurface] }
+    set { expandedSizes[contentSurface] = newValue }
+  }
   private var miniFrame: NSRect?
+  /// Mini's natural width (`DictationOverlayWindow.miniNaturalWidth`): its
+  /// controls and, with an agent bound, the channel counter. The controller
+  /// reports it whenever the counter changes (bus intercom spec §13.4).
+  private(set) var miniNaturalWidth = DictationOverlayWindow.miniFloorWidth
+  private var channelMapEnabled = false
+  private var channelCapturing = false
+  var miniSize: NSSize {
+    NSSize(
+      width: channelMapEnabled ? miniNaturalWidth : (channelCapturing ? 164 : 200),
+      height: DictationOverlayWindow.collapsedHeight)
+  }
+
+  /// Compact's natural width: the 410 pt floor plus the channel map
+  /// (`DictationOverlayWindow.midiNaturalWidth`). The controller reports it
+  /// whenever the map's channels change.
+  private(set) var midiNaturalWidth = DictationOverlayWindow.midiSize.width
+  /// The width the user gave the compact strip with its edge in this session,
+  /// and whether that was narrower than the natural width at the time. A
+  /// narrowed strip keeps the user's width: roster changes no longer resize it
+  /// and the map drops the chips' names, or collapses to its counter, whose
+  /// click gives the natural width back (`restoreMidiNaturalWidth`). A strip
+  /// the user widened grows when the map outgrows it and never shrinks below
+  /// the user's width.
+  private var midiUserWidth: CGFloat?
+  private(set) var midiShrunkByUser = false
+  /// The width compact settles to: the user's after a manual shrink, else the
+  /// natural width, raised to a width the user chose.
+  var midiPresentationWidth: CGFloat {
+    if midiShrunkByUser, let midiUserWidth { return midiUserWidth }
+    return max(midiNaturalWidth, midiUserWidth ?? 0)
+  }
   fileprivate var presentationMode: OverlayPresentationMode = .expanded
   /// Duration of the morph most recently started; the SwiftUI cross-fade
   /// reads it so content and frame land together.
@@ -52,12 +95,48 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private(set) var isFrameTransitioning = false
   var isUserResizing: Bool { resizeStart != nil }
   var isUserDragging: Bool { dragStart != nil }
-  var sizeForPersistence: NSSize { expandedSize ?? frame.size }
+  var sizeForPersistence: NSSize {
+    expandedSize
+      ?? (presentationMode == .expanded
+        ? frame.size
+        : DictationOverlayWindow.restoredContentSize(
+          surface: contentSurface, defaults: contentSizeDefaults))
+  }
+
+  func persistContentSize() {
+    DictationOverlayWindow.persist(
+      size: sizeForPersistence, surface: contentSurface, defaults: contentSizeDefaults)
+  }
+
+  /// Busy gestures and morphs finish first. The controller's existing completion
+  /// callbacks retry the latest projected surface, without a second pending owner.
+  @discardableResult
+  func setContentSurface(_ surface: OverlayContentSurface, animated: Bool = false) -> Bool {
+    guard surface != contentSurface, !isUserResizing, !isFrameTransitioning else { return false }
+    expandedSize = sizeForPersistence
+    persistContentSize()
+    contentSurface = surface
+    if presentationMode == .expanded {
+      if expandedSize == nil {
+        expandedSize = DictationOverlayWindow.restoredContentSize(
+          surface: surface, defaults: contentSizeDefaults)
+      }
+      setPresentationMode(.expanded, animated: animated, settleResize: true)
+    }
+    return true
+  }
   /// MIDI borrows width around the parked mini; its temporary left edge is
   /// never the saved position. A real drag moves that mini by the same edges.
   var originForPersistence: NSPoint {
     let positionedFrame = frameTransitionTarget ?? frame
-    guard presentationMode == .midi else { return positionedFrame.origin }
+    guard presentationMode == .midi else {
+      // Mini is the placement strip drawn at its natural width, anchored at
+      // the same trailing edge.
+      guard presentationMode == .mini else { return positionedFrame.origin }
+      return NSPoint(
+        x: positionedFrame.maxX - DictationOverlayWindow.miniPlacementSize.width,
+        y: positionedFrame.minY)
+    }
     if let miniFrame {
       guard let dragStart, let parked = dragStart.miniFrame else { return miniFrame.origin }
       return NSPoint(
@@ -65,8 +144,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         y: parked.minY + positionedFrame.maxY - dragStart.frame.maxY)
     }
     return NSPoint(
-      x: positionedFrame.maxX - DictationOverlayWindow.collapsedSize.width,
-      y: positionedFrame.maxY - DictationOverlayWindow.collapsedSize.height)
+      x: positionedFrame.maxX - DictationOverlayWindow.miniPlacementSize.width,
+      y: positionedFrame.maxY - DictationOverlayWindow.miniPlacementSize.height)
   }
 
   /// Grow leftward so the microphone and fold controls keep their screen position.
@@ -103,12 +182,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       makeFirstResponder(nil)
       releaseKeyAfterTranscript()
       if previous == .expanded && expandedSize == nil { expandedSize = frame.size }
-      size = mode == .mini ? DictationOverlayWindow.collapsedSize : DictationOverlayWindow.midiSize
+      size =
+        mode == .mini
+        ? miniSize
+        : NSSize(width: midiPresentationWidth, height: DictationOverlayWindow.collapsedHeight)
     } else {
       size = expandedPresentationSize()
     }
     // Intermediate frames may be smaller than the expanded window's floor.
-    minSize = DictationOverlayWindow.collapsedSize
+    minSize = miniSize
     contentMinSize = minSize
     styleMask.remove(.resizable)
     let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
@@ -131,30 +213,91 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let generation = frameTransitionGeneration
     frameTransitionTarget = restored
     isFrameTransitioning = animated
+    // A morph holds one layout from its first step to its landing. An unroll
+    // holds the landing layout and the growing window reveals it; a fold
+    // holds the departing layout and the shrinking window covers it, so a
+    // step only moves the hosting view instead of laying the panel out at
+    // every intermediate size. A fold that catches an unroll keeps the size
+    // the unroll already holds: the layout on screen never changes size
+    // mid-flight, whichever way the morph is travelling.
+    let container = contentView as? OverlayContentContainer
+    let unrolls = animated && mode == .expanded && previous != .expanded
+    let folds =
+      animated && !unrolls && mode != .expanded
+      && (restored.width < frame.width - 0.5 || restored.height < frame.height - 0.5)
+    if unrolls {
+      container?.pinnedContentSize = restored.size
+    } else if folds {
+      container?.pinnedContentSize = container?.pinnedContentSize ?? frame.size
+    } else {
+      container?.pinnedContentSize = nil
+    }
     OverlayPresentationTrace.shared.record(
       .frameTransitionBegan, from: previous, mode: mode, animated: animated, frame: frame,
-      target: restored, generation: generation, note: settleResize ? "settle_resize" : nil)
+      target: restored, generation: generation,
+      note: settleResize ? "settle_resize" : unrolls ? "unroll" : folds ? "fold" : nil)
     lastMorphDuration =
       animated ? DictationOverlayWindow.presentationDuration(from: frame, to: restored) : 0
+    guard unrolls || folds else {
+      animateFrame(to: restored, generation: generation)
+      if !animated { completeFrameTransition(generation: generation) }
+      return
+    }
+    // The held layout is built before the animator's clock starts: a layout
+    // inside the first step would cost that step its frames. One turn later the
+    // controller has also published the morph duration the SwiftUI fade reads.
+    Task { @MainActor [weak self] in
+      guard let self, generation == frameTransitionGeneration, isFrameTransitioning else {
+        return
+      }
+      let wasApplyingFrame = OverlayController.isApplyingFrame
+      OverlayController.isApplyingFrame = true
+      defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+      contentView?.layoutSubtreeIfNeeded()
+      animateFrame(to: restored, generation: generation)
+    }
+  }
+
+  private func animateFrame(to target: NSRect, generation: UInt64) {
     NSAnimationContext.runAnimationGroup { context in
       context.duration = lastMorphDuration
       context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-      animator().setFrame(restored, display: true)
+      animator().setFrame(target, display: true)
     } completionHandler: { [weak self] in
       Task { @MainActor in
         self?.completeFrameTransition(generation: generation)
       }
     }
-    if !animated { completeFrameTransition(generation: generation) }
+  }
+
+  /// A direct request for the agent column reserves both panes before the
+  /// expansion begins. Width determines geometry, never whether the click works.
+  func ensureAgentsSplitWidth(_ minimum: CGFloat) {
+    let screenWidth = (screen ?? NSScreen.main)?.visibleFrame.width ?? minimum
+    let floor = min(minimum, screenWidth)
+    let saved =
+      expandedSizes[.agents]
+      ?? DictationOverlayWindow.restoredContentSize(surface: .agents, defaults: contentSizeDefaults)
+    guard saved.width < floor || (contentSurface == .agents && frame.width < floor) else { return }
+    expandedSizes[.agents] = NSSize(width: max(saved.width, floor), height: saved.height)
+    if contentSurface == .agents, presentationMode == .expanded, !isUserResizing {
+      setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
+    }
   }
 
   /// Remembered or default expanded size, raised to the qualified content
   /// height when the controller still owns automatic sizing.
   private func expandedPresentationSize() -> NSSize {
-    let expanded = expandedSize ?? DictationOverlayWindow.defaultSize
+    let expanded =
+      expandedSize
+      ?? DictationOverlayWindow.restoredContentSize(
+        surface: contentSurface, defaults: contentSizeDefaults)
+    // Both axes meet the floor: a size remembered before the floor was raised
+    // would otherwise unfold narrower than the header's ideal width.
+    let restingWidth = max(expanded.width, DictationOverlayWindow.minSize.width)
     let restingHeight = max(expanded.height, DictationOverlayWindow.minSize.height)
-    let qualified = qualifiedExpandedHeight?(expanded.width) ?? restingHeight
-    return NSSize(width: expanded.width, height: max(restingHeight, qualified))
+    let qualified = qualifiedExpandedHeight?(restingWidth) ?? restingHeight
+    return NSSize(width: restingWidth, height: max(restingHeight, qualified))
   }
 
   private func completeFrameTransition(generation: UInt64) {
@@ -168,8 +311,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     frameTransitionTarget = nil
     transitionTop = nil
     transitionRight = nil
+    // The window has landed on the target frame. Releasing the held size in
+    // this same pass lays the settled layout out once, at the size the window
+    // already has, before the next paint: no second layout follows it and no
+    // element that was visible mid-morph changes its screen position.
+    (contentView as? OverlayContentContainer)?.pinnedContentSize = nil
     // Mini is a drag surface; MIDI exposes only horizontal resize handles.
-    minSize = DictationOverlayWindow.minimumSize(for: presentationMode)
+    minSize =
+      presentationMode == .mini
+      ? miniSize : DictationOverlayWindow.minimumSize(for: presentationMode)
     contentMinSize = minSize
     if presentationMode != .mini { styleMask.insert(.resizable) }
     if let contentView {
@@ -181,7 +331,92 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       expandedSize = nil
       miniFrame = nil
     }
+    settleMiniWidth()
+    settleMidiWidth()
     onFrameTransitionCompleted?()
+  }
+
+  /// The map's channels changed. In compact the strip follows at once, with
+  /// its upper-right corner, and so its fold button, where they are; display
+  /// containment still applies. A morph, drag or resize in flight settles
+  /// first, and its completion lands here again.
+  func setMidiNaturalWidth(_ width: CGFloat) {
+    let natural = max(width, DictationOverlayWindow.midiSize.width)
+    guard abs(natural - midiNaturalWidth) > 0.5 else { return }
+    midiNaturalWidth = natural
+    settleMidiWidth()
+  }
+
+  /// The channel counter's click in compact (spec §13.4): the width the user
+  /// gave the strip is forgotten, so it settles to its natural width at its
+  /// upper-right pin and the chips return. A morph, drag or resize in flight
+  /// settles first, and its completion lands on the natural width.
+  func restoreMidiNaturalWidth() {
+    midiUserWidth = nil
+    midiShrunkByUser = false
+    settleMidiWidth()
+  }
+
+  /// The end of a manual resize in compact: the user's width is kept for the
+  /// session, and a width below the natural one stops the roster resizing it.
+  private func noteUserMidiWidth(_ width: CGFloat) {
+    midiUserWidth = width
+    midiShrunkByUser = width < midiNaturalWidth - 0.5
+  }
+
+  private func settleMidiWidth() {
+    guard presentationMode == .midi, !isFrameTransitioning, !isUserDragging, !isUserResizing
+    else { return }
+    let width = midiPresentationWidth
+    guard abs(frame.width - width) > 0.5 else { return }
+    let wasApplyingFrame = OverlayController.isApplyingFrame
+    OverlayController.isApplyingFrame = true
+    defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    // One step, no morph, as mini's width settles: the strip's content is
+    // already laid out for the new map and the trailing controls stay put.
+    let target = DictationOverlayWindow.visibleExpansionFrame(
+      NSRect(x: frame.maxX - width, y: frame.minY, width: width, height: frame.height),
+      in: visible)
+    setFrame(target, display: true)
+  }
+
+  /// Maciej, 2026-10-19 09:36: a gap beside the brand is "simply brzydka";
+  /// Monika, 2026-10-22, of the 200 pt mini beside its counter: "brzydko to
+  /// wygląda, ta dziura". Mini is as wide as its content, so the counter
+  /// changing between the agent count and the open digits resizes it. The
+  /// trailing edge stays, so the microphones keep their screen position. A
+  /// morph in flight lands on the size it started with; its completion
+  /// settles here.
+  func setChannelMapPresentation(enabled: Bool, capturing: Bool, naturalWidth: CGFloat) {
+    let natural = max(naturalWidth, DictationOverlayWindow.miniFloorWidth)
+    guard
+      enabled != channelMapEnabled || capturing != channelCapturing
+        || abs(natural - miniNaturalWidth) > 0.5
+    else { return }
+    channelMapEnabled = enabled
+    channelCapturing = capturing
+    miniNaturalWidth = natural
+    settleMiniWidth()
+  }
+
+  private func settleMiniWidth() {
+    guard presentationMode == .mini, !isFrameTransitioning, !isUserDragging, !isUserResizing,
+      abs(frame.width - miniSize.width) > 0.5
+    else { return }
+    let wasApplyingFrame = OverlayController.isApplyingFrame
+    OverlayController.isApplyingFrame = true
+    defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+    minSize = miniSize
+    contentMinSize = minSize
+    // One step, no morph: the header swaps the counter's content in the same
+    // pass, so an animated width would clip the trailing controls while the
+    // strip widens.
+    setFrame(
+      NSRect(
+        x: frame.maxX - miniSize.width, y: frame.minY, width: miniSize.width,
+        height: frame.height),
+      display: true)
   }
 
   func settleFrameTransition() {
@@ -211,10 +446,17 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     presence?.invalidate()
   }
 
+  /// True while the screenshot and app-activation monitors are installed.
+  var isObservingPresence: Bool { presence?.isObserving ?? false }
+
   override var canBecomeKey: Bool { allowsKeyForTranscript }
   override var canBecomeMain: Bool { false }
   /// Only explicit transcript interaction opens the keyboard gate.
   private(set) var allowsKeyForTranscript = false
+  /// Set while a click that opened the gate is dispatched. That click hands
+  /// first responder to text inside this panel, so the transcript canvas
+  /// resigning on the way out must not give the keyboard back.
+  private var dispatchingGateClick = false
 
   /// The transcript canvas needs keyboard input for selection or editing.
   func takeKeyForTranscript() {
@@ -225,7 +467,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// The canvas resigned. Drop key status so keystrokes return to the app the
   /// user was dictating into.
   func releaseKeyAfterTranscript() {
-    guard allowsKeyForTranscript else { return }
+    guard allowsKeyForTranscript, !dispatchingGateClick else { return }
     allowsKeyForTranscript = false
     if isKeyWindow { resignKey() }
   }
@@ -238,12 +480,13 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     makeFirstResponder(nil)
   }
 
-  override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if isKeyWindow, event.type == .keyDown,
+  /// ⌘C for whatever holds the focus in this panel.
+  func performCopyChord(_ event: NSEvent) -> Bool {
+    guard isKeyWindow, event.type == .keyDown,
       event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c",
-      let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:)))
-    {
+      event.charactersIgnoringModifiers?.lowercased() == "c"
+    else { return false }
+    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
       // The focused responder owns its copy: the transcript canvas routes
       // through the tagged clipboard bridge in its own `copy(_:)`, and any
       // other text view keeps the behaviour it overrides.
@@ -256,14 +499,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     // This panel is non-activating, so the app's Edit menu does not receive
     // key equivalents while another app is active; the action has to be sent
     // explicitly down the responder chain.
-    if isKeyWindow, event.type == .keyDown,
-      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c",
-      firstResponder?.responds(to: #selector(NSText.copy(_:))) != true,
-      NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
-    {
-      return true
-    }
+    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if performCopyChord(event) { return true }
     return super.performKeyEquivalent(with: event)
   }
 
@@ -272,6 +512,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    // ⌘C on a selected bubble did nothing in the installed app, while the key
+    // equivalent path passed in a test host that is the active app (Maciej,
+    // 2026-10-19). With another app active the chord can arrive as a plain
+    // keyDown for the first responder; the transcript canvas catches it in its
+    // own keyDown, and the panel now does the same for every responder.
+    if event.type == .keyDown, performCopyChord(event) { return }
     // An unpinned panel sits among ordinary windows and never activates, so
     // nothing else would lift it back out from under the window covering it.
     if event.type == .leftMouseDown, level == .normal {
@@ -359,17 +605,21 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       let origin = originForPersistence
       let moved = dragMoved
       if moved, presentationMode == .midi {
-        miniFrame = NSRect(origin: origin, size: DictationOverlayWindow.collapsedSize)
+        miniFrame = NSRect(origin: origin, size: DictationOverlayWindow.miniPlacementSize)
       }
       dragStart = nil
       dragMoved = false
+      settleMiniWidth()
+      settleMidiWidth()
       if moved { onUserDragEnded?(origin) }
       if clickedPresentation { onPresentationClick?() }
     default:
+      var openedKeyboardGate = false
       if event.type == .leftMouseDown {
         for case let region as OverlaySelectableTextRegionView in selectableTextRegions.allObjects
         where region.contains(windowPoint: event.locationInWindow) {
           takeKeyForTranscript()
+          openedKeyboardGate = true
           break
         }
       }
@@ -380,12 +630,19 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
           // Follow public responder capabilities, not a private class name.
           if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
             takeKeyForTranscript()
+            openedKeyboardGate = true
             break
           }
           hit = view.superview
         }
       }
+      // The transcript canvas is first responder until something takes it, and
+      // its resign closed the gate in the middle of this click: the bubble text
+      // was selected in a panel that was no longer key, so ⌘C went to the app
+      // behind it (Maciej, 2026-10-19).
+      dispatchingGateClick = openedKeyboardGate
       super.sendEvent(event)
+      dispatchingGateClick = false
       if event.type == .mouseMoved { refreshCursor(at: event.locationInWindow) }
     }
   }
@@ -434,7 +691,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let requested = OverlayResizeHit.apply(
       edge: resizeStart.edge, start: resizeStart.frame,
       dx: point.x - resizeStart.mouse.x, dy: point.y - resizeStart.mouse.y,
-      minSize: DictationOverlayWindow.collapsedSize)
+      minSize: DictationOverlayWindow.miniPlacementSize)
     // Track the fold intent independently of the painted frame. Expanded
     // content cannot fit inside a strip while the gesture is still active.
     requestedResizeSize = requested.size
@@ -461,6 +718,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       // callback queues the selected mode until this gesture ends.
       onResizePresentationSelected?(mode)
       if pendingResizePresentation == nil { pendingResizePresentation = (mode, false) }
+    }
+    if changed, pendingResizePresentation == nil, presentationMode == .midi {
+      noteUserMidiWidth(frame.width)
     }
     if changed {
       if pendingResizePresentation?.mode == .expanded {
@@ -640,9 +900,32 @@ final class OverlayContentContainer: NSView {
   private let hosting: NSView
   let grabPad = OverlayResizeGrabPad()
 
+  /// While the panel morphs, the content keeps one size, held at the window's
+  /// top-right corner. An unroll holds the size it lands at and the growing
+  /// window reveals it; a fold holds the size it departs from and the
+  /// shrinking window covers it. Maciej, 2026-10-19: the unroll "robi z tego
+  /// siekę", the parts "się rozpadają, przesuwają". His 13:40 unroll painted
+  /// five frames in 1.9 s: every animator step laid the whole conversation out
+  /// again at a new width. Laid out once, a step only moves this view. The
+  /// rounded mask keeps the panel's corners on the window while it cuts
+  /// through the held layout.
+  var pinnedContentSize: NSSize? {
+    didSet {
+      guard pinnedContentSize != oldValue else { return }
+      layer?.cornerCurve = .continuous
+      layer?.cornerRadius = pinnedContentSize == nil ? 0 : CSRadius.window
+      layer?.masksToBounds = pinnedContentSize != nil
+      pinHosting()
+    }
+  }
+
+  /// The hosting view's frame: the bounds, or the held size during a morph.
+  var contentFrame: NSRect { hosting.frame }
+
   init(hosting: NSView) {
     self.hosting = hosting
     super.init(frame: .zero)
+    wantsLayer = true
     addSubview(grabPad)
     addSubview(hosting)
     hosting.frame = bounds
@@ -654,7 +937,7 @@ final class OverlayContentContainer: NSView {
   override func setFrameSize(_ newSize: NSSize) {
     let previousBounds = bounds
     super.setFrameSize(newSize)
-    if hosting.frame != bounds { hosting.frame = bounds }
+    pinHosting()
     if previousBounds != bounds {
       window?.invalidateCursorRects(for: self)
       refreshGrabPad()
@@ -663,8 +946,21 @@ final class OverlayContentContainer: NSView {
 
   override func layout() {
     super.layout()
-    if hosting.frame != bounds { hosting.frame = bounds }
+    pinHosting()
     refreshGrabPad()
+  }
+
+  /// The bounds, or the held size anchored at the top-right corner (this view
+  /// is not flipped), where the header's trailing controls sit in every form,
+  /// so they keep their screen position through the whole morph.
+  private func pinHosting() {
+    let frame =
+      pinnedContentSize.map {
+        NSRect(
+          x: bounds.maxX - $0.width, y: bounds.maxY - $0.height, width: $0.width,
+          height: $0.height)
+      } ?? bounds
+    if hosting.frame != frame { hosting.frame = frame }
   }
 
   override func viewDidMoveToWindow() {
@@ -777,22 +1073,111 @@ enum DictationOverlayWindow {
   /// full-screen overlay folded in the same time as MIDI to mini. The morph
   /// keeps one speed instead of one clock: the edge that travels farthest
   /// sets the duration, and a short step keeps the former 0.28 s.
-  static let presentationSpeed: CGFloat = 1000
+  ///
+  /// Maciej, 2026-10-19: unrolling mini into the expanded view was far too slow
+  /// ("ja chciałem takie wolne, żeby była jasność, ale nie tak wolne"); his
+  /// 1149 pt unroll was declared at 1.15 s. The speed and the ceiling are
+  /// Stasiu's choice, for his acceptance: 1800 pt/s, never past 0.6 s, so a
+  /// big panel still takes visibly longer than a short step.
+  static let presentationSpeed: CGFloat = 1800
   static let presentationDuration: TimeInterval = 0.28
+  static let longestPresentationDuration: TimeInterval = 0.6
 
   static func presentationDuration(from start: NSRect, to end: NSRect) -> TimeInterval {
     let travel = max(
       abs(end.minX - start.minX), abs(end.maxX - start.maxX),
       abs(end.minY - start.minY), abs(end.maxY - start.maxY))
-    return max(presentationDuration, TimeInterval(travel / presentationSpeed))
+    return min(
+      longestPresentationDuration,
+      max(presentationDuration, TimeInterval(travel / presentationSpeed)))
   }
   static let collapsedHeight: CGFloat = 46
-  static let collapsedSize = NSSize(width: 200, height: collapsedHeight)
+  /// The resting mini strip that placement, persistence and resize gestures
+  /// reason in: screen anchors and the saved origin describe a 200 × 46 strip,
+  /// a resize gesture never requests less, and release-to-fold selects mini
+  /// below the midpoint between it and compact's floor (305 pt). Mini itself
+  /// is drawn at `miniNaturalWidth`, at this strip's trailing edge (the shared
+  /// upper-right pin), so positions saved before content-sized mini land
+  /// where they did.
+  static let miniPlacementSize = NSSize(width: 200, height: collapsedHeight)
+  /// The mini row's measured parts at text scale 1 (spec §13.4). The header
+  /// pads 16 pt per side (`16 - clipInset` + `clipInset`); the 9 pt close dot
+  /// leads; the empty centre between the brand and the trailing controls has
+  /// no minimum in mini and a 4 pt row gap on either side, so it closes to
+  /// the 8 pt the trailing controls keep between them; the trailing group is
+  /// 81 pt (the 22 pt agents control, 8, and the 51 pt recording pair). The
+  /// counter stands 6 pt after the dot, as "cs" did. A SwiftUI fitting-size
+  /// probe of the former row measured these parts at 159 pt with "cs".
+  static let miniOuterPadding: CGFloat = 32
+  static let miniBrandDot: CGFloat = 9
+  static let miniRowSpacing: CGFloat = 4
+  static let miniBrandGap: CGFloat = 6
+  static let miniTrailingControls: CGFloat = 81
+  /// Mini with no counter: padding, the close dot, the two row gaps around the
+  /// empty centre and the trailing controls = 130. The capsule never gets
+  /// narrower than its controls.
+  static let miniFloorWidth =
+    miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
+
+  /// Mini's natural width (spec §13.4): its floor plus, while the map holds a
+  /// channel, the brand gap and the channel counter as it is drawn, the agent
+  /// count with `▾` or the open digits with the open-channel dot. No fixed
+  /// width and no hole: the capsule hugs its content, and the recording form
+  /// is the same rule with the recording counter, measured.
+  @MainActor
+  static func miniNaturalWidth(
+    map: OverlayChannelMapModel, textScale: CGFloat, stacked: Bool = false
+  ) -> CGFloat {
+    guard !map.chips.isEmpty else { return miniFloorWidth }
+    let counter = OverlayChannelPill.counterWidth(
+      figure: String(map.count), openDigitCount: map.openDigits.count,
+      scale: OverlayChannelPill.headerScale(textScale), stacked: stacked)
+    return ceil(miniFloorWidth + miniBrandGap + counter)
+  }
+
+  /// Compact's floor, and its whole width while no channel is mapped.
   static let midiSize = NSSize(width: 410, height: collapsedHeight)
+  /// The most compact grows to for its channel chips: two floors (bus
+  /// intercom spec §13.1). Past it the chips drop their names.
+  static let midiChannelMapBudget = 2 * midiSize.width
+
+  /// Compact's natural width (spec §13.1): the floor, the map's leading gap,
+  /// room for channel 0's digit chip, which leads the row while the
+  /// microphone broadcasts, so the chord changes neither the width nor the
+  /// tier, and the row of the first tier that fits the 820 pt budget: the
+  /// named chips, else the digit-only chips with room for the longest name,
+  /// which the selected conversation's chip keeps. The open-channel dot adds
+  /// no width. With no agent it is the floor; it never exceeds the budget or
+  /// the screen's visible width, and never goes below the floor.
+  @MainActor
+  static func midiNaturalWidth(
+    map: OverlayChannelMapModel, textScale: CGFloat, visibleWidth: CGFloat? = nil
+  ) -> CGFloat {
+    let agents = map.agents
+    guard !agents.isEmpty else { return midiSize.width }
+    let scale = OverlayChannelPill.headerScale(textScale)
+    let spacing = OverlayChannelMapView.chipSpacing
+    let digit = OverlayChannelPill.chipWidth(name: nil, scale: scale)
+    let named = agents.map { OverlayChannelPill.chipWidth(name: $0.name, scale: scale) }
+    let base = midiSize.width + OverlayChannelMapView.leadingGap + digit + spacing
+    let namedWidth = ceil(
+      base + OverlayChannelMapModel.rowWidth(chipWidths: named, spacing: spacing))
+    let natural: CGFloat
+    if namedWidth <= midiChannelMapBudget {
+      natural = namedWidth
+    } else {
+      let digits = OverlayChannelMapModel.rowWidth(
+        chipWidths: Array(repeating: digit, count: agents.count), spacing: spacing)
+      let longestName = (named.max() ?? digit) - digit
+      natural = min(ceil(base + digits + longestName), midiChannelMapBudget)
+    }
+    guard let visibleWidth else { return natural }
+    return max(midiSize.width, min(natural, visibleWidth))
+  }
 
   static func minimumSize(for mode: OverlayPresentationMode) -> NSSize {
     switch mode {
-    case .mini: collapsedSize
+    case .mini: NSSize(width: miniFloorWidth, height: collapsedHeight)
     case .midi: midiSize
     case .expanded: minSize
     }
@@ -800,7 +1185,7 @@ enum DictationOverlayWindow {
 
   static func presentationMode(forResizedSize size: NSSize) -> OverlayPresentationMode {
     if size.height >= (collapsedHeight + minSize.height) / 2 { return .expanded }
-    return size.width < (collapsedSize.width + midiSize.width) / 2 ? .mini : .midi
+    return size.width < (miniPlacementSize.width + midiSize.width) / 2 ? .mini : .midi
   }
 
   /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
@@ -815,26 +1200,53 @@ enum DictationOverlayWindow {
   /// Readability floor for settled regular content and programmatic content
   /// sizing via `clamp(_:to:)`. A live edge gesture records fold intent below
   /// this floor, but paints the current form at its floor until release.
-  /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
-  /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
-  /// lines) without the old action-layer mass. Width floor (320) is unchanged.
-  static let minSize = NSSize(width: 320, height: 260)
-  /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
-  /// Founder spec: the resting state is a horizontal bar (waveform + a few
-  /// transcript lines), never a portrait column. Resizing persists, so users
-  /// who prefer a tall panel drag it once and keep it.
-  static let defaultSize = NSSize(width: 470, height: 280)
-  /// Bumped v5 → v6: slim evidence chrome lowers the resting landscape height.
-  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v6"
+  /// Height is the transcript-action column's floor, not a transcript-lines
+  /// guess: the expanded form shows seven action slots, with the rest in the
+  /// column's scroll view. Its minimum fits the header, that viewport and its
+  /// padding (`OverlayTranscriptActionsLayout.minimumExpandedHeight`). Mini and
+  /// MIDI keep their own sizes and never see this height.
+  ///
+  /// Width 320 → 360 (Founder, 2026-10-18: at 320 the session counter broke
+  /// into one glyph per line and the agent pills swallowed the messages). The
+  /// floor is the header's own ideal width at text scale 1.0, expanded density:
+  /// 32 outer padding (`16 - clipInset` + `clipInset` per side) + 3 × 10 row
+  /// spacing + 89 leading (9 pt close dot + 5 + ~75 pt `codescribe` wordmark at
+  /// `CSFont.ui(15, .bold)` with −0.3 tracking) + 12 waveform minimum
+  /// (`OverlayHeaderDensity.waveformMinWidth`) + 47 session counter (`h:mm:ss`
+  /// at `CSFont.mono(11)`, a 0.6 em advance) + 141 trailing (three 22 pt glyph
+  /// buttons + the 51 pt recording pair + 3 × 8 spacing) = 351, rounded up to
+  /// 360 for the close dot's hover growth.
+  static let minSize = NSSize(
+    width: 360, height: OverlayTranscriptActionsLayout.minimumExpandedHeight)
+  /// First-launch content size (no persisted value yet). The width keeps the
+  /// landscape proportion of the old 470 × 280 bar, but the height sits on
+  /// the expanded floor: seven transcript action slots fit from the first
+  /// frame, and a default below `minSize` could never be the
+  /// frame the window actually takes. Resizing persists, so users who prefer
+  /// a taller panel drag it once and keep it.
+  static let defaultSize = NSSize(
+    width: 470, height: OverlayTranscriptActionsLayout.minimumExpandedHeight)
+  /// Independent transcription/agents sizes replace the shared v6 frame.
+  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v7"
 
   /// Build the floating overlay panel around an injected `OverlayState`.
   /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the
   /// orchestrator before the panel is shown.
   @MainActor
-  static func make(state: OverlayState, textScale: TextScaleController) -> NSPanel {
+  static func make(
+    state: OverlayState,
+    textScale: TextScaleController,
+    reduceTransparencyOverride: Bool? = nil,
+    contrastOverride: ColorSchemeContrast? = nil,
+    sizeDefaults: UserDefaults = .standard
+  ) -> NSPanel {
     // Wrap in TextScaleRoot so ⌘+/-/0 on this panel scale the overlay text
     // (transcript + status) via `\.csTextScale`, independently of the chat.
-    let root = TextScaleRoot(controller: textScale) { DictationOverlayView(state: state) }
+    let root = TextScaleRoot(controller: textScale) {
+      DictationOverlayView(state: state)
+        .environment(\.csReduceTransparencyOverride, reduceTransparencyOverride)
+        .environment(\.csContrastOverride, contrastOverride)
+    }
     let hosting = NSHostingView(rootView: root)
     // CRITICAL: the WINDOW owns its size; the SwiftUI content only fills whatever
     // frame the window has. An NSHostingView otherwise installs Auto Layout
@@ -861,14 +1273,19 @@ enum DictationOverlayWindow {
     hosting.autoresizingMask = []
 
     let panel = FloatingOverlayPanel(
-      contentRect: NSRect(origin: .zero, size: restoredContentSize()),
+      contentRect: NSRect(
+        origin: .zero,
+        size: restoredContentSize(surface: state.windowContentSurface, defaults: sizeDefaults)),
       styleMask: [.borderless, .nonactivatingPanel, .resizable],
       backing: .buffered,
       defer: false
     )
+    panel.contentSurface = state.windowContentSurface
+    panel.contentSizeDefaults = sizeDefaults
     panel.delegate = panel
     state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
+      if let state { panel.setContentSurface(state.windowContentSurface) }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
@@ -877,9 +1294,32 @@ enum DictationOverlayWindow {
     panel.onResizePresentationSelected = { [weak state] mode in
       state?.setPresentationMode(mode)
     }
-    state.onAgentSidebarPresented = { [weak panel] in
-      panel?.makeFirstResponder(nil)
-      panel?.releaseKeyAfterTranscript()
+    // Mini's and compact's widths follow the channel map (bus intercom spec
+    // 5.1, 13.1, 13.4): one projection, one hook, both natural widths.
+    let fitToChannelMap = { [weak panel, weak state] in
+      guard let panel, let state else { return }
+      let map = state.channelMapLayoutModel
+      panel.setChannelMapPresentation(
+        enabled: state.channelMapInMini, capturing: state.channelAudioCaptureActive,
+        naturalWidth: miniNaturalWidth(
+          map: map, textScale: textScale.scale, stacked: state.channelMapCounterStacked))
+      panel.setMidiNaturalWidth(
+        state.channelMapInHeader
+          ? midiNaturalWidth(
+            map: map, textScale: textScale.scale,
+            visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width) : midiSize.width)
+    }
+    fitToChannelMap()
+    state.onChannelMapLayoutChanged = fitToChannelMap
+    state.onRestoreMidiNaturalWidth = { [weak panel] in panel?.restoreMidiNaturalWidth() }
+    state.onAgentSidebarPresented = { [weak panel, weak state] in
+      guard let panel else { return }
+      if state?.agentsLayout == .split {
+        panel.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+      }
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
     }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
@@ -971,18 +1411,29 @@ enum DictationOverlayWindow {
   /// Restore the user's last content size (clamped), or the default on first launch.
   static func restoredContentSize(
     for screen: NSScreen? = NSScreen.main,
+    surface: OverlayContentSurface = .transcription,
     defaults: UserDefaults = .standard
   ) -> NSSize {
-    let width = defaults.double(forKey: sizeDefaultsKey + ".w")
-    let height = defaults.double(forKey: sizeDefaultsKey + ".h")
+    var key = sizeDefaultsKey + "." + surface.rawValue
+    // The old shared frame could be a full-screen agent bus. Keep that useful
+    // agents size; a first transcription starts compact instead of inheriting it.
+    if surface == .agents, defaults.object(forKey: key + ".w") == nil {
+      key = "DictationOverlayPanel.contentSize.v6"
+    }
+    let width = defaults.double(forKey: key + ".w")
+    let height = defaults.double(forKey: key + ".h")
     let raw = (width > 0 && height > 0) ? NSSize(width: width, height: height) : defaultSize
     return clamp(raw, to: screen)
   }
 
   /// Persist the current content size so it survives relaunch. Called on hide().
-  static func persist(size: NSSize, defaults: UserDefaults = .standard) {
-    defaults.set(Double(size.width), forKey: sizeDefaultsKey + ".w")
-    defaults.set(Double(size.height), forKey: sizeDefaultsKey + ".h")
+  static func persist(
+    size: NSSize, surface: OverlayContentSurface = .transcription,
+    defaults: UserDefaults = .standard
+  ) {
+    let key = sizeDefaultsKey + "." + surface.rawValue
+    defaults.set(Double(size.width), forKey: key + ".w")
+    defaults.set(Double(size.height), forKey: key + ".h")
   }
 }
 
@@ -1072,6 +1523,10 @@ final class OverlayPresence {
     apply()
   }
 
+  var isObserving: Bool {
+    localMonitor != nil || globalMonitor != nil || workspaceObserver != nil
+  }
+
   func invalidate() {
     if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
@@ -1086,7 +1541,7 @@ final class OverlayPresence {
     captureUntil = nil
   }
 
-  private func noteScreenshotIfNeeded(_ event: NSEvent) {
+  func noteScreenshotIfNeeded(_ event: NSEvent) {
     guard OverlayPresencePolicy.isScreenshotChord(event) else { return }
     captureUntil = Date().addingTimeInterval(4)
     apply()
@@ -1111,7 +1566,9 @@ final class OverlayPresence {
     if panel.level != policy.windowLevel {
       panel.level = policy.windowLevel
     }
-    if policy == .capture {
+    // A screenshot lifts the overlay only when it is already on screen. An
+    // ordered-out panel stays hidden: the chord is not a reason to show it.
+    if policy == .capture, panel.isVisible {
       panel.orderFrontRegardless()
     }
   }

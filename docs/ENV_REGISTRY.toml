@@ -16,7 +16,7 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-09-29"
+updated = "2026-10-20"
 
 [vars.CODESCRIBE_BIN]
 default = ""
@@ -38,6 +38,13 @@ type = "string"
 reload = "restart"
 category = "test"
 description = "Private local archived WAV for explicitly ignored acoustic and live-producer recovery benches; never a production capture source or an upload."
+
+[vars.CARGO_HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Cargo home; replay and bridge test fixtures derive the user's home from its parent when HOME carries no ~/.codescribe/data_assets (sandboxed-HOME E2E)"
 
 [vars.CODESCRIBE_STREAM_TEST_WAV]
 default = ""
@@ -477,6 +484,13 @@ reload = "hot"
 category = "stt"
 description = "Minimum PCM gap between committed occurrences that opens a new Light+ sentence. Range 0.3-2.0 seconds; next recording session."
 
+[vars.CODESCRIBE_LEDGER_SENSITIVITY]
+default = "0"
+type = "int"
+reload = "hot"
+category = "stt"
+description = "Lab slider for live Whisper word admission, next recording session. Range -100 to 100; 0 is the shipped engine. Left (negative) refuses more identical repeats and words far from speech: fewer repeated and stray words, more cut words. Right (positive) keeps more of both."
+
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
 type = "string"
@@ -725,11 +739,11 @@ category = "stt"
 description = "Promoted Settings write token for audio.seal_ledger_enabled. The next take reads this choice from its immutable settings snapshot. Disabling selects direct decoder publication without word-admission or acoustic-seal certification. This token is a settings router key, not a process-environment override."
 
 [vars.CODESCRIBE_APPLE_LIVE_ENABLED]
-default = "0"
+default = "mode-dependent"
 type = "bool"
 reload = "hot"
 category = "stt"
-description = "Promoted Settings write token for audio.apple_live_enabled. The next take reads this independent choice from its immutable settings snapshot. Disabling prevents Apple live recognition and Apple witness text from affecting transcription. This token is a settings router key, not a process-environment override."
+description = "Promoted Settings write token for audio.apple_live_enabled. Without a saved choice, Apple-only enables its recognizer; Local power and consented Cloud leave Apple off. An explicit choice wins in every mode. The next take reads the choice from its immutable settings snapshot. Disabling prevents Apple live recognition and Apple witness text from affecting transcription. This token is a settings router key, not a process-environment override."
 
 [vars.STT_FILE_ENDPOINT]
 default = ""
@@ -882,13 +896,6 @@ description = "Unload idle embedder weights after this many seconds (default 270
 # LLM / AI Formatting
 # ═══════════════════════════════════════════════════════════════════════════════
 
-[vars.AI_FORMATTING_ENABLED]
-default = "1"
-type = "bool"
-reload = "restart"
-category = "llm"
-description = "Compatibility gate for AI formatting; FORMATTING_LEVEL=off still bypasses the formatting provider even when this is enabled"
-
 [vars.CODESCRIBE_TRANSCRIPT_TAGGING]
 default = "0"
 type = "bool"
@@ -922,7 +929,7 @@ default = "correction"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
+description = "Normalized formatting policy and the only formatting on/off switch: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max. Replaces the retired AI_FORMATTING_ENABLED bool (false -> off, migrated once from settings.json and the first .env import). The persisted choice lives in settings.json speech.formatting.level; this variable is only an operator override from the launch environment, which outranks Settings for that process and raises a FORMATTING_LEVEL precedence note when it differs. Codescribe never copies the saved level into its own process environment, so child processes and self-relaunches do not inherit it"
 
 [vars.CODESCRIBE_FORMAT_ON_DEVICE]
 default = "0"
@@ -1148,6 +1155,13 @@ type = "string"
 reload = "restart"
 category = "hotkeys"
 description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
+
+[vars.WIDGET_SHORTCUT]
+default = "ctrl+shift+b"
+type = "string"
+reload = "hot"
+category = "hotkeys"
+description = "The user's chord that shows or hides the collapsed widget: any of ctrl/option/cmd/shift joined by + and ending with one letter or space, at least one of ctrl/option/cmd. cmd+shift+space stays the Agent summon. Default ctrl+shift+b"
 
 [vars.AGENT_CHANNEL_MODIFIER]
 default = "ctrl"
@@ -1789,6 +1803,27 @@ reload = "hot"
 category = "llm"
 description = "OpenAI assistant speech model; xAI accepts no model field."
 
+[vars.CS_SAY_VOICE]
+default = "carina"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Voice for cs-say TEXT without provider/session; --voice wins. Does not change agent profiles. Read at helper invocation."
+
+[vars.CS_SAY_SPEED]
+default = "1.0"
+type = "f32"
+reload = "restart"
+category = "agent"
+description = "Positive finite speed for the cs-say system voice; --speed wins. Read at helper invocation."
+
+[vars.CS_SAY_TTS_VENDOR]
+default = "xai"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""
 type = "string"
@@ -1837,3 +1872,10 @@ type = "string"
 reload = "restart"
 category = "test"
 description = "Private request mailbox for the parent-owned external accessibility client in make test-swift. Passed through TEST_RUNNER_ to the isolated XCTest host; never read by app runtime."
+
+[vars.CODESCRIBE_TEST_ISOLATED_GUI]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Explicit opt-in for native keyboard/window/AX acceptance in a separate GUI session. Normal XCTest hosts prohibit activation and make fixtures transparent/non-interactive; native GUI cases report skipped rather than claiming acceptance. Forwarded through TEST_RUNNER_ by make test-swift."

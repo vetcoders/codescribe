@@ -75,9 +75,17 @@ enum CSPalette {
   /// dark sheet keeps the hue of the Vibecrafted terminal's navy (#0B0B12,
   /// `~/.config/vibecrafted/terminal-theme.toml`) lifted one step above the
   /// 6 % bubble lift.
-  static let sheetLightHex: UInt32 = 0xF6F3EE
-  static let sheetDarkHex: UInt32 = 0x16161C
-  static let sheet = adaptive(light: NSColor(hex: sheetLightHex), dark: NSColor(hex: sheetDarkHex))
+  /// Read the observable preference while a view evaluates its tokens. The
+  /// palette and its SwiftUI projection must not freeze a launch-time colour.
+  static var sheetLightHex: UInt32 { SheetShadePreference.shared.current(dark: false).hex }
+  static var sheetDarkHex: UInt32 { SheetShadePreference.shared.current(dark: true).hex }
+  static var sheet: NSColor { sheetColor(preference: .shared) }
+
+  static func sheetColor(preference: SheetShadePreference) -> NSColor {
+    adaptive(
+      light: NSColor(hex: preference.current(dark: false).hex),
+      dark: NSColor(hex: preference.current(dark: true).hex))
+  }
   static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
   static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
@@ -100,6 +108,25 @@ enum CSPalette {
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
   static let dangerLight = adaptive(light: NSColor(hex: 0xB3261E), dark: NSColor(hex: 0xFFAAA5))
+  /// The amber and the processing orange at label strength. The floating sheet
+  /// proves 4.5:1 for status words against the opaque sheet, which the base
+  /// rungs of both hues miss on paper; these are the same hues, deepened.
+  static let amberLight = adaptive(light: NSColor(hex: 0x8A5B00), dark: NSColor(hex: 0xE2BE5B))
+  static let modeProcessingLight = adaptive(
+    light: NSColor(hex: 0x96450A), dark: NSColor(hex: 0xF09A4E))
+  /// The healthy olive at status strength. On ink the label rung sits within
+  /// 0.15 of `textMuted`, so a resting grey glyph beside a status read as
+  /// "healthy"; this rung keeps the status clear of the muted grey on both
+  /// appearances.
+  static let oliveStatus = adaptive(light: NSColor(hex: 0x4D5E2D), dark: NSColor(hex: 0xB5C98D))
+  /// Steel blue: the dictionary owns the words it rewrote, so a rewritten
+  /// surface never wears the uncertainty orange.
+  static let lexicon = adaptive(light: NSColor(hex: 0x31587A), dark: NSColor(hex: 0x9FC2E8))
+  /// A floating panel's edge. Warmer and stronger than a `hairline` divider,
+  /// and the paper rung is the fainter of the two: the edge separates the sheet
+  /// from an arbitrary desktop, not two rows inside one window.
+  static let panelEdge = adaptive(
+    light: NSColor(hex: 0x5F5A52, alpha: 0.20), dark: NSColor(hex: 0xF3F0EA, alpha: 0.16))
 
   /// Primary-action wash: the operator's accent on paper; on ink the same
   /// accent lifted halfway to white. A translucent accent wash alone paints
@@ -122,7 +149,7 @@ enum CSColor {
   static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
   static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
-  static let sheet = Color(nsColor: CSPalette.sheet)
+  static var sheet: Color { Color(nsColor: CSPalette.sheet) }
 
   /// Lifted surface wash. Dark mode lifts with a white veil; on paper the same
   /// lift is a white card over the warm base, so the veil maps to a stronger

@@ -99,7 +99,7 @@ Wymagane **tylko jeśli** `USE_LOCAL_STT=0` (RESTART NEEDED):
 - `STT_API_KEY` (RESTART NEEDED)
 
 **2) AI Formatting / Assistive (gdy włączasz AI)**
-Wymagane **tylko jeśli** `AI_FORMATTING_ENABLED=1` i chcesz LLM:
+Wymagane **tylko jeśli** `FORMATTING_LEVEL` jest inny niż `off` i chcesz LLM:
 
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
   - albo tryb‑specyficzne: `LLM_FORMATTING_*` i/lub `LLM_ASSISTIVE_*` (HOT RELOADED)
@@ -193,7 +193,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ### LLM (formatting/assistive)
 
-- `AI_FORMATTING_ENABLED` (RESTART NEEDED)
+- `FORMATTING_LEVEL` (HOT RELOADED; `off` wyłącza formatowanie AI — to jedyny przełącznik)
 - `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_API_KEY` (HOT RELOADED)
 - `LLM_FORMATTING_ENDPOINT`, `LLM_FORMATTING_MODEL`, `LLM_FORMATTING_API_KEY` (HOT RELOADED)
 - `LLM_ASSISTIVE_ENDPOINT`, `LLM_ASSISTIVE_MODEL`, `LLM_ASSISTIVE_API_KEY` (HOT RELOADED)
@@ -304,7 +304,7 @@ USE_LOCAL_STT=1
 **2) Local + AI formatting**
 
 ```
-AI_FORMATTING_ENABLED=1
+FORMATTING_LEVEL=correction
 LLM_FORMATTING_PROVIDER=openai-responses   # openai-responses | anthropic-messages | xai-responses
 LLM_FORMATTING_MODEL=gpt-4.1
 # Klucz: Settings › Providers (Keychain); LLM_OPENAI_API_KEY w env tylko jako fallback.

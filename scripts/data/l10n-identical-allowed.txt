@@ -25,6 +25,7 @@
 
 # Product, vendor and tool names.
 Codescribe - %@
+Codescribe Bus
 AICX MCP
 Loctree MCP
 
@@ -35,8 +36,22 @@ Responses (/v1/responses)
 https://…/mcp
 status
 
+# A sample raw Polish transcript used as a placeholder; the source is already Polish.
+tak jeśli nie stosuje się zaleceń dokumentacji…
+
+# Loanwords Polish spells the same way.
+Argument
+
+# A sample raw Polish transcript used as a placeholder; the source is already Polish.
+
+# Loanwords and sample text Polish spells the same way.
+
 # Key names as the keyboard prints them.
 hotkeys.binding.doubleCtrl
+Command
+Control
+Option
+Shift
 
 # Formatting levels: a named family (Light+ / Smart / Max), not description.
 overlay.versions.source.lightPlus
@@ -49,7 +64,11 @@ hotkeys.mode.agent
 Commit
 Commit: %@
 Model
-Model: %@
 Plan
-Status
 OK
+
+# Appearance choice that follows macOS: "System" is the same word in Polish.
+System
+
+# Agent window header line: the product word "Agent" plus a model identifier, in Polish the same.
+Agent · %@

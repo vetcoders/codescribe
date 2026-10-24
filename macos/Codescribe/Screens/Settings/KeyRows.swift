@@ -12,6 +12,9 @@ import SwiftUI
 // MARK: - Shared chrome
 
 /// Input chrome shared by every editable settings row (text and secure fields).
+/// A field sits on the control rung, the chip's insets, so it is as tall as the
+/// Save and Test actions beside it (Founder brief, round 16, 2026-10-18: lower
+/// fields in the MCP form; one owner, so every field follows).
 private struct SettingsInputChrome: ViewModifier {
   let isFocused: Bool
 
@@ -21,8 +24,8 @@ private struct SettingsInputChrome: ViewModifier {
       .font(CSFont.mono(12, .regular))
       .foregroundStyle(Color.primary)
       .autocorrectionDisabled()
-      .padding(.horizontal, 11)
-      .padding(.vertical, 8)
+      .padding(.horizontal, SettingsScale.controlInsetH)
+      .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
           .fill(Color.primary.opacity(0.06))
@@ -43,7 +46,8 @@ extension View {
   }
 }
 
-/// Accent "Save": dimmed until there is something to save.
+/// Accent "Save": dimmed until there is something to save. On the control
+/// rung, like the field it usually stands next to.
 struct SettingsSaveButton: View {
   var title: LocalizedStringKey = "Save"
   let enabled: Bool
@@ -52,10 +56,10 @@ struct SettingsSaveButton: View {
   var body: some View {
     Button(action: action) {
       Text(title)
-        .font(CSFont.ui(12, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
             .fill(CSColor.chromeAccent.opacity(enabled ? 0.14 : 0.06))
@@ -79,18 +83,18 @@ struct SettingsChipButton<Label: View>: View {
   var body: some View {
     Button(action: action) {
       label()
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
+        .padding(.horizontal, SettingsScale.controlInsetH)
+        .padding(.vertical, SettingsScale.controlInsetV)
         .background(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .fill(Color.primary.opacity(0.06))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+          RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
         )
     }
-    .csFocusRing()
+    .csFocusRing(cornerRadius: SettingsScale.controlRadius)
     .disabled(!enabled)
   }
 }
@@ -121,7 +125,7 @@ struct SettingsRefreshButton: View {
         } else {
           CSIconView(icon: .refresh, size: 10, weight: .semibold)
         }
-        Text(title).font(CSFont.ui(11.5, .semibold))
+        Text(title).font(SettingsScale.controlLabel)
       }
       .foregroundStyle(enabled && !busy ? Color.secondary : Color.secondary.opacity(0.6))
       .frame(height: 14)
@@ -139,7 +143,7 @@ extension SettingsChipButton where Label == Text {
   ) {
     self.init(enabled: enabled, action: action) {
       Text(title)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(enabled ? tint : Color.secondary)
     }
   }
@@ -168,12 +172,12 @@ struct SettingsUrlRow: View {
   @State private var loadedInitial = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
-        .font(CSFont.ui(13.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
 
-      HStack(spacing: 8) {
+      HStack(spacing: CSSpace.sm) {
         TextField(placeholder, text: $draft)
           .settingsInputChrome(isFocused: isFocused)
           .focused($isFocused)
@@ -187,14 +191,14 @@ struct SettingsUrlRow: View {
 
       if let error {
         Text(error)
-          .font(CSFont.mono(11, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.terracotta)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
       }
       if let caption {
         Text(caption)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(Color.secondary)
       }
@@ -226,10 +230,10 @@ struct SettingsDetailRow: View {
   var body: some View {
     HStack(spacing: 8) {
       Text(title)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
       Text(value)
-        .font(CSFont.mono(11, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -250,8 +254,9 @@ enum KeyRowPresentation {
 /// One Keychain account on one line: presence dot, label, state (`Set` /
 /// `Not set` / `Optional`) and a `Change` / `Add` chip that opens the editor —
 /// paste-to-replace secure field, Save, Test, Clear. The account name is not
-/// on the row; the card's Advanced disclosure shows it. `optional` marks
-/// key-optional hosts (custom providers): an absent key is neutral there, not red.
+/// on the row; the card's Advanced disclosure shows it. `optional` marks a key
+/// nothing is waiting for — a key-optional host, or a provider already covered
+/// by a connected account — and only chooses the wording of the state.
 struct KeyRow: View {
   let account: String
   let label: String
@@ -279,8 +284,12 @@ struct KeyRow: View {
 
   private var isUpdating: Bool { mutationPending || operationPending }
 
+  /// Presence tints the row green; an absent key stays neutral whether or not
+  /// it is marked optional. A key that is simply missing blocks nothing on its
+  /// own — an account can cover the same provider — so red is reserved for a
+  /// real failure, which `KeyProbeChip` and the operation error report.
   private var accent: Color {
-    isSet ? CSColor.olive : (optional ? Color.secondary : CSColor.terracotta)
+    isSet ? CSColor.olive : Color.secondary
   }
 
   init(
@@ -315,10 +324,10 @@ struct KeyRow: View {
         customProviderContent(endpoint: endpoint)
       }
     }
-    // Presence-tinted card: green when set, red (required) / grey (optional)
-    // when not. Embedded rows keep the tint on the dot and state text only.
-    .padding(.horizontal, embedded ? 0 : 15)
-    .padding(.vertical, embedded ? 2 : 13)
+    // Presence-tinted card: green when set, grey when not.
+    // Embedded rows keep the tint on the dot and state text only.
+    .padding(.horizontal, embedded ? 0 : SettingsScale.cardPadding)
+    .padding(.vertical, embedded ? 2 : SettingsScale.cardPadding)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(accent.opacity(embedded ? 0 : 0.06))
@@ -330,7 +339,7 @@ struct KeyRow: View {
   }
 
   private var standardContent: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
       standardSummary
 
       editingAndStatus
@@ -338,16 +347,16 @@ struct KeyRow: View {
   }
 
   private func customProviderContent(endpoint: String) -> some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: CSSpace.sm) {
       ViewThatFits(in: .horizontal) {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: CSSpace.md) {
           customProviderEndpoint(endpoint)
             .frame(minWidth: 240, maxWidth: .infinity, alignment: .leading)
           compactSummary
             .fixedSize(horizontal: true, vertical: false)
         }
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: CSSpace.xs) {
           customProviderEndpoint(endpoint)
           compactSummary
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -359,10 +368,10 @@ struct KeyRow: View {
   }
 
   private var standardSummary: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text(label)
-        .font(CSFont.ui(13.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Spacer(minLength: 0)
       if let probeResult {
@@ -374,10 +383,10 @@ struct KeyRow: View {
   }
 
   private var compactSummary: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text(label)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(Color.primary)
       if let probeResult {
         KeyProbeChip(result: probeResult)
@@ -389,7 +398,7 @@ struct KeyRow: View {
 
   private var presenceState: some View {
     Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
-      .font(CSFont.mono(10, .semibold))
+      .font(SettingsScale.statusBadge)
       .foregroundStyle(isSet ? CSColor.oliveLight : accent)
   }
 
@@ -406,10 +415,10 @@ struct KeyRow: View {
   private func customProviderEndpoint(_ endpoint: String) -> some View {
     VStack(alignment: .leading, spacing: 3) {
       Text("API address")
-        .font(CSFont.ui(11, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
       Text(verbatim: endpoint)
-        .font(CSFont.mono(11, .medium))
+        .font(SettingsScale.metaKey)
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -419,7 +428,7 @@ struct KeyRow: View {
 
   @ViewBuilder private var editingAndStatus: some View {
     if editing {
-      HStack(spacing: 8) {
+      HStack(spacing: CSSpace.sm) {
         SecureField(isSet ? "Replace key…" : "Paste key…", text: $draft)
           .settingsInputChrome(isFocused: isFocused)
           .focused($isFocused)
@@ -439,7 +448,7 @@ struct KeyRow: View {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 20, height: 14)
             } else {
               Text("Test", comment: "Button label: run a connection test")
-                .font(CSFont.ui(12, .semibold))
+                .font(SettingsScale.controlLabel)
             }
           }
           .frame(minWidth: 26, minHeight: 18)
@@ -464,12 +473,12 @@ struct KeyRow: View {
     if operationPending {
       HStack {
         ProgressView().controlSize(.small)
-        Text("Updating provider access…").font(CSFont.ui(11.5))
+        Text("Updating provider access…").font(SettingsScale.helper)
       }
     }
     if let operationError {
       Text(operationError)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(CSColor.danger)
         .textSelection(.enabled)
     }
@@ -559,7 +568,7 @@ struct KeyProbeChip: View {
 
   var body: some View {
     Text(label)
-      .font(CSFont.mono(10, .semibold))
+      .font(SettingsScale.statusBadge)
       .lineLimit(1)
       .foregroundStyle(tint)
       .padding(.horizontal, 8)
@@ -618,28 +627,30 @@ struct AccountLoginRow: View {
   }
 
   var body: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: CSSpace.sm) {
       Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
       Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
-        .font(CSFont.ui(12.5, .semibold))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
-        .font(CSFont.mono(10, .semibold))
+        .font(SettingsScale.statusBadge)
         .foregroundStyle(accent)
         .lineLimit(1)
         .truncationMode(.middle)
         .help(provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
-          .font(CSFont.mono(10, .medium))
+          .font(SettingsScale.statusBadge)
           .foregroundStyle(CSColor.terracotta)
           .lineLimit(1)
           .help(loginNotice)
       }
       Spacer(minLength: 0)
+      // Sign out is a neutral chip like every other row action: it is an
+      // ordinary choice, and destructive styling belongs to a confirmation.
       if signedIn {
         SettingsChipButton(
-          "Sign out", tint: CSColor.terracotta, enabled: !loginPending, action: onSignOut
+          "Sign out", tint: Color.secondary, enabled: !loginPending, action: onSignOut
         )
         .help("Remove the stored \(accountBrand) account tokens")
         .accessibilityLabel("Sign out of \(accountBrand)")
@@ -647,7 +658,7 @@ struct AccountLoginRow: View {
         SettingsChipButton(
           enabled: provider.accountLoginEnabled && !loginPending, action: onStart
         ) {
-          HStack(spacing: 6) {
+          HStack(spacing: CSSpace.xs) {
             if loginPending {
               ProgressView().controlSize(.small).scaleEffect(0.62).frame(width: 14, height: 12)
             } else {
@@ -658,7 +669,7 @@ struct AccountLoginRow: View {
                 ? (provider.id == "xai-responses" ? "Approve in browser…" : "Waiting for browser…")
                 : "Sign in with \(accountBrand)"
             )
-            .font(CSFont.ui(12, .semibold))
+            .font(SettingsScale.controlLabel)
           }
           .foregroundStyle(
             provider.accountLoginEnabled && !loginPending ? CSColor.oliveLight : Color.secondary
@@ -686,7 +697,7 @@ struct OAuthClientIdButton: View {
   var body: some View {
     Button("OAuth client id…") { editing = true }
       .buttonStyle(.plain)
-      .font(CSFont.mono(10, .medium))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .csFocusRing()
       .popover(isPresented: $editing, arrowEdge: .bottom) {
@@ -751,37 +762,37 @@ struct SettingsSecondsSlider: View {
   @State private var gate = SliderCommitGate()
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(CSFont.ui(13, .semibold))
-            .foregroundStyle(Color.primary)
-          Text(detail)
-            .font(CSFont.ui(11.5))
-            .foregroundStyle(Color.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
+      Text(title)
+        .font(SettingsScale.settingName)
+        .foregroundStyle(Color.primary)
+      Text(detail)
+        .font(SettingsScale.helper)
+        .foregroundStyle(Color.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      // The track stops at `sliderWidth`; the value reads at its end.
+      HStack(spacing: CSSpace.md) {
+        Slider(
+          value: Binding(
+            get: { gate.displayed(persisted: value) },
+            set: { newValue in
+              if let direct = gate.valueChanged(newValue) { value = direct }
+            }
+          ),
+          in: range, step: step,
+          onEditingChanged: { editing in
+            if let committed = gate.editingChanged(editing) { value = committed }
+          }
+        )
+        .tint(CSColor.chromeAccent)
+        .frame(maxWidth: SettingsScale.sliderWidth)
+        .accessibilityLabel(title)
+        .accessibilityValue(valueLabel)
         Text(valueLabel)
-          .font(CSFont.mono(11, .semibold))
+          .font(SettingsScale.monoValue)
           .foregroundStyle(Color.primary)
       }
-      Slider(
-        value: Binding(
-          get: { gate.displayed(persisted: value) },
-          set: { newValue in
-            if let direct = gate.valueChanged(newValue) { value = direct }
-          }
-        ),
-        in: range, step: step,
-        onEditingChanged: { editing in
-          if let committed = gate.editingChanged(editing) { value = committed }
-        }
-      )
-      .tint(CSColor.chromeAccent)
-      .accessibilityLabel(title)
-      .accessibilityValue(valueLabel)
+      .padding(.top, CSSpace.xs)
     }
   }
 

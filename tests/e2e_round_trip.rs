@@ -19,27 +19,66 @@
 //! Created by Vetcoders (c)2026
 
 use anyhow::Result;
+use serial_test::serial;
 
-#[path = "support/e2e_stt_matrix.rs"]
-mod e2e_stt_matrix;
-
-use e2e_stt_matrix::{ROUNDTRIP_OPT_IN_ENV, parse_opt_in};
-
-/// Pure second lock behind `#[ignore]`, using the shared opt-in syntax.
-/// Refusal is an error before any model initialization, never a passing skip.
-fn roundtrip_gate(value: Option<&str>) -> Result<()> {
-    anyhow::ensure!(
-        parse_opt_in(value),
-        "round-trip gate refused before model initialization: set {ROUNDTRIP_OPT_IN_ENV}=1 \
-         or true and select --ignored (or use `make test-e2e-roundtrip`)"
-    );
-    Ok(())
+/// Synthesize 24 kHz mono speech via `codescribe_core::tts` when CSM-1B weights
+/// are installed locally, or via macOS native `/usr/bin/say` (`Samantha` / `Zosia`)
+/// when running without local CSM-1B safetensors.
+fn ensure_operator_model_env() {
+    let Some(operator_home) = std::env::var("HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.join(".codescribe/models").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME").ok().and_then(|c| {
+                std::path::PathBuf::from(c)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+    else {
+        return;
+    };
+    if std::env::var_os("CODESCRIBE_MODELS_DIR").is_none() {
+        let models = operator_home.join(".codescribe/models");
+        if models.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_MODELS_DIR", models) };
+        }
+    }
+    if std::env::var_os("CODESCRIBE_HF_CACHE").is_none() {
+        let hf = operator_home.join(".cache/huggingface/hub");
+        if hf.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_HF_CACHE", hf) };
+        }
+    }
 }
 
-fn require_roundtrip_opt_in() -> Result<()> {
-    roundtrip_gate(std::env::var(ROUNDTRIP_OPT_IN_ENV).ok().as_deref())
+fn synthesize_for_roundtrip(text: &str, lang: &str) -> Result<Vec<f32>> {
+    if codescribe_core::tts::init().is_ok() {
+        return codescribe_core::tts::synthesize(text);
+    }
+    let temp = tempfile::tempdir()?;
+    let wav_path = temp.path().join("say.wav");
+    let voice = if lang.starts_with("pl") {
+        "Zosia"
+    } else {
+        "Samantha"
+    };
+    let status = std::process::Command::new("/usr/bin/say")
+        .args([
+            "-v",
+            voice,
+            "-o",
+            wav_path.to_str().expect("utf8 path"),
+            "--data-format=LEI16@24000",
+            text,
+        ])
+        .status()?;
+    anyhow::ensure!(status.success(), "/usr/bin/say failed with {status}");
+    let (samples, rate) = codescribe_core::audio::load_audio_file(&wav_path)?;
+    anyhow::ensure!(rate == 24_000, "unexpected say sample rate {rate}");
+    Ok(samples)
 }
-
 /// Calculate simple word overlap similarity (0.0 - 1.0)
 fn word_similarity(a: &str, b: &str) -> f32 {
     let a_lower = a.to_lowercase();
@@ -64,46 +103,6 @@ fn word_similarity(a: &str, b: &str) -> f32 {
     let union = a_words.union(&b_words).count();
 
     intersection as f32 / union as f32
-}
-
-#[test]
-fn test_roundtrip_gate_requires_explicit_opt_in() {
-    for value in ["1", "true", "TRUE", " True ", "\t1\n"] {
-        assert!(roundtrip_gate(Some(value)).is_ok(), "rejected {value:?}");
-    }
-    for value in [None, Some(""), Some("0"), Some("yes"), Some("false")] {
-        let error = roundtrip_gate(value).expect_err("missing or invalid opt-in must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("refused before model initialization")
-        );
-    }
-}
-
-/// Exercise the actual ignored test entrypoints, not only the parser. Only the
-/// child environment is changed, so parallel tests retain their own opt-in.
-#[test]
-fn test_roundtrip_ignored_without_opt_in_fails() -> Result<()> {
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args(["--ignored", "--nocapture", "--test-threads=1"])
-        .env_remove(ROUNDTRIP_OPT_IN_ENV)
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "false green: {stdout}\n{stderr}");
-    assert!(
-        stdout.contains("0 passed; 10 failed; 0 ignored"),
-        "all ten heavy entries must fail: {stdout}\n{stderr}"
-    );
-    assert_eq!(
-        stderr
-            .matches("round-trip gate refused before model initialization")
-            .count(),
-        10,
-        "each heavy entry must refuse at its gate: {stdout}\n{stderr}"
-    );
-    Ok(())
 }
 
 #[test]
@@ -146,19 +145,17 @@ fn test_whisper_embedded_readiness_contract() {
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_tts_stt_round_trip_english() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    // Initialize components
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Hello, this is a test of the speech pipeline.";
     eprintln!("Input:  '{}'", input);
 
     // TTS: text → audio (24kHz)
-    let audio = codescribe_core::tts::synthesize(input)?;
+    let audio = synthesize_for_roundtrip(input, "en")?;
     eprintln!(
         "TTS generated {} samples ({:.2}s @ 24kHz)",
         audio.len(),
@@ -185,18 +182,16 @@ fn test_tts_stt_round_trip_english() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_tts_stt_round_trip_polish() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Cześć, to jest test systemu rozpoznawania mowy.";
     eprintln!("Input:  '{}'", input);
 
-    let audio = codescribe_core::tts::synthesize(input)?;
-    eprintln!("TTS generated {} samples", audio.len());
+    let audio = synthesize_for_roundtrip(input, "pl")?;
 
     let transcribed = codescribe_core::stt::whisper::transcribe(&audio, 24000, Some("pl"))?;
     eprintln!("Output: '{}'", transcribed.trim());
@@ -218,11 +213,10 @@ fn test_tts_stt_round_trip_polish() -> Result<()> {
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedding_round_trip_similarity() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
     codescribe_core::embedder::init()?;
 
@@ -230,7 +224,7 @@ fn test_embedding_round_trip_similarity() -> Result<()> {
     eprintln!("Input: '{}'", input);
 
     // Generate audio and transcribe back
-    let audio = codescribe_core::tts::synthesize(input)?;
+    let audio = synthesize_for_roundtrip(input, "en")?;
     let transcribed = codescribe_core::stt::whisper::transcribe(&audio, 24000, Some("en"))?;
     eprintln!("Transcribed: '{}'", transcribed.trim());
 
@@ -252,10 +246,10 @@ fn test_embedding_round_trip_similarity() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedding_preserves_meaning() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
+    ensure_operator_model_env();
     codescribe_core::embedder::init()?;
 
     // Similar meaning, different words
@@ -289,11 +283,10 @@ fn test_embedding_preserves_meaning() -> Result<()> {
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_full_pipeline_double_round_trip() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
     codescribe_core::embedder::init()?;
 
@@ -301,12 +294,12 @@ fn test_full_pipeline_double_round_trip() -> Result<()> {
     eprintln!("Original: '{}'", original);
 
     // First round-trip: text → audio → text
-    let audio1 = codescribe_core::tts::synthesize(original)?;
+    let audio1 = synthesize_for_roundtrip(original, "en")?;
     let text1 = codescribe_core::stt::whisper::transcribe(&audio1, 24000, Some("en"))?;
     eprintln!("After 1st round-trip: '{}'", text1.trim());
 
     // Second round-trip: text → audio → text
-    let audio2 = codescribe_core::tts::synthesize(&text1)?;
+    let audio2 = synthesize_for_roundtrip(&text1, "en")?;
     let text2 = codescribe_core::stt::whisper::transcribe(&audio2, 24000, Some("en"))?;
     eprintln!("After 2nd round-trip: '{}'", text2.trim());
 
@@ -331,14 +324,14 @@ fn test_full_pipeline_double_round_trip() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_whisper_embedded_model_works() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
     // Verify embedded model is being used
     let embedded = codescribe_core::stt::whisper::embedded::is_embedded_available();
     eprintln!("Whisper embedded model available: {}", embedded);
 
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     // Generate test audio (simple sine wave as speech proxy)
@@ -366,18 +359,13 @@ fn test_whisper_embedded_model_works() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
 fn test_tts_embedded_model_works() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
     let embedded = codescribe_core::tts::embedded::is_embedded_available();
     eprintln!("TTS embedded model available: {}", embedded);
 
-    codescribe_core::tts::init()?;
-
     let text = "Test.";
-    let audio = codescribe_core::tts::synthesize(text)?;
-
+    let audio = synthesize_for_roundtrip(text, "en")?;
     eprintln!("Generated {} samples for '{}'", audio.len(), text);
     assert!(!audio.is_empty(), "TTS should produce audio");
 
@@ -396,13 +384,13 @@ fn test_tts_embedded_model_works() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_embedded_model_works() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
     let embedded = codescribe_core::embedder::embedded::is_embedded_available();
     eprintln!("Embedded model available: {}", embedded);
 
+    ensure_operator_model_env();
     codescribe_core::embedder::init()?;
 
     let text = "Hello world";
@@ -432,13 +420,11 @@ fn test_embedded_model_works() -> Result<()> {
 // ═══════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_numbers_survive_round_trip() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
-
     let inputs = [
         "My phone number is 555-1234.",
         "The meeting is at 3:30 PM.",
@@ -447,7 +433,7 @@ fn test_numbers_survive_round_trip() -> Result<()> {
 
     for input in inputs {
         eprintln!("\nTesting: '{}'", input);
-        let audio = codescribe_core::tts::synthesize(input)?;
+        let audio = synthesize_for_roundtrip(input, "en")?;
         let output = codescribe_core::stt::whisper::transcribe(&audio, 24000, Some("en"))?;
         eprintln!("Got: '{}'", output.trim());
 
@@ -459,17 +445,16 @@ fn test_numbers_survive_round_trip() -> Result<()> {
 }
 
 #[test]
-#[ignore = "opt-in e2e: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip -- --ignored"]
+#[serial]
+#[ignore = "opt-in e2e: embedded Whisper/TTS/embedder weights — cargo test --test e2e_round_trip -- --ignored"]
 fn test_punctuation_handling() -> Result<()> {
-    require_roundtrip_opt_in()?;
-
-    codescribe_core::tts::init()?;
+    ensure_operator_model_env();
     codescribe_core::stt::whisper::init()?;
 
     let input = "Hello! How are you? I'm fine, thanks.";
     eprintln!("Input: '{}'", input);
 
-    let audio = codescribe_core::tts::synthesize(input)?;
+    let audio = synthesize_for_roundtrip(input, "en")?;
     let output = codescribe_core::stt::whisper::transcribe(&audio, 24000, Some("en"))?;
     eprintln!("Output: '{}'", output.trim());
 

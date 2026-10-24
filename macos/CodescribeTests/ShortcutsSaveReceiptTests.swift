@@ -58,6 +58,8 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
       persisted = CsModeBinding.sampleBindings
     }
 
+    func setWidgetShortcut(_ wireId: String) throws {}
+
     func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] { conflicts(candidate) }
     func rearmAfterPermissionGrant() {}
     func channelModifier() -> String { "ctrl" }

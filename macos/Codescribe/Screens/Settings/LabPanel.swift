@@ -5,6 +5,8 @@ import SwiftUI
 struct LabPanel: View {
   @ObservedObject var model: SettingsViewModel
   @AppStorage("codescribe.lab_mode") private var labMode = false
+  /// A drag on the ledger slider persists once, at release.
+  @State private var ledgerGate = SliderCommitGate()
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -17,16 +19,26 @@ struct LabPanel: View {
             localized: "Open the loopback Voice Lab. Production builds never show this panel.")
       )
 
-      Toggle("Lab mode", isOn: $labMode)
-        .toggleStyle(.switch)
-        .font(.body)
+      // The take's word pins lead the desk, open on arrival (Maciej, 2026-10-20:
+      // "jest, ale na spodzie zamiast na górze"); the switches follow.
+      DictionaryWordPins(configDir: model.configDir)
 
-      sealLaneRow
+      // One column: every switch sits on the trailing edge of its row, so
+      // the desk reads as a list and not as a staircase (Founder, 2026-10-20).
+      VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+        SettingsControlRow(title: String(localized: "Lab mode")) {
+          Toggle("", isOn: $labMode)
+            .settingsSwitch()
+            .accessibilityLabel("Lab mode")
+        }
 
-      transcriptionTracks
+        sealLaneRow
 
-      dictationWitnessRow
-        .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
+        transcriptionTracks
+
+        dictationWitnessRow
+          .disabled(!model.settings.sealLedgerEnabled || !model.settings.appleLiveEnabled)
+      }
 
       Picker(
         "Whisper buffering",
@@ -63,12 +75,14 @@ struct LabPanel: View {
       Button("Open Voice Lab") {
         Task { await VoiceLabRuntime.shared.openConsole() }
       }
-      .font(CSFont.mono(11, .semibold))
+      .font(CSFont.ui(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
 
       recognitionParameters
+
+      ledgerSensitivity
     }
-    .padding(CSSpace.xl)
+    .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
     .task { await model.refreshAdmission() }
   }
@@ -80,28 +94,27 @@ struct LabPanel: View {
   @ViewBuilder
   private var sealLaneRow: some View {
     let sealLane = sealLaneControlState(model.admission)
-    Toggle("Committing transcript fragments", isOn: sealLaneBinding)
-      .toggleStyle(.switch)
-      .font(.body)
-      .tint(CSColor.chromeAccent)
-      .disabled(!sealLane.isEnabled)
-      .accessibilityValue(sealLaneAccessibilityValue(sealLane))
-      .accessibilityIdentifier("lab-committing-transcript-fragments")
-    Text("Required before a recording can start.")
-      .font(.caption)
-      .foregroundStyle(.secondary)
-    if !sealLane.isEnabled {
-      Text(sealLane.detail)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+    SettingsControlRow(
+      title: String(localized: "Committing transcript fragments")
+    ) {
+      Toggle("", isOn: sealLaneBinding)
+        .settingsSwitch()
+        .disabled(!sealLane.isEnabled)
+        .accessibilityLabel("Committing transcript fragments")
+        .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+        .accessibilityIdentifier("lab-committing-transcript-fragments")
     }
+    Text(sealLane.detail)
+      .font(SettingsScale.helper)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
   }
 
+  @ViewBuilder
   private var transcriptionTracks: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    SettingsControlRow(title: String(localized: "Seal-ledger admission")) {
       Toggle(
-        "Seal-ledger admission",
+        "",
         isOn: Binding(
           get: { model.settings.sealLedgerEnabled },
           set: { enabled in
@@ -110,10 +123,20 @@ struct LabPanel: View {
           }
         )
       )
+      .settingsSwitch()
+      .accessibilityLabel("Seal-ledger admission")
       .accessibilityIdentifier("lab-seal-ledger-enabled")
+    }
 
+    SettingsControlRow(
+      title: String(localized: "Apple live speech"),
+      subtitle: String(
+        localized:
+          "Applies to the next recording. Turn both off to keep Whisper output without Apple revisions or seal-ledger admission."
+      )
+    ) {
       Toggle(
-        "Apple live speech",
+        "",
         isOn: Binding(
           get: { model.settings.appleLiveEnabled },
           set: { enabled in
@@ -122,46 +145,35 @@ struct LabPanel: View {
           }
         )
       )
+      .settingsSwitch()
+      .accessibilityLabel("Apple live speech")
       .accessibilityIdentifier("lab-apple-live-enabled")
-
-      Text(
-        "Applies to the next recording. Turn both off to keep Whisper output without Apple revisions or seal-ledger admission."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
     }
-    .toggleStyle(.switch)
-    .font(.body)
-    .tint(CSColor.chromeAccent)
   }
 
   /// Voice Lab experiment: the DictationTranscriber witness re-checks
   /// unresolved recovery debt after each sealed utterance, in the background.
   /// The effective value comes from the settings snapshot; an exported
   /// process env still overrides the switch.
-  @ViewBuilder
   private var dictationWitnessRow: some View {
-    Toggle(
-      String(localized: "DictationTranscriber witness (experimental)"),
-      isOn: Binding(
-        get: { model.settings.dictationWitnessArmed },
-        set: { model.setDictationWitnessArmed($0) }
-      )
-    )
-    .toggleStyle(.switch)
-    .font(.body)
-    .tint(CSColor.chromeAccent)
-    .accessibilityIdentifier("lab-dictation-witness")
-    Text(
-      String(
+    SettingsControlRow(
+      title: String(localized: "DictationTranscriber witness (experimental)"),
+      subtitle: String(
         localized:
           "Re-checks words a take left unresolved, in the background after each sealed utterance. A process env value overrides this toggle."
       )
-    )
-    .font(.caption)
-    .foregroundStyle(.secondary)
-    .fixedSize(horizontal: false, vertical: true)
+    ) {
+      Toggle(
+        "",
+        isOn: Binding(
+          get: { model.settings.dictationWitnessArmed },
+          set: { model.setDictationWitnessArmed($0) }
+        )
+      )
+      .settingsSwitch()
+      .accessibilityLabel("DictationTranscriber witness (experimental)")
+      .accessibilityIdentifier("lab-dictation-witness")
+    }
   }
 
   private var sealLaneBinding: Binding<Bool> {
@@ -184,6 +196,82 @@ struct LabPanel: View {
       : String(
         localized: "\(value), overridden",
         comment: "VoiceOver value: a toggle state frozen by an override")
+  }
+
+  /// One slider over live word admission. Left refuses more identical
+  /// repeats and words far from speech; right keeps more of both. The centre
+  /// is the shipped engine. The take freezes the value when it starts.
+  private var ledgerSensitivity: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      SettingsSectionLabel(
+        String(
+          localized: "Word admission",
+          comment: "Lab group: the ledger sensitivity slider"))
+
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .firstTextBaseline) {
+          Text("Ledger sensitivity")
+            .font(SettingsScale.settingName)
+          Spacer()
+          Text(verbatim: ledgerSensitivityLabel)
+            .font(CSFont.ui(11, .semibold))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+        }
+        Slider(
+          value: Binding(
+            get: { ledgerGate.displayed(persisted: model.ledgerSensitivitySlider) },
+            set: { newValue in
+              if let direct = ledgerGate.valueChanged(newValue) {
+                model.ledgerSensitivitySlider = direct
+              }
+            }
+          ),
+          in: -100...100,
+          step: 5
+        ) {
+          Text("Ledger sensitivity")
+        } onEditingChanged: { editing in
+          if let committed = ledgerGate.editingChanged(editing) {
+            model.ledgerSensitivitySlider = committed
+          }
+        }
+        .labelsHidden()
+        .tint(CSColor.chromeAccent)
+        .accessibilityValue(ledgerSensitivityLabel)
+        .accessibilityIdentifier("lab-ledger-sensitivity")
+        HStack {
+          Text("Fewer repeats")
+          Spacer()
+          Text("Fewer cut words")
+        }
+        .font(CSFont.ui(11))
+        .foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline) {
+          Text(
+            "Too many repeated words: move it left. Too many cut words: move it right. The centre is the shipped engine. Applies to the next recording."
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 8)
+          Button("Centre") {
+            model.setLedgerSensitivity(0)
+          }
+          .font(CSFont.ui(11, .semibold))
+          .foregroundStyle(CSColor.chromeAccent)
+          .buttonStyle(.plain)
+          .disabled(model.settings.ledgerSensitivity == 0)
+        }
+      }
+      .settingsGroupedInset()
+    }
+  }
+
+  /// Signed position; mid-drag it follows the draft, not the persisted value.
+  private var ledgerSensitivityLabel: String {
+    let position = Int(ledgerGate.displayed(persisted: model.ledgerSensitivitySlider).rounded())
+    return position > 0 ? "+\(position)" : "\(position)"
   }
 
   /// Experimental recognition parameters. The speech-pause limit is a

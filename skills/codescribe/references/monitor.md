@@ -18,13 +18,19 @@ until zero plus one extra read. Then return to the event-driven listener.
 
 ## Channel 0 reception
 
-Change reception during a session with `cs-bus --broadcast on|quiet|off --provider PROVIDER --session SESSION [--bus BUS]`; omission of `--bus` uses the
-validated lease's bus. `on` is the default. `quiet` (Steer) retains all messages in the
-mailbox without waking the agent: on the next natural turn, explicitly read
+Reception has two independent axes. Change either during a session with
+`cs-bus --broadcast on|off --provider PROVIDER --session SESSION [--bus BUS]`
+(channel-0 membership) and `cs-bus --quiet on|off --provider PROVIDER --session SESSION [--bus BUS]`
+(the moon, do not disturb); omission of `--bus` uses the validated lease's bus.
+Both default to on channel 0 with the moon dark. The moon retains every message
+from every channel — broadcasts, the Founder's directs and peer messages — in
+the mailbox without waking the agent: on the next natural turn, explicitly read
 `--read-pending` and ACK only complete returned messages, even if no bell rang.
-`off` records a skip instead of queueing new broadcasts; direct and peer messages
-still wake in this mode. `quiet` also suppresses direct and peer wakeups. The
-policy file is reread without restarting or reattaching.
+Light it when a conversation must not be interrupted; it does not need channel 0
+to be off. `--broadcast off` records a skip instead of queueing new broadcasts;
+direct and peer messages still wake unless the moon is lit. `--broadcast quiet`
+is the pre-split spelling of on channel 0 with the moon lit. The policy file is
+reread without restarting or reattaching.
 
 ## Codex native queue
 
@@ -108,7 +114,8 @@ cs-bus --retry-wakeup <delivery-id> --provider codex --session <thread-id>
 An uncertain attempt might already be queued: verify before retrying it.
 Reattachment with changed wakeup configuration restarts only the verified
 owned follower, preserving its cursor and unread mailbox. `--wakeup off`
-selects monitor-only operation; `--on-seal` selects a custom hook instead of
+selects monitor-only operation: nothing then wakes a Codex conversation that
+has finished its turn (Founder's test, 2026-10-18). `--on-seal` selects a custom hook instead of
 native queue. Neither touches microphone or app lifecycle.
 
 Every attachment must start the provider's output-notifying monitor on
@@ -218,6 +225,29 @@ This is the integration contract, not a claim of verified live Kimi wakeup.
 Acceptance requires a fresh named utterance received and answered by that same
 Kimi conversation after it yielded, without a typed nudge.
 
+## Antigravity (agy): completion-notifying background task
+
+Antigravity resumes a finished conversation only when a background command
+exits; its streaming output never starts a turn, so an infinite `--watch --bell`
+never wakes it. Run one background command (replace CONVERSATION_ID with this
+conversation's id) with `WaitMsBeforeAsync` set to 1000, then end the turn:
+
+```bash
+cs-bus --watch --until-event --provider agy --session CONVERSATION_ID
+```
+
+Its exit with `mailbox_ready` arrives as a system message and starts a turn. On
+dragon (Andrzej, 2026-10-17) three such tasks waited through 58, 56 and 61 silent
+minutes and woke the conversation 5–7 s after the Founder's seal, without an
+empty wake. Handle the wake as in Kimi above: read, ACK the exact IDs, reply,
+drain, rearm one task.
+
+## OMP: the plugin's waiter
+
+The Codescribe OMP plugin holds `cs-bus --omp-wake` after every turn end and
+starts a turn on a new delivery; add no other waiter. In the Founder's wake
+test on dragon (2026-10-17) Olek answered through it.
+
 ## Claude Code: plugin hook or completion task
 
 Claude Code wakes an idle conversation on process completion or an `asyncRewake`
@@ -237,19 +267,32 @@ with a `codescribe_mailbox_ready` notice on stderr. It never reads or ACKs.
 Announced IDs stay recorded until acknowledged, so a message left unread does
 not wake every turn. It also announces `follower_lost` or a refused mailbox once,
 and wakes after six silent hours only to re-arm. It ends silently when the
-session detaches or Claude Code exits. Every turn end re-arms it.
+session detaches or Claude Code exits. Every turn end and every tool call
+re-arm it: Claude Code runs no `Stop` hook after a user interrupt, and runs
+`StopFailure` instead after an API error, so a turn that a wake started would
+otherwise end with no waiter. An armed lease makes a later arm return at once.
 
 During an active turn, the plugin's `PostToolUse` probe can deliver the same
 `codescribe_mailbox_ready` notice. Read and ACK it before continuing work; the
 probe and Stop waiter never ACK messages themselves. Keep the same connection
-and end the turn after draining; the Stop hook re-arms automatically.
+and end the turn after draining; the hooks re-arm automatically.
 
 Without the plugin, use the Kimi pattern with `--provider claude-code`: one
 `Bash(run_in_background=true)` task over `cs-bus --watch --until-event`; on
 `mailbox_ready` read, ACK, act, and start one new task before ending the turn.
-Claude Code stops a background task at its timeout (default 10 min, at most
-2 h) and wakes the model: set the maximum timeout and treat that wake as a rearm
-without ACK or reply. A turn that ends without a new task is deaf.
+An interactive Claude Code session keeps a background task running; unattended
+runs (`-p`, Agent SDK, CI) stop it at its timeout (30 min by default, at most
+2 h) and wake the model: there, set the maximum timeout and treat that wake as a
+rearm without ACK or reply. A background session started from the agents
+screen is neither: there an untimed task waited 85 min, and another 1 h 50 min,
+until a message ended it (measured 2026-10-18); whether such a session stops a
+task after 2 h is not yet measured. A turn that ends without a new task is deaf.
+
+The same task may also run beside the plugin. While it lives, the plugin's
+waiter stays armed but leaves deliveries to the task, which records what it
+reported before it exits, so one message wakes the conversation once. When the
+task is gone, the waiter takes over and announces anything the task never
+reported; a lost follower is still the waiter's to announce.
 
 ## Watch stream
 
@@ -336,6 +379,70 @@ two loops do not consume the same stream.
 This mechanism has demonstrated delivery during an active turn. It does not
 establish wakeup after a final answer. Report that distinction and keep an
 active listening turn open when post-final wakeup is unavailable.
+
+### Codex: the one form that works
+
+The Founder's tests in Codex (Maciej, 2026-10-18) found exactly one working
+form: start the reader with `tty: true`, and start it and read its terminal
+inside **one** `functions.exec` cell that then calls `yield_control()`.
+
+```js
+// @exec: {"yield_time_ms": 2000, "max_output_tokens": 2000}
+const start = await tools.exec_command({
+  cmd: "exec cs-bus --watch --until-event --provider codex --session THREAD_ID",
+  tty: true,
+  yield_time_ms: 1000,
+  max_output_tokens: 5000,
+});
+if (!start.session_id) {
+  notify({ kind: "codescribe_until_event_completion", ...start });
+} else {
+  const sid = start.session_id;
+  text({
+    mode: "monitor-until-event",
+    session_id: sid,
+    read_pending_polling: false,
+  });
+  await yield_control();
+  while (true) {
+    const r = await tools.write_stdin({
+      session_id: sid,
+      chars: "",
+      yield_time_ms: 25000,
+      max_output_tokens: 5000,
+    });
+    if (r.output || !r.session_id) {
+      notify({
+        kind: "codescribe_until_event_completion",
+        tool_session_id: sid,
+        output: r.output,
+        exit_code: r.exit_code,
+        still_running: Boolean(r.session_id),
+      });
+    }
+    if (!r.session_id) break;
+  }
+}
+```
+
+- Only this cell consumes that terminal session. Keep the exec cell ID and
+  the `exec_command` session ID apart.
+- No `--max-wait`. The 25 s `write_stdin` is a blocking read of the tool's
+  output, not a model turn and not a `--read-pending` poll.
+- If the start already returns `mailbox_ready`, handle the pending message,
+  then rearm.
+- On `mailbox_ready`: read the owned mailbox, ACK the exact IDs at once,
+  drain, consume the finished cell with `functions.wait`, and arm exactly one
+  new cell.
+
+Keep `codex-queue` on beside the cell; each covers the other's gap. In the
+Founder's observed test (Maciej, 2026-10-18) an idle Codex read a native-queue
+message 5.6 s after it was sent, while a Codex in the middle of a turn read a
+queue message only after that turn ended: 5 min in that test, but the wait
+lasts as long as the turn does, hours for a long one. That same
+mid-turn Codex read a bus message through the cell 25 s after it was sent.
+A bus message to the idle Codex, without the queue, never woke it. Only the
+native queue wakes an idle Codex; the cell delivers during a turn.
 
 ## Acknowledge conversation receipt
 

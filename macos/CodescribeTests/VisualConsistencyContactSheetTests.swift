@@ -210,9 +210,9 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
       })
     await awaitCondition { !failedLicense.isBusy }
     let licenseModel = isolatedSettingsModel(licenseService: failedLicense)
-    licenseModel.section = .license
+    licenseModel.section = .user
     XCTAssertEqual(licenseModel.settingsHealth.level, .degraded)
-    XCTAssertEqual(licenseModel.settingsHealth.targetSection, .license)
+    XCTAssertEqual(licenseModel.settingsHealth.targetSection, .user)
     run.takeDensity(
       id: "license-warning-floor", size: settingsFloor,
       // Compose the production panel and footer without SettingsView.onAppear,
@@ -225,7 +225,7 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
         .frame(width: 216)
         Divider()
         ScrollView {
-          LicensePanel(model: licenseModel)
+          LicenseSection(model: licenseModel)
             .padding(CSSpace.xl)
         }
         .frame(minWidth: SettingsView.detailMinWidth)
@@ -504,8 +504,6 @@ private final class SheetRun {
     ) {
       let model = TrayViewModel(engine: nil, isRecording: recording)
       model.onQuit = {}
-      model.onCheckForUpdates = {}
-      model.onOpenSetupWizard = {}
       model.onHelp = {}
       model.onAbout = {}
       model.onIntent = { _ in }

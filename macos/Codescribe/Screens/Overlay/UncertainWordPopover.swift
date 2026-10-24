@@ -65,7 +65,7 @@ struct UncertainWordPopoverView: View {
         .foregroundStyle(palette.mutedText.color)
       if let diagnostic = model.diagnosticValue {
         Text(diagnostic)
-          .font(.system(size: 10, design: .monospaced))
+          .font(CSFont.mono(10))
           .foregroundStyle(palette.mutedText.color)
           .accessibilityIdentifier("uncertain-word-diagnostic")
       }

@@ -12,6 +12,8 @@ struct OverlayConversationComposer: View {
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
+  /// Out of sight under the agents list or a folded bar.
+  var isCovered = false
   var onFocusChange: ((Bool) -> Void)? = nil
   var placeholder = String(localized: "Message the Agent")
   var clipboard: NSPasteboard = .general
@@ -21,6 +23,20 @@ struct OverlayConversationComposer: View {
   var saveFile: (Data, String) throws -> URL = { data, name in
     URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
   }
+  var replySelection: OverlayUserReplyReference? = nil
+  var onClearReply: () -> Void = {}
+  var draftMicrophoneRecording = false
+  var draftMicrophoneBusy = false
+  /// The header's exact-owner live take projection; this changes only the glyph.
+  var liveSpeechActive = false
+  var onToggleDraftMicrophone: (() -> Void)? = nil
+  var onStageCaptureAttachments: (([String]) -> Bool)? = nil
+  var pendingCaptureAttachments: [String] = []
+  var onRemoveCaptureAttachment: ((String) -> Void)? = nil
+  var captureAttachmentError: String? = nil
+  var onRetryCaptureAttachments: (() -> Void)? = nil
+  var onNavigateReply: (() -> Void)? = nil
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
 
@@ -47,6 +63,7 @@ struct OverlayConversationComposer: View {
   private var attachments: [String] { ConversationDraft.split(draft).attachments }
 
   private func attach(_ paths: [String]) {
+    if onStageCaptureAttachments?(paths) == true { return }
     let parts = ConversationDraft.split(draft)
     let added = paths.filter { !parts.attachments.contains($0) }
     guard !added.isEmpty else { return }
@@ -61,6 +78,54 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: 6) {
+      if let replySelection {
+        HStack(alignment: .top, spacing: 8) {
+          Button {
+            onNavigateReply?()
+          } label: {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(verbatim: replySelection.author).fontWeight(.semibold)
+              Text(verbatim: replySelection.text).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .buttonStyle(.plain)
+          .disabled(onNavigateReply == nil)
+          Button("Clear reply", systemImage: "xmark", action: onClearReply)
+            .labelStyle(.iconOnly).buttonStyle(.plain)
+            .accessibilityIdentifier("overlay-conversation-clear-reply")
+        }
+        .font(.system(size: 11 * textScale))
+        .foregroundStyle(palette.mutedText.color)
+        .accessibilityIdentifier("overlay-conversation-reply-context")
+      }
+      if !pendingCaptureAttachments.isEmpty {
+        Text("Attachments for active recording")
+          .font(.system(size: 10 * textScale)).foregroundStyle(palette.mutedText.color)
+        WrapLayout(spacing: 6) {
+          ForEach(pendingCaptureAttachments, id: \.self) { path in
+            OverlayComposerAttachmentPill(path: path, palette: palette) {
+              onRemoveCaptureAttachment?(path)
+            }
+          }
+        }
+        .accessibilityIdentifier("overlay-conversation-capture-attachments")
+        if let captureAttachmentError {
+          HStack {
+            Text(verbatim: captureAttachmentError)
+              .foregroundStyle(palette.errorStatus.color)
+            if let onRetryCaptureAttachments {
+              Button("Retry attachments", action: onRetryCaptureAttachments)
+                .buttonStyle(.plain)
+            }
+          }
+          .font(.system(size: 10 * textScale))
+        } else {
+          Text("Attaching to this recording…")
+            .font(.system(size: 10 * textScale))
+            .foregroundStyle(palette.mutedText.color)
+        }
+      }
       let attached = attachments
       if !attached.isEmpty {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -69,6 +134,9 @@ struct OverlayConversationComposer: View {
               OverlayComposerAttachmentPill(path: path, palette: palette) { detach(path) }
             }
           }
+          // The chips keep their own sideways scrolling; the pin only makes
+          // sure a scroller the system forces back is the overlay one.
+          .csAutohidingScrollers(.includesHorizontal)
         }
         .frame(maxHeight: 30)
         .accessibilityIdentifier("overlay-conversation-attachments")
@@ -84,6 +152,18 @@ struct OverlayConversationComposer: View {
     .padding(.vertical, ComposerControlMetrics.verticalPadding)
   }
 
+  var draftMicrophoneSymbol: String {
+    liveSpeechActive
+      ? OverlayAgentAudioControls.liveSpeechSymbol
+      : draftMicrophoneRecording ? "mic.fill" : "mic"
+  }
+
+  var draftMicrophoneAccessibilityLabel: String {
+    if liveSpeechActive { return String(localized: "Live speech active") }
+    return draftMicrophoneRecording
+      ? String(localized: "Stop dictation") : String(localized: "Dictate message")
+  }
+
   private var editorRow: some View {
     HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
       ConversationMessageField(
@@ -93,7 +173,7 @@ struct OverlayConversationComposer: View {
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
-        onCancel: onCancel, focusRevision: focusRevision,
+        onCancel: onCancel, focusRevision: focusRevision, isCovered: isCovered,
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
@@ -113,18 +193,80 @@ struct OverlayConversationComposer: View {
             .accessibilityHidden(true)
         }
       }
+      if let onToggleDraftMicrophone {
+        // The same live take addressed to this conversation lights the
+        // header and gives this draft control its live-speech glyph.
+        Button(action: onToggleDraftMicrophone) {
+          Image(systemName: draftMicrophoneSymbol)
+            .symbolEffect(
+              .pulse, options: .repeating,
+              isActive: draftMicrophoneRecording && !reduceMotion)
+        }
+        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+        .frame(
+          width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+        )
+        .contentShape(Circle()).buttonStyle(.plain)
+        // A pastel at rest (Maciej, 2026-10-23: "daj bardziej pastelowy");
+        // hover and recording bring the whole violet back.
+        .conversationActionHover(
+          restingColor: palette.agentAccent.color.opacity(draftMicrophoneRecording ? 1 : 0.5),
+          hoverColor: palette.agentAccent.color
+        )
+        .disabled(draftMicrophoneBusy)
+        .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
+        .accessibilityIdentifier("overlay-conversation-draft-microphone")
+      }
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)
         .labelStyle(.iconOnly)
         .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-        .foregroundStyle(CSColor.terracotta)
         .frame(
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle())
         .buttonStyle(.plain)
+        .conversationActionHover(
+          restingColor: palette.listeningStatus.color.opacity(0.8),
+          hoverColor: palette.listeningStatus.color
+        )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
     }
+  }
+}
+
+/// The asset store mints its own file names: a pasted image lands as
+/// `inline_<sha256>.png` and a pasted file as `clipboard_<sha256>_<name>`.
+/// Neither is a label — the Founder's chip read `inline_5af8…f0108a4f.png`
+/// (2026-10-18). A pasted picture is named for what it is, and a file the user
+/// chose gives back the name they chose; anything else keeps its own name.
+enum ConversationAttachmentLabel {
+  private static let inlineImagePrefix = "inline_"
+  private static let clipboardPrefix = "clipboard_"
+  private static let hashLength = 64
+
+  /// `bytes` is the pointer's own size, or 0 when the caller has none yet.
+  static func display(fileName: String, bytes: Int = 0) -> String {
+    if fileName.hasPrefix(inlineImagePrefix) {
+      let image = String(
+        localized: "Image", comment: "Attachment chip label for an image pasted into a message")
+      guard bytes > 0 else { return image }
+      let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+      return "\(image) · \(size)"
+    }
+    return chosenName(fileName) ?? fileName
+  }
+
+  /// Peels the content hash the clipboard store prefixes to a chosen name.
+  private static func chosenName(_ fileName: String) -> String? {
+    guard fileName.hasPrefix(clipboardPrefix) else { return nil }
+    let stored = fileName.dropFirst(clipboardPrefix.count)
+    let hash = stored.prefix(hashLength)
+    guard hash.count == hashLength, hash.allSatisfy(\.isHexDigit),
+      stored.dropFirst(hashLength).first == "_"
+    else { return nil }
+    let chosen = stored.dropFirst(hashLength + 1)
+    return chosen.isEmpty ? nil : String(chosen)
   }
 }
 
@@ -136,9 +278,13 @@ struct OverlayComposerAttachmentPill: View {
   let palette: OverlayAppearancePalette
   let onRemove: () -> Void
   @State private var thumbnail: NSImage?
+  @State private var bytes = 0
   @State private var showPreview = false
 
-  private var name: String { URL(fileURLWithPath: path).lastPathComponent }
+  private var name: String {
+    ConversationAttachmentLabel.display(
+      fileName: URL(fileURLWithPath: path).lastPathComponent, bytes: bytes)
+  }
 
   private var attachment: MessageAttachment {
     MessageAttachment(name: name, url: URL(fileURLWithPath: path))
@@ -161,8 +307,9 @@ struct OverlayComposerAttachmentPill: View {
               .font(.system(size: 10, weight: .medium))
               .foregroundStyle(palette.mutedText.color)
           }
+          // A label, not code: the system voice, per the mono policy.
           Text(verbatim: name)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.ui(10.5, .medium))
             .foregroundStyle(palette.primaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -195,7 +342,11 @@ struct OverlayComposerAttachmentPill: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Text(verbatim: name))
-    .task(id: path) { thumbnail = NSImage(contentsOf: URL(fileURLWithPath: path)) }
+    .task(id: path) {
+      let url = URL(fileURLWithPath: path)
+      thumbnail = NSImage(contentsOf: url)
+      bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+    }
     .sheet(isPresented: $showPreview) {
       AttachmentPreviewSheet(attachment: attachment) {
         showPreview = false
@@ -218,6 +369,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   var onTypingActivity: () -> Void = {}
   var onCancel: (() -> Void)? = nil
   var focusRevision: UInt64 = 0
+  var isCovered = false
   var onFocusChange: (Bool) -> Void = { _ in }
   let clipboard: NSPasteboard
   let saveImage: (Data) throws -> URL
@@ -230,15 +382,32 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = MessageScrollView()
+    // This editor mutates TextKit geometry during main-thread layout. Give it
+    // explicit backing layers so an ancestor's flattened layer cannot draw it
+    // on a Core Animation worker while layout holds the view-hierarchy lock.
+    // The reverse order (TextKit draw -> insertion-indicator reparent) deadlocks.
+    scroll.wantsLayer = true
+    scroll.canDrawConcurrently = false
+    scroll.layer?.drawsAsynchronously = false
+    scroll.contentView.wantsLayer = true
+    scroll.contentView.canDrawConcurrently = false
+    scroll.contentView.layer?.drawsAsynchronously = false
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
-    scroll.scrollerStyle = .overlay
-    scroll.autohidesScrollers = true
+    // The scroller policy lives in `CSScrollerPin` (Founder, 2026-10-18); the
+    // coordinator keeps it pinned across "Show scroll bars" changes.
+    context.coordinator.scrollerPin.attach(to: scroll)
     scroll.borderType = .noBorder
     let editor = MessageTextView()
+    editor.wantsLayer = true
+    editor.canDrawConcurrently = false
+    editor.layer?.drawsAsynchronously = false
     editor.isRichText = false
     editor.isEditable = true
     editor.isSelectable = true
+    // Without this, Cmd+Z has nothing recorded to undo in the overlay's
+    // composer (the chat window's ComposerTextView already allows undo).
+    editor.allowsUndo = true
     editor.drawsBackground = false
     let font = NSFont.systemFont(ofSize: fontSize)
     editor.font = font
@@ -260,6 +429,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
+  }
+
+  static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    coordinator.scrollerPin.detach()
   }
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -308,6 +481,22 @@ private struct ConversationMessageField: NSViewRepresentable {
         editor.window?.makeFirstResponder(editor)
       }
     }
+    // Typing under the agents list went into this field, out of sight. Covered,
+    // it gives the keyboard up; uncovered, it takes it back only from a panel
+    // that still holds the keyboard, so nothing is taken from another app.
+    if context.coordinator.isCovered != isCovered {
+      context.coordinator.isCovered = isCovered
+      if isCovered {
+        if editor.window?.firstResponder === editor { editor.window?.makeFirstResponder(nil) }
+      } else {
+        DispatchQueue.main.async { [weak editor, weak coordinator = context.coordinator] in
+          guard let editor, let window = editor.window, window.isKeyWindow,
+            coordinator?.isCovered == false
+          else { return }
+          window.makeFirstResponder(editor)
+        }
+      }
+    }
     scroll.needsLayout = true
   }
 
@@ -316,6 +505,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     var parent: ConversationMessageField
     var applyingExternalText = false
     var focusRevision: UInt64 = 0
+    var isCovered = false
+    let scrollerPin = CSScrollerPin()
     private var pendingHeight: CGFloat?
     private var heightUpdateScheduled = false
     init(_ parent: ConversationMessageField) { self.parent = parent }
@@ -540,17 +731,40 @@ private struct ConversationMessageField: NSViewRepresentable {
       return super.validateUserInterfaceItem(item)
     }
 
-    private func performComposerPaste(with event: NSEvent) -> Bool {
+    /// Every standard Cmd edit shortcut lives here: a nonactivating
+    /// borderless panel has no menu-bar routing, so only shortcuts handled
+    /// in the view work at all. Paste alone was handled, and Maciej found
+    /// the gap by hand (P1!, 2026-10-22): Cmd+V worked while Cmd+C, Cmd+X,
+    /// Cmd+A, Cmd+Z and Cmd+Shift+Z did nothing.
+    private func performComposerEditCommand(with event: NSEvent) -> Bool {
       guard event.type == .keyDown, window?.firstResponder === self,
-        event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-        event.charactersIgnoringModifiers?.lowercased() == "v"
+        let key = event.charactersIgnoringModifiers?.lowercased()
       else { return false }
-      paste(nil)
+      let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+      switch (modifiers, key) {
+      case (.command, "v"):
+        paste(nil)
+      case (.command, "c"):
+        copy(nil)
+      case (.command, "x"):
+        cut(nil)
+        onTypingActivity()
+      case (.command, "a"):
+        selectAll(nil)
+      case (.command, "z"):
+        undoManager?.undo()
+        onTypingActivity()
+      case ([.command, .shift], "z"):
+        undoManager?.redo()
+        onTypingActivity()
+      default:
+        return false
+      }
       return true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-      if performComposerPaste(with: event) { return true }
+      if performComposerEditCommand(with: event) { return true }
       return super.performKeyEquivalent(with: event)
     }
 
@@ -575,7 +789,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     override func keyDown(with event: NSEvent) {
-      if performComposerPaste(with: event) { return }
+      if performComposerEditCommand(with: event) { return }
       let alternate = event.modifierFlags.intersection([.shift, .option, .control, .command])
       if event.keyCode == 53, alternate.isEmpty, !hasMarkedText(), let onCancel {
         onCancel()

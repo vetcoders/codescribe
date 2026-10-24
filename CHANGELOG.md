@@ -7,46 +7,191 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Added
-
-- A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
-
-## [0.17.1] - 2026-10-17
-
-Source changes in preparation; validation and distribution have separate receipts.
-
 ### Fixed
 
-- Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
-- Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
-- Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
-
-<!-- release-notes:0.17.1:start -->
-<!-- release-summary: generated -->
+- Overlay: the agent conversation cache no longer rewrites every conversation every 30 seconds. Each conversation source now has its own cache file and a checkpoint saves only the ones that changed, which cuts the disk writes macOS had flagged Codescribe for: on the machine that reported it, a checkpoint wrote 14 MB for eleven channels and now writes about 2 MB per changed conversation. The previous single cache file is removed on the first save; the conversations themselves are unaffected.
+- Held agent messages: Cancel/Edit pressed after the hold has run out no longer pulls the text back into the composer while the agent already has the message. The app checks the clock at the tap, and `cs-bus --withdraw` / `--revise` refuse with “message already delivered” within half a second of the deadline or after Send now, instead of reporting success.
+- Agents list: a click on the All row's message preview opens the broadcast conversation, as an agent row's preview does; before, only the title line above it reacted.
+- Settings › Shortcuts: the Fn tap switch no longer reads as if holding Fn needed it. It is now „Tap Fn to toggle dictation” (PL „Stuknięcie Fn włącza i wyłącza dyktowanie”), and its note says a short tap starts or stops a take while holding Fn always records.
+- Settings › formatting level: choosing Off, Correction or Smart takes effect again after Codescribe has restarted itself (interface-language change, setup-wizard resume, clearing defaults). The app no longer copies the saved level into its own process environment, where a self-relaunch inherited it as a `FORMATTING_LEVEL` launch override that outranked every later Settings choice and showed as a configuration warning in About. A `FORMATTING_LEVEL` exported before launch still overrides Settings and is still reported.
+- Settings › Agent › MCP (Polish): the add-server form's launch-command hint, its argument buttons and the command placeholder are translated, the command placeholder no longer repeats the server-name example, the field reads „Polecenie”, and the Technical details group aligns left instead of centring under the form.
+- Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier, holding it past the start delay before the digit no longer hangs up the open channel and starts a phantom dictation that the digit then reopened; while a channel is open that hold admits nothing and the digit chord alone closes the channel.
+- Agent channels: with Fn (or Ctrl) as both the hold-to-dictate key and the channel modifier and no channel open, a slow chord (the key held past the start delay, then the digit) no longer pastes a stray word when the key is released. The hold that had already started was only the chord's prefix: it ends without delivering, copying or archiving anything, the overlay closes the take, and the channel opens as usual.
+- Collapsed overlay: a press of the hold key that never becomes a take (released inside the hold delay, or declined beside an open channel) no longer leaves the header on a disabled stop at 00:00 until the next take. The capture clock starts when capture starts, a preparing that ends without one leaves the header ready, an open channel's counter keeps running through such a press, and a dictation that stops beside an open channel (a slow channel chord) hands the counter to the channel instead of reappearing as a disabled stop after the hang-up chord.
 
 ### Added
 
-- restructure the Shortcuts tab around honest save semantics
-- About tab replaces User with readable diagnostics
-
-### Fixed
-
-- speak the chosen language in the restart row
-- let the formatting level picker size to its labels
+- Shortcuts: a widget chord shows the collapsed widget from anywhere and hides it again while nothing is recording; a recording or open channel only comes forward. `Control+Shift+B` by default; Settings › Shortcuts › Extra shortcuts records your own (Control, Option or Command plus a letter or Space), persisted as `WIDGET_SHORTCUT` and applied without a restart.
+- Creator offers horizontal intercom or floating vertical agent capsules. The vertical widget shares the current roster, opens a conversation on click (hovering a row moves nothing), moves as a whole when a row is dragged, resizes from any row's left, right, top or bottom edge (taller rows become larger tiles), detaches a conversation into its own window only from its unrolled card's grip, hosts the middle-click agent chooser (wheel to choose, middle click to talk, agents in their own windows included) instead of the main overlay, keeps a narrow row's microphone and speaker at its right edge (antenna and moon return once the row is wide), has its own text size (⌘+/⌘−/⌘0 in an Intercom window), and keeps conversation selection separate from its microphone controls. A wide horizontal strip gives agent names and audio/panel controls priority over the waveform. Its buttons rest in the same muted ink as the "Intercom" label and brighten under the pointer; a talking agent's name brightens instead of turning violet. An agent nobody reads (its reader gone, or a backlog unread for ten minutes) is greyed out with an explicit mark: a cross when disconnected, zzz when not reading, and the hint says for how long.
+- Agent list: for a Codex agent outside Frame and a terminal, the per-agent button opens the agent's thread in the Codex app (ChatGPT), even while the agent shows as disconnected between replies. A Codex Cloud thread, which the app cannot open from this Mac, keeps the button greyed with "Codex Cloud thread: open it in ChatGPT".
+- Collapsed overlay: a channel map shows each bound agent by digit, so the channel chord's target is readable without unfolding the Agents canvas. In compact it sits between the clock and the header buttons as chips (`2 Miksa · 3 Igor · 5 Kuba`, lease names with a capital first letter); in mini a counter (`3 ▾`) replaces the "cs" wordmark beside the brand dot, and mini is as wide as its content, with no empty space before its controls. Channel 0 appears only while you broadcast on it. A chip's hint names the chord with the modifier from Settings (`5 · Kuba · Ctrl+5`), the counter's hint lists the agents; a chip click opens that agent's conversation, as its rail pill does, and never touches the microphone. The channel the microphone feeds carries a violet dot on its digit, with no symbol (the Agents button keeps the microphone for one agent and the megaphone for a broadcast), and the agent violet, on its chip or, folded, on the counter. Compact opens wide enough for its named chips up to 820 pt, then shows digits only (the selected conversation's chip keeps its name), and a strip you narrow by hand keeps your width for the session, falling back to digits and then to the counter. Clicking the counter switches mini to compact, or gives a narrowed compact strip its natural width back. With the map on, the channel chord no longer unfolds mini or compact onto the Agents canvas; the chip or counter shows the open digit instead, and the overlay keeps its form. The rail's numbered pills and the map share one pill view.
+- Agent list: the per-agent button also opens the agent's iTerm2 or Terminal tab, not only its Frame pane. A known Frame pane still wins; otherwise the agent's own reader selects its tab and Codescribe brings the terminal forward. The row says when the tab is not found, when macOS does not allow controlling the terminal (System Settings › Privacy & Security › Automation) or when no terminal is known for the agent.
 
 ### Changed
 
-- l10n(settings): catalog entries for the restructured Shortcuts tab
-- l10n(settings): catalog for round 5 and a shorter Polish "Ask"
+- Agent pills share a context menu for writing, speaking, playback, showing the agent list, supported terminal navigation, broadcast membership and Do not disturb. Disconnect remains blocked during recording. The general overlay menu keeps its actions except Pin; the header pin button remains available.
+- Images pasted during a live agent take remain bound to the selected audio segment while speech advances. Pasting before the first segment waits quietly and attaches automatically to that same capture; Retry no longer moves the file to the latest utterance. The follower keeps the committed image in the same voice message across revisions and restart.
+- Clicking a floating agent capsule pins its small message preview. Hover remains transient; opening the full conversation is an explicit action inside the preview.
+- Agent and conversation pane buttons stay with their own panels. Showing the agent list opens a side column at every width; hiding it stays hidden until an explicit reveal. Individual-agent capture shows a microphone; channel-zero broadcast shows an outlined megaphone.
+- Message bubble actions brighten their icon and label together on hover, without redundant tooltips or button chrome. The composer microphone and Send share that feedback; Send keeps its filled paper plane in softer, adaptive terracotta.
+- Creator: the collapsed overlay channel map is opt-in, with a live **Channel map in the overlay** switch. With it off, mini restores the `cs` wordmark and its earlier widths; compact no longer grows for agent chips. The choice never changes microphone routing.
 
-### Documentation
+- Agent window: the "Conversation width" submenu under "More actions" marks the active mode with the system check mark (native picker); before, the mark never rendered and the choice looked ignored.
+- Agent window: one bar, the same height as Settings. The conversation title, live status and "Agent · model" sit in the window bar beside the wordmark; the separate header row under the bar is gone, and its controls (Voice Lab mark, width, **Context**) join **Always on top** and the menu on the trailing side.
+- Agent window: a one-click conversation width button sits beside **Context** in the window bar (Standard → Wide → Full width); the submenu under "More actions" still names the modes.
+- **Restart now** in Settings (interface language, sheet shade) brings Codescribe back with Settings open on the section you were in and in front, instead of relaunching into the background under the previous app.
+- Settings says less, after the Founder's review of its first ten views. The window bar shows only the wordmark and version, no second title for the pane. Creator drops the headers that repeated their cards (Languages, Appearance, Voice & formatting; Permissions keeps its header and its System Settings action), loses the sentence that promised "your current settings stay" (the wizard keeps custom shortcuts now, see Fixed), and calls the speech-language row **Transcription language**, because that is all `speech.language` governs. Shortcuts loses its intro, the Dictation blurb and the "three shortcuts need saving" note; "During dictation" becomes **Attach extra context**. Providers explains cloud uploads in one sentence that names both paths (Cloud mode, cloud re-transcription), and an API key reads "Optional" only when the connected account can actually make requests (OpenAI and xAI, not Anthropic). Agent › AI models shortens the model-list notes to "The model list needs an API key. You can enter a model ID by hand." and the Formatting note to "Corrections and Smart. Max uses the Agent model." Prompts, Workspace, Diagnostics, Tools and MCP lose their intros and empty-state box; Workspace keeps one line ("Processes and MCP servers have their own permissions.") with the path rules in the guide; Diagnostics is headed **Agent environment configuration** and names missing capabilities in words instead of ids; the tool-rules paragraph reads "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."
+- Settings layout: the Audio input-device menu ends on the retention menu's edge and the readiness icon sits on the title's baseline; the Codescribe Bus hold and auto-send cards take the slider card's width; the prompt source chip and Edit button share one size and baseline; the Diagnostics tool and server rows put the chevron on the title line and the status icon on the description line; per-tool Allow/Ask/Block segments are right-aligned like the defaults.
+- Settings › Agent › AI models: the Formatting card's engine row reads **Formatting engine** with one sentence ("Apple on your Mac first; this provider steps in when Apple fails.") and two translated choices, **Cloud provider** and **Apple on this Mac (experimental)**; the four-sentence technical note and the `.env` remark moved to the guide, and with Apple selected the lane's access line reads "Used when Apple fails." plus its real state instead of a three-sentence status.
+- Settings › Creator: the interface-language, transcription-language and appearance rows use one native segmented control whose segments hug their labels, so the three rows share a size instead of each picker stretching to its widest word; the panel-shade menus show the shade name, with the hex code under the row title.
+- Privacy: the status card is headed "Data processing"; one action, "Set up the cloud in Providers", sits under it and lands on Providers › Cloud transcription.
+- User › License is one card: product name and purchase kind, a green status, the offline countdown with the Keychain note, and "Manage key" that opens Change key / Get license key / Remove key inside the card; without a key the activation field is open at once. The sentence above reads "A license unlocks Agent mode."
+- The Formatting level is the only formatting switch: Off replaces the separate AI formatting toggle in Creator, and `AI_FORMATTING_ENABLED` is no longer read from `settings.json` or `.env`. A toggle that was switched off migrates once to level Off and the old key leaves `settings.json` on that save.
+- Settings says less, round 2: the Engine empty state reads "No transcription in this session", the markers switch loses its row title, Preview keeps only its header and the selected preset's line, Dictionary loses its intro sentence.
+- The setup wizard follows one pattern on all nine steps, after the Founder's review: the wordmark, step counter and progress bar stay at the top and Back / Skip / Continue / Finish at the bottom; each step shows its icon with one question or instruction, a small category label under it (e.g. **INTERFACE LANGUAGE**, **OPERATING LANE**, **PERMISSIONS**, **DICTATION LANGUAGE**, **LOCAL TRANSCRIPTION**, **AI PROVIDER**, **AGENTS**), then its content in one 560 pt column; selected cards use the prominent card surface. Gone: the "Your language. Your shortcuts. Your way of working." and "Choose how you want to use Codescribe." headings, the second headings inside the steps, "When you speak more than one language." under Auto-detect, "Use both methods." under Hybrid, and the System Settings footnote on permissions. "Dictation + AI agent" reads "Dictate, or talk to an AI agent."; permissions read "You can do this later in Settings."; the local model step asks "Do you want to transcribe on your Mac?" and holds the model in one card; the provider sentence names only the access the provider has ("account or API key" only for OpenAI and xAI with account sign-in, otherwise the key); the agent cards read "Install the Codescribe skill" / "Codescribe skill installed" instead of "Connect to the active session", because Continue installs a skill and connects no session; the summary shows the model name and state with its source and path under "Details", and says "Dictation is ready." instead of "Codescribe is ready." while the Agent step is not ready on the agent path.
+- The Agent window follows the Founder's approved layout in the current style. The conversation title, "Agent · model", the live status and a **Context** button move from the toolbar into a header at the top of the conversation column; the toolbar keeps the wordmark, pin and menu, and the turn count is gone. **Context** opens an optional **Agent context** panel (closed by default, remembered, a fixed 260 pt column) with the conversation's stored facts and a **Tool settings** row into Settings › Agent › Tools; an open panel raises the window floor instead of squeezing the conversation. Messages show the author and a compact time (full date on hover, a separator where the day changes) and keep **copy**, **Speak** and **raw**/**rich** in one quiet row under the message. The "· streaming · attach file / image" hints under the composer are gone (the controls' tooltips say it), and the "You use dev power mode" corner caption becomes a **Voice Lab power mode** mark in the conversation header, shown under the same condition.
+- Dictation: the Local power caption reads "Live speech recognition and correction in the background, without sending recordings"; the Live Whisper refinement card moves to the Whisper tab under the model card and its caption reads "Apple recognizes speech and Whisper corrects the text during the recording"; the model card shows one Status line (Loaded in memory / Installed / Not installed) beside Check model; the Disk space section is gone.
 
-- record the gap between the Shortcuts picker and routed gestures
-- state the Max consultation self-heal contract
+### Fixed
 
-Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+- The conversation composer's editor, clip view and scroll view keep explicit synchronous drawing boundaries, preventing ancestor layer flattening from sending TextKit drawing into the worker/main-thread lock inversion captured during editor resize. Native runtime acceptance remains separate from the source repair.
+- Rerunning the wizard keeps custom mode shortcuts; a preset is written only when you pick one.
 
-<!-- release-boundary: 0.17.1 de8c6e0836bb9104f2c41dd6770971bbe7acec95 -->
+## [0.18.0] - 2026-10-20
+
+Source changes in preparation; validation and distribution have separate receipts.
+
+<!-- release-notes:0.18.0:start -->
+
+Source history: 245 commits; [complete inventory](docs/releases/0.18.0-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.18.0 6aede4c05da926a940a1f0151b736d9742fd7817 -->
+<!-- release-notes:0.18.0:end -->
+
+## [0.17.2] - Unreleased
+
+Source changes in preparation. This is not a published release.
+
+### Fixed
+
+- Unpinning the widget keeps it visible while the pointer is over it or its menu
+  is open. Leaving the interaction starts the full three-second grace period;
+  returning during the fade keeps the window visible.
+- The auto-fold menu names the current interval and labels its selected option,
+  including Never, instead of relying on a checkmark image that was not visible
+  in the native menu.
+
+<!-- release-notes:0.17.2:start -->
+
+Source history: 2 commits; [complete inventory](docs/releases/0.17.2-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.17.2 4ced05b743ad18d5da2249a089d2f0f9a1dbf719 -->
+<!-- release-notes:0.17.2:end -->
+
+## [0.17.1] - 2026-10-19
+
+Validation and distribution have separate receipts.
+
+### Known issues
+
+- Live and final transcription can still contain incorrect words or text inferred
+  from quiet audio. The filters below are implemented defenses, not a claim that
+  this class of error has disappeared.
+- The unpinned widget can hide during pointer/menu interaction, and the auto-fold
+  menu does not clearly show the selected interval. These remain open in this
+  source checkpoint.
+
+### Added
+
+- A remote agent can join the Transcript BUS over MCP 2.0 with its own mailbox, read/ACK, sending and optional requested speech; identity, paths and capabilities come from a locally reviewed scope file. See [`docs/AGENT_MCP.md`](docs/AGENT_MCP.md).
+- A middle click can pick an agent. With **Middle click picks an agent** on (Settings › Shortcuts & control › Dictation control; off by default, `MIDDLE_MOUSE_AGENT_GESTURE`), a middle click opens the overlay's agents with the first row focused; the wheel or the pointer moves the focus, a left click opens that conversation, and a middle click on it opens its microphone until the next middle click, which closes and sends. Escape or 20 seconds without input ends the choice. While the setting is on, Codescribe takes the middle click, and while you choose also the wheel, the left click and Escape; with the middle button acting as Fn, a hold still dictates.
+- An agent row in the overlay can bring that agent's terminal panel to the front in vc-frame. The button (“Focus agent panel in Frame”) appears only when a compatible `vc-frame` is installed on the `PATH` and is disabled while the agent's reader is disconnected. The agent's bus reader runs `vc-frame action focus-pane-id` from the agent's own pane, so Codescribe never drives the terminal; the overlay folds, the terminal app comes forward, and the row reports when the panel is not found, the agent is not running in Frame or the request expired.
+- An agent can write to you alone: `cs-bus --send "…" --to founder` (or `--to 10`) appears in that agent's conversation as “name → You” and reaches no other agent.
+- `codescribe replay <session|wav>` runs a recorded take through the production session again and prints the text the overlay would show. `--runs N` checks that repeated runs agree, `--json` prints a receipt naming every input that differs from the take, and `--ledger on|off` and `--device NAME` replay the take as a what-if with seal-ledger admission switched or on another microphone. Each run keeps its evidence under `replays/<session>/` in the data folder. Replay needs Speech Recognition permission for the terminal it runs in.
+- Every recording writes `sessions/<session>.replay-card.json` in the data folder (`~/.codescribe`): the build, the capture device, language, capture turn and a copy of the settings in which API keys are recorded only as present or absent.
+- Agent voice replies are kept as audio. Each synthesis is stored in `~/.codescribe/agent-bridge/speech/` (`<hash>.wav` with a `<hash>.json` sidecar holding the spoken text), so playing a reply again, or repeating the same words in the same voice, is neither synthesized nor paid for again.
+
+- Settings › Creator › Appearance: **Appearance** (System, Light, Dark) applies at once to every window, the tray and the overlay. **Panel shade, dark / light** offer the content-sheet candidates under review (Today, Soft graphite, Warm carbon; Today, Limestone, Travertine); a shade is read at launch, so the row ends with the same **Restart now** as the interface language.
+
+### Changed
+
+- Settings: every switch is the small macOS switch, tinted the same, with its label carried by the row; the Lab desk's switches sit in one trailing column instead of a staircase; slider tracks stop at one shared width with the value at the track's end.
+- Settings › Dictation › Engine › Transcript markers: the template editor and its preview are one box with an **Edit | Preview** segment above it instead of two stacked boxes.
+
+- The tray menu no longer carries **Setup Wizard** or **Check for Updates**: the wizard is reopened from Settings → Creator (**Open Setup Wizard…** under the heading), and updates are checked from the **Codescribe** application menu (**Check for Updates…**, right under About, as in other Mac apps) or from Settings → User.
+- Settings has one **User** tab in place of About and License. It opens with the license — its state, the key field and **Activate** in one card, with **Get license key** and **Remove key** under it — followed by the version with a new **Check for Updates…** button, local data, the first-dictation confirmation, the documents and the resets. **Transcript markers** moved to Settings → Dictation → Engine. The Agent window's **Enter license** and the license messages point to Settings → User.
+- Agents now speak their replies to the Founder as well as writing them, unless playback is muted or someone asks for quiet; a muted speaker means text only, and agents never unmute it. The skill used to allow speech only after an explicit request such as "daj znać głosem"; that limit grew out of a single request and was never decided. Speech stays short, above all on channel 0.
+- The skill now tells each provider how it is woken: Codex runs `cs-bus --watch --until-event` in one `tty` exec cell beside its native queue, Antigravity (agy) runs the same command as a background task whose exit starts a turn, and OMP relies on its plugin's waiter. The entrypoint and the Codex command no longer point Codex at an endless `--watch --bell`, which never ends and so never wakes it.
+- The overlay conversation fades under the header on macOS 26 instead of staying sharp behind the glass, and the header's right end follows the window's corner.
+- One type policy across the app: labels, buttons, statuses and sentences use the system face; JetBrains Mono is kept for times, versions, keyboard shortcuts, code and eyebrows, and SF Mono is no longer used.
+- The overlay is at least 360 pt wide, so the timer never wraps; the agent rows in the narrow overlay share one width.
+- An attachment chip names a pasted picture "Image · size" and a pasted file by the name it was chosen with, instead of the store's hashed file name.
+- A provider API key that is not set is never a red warning. An account and a key are alternatives, so whichever is missing reads "Optional" in neutral grey once the other is configured, and stays neutral when neither is; red is left for a real failure, such as a key the provider rejected. The same rule holds in setup and in Settings → Providers, where **Sign out** is now a neutral chip instead of a red one.
+- Setup counts the steps the chosen lane actually shows. The Basic lane hides the Agentic Readiness step, so it reads "Step 7 of 8" and then "Step 8 of 8" instead of jumping from 7 straight to 9; the progress bar follows the same fraction.
+- Setup's second step names what you get rather than the lane: "Dictation only" and "Dictation + AI agent".
+- Setup's permission descriptions no longer repeat the "Optional" badge beside the title, and each one says in two short sentences what stops working and what keeps working. The footnote now names what it is about: "You can change these permissions later in System Settings."
+- Setup's completion step drops the sentence that repeated the heading's ready verdict and the "Required for transcription" group label; the heading, "Summary", "Review your setup." and the rows carry it.
+- Setup's provider step says one source is enough — sign in with a provider account **or** add an API key.
+- The Whisper model's state reads beside the model heading instead of at the far right edge of the window, and setup's model step separates the heading from the model block.
+- Both notes under setup's interface-language picker use one text style.
+- The overlay menu names the Steer box "Wake the agent", and replies no longer carry an "Unsolicited reply" label.
+- The overlay's agent list marks the open conversation the same way on every row, "0 · All" included: a slim accent bar on the leading edge over a light veil. "0 · All" no longer sits on a violet wash and stays apart by its place at the top, its antenna and the divider below it. Hover on a row is a light veil instead of a milky patch in the light appearance, and the rows are denser.
+- Conversation bubbles in the overlay may use more of the column (92 % instead of 82 %), so a docked agent list no longer leaves an empty band beside them.
+- The Agent window and Settings share one sidebar, with Settings as the model: the same width (216 pt), search field, section headers, selection and glass, and the same toggle button at the left of the toolbar with `Control+Command+S`. Each window remembers whether its sidebar is open. Conversation titles take the system sidebar style and dim with the window like any other sidebar row.
+- **New conversation** moves from the pill at the bottom of the Agent sidebar to the top, just under the search field, as a quiet icon and label.
+- The Agent window calls what it stores a conversation: "New conversation", "Search conversations", "Delete Conversation" and every other label, menu, error and accessibility text that said thread, as well as the Markdown export of an untitled conversation and the storage summary in Settings. In Polish "wątek" becomes "rozmowa" ("Nowa rozmowa", "Usunąć tę rozmowę?"). "Chat" stays the name of the mode and "session" keeps its meaning for dictation and the bus.
+- The Settings health line under the sidebar is ordinary secondary text beside its coloured dot.
+- The overlay takes its colours from the app palette and draws its brand with the shared wordmark; the onboarding header uses the design-system type.
+- No window shows a thick, always-visible scroll bar any more, even with a mouse attached: the overlay, Settings, the Agent window, the tray and onboarding show at most a thin bar while scrolling. The tool list in Settings → Agent grows with the page instead of scrolling inside a box of its own.
+- The app spends less CPU on the bus while the overlay is open and while you record. The overlay stops reparsing and re-polling acknowledgements that settle on another agent's bus and checks each bus's segment manifest once per change instead of on every 500 ms pass; the app no longer reparses agent acknowledgement markers on every pass; live-lexicon rules are compiled once instead of on every rewrite.
+- Transcription publishes the recognizer's text directly by default. Seal-ledger admission is off unless chosen. Apple-only keeps Apple live recognition on by default, including on a fresh install without Whisper weights; Local power and consented Cloud leave Apple off unless chosen. Explicit Apple and ledger choices are preserved. The independent switches live in Lab, which only developer builds show. The default direct transcription starts without a measured microphone calibration: Settings › Audio shows the calibration as "Optional" and a switched-off committing lane as a neutral "Off", and when a recording is refused it names that refusal and offers only its remedy. With seal-ledger admission enabled, a recording still needs the calibration, the committing lane and its detector. Local transcription shows Whisper's text as each stretch of up to 9 seconds is decoded. Agent channel takes follow the same choice.
+- Agent rows in the overlay fit in five lines and say who wrote to whom: the title with the channel-0 mark, the unread badge and the time; the agent's provider and model; a two-line preview such as “You → All”, “lena → You” or “lena → astra”; one state line. Every row and pill marks which of the three channel-0 states the agent is in, and “Skipped: off channel 0” appears only when the agent's reader recorded skipping that very broadcast, so a later change of the setting never rewrites an old message's receipt. A direct message between two agents shows in both of their conversations.
+- The docked agent list resizes from its divider and keeps its width.
+- The product name is written “Codescribe” however the recognizer heard it (“CodeScript”, “code script”, “kod skrajb” …), in transcripts and in every formatted version. Code blocks, inline code, quoted literals and paths such as `~/.codescribe` keep their spelling.
+- `cs-bus --status` reports whether the session's `--watch --until-event` task is alive (`listener.until_event_alive`), for every provider.
+- Settings → Agent → Tools is a compact list. A tool's card pulls its name, the rule that decided its level and its category together, drops the raw identifier to the quietest rung — still whole and now selectable — and takes a tighter inset and a smaller Allow/Ask/Deny control. "Defaults" is now a section title of the same weight as "Individual tools", so the rule between them is gone, and the description of how rules rank is two sentences instead of four clauses. The search field and the source popup share one row, without a "Source" caption: the popup's own entries name what it selects.
+- Settings → Agent → MCP reads like the rest of the window. "Add server" is an ordinary section title above its form instead of an uppercase mono eyebrow inside it, the form and the empty state sit on the shared card at the pane's own spacing, and the Enabled / Test / Remove actions are the one Settings chip. With no servers configured the tab says in one sentence what a server would add and no longer offers to skip a step — MCP is optional, not a step. Its fields are lower, and so is every text field in Settings and setup: a field now has the height of the Save button beside it.
+- Settings is sized for a desktop app rather than a tablet: one scale across the whole central pane, with smaller cards, tighter margins and text and controls a rung down, so pages that overflowed the window by a tile or less now fit. Section titles sit above their cards and are never smaller or lighter than the settings underneath them, and every flat action in Settings is the same chip, with its keyboard outline on the chip's own shape. The sidebar keeps its size, and no wording changed.
+- Settings → Providers and Settings → Agent follow that scale too, and say less while saying it more precisely. A provider card names its protocol once — on the pill — and the three Providers sections are peers. Cloud transcription keeps the key at the first level and moves the addresses under the card's **Advanced**, under two short lines: where you choose the mode, and when a recording is actually sent. On **AI models** the model-list line moved above the model field, so "enter a model ID below" points where it says; the two Codescribe Bus timers now stand together and each timer names what it acts on, the bus or the built-in Agent. Agent → Diagnostics calls the provider a provider instead of a model, names the capabilities that have no provider instead of counting them, says whether the listed items block the Agent, and uses the compact integration row as the pattern for every list on the page.
+- Settings › Creator no longer installs or updates the coding-agent skill on a single click. **Install skill…** and **Update skill…** first open a confirmation that names the destination folder, the skill version and whether an existing copy is replaced, including other clients' outdated copies updated in the same step; only its **Install** or **Update** button writes files. A client whose skill is already up to date has its button disabled. The card now opens with three sentences on what the Codescribe skill is and what the agent can do once it is installed.
+- Settings answers what a status implied but never said. A coding-agent row reads **Up to date** or **Update available** beside its **Update skill** button, and the folders each client reads moved into a **Skill locations** disclosure; **Max permissions** says whether any request is waiting. Shortcuts carries every section title above its card, says in plain words what middle click does and what a short Fn press costs in macOS, and fits its rows back into the shared scale after they had grown by a tile. Audio's readiness card is no longer a panel inside a card, its buttons are the same chip as the rest of Settings and now name the action they start, and the volume row ends where the switch above it does.
+
+### Fixed
+
+- The live transcript activity marker keeps its position through width changes instead of retaining the wrapping of a discarded layout proposal.
+- Switching agents opens the loaded conversation at its latest reply while retaining the composer and unsent draft.
+- The Settings window has its yellow button back, and it and ⌘M hide the window the way they hide the Agent window, instead of minimising it into an empty App Exposé tile. Reopen it with **Open Settings** or ⌘, (Founder decision, 2026-10-20; `docs/guide/settings.md`).
+- Settings → Dictionary no longer flashes "No recorded word slots" and the correction cards for a frame when you come back to it: the word-pins section reopens on the last snapshot it read for that take and refreshes in place, and a first visit holds the list's room while the receipts are read.
+
+- A Claude Code agent no longer stops hearing the bus after an interrupted turn. The plugin re-arms its waiter after every tool call, not only at a normal turn end, because Claude Code runs no Stop hook after an interrupt.
+- An agent that also keeps a `cs-bus --watch --until-event` task is woken once per message instead of twice; the plugin's waiter steps aside while the task lives and takes over when it is gone.
+- An agent's message to channel 0 now reaches each other agent as a channel-0 message (`0 (all audience)`), not as one addressed to that agent by name. Every copy of an agent's message also carries its original address and the audience frozen when it was sent (`target`: broadcast or direct, the recipients, leaving out agents with channel 0 unticked), so a recipient sees who else got it, as with the Founder's spoken messages.
+- `cs-bus --send … --to NAME` reaches every other session bound to that name (two sessions of one agent both get it) instead of only the first; `--to 3` addresses one channel.
+- `cs-bus --ack A --ack B` acknowledges both deliveries. Before, each repeated `--ack` replaced the previous one, so only the last id was acknowledged and the others stayed unread.
+- A conversation title clipped in the Agent window ends with an ellipsis instead of being cut mid-word without a sign.
+- Switching pages in Settings no longer freezes the window for a quarter of a second. Every switch re-validated the whole Whisper model on the main thread; the check now runs in the background and the page shows the last known model state until it lands.
+- ⌘C copies text selected in an overlay bubble. A click into the bubble moved focus off the transcript and the panel gave up the keyboard in the same click, so the shortcut went to the app behind it.
+- The agent list docked beside the overlay conversation grows with the overlay text size like the conversation does, instead of staying at the default size while its column widens.
+- Sending an agent message over 64 KB or saving an empty revision says what is wrong instead of reporting a disk error.
+- After an agent's channel take ends, the overlay header is ready again instead of looking like a dictation still waiting for its text.
+- With keyboard navigation turned on in macOS, focus entering the overlay's agent list lands on the selected conversation instead of staying on "0 · All".
+- Added audio-based filters for unsupported Whisper words, decoder repetition and phrases inferred from quiet audio. They use measured speech near the candidate and retain words when audio evidence is unavailable. False positives and false negatives remain possible; quiet-audio phantom text is still a known issue.
+- A spoken agent message waits through the same send pause as a typed one, with Cancel, Edit and Send now. Before, a take that the ledger did not seal was sent at once.
+- A spoken agent message ends at a pause in your speech measured on the capture, not at a pause in the recognized text; without a measurement the take does not assume silence.
+- When a new agent take opens while the previous one is still finishing, the previous message is no longer delivered before its last words arrive.
+- The overlay's timer runs during an agent channel take, not only during dictation.
+- ⌘C copies text selected in an overlay conversation bubble instead of reaching the app behind the overlay.
+- The docked agent list follows the overlay's text size, like the conversation beside it.
+- A broadcast reply appears in “0 · All” only, no longer also in the replying agent's private conversation.
+- A delivery whose wake notice was lost wakes the agent once more after 10 minutes while it is still unread (Claude Code and OMP plugins), and the six-hour idle receipt lists the deliveries still unacknowledged instead of saying that no message arrived.
+- Editing a finished transcript keeps Format and Retranscribe available. Retranscription waits for its committed text before enabling another document action.
+- Format remains available for a retained transcript when delivery or speech coverage reports an error, whenever the producer authorizes it.
+
+<!-- release-notes:0.17.1:start -->
+
+Source history: 291 commits; [complete inventory](docs/releases/0.17.1-commits.json). Squash headings describe intermediate work and may include later revisions.
+
+<!-- release-boundary: 0.17.1 c55f8bc4d9faee2231ff7dff11e19e76cef4daca -->
 <!-- release-notes:0.17.1:end -->
 
 ## [0.17.0] - 2026-10-16
@@ -189,6 +334,7 @@ Source history: 996 commits; [complete inventory](docs/releases/0.17.1-commits.j
   when it is on; MINI remains the idle entry form.
 - Resize cursors are reused and no longer compete with a whole-window arrow
   cursor rectangle or native text tracking at the window edges.
+- Cloud recognition keeps the opening utterance intact until a measured pause or Stop instead of splitting it on a 2.5-second timer.
 
 <!-- release-notes:0.17.0:start -->
 
@@ -453,6 +599,8 @@ configuration loading remain under investigation.
 
 ### Fixed
 
+- `cs-bus --status` reports `listener.until_event_alive`: whether a `--watch --until-event` task of this session is running, for every provider. Each such task holds `runtime/until-event/LEASE.lock`, the same mark the plugin's waiter already yields to.
+- A Codescribe plugin wake whose notice was lost no longer leaves its message silent: a delivery still unacknowledged ten minutes after its announcement wakes the agent once more (`codescribe_mailbox_reminder`), and the six-hour idle receipt lists deliveries still unacknowledged instead of saying no message arrived.
 - **Latched paste target never yields to a foreign frontmost app.** `execute_clipboard_paste` follows the throne law `clipboard_paste_may_post`: a latched target must confirm focus or be observed frontmost; the external-frontmost fallback (2fb2bd8ec) now applies only to an Insert with no latch. Canary finding P1-01 (2026-08-24) closed.
 
 - **Repeated speech is no longer deleted by string equality.** Light+ stopped
