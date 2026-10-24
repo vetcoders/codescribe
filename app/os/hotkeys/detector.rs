@@ -713,8 +713,6 @@ impl HotkeyDetector {
         if let HotkeyPhysicalKey::Digit(digit) = key
             && channel_chord_matches(config.channel_modifier, modifiers)
         {
-            self.fn_press_pending = false;
-            self.fn_press_started = None;
             if self.agent_channel_digit_down == Some(digit) {
                 return None;
             }
