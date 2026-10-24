@@ -6,6 +6,37 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  func testStretchedCardsRevealUsefulContentAtEachTextScale() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
+      let factor = max(1, scale)
+      XCTAssertEqual(
+        metrics.cardContent(width: metrics.minimumNameWidth - 1, cardHeight: 2000), .header)
+      let width = max(metrics.minimumNameWidth, 220 * factor)
+      XCTAssertEqual(
+        metrics.cardContent(width: width, cardHeight: 54 * factor), .context)
+      XCTAssertEqual(
+        metrics.cardContent(width: width, cardHeight: 140 * factor), .preview)
+      XCTAssertEqual(
+        metrics.cardContent(
+          width: max(metrics.minimumNameWidth, 320 * factor), cardHeight: 240 * factor), .composer)
+    }
+    let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: 1)
+    for siblings in [1, 4, 9] {
+      let height = metrics.fittedCardHeight(260, count: siblings, available: 900)
+      XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: height), .composer)
+    }
+  }
+
+  func testPagingCountsActualTallCardsSoLowerAgentsRemainReachable() {
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 8, offset: 0, visibleHeight: 900, scale: 1, cardHeight: 260), 0..<3)
+    XCTAssertEqual(
+      Layout.visibleRange(
+        count: 8, offset: 99, visibleHeight: 900, scale: 1, cardHeight: 260), 5..<8)
+  }
+
   func testResizeAndPresentationShareTheThreeMailboxHeaderSlots() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
@@ -145,8 +176,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
 
   /// Maciej, 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie
   /// fajne", the one-or-two-row snap "nie robi nic". A card follows the
-  /// gesture from one row up to its share of the screen.
-  func testCardsStretchWithTheGestureUpToTheirShareOfTheScreen() {
+  /// gesture up to a viewport-sized card; siblings are reached by paging.
+  func testCardsStretchWithTheGestureWithoutDividingHeightBetweenSiblings() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
       let icon = metrics.iconSide
@@ -160,12 +191,13 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           metrics.fittedCardHeight(requested, count: 3, available: 2000), requested,
           "any height in between, not a snap")
       }
-      let share = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
-      XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), share)
+      let maximum = 2000 - Layout.controlHeight(scale: scale) - Layout.gap
+      XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), maximum)
       XCTAssertEqual(
         metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 2 * icon), .actions,
         "two rows' height moves the controls under the name")
-      XCTAssertEqual(metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 1.6 * icon), .name)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 1.6 * icon), .name)
     }
   }
 

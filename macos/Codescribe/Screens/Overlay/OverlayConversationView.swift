@@ -44,6 +44,10 @@ private struct OverlayHeldControlButton: View {
   }
 }
 
+enum OverlayConversationPresentation: Equatable, Sendable {
+  case standard, intercom
+}
+
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
@@ -86,6 +90,16 @@ struct OverlayConversationView: View {
   /// carries its microphone and speaker — the identity pill evacuates instead
   /// of repeating it (Maciej, 2026-10-17).
   var hidesNavigation = false
+  /// Intercom cards use the same message rows without another nested surface.
+  /// The standard presentation remains the main and detached window default.
+  var presentation: OverlayConversationPresentation = .standard
+  var showsComposer = true
+  /// A bounded text preview in a stretched group card; opening the full
+  /// conversation restores the complete body without changing its document.
+  var messagePreviewLineLimit: Int? = nil
+  /// Group previews bound eager row construction; full presentations retain
+  /// the ordinary history window. This slices the projection, never the source.
+  var messageWindowLimit: Int? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -128,8 +142,14 @@ struct OverlayConversationView: View {
           owner: owner, busPath: message.busPath, text: text)
       }
 
-  var orderedMessages: [OverlayConversationMessage] { conversation.messages }
+  var orderedMessages: [OverlayConversationMessage] {
+    guard let messageWindowLimit else { return conversation.messages }
+    return Array(conversation.messages.suffix(max(0, messageWindowLimit)))
+  }
   private var followsLatest: Bool { scrollFollow.followingLive }
+  private var contentInset: CGFloat { presentation == .intercom ? 12 : 20 }
+  private var visibleComposerHeight: CGFloat { showsComposer ? composerHeight : 0 }
+  private var visibleNavigationHeight: CGFloat { hidesNavigation ? 0 : navigationHeight }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
   /// The window bound keeps a margin on the far side so leading and trailing
@@ -151,8 +171,9 @@ struct OverlayConversationView: View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(
-          maxBubbleWidth: Self.bubbleCap(
-            contentWidth: geometry.size.width, textScale: textScale)
+          maxBubbleWidth: presentation == .intercom
+            ? max(0, geometry.size.width - 2 * contentInset)
+            : Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -177,12 +198,14 @@ struct OverlayConversationView: View {
           transaction.disablesAnimations = true
         }
         .overlay(alignment: .bottom) {
-          composer
-            .onGeometryChange(for: CGFloat.self) {
-              $0.size.height
-            } action: {
-              composerHeight = $0
-            }
+          if showsComposer {
+            composer
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: {
+                composerHeight = $0
+              }
+          }
         }
         .overlay(alignment: .bottom) {
           ZStack {
@@ -203,7 +226,7 @@ struct OverlayConversationView: View {
               )
               .accessibilityHint(Text("Jump to the current reply"))
               .accessibilityIdentifier("overlay-conversation-jump-to-current")
-              .padding(.bottom, composerHeight + 10)
+              .padding(.bottom, visibleComposerHeight + 10)
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
@@ -252,6 +275,11 @@ struct OverlayConversationView: View {
             scrollToLatest(proxy)
           }
           rememberScrollFocusAnchor()
+        }
+        .onChange(of: messageWindowLimit) { _, _ in
+          // Opening a preview restores the ordinary history window instead of
+          // leaving its three-row start pinned inside the complete projection.
+          settleMessageWindow(reset: true)
         }
         .onChange(of: focusRevision) { _, _ in
           let reselectingOpenConversation =
@@ -331,7 +359,7 @@ struct OverlayConversationView: View {
         }
       }
     }
-    .padding(.horizontal, 20)
+    .padding(.horizontal, contentInset)
     .padding(.top, 6)
     .padding(.bottom, bottomInset)
     .frame(maxWidth: .infinity)
@@ -523,7 +551,7 @@ struct OverlayConversationView: View {
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
     let start = windowStart
     let list = ScrollView {
-      VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: presentation == .intercom ? 6 : 12) {
         if !conversation.historyLoaded {
           ProgressView()
             .controlSize(.small)
@@ -546,7 +574,7 @@ struct OverlayConversationView: View {
         }
         Color.clear.frame(height: 1).id("conversation-bottom")
       }
-      .padding(.horizontal, 20)
+      .padding(.horizontal, contentInset)
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background {
@@ -557,7 +585,10 @@ struct OverlayConversationView: View {
       }
       .csAutohidingScrollers()
     }
-    .contentMargins(.bottom, composerHeight > 0 ? composerHeight : bottomInset + 54)
+    .contentMargins(
+      .bottom,
+      showsComposer
+        ? (visibleComposerHeight > 0 ? visibleComposerHeight : bottomInset + 54) : bottomInset)
     if #available(macOS 26.0, *) {
       // The header's glass alone is not a shade: bubbles stayed readable right
       // behind the mark (Founder, 2026-10-18). Apple pairs a glass bar with the
@@ -568,7 +599,7 @@ struct OverlayConversationView: View {
       list
         .safeAreaBar(edge: .top, spacing: 0) {
           Color.clear
-            .frame(height: topInset + navigationHeight)
+            .frame(height: topInset + visibleNavigationHeight)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
@@ -576,7 +607,7 @@ struct OverlayConversationView: View {
         // The composer's glass sits on the floor with nothing pinned behind it.
         .scrollEdgeEffectHidden(true, for: .bottom)
     } else {
-      list.contentMargins(.top, topInset + navigationHeight)
+      list.contentMargins(.top, topInset + visibleNavigationHeight)
     }
   }
 
@@ -733,10 +764,12 @@ struct OverlayConversationView: View {
     -> some View
   {
     HStack(alignment: .top, spacing: 0) {
-      if message.kind == .user { Spacer(minLength: 0) }
+      if presentation == .standard && message.kind == .user { Spacer(minLength: 0) }
       messageBubble(message)
-        .frame(maxWidth: maxBubbleWidth, alignment: message.kind == .user ? .trailing : .leading)
-      if message.kind == .reply { Spacer(minLength: 0) }
+        .frame(
+          maxWidth: maxBubbleWidth,
+          alignment: presentation == .standard && message.kind == .user ? .trailing : .leading)
+      if presentation == .standard && message.kind == .reply { Spacer(minLength: 0) }
     }
     .frame(maxWidth: .infinity)
     .id(message.id)
@@ -780,7 +813,13 @@ struct OverlayConversationView: View {
           .lineLimit(2)
       }
       Group {
-        if OversizedBubblePolicy.isOversized(message.bodyText) {
+        if let messagePreviewLineLimit {
+          Text(verbatim: message.bodyText)
+            .font(.system(size: 13 * textScale))
+            .foregroundStyle(palette.primaryText.color)
+            .lineLimit(messagePreviewLineLimit)
+            .textSelection(.enabled)
+        } else if OversizedBubblePolicy.isOversized(message.bodyText) {
           OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
               raw: head, size: 13, bodyColor: palette.primaryText.color,
@@ -841,15 +880,18 @@ struct OverlayConversationView: View {
       }
       .background { OverlayMenuCursorRegion() }
     }
-    .padding(12)
+    .padding(presentation == .intercom ? 0 : 12)
+    .padding(.vertical, presentation == .intercom ? 6 : 0)
     .background(
-      palette.primaryText.color.opacity(0.06),
+      palette.primaryText.color.opacity(presentation == .intercom ? 0 : 0.06),
       in: RoundedRectangle(cornerRadius: 16, style: .continuous)
     )
     .overlay {
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .strokeBorder(
-          message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
+          presentation == .intercom
+            ? Color.clear
+            : message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)

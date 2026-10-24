@@ -22,7 +22,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var invalidated = false
   /// Mouse deltas are absolute from mouse-down. Keep the whole group's frame
   /// as the baseline.
-  @ObservationIgnored private var groupResizeGesture: (gesture: UUID, frame: CGRect)?
+  @ObservationIgnored private var groupResizeGesture:
+    (gesture: UUID, frame: CGRect, count: Int, index: Int?)?
   @ObservationIgnored private var resizingGroup = false
   /// A card's resize that converted it into an instance hands the rest of
   /// that same gesture to the instance.
@@ -179,9 +180,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       min(minimumHeaderWidth, screenFrame.width),
       contentMetrics.fittedWidth(
         CGFloat(desktop.groupWidth ?? Double(defaultWidth)), available: screenFrame.width))
-    groupCardHeight = contentMetrics.fittedCardHeight(
-      CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)),
-      count: visibleRows.count, available: screenFrame.height)
+    groupCardHeight =
+      width < contentMetrics.minimumNameWidth
+      ? contentMetrics.iconSide
+      : contentMetrics.fittedCardHeight(
+        CGFloat(desktop.groupRowHeight ?? Double(contentMetrics.iconSide)),
+        count: groupIdentities.count, available: screenFrame.height)
     headerControlsVisible =
       width
       >= OverlayIntercomWidgetLayout.restingWidth(
@@ -221,10 +225,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   private var groupIdentities: [OverlayIntercomCardIdentity] { desktop.groupRows(of: identities) }
 
+  private var groupHasComposer: Bool {
+    contentMetrics.cardContent(width: groupWidth, cardHeight: groupCardHeight) == .composer
+  }
+
   fileprivate var visibleRows: Range<Int> {
     OverlayIntercomWidgetLayout.visibleRange(
       count: groupIdentities.count, offset: rowOffset, visibleHeight: availableHeight,
-      scale: contentMetrics.iconSide / OverlayIntercomWidgetLayout.rowHeight)
+      scale: contentMetrics.iconSide / OverlayIntercomWidgetLayout.rowHeight,
+      cardHeight: groupCardHeight)
   }
 
   fileprivate var hasOverflow: Bool { visibleRows.count < groupIdentities.count }
@@ -233,6 +242,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   func presentsConversation(_ conversationID: String?) -> Bool {
     guard visible, let conversationID else { return false }
+    if !presentation.folded, groupHasComposer,
+      groupIdentities.contains(where: { identity in
+        identity.conversationID == conversationID && cards[identity]?.isPresented == true
+          && state.conversations.contains(where: { identity.matches($0) })
+      })
+    {
+      return true
+    }
     if presentation.expanded.contains(where: { identity in
       identity.conversationID == conversationID && cards[identity]?.isPresented == true
         && state.conversations.contains(where: { identity.matches($0) })
@@ -457,9 +474,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     defer { positioning = false }
     let range = visibleRows
     let group = groupIdentities
+    var siblingAppeared = false
     for (identity, panel) in cards {
       let expanded = presentation.expanded.contains(identity)
-      panel.acceptsConversationFocus = expanded
+      panel.acceptsConversationFocus = expanded || (groupHasComposer && identity.canExpand)
       guard !presentation.folded, let index = group.firstIndex(of: identity), range.contains(index)
       else {
         panel.setPresented(
@@ -500,10 +518,13 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           panel.setFrame(frame, display: true)
         }
       }
+      let wasPresented = panel.isPresented
       panel.setPresented(true, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+      if !wasPresented && !expanded { siblingAppeared = true }
     }
-    // Geometry and hover leave the order of presented windows alone. Only an
-    // explicit expand below (or a native click/focus) raises a conversation.
+    // A newly shown sibling must not cover the expanded editor. Geometry,
+    // hover and ordinary content refreshes do not reorder existing windows.
+    if siblingAppeared { raisePresentedGroup() }
   }
 
   fileprivate func expand(_ identity: OverlayIntercomCardIdentity) {
@@ -605,9 +626,17 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// unfolds and stands in front, its detached windows still above it.
   func revealGroup() {
     if presentation.folded { toggleGroup() }
+    raisePresentedGroup()
+  }
+
+  private func raisePresentedGroup() {
+    for identity in presentation.frontOrder(groupIdentities) {
+      if let panel = cards[identity], panel.isPresented { panel.orderFrontRegardless() }
+    }
+    for instance in desktop.instances where !instance.closed {
+      if let panel = instancePanels[instance.id], panel.isPresented { panel.orderFrontRegardless() }
+    }
     header?.orderFrontRegardless()
-    for panel in cards.values { panel.orderFrontRegardless() }
-    for panel in instancePanels.values where panel.isVisible { panel.orderFrontRegardless() }
   }
 
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). One agent keeps
@@ -754,27 +783,29 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let header else { return }
     resizingGroup = true
     defer { resizingGroup = false }
-    let count = presentation.folded ? 0 : visibleRows.count
+    let initialCount = presentation.folded ? 0 : groupIdentities.count
     let index = row.flatMap { groupIdentities.firstIndex(of: $0) }.map {
       $0 - visibleRows.lowerBound
     }
-    let delta = CGSize(
-      width: delta.width,
-      height: delta.height
-        * OverlayIntercomWidgetLayout.rowEdgeFactor(edge: edge, index: index, count: count))
     if groupResizeGesture?.gesture != gesture {
       let height =
-        header.frame.height + CGFloat(count) * (groupCardHeight + OverlayIntercomWidgetLayout.gap)
+        header.frame.height
+        + CGFloat(initialCount) * (groupCardHeight + OverlayIntercomWidgetLayout.gap)
       groupResizeGesture = (
         gesture,
         CGRect(
           x: header.frame.minX, y: header.frame.maxY - height,
-          width: header.frame.width, height: height)
+          width: header.frame.width, height: height), initialCount, index
       )
     }
-    guard let base = groupResizeGesture?.frame else { return }
+    guard let drag = groupResizeGesture else { return }
+    let count = drag.count
+    let delta = CGSize(
+      width: delta.width,
+      height: delta.height
+        * OverlayIntercomWidgetLayout.rowEdgeFactor(edge: edge, index: drag.index, count: count))
     let fitted = contentMetrics.resizedGroupFrame(
-      base, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header),
+      drag.frame, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header),
       minimumWidth: minimumHeaderWidth)
     desktop.groupWidth = Double(fitted.width)
     if count > 0 && edge.resizesHeight {
@@ -1174,6 +1205,9 @@ private struct OverlayIntercomCard: View {
   var body: some View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let expanded = controller.presentation.expanded.contains(identity)
+    let content = controller.contentMetrics.cardContent(
+      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
+    let showsMessages = expanded || content == .preview || content == .composer
     let corner =
       expanded
       ? OverlayIntercomWidgetLayout.conversationCornerRadius
@@ -1181,24 +1215,38 @@ private struct OverlayIntercomCard: View {
     VStack(spacing: 0) {
       cardHeader(palette: palette, expanded: expanded)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      if expanded {
-        if let conversation {
-          conversationBody(conversation, palette: palette)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-          Text("Conversation unavailable").csFont(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-      } else if controller.stacksGroupControls {
+      if !expanded && controller.stacksGroupControls {
         stackedControls(palette: palette)
           .frame(maxWidth: .infinity, alignment: .trailing)
           .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
+      if !expanded && content != .header, let conversation {
+        OverlayIntercomConversationContext(
+          descriptor: state.conversationAgentDescriptor(conversation),
+          timestamp: conversation.messages.last.flatMap {
+            MessageTimestamp.date(fromISO8601: $0.emittedAt)
+          }, palette: palette)
+      }
+      if showsMessages {
+        if let conversation {
+          conversationBody(
+            conversation, palette: palette, showsComposer: expanded || content == .composer,
+            preview: !expanded
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          Text("Conversation unavailable").csFont(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+      }
     }
     .foregroundStyle(palette.primaryText.color)
-    // A stretched row is a larger tile with its content in the middle, not a
-    // row with an empty bottom.
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: expanded ? .top : .center)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    // An icon remains a compact row even if a previously tall group narrows.
+    .frame(
+      height: !expanded && controller.groupTier == .icon
+        ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil
+    )
     .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
@@ -1243,6 +1291,7 @@ private struct OverlayIntercomCard: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-intercom-row-\(identity.digit)")
+    .frame(maxHeight: .infinity, alignment: .top)
   }
 
   @ViewBuilder
@@ -1425,11 +1474,15 @@ private struct OverlayIntercomCard: View {
   }
 
   private func conversationBody(
-    _ conversation: OverlayConversation, palette: OverlayAppearancePalette
+    _ conversation: OverlayConversation, palette: OverlayAppearancePalette,
+    showsComposer: Bool, preview: Bool
   ) -> some View {
     OverlayIntercomConversationBody(
       state: state, conversation: conversation, palette: palette,
-      focusRevision: controller.focusRevisions[identity] ?? 0)
+      focusRevision: controller.focusRevisions[identity] ?? 0,
+      presentation: .intercom, showsComposer: showsComposer,
+      messagePreviewLineLimit: preview ? 3 : nil,
+      messageWindowLimit: preview ? 3 : nil)
   }
 }
 
@@ -1604,10 +1657,15 @@ private struct OverlayIntercomConversationBody: View {
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
   let focusRevision: UInt64
+  var presentation: OverlayConversationPresentation = .standard
+  var showsComposer = true
+  var messagePreviewLineLimit: Int? = nil
+  var messageWindowLimit: Int? = nil
 
   var body: some View {
     OverlayConversationView(
-      conversation: conversation, palette: palette, topInset: 0, bottomInset: 12,
+      conversation: conversation, palette: palette, topInset: 0,
+      bottomInset: presentation == .intercom ? 8 : 12,
       pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
       onControl: { message, stop in Task { await state.controlReply(message, stop: stop) } },
       composerFocusRevision: focusRevision,
@@ -1620,6 +1678,9 @@ private struct OverlayIntercomConversationBody: View {
           ? state.draftCapture.error : nil),
       onSend: { Task { await state.sendConversationText(conversation) } },
       hidesNavigation: true,
+      presentation: presentation, showsComposer: showsComposer,
+      messagePreviewLineLimit: messagePreviewLineLimit,
+      messageWindowLimit: messageWindowLimit,
       onComposerEditorActive: { state.noteComposerEditorActive($0) },
       onComposerTypingActivity: { state.noteComposerTypingActivity() },
       replySelection: state.conversationReplies[conversation.id],
@@ -1640,6 +1701,35 @@ private struct OverlayIntercomConversationBody: View {
         state.conversationReplies[conversation.id] = OverlayUserReplyReference(message: $0)
       }
     )
+  }
+}
+
+/// Only metadata already projected for this exact conversation is shown.
+/// Provider/model and message time do not imply a repository or working tree.
+private struct OverlayIntercomConversationContext: View {
+  @Environment(\.csTextScale) private var scale
+  let descriptor: String?
+  let timestamp: Date?
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    if descriptor != nil || timestamp != nil {
+      HStack(spacing: 8) {
+        if let descriptor {
+          Text(verbatim: descriptor)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+        Spacer(minLength: 0)
+        if let timestamp { MessageTimestampLabel(date: timestamp, compact: true) }
+      }
+      .font(.system(size: 10 * scale))
+      .foregroundStyle(palette.mutedText.color)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 4)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("overlay-intercom-context")
+    }
   }
 }
 

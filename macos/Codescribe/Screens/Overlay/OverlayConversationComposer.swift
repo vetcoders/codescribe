@@ -478,7 +478,12 @@ private struct ConversationMessageField: NSViewRepresentable {
       context.coordinator.focusRevision = focusRevision
       DispatchQueue.main.async { [weak editor] in
         guard let editor else { return }
-        (editor.window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+        if let panel = editor.window as? FloatingOverlayPanel {
+          panel.takeKeyForTranscript()
+        } else if let panel = editor.window as? OverlayIntercomPanel {
+          guard panel.isVisible, panel.canBecomeKey else { return }
+          panel.makeKeyAndOrderFront(nil)
+        }
         editor.window?.makeFirstResponder(editor)
       }
     }
