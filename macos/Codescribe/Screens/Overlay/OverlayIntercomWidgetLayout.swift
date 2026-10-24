@@ -112,11 +112,11 @@ struct IntercomContentMetrics: Equatable {
   /// controls appear once the card holds two rows.
   func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
     guard count > 0 else { return iconSide }
-    // The group can extend below the display. Dividing by the roster count
-    // prevented a 240 pt composer with four cards on a 900 pt screen, even
-    // after an explicit stretch. Bound each card, keeping room for the header.
+    // The whole roster shares the display budget. Growing one row must not
+    // push its siblings off screen or page away rows that fit when compact.
     let maximum =
-      available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
+      (available - OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11))
+      / CGFloat(count)
       - OverlayIntercomWidgetLayout.gap
     return max(iconSide, min(requested, maximum))
   }
@@ -127,17 +127,9 @@ struct IntercomContentMetrics: Equatable {
   ) -> CGRect {
     var minimum = minimumGroupSize(count: count)
     minimum.width = max(minimum.width, minimumWidth)
-    let maximumHeight =
-      OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
-      + CGFloat(max(0, count))
-      * (fittedCardHeight(.greatestFiniteMagnitude, count: count, available: visibleFrame.height)
-        + OverlayIntercomWidgetLayout.gap)
-    let bounds = CGRect(
-      x: visibleFrame.minX, y: visibleFrame.maxY - max(visibleFrame.height, maximumHeight),
-      width: visibleFrame.width, height: max(visibleFrame.height, maximumHeight))
     var result = OverlayIntercomWidgetLayout.resizedFrame(
       frame, delta: delta, edge: edge, minimum: minimum,
-      visibleFrame: bounds)
+      visibleFrame: visibleFrame)
     let width = max(
       min(minimumWidth, visibleFrame.width),
       fittedWidth(result.width, available: visibleFrame.width))
@@ -181,7 +173,10 @@ enum OverlayIntercomWidgetLayout {
   ) -> Range<Int> {
     let header = controlHeight(scale: scale)
     let row = cardHeight ?? header
-    let capacity = max(1, Int(max(0, visibleHeight - header) / (max(header, row) + gap)))
+    // Dividing the shared height among rows can round a fitting roster just
+    // below an integer. Do not page away its last row for floating-point dust.
+    let capacity = max(
+      1, Int((max(0, visibleHeight - header) / (max(header, row) + gap) + 0.000_001).rounded(.down)))
     let shown = min(max(0, count), capacity)
     let start = min(max(0, offset), max(0, count - shown))
     return start..<(start + shown)
@@ -203,18 +198,23 @@ enum OverlayIntercomWidgetLayout {
   }
 
   static func clampedHeader(
-    _ frame: CGRect, count _: Int, visibleFrame: CGRect, scale: CGFloat = 1,
-    cardHeight _: CGFloat? = nil
+    _ frame: CGRect, count: Int, visibleFrame: CGRect, scale: CGFloat = 1,
+    cardHeight: CGFloat? = nil
   ) -> CGRect {
     var result = frame
     result.size.width = min(frame.width, visibleFrame.width)
     result.size.height = min(controlHeight(scale: scale), visibleFrame.height)
-    return movedFrame(result, visibleFrame: visibleFrame, headerHeight: result.height)
+    let bodyHeight = CGFloat(max(0, count)) * ((cardHeight ?? result.height) + gap)
+    let stackHeight = min(visibleFrame.height, result.height + bodyHeight)
+    result.origin.x = min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - result.width)
+    result.origin.y = min(
+      max(frame.minY, visibleFrame.minY + stackHeight - result.height),
+      visibleFrame.maxY - result.height)
+    return result
   }
 
-  /// Moving keeps the grab strip reachable, not the body below it. The same
-  /// rule owns the group header and a detached conversation's title row.
-  /// Initial placement and resizing retain their separate size constraints.
+  /// An explicit detached-window drag keeps its grab strip reachable.
+  /// Group placement, expansion and resizing constrain their entire frames.
   static func movedFrame(
     _ frame: CGRect, visibleFrame: CGRect, headerHeight: CGFloat
   ) -> CGRect {
@@ -283,6 +283,13 @@ enum OverlayIntercomWidgetLayout {
   ) -> CGRect {
     let minWidth = min(minimum.width, visibleFrame.width)
     let minHeight = min(minimum.height, visibleFrame.height)
+    // A saved frame may belong to a larger or removed display. Recover it
+    // before applying the gesture, preserving the opposite edge whenever it
+    // is already reachable on this display.
+    let frame = cardFrame(
+      below: frame,
+      size: CGSize(width: max(frame.width, minWidth), height: max(frame.height, minHeight)),
+      visibleFrame: visibleFrame)
     var result = frame
     switch edge {
     case .left, .bottomLeft:

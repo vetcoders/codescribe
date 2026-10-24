@@ -300,7 +300,8 @@ final class IdleRestartCoordinatorTests: XCTestCase {
     for throwsOnReserve in [false, true] {
       let root = try fixture()
       let queue = FinalizationQueue()
-      var shouldRefuse = true
+      let refusal = CaptureState()
+      refusal.busy = true
       var leaseFD: Int32 = -1
       var terminated = false
       let coordinator = try IdleRestartCoordinator(
@@ -311,8 +312,8 @@ final class IdleRestartCoordinatorTests: XCTestCase {
           return handle
         },
         reserveCapture: {
-          if shouldRefuse && throwsOnReserve { throw CocoaError(.fileReadUnknown) }
-          return !shouldRefuse
+          if refusal.busy && throwsOnReserve { throw CocoaError(.fileReadUnknown) }
+          return !refusal.busy
         },
         scheduleFinalization: { queue.actions.append($0) },
         terminate: { terminated = true })
@@ -324,7 +325,7 @@ final class IdleRestartCoordinatorTests: XCTestCase {
       XCTAssertEqual(
         try receipt(root, first)["reason"] as? String,
         throwsOnReserve ? "idle_lease_unavailable" : "capture_busy_or_not_ready")
-      shouldRefuse = false
+      refusal.busy = false
       let retry = try request(root)
       await coordinator.handle(retry)
       XCTAssertEqual(queue.actions.count, 1)

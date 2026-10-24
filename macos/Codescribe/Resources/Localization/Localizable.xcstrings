@@ -1,6 +1,17 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Hide all" : {
+      "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj wszystkie"
+          }
+        }
+      }
+    },
     "Your Inbox" : {
       "comment" : "The human mailbox beside agent conversations; no channel number is displayed",
       "localizations" : {
