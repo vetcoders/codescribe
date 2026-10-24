@@ -232,6 +232,7 @@ install-if-idle:
 RESTART_IDLE_WAIT ?= 21600
 RESTART_IDLE_INTERVAL ?= 30
 RESTART_AFTER_INSTALL ?= 1
+INSTALL_ANNOUNCE ?= 1
 RESTART_IF_IDLE = ./scripts/restart-if-idle --newer-only --wait $(RESTART_IDLE_WAIT) --interval $(RESTART_IDLE_INTERVAL) --announce --detach
 
 .PHONY: restart-if-idle
@@ -283,7 +284,10 @@ install-app: install-voice-lab
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
 	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
 	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
-	if [ -n "$$version" ]; then echo "Build $$version zainstalowany"; "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi
+	if [ -n "$$version" ]; then \
+		echo "Build $$version zainstalowany"; \
+		if [ "$(INSTALL_ANNOUNCE)" = "1" ]; then "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi; \
+	fi
 	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
 	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \
 		$(RESTART_IF_IDLE) || echo "Restart not armed; run 'make restart-if-idle' at an idle moment."; \
