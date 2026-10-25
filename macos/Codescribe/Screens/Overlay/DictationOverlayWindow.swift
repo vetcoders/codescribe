@@ -1036,16 +1036,16 @@ final class OverlayContentContainer: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
-    invalidateCursorOwnership(for: event)
+    invalidateCursorOwnership(from: event.trackingArea, in: event.window)
   }
 
   override func mouseExited(with event: NSEvent) {
-    invalidateCursorOwnership(for: event)
+    invalidateCursorOwnership(from: event.trackingArea, in: event.window)
   }
 
-  private func invalidateCursorOwnership(for event: NSEvent) {
-    guard let cursorBoundary, event.trackingArea === cursorBoundary,
-      event.window === window
+  func invalidateCursorOwnership(from area: NSTrackingArea?, in sourceWindow: NSWindow?) {
+    guard let cursorBoundary, area === cursorBoundary,
+      sourceWindow === window
     else { return }
     (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
   }

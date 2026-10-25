@@ -364,10 +364,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         instancePanels[instance.id] = panel
       }
       panel.acceptsConversationFocus = !instance.minimized
-      // A detached window stands above the group it came from. On one shared
-      // level every group reconcile re-ordered the rows over it (Maciej,
-      // 2026-10-23: the detached Klaudiusz played hide-and-seek under row 1).
-      panel.floatingLevel = OverlayIntercomPanel.detachedLevel
       panel.yieldToAppWindow(NSApp.isActive ? NSApp.keyWindow : nil)
       positioning = true
       let fitted = instanceFrame(instance, for: panel)
@@ -1035,11 +1031,21 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 /// Internal so the text-size shortcuts can name the Intercom's windows.
 @MainActor
 final class OverlayIntercomPanel: NSPanel {
-  /// Group rows float; a detached conversation floats one level higher.
+  /// Passive fiszki stay below the main conversation at `.floating`; open
+  /// conversations stay above them regardless of reconciliation order.
+  static let passiveLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
   static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
 
-  var acceptsConversationFocus = false
-  var floatingLevel: NSWindow.Level = .floating
+  var acceptsConversationFocus = false {
+    didSet {
+      guard oldValue != acceptsConversationFocus else { return }
+      yieldToAppWindow(yieldedWindow)
+    }
+  }
+  var floatingLevel: NSWindow.Level {
+    acceptsConversationFocus ? Self.detachedLevel : Self.passiveLevel
+  }
+  private weak var yieldedWindow: NSWindow?
   var onScroll: (CGFloat) -> Void = { _ in }
   private var presented = false
   private var visibilityRevision: UInt64 = 0
@@ -1051,7 +1057,7 @@ final class OverlayIntercomPanel: NSPanel {
   override func orderFrontRegardless() {
     let window = NSApp.isActive ? NSApp.keyWindow : nil
     if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
-      level = .normal
+      yieldToAppWindow(window)
       order(.below, relativeTo: window.windowNumber)
     } else {
       yieldToAppWindow(nil)
@@ -1061,12 +1067,17 @@ final class OverlayIntercomPanel: NSPanel {
 
   func yieldToAppWindow(_ window: NSWindow?) {
     if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
-      level = .normal
+      yieldedWindow = window
+      // Keep chat above compact chrome even while both yield to Settings.
+      let target = NSWindow.Level(
+        rawValue: NSWindow.Level.normal.rawValue - (acceptsConversationFocus ? 0 : 1))
+      if level != target { level = target }
       if isVisible && window.isVisible {
         order(.below, relativeTo: window.windowNumber)
       }
     } else {
-      level = floatingLevel
+      yieldedWindow = nil
+      if level != floatingLevel { level = floatingLevel }
     }
   }
 
@@ -1126,7 +1137,7 @@ final class OverlayIntercomPanel: NSPanel {
     isOpaque = false
     backgroundColor = .clear
     hasShadow = true
-    level = .floating
+    level = floatingLevel
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     hidesOnDeactivate = false
     becomesKeyOnlyIfNeeded = true

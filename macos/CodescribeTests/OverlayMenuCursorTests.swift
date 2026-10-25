@@ -6,6 +6,71 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testContentBoundaryLayoutChurnDoesNotRearmCursorWrites() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    let content = OverlayContentContainer(hosting: NSView())
+    panel.contentView = content
+    panel.setPresentationMode(.expanded)
+    defer { panel.close() }
+    content.updateTrackingAreas()
+    let boundary = try XCTUnwrap(content.trackingAreas.first)
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 5, y: 200)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    var writes = 0
+    for _ in 0..<100 {
+      content.updateTrackingAreas()
+      if panel.refreshCursor(at: point) { writes += 1 }
+    }
+    XCTAssertEqual(content.trackingAreas.count, 1)
+    XCTAssertTrue(content.trackingAreas.first === boundary)
+    XCTAssertEqual(writes, 0)
+    panel.setContentSize(NSSize(width: 500, height: 300))
+    content.updateTrackingAreas()
+    XCTAssertTrue(content.trackingAreas.first === boundary)
+    XCTAssertTrue(boundary.options.contains(.inVisibleRect))
+    XCTAssertEqual(content.visibleRect.size, NSSize(width: 500, height: 300))
+    XCTAssertFalse(panel.isVisible)
+  }
+
+  func testContentBoundaryIgnoresForeignEventsButRearmsRealExitAndEntry() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable],
+      backing: .buffered, defer: false)
+    let foreign = OverlayIntercomPanel()
+    let content = OverlayContentContainer(hosting: NSView())
+    panel.contentView = content
+    panel.setPresentationMode(.expanded)
+    defer {
+      panel.close()
+      foreign.close()
+    }
+    content.updateTrackingAreas()
+    let boundary = try XCTUnwrap(content.trackingAreas.first)
+    let stale = NSTrackingArea(
+      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: content, userInfo: nil)
+    let saved = NSCursor.current
+    defer { saved.set() }
+    let point = NSPoint(x: 5, y: 200)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: stale, in: panel)
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: foreign)
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: panel)
+    XCTAssertTrue(panel.refreshCursor(at: point), "Actual boundary exit relinquishes ownership")
+    XCTAssertFalse(panel.refreshCursor(at: point))
+    content.invalidateCursorOwnership(from: boundary, in: panel)
+    XCTAssertTrue(panel.refreshCursor(at: point), "Actual re-entry establishes ownership again")
+    XCTAssertFalse(panel.isVisible)
+  }
+
   func testRetiredTrackingAreaExitCannotClearANewerNativeHoverEntry() throws {
     let panel = OverlayIntercomPanel()
     let foreign = OverlayIntercomPanel()

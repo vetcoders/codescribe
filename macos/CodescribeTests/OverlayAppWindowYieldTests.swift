@@ -18,7 +18,7 @@ final class OverlayAppWindowYieldTests: XCTestCase {
     let header = OverlayIntercomPanel()
     let card = OverlayIntercomPanel()
     let detached = OverlayIntercomPanel()
-    detached.floatingLevel = OverlayIntercomPanel.detachedLevel
+    detached.acceptsConversationFocus = true
     let panels = [header, card, detached]
     let settings = titledWindow("Settings")
     defer {
@@ -32,19 +32,66 @@ final class OverlayAppWindowYieldTests: XCTestCase {
     defer { observer.invalidate() }
     let generation = state.captureGeneration
     deliver(NSWindow.didBecomeKeyNotification, settings)
-    XCTAssertTrue(panels.allSatisfy { $0.level == .normal })
+    XCTAssertEqual(detached.level, .normal)
+    XCTAssertLessThan(card.level.rawValue, detached.level.rawValue)
+    XCTAssertEqual(header.level, card.level)
     // A subsequent click must still lower the cards even after the normal
     // overlay has already yielded once to this same window.
     card.level = .floating
     deliver(NSWindow.didBecomeKeyNotification, settings)
-    XCTAssertEqual(card.level, .normal)
+    XCTAssertLessThan(card.level.rawValue, detached.level.rawValue)
     deliver(NSWindow.willCloseNotification, settings)
-    XCTAssertEqual(header.level, .floating)
-    XCTAssertEqual(card.level, .floating)
+    XCTAssertEqual(header.level, OverlayIntercomPanel.passiveLevel)
+    XCTAssertEqual(card.level, OverlayIntercomPanel.passiveLevel)
     XCTAssertEqual(detached.level, OverlayIntercomPanel.detachedLevel)
     XCTAssertTrue(panels.allSatisfy { !$0.isVisible && !$0.isKeyWindow })
     XCTAssertFalse(settings.isVisible)
     XCTAssertEqual(state.captureGeneration, generation)
+  }
+
+  func testConversationLayerSurvivesCompactSiblingRefreshAndMinimizeRestore() {
+    let row = OverlayIntercomPanel()
+    let chat = OverlayIntercomPanel()
+    defer {
+      row.close()
+      chat.close()
+    }
+    chat.acceptsConversationFocus = true
+    let mainChatLevel = OverlayPresencePolicy.rest.windowLevel
+    XCTAssertLessThan(row.level.rawValue, mainChatLevel.rawValue)
+    XCTAssertGreaterThan(chat.level.rawValue, row.level.rawValue)
+    for _ in 0..<100 {
+      row.yieldToAppWindow(nil)
+      XCTAssertLessThan(row.level.rawValue, chat.level.rawValue)
+    }
+    chat.acceptsConversationFocus = false
+    XCTAssertEqual(chat.level, row.level)
+    chat.acceptsConversationFocus = true
+    XCTAssertGreaterThan(chat.level.rawValue, row.level.rawValue)
+    XCTAssertFalse(row.isVisible)
+    XCTAssertFalse(chat.isVisible)
+  }
+
+  func testOpeningAndMinimizingConversationKeepsYieldedLayerBelowSettings() {
+    let settings = titledWindow("Settings")
+    let row = OverlayIntercomPanel()
+    let chat = OverlayIntercomPanel()
+    defer {
+      row.close()
+      chat.close()
+      settings.close()
+    }
+    row.yieldToAppWindow(settings)
+    chat.yieldToAppWindow(settings)
+    chat.acceptsConversationFocus = true
+    XCTAssertEqual(chat.level, settings.level)
+    XCTAssertLessThan(row.level.rawValue, chat.level.rawValue)
+    chat.acceptsConversationFocus = false
+    XCTAssertEqual(chat.level, row.level)
+    chat.acceptsConversationFocus = true
+    XCTAssertEqual(chat.level, .normal)
+    XCTAssertFalse(chat.isKeyWindow)
+    XCTAssertFalse(settings.isVisible)
   }
 
   private struct Rig {
