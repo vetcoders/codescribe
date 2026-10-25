@@ -1024,7 +1024,10 @@ final class OverlayContentContainer: NSView {
 
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
-    if let cursorBoundary { removeTrackingArea(cursorBoundary) }
+    // inVisibleRect follows native geometry without replacing its identity.
+    // Recreating it during layout queues artificial exits/entries that rearm
+    // the panel's cursor write even when the pointer has not left the window.
+    guard cursorBoundary == nil else { return }
     let area = NSTrackingArea(
       rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
       owner: self, userInfo: nil)
@@ -1033,10 +1036,17 @@ final class OverlayContentContainer: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
-    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
+    invalidateCursorOwnership(for: event)
   }
 
   override func mouseExited(with event: NSEvent) {
+    invalidateCursorOwnership(for: event)
+  }
+
+  private func invalidateCursorOwnership(for event: NSEvent) {
+    guard let cursorBoundary, event.trackingArea === cursorBoundary,
+      event.window === window
+    else { return }
     (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
   }
 
