@@ -27,6 +27,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::audio::streaming_recorder::CaptureSubscriberId;
 use crate::os::hold_badge::{self, BadgeMode};
+use crate::presentation::transcript_bus::ChannelCohortMember;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use crate::stt::active_names;
 
@@ -507,36 +508,68 @@ pub(crate) struct OpenAgentChannel {
 
 /// The Founder speaks to several channels at once and every agent must know
 /// it (Maciej, 2026-10-25: "musicie wiedzieć, że ja teraz nadaję do czterech
-/// agentów"). Each nonzero channel's bus carries the other live channels open
-/// beside it, derived from the registry alone.
-///
-/// Call this with the registry guard held, after every insert or removal.
-/// A removed channel is no longer in `channels` and keeps the snapshot it had
-/// while open, so channels that close together (one silence) still list each
-/// other on their seals. Fn+0 keeps its own recipients and gets no snapshot.
-fn publish_co_audience(channels: &std::collections::HashMap<u8, OpenAgentChannel>) {
-    let mut live: Vec<(u8, &OpenAgentChannel)> = channels
+/// agentów"). The registry's live members, in digit order, become the shared
+/// cohort every open channel bus reads as its `co_audience`. Fn+0 is listed
+/// like any open channel, but its own bus follows no cohort.
+fn cohort_members(
+    channels: &std::collections::HashMap<u8, OpenAgentChannel>,
+) -> Vec<ChannelCohortMember> {
+    let mut members: Vec<ChannelCohortMember> = channels
         .iter()
         .filter(|(_, open)| matches!(open.mode, ChannelOpenMode::Live))
-        .map(|(digit, open)| (*digit, open))
+        .filter_map(|(digit, open)| {
+            Some(ChannelCohortMember {
+                digit: *digit,
+                channel: digit.to_string(),
+                audience: open.audience.clone(),
+                session_id: open.session_id.clone()?,
+                provider: open.provider.clone(),
+                provider_session_id: open.provider_session_id.clone(),
+            })
+        })
         .collect();
-    live.sort_unstable_by_key(|(digit, _)| *digit);
-    for (digit, open) in &live {
-        let Some(bus) = open.transcript_bus.as_ref().filter(|_| *digit != 0) else {
-            continue;
-        };
-        bus.set_co_audience(
-            live.iter()
-                .filter(|(other, _)| other != digit)
-                .map(|(other, peer)| {
-                    serde_json::json!({
-                        "channel": other.to_string(),
-                        "audience": peer.audience,
-                        "session_id": peer.session_id,
-                    })
-                })
-                .collect(),
+    members.sort_unstable_by_key(|member| member.digit);
+    members
+}
+
+/// Every registry mutation runs, with the registry guard held:
+/// `freeze_closing_cohort` for the channels about to leave, the mutation,
+/// then one `publish_cohort`. Bus writers only ever take the cohort read lock.
+impl RecordingController {
+    /// Swap the shared cohort for the registry's current live members.
+    fn publish_cohort(&self, channels: &std::collections::HashMap<u8, OpenAgentChannel>) {
+        let members = Arc::new(cohort_members(channels));
+        *self
+            .agent_channel_cohort
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = members;
+    }
+
+    /// Give each closing channel the cohort as it stood before the removal.
+    /// One snapshot serves the whole batch, so channels closed by the same
+    /// silence still list each other.
+    fn freeze_closing_cohort<'a>(&self, closing: impl IntoIterator<Item = &'a OpenAgentChannel>) {
+        let cohort = Arc::clone(
+            &self
+                .agent_channel_cohort
+                .read()
+                .unwrap_or_else(|error| error.into_inner()),
         );
+        for open in closing {
+            if let Some(bus) = &open.transcript_bus {
+                bus.freeze_co_audience(Arc::clone(&cohort));
+            }
+        }
+    }
+
+    /// Point an admitted channel's bus at the live cohort. Fn+0 keeps its own
+    /// recipients and follows none.
+    fn follow_cohort(&self, digit: u8, open_bus: Option<&Arc<TranscriptBus>>) {
+        if digit != 0
+            && let Some(bus) = open_bus
+        {
+            bus.attach_co_audience(Arc::clone(&self.agent_channel_cohort), digit);
+        }
     }
 }
 
@@ -1214,8 +1247,9 @@ impl RecordingController {
         mode: ChannelOpenMode,
     ) -> Result<bool> {
         let mut channels = self.agent_channels.lock().await;
+        self.freeze_closing_cohort(channels.get(&digit));
         if let Some(open) = channels.remove(&digit) {
-            publish_co_audience(&channels);
+            self.publish_cohort(&channels);
             drop(channels);
             self.close_open_channel(
                 digit,
@@ -1387,6 +1421,7 @@ impl RecordingController {
             }
         };
 
+        self.follow_cohort(digit, transcript_bus.as_ref());
         let audience = bound.audience.clone();
         let published_clock = Arc::clone(&speech_clock);
         let receipt_session = session_id.clone();
@@ -1412,7 +1447,7 @@ impl RecordingController {
                 capture_ledger,
             },
         );
-        publish_co_audience(&channels);
+        self.publish_cohort(&channels);
         drop(recorder_guard);
         drop(channels);
         // The tray glyph mirrors the pointer badge: any open channel listens in
@@ -1822,7 +1857,13 @@ impl RecordingController {
     /// each channel feed before admission; tracked tails join and publish its
     /// existing close receipt independently of the next capture.
     pub(crate) async fn close_agent_channels_for_dictation(&self) -> Result<()> {
-        let mut open: Vec<_> = self.agent_channels.lock().await.drain().collect();
+        let mut open: Vec<_> = {
+            let mut channels = self.agent_channels.lock().await;
+            self.freeze_closing_cohort(channels.values());
+            let open: Vec<_> = channels.drain().collect();
+            self.publish_cohort(&channels);
+            open
+        };
         open.sort_by_key(|(digit, _)| *digit);
         let bus = crate::presentation::transcript_bus::transcript_bus_path();
         let mut first_error = None;
@@ -1839,8 +1880,9 @@ impl RecordingController {
                 .await
             {
                 let mut channels = self.agent_channels.lock().await;
+                self.follow_cohort(digit, retained.transcript_bus.as_ref());
                 channels.insert(digit, retained);
-                publish_co_audience(&channels);
+                self.publish_cohort(&channels);
                 drop(channels);
                 if first_error.is_none() {
                     first_error = Some(error);
@@ -1876,12 +1918,13 @@ impl RecordingController {
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
+            self.freeze_closing_cohort(digits.iter().filter_map(|digit| channels.get(digit)));
             let due: Vec<(u8, OpenAgentChannel)> = digits
                 .into_iter()
                 .filter_map(|digit| channels.remove(&digit).map(|open| (digit, open)))
                 .collect();
             if !due.is_empty() {
-                publish_co_audience(&channels);
+                self.publish_cohort(&channels);
             }
             due
         };

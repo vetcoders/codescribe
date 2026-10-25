@@ -909,11 +909,9 @@ impl std::fmt::Debug for TranscriptBus {
 struct TranscriptBusWriter {
     /// Capture-time recipients are metadata, never transcript identity.
     channel_recipients: Option<serde_json::Value>,
-    /// The other agent channels open beside this one, as the controller's
-    /// registry last published them while this channel was still registered.
-    /// It means "open at emission", not "heard the whole utterance", and is
-    /// never a routing, identity, CAS or ACK input.
-    co_audience: Vec<serde_json::Value>,
+    /// Where this channel reads the other open agent channels from. Metadata
+    /// only: never a routing, recipients, identity, CAS or ACK input.
+    co_audience: CoAudienceSource,
     /// Disabled for the rest of this session after any uncertain append.
     file: Option<Box<dyn Write + Send>>,
     sequence: u64,
@@ -943,6 +941,62 @@ struct TranscriptBusWriter {
     /// contract (Founder seal cc6c8248): between that start row and the
     /// terminal seal, channel revisions stay in-process.
     announced_documents: HashSet<u64>,
+}
+
+/// One open agent channel as the controller's registry holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ChannelCohortMember {
+    #[serde(skip)]
+    pub digit: u8,
+    pub channel: String,
+    pub audience: String,
+    /// Capture identity (`agent-channel-{digit}-{uuid}`), not the agent's.
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+}
+
+/// The controller's live agent-channel membership. The registry owner swaps
+/// the inner `Arc` once per registry change while holding the registry lock,
+/// and never holds this write lock while taking a bus writer lock. A bus
+/// writer may take the read lock: that read is the linearization point.
+pub(crate) type ChannelCohort = Arc<std::sync::RwLock<Arc<Vec<ChannelCohortMember>>>>;
+
+/// Where a channel bus reads its `co_audience` from.
+enum CoAudienceSource {
+    /// Shared bus, Fn+0, or a channel never admitted to the registry.
+    Absent,
+    /// Open: the cohort current at each emission, own digit excluded.
+    Emission { cohort: ChannelCohort, own: u8 },
+    /// Closing: the cohort frozen just before this channel left the registry,
+    /// shared by every channel removed in the same batch.
+    CaptureClose {
+        cohort: Arc<Vec<ChannelCohortMember>>,
+        own: u8,
+    },
+}
+
+impl CoAudienceSource {
+    /// The basis label and the other members, or `None` when there are none.
+    fn members(&self) -> Option<(&'static str, Vec<ChannelCohortMember>)> {
+        let (basis, cohort, own) = match self {
+            Self::Absent => return None,
+            Self::Emission { cohort, own } => (
+                "emission",
+                Arc::clone(&cohort.read().unwrap_or_else(|error| error.into_inner())),
+                *own,
+            ),
+            Self::CaptureClose { cohort, own } => ("capture_close", Arc::clone(cohort), *own),
+        };
+        let others: Vec<ChannelCohortMember> = cohort
+            .iter()
+            .filter(|member| member.digit != own)
+            .cloned()
+            .collect();
+        (!others.is_empty()).then_some((basis, others))
+    }
 }
 
 struct ChannelPublicationEvidence {
@@ -2426,14 +2480,30 @@ impl TranscriptBus {
         }
     }
 
-    /// Replace the co-audience snapshot later rows carry. Only the controller
-    /// calls this, under its channel-registry lock; this writer lock is the
-    /// leaf of that order and is never held while the registry is awaited.
-    pub(crate) fn set_co_audience(&self, entries: Vec<serde_json::Value>) {
+    /// Read the controller's live cohort at every later emission. Called once
+    /// the channel is admitted, and again when a failed close keeps it open.
+    pub(crate) fn attach_co_audience(&self, cohort: ChannelCohort, own: u8) {
         self.writer
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .co_audience = entries;
+            .co_audience = CoAudienceSource::Emission { cohort, own };
+    }
+
+    /// Stop following the live cohort: later rows of this closing session
+    /// carry `cohort`, taken before this channel left the registry. A bus
+    /// that never followed the cohort stays without co-audience.
+    pub(crate) fn freeze_co_audience(&self, cohort: Arc<Vec<ChannelCohortMember>>) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let own = match &writer.co_audience {
+            CoAudienceSource::Absent => return,
+            CoAudienceSource::Emission { own, .. } | CoAudienceSource::CaptureClose { own, .. } => {
+                *own
+            }
+        };
+        writer.co_audience = CoAudienceSource::CaptureClose { cohort, own };
     }
 
     fn with_writer(
@@ -2446,7 +2516,7 @@ impl TranscriptBus {
             path,
             writer: Mutex::new(TranscriptBusWriter {
                 channel_recipients: None,
-                co_audience: Vec::new(),
+                co_audience: CoAudienceSource::Absent,
                 file,
                 sequence: 0,
                 started: false,
@@ -2895,6 +2965,14 @@ impl TranscriptBus {
         writer: &mut TranscriptBusWriter,
         event: &impl Serialize,
     ) -> io::Result<()> {
+        if writer.file.is_none() {
+            return Ok(());
+        }
+        // Read the cohort before borrowing the file: one snapshot per row.
+        let co_audience = writer
+            .channel_recipients
+            .as_ref()
+            .and_then(|_| writer.co_audience.members());
         let Some(file) = writer.file.as_mut() else {
             return Ok(());
         };
@@ -2904,11 +2982,12 @@ impl TranscriptBus {
                 if let Some(fields) = value.as_object_mut() {
                     fields.insert("recipients".into(), recipients["recipients"].clone());
                     fields.insert("channel".into(), recipients["channel"].clone());
-                    if !writer.co_audience.is_empty() {
+                    if let Some((basis, members)) = &co_audience {
                         fields.insert(
                             "co_audience".into(),
-                            serde_json::Value::Array(writer.co_audience.clone()),
+                            serde_json::to_value(members).map_err(io::Error::other)?,
                         );
+                        fields.insert("co_audience_basis".into(), (*basis).into());
                     }
                 }
                 super::transcript_bus_maintenance::generation::encode(&value)?
