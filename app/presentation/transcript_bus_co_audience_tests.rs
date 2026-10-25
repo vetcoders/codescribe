@@ -23,8 +23,9 @@ mod co_audience_contract {
         let mut take = session(&id);
         take.audience = Some(format!("owner-{digit}"));
         take.badge_only = true;
-        let bus = Arc::new(TranscriptBus::open_at(
-            take, dir.join(format!("channel-{digit}.jsonl")), None).unwrap());
+        let bus = Arc::new(
+            TranscriptBus::open_at(take, dir.join(format!("channel-{digit}.jsonl")), None).unwrap(),
+        );
         bus.record_channel_receipt(&serde_json::json!({
             "schema": "codescribe.channel-recipients.v1", "session_id": id,
             "channel": digit.to_string(), "recipients": [{"lease_id": format!("owner-{digit}")}],
@@ -38,26 +39,45 @@ mod co_audience_contract {
             "state": "open", "marker": marker,
         }));
         crate::durable_bus_oracle::logical_text(&bus.path)
-            .lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .find(|row| row["marker"] == marker).unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|row| row["marker"] == marker)
+            .unwrap()
     }
 
     #[test]
     fn co_audience_all_live_writers_observe_one_cohort_and_exclude_only_their_own_digit() {
         let dir = tempfile::tempdir().unwrap();
-        let names = [(1, "klaudiusz"), (2, "lena"), (3, "roman"), (4, "marek"),
-                     (5, "tomek"), (8, "as"), (9, "olga-div0")];
-        let members: Vec<_> = names.iter().map(|(digit, name)| member(*digit, name, name)).collect();
+        let names = [
+            (1, "klaudiusz"),
+            (2, "lena"),
+            (3, "roman"),
+            (4, "marek"),
+            (5, "tomek"),
+            (8, "as"),
+            (9, "olga-div0"),
+        ];
+        let members: Vec<_> = names
+            .iter()
+            .map(|(digit, name)| member(*digit, name, name))
+            .collect();
         let shared = cohort(members.clone());
         for (digit, _) in names {
             let bus = bus(dir.path(), digit);
             bus.attach_co_audience(Arc::clone(&shared), digit);
             let row = emit(&bus, 1);
-            let expected: Vec<_> = members.iter().filter(|entry| entry.digit != digit).cloned().collect();
+            let expected: Vec<_> = members
+                .iter()
+                .filter(|entry| entry.digit != digit)
+                .cloned()
+                .collect();
             assert_eq!(row["co_audience"], serde_json::to_value(expected).unwrap());
             assert_eq!(row["co_audience_basis"], "emission");
-            assert_eq!(row["recipients"], serde_json::json!([{"lease_id": format!("owner-{digit}")}]),
-                       "co-audience never expands the frozen delivery owners");
+            assert_eq!(
+                row["recipients"],
+                serde_json::json!([{"lease_id": format!("owner-{digit}")}]),
+                "co-audience never expands the frozen delivery owners"
+            );
         }
     }
 
@@ -72,21 +92,31 @@ mod co_audience_contract {
         assert!(single.get("co_audience").is_none());
         assert!(single.get("co_audience_basis").is_none());
         *shared.write().unwrap() = Arc::new(vec![member(1, "old", "old"), own.clone()]);
-        assert_eq!(emit(&bus, 2)["co_audience"][0]["provider_session_id"], "thread-old");
+        assert_eq!(
+            emit(&bus, 2)["co_audience"][0]["provider_session_id"],
+            "thread-old"
+        );
         *shared.write().unwrap() = Arc::new(vec![own.clone()]);
         assert!(emit(&bus, 3).get("co_audience").is_none());
         *shared.write().unwrap() = Arc::new(vec![member(1, "new", "new"), own]);
         let reused = emit(&bus, 4);
         assert_eq!(reused["co_audience"][0]["audience"], "new");
         assert_eq!(reused["co_audience"][0]["session_id"], "capture-new");
-        assert_eq!(reused["co_audience"][0]["provider_session_id"], "thread-new");
+        assert_eq!(
+            reused["co_audience"][0]["provider_session_id"],
+            "thread-new"
+        );
         assert!(!reused.to_string().contains("thread-old"));
     }
 
     #[test]
     fn co_audience_closing_cohort_survives_delay_and_the_live_cohort_becoming_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let members = vec![member(1, "one", "one"), member(3, "roman", "roman"), member(9, "nine", "nine")];
+        let members = vec![
+            member(1, "one", "one"),
+            member(3, "roman", "roman"),
+            member(9, "nine", "nine"),
+        ];
         let shared = cohort(members.clone());
         let first = bus(dir.path(), 1);
         let third = bus(dir.path(), 3);
@@ -102,7 +132,11 @@ mod co_audience_contract {
         *shared.write().unwrap() = Arc::new(Vec::new());
         for (digit, bus) in [(1, first), (3, third)] {
             let row = emit(&bus, 2);
-            let expected: Vec<_> = members.iter().filter(|entry| entry.digit != digit).cloned().collect();
+            let expected: Vec<_> = members
+                .iter()
+                .filter(|entry| entry.digit != digit)
+                .cloned()
+                .collect();
             assert_eq!(row["co_audience"], serde_json::to_value(expected).unwrap());
             assert_eq!(row["co_audience_basis"], "capture_close");
         }
@@ -122,7 +156,8 @@ mod co_audience_contract {
             ready.send(()).unwrap();
             emit(&emitting, 1)
         });
-        wait.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        wait.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         // The emission is blocked on its writer while the controller can publish
         // the replacement without touching that writer. Its eventual read must
         // observe the new membership, not an old per-writer cached copy.
@@ -148,14 +183,23 @@ mod co_audience_contract {
         bus.observe_channel_publication_evidence(&ledger);
         bus.publish_channel_closed(0).unwrap();
         let text = crate::durable_bus_oracle::logical_text(&bus.path);
-        let twins: Vec<serde_json::Value> = text.lines()
+        let twins: Vec<serde_json::Value> = text
+            .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .filter(|row| row["status"] == "transcript_sealed").collect();
-        assert_eq!(twins.len(), 2, "real evidence and clean closing rows: {text}");
+            .filter(|row| row["status"] == "transcript_sealed")
+            .collect();
+        assert_eq!(
+            twins.len(),
+            2,
+            "real evidence and clean closing rows: {text}"
+        );
         for row in &twins {
             assert_eq!(row["co_audience_basis"], "capture_close");
             assert_eq!(row["co_audience"][0]["channel"], "1");
-            assert_eq!(row["recipients"], serde_json::json!([{"lease_id": "owner-3"}]));
+            assert_eq!(
+                row["recipients"],
+                serde_json::json!([{"lease_id": "owner-3"}])
+            );
             assert_eq!(row["rendered_text"], revision.rendered_text);
             assert_eq!(row["reducer_revision"], twins[0]["reducer_revision"]);
         }
