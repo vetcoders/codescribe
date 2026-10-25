@@ -6,6 +6,80 @@ import XCTest
 
 @MainActor
 final class OverlayMenuCursorTests: XCTestCase {
+  func testRetiredTrackingAreaExitCannotClearANewerNativeHoverEntry() throws {
+    let panel = OverlayIntercomPanel()
+    let foreign = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    panel.contentView = region
+    defer {
+      panel.close()
+      foreign.close()
+    }
+    region.updateTrackingAreas()
+    let retired = try XCTUnwrap(region.trackingAreas.first)
+    region.setFrameSize(NSSize(width: 60, height: 30))
+    region.updateTrackingAreas()
+    let current = try XCTUnwrap(region.trackingAreas.first)
+    XCTAssertFalse(retired === current)
+    var changes: [Bool] = []
+    region.onHover = { changes.append($0) }
+    region.handleHoverEvent(at: NSPoint(x: 10, y: 10), from: current, in: panel)
+    XCTAssertTrue(region.hovered)
+    region.handleHoverEvent(at: nil, from: retired, in: panel)
+    XCTAssertTrue(region.hovered)
+    region.handleHoverEvent(at: nil, from: current, in: foreign)
+    XCTAssertTrue(region.hovered)
+    XCTAssertEqual(changes, [true])
+    region.handleHoverEvent(at: nil, from: current, in: panel)
+    XCTAssertFalse(region.hovered)
+    XCTAssertEqual(changes, [true, false])
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(foreign.isVisible)
+  }
+
+  func testUnchangedIntercomHoverGeometryKeepsOneTrackingArea() throws {
+    let panel = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    panel.contentView = region
+    defer { panel.close() }
+    region.updateTrackingAreas()
+    let original = try XCTUnwrap(region.trackingAreas.first)
+    var retained = true
+    for _ in 0..<200 {
+      region.updateTrackingAreas()
+      XCTAssertEqual(region.trackingAreas.count, 1)
+      retained = retained && region.trackingAreas.first === original
+    }
+    XCTAssertTrue(retained)
+    region.setFrameSize(NSSize(width: 60, height: 30))
+    region.updateTrackingAreas()
+    XCTAssertEqual(region.trackingAreas.count, 1)
+    XCTAssertFalse(region.trackingAreas.first === original)
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(panel.isKeyWindow)
+  }
+
+  func testNativeIntercomHoverClearsWhenItsRegionLeavesTheWindow() {
+    let panel = OverlayIntercomPanel()
+    panel.setFrame(NSRect(x: 0, y: 0, width: 80, height: 30), display: false)
+    let region = OverlayMenuCursorRegionView(frame: NSRect(x: 0, y: 0, width: 80, height: 30))
+    var changes: [Bool] = []
+    region.onHover = { changes.append($0) }
+    panel.contentView = region
+    defer { panel.close() }
+    region.updateHover(at: NSPoint(x: 10, y: 10))
+    region.updateHover(at: NSPoint(x: 15, y: 10))
+    XCTAssertTrue(region.hovered)
+    XCTAssertEqual(changes, [true])
+    panel.contentView = NSView()
+    XCTAssertFalse(region.hovered)
+    XCTAssertEqual(changes, [true, false])
+    XCTAssertFalse(panel.isVisible)
+    XCTAssertFalse(panel.isKeyWindow)
+  }
+
   func testInteriorDecisionBudgetAcrossTenThousandMoves() {
     let bounds = NSRect(x: 0, y: 0, width: 600, height: 500)
     var state = OverlayCursorState()

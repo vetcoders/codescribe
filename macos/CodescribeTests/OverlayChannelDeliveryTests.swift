@@ -501,6 +501,51 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
   }
 
+  func testCaptureClosingDuringRefusedPasteReturnsFilesToTheUnsentDraft() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    let (source, _, _) = captureAttachmentRows(fixture: fixture, primary: fixture.bus)
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(source)
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: fixture.bus.path).first(where: { $0.owner?.channel == "1" }))
+    var message = try XCTUnwrap(conversation.messages.first)
+    message.captureState = .finished
+    let closed = OverlayConversation(
+      id: conversation.id, channel: conversation.channel, name: conversation.name,
+      owner: conversation.owner, messages: [message])
+    let state = OverlayState()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.conversationDrafts[conversation.id] = "Keep this text"
+    let root = ConversationAttachmentPointer.configDirectory
+    XCTAssertNotEqual(root.path, NSHomeDirectory() + "/.codescribe")
+    guard root.path != NSHomeDirectory() + "/.codescribe" else { return }
+    let file = root.appendingPathComponent("assets/recovered.png")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("attachment fixture".utf8).write(to: file)
+    defer { try? FileManager.default.removeItem(at: file) }
+    let path = file.resolvingSymlinksInPath().path
+    let refused = expectation(description: "the capture closes before attachment admission")
+    state.publishCaptureAttachments = { _, _ in
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [closed]))
+      refused.fulfill()
+      throw CocoaError(.fileWriteNoPermission)
+    }
+    state.publishConversationText = { _, _, _ in XCTFail("Recovery must never send a message") }
+    let generation = state.captureGeneration
+    XCTAssertTrue(state.stageConversationAttachments([path], in: conversation))
+    await fulfillment(of: [refused], timeout: 2)
+    XCTAssertNil(state.captureAttachmentDrafts[conversation.id])
+    XCTAssertNil(state.captureAttachmentErrors[conversation.id])
+    let draft = ConversationDraft.split(state.conversationDrafts[conversation.id] ?? "")
+    XCTAssertEqual(draft.text.trimmingCharacters(in: .whitespacesAndNewlines), "Keep this text")
+    XCTAssertEqual(draft.attachments, [path])
+    XCTAssertNotNil(state.textMessageErrors[conversation.id])
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertFalse(state.stageConversationAttachments(["/fixture/next.png"], in: closed))
+  }
+
   func testCaptureAttachmentsKeepExactRevisionAndReplyReferenceThroughRestore() throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

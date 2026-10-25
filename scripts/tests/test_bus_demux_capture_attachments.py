@@ -29,6 +29,29 @@ class CaptureAttachmentTests(unittest.TestCase):
                 DEMUX.publish_reply_event(self.bus, self.stage)
         self.assertNotIn("speech did not start", str(caught.exception))
 
+    def test_capture_refusal_keeps_one_private_diagnostic_without_file_content(self):
+        from types import SimpleNamespace
+        file = Path(self.pointer["path"])
+        file.write_bytes(b"image fixture")
+        root = Path(self.temp.name) / "bridge"
+        args = SimpleNamespace(
+            attach_file=[str(file)], capture_session=self.session, capture_epoch=7,
+            capture_source_sequence=0, bus=self.bus, bridge_home=root)
+        with patch.object(DEMUX, "describe_attachment", return_value=self.pointer), \
+                patch.object(DEMUX, "publish_reply_event", side_effect=OSError("target closed")):
+            for _ in range(2):
+                with self.assertRaisesRegex(OSError, "target closed"):
+                    DEMUX.stage_capture_attachment_command(args)
+        receipt = root / "runtime" / "capture-attachment-last-refusal.json"
+        saved = json.loads(receipt.read_text())
+        self.assertEqual(saved["session_id"], self.session)
+        self.assertEqual(saved["source_sequence"], 0)
+        self.assertEqual(saved["reason"], "target closed")
+        self.assertNotIn(str(file), receipt.read_text())
+        self.assertNotIn("attachments", saved)
+        self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(list(receipt.parent.iterdir())), 1)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

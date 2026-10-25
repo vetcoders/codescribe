@@ -369,7 +369,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let state = OverlayState()
       state.engine = engine
       state.attach()
-      state.toggleCollapsed()
+      state.setPresentationMode(.midi)
       state.handleRecordingStarted()
       XCTAssertEqual(state.isCollapsed, !expanded)
       XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -470,7 +470,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       state.setPresentationMode(.mini)
       settle(root)
-      for mode in [OverlayPresentationMode.midi, .expanded, .mini, .midi, .expanded, .mini] {
+      for mode in [OverlayPresentationMode.expanded, .mini, .expanded, .mini] {
         state.toggleCollapsed()
         settle(root)
         XCTAssertEqual(state.presentationMode, mode)

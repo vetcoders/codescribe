@@ -8220,7 +8220,22 @@ def stage_capture_attachment_command(args: argparse.Namespace) -> int:
         "attachments": attachments,
         "emitted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds"),
     }
-    receipt = publish_reply_event(args.bus, event, bridge_root=args.bridge_home)
+    try:
+        receipt = publish_reply_event(args.bus, event, bridge_root=args.bridge_home)
+    except (OSError, ValueError, RuntimeError) as error:
+        # One bounded private diagnostic, not a delivery or transcript record.
+        # Keep target coordinates, not attachment metadata or payload bytes.
+        diagnostic = {
+            "schema": "codescribe.capture-attachment-refusal.v1",
+            "session_id": args.capture_session, "capture_epoch": args.capture_epoch,
+            "source_sequence": args.capture_source_sequence, "stage_id": event["stage_id"],
+            "emitted_at": event["emitted_at"], "reason": str(error)[-4096:],
+        }
+        try:
+            atomic_json(args.bridge_home / "runtime" / "capture-attachment-last-refusal.json", diagnostic)
+        except OSError as diagnostic_error:
+            sys.stderr.write(f"cs-bus: attachment diagnostic unavailable: {diagnostic_error}\n")
+        raise
     emit({"kind": "capture_attachment_staged", "stage_id": event["stage_id"],
           "session_id": args.capture_session, "capture_epoch": args.capture_epoch,
           "source_sequence": args.capture_source_sequence, "source": receipt})

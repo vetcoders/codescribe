@@ -113,20 +113,21 @@ final class OverlayMenuCursorRegionView: NSView {
     hoverArea = area
   }
 
-  private func ownsHoverEvent(_ event: NSEvent) -> Bool {
-    if let source = event.trackingArea, source !== hoverArea { return false }
-    if let source = event.window, source !== window { return false }
-    return true
+  /// Both native callbacks enter here with their original source identity.
+  /// A late exit from a retired area must not clear a newer hover entry.
+  func handleHoverEvent(at point: NSPoint?, from area: NSTrackingArea?, in sourceWindow: NSWindow?)
+  {
+    if let area, area !== hoverArea { return }
+    if let sourceWindow, sourceWindow !== window { return }
+    updateHover(at: point)
   }
 
   override func mouseEntered(with event: NSEvent) {
-    guard ownsHoverEvent(event) else { return }
-    updateHover(at: event.locationInWindow)
+    handleHoverEvent(at: event.locationInWindow, from: event.trackingArea, in: event.window)
   }
 
   override func mouseExited(with event: NSEvent) {
-    guard ownsHoverEvent(event) else { return }
-    setHovered(false)
+    handleHoverEvent(at: nil, from: event.trackingArea, in: event.window)
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? { nil }

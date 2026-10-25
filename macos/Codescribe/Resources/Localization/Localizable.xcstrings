@@ -418,7 +418,6 @@
       }
     },
     "%@%@" : {
-      "shouldTranslate" : false,
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -426,10 +425,10 @@
             "value" : "%1$@%2$@"
           }
         }
-      }
+      },
+      "shouldTranslate" : false
     },
     "%@%@%@" : {
-      "shouldTranslate" : false,
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -437,7 +436,8 @@
             "value" : "%1$@%2$@%3$@"
           }
         }
-      }
+      },
+      "shouldTranslate" : false
     },
     "%@, overridden" : {
       "comment" : "VoiceOver value: a toggle state frozen by an override",
@@ -19132,6 +19132,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostawca nie zwrócił żadnych modeli. Wpisz identyfikator modelu poniżej."
+          }
+        }
+      }
+    },
+    "The recording ended. Files are in this conversation's draft; send them when ready." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nagranie się zakończyło. Pliki są w szkicu tej rozmowy; wyślij je, kiedy zechcesz."
           }
         }
       }

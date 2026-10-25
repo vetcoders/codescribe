@@ -2550,6 +2550,7 @@ final class OverlayState {
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
     activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
     resolveWaitingCaptureAttachments(in: projected)
+    recoverClosedCaptureAttachments(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -2848,6 +2849,31 @@ final class OverlayState {
     return staged.paths
   }
 
+  /// A refused attachment cannot follow a closed take or its successor.
+  /// Return its files to the existing manual draft so Send stays an explicit
+  /// choice, instead of capturing every later paste in an unretryable target.
+  private func recoverClosedCaptureAttachments(in projected: [OverlayConversation]) {
+    for (id, staged) in captureAttachmentDrafts {
+      guard captureAttachmentErrors[id] != nil,
+        !pendingCaptureAttachmentSends.contains(id),
+        let target = staged.target,
+        let conversation = projected.first(where: { $0.id == id }),
+        conversation.messages.contains(where: {
+          $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
+        })
+      else { continue }
+      let draft = ConversationDraft.split(conversationDrafts[id] ?? "")
+      let added = staged.paths.filter { !draft.attachments.contains($0) }
+      conversationDrafts[id] = ConversationDraft.compose(
+        text: draft.text, attachments: draft.attachments + added)
+      captureAttachmentDrafts.removeValue(forKey: id)
+      captureAttachmentErrors.removeValue(forKey: id)
+      textMessageErrors[id] = String(
+        localized:
+          "The recording ended. Files are in this conversation's draft; send them when ready.")
+    }
+  }
+
   func sendCaptureAttachments(in conversationID: String) async {
     guard let staged = captureAttachmentDrafts[conversationID], !staged.paths.isEmpty,
       !pendingCaptureAttachmentSends.contains(conversationID)
@@ -2862,6 +2888,7 @@ final class OverlayState {
     var succeeded = false
     defer {
       pendingCaptureAttachmentSends.remove(conversationID)
+      recoverClosedCaptureAttachments(in: conversations)
       if succeeded, captureAttachmentDrafts[conversationID]?.paths.isEmpty == false {
         Task { await sendCaptureAttachments(in: conversationID) }
       }
