@@ -1631,6 +1631,38 @@ its named audience; a missing address is reported as unknown, never inferred
 from mentions in the text. This projection changes neither routing nor delivery
 identity, recipients, ACK state or the original message text.
 
+## Open-channel co-audience
+
+A nonzero Live agent-channel journal may carry `co_audience` on its emitted
+rows. This is a sorted list of the other Live channels admitted by the same
+local `RecordingController`, excluding the row's own channel. Membership comes
+from the controller's canonical open-channel registry. It is a read-only
+projection, not a recipient list or proof that anyone heard a whole utterance.
+An entry contains `channel`, `audience`, the capture `session_id`, and the
+`provider` / agent `provider_session_id` when known. Capture and agent session
+identities are distinct. Actual membership is used; no fixed channel roster is
+shipped. An open channel zero can appear as another live member; its own bus
+continues to use its frozen broadcast recipients and has no co-audience source.
+
+A nonempty list always has `co_audience_basis`:
+
+- `emission`: membership at the writer's shared-snapshot read. All open channel
+  writers read the same per-controller projection; a registry transition swaps
+  the whole immutable snapshot once, rather than updating writers one by one.
+- `capture_close`: membership frozen immediately before the channel leaves the
+  registry. Every channel removed in one close batch freezes the same cohort.
+  Later asynchronous closing/seal rows retain this boundary, even after the
+  remaining live roster changes. They do not claim the peers are still open at
+  the later publication time.
+
+Both fields are omitted when no other member exists. A failed open never joins
+the roster; a close rollback restores live membership and emission basis.
+Reusing a digit uses the new capture and agent identities. The metadata survives
+evidence normalization, owned mailbox presentation and complete watch messages.
+It does not alter `recipients`, address selection, message identity, ACK/CAS,
+transcript text, ledger decisions, microphone ownership or recognition. Remote
+hosts do not implicitly join a local controller's roster.
+
 ## Native provider queue receipt
 
 The queue message's content depends on who the normalizer attributed the

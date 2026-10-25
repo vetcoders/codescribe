@@ -5825,4 +5825,5 @@ mod tests {
             revision.rendered_text.len()
         );
     }
+    include!("transcript_bus_co_audience_tests.rs");
 }
