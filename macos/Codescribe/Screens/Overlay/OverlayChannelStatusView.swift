@@ -1559,7 +1559,9 @@ struct OverlayChannelStatusView: View {
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
       scrollTargetID: gestureFocusID.flatMap { id in
-        currentConversations.first(where: { $0.channel == "0" })?.id == id ? nil : id
+        currentConversations.contains(where: {
+          $0.id == id && ($0.channel == "0" || $0.isHumanInbox)
+        }) ? nil : id
       }
     ) {
       HStack(spacing: 6) {
@@ -1578,77 +1580,91 @@ struct OverlayChannelStatusView: View {
         }
       }
     } pinned: { rowFocus in
-      if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
-        onSelectConversation != nil
+      if onSelectConversation != nil,
+        currentConversations.contains(where: { $0.channel == "0" || $0.isHumanInbox })
       {
-        rowGlassContainer(
-          VStack(alignment: .leading, spacing: 2) {
-            broadcastRow(broadcast, rowFocus: rowFocus)
-            // The pair sits beside the preview, not in the Agents header
-            // and not in the agent-row footer. Three lines belong to All.
-            HStack(alignment: .center, spacing: 8) {
-              if let last = broadcast.messages.last {
-                let unread = unreadCounts[broadcast.id] ?? 0
-                // The preview opens the conversation like an agent row's
-                // preview does; only the All pair beside it keeps its own
-                // actions (Founder, 2026-10-23: a click on it did nothing).
-                Button {
-                  onSelectConversation?(broadcast.id)
-                } label: {
-                  Text(verbatim: Self.drawerPreview(message: last))
-                    .font(.system(size: 12.5 * textScale))
-                    .foregroundStyle(
-                      unread > 0 ? palette.bodyText.color : palette.mutedText.color
+        VStack(alignment: .leading, spacing: 2) {
+          if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
+            onSelectConversation != nil
+          {
+            rowGlassContainer(
+              VStack(alignment: .leading, spacing: 2) {
+                broadcastRow(broadcast, rowFocus: rowFocus)
+                // The pair sits beside the preview, not in the Agents header
+                // and not in the agent-row footer. Three lines belong to All.
+                HStack(alignment: .center, spacing: 8) {
+                  if let last = broadcast.messages.last {
+                    let unread = unreadCounts[broadcast.id] ?? 0
+                    // The preview opens the conversation like an agent row's
+                    // preview does; only the All pair beside it keeps its own
+                    // actions (Founder, 2026-10-23: a click on it did nothing).
+                    Button {
+                      onSelectConversation?(broadcast.id)
+                    } label: {
+                      Text(verbatim: Self.drawerPreview(message: last))
+                        .font(.system(size: 12.5 * textScale))
+                        .foregroundStyle(
+                          unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                        )
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(
+                      Text(
+                        verbatim: String(
+                          localized: "View conversation without changing the microphone"))
                     )
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("overlay-all-preview")
+                  } else {
+                    Spacer(minLength: 0)
+                  }
+                  OverlayAgentAudioControls(
+                    open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
+                    microphoneEnabled: !unavailable && hudStates["0"] != nil
+                      && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
+                    playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
+                    palette: palette, onMicrophone: { onToggleChannel?(0) },
+                    onPlayback: { onTogglePlayback?("0") }, broadcast: true,
+                    speaking: broadcast.replySpeaking
+                  )
+                  .fixedSize()
+                  .accessibilityIdentifier("overlay-channel-toggle-0")
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint(
-                  Text(
-                    verbatim: String(
-                      localized: "View conversation without changing the microphone"))
-                )
-                .accessibilityIdentifier("overlay-all-preview")
-              } else {
-                Spacer(minLength: 0)
               }
-              OverlayAgentAudioControls(
-                open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
-                microphoneEnabled: !unavailable && hudStates["0"] != nil
-                  && onToggleChannel != nil && !pendingToggleChannels.contains("0"),
-                playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains("0"),
-                palette: palette, onMicrophone: { onToggleChannel?(0) },
-                onPlayback: { onTogglePlayback?("0") }, broadcast: true,
-                speaking: broadcast.replySpeaking
-              )
-              .fixedSize()
-              .accessibilityIdentifier("overlay-channel-toggle-0")
-            }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            )
+            // The shared channel is a roster row: the same padding, the same
+            // selection mark and the same hover as the agents under it.
+            .padding(.vertical, 3)
+            .padding(.horizontal, 5)
+            .modifier(
+              OverlayRosterRowSelection(
+                palette: palette, selected: selectedConversationID == broadcast.id)
+            )
+            .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
+            .modifier(
+              OverlayGestureFocusRing(
+                focused: broadcast.id == gestureFocusID,
+                shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+                targetID: broadcast.id, onHover: onGestureHover)
+            )
+            .id(broadcast.id)
+            .modifier(
+              OverlayBroadcastPolicyMenu(
+                members: broadcastMembers, palette: palette, enabled: !unavailable))
           }
-          .frame(maxWidth: .infinity, alignment: .leading)
-        )
-        // The shared channel is a roster row: the same padding, the same
-        // selection mark and the same hover as the agents under it.
-        .padding(.vertical, 3)
-        .padding(.horizontal, 5)
-        .modifier(
-          OverlayRosterRowSelection(
-            palette: palette, selected: selectedConversationID == broadcast.id)
-        )
-        .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
-        .modifier(
-          OverlayGestureFocusRing(
-            focused: broadcast.id == gestureFocusID,
-            shape: RoundedRectangle(cornerRadius: 10), palette: palette,
-            targetID: broadcast.id, onHover: onGestureHover)
-        )
-        .id(broadcast.id)
-        .modifier(
-          OverlayBroadcastPolicyMenu(
-            members: broadcastMembers, palette: palette, enabled: !unavailable))
+          if let inbox = currentConversations.first(where: \.isHumanInbox) {
+            conversationRow(inbox, saved: false, rowFocus: rowFocus)
+              .font(.system(size: 13 * textScale, weight: .medium))
+              .foregroundStyle(palette.primaryText.color)
+              .padding(.horizontal, 5)
+          }
+        }
+        .padding(CSSpace.xxs)
+        .modifier(OverlayControlGlass(cornerRadius: CSRadius.card))
       }
     } content: { rowFocus in
       VStack(alignment: .leading, spacing: 6) {
@@ -2178,11 +2194,6 @@ struct OverlayChannelStatusView: View {
         .fixedSize(horizontal: false, vertical: true)
         .padding(.vertical, 12)
         .accessibilityIdentifier("overlay-agent-connection-hint")
-      }
-      if onSelectConversation != nil,
-        let inbox = currentConversations.first(where: \.isHumanInbox)
-      {
-        conversationRow(inbox, saved: false, rowFocus: rowFocus)
       }
       ForEach(channels) { channel in
         channelRow(channel, rowFocus: rowFocus)
@@ -2743,7 +2754,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
           } action: {
             pinnedHeight = $0
           }
-          .accessibilityIdentifier("overlay-agent-monitor-pinned-all")
+          .accessibilityIdentifier("overlay-agent-monitor-pinned-mailboxes")
         ScrollViewReader { proxy in
           ScrollView(.vertical) {
             contentBuilder($rowFocus)
@@ -2783,7 +2794,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
   }
 }
 
-/// Measured header and pinned All consume space before the scrolling agents.
+/// Measured header and pinned mailboxes consume space before the scrolling agents.
 enum OverlayAgentMonitorLayout {
   static func viewportHeight(
     maximumHeight: CGFloat, headerHeight: CGFloat, pinnedHeight: CGFloat, contentHeight: CGFloat?
