@@ -64,11 +64,6 @@ enum CSPalette {
 
   // Surfaces — warm ink in dark, warm paper in light.
   static let ink = adaptive(light: NSColor(hex: 0xF7F5F0), dark: NSColor(hex: 0x090A0D))
-  static let glassBase = adaptive(
-    light: NSColor(hex: 0xFFFFFF, alpha: 0.78),
-    dark: NSColor(hex: 0x12141A, alpha: 0.84)
-  )
-  static let glassUnder = adaptive(light: NSColor(hex: 0xEDEAE3), dark: NSColor(hex: 0x0B0C10))
   /// The app sheet: the overlay canvas colour, shared by every window's content
   /// area outside its sidebar so Settings, the Agent window, the wizard, the
   /// tray menu and the overlay read as one surface (Maciej, ch1 2026-10-15
@@ -88,8 +83,6 @@ enum CSPalette {
       light: NSColor(hex: preference.current(dark: false).hex),
       dark: NSColor(hex: preference.current(dark: true).hex))
   }
-  static let warmInk = adaptive(light: NSColor(hex: 0xF8F3EC), dark: NSColor(hex: 0x15110E))
-  static let warmDeep = adaptive(light: NSColor(hex: 0xE9E5DD), dark: NSColor(hex: 0x0D1012))
 
   // Text — warm near-black on paper, warm off-white on ink. The "Alt" rung is
   // always the fainter one: closer to the page in whichever mode is active.
@@ -101,7 +94,6 @@ enum CSPalette {
   /// sheet (#DFDDD9, 2026-10-20), including every selectable sheet shade.
   /// Travertine's chip is the darkest light surface.
   static let textMuted = adaptive(light: NSColor(hex: 0x4B4D46), dark: NSColor(hex: 0xA0A39D))
-  static let textMutedAlt = adaptive(light: NSColor(hex: 0x84877E), dark: NSColor(hex: 0x82857F))
   static let textFaint = adaptive(light: NSColor(hex: 0x9DA094), dark: NSColor(hex: 0x6F7268))
   static let textFaintAlt = adaptive(light: NSColor(hex: 0xB2B5A9), dark: NSColor(hex: 0x5D6058))
 
@@ -176,8 +168,6 @@ enum CSPalette {
 enum CSColor {
   // Surfaces
   static let ink = Color(nsColor: CSPalette.ink)  // page base
-  static let glassBase = Color(nsColor: CSPalette.glassBase)  // app window material tint
-  static let glassUnder = Color(nsColor: CSPalette.glassUnder)
   /// Content area of every window outside its sidebar; see `CSPalette.sheet`.
   static var sheet: Color { Color(nsColor: CSPalette.sheet) }
 
@@ -259,21 +249,8 @@ enum CSColor {
   static let textBody = Color(nsColor: CSPalette.textBody)
   static let textBodyAlt = Color(nsColor: CSPalette.textBodyAlt)
   static let textMuted = Color(nsColor: CSPalette.textMuted)
-  static let textMutedAlt = Color(nsColor: CSPalette.textMutedAlt)
   static let textFaint = Color(nsColor: CSPalette.textFaint)  // mono meta
   static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // timestamps
-
-  /// Warm wash gradient shared by Settings detail and overlay/tray previews so
-  /// those surfaces cannot drift apart. Follows the system appearance.
-  static let windowWash = LinearGradient(
-    stops: [
-      .init(color: Color(nsColor: CSPalette.warmInk), location: 0.0),
-      .init(color: Color(nsColor: CSPalette.glassUnder), location: 0.55),
-      .init(color: Color(nsColor: CSPalette.warmDeep), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
 }
 
 enum CSRadius {
@@ -281,7 +258,6 @@ enum CSRadius {
   static let input: CGFloat = 9
   static let card: CGFloat = 12
   static let composer: CGFloat = 13
-  static let tray: CGFloat = 14
   static let pill: CGFloat = 20
   static let window: CGFloat = 22
 }

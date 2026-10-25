@@ -68,10 +68,6 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   func testSurfacesAndTextAdaptAcrossAppearances() {
     let adaptiveTokens: [(String, NSColor)] = [
       ("ink", CSPalette.ink),
-      ("glassBase", CSPalette.glassBase),
-      ("glassUnder", CSPalette.glassUnder),
-      ("warmInk", CSPalette.warmInk),
-      ("warmDeep", CSPalette.warmDeep),
       ("textHigh", CSPalette.textHigh),
       ("textBody", CSPalette.textBody),
       ("textMuted", CSPalette.textMuted),

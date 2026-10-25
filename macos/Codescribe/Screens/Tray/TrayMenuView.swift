@@ -439,7 +439,7 @@ private struct TrayNoteStatusRow: View {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
       .padding(CSSpace.previewInset)
-      .background(CSColor.windowWash)
+      .background(CSColor.sheet)
       .onAppear { FontLoader.register() }
   }
 
@@ -450,7 +450,7 @@ private struct TrayNoteStatusRow: View {
       trayStatus: .preview(kind: .listening, tone: .active)
     )
     .padding(CSSpace.previewInset)
-    .background(CSColor.windowWash)
+    .background(CSColor.sheet)
     .onAppear { FontLoader.register() }
   }
 #endif

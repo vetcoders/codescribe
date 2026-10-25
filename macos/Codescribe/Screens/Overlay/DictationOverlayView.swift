@@ -1708,7 +1708,7 @@ private struct OverlayScrollEdgeEffects: ViewModifier {
     content()
       .frame(width: width, height: height)
       .padding(CSSpace.previewInset)
-      .background(CSColor.windowWash)
+      .background(CSColor.sheet)
   }
 
   @MainActor
