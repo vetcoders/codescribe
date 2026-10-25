@@ -115,10 +115,11 @@ build = (root / "scripts/build-app.sh").read_text(encoding="utf-8")
 stamp = build.index('"$REPO_ROOT/scripts/lib/stamp-single-instance.sh" "$APP"')
 gate = build.rindex('if [ "$INSTALL_LANE" = "1" ]; then', 0, stamp)
 assert 'INSTALL_LANE="${CODESCRIBE_INSTALL_LANE:-0}"' in build[:gate]
-first_sign = build.index('codesign --force --deep --sign')
-assert stamp < first_sign, "stamp must precede the stage-7 codesign"
+app_signs = list(re.finditer(r'^\s*codesign --force\b.*"\$APP"', build, re.M))
+assert app_signs, "no app signing commands found"
+assert stamp < app_signs[0].start(), "stamp must precede the stage-7 codesign"
 verify = build.index('codesign --verify --deep --strict "$APP"')
-assert verify > build.rindex('codesign --force --deep --sign'), "seal check must follow signing"
+assert verify > app_signs[-1].start(), "seal check must follow signing"
 makefile = (root / "Makefile").read_text(encoding="utf-8")
 recipe = makefile[makefile.index("\ninstall-app:"):]
 recipe = recipe[: recipe.index("\n\n")]
