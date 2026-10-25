@@ -423,7 +423,7 @@ private struct LLMLaneEditor: View {
     guard probe.status == "failed" || probe.status == "timed_out" else { return nil }
     switch probe.failureCode {
     case "unavailable":
-      return String(localized: "No formatting provider is available. Configure an account or API key.")
+      return String(localized: "Formatting is unavailable. Check the provider, model and account settings.")
     case "account_authentication":
       return String(localized: "Account access failed. Check your connection and account settings, then repeat the test.")
     case "timeout":

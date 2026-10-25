@@ -8643,6 +8643,17 @@
         }
       }
     },
+    "Formatting is unavailable. Check the provider, model and account settings." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Formatowanie jest niedostępne. Sprawdź dostawcę, model i ustawienia konta."
+          }
+        }
+      }
+    },
     "Formatting level" : {
       "localizations" : {
         "pl" : {
@@ -11915,17 +11926,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przekazano poziomu rozumowania. Model używa własnego ustawienia domyślnego."
-          }
-        }
-      }
-    },
-    "No formatting provider is available. Configure an account or API key." : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Brak dostępnego dostawcy formatowania. Skonfiguruj konto lub klucz API."
           }
         }
       }
