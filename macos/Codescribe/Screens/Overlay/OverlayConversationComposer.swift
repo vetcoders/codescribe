@@ -3,6 +3,11 @@ import SwiftUI
 
 /// One input surface; the conversation owner retains the draft and publishes it.
 struct OverlayConversationComposer: View {
+  /// Restart admission needs the current keyboard recipient, not the editor
+  /// ownership retained across window blur for automatic-collapse protection.
+  @MainActor
+  static var hasFocusedEditor: Bool { ConversationMessageField.hasFocusedEditor }
+
   @Environment(\.csTextScale) private var textScale
   let palette: OverlayAppearancePalette
   @Binding var draft: String
@@ -359,6 +364,14 @@ struct OverlayComposerAttachmentPill: View {
 
 /// SwiftUI owns the draft; AppKit owns text editing and the responder chain.
 private struct ConversationMessageField: NSViewRepresentable {
+  @MainActor
+  static var hasFocusedEditor: Bool {
+    guard let window = NSApp?.keyWindow, window.isVisible,
+      let editor = window.firstResponder as? MessageTextView
+    else { return false }
+    return editor.window === window && !editor.isHiddenOrHasHiddenAncestor
+  }
+
   @Binding var text: String
   @Binding var height: CGFloat
   let textColor: NSColor

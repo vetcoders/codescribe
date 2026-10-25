@@ -2626,11 +2626,13 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
-  /// The Founder is writing to an agent: the composer is active, keys fell
-  /// within the typing horizon, or a draft waits unsent. An idle restart must
-  /// not quit the app under it (Maciej, 2026-10-23).
+  /// Restart uses AppKit's current keyboard recipient. Retained editor
+  /// ownership also holds automatic collapse after window blur, but cannot
+  /// prove that the Founder is still writing in that window. Recent typing
+  /// and every unsent draft remain protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
-    composerRetainsAutomaticReplyFocus
+    OverlayConversationComposer.hasFocusedEditor
+      || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)
       || conversationDrafts.values.contains {
         !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
