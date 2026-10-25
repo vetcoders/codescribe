@@ -203,7 +203,9 @@ final class ThreadRailSectionTests: XCTestCase {
 
 @MainActor
 final class AccentColorTokenTests: XCTestCase {
-  func testChromeAccentResolvesToProductAccentAcrossAppearances() throws {
+  /// Founder, 2026-10-24: actions are not terracotta; they keep the system
+  /// accent and read as clickable through their bordered shape.
+  func testChromeAccentResolvesToSystemAccentAcrossAppearances() throws {
     for name in [
       NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua,
       .accessibilityHighContrastDarkAqua,
@@ -212,8 +214,8 @@ final class AccentColorTokenTests: XCTestCase {
       appearance.performAsCurrentDrawingAppearance {
         assertSameColor(
           NSColor(CSColor.chromeAccent),
-          CSPalette.terracottaText,
-          message: "chrome accent must follow the product palette in \(name.rawValue)"
+          NSColor.controlAccentColor,
+          message: "chrome accent must follow macOS in \(name.rawValue)"
         )
       }
     }
