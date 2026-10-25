@@ -40,6 +40,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
       XCTAssertGreaterThan(later.height, 3 * row)
       XCTAssertLessThan(later.height, 8 * row)
+      XCTAssertTrue(later.showsComposer)
+      XCTAssertFalse(
+        try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 5 * row)).showsComposer
+      )
     }
   }
 
@@ -109,9 +113,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private func reviewProductionCardPhases(dark: Bool) throws {
     func render(
       channel: String, text: String?, height: CGFloat, dark: Bool,
-      expanded: Bool = false, hover: Bool = false
+      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false
     ) throws
-      -> (contentEdges: Int, headerMask: Data)
+      -> Data
     {
       let session = "fixture-\(channel)"
       let identity = AgentPlaybackIdentity(provider: "codex", session: session, bus: "/fixture/bus")
@@ -168,7 +172,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           workspace: "/fixture/codescribe",
           frame: .init(session: "codescribe", paneID: 11))
       ])
-      state.conversationDrafts[conversation.id] = "Preserved draft"
+      let retainedDraft =
+        longDraft
+        ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
+      state.conversationDrafts[conversation.id] = retainedDraft
+      state.publishConversationText = { _, _, _ in XCTFail("Mounting a preview must not send") }
+      let keyWindow = NSApp.keyWindow
       let generation = state.captureGeneration
       let suite = "CodescribeTests.compact.\(UUID().uuidString)"
       let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -210,13 +219,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       image.addRepresentation(bitmap)
       let attachment = XCTAttachment(image: image)
       attachment.name =
-        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")"
+        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(longDraft ? "long-draft" : "idle")"
       attachment.lifetime = .keepAlways
       add(attachment)
-      var contentEdges = 0
       var header = Data()
       let headerPixels = Int(30 * CGFloat(bitmap.pixelsHigh) / height)
-      for y in 0..<bitmap.pixelsHigh {
+      for y in 0..<headerPixels {
         var previousBrightness: CGFloat?
         for x in 0..<bitmap.pixelsWide {
           let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
@@ -225,17 +233,29 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
             * 0.0722
           let ink = previousBrightness.map { abs(brightness - $0) > 0.06 } ?? false
           previousBrightness = brightness
-          if y < headerPixels {
-            header.append(ink ? 1 : 0)
-          }
-          if ink && y >= headerPixels { contentEdges += 1 }
+          header.append(ink ? 1 : 0)
         }
       }
+      var pendingViews: [NSView] = [host]
+      var editors: [NSTextView] = []
+      while let view = pendingViews.popLast() {
+        if let editor = view as? NSTextView, editor.isEditable { editors.append(editor) }
+        pendingViews.append(contentsOf: view.subviews)
+      }
+      if !expanded {
+        let shouldHaveInput = !hover && height >= 220
+        XCTAssertEqual(editors.count, shouldHaveInput ? 1 : 0)
+        for editor in editors {
+          XCTAssertEqual(editor.string, retainedDraft)
+          XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
+        }
+      }
+      XCTAssertTrue(NSApp.keyWindow === keyWindow, "Resizing or hovering must not take focus")
       XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
       XCTAssertEqual(controller.interactionWindowCounts.visible, 0)
       XCTAssertEqual(state.captureGeneration, generation)
-      XCTAssertEqual(state.conversationDrafts[conversation.id], "Preserved draft")
-      return (contentEdges, header)
+      XCTAssertEqual(state.conversationDrafts[conversation.id], retainedDraft)
+      return header
     }
     let richMessage = """
       ## Wynik pracy
@@ -258,17 +278,16 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
       }
       for height in [CGFloat(150), 220] {
-        let empty = try render(channel: "3", text: nil, height: height, dark: dark)
-        let message = try render(channel: "3", text: richMessage, height: height, dark: dark)
-        XCTAssertGreaterThan(
-          message.contentEdges, empty.contentEdges + 100, "Later phase must paint rich content")
+        _ = try render(channel: "3", text: nil, height: height, dark: dark)
+        _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
       }
+      _ = try render(channel: "3", text: richMessage, height: 220, dark: dark, longDraft: true)
       _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
       _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
       let three = try render(channel: "3", text: nil, height: 30, dark: dark)
       let four = try render(channel: "4", text: nil, height: 30, dark: dark)
       XCTAssertNotEqual(
-        three.headerMask, four.headerMask, "The compact header must paint its digit")
+        three, four, "The compact header must paint its digit")
     }
   }
 

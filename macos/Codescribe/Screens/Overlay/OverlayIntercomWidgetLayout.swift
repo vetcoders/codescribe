@@ -14,6 +14,7 @@ enum IntercomCardContent: Equatable, Sendable {
 /// Room for the shared rich message renderer after agent identity/context.
 struct IntercomCompactPreviewLayout: Equatable {
   let height: CGFloat
+  let showsComposer: Bool
 }
 
 struct IntercomHeaderContent: Equatable {
@@ -201,7 +202,11 @@ struct IntercomContentMetrics: Equatable {
       - contextHeight
     let minimum = 3 * lineHeight + metadataLine + 12
     guard available >= minimum else { return nil }
-    return IntercomCompactPreviewLayout(height: available)
+    let composerHeight =
+      (ComposerControlMetrics.hitTargetSize + 2 * ComposerControlMetrics.verticalPadding + 14)
+      * scale
+    return IntercomCompactPreviewLayout(
+      height: available, showsComposer: available >= minimum + composerHeight)
   }
 
   private func compactHeaderHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {

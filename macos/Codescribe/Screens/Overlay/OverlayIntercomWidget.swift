@@ -1494,9 +1494,13 @@ private struct OverlayIntercomCard: View {
           Text("Conversation unavailable").csFont(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-      } else if let preview, let message = conversation?.messages.last {
-        OverlayIntercomMessagePreview(message: message, palette: palette)
-          .frame(height: preview.height, alignment: .top)
+      } else if let preview, let conversation {
+        OverlayIntercomConversationBody(
+          state: state, conversation: conversation, palette: palette, focusRevision: 0,
+          presentation: .intercom, showsComposer: preview.showsComposer,
+          messageWindowLimit: 8, composerEditorHeightLimit: 28 * scale
+        )
+        .frame(height: preview.height)
       }
     }
     .foregroundStyle(palette.primaryText.color)
@@ -1940,6 +1944,9 @@ private struct OverlayIntercomConversationBody: View {
   let palette: OverlayAppearancePalette
   let focusRevision: UInt64
   var presentation: OverlayConversationPresentation = .standard
+  var showsComposer = true
+  var messageWindowLimit: Int? = nil
+  var composerEditorHeightLimit: CGFloat? = nil
 
   var body: some View {
     OverlayConversationView(
@@ -1958,6 +1965,9 @@ private struct OverlayIntercomConversationBody: View {
       onSend: { Task { await state.sendConversationText(conversation) } },
       hidesNavigation: true,
       presentation: presentation,
+      showsComposer: showsComposer,
+      messageWindowLimit: messageWindowLimit,
+      composerEditorHeightLimit: composerEditorHeightLimit,
       onComposerEditorActive: { state.noteComposerEditorActive($0) },
       onComposerTypingActivity: { state.noteComposerTypingActivity() },
       replySelection: state.conversationReplies[conversation.id],
@@ -2021,43 +2031,16 @@ private struct OverlayIntercomHoverPreview: View {
     VStack(alignment: .leading, spacing: 6) {
       Text(verbatim: identity.displayDigit + " · " + identity.name).csFont(11, .semibold)
         .padding(.horizontal, 12).padding(.top, 10)
-      if let message = state.conversations.first(where: { identity.matches($0) })?.messages.last {
-        OverlayIntercomMessagePreview(message: message, palette: palette, passive: true)
+      if let conversation = state.conversations.first(where: { identity.matches($0) }) {
+        OverlayIntercomConversationBody(
+          state: state, conversation: conversation, palette: palette, focusRevision: 0,
+          presentation: .intercom, showsComposer: false, messageWindowLimit: 3
+        )
+        .allowsHitTesting(false)
       }
     }
     .foregroundStyle(palette.primaryText.color)
     .background(palette.desktopBackground.color.opacity(0.9))
-  }
-}
-
-/// A later-size preview projected onto the existing sheet. It uses the same
-/// rich content renderer as full conversation bubbles, with no new document.
-private struct OverlayIntercomMessagePreview: View {
-  @Environment(\.csTextScale) private var scale
-  let message: OverlayConversationMessage
-  let palette: OverlayAppearancePalette
-  var passive = false
-
-  var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack {
-          Text(verbatim: OverlayChannelStatusView.messageRoute(of: message).label)
-            .font(.system(size: 10 * scale, weight: .semibold))
-          Spacer(minLength: 8)
-          MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
-            .font(.system(size: 10 * scale))
-        }
-        .foregroundStyle(palette.mutedText.color)
-        OverlayConversationMessageContent(
-          message: message, palette: palette, showsActivity: message.captureState == .receiving,
-          previewOnly: passive)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 6)
-    }
-    .csAutohidingScrollers()
   }
 }
 

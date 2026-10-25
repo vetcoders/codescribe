@@ -6,6 +6,7 @@ struct OverlayConversationComposer: View {
   @Environment(\.csTextScale) private var textScale
   let palette: OverlayAppearancePalette
   @Binding var draft: String
+  var maximumEditorHeight: CGFloat? = nil
   let sending: Bool
   let onSubmit: () -> Void
   var onEditorActive: (Bool) -> Void = { _ in }
@@ -179,7 +180,7 @@ struct OverlayConversationComposer: View {
         onPasteError: { pasteError = $0 },
         hasAttachments: { !attachments.isEmpty }, onAttach: attach
       )
-      .frame(height: editorHeight)
+      .frame(height: min(editorHeight, maximumEditorHeight ?? editorHeight))
       .transaction { $0.animation = nil }
       .accessibilityIdentifier("overlay-conversation-composer")
       .help("Paste files, images, or long text to attach a local copy.")

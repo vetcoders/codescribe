@@ -55,16 +55,11 @@ struct OverlayConversationMessageContent: View {
   let message: OverlayConversationMessage
   let palette: OverlayAppearancePalette
   var showsActivity = false
-  var previewOnly = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       Group {
-        if previewOnly {
-          MarkdownText(
-            raw: OversizedBubblePolicy.head(of: message.bodyText), size: 13,
-            bodyColor: palette.primaryText.color, showsUnderlineCaret: showsActivity)
-        } else if OversizedBubblePolicy.isOversized(message.bodyText) {
+        if OversizedBubblePolicy.isOversized(message.bodyText) {
           OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
               raw: head, size: 13, bodyColor: palette.primaryText.color,
@@ -154,6 +149,7 @@ struct OverlayConversationView: View {
   /// Group previews bound eager row construction; full presentations retain
   /// the ordinary history window. This slices the projection, never the source.
   var messageWindowLimit: Int? = nil
+  var composerEditorHeightLimit: CGFloat? = nil
   var onComposerEditorActive: (Bool) -> Void = { _ in }
   var onComposerTypingActivity: () -> Void = {}
 
@@ -387,7 +383,7 @@ struct OverlayConversationView: View {
     VStack(spacing: 8) {
       if conversation.owner != nil || conversation.channel == "0" {
         OverlayConversationComposer(
-          palette: palette, draft: $draft,
+          palette: palette, draft: $draft, maximumEditorHeight: composerEditorHeightLimit,
           sending: sending || !pendingDeliveryControls.isEmpty, onSubmit: submit,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
           focusRevision: revisionFocus &+ composerFocusRevision,
