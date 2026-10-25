@@ -1176,11 +1176,14 @@ private struct OverlayIntercomHeader: View {
     // clicks; the count and the gaps fall through to the move surface.
     .background(OverlayIntercomDragHandle(cursorHint: false))
     .background {
-      OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency)
-        .clipShape(
-          RoundedRectangle(
-            cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
-            style: .continuous))
+      OverlayCanvasBackdrop(
+        palette: palette, reduceTransparency: reduceTransparency,
+        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+      )
+      .clipShape(
+        RoundedRectangle(
+          cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+          style: .continuous))
     }
     // The chooser's channel 0 is this bar: its ring lands here.
     .modifier(
@@ -1487,7 +1490,10 @@ private struct OverlayIntercomCard: View {
       height: !expanded && controller.groupTier == .icon && content == .header
         ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : nil
     )
-    .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
+    .background(
+      OverlayCanvasBackdrop(
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
+    )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: corner, style: .continuous)
@@ -2089,7 +2095,10 @@ private struct OverlayIntercomInstanceCard: View {
     }
     .foregroundStyle(palette.primaryText.color)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .background(OverlayCanvasBackdrop(palette: palette, reduceTransparency: reduceTransparency))
+    .background(
+      OverlayCanvasBackdrop(
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
+    )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
       RoundedRectangle(cornerRadius: corner, style: .continuous)

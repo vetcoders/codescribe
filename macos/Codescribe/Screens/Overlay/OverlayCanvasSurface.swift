@@ -39,13 +39,14 @@ struct OverlayCanvasBackdrop: View {
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
   var increasedContrast = false
+  var cornerRadius: CGFloat = CSRadius.window
 
   var body: some View {
     ZStack {
       if reduceTransparency || increasedContrast {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
-        OverlayDesktopMaterial(palette: palette)
+        OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
         Rectangle()
           .fill(Color(nsColor: Self.glassVeil(palette)))
           .allowsHitTesting(false)
@@ -76,12 +77,13 @@ struct OverlayCanvasBackdrop: View {
 /// Keep the material active while the user types into another application.
 private struct OverlayDesktopMaterial: NSViewRepresentable {
   let palette: OverlayAppearancePalette
+  let cornerRadius: CGFloat
 
   func makeNSView(context: Context) -> NSView {
     if #available(macOS 26, *) {
       let view = OverlayDesktopGlassView()
       view.style = .regular
-      view.cornerRadius = CSRadius.window
+      view.cornerRadius = cornerRadius
       applyAppearance(to: view)
       return view
     }
@@ -94,6 +96,11 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
+    if #available(macOS 26, *), let glass = nsView as? OverlayDesktopGlassView,
+      glass.cornerRadius != cornerRadius
+    {
+      glass.cornerRadius = cornerRadius
+    }
     applyAppearance(to: nsView)
   }
 
