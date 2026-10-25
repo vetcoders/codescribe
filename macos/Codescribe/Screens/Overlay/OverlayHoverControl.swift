@@ -144,12 +144,9 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
       label
         .foregroundStyle(palette.primaryText.color)
         .opacity(emphasis.opacity(enabled: isEnabled, hovered: hovered))
+        // Ink brightens on hover. A filled chip behind the glyph read as a
+        // halo; the hit target stays the padded rectangle.
         .padding(2)
-        .background {
-          RoundedRectangle(cornerRadius: CSRadius.chip)
-            .fill(
-              palette.primaryText.color.opacity(isEnabled && hovered ? 0.14 : 0))
-        }
         .contentShape(Rectangle())
     }
     .csFocusRing()

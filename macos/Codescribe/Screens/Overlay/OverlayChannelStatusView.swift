@@ -453,8 +453,7 @@ private struct OverlayFlatAudioInk: ViewModifier {
   func body(content: Content) -> some View {
     if flat {
       content.conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-        hoverBackground: CSColor.hairline(0.12))
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
     } else {
       content
     }
@@ -528,6 +527,12 @@ struct OverlayAgentAudioControls: View {
   private var controlScale: CGFloat { broadcast && broadcastEmphasis ? Self.broadcastScale : 1 }
   private var glyphSize: CGFloat {
     (diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12) * controlScale
+  }
+  /// Flat Intercom slots are the full hit square. Glass roster slots stay the
+  /// small glyph box and let the chrome frame center them.
+  private var glyphBox: CGFloat {
+    let base = chrome ? Self.controlFrame : (diameter ?? Self.controlFrame)
+    return base * controlScale
   }
 
   /// The broadcast row speaks through a left-facing outline megaphone; agent
@@ -613,7 +618,10 @@ struct OverlayAgentAudioControls: View {
   }
 
   var body: some View {
-    HStack(spacing: 6) {
+    // Glass rows keep 6pt between chrome circles. A flat Intercom pair uses
+    // 2pt and pins each glyph to the shared edge, so the 30pt hit squares
+    // stay put while the icons are no longer a glyph-width apart.
+    HStack(spacing: chrome ? 6 : 2) {
       if showsSpeaker {
         Button(action: onPlayback) {
           Image(
@@ -627,7 +635,9 @@ struct OverlayAgentAudioControls: View {
             OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
           )
           .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-          .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
+          .frame(
+            width: glyphBox, height: glyphBox,
+            alignment: chrome ? .center : .trailing)
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
@@ -652,9 +662,8 @@ struct OverlayAgentAudioControls: View {
                 open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
             )
             .frame(
-              width: Self.controlFrame * controlScale,
-              height: Self.controlFrame * controlScale
-            )
+              width: glyphBox, height: glyphBox,
+              alignment: chrome ? .center : .leading)
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
         .tint(Self.litGlass(open ? recordingAccent : nil))

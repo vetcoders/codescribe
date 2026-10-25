@@ -1204,35 +1204,35 @@ private struct OverlayIntercomHeader: View {
       width: controller.groupWidth, paging: controller.headerNeedsPaging)
     HStack(spacing: IntercomHeaderMetrics.spacing) {
       Menu {
-        Menu("Conversations") {
-          mailboxMenuItem(
-            broadcast, title: String(localized: "Shared conversation"),
-            symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
-          mailboxMenuItem(
-            inbox, title: String(localized: "Your Inbox"), symbol: "tray",
-            identifier: "overlay-intercom-inbox")
-        }
-        Menu("Window layout") {
-          Button("Dock all agents", systemImage: "rectangle.stack") { controller.dockAll() }
-            .accessibilityIdentifier("overlay-intercom-dock-all")
-          if controller.canRestoreDockedLayout {
-            Button("Restore window layout", systemImage: "arrow.uturn.backward") {
-              controller.restoreDockedLayout()
-            }
+        // Frequent actions sit on the first menu. Saved conversations stays
+        // one named submenu; it is a list, not a layout command.
+        Button(
+          controller.presentation.folded
+            ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
+        ) { controller.toggleGroup() }
+        Button("Dock all agents", systemImage: "rectangle.stack") { controller.dockAll() }
+          .accessibilityIdentifier("overlay-intercom-dock-all")
+        if controller.canRestoreDockedLayout {
+          Button("Restore window layout", systemImage: "arrow.uturn.backward") {
+            controller.restoreDockedLayout()
           }
-          Button(
-            controller.presentation.folded
-              ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
-          ) { controller.toggleGroup() }
-          let closed = controller.closedInstances
-          if !closed.isEmpty {
-            Menu("Saved conversations") {
-              ForEach(closed) { instance in
-                Button {
-                  controller.reopenInstance(instance.id)
-                } label: {
-                  Text(verbatim: instance.displayTitle)
-                }
+        }
+        Divider()
+        mailboxMenuItem(
+          broadcast, title: String(localized: "Shared conversation"),
+          symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
+        mailboxMenuItem(
+          inbox, title: String(localized: "Your Inbox"), symbol: "tray",
+          identifier: "overlay-intercom-inbox")
+        let closed = controller.closedInstances
+        if !closed.isEmpty {
+          Divider()
+          Menu("Saved conversations") {
+            ForEach(closed) { instance in
+              Button {
+                controller.reopenInstance(instance.id)
+              } label: {
+                Text(verbatim: instance.displayTitle)
               }
             }
           }
@@ -1255,8 +1255,7 @@ private struct OverlayIntercomHeader: View {
       .menuIndicator(.hidden)
       .fixedSize()
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-        hoverBackground: CSColor.hairline(0.12))
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
       .accessibilityLabel("Intercom menu")
       .accessibilityIdentifier("overlay-intercom-menu")
       .help("Intercom menu")
@@ -1286,7 +1285,10 @@ private struct OverlayIntercomHeader: View {
     // Any free spot on the bar moves the group — not a grip that showed a
     // finger drawing (Maciej, 2026-10-23). Buttons above it keep their
     // clicks; the count and the gaps fall through to the move surface.
-    .background(OverlayIntercomDragHandle(cursorHint: false))
+    // A click that never becomes a drag toggles the existing group fold.
+    // Instance headers and detach grips do not.
+    .background(
+      OverlayIntercomDragHandle(onClick: { controller.toggleGroup() }, cursorHint: false))
     .background {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
@@ -1327,6 +1329,11 @@ private struct OverlayIntercomHeader: View {
       controller.revealChooserFocus(focus)
     }
     .accessibilityIdentifier("overlay-intercom-drag-handle")
+    .accessibilityAction(
+      named: Text(
+        controller.presentation.folded
+          ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom"))
+    ) { controller.toggleGroup() }
   }
 
   private func mailboxMenuItem(
@@ -1447,18 +1454,23 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
 /// refused detach leaves the group card in the stack, and the stack is not
 /// dragged.
 private struct OverlayIntercomDragHandle: NSViewRepresentable {
+  /// A click that never crosses the drag threshold. Only the group's top bar
+  /// sets this, so a detached window's header and a detach grip stay still.
+  var onClick: () -> Void = {}
   var onDrag: () -> Bool = { true }
   /// A visible grip shows the open hand; a whole-header surface under the
   /// buttons keeps their arrow.
   var cursorHint = true
   func makeNSView(context: Context) -> OverlayIntercomDragView { OverlayIntercomDragView() }
   func updateNSView(_ nsView: OverlayIntercomDragView, context: Context) {
+    nsView.onClick = onClick
     nsView.onDrag = onDrag
     nsView.cursorHint = cursorHint
   }
 }
 
 private final class OverlayIntercomDragView: NSView {
+  var onClick: () -> Void = {}
   var onDrag: () -> Bool = { true }
   var cursorHint = true
   private var moving = false
@@ -1490,8 +1502,12 @@ private final class OverlayIntercomDragView: NSView {
     window.performDrag(with: event)
   }
   override func mouseUp(with event: NSEvent) {
+    let clicked = !moving
     moving = false
     dragStart = nil
+    // A drag already called performDrag. Only a click that stayed under the
+    // threshold reaches onClick, and only the top bar uses that to fold.
+    if clicked { onClick() }
     super.mouseUp(with: event)
   }
   override func resetCursorRects() {
@@ -1681,6 +1697,7 @@ private struct OverlayIntercomCard: View {
               Image(systemName: "tray").csFont(11)
             } else {
               Text(verbatim: identity.displayDigit).csMono(10)
+                .foregroundStyle(detached ? palette.mutedText.color : palette.primaryText.color)
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
                 kind: intercomStatusDot(roster, state: state, digit: identity.digit),
@@ -1689,11 +1706,23 @@ private struct OverlayIntercomCard: View {
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .contentShape(Rectangle())
+          .overlay(alignment: .bottomTrailing) {
+            // The icon tier has no grip. The badge sits inside the square
+            // so a detached row does not grow the group.
+            if detached {
+              Image(systemName: "macwindow")
+                .font(.system(size: 7 * scale, weight: .semibold))
+                .foregroundStyle(palette.mutedText.color)
+                .accessibilityHidden(true)
+            }
+          }
         }
         .buttonStyle(.plain)
+        .opacity(detached ? 0.72 : 1)
         .modifier(nameHint)
         .simultaneousGesture(moveGesture)
         .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
+        .modifier(OverlayDetachedRosterValue(detached: detached))
         .accessibilityLabel(
           Text(verbatim: identity.isHumanInbox ? name : identity.digit + " · " + name)
         )
@@ -1737,7 +1766,7 @@ private struct OverlayIntercomCard: View {
           // turning violet (Maciej, 2026-10-23: "można by się tego fioletu
           // pozbyć … na rzecz rozjaśnienia").
           .conversationActionHover(
-            restingColor: inactive
+            restingColor: inactive || detached
               ? palette.mutedText.color
               : speaking ? palette.primaryText.color : palette.bodyText.color,
             hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
@@ -1746,6 +1775,7 @@ private struct OverlayIntercomCard: View {
             conversation == nil
               || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil)
           )
+          .modifier(OverlayDetachedRosterValue(detached: detached))
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
           .accessibilityActions {
             if identity.canExpand {
@@ -1755,6 +1785,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
           .modifier(nameHint)
         }
+        .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
@@ -1782,8 +1813,7 @@ private struct OverlayIntercomCard: View {
           .labelStyle(.iconOnly).buttonStyle(.plain)
           .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
           .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-            hoverBackground: CSColor.hairline(0.12)
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
           )
           .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
@@ -1966,8 +1996,7 @@ private struct OverlayIntercomFocusButton: View {
       // Smoked at rest like the wordmark and the audio pair, brighter under
       // the pointer (Maciej, 2026-10-23: "nie tylko w pierwszym").
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-        hoverBackground: CSColor.hairline(0.12)
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
       .disabled(!action.enabled)
       .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
@@ -2051,6 +2080,8 @@ private struct OverlayIntercomConversationBody: View {
 
 /// Only metadata already projected for this exact conversation is shown.
 /// Provider/model and message time do not imply a repository or working tree.
+/// Each line keeps the name's leading inset. Wrapped text used to center
+/// inside its block and read as an orphan under the agent name.
 private struct OverlayIntercomConversationContext: View {
   @Environment(\.csTextScale) private var scale
   let descriptor: String?
@@ -2058,19 +2089,47 @@ private struct OverlayIntercomConversationContext: View {
   let palette: OverlayAppearancePalette
   var leadingInset: CGFloat = 12
 
+  private var contextLines: [String] {
+    [descriptor, location].compactMap { value in
+      guard let value else { return nil }
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }.prefix(2).map { $0 }
+  }
+
   var body: some View {
-    if descriptor != nil || location != nil {
-      Text(verbatim: [descriptor, location].compactMap { $0 }.joined(separator: " · "))
-        .lineLimit(2)
-        .truncationMode(.middle)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .font(.system(size: 10 * scale))
-        .foregroundStyle(palette.mutedText.color)
-        .padding(.leading, leadingInset)
-        .padding(.trailing, 12)
-        .padding(.bottom, 6)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("overlay-intercom-context")
+    if !contextLines.isEmpty {
+      VStack(alignment: .leading, spacing: 1) {
+        ForEach(Array(contextLines.enumerated()), id: \.offset) { _, line in
+          Text(verbatim: line)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .font(.system(size: 10 * scale))
+      .foregroundStyle(palette.mutedText.color)
+      .padding(.leading, leadingInset)
+      .padding(.trailing, 12)
+      .padding(.bottom, 6)
+      .fixedSize(horizontal: false, vertical: true)
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("overlay-intercom-context")
+    }
+  }
+}
+
+/// A detached agent stays in the roster. The value names that state without
+/// borrowing the disconnected-row treatment, which means a different thing.
+private struct OverlayDetachedRosterValue: ViewModifier {
+  let detached: Bool
+
+  func body(content: Content) -> some View {
+    if detached {
+      content.accessibilityValue(Text("Detached"))
+    } else {
+      content
     }
   }
 }
@@ -2342,8 +2401,7 @@ private struct OverlayIntercomInstanceCard: View {
         }
         .buttonStyle(.plain)
         .conversationActionHover(
-          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-          hoverBackground: CSColor.hairline(0.12)
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
         )
         .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
       }
@@ -2365,8 +2423,7 @@ private struct OverlayIntercomInstanceCard: View {
       }
       .buttonStyle(.plain)
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
-        hoverBackground: CSColor.hairline(0.12)
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
       .overlayFastHint(
         current ? String(localized: "Collapse into the group")

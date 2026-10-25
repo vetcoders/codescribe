@@ -39,7 +39,8 @@ struct IntercomHeaderMetrics: Equatable {
     }
     controlHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
     groupWidth = controlHeight
-    // OverlayAgentAudioControls: two flat diameter-sized buttons, 6pt apart.
+    // Two diameter hit squares. The flat pair pins glyphs inward with a 2pt
+    // gap; this slot still budgets the previous 6pt so header width holds.
     audioWidth = 2 * controlHeight + 6
     countWidth = textWidth(agentCount.formatted(), font: mono)
     pagingControlWidth = 16 * max(1, scale)
