@@ -363,7 +363,7 @@ class ReadAckTests(unittest.TestCase):
         self.assertIn("--read-pending", notice)
         self.assertIn("--ack", notice)
         self.assertIn(self.ids[0], notice)
-        self.assertIn("from: Founder (typed)\n", notice)
+        self.assertIn("from: User (typed)\n", notice)
         # Owner-complete read and ACK commands stay bounded, without evidence arrays.
         self.assertLess(len(notice) - len(self.pending[0]["text"]), 512)
         self.assertNotIn("Delivery provenance", notice)

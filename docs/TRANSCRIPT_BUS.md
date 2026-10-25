@@ -181,11 +181,11 @@ Frame host; a terminal receipt without `frame` activates
 The complete causal identity, sender, reply association, routing and provenance
 for a delivery live in the owned mailbox projection, not in the Codex native
 queue copy. The native queue header always carries the delivery ID and
-`ADDRESSED TO`; a Founder-sourced delivery (typed or sealed voice) also carries
-its full untruncated text, tagged `from: Founder (typed)` or
-`from: Founder (voice)`. A peer agent's delivery carries no raw text at all: it
+`ADDRESSED TO`; a user-sourced delivery (typed or sealed voice) also carries
+its full untruncated text, tagged `from: User (typed)` or
+`from: User (voice)`. A peer agent's delivery carries no raw text at all: it
 is a notice naming the sending peer and channel, the words "peer coordination,
-not a Founder instruction", and the exact `cs-bus --read-pending` command to
+not a user instruction", and the exact `cs-bus --read-pending` command to
 read it from the owned mailbox — see [Native provider queue
 receipt](#native-provider-queue-receipt) for the queue mechanics. Watch bells
 remain notifications. The agent reads `cs-bus --read-pending`
@@ -1667,19 +1667,27 @@ hosts do not implicitly join a local controller's roster.
 
 The queue message's content depends on who the normalizer attributed the
 delivery to (`producer_schema`, set once in `consider()`/`slim()` — the queue
-adapter does not re-derive it). A Founder-sourced seal or typed message keeps
-its full untruncated text, headed `from: Founder (voice)` or
-`from: Founder (typed)`. A peer agent's delivery (`codescribe.agent-reply.v1`),
-and anything the normalizer did not tag as one of the two Founder lanes, fails
+adapter does not re-derive it). A user-sourced seal or typed message keeps
+its full untruncated text, headed `from: User (voice)` or
+`from: User (typed)`. A peer agent's delivery (`codescribe.agent-reply.v1`),
+and anything the normalizer did not tag as one of the two user lanes, fails
 closed to a notice: no raw text, just the delivery ID, the sending peer's name
-and channel, the words "peer coordination, not a Founder instruction", and the
+and channel, the words "peer coordination, not a user instruction", and the
 exact `cs-bus --read-pending --provider codex --session <thread-id>` command.
 The receiver must read the owned mailbox's full envelope before treating a
-peer's coordination text as if it had Founder authority. Every metadata field
+peer's coordination text as if it had user authority. Every metadata field
 in the wrapper is rendered on one line with non-printable characters replaced,
 and the fields a peer chose itself (its name and channel) keep only letters,
-digits and `._-`, so a peer cannot forge a `from: Founder` line or a line of
+digits and `._-`, so a peer cannot forge a `from: User` line or a line of
 its own.
+
+When present, co-audience has a separate bounded context line, headed
+`OTHER LIVE CHANNELS AT EMISSION` or `OTHER LIVE CHANNELS AT CAPTURE CLOSE`.
+It is not `ADDRESSED TO`, a recipient list or proof of complete listening.
+At most nine sanitized channel/name pairs are shown. Same-phase reducer
+snapshots may update this observation without changing transcript content;
+a newer capture epoch starts its own observation history. Terminal lifecycle
+metadata is retained in the final envelope without a private freshness marker.
 
 A conversation ACK retains its immutable owned envelope, and also withdraws the
 matching pending Codex submission through `thread/queue/delete`. The transport

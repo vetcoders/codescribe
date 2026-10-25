@@ -7,14 +7,14 @@ import SwiftUI
 // of CSColor adapts without a call-site change. Brand and semantic hues
 // (terracotta, assistive violet, olive, amber) are appearance-fixed — they
 // carry app-owned mode, state, and brand meaning, not chrome meaning.
-// Interactive chrome follows the operator's macOS accent through one role,
+// Interactive chrome follows the user's macOS accent through one role,
 // `chromeAccent`; terracotta stays the dictation and recording colour
 // (Founder, 2026-10-24: actions are not terracotta).
 // Window chrome (canvas, code wells, control fills) is the system semantic
 // NSColor directly — one owner, no per-surface appearance wrappers.
 // Assistive violet = voice routed to the agent. Olive/green = healthy status.
 // Amber = reasoning/format meta.
-// Never hardcode a replacement for the system accent: the operator owns it.
+// Never hardcode a replacement for the system accent: the user owns it.
 
 extension Color {
   init(hex: UInt32, alpha: Double = 1.0) {
@@ -151,9 +151,9 @@ enum CSPalette {
     light: NSColor(hex: 0x5F5A52, alpha: 0.20), dark: NSColor(hex: 0xF3F0EA, alpha: 0.16))
 
   /// The one chrome accent shared by selection, focus and interactive
-  /// controls: the operator's macOS accent. Actions read as clickable through
+  /// controls: the user's macOS accent. Actions read as clickable through
   /// their shape (small bordered buttons), not through a brand hue; with the
-  /// Graphite accent they stay grey by the operator's choice.
+  /// Graphite accent they stay grey by the user's choice.
   static let chromeAccent = NSColor.controlAccentColor
 
   /// Primary-action wash: the chrome accent on paper; on ink the same accent
