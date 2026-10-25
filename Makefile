@@ -1210,6 +1210,7 @@ verify:
 	python3 -m unittest scripts/tests/test_install_bus_payload.py; \
 	python3 -m unittest scripts/tests/test_bus_peer_messages.py; \
 	python3 -m unittest scripts/tests/test_bus_address_authority.py; \
+	python3 -m unittest scripts/tests/test_bus_co_audience.py; \
 	python3 -m unittest scripts/tests/test_bus_broadcast_policy.py; \
 	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
 	python3 -m unittest scripts/tests/test_bus_history.py; \
