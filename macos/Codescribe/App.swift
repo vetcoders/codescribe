@@ -688,10 +688,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       idleRestartCoordinator = try IdleRestartCoordinator(
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
-        reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        reserveCapture: { [hotkeys] in hotkeys.reserveIdleRestart() },
         founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
-          RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+          NSApp.terminate(nil)
         })
     } catch {
       appLogger.error("Idle restart capability unavailable: \(error.localizedDescription)")

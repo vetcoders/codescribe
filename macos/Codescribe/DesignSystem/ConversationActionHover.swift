@@ -3,8 +3,8 @@ import SwiftUI
 /// Message actions change only their ink on hover. Applying this to the whole
 /// control keeps a label and its symbol in step, without a wash or tooltip.
 /// Keyboard focus keeps the product's single-pixel outline: the window's
-/// `csFocusPolicy()` releases focus after a pointer click, so it never shows
-/// for the mouse.
+/// `csFocusPolicy()` hides pointer outlines before delivering the click and
+/// releases focus afterward.
 private struct ConversationActionHover: ViewModifier {
   let restingColor: Color
   let hoverColor: Color
