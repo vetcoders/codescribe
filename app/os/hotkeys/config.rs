@@ -5,15 +5,14 @@
 //! whoever is writing it. [`apply_hotkey_config`] is the single write entry
 //! point from [`Config`]; the detector only ever reads.
 //!
-//! Multi-valued settings are bit-packed into one atomic — all three
-//! [`WorkMode`] bindings share a single `AtomicU16` — so an apply is observed
-//! whole rather than as a torn mix of old and new bindings.
+//! The mode bindings, channel modifier and Fn tap share one `AtomicU16`,
+//! so their key ownership is never observed as a torn mix during reload.
 //!
 //! Canonical gesture semantics live in `docs/HOTKEYS_CONTRACT.md`, which the
 //! defaults here mirror.
 
 use crate::config::{
-    ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding,
+    ChannelModifier, Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, ShortcutBinding,
     UserSettings, WorkMode,
 };
 use std::sync::OnceLock;
@@ -47,10 +46,27 @@ const DEFAULT_MODE_BINDINGS_ENCODED: u16 =
 
 // --- Global Mode Binding Contract ---
 // Runtime source of truth: mode -> binding mapping, not legacy hold/toggle fields.
-/// Process-global mode→gesture map; three 4-bit slots in one `AtomicU16` (no torn apply).
-static MODE_HOTKEY_BINDINGS: AtomicU16 = AtomicU16::new(DEFAULT_MODE_BINDINGS_ENCODED);
+/// Three 4-bit bindings, a 2-bit channel modifier and the Fn-tap flag.
+static HOTKEY_GESTURES: AtomicU16 = AtomicU16::new(DEFAULT_MODE_BINDINGS_ENCODED);
+const MODE_BINDINGS_MASK: u16 = 0x0FFF;
+const CHANNEL_MODIFIER_MASK: u16 = 0x3000;
+const FN_TAP_MASK: u16 = 0x4000;
 
-/// Pack one binding into its 4-bit slot value inside `MODE_HOTKEY_BINDINGS`.
+/// A compare-exchange loop: `fetch_update` is deprecated on current stable and
+/// its `try_update` replacement is still unstable at the 1.94 MSRV.
+fn update_gesture_bits(mask: u16, value: u16) {
+    let mut current = HOTKEY_GESTURES.load(AtomicOrdering::SeqCst);
+    while let Err(actual) = HOTKEY_GESTURES.compare_exchange_weak(
+        current,
+        (current & !mask) | value,
+        AtomicOrdering::SeqCst,
+        AtomicOrdering::SeqCst,
+    ) {
+        current = actual;
+    }
+}
+
+/// Pack one binding into its 4-bit slot.
 fn encode_shortcut_binding(binding: ShortcutBinding) -> u16 {
     match binding {
         ShortcutBinding::Disabled => BIND_DISABLED,
@@ -104,10 +120,7 @@ fn decode_mode_hotkey_bindings(raw: u16) -> ModeHotkeyBindings {
 /// This mapping is the runtime source of truth for which gesture drives which
 /// [`WorkMode`]; the legacy hold/toggle fields are not consulted.
 pub fn set_mode_hotkey_bindings(bindings: ModeHotkeyBindings) {
-    MODE_HOTKEY_BINDINGS.store(
-        encode_mode_hotkey_bindings(bindings),
-        AtomicOrdering::SeqCst,
-    );
+    update_gesture_bits(MODE_BINDINGS_MASK, encode_mode_hotkey_bindings(bindings));
     tracing::info!(
         "Mode bindings set: dictation={:?}, formatting={:?}, assistive={:?}",
         bindings.dictation,
@@ -118,7 +131,7 @@ pub fn set_mode_hotkey_bindings(bindings: ModeHotkeyBindings) {
 
 /// Current mode-to-gesture mapping as seen by the gesture detector.
 pub fn get_mode_hotkey_bindings() -> ModeHotkeyBindings {
-    decode_mode_hotkey_bindings(MODE_HOTKEY_BINDINGS.load(AtomicOrdering::SeqCst))
+    decode_mode_hotkey_bindings(HOTKEY_GESTURES.load(AtomicOrdering::SeqCst))
 }
 
 // --- Global Exclusive Mode Setting ---
@@ -312,10 +325,6 @@ pub fn get_double_tap_interval_ms() -> u64 {
 // Channel digits default to Ctrl so a passed-through chord does not type into
 // the frontmost app. Fn tap and middle-mouse-as-Fn stay off until chosen.
 
-/// 0 = Ctrl (default), 1 = Fn. Command is not a stored value.
-static CHANNEL_MODIFIER: AtomicU8 = AtomicU8::new(0);
-/// Quick Fn press below the hold delay toggles dictation.
-static FN_TAP_TOGGLES_DICTATION: AtomicBool = AtomicBool::new(false);
 /// Middle mouse button follows the Fn press/release path.
 static MIDDLE_MOUSE_ACTS_AS_FN: AtomicBool = AtomicBool::new(false);
 /// A short middle click opens the overlay's agent chooser.
@@ -325,36 +334,32 @@ fn encode_channel_modifier(modifier: ChannelModifier) -> u8 {
     match modifier {
         ChannelModifier::Ctrl => 0,
         ChannelModifier::Fn => 1,
+        ChannelModifier::Off => 2,
     }
 }
 
 fn decode_channel_modifier(value: u8) -> ChannelModifier {
     match value {
         1 => ChannelModifier::Fn,
+        2 => ChannelModifier::Off,
         _ => ChannelModifier::Ctrl,
     }
 }
 
 /// Publish the modifier that opens an agent channel with a digit.
 pub fn set_channel_modifier(modifier: ChannelModifier) {
-    CHANNEL_MODIFIER.store(encode_channel_modifier(modifier), AtomicOrdering::SeqCst);
+    update_gesture_bits(
+        CHANNEL_MODIFIER_MASK,
+        u16::from(encode_channel_modifier(modifier)) << 12,
+    );
     tracing::info!("Agent channel modifier set to: {}", modifier.as_str());
 }
 
 /// Modifier currently required to open an agent channel.
 pub fn get_channel_modifier() -> ChannelModifier {
-    decode_channel_modifier(CHANNEL_MODIFIER.load(AtomicOrdering::SeqCst))
-}
-
-/// Enable or disable dictation toggle on a quick Fn press.
-pub fn set_fn_tap_toggles_dictation(enabled: bool) {
-    FN_TAP_TOGGLES_DICTATION.store(enabled, AtomicOrdering::SeqCst);
-    tracing::info!("Fn tap toggles dictation: {}", enabled);
-}
-
-/// Whether a quick Fn press toggles dictation.
-pub fn get_fn_tap_toggles_dictation() -> bool {
-    FN_TAP_TOGGLES_DICTATION.load(AtomicOrdering::SeqCst)
+    decode_channel_modifier(
+        ((HOTKEY_GESTURES.load(AtomicOrdering::SeqCst) & CHANNEL_MODIFIER_MASK) >> 12) as u8,
+    )
 }
 
 /// Enable or disable the middle mouse button as an Fn press/release.
@@ -461,20 +466,26 @@ impl ModeHotkeyBindings {
         }
     }
 
-    /// Load [`UserSettings`] from disk, then read the mapping out of them.
-    pub fn load() -> Self {
-        Self::from_settings(&UserSettings::load())
+    fn from_bindings(bindings: &[ModeBinding]) -> Self {
+        let binding_for = |mode| {
+            bindings
+                .iter()
+                .find(|entry| entry.mode == mode)
+                .map_or(ShortcutBinding::Disabled, |entry| entry.binding)
+        };
+        Self {
+            dictation: binding_for(WorkMode::Dictation),
+            formatting: binding_for(WorkMode::Formatting),
+            assistive: binding_for(WorkMode::Assistive),
+        }
     }
 }
 
 impl From<&Config> for HotkeyRuntimeConfig {
-    /// Build a runtime snapshot from `Config` timings/flags plus disk mode bindings.
-    ///
-    /// Mode bindings still come from [`ModeHotkeyBindings::load`], not from
-    /// `config` fields — the mode map is settings-owned, not Config-owned.
+    /// Build a runtime snapshot entirely from one loader capture.
     fn from(config: &Config) -> Self {
         Self {
-            mode_bindings: ModeHotkeyBindings::load(),
+            mode_bindings: ModeHotkeyBindings::from_bindings(&config.mode_bindings),
             hold_exclusive: config.hold_exclusive,
             hold_arm_modifier: config.hold_arm_modifier,
             hold_start_delay_ms: config.hold_start_delay_ms,
@@ -491,16 +502,17 @@ impl From<&Config> for HotkeyRuntimeConfig {
 
 /// Snapshot every hotkey atomic into one value.
 pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
+    let gestures = HOTKEY_GESTURES.load(AtomicOrdering::SeqCst);
     HotkeyRuntimeConfig {
-        mode_bindings: get_mode_hotkey_bindings(),
+        mode_bindings: decode_mode_hotkey_bindings(gestures),
         hold_exclusive: get_exclusive_mode(),
         hold_arm_modifier: get_hold_arm_modifier(),
         hold_start_delay_ms: get_hold_start_delay_ms(),
         double_tap_interval_ms: get_double_tap_interval_ms(),
         deferred_insert_shortcut: get_deferred_insert_shortcut(),
-        channel_modifier: get_channel_modifier(),
+        channel_modifier: decode_channel_modifier(((gestures & CHANNEL_MODIFIER_MASK) >> 12) as u8),
         widget_shortcut: get_widget_shortcut(),
-        fn_tap_toggles_dictation: get_fn_tap_toggles_dictation(),
+        fn_tap_toggles_dictation: gestures & FN_TAP_MASK != 0,
         middle_mouse_acts_as_fn: get_middle_mouse_acts_as_fn(),
         middle_mouse_agent_gesture: get_middle_mouse_agent_gesture(),
     }
@@ -525,15 +537,26 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     if get_hotkey_runtime_config() == normalized {
         return;
     }
-    set_mode_hotkey_bindings(normalized.mode_bindings);
+    let gestures = encode_mode_hotkey_bindings(normalized.mode_bindings)
+        | (u16::from(encode_channel_modifier(normalized.channel_modifier)) << 12)
+        | if normalized.fn_tap_toggles_dictation {
+            FN_TAP_MASK
+        } else {
+            0
+        };
+    HOTKEY_GESTURES.store(gestures, AtomicOrdering::SeqCst);
+    tracing::info!(
+        bindings = ?normalized.mode_bindings,
+        channel_modifier = normalized.channel_modifier.as_str(),
+        fn_tap = normalized.fn_tap_toggles_dictation,
+        "Hotkey gestures set"
+    );
     set_exclusive_mode(normalized.hold_exclusive);
     set_hold_arm_modifier(normalized.hold_arm_modifier);
     set_hold_start_delay_ms(normalized.hold_start_delay_ms);
     set_double_tap_interval_ms(normalized.double_tap_interval_ms);
     set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
-    set_channel_modifier(normalized.channel_modifier);
     set_widget_shortcut(normalized.widget_shortcut);
-    set_fn_tap_toggles_dictation(normalized.fn_tap_toggles_dictation);
     set_middle_mouse_acts_as_fn(normalized.middle_mouse_acts_as_fn);
     set_middle_mouse_agent_gesture(normalized.middle_mouse_agent_gesture);
 }
@@ -622,7 +645,7 @@ mod tests {
             runtime.deferred_insert_shortcut
         );
         assert_eq!(get_channel_modifier(), ChannelModifier::Fn);
-        assert!(get_fn_tap_toggles_dictation());
+        assert!(get_hotkey_runtime_config().fn_tap_toggles_dictation);
         assert!(get_middle_mouse_acts_as_fn());
         assert!(get_middle_mouse_agent_gesture());
     }
@@ -659,6 +682,65 @@ mod tests {
 
         apply_hotkey_runtime_config(runtime);
         assert_eq!(get_hotkey_runtime_config(), after_first);
+    }
+
+    #[test]
+    fn runtime_uses_captured_bindings() {
+        let config = Config {
+            mode_bindings: vec![ModeBinding {
+                mode: WorkMode::Dictation,
+                binding: ShortcutBinding::HoldCtrl,
+            }],
+            channel_modifier: ChannelModifier::Fn,
+            ..Config::default()
+        };
+        let runtime = HotkeyRuntimeConfig::from(&config);
+        assert_eq!(runtime.mode_bindings.dictation, ShortcutBinding::HoldCtrl);
+        assert_eq!(runtime.mode_bindings.formatting, ShortcutBinding::Disabled);
+        assert_eq!(runtime.mode_bindings.assistive, ShortcutBinding::Disabled);
+        assert_eq!(runtime.channel_modifier, ChannelModifier::Fn);
+    }
+
+    #[test]
+    fn live_reload_never_tears_key_ownership() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = get_hotkey_runtime_config();
+        let fn_recording = HotkeyRuntimeConfig {
+            mode_bindings: ModeHotkeyBindings {
+                dictation: ShortcutBinding::HoldFn,
+                formatting: ShortcutBinding::Disabled,
+                assistive: ShortcutBinding::Disabled,
+            },
+            channel_modifier: ChannelModifier::Ctrl,
+            fn_tap_toggles_dictation: true,
+            ..previous
+        };
+        let ctrl_recording = HotkeyRuntimeConfig {
+            mode_bindings: ModeHotkeyBindings {
+                dictation: ShortcutBinding::HoldCtrl,
+                ..fn_recording.mode_bindings
+            },
+            channel_modifier: ChannelModifier::Fn,
+            fn_tap_toggles_dictation: false,
+            ..fn_recording
+        };
+        apply_hotkey_runtime_config(fn_recording);
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                for _ in 0..10_000 {
+                    apply_hotkey_runtime_config(ctrl_recording);
+                    apply_hotkey_runtime_config(fn_recording);
+                }
+            });
+            for _ in 0..20_000 {
+                let snapshot = get_hotkey_runtime_config();
+                assert!(snapshot == fn_recording || snapshot == ctrl_recording);
+            }
+            writer.join().unwrap();
+        });
+        apply_hotkey_runtime_config(previous);
     }
 
     /// `ctrl` and `fn` parse; `cmd` is rejected. Defaults stay ctrl, tap off, middle off.

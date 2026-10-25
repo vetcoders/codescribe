@@ -280,6 +280,16 @@ struct CodescribeApp: App {
           .keyboardShortcut("m", modifiers: .command)
         Button("Zoom") { NSApp.keyWindow?.performZoom(nil) }
       }
+      // Edit › Undo/Redo travel the responder chain, as AppKit's own items do:
+      // `-[NSWindow undo:]` asks the focused view for its undo manager. The
+      // SwiftUI defaults call the window's manager directly, past every text
+      // view that keeps its own history (crash and dead Cmd+Z, 2026-10-23).
+      CommandGroup(replacing: .undoRedo) {
+        Button("Undo") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+          .keyboardShortcut("z", modifiers: .command)
+        Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+          .keyboardShortcut("z", modifiers: [.command, .shift])
+      }
     }
   }
 }
@@ -688,10 +698,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       idleRestartCoordinator = try IdleRestartCoordinator(
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
-        reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        reserveCapture: { [hotkeys] in hotkeys.reserveIdleRestart() },
         founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
-          RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+          NSApp.terminate(nil)
         })
     } catch {
       appLogger.error("Idle restart capability unavailable: \(error.localizedDescription)")

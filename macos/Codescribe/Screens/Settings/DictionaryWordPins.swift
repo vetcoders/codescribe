@@ -59,24 +59,24 @@ struct DictionaryWordPins: View {
         }
         if failed {
           Text("Word pins could not be read. No timing was inferred.")
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         } else if !loaded {
           // First visit: the receipts are still being read. Hold the room
           // the list takes so nothing below jumps when it lands.
           Text("Reading the recorded slots…")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(CSColor.secondaryInk)
             .frame(maxWidth: .infinity, minHeight: 280, alignment: .topLeading)
             .accessibilityIdentifier("dictionary-word-pins-reading")
         } else if snapshot.pins.isEmpty {
           Text("No recorded word slots for this take.")
-            .foregroundStyle(.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           speechBand
         } else {
           Text(snapshot.session).font(CSFont.mono(11)).textSelection(.enabled)
           Text("Pins in this take: \(snapshot.pins.count)")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(CSColor.secondaryInk)
           Text("Select a pin to inspect its PCM range and source.")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(CSColor.secondaryInk)
           ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 6) {
               ForEach(snapshot.pins) { pin in
@@ -166,7 +166,7 @@ struct DictionaryWordPins: View {
   private var speechBand: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Silero speech · whole take")
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.caption).foregroundStyle(CSColor.secondaryInk)
       ForEach(snapshot.epochs, id: \.self) { epoch in
         let end = snapshot.timelineEnd(epoch: epoch)
         let ranges = snapshot.speechRanges.filter { $0.epoch == epoch }
@@ -201,7 +201,7 @@ struct DictionaryWordPins: View {
         .padding(.horizontal, 6)
         if snapshot.speechObserved[epoch] == nil {
           Text("No VAD recorded for this capture epoch.")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(CSColor.secondaryInk)
         }
       }
     }
@@ -480,9 +480,9 @@ enum DictionaryPinSpeechState: Sendable {
 
   var color: Color {
     switch self {
-    case .speech: .green
-    case .subFloor: .orange
-    case .noSpeech, .noVAD: .secondary
+    case .speech: CSColor.oliveLight
+    case .subFloor: CSColor.amberLight
+    case .noSpeech, .noVAD: CSColor.secondaryInk
     }
   }
 }
