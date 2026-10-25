@@ -1329,25 +1329,45 @@ extension RealAgentBridgeInstaller {
     }.value
   }
 
-  /// Brings the terminal host application that owns the `vc-frame` pane to the front.
+  /// Activates the exact host once and confirms that it receives key events.
   @MainActor
   static func activateAgentTerminalHost(
     hostPID: Int32?,
     hostBundleID: String?
-  ) -> Bool {
-    if let hostPID, hostPID > 0,
-      let app = NSRunningApplication(processIdentifier: hostPID),
-      !app.isTerminated,
-      app.activate()
-    {
+  ) async -> Bool {
+    let trimmedBundleID = hostBundleID?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let bundleID = trimmedBundleID.flatMap { $0.isEmpty ? nil : $0 }
+    let app: NSRunningApplication
+    if let hostPID {
+      guard hostPID > 0,
+        let candidate = NSRunningApplication(processIdentifier: hostPID),
+        !candidate.isTerminated,
+        bundleID == nil || candidate.bundleIdentifier == bundleID
+      else { return false }
+      // A vc-terminal process can itself be the registered foreground app.
+      // Its executable's name does not identify a separate parent GUI.
+      app = candidate
+    } else {
+      guard let bundleID, !bundleID.isEmpty else { return false }
+      let matches = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        .filter { !$0.isTerminated }
+      guard matches.count == 1, let candidate = matches.first else { return false }
+      app = candidate
+    }
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
       return true
     }
-    if let hostBundleID = hostBundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !hostBundleID.isEmpty
-    {
-      let matches = NSRunningApplication.runningApplications(withBundleIdentifier: hostBundleID)
-        .filter { !$0.isTerminated }
-      if let app = matches.first, app.activate() {
+    guard app.activate() else { return false }
+    // NSRunningApplication's changing properties refresh across main-run-loop
+    // turns. Yield within this one request; never spin or repeatedly activate.
+    for _ in 0..<20 {
+      do {
+        try await Task.sleep(for: .milliseconds(50))
+      } catch {
+        return false
+      }
+      guard !app.isTerminated else { return false }
+      if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
         return true
       }
     }

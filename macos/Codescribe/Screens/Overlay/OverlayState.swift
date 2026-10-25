@@ -317,6 +317,7 @@ enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
 struct OverlayAgentPanelFocusState: Equatable, Sendable {
   enum Phase: Equatable, Sendable {
     case requesting
+    case activating
     case succeeded
     case failed
   }
@@ -330,7 +331,7 @@ struct OverlayAgentPanelFocusState: Equatable, Sendable {
   /// different one when the follower's knowledge moved meanwhile.
   var target: OverlayAgentPanelFocusTarget = .frame
 
-  var isRequesting: Bool { phase == .requesting }
+  var isRequesting: Bool { phase == .requesting || phase == .activating }
   var isSucceeded: Bool { phase == .succeeded }
   var isFailed: Bool { phase == .failed }
 }
@@ -1598,9 +1599,9 @@ final class OverlayState {
     @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
       try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
     }
-  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) -> Bool = {
+  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) async -> Bool = {
     hostPID, hostBundleID in
-    RealAgentBridgeInstaller.activateAgentTerminalHost(
+    await RealAgentBridgeInstaller.activateAgentTerminalHost(
       hostPID: hostPID, hostBundleID: hostBundleID)
   }
   /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
@@ -1694,7 +1695,7 @@ final class OverlayState {
         return
       }
       guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID,
-        self.agentPanelFocusStates[owner.channel]?.phase == .requesting
+        self.agentPanelFocusStates[owner.channel]?.isRequesting == true
       else { return }
       self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
         requestID: request.requestID,
@@ -1758,42 +1759,79 @@ final class OverlayState {
     guard !results.isEmpty, !agentPanelFocusStates.isEmpty else { return }
     var changed = false
     for (channel, state) in agentPanelFocusStates {
-      guard state.phase == .requesting, let result = results[state.requestID] else { continue }
+      guard state.phase == .requesting, let result = results[state.requestID],
+        result.requestID == state.requestID,
+        result.provider == state.owner.provider,
+        result.providerSessionID == state.owner.providerSessionID,
+        result.leaseID == state.owner.leaseID
+      else { continue }
       changed = true
       // The receipt names where the follower aimed; an older follower names
       // nothing and only ever aimed at Frame.
       let target = Self.panelFocusTarget(of: result) ?? state.target
       if result.isSuccess {
-        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
-          requestID: state.requestID,
-          owner: state.owner,
-          phase: .succeeded,
-          statusText: target.succeededText,
-          updatedAt: Date(),
-          target: target
-        )
-        foldAfterAgentPanelFocus()
         let hostPID: Int32?
         let hostBundleID: String
+        let binding = channelPlaybackAgents[channel]
         if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
           hostPID = nil
           hostBundleID = terminalBundleID
         } else {
-          let fallbackFrame = channelPlaybackAgents[channel]?.frame
-          hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
+          hostPID = result.frame?.hostPID ?? binding?.frame?.hostPID
           hostBundleID =
-            result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+            result.frame?.hostBundleID ?? binding?.frame?.hostBundleID ?? "io.vetcoders.vibecrafted"
         }
-        _ = activateTerminalHost(hostPID, hostBundleID)
-        let requestID = state.requestID
+        // Consume the pane receipt once. While activation is being observed,
+        // another snapshot cannot dispatch the same request a second time.
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .activating,
+          statusText: target.requestingText,
+          updatedAt: Date(),
+          target: target
+        )
         Task { @MainActor [weak self] in
-          guard let self else { return }
+          guard let self,
+            self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+            self.agentPanelFocusStates[channel]?.phase == .activating
+          else { return }
+          guard self.canFocusAgentPanel(state.owner),
+            self.channelPlaybackAgents[channel]?.frame == binding?.frame,
+            self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          else {
+            self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+              requestID: state.requestID, owner: state.owner, phase: .failed,
+              statusText: target.failureText, updatedAt: Date(), target: target)
+            self.onChannelPresentationChanged?()
+            return
+          }
+          let activated = await self.activateTerminalHost(hostPID, hostBundleID)
+          // A timeout, retry or replacement owner wins over a late completion.
+          guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+            self.agentPanelFocusStates[channel]?.phase == .activating
+          else { return }
+          let bindingMatches = self.canFocusAgentPanel(state.owner)
+            && self.channelPlaybackAgents[channel]?.frame == binding?.frame
+            && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          let succeeded = activated && bindingMatches
+          self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+            requestID: state.requestID,
+            owner: state.owner,
+            phase: succeeded ? .succeeded : .failed,
+            statusText: succeeded ? target.succeededText : target.failureText,
+            updatedAt: Date(),
+            target: target
+          )
+          if succeeded { self.foldAfterAgentPanelFocus() }
+          self.onChannelPresentationChanged?()
+          guard succeeded else { return }
           do {
             try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
           } catch {
             return
           }
-          if self.agentPanelFocusStates[channel]?.requestID == requestID,
+          if self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .succeeded
           {
             self.agentPanelFocusStates.removeValue(forKey: channel)
