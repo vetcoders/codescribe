@@ -78,9 +78,9 @@ enum CodeTheme {
 
   // Light Aqua. Selected when the window is not dark. Reuses darker CSColor
   // tokens so tokens read on a light fill —
-  // olive #5F6B3E, terracottaDeep #C98A6E, eyebrowOlive #7F8C5E, textFaintAlt
-  // #5D6058, textMutedAlt #82857F, ink #090A0D — rather than inventing a new
-  // palette the design system does not carry.
+  // olive #5F6B3E, terracottaDeep #C98A6E, textFaintAlt #5D6058, textMutedAlt
+  // #82857F, ink #090A0D, plus the olive mid-tone #7F8C5E for literals —
+  // rather than inventing a new palette the design system does not carry.
   static let lightCSS = """
     .hljs{color:#090A0D}
     .hljs-comment,.hljs-quote{color:#82857F}

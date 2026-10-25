@@ -230,6 +230,20 @@ final class DesignSystemAdaptiveTests: XCTestCase {
     }
   }
 
+  /// Eyebrows mark sections on sheets, cards, chips and glass and never sit on
+  /// their own tint, so only the real surfaces apply. The travertine sheet held
+  /// the old paper rung at 3.4:1.
+  func testEyebrowOliveClearsAaOnEveryRealSurface() {
+    for name in Self.auditAppearances {
+      let ink = resolvedRGBA(CSPalette.eyebrowOlive, name)
+      for (surface, background) in realSurfaces(name) {
+        let ratio = ink.contrast(background)
+        XCTAssertGreaterThanOrEqual(
+          ratio, 4.5, "eyebrowOlive on \(surface) in \(name.rawValue): \(ratio):1")
+      }
+    }
+  }
+
   // MARK: - Veil polarity
 
   func testHairlineAndRaisedVeilsFlipPolarityWithTheAppearance() {

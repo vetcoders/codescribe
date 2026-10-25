@@ -113,7 +113,10 @@ enum CSPalette {
   static let terracottaLight = adaptive(light: NSColor(hex: 0x75351E), dark: NSColor(hex: 0xE9B79F))
   static let assistiveLight = adaptive(light: NSColor(hex: 0x522EA2), dark: NSColor(hex: 0xC9B7FF))
   static let oliveLight = adaptive(light: NSColor(hex: 0x404D2C), dark: NSColor(hex: 0x9DB178))
-  static let eyebrowOlive = adaptive(light: NSColor(hex: 0x66744A), dark: NSColor(hex: 0x7F8C5E))
+  /// Section eyebrows sit on sheets, cards, chips and glass, never on their
+  /// own tint; both rungs clear 4.5:1 on the darkest of those surfaces (a chip
+  /// on a travertine card, a chip on a warm-carbon card).
+  static let eyebrowOlive = adaptive(light: NSColor(hex: 0x464F33), dark: NSColor(hex: 0x9BA77C))
   static let amber = adaptive(light: NSColor(hex: 0x9A7B1E), dark: NSColor(hex: 0xD6B24E))
   static let modeProcessing = adaptive(light: NSColor(hex: 0xB96A24), dark: NSColor(hex: 0xF28C45))
   static let dangerLight = adaptive(light: NSColor(hex: 0x8C1D17), dark: NSColor(hex: 0xFFAAA5))
