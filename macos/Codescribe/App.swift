@@ -623,9 +623,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let trayToggles = config.trayToggles()
     DockPresence.apply(showDockIcon: trayToggles.showDockIcon)
 
-    // Diagnostic log beside codescribe.log: the presentation ledger persists
-    // here because unified-log debug entries do not survive.
-    let diagnostic = DiagnosticLog.install(dataDirectory: config.configDir())
+    // Diagnostic log beside codescribe.log in the high-churn folder: the
+    // presentation ledger persists here because unified-log debug entries do
+    // not survive.
+    let diagnostic = DiagnosticLog.install(churnDirectory: config.churnDir())
     let launchInfo = Bundle.main.infoDictionary ?? [:]
     let launchCommit = launchInfo["CSBuildCommit"] as? String ?? "dev"
     let launchVersion = launchInfo["CFBundleShortVersionString"] as? String ?? "unknown"

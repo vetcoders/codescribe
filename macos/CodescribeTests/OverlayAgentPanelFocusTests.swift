@@ -282,7 +282,9 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     try line.write(to: channelBus, atomically: true, encoding: .utf8)
 
     let sharedBus = tempRoot.appendingPathComponent("transcript-bus.jsonl")
-    let reader = OverlayChannelDeliveryReader(root: tempRoot, sharedBus: sharedBus)
+    let reader = OverlayChannelDeliveryReader(
+      root: tempRoot, cacheRoot: tempRoot.appendingPathComponent("data.noindex", isDirectory: true),
+      sharedBus: sharedBus)
     let snapshot = try await reader.readSnapshot()
     let parsed = try XCTUnwrap(snapshot.panelFocusResults[requestID])
     XCTAssertEqual(parsed.status, "pane_missing")

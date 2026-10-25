@@ -194,7 +194,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
   {
     let fixture = try ArchiveFixture()
     defer { fixture.remove() }
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let before: OverlayChannelDeliverySnapshot
     do { before = try await reader.readSnapshot() } catch {
       XCTFail("Initial history read: \(error)")
@@ -219,7 +219,9 @@ final class OverlayAgentArchiveTests: XCTestCase {
     XCTAssertTrue(after.deliveries.isEmpty)
     XCTAssertTrue(after.archivedOwners.contains(fixture.owner))
     XCTAssertEqual(after.conversations.first { $0.id == fixture.owner.id }, conversation)
-    let restarted = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    let restarted = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(restarted.conversations.first { $0.id == fixture.owner.id }, conversation)
     XCTAssertEqual(try Data(contentsOf: fixture.lease), leaseBytes)
     XCTAssertEqual(try Data(contentsOf: fixture.bus), busBytes)
@@ -232,11 +234,15 @@ final class OverlayAgentArchiveTests: XCTestCase {
     let fixture = try ArchiveFixture(includeMessage: false)
     defer { fixture.remove() }
     try fixture.writeArchive()
-    var snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    var snapshot = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertTrue(
       snapshot.archivedOwners.isEmpty, "a failed binding publication must keep its owner active")
     try fixture.writeBinding(session: "replacement")
-    snapshot = try await OverlayChannelDeliveryReader(root: fixture.root).readSnapshot()
+    snapshot = try await OverlayChannelDeliveryReader(
+      root: fixture.root, cacheRoot: fixture.cacheRoot
+    ).readSnapshot()
     XCTAssertEqual(snapshot.archivedOwners, [fixture.owner])
     XCTAssertNotNil(snapshot.conversations.first { $0.id == fixture.owner.id })
   }
@@ -302,7 +308,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
         to: fixture.root.appendingPathComponent("archives/\(lease)-4.json"))
     }
     for _ in 0..<2 {
-      let reader = OverlayChannelDeliveryReader(root: fixture.root)
+      let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
       let snapshot = try await reader.readSnapshot()
       XCTAssertEqual(snapshot.archivedOwners.count, 17)
       let saved = snapshot.conversations.filter { expected[$0.id] != nil }
@@ -350,7 +356,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     defer { fixture.remove() }
     try fixture.writeArchive()
     try fixture.writeBinding(session: "replacement")
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let first = try await reader.readSnapshot()
     XCTAssertEqual(first.archivedOwners, [fixture.owner])
     let opens = await reader.metadataFileOpens
@@ -374,7 +380,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     try fixture.writeArchive()
     try fixture.writeBinding(session: "replacement")
     let path = fixture.root.appendingPathComponent("archives/\(fixture.owner.leaseID)-4.json")
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let first = try await reader.readSnapshot()
     XCTAssertEqual(first.archivedOwners.first?.name, "adam")
     let original = try Data(contentsOf: path)
@@ -405,7 +411,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     XCTAssertLessThan(bytes.count, 65_536)
     bytes.append(Data(repeating: 32, count: 65_536 - bytes.count))
     try bytes.write(to: path, options: .atomic)
-    let reader = OverlayChannelDeliveryReader(root: fixture.root)
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let accepted = try await reader.readSnapshot()
     XCTAssertEqual(accepted.archivedOwners, [fixture.owner])
     bytes.append(32)
@@ -433,6 +439,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
     let installer: RealAgentBridgeInstaller
     let owner: OverlayConversationOwner
     var root: URL { installer.bridgeRoot }
+    var cacheRoot: URL { home.appendingPathComponent("data.noindex", isDirectory: true) }
     var bus: URL { home.appendingPathComponent("archive.jsonl") }
     var lease: URL { root.appendingPathComponent("leases/\(owner.leaseID).json") }
     var binding: URL { root.appendingPathComponent("vc.agent-audience-binding.v1.json") }

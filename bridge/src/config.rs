@@ -1100,6 +1100,13 @@ impl CodescribeConfig {
         Config::config_dir().to_string_lossy().to_string()
     }
 
+    /// Absolute path to the high-churn data folder (`<config dir>/data.noindex`),
+    /// resolved by `Config::churn_dir`. Swift places its diagnostic log and
+    /// overlay caches here instead of rebuilding the path.
+    pub fn churn_dir(&self) -> String {
+        Config::churn_dir().to_string_lossy().to_string()
+    }
+
     /// Settings JSON belongs to the settings loader, not the app-data directory.
     /// Resolves the path only; does not load credentials or create a file.
     pub fn settings_file_path(&self) -> String {
@@ -3692,6 +3699,21 @@ mod settings_snapshot_tests {
         assert!(matches!(result, Err(CsError::Config { ref msg })
             if msg == "Configuration refusal recorded in this process"));
         assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    /// Swift reads the high-churn folder from the core resolver, never from a
+    /// string it builds itself.
+    #[test]
+    #[serial]
+    fn churn_dir_export_is_the_core_resolver_under_the_data_override() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let exported = CodescribeConfig {}.churn_dir();
+        assert_eq!(exported, Config::churn_dir().to_string_lossy());
+        assert_eq!(
+            std::path::PathBuf::from(exported),
+            root.path().canonicalize().unwrap().join("data.noindex")
+        );
     }
 
     #[test]

@@ -53,10 +53,19 @@ const CHANNEL_MODIFIER_MASK: u16 = 0x3000;
 const FN_TAP_MASK: u16 = 0x4000;
 
 fn update_gesture_bits(mask: u16, value: u16) {
-    let _ =
-        HOTKEY_GESTURES.fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |current| {
-            Some((current & !mask) | value)
-        });
+    let mut current = HOTKEY_GESTURES.load(AtomicOrdering::SeqCst);
+    loop {
+        let next = (current & !mask) | value;
+        match HOTKEY_GESTURES.compare_exchange(
+            current,
+            next,
+            AtomicOrdering::SeqCst,
+            AtomicOrdering::SeqCst,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 /// Pack one binding into its 4-bit slot.

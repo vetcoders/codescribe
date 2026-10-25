@@ -20,7 +20,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testAppendWritesOneLineWithUTCTimestampAndCategory() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     log.append(
       category: "overlay-presentation", "frame.completed midi gen=7",
       at: Date(timeIntervalSince1970: 1_000_000_000.5))
@@ -30,7 +30,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testURLIsLogsDiagnosticLogAndFirstAppendCreatesTheDirectory() {
-    let url = DiagnosticLog.url(dataDirectory: directory.path)
+    let url = DiagnosticLog.url(churnDirectory: directory.path)
     XCTAssertEqual(url.path, directory.appendingPathComponent("logs/diagnostic.log").path)
     let logs = directory.appendingPathComponent("logs").path
     XCTAssertFalse(FileManager.default.fileExists(atPath: logs))
@@ -39,7 +39,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testTwoAppendsLandInOrderOnOneFile() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     log.append(category: "a", "one")
     log.append(category: "b", "two")
     let lines = try log.lines()
@@ -49,7 +49,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testOversizedFileRollsToGenerationOneAtOpen() throws {
-    let url = DiagnosticLog.url(dataDirectory: directory.path)
+    let url = DiagnosticLog.url(churnDirectory: directory.path)
     try FileManager.default.createDirectory(
       at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let old = String(repeating: "x", count: 200) + "\n"
@@ -64,7 +64,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testInteractionJoinsActualCompletionToItsStart() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     let action = log.beginInteraction(action: "widget.show", surface: "tray")
     XCTAssertEqual(try interactionRows(log).map { $0["phase"] as? String }, ["started"])
     XCTAssertTrue(action.finish(.succeeded, effect: .stateChanged, cleanup: .notRequired))
@@ -79,7 +79,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testRacingCancelAndResultProduceExactlyOneTerminal() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     let action = log.beginInteraction(action: "agent.send", surface: "composer")
     DispatchQueue.concurrentPerform(iterations: 100) { index in
       action.finish(
@@ -93,7 +93,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testDroppedUnfinishedWorkIsNeverReportedAsSuccess() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     do {
       let action = log.beginInteraction(action: "settings.save", surface: "settings")
       XCTAssertNotNil(action.id)
@@ -106,7 +106,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testConcurrentActionsRemainDistinctAndEachStartPrecedesItsResult() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     DispatchQueue.concurrentPerform(iterations: 50) { _ in
       let action = log.beginInteraction(action: "fixture.callback", surface: "fixture")
       action.finish(.succeeded, effect: .callbackCompleted, cleanup: .complete)
@@ -121,7 +121,7 @@ final class DiagnosticLogTests: XCTestCase {
   }
 
   func testRetriesHaveDistinctIdentityAndOnlyContentFreeFields() throws {
-    let log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+    let log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
     let first = log.beginInteraction(action: "agent.send", surface: "composer")
     first.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .busy)
     let retry = log.beginInteraction(action: "agent.send", surface: "composer")

@@ -1268,11 +1268,13 @@ final class OverlayState {
     engine?.setListener(listener)
     if engine is ControllerDictationEngine {
       let root = OverlayChannelDeliveryReader.productionRoot()
-      restoreReadState(root: root)
+      let cacheRoot = URL(fileURLWithPath: CodescribeConfig().churnDir(), isDirectory: true)
+      restoreReadState(cacheRoot: cacheRoot)
       restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
-          root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
+          root: root, cacheRoot: cacheRoot,
+          sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
     }
   }
 
@@ -1450,7 +1452,7 @@ final class OverlayState {
         replyID: replyID, ticket: ticket, provider: provider,
         session: session, busPath: busPath, stop: stop)
     }
-  /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
+  /// Reply ids the user has read. Durable when `restoreReadState(cacheRoot:)` ran:
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
   @ObservationIgnored private var readStateRoot: URL?
@@ -2492,9 +2494,9 @@ final class OverlayState {
 
   /// Read marks live next to the delivery cursor, whose projections restore
   /// the history. Call before the first conversation snapshot.
-  func restoreReadState(root: URL) {
-    readStateRoot = root
-    if let stored = OverlayReadStateStore.load(root: root) {
+  func restoreReadState(cacheRoot: URL) {
+    readStateRoot = cacheRoot
+    if let stored = OverlayReadStateStore.load(cacheRoot: cacheRoot) {
       viewedReplyIDs.formUnion(stored)
       readStateNeedsAdoption = false
     } else {
@@ -2523,7 +2525,7 @@ final class OverlayState {
   private func persistReadState() {
     guard let readStateRoot else { return }
     do {
-      try OverlayReadStateStore.save(root: readStateRoot, readReplyIDs: viewedReplyIDs)
+      try OverlayReadStateStore.save(cacheRoot: readStateRoot, readReplyIDs: viewedReplyIDs)
     } catch {
       NSLog("codescribe: overlay read state not saved: \(error)")
     }

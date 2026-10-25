@@ -1475,7 +1475,8 @@ new recipients open the existing aggregate conversation, rather than choosing an
 arbitrary agent. Header and conversation navigation never request speech.
 
 The delivery observer's restart cache is the directory
-`runtime/overlay-delivery-cursor/`. Each bus is one cache unit (its cursor plus
+`data.noindex/overlay-delivery-cursor/` under the data root (see "High-churn
+data and Spotlight" below). Each bus is one cache unit (its cursor plus
 its conversation projection) in its own owner-only JSON file, named by a digest
 of the bus path; the file also records that path. Live snapshots consume bus
 evidence and verified receipt metadata immediately; persistence is a separate
@@ -1495,9 +1496,42 @@ dirty state on the next poll. The existing 128 MiB cache budget, counted
 across all unit files, evicts whole units, largest projection first; an
 evicted unit, or the unit of a bus no longer in use once more than 16 are
 cached, loses its file and returns to the bounded cold-tail path. The earlier
-single file `runtime/overlay-delivery-cursor.v1.json` is never read; the first
-successful save deletes it. This cache never advances the agent mailbox cursor,
-acknowledges delivery, or establishes transcript truth.
+single file `overlay-delivery-cursor.v1.json` is never read; the startup move
+brings it into `data.noindex/` and the first successful save deletes it. This
+cache never advances the agent mailbox cursor, acknowledges delivery, or
+establishes transcript truth. The overlay's reply read marks live beside it in
+`data.noindex/overlay-read-state.v1.json`.
+
+### High-churn data and Spotlight
+
+Spotlight re-imports a file on every write unless it sits in a folder named
+`*.noindex`, also one nested inside an indexed folder. Data that is rewritten
+constantly and has no path-identity role therefore lives in
+`<data root>/data.noindex/` (`~/.codescribe/data.noindex/`, or
+`$CODESCRIBE_DATA_DIR/data.noindex/`). `Config::churn_dir()` in
+`core/config/loader.rs` is its only resolver; Swift receives it as
+`CodescribeConfig.churnDir()`. It holds:
+
+- `logs/`: `codescribe.log` (Rust tracing) and `diagnostic.log` (Swift);
+- `overlay-delivery-cursor/` and the earlier `overlay-delivery-cursor.v1.json`;
+- `overlay-read-state.v1.json`.
+
+Everything whose path is persisted, compared or shared by path with another
+process stays where it was: this bus and its `events/` archives, channel buses,
+leases, bindings, archives, `sessions/` (bus envelopes carry
+`sessions/<session_id>.wav`, retention receipts name `sessions/` and `takes/`
+paths), `takes/`, `transcriptions/`, and every `agent-bridge/runtime/` file that
+`bus-demux` or the plugins read or write (followers, wake ledgers, reply
+playback, playback mutes, broadcast policy, channel speech, the ack cursor).
+
+Every app and CLI process moves entries left by an earlier build once, inside
+the logging initialization and before the log sink opens
+(`core/config/churn.rs`). Each entry is one same-volume rename that refuses an
+existing destination: nothing is copied, deleted or replaced. An entry that
+exists at both locations, or on another volume, is left untouched and logged as
+an error on every start until it is resolved by hand. The moved entries are not
+read or written by `bus-demux`, leases or the bus, so agents writing the bus
+while the app starts are not affected.
 
 ## C11 evidence boundary
 

@@ -124,7 +124,8 @@ Codescribe stores configuration in:
 │   ├── formatting.txt   # AI formatting prompt
 │   └── assistive.txt    # Assistive mode prompt
 ├── transcriptions/   # Saved transcripts
-└── logs/             # Debug logs
+└── data.noindex/     # Constantly rewritten data, kept out of Spotlight
+    └── logs/         # Debug logs (codescribe.log, diagnostic.log)
 ```
 
 Create default config:

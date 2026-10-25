@@ -17,6 +17,8 @@
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
+/// One-time move of high-churn data into `Config::churn_dir` (`data.noindex`).
+pub mod churn;
 /// Layer 1 ASR product mode, audio-egress consent, and gateway mint config.
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
@@ -64,7 +66,7 @@ pub mod stt_migration;
 mod types;
 
 pub use loader::{
-    CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
+    CHURN_DIR_NAME, CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
     note_startup_acquisition,
 };
 pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};

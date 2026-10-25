@@ -16,6 +16,9 @@ actor OverlayChannelDeliveryReader {
     category: "overlay-delivery-reader")
 
   private let root: URL
+  /// The core's high-churn folder (`CodescribeConfig.churnDir()`): the restart
+  /// cache lives here, apart from the bridge files `root` holds.
+  private let cacheRoot: URL
   private let sharedBus: URL?
   private var buses: [URL: Cursor] = [:]
   private var persisted: [String: OverlayDeliveryCursorMark]?
@@ -156,8 +159,9 @@ actor OverlayChannelDeliveryReader {
     var storageStart: UInt64?
   }
 
-  init(root: URL, sharedBus: URL? = nil) {
+  init(root: URL, cacheRoot: URL, sharedBus: URL? = nil) {
     self.root = root
+    self.cacheRoot = cacheRoot
     self.sharedBus = sharedBus?.standardizedFileURL
   }
 
@@ -181,7 +185,7 @@ actor OverlayChannelDeliveryReader {
   ) throws
     -> OverlayChannelDeliverySnapshot
   {
-    if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
+    if persisted == nil { persisted = OverlayDeliveryCursorStore.load(cacheRoot: cacheRoot) }
     let bindingsURL = root.appendingPathComponent("vc.agent-audience-binding.v1.json")
     var bindings: [String: [String: Any]] = [:]
     if FileManager.default.fileExists(atPath: bindingsURL.path) {
@@ -903,7 +907,7 @@ actor OverlayChannelDeliveryReader {
   }
 
   private func persistedCursor(for url: URL) -> Cursor? {
-    if persisted == nil { persisted = OverlayDeliveryCursorStore.load(root: root) }
+    if persisted == nil { persisted = OverlayDeliveryCursorStore.load(cacheRoot: cacheRoot) }
     guard let mark = persisted?[url.path], let data = mark.projection,
       let projection = try? JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: data),
       projection.destinationVersion == 1
@@ -976,7 +980,7 @@ actor OverlayChannelDeliveryReader {
     // Each bus is its own cache unit: only the changed units are encoded and
     // written; unchanged units keep their files, and dropped marks lose them.
     persisted = try OverlayDeliveryCursorStore.save(
-      root: root, marks: marks, changed: Set(changed.map { $0.0.path }))
+      cacheRoot: cacheRoot, marks: marks, changed: Set(changed.map { $0.0.path }))
     lastCheckpoint = time
     checkpointWrites &+= 1
     // Save failure leaves all fingerprints dirty for retry. Successful eviction

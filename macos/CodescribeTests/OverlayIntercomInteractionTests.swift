@@ -23,7 +23,7 @@ final class OverlayIntercomInteractionTests: XCTestCase {
       directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
       store = OverlayIntercomDesktopStore(defaults: defaults)
       store.save(desktop)
-      log = DiagnosticLog(url: DiagnosticLog.url(dataDirectory: directory.path))
+      log = DiagnosticLog(url: DiagnosticLog.url(churnDirectory: directory.path))
       controller = OverlayIntercomWidgetController(
         state: state, textScale: TextScaleController(key: suite),
         desktopStore: store, diagnosticLog: log)

@@ -246,10 +246,10 @@ Common issues and solutions for codescribe.
 
 ```bash
 # Recent logs
-tail -100 ~/.codescribe/logs/codescribe.log
+tail -100 ~/.codescribe/data.noindex/logs/codescribe.log
 
 # Live logs
-tail -f ~/.codescribe/logs/codescribe.log
+tail -f ~/.codescribe/data.noindex/logs/codescribe.log
 
 # Verbose mode (run in foreground)
 codescribe -v
@@ -292,7 +292,7 @@ rm ~/.codescribe/.env
 make config
 
 # Clear caches
-rm -rf ~/.codescribe/logs/*
+rm -rf ~/.codescribe/data.noindex/logs/*
 
 # Restart
 open -a codescribe
