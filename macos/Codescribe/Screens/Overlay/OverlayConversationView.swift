@@ -152,6 +152,8 @@ struct OverlayConversationView: View {
   /// the same formatted bubbles in attached, main and detached conversations.
   var presentation: OverlayConversationPresentation = .standard
   var showsComposer = true
+  /// Saved-owner windows retain reading and copying, without live commands.
+  var allowsLiveActions = true
   /// Group previews bound eager row construction; full presentations retain
   /// the ordinary history window. This slices the projection, never the source.
   var messageWindowLimit: Int? = nil
@@ -686,6 +688,7 @@ struct OverlayConversationView: View {
   }
 
   private func submit() {
+    guard allowsLiveActions else { return }
     _ = scrollFollow.handle(.jumpToCurrent)
     onSend()
   }
@@ -709,7 +712,7 @@ struct OverlayConversationView: View {
     _ control: OverlayDeliveryControl, message: OverlayConversationMessage,
     then succeeded: @escaping @MainActor () -> Void = {}
   ) {
-    guard !pendingDeliveryControls.contains(message.id) else { return }
+    guard allowsLiveActions, !pendingDeliveryControls.contains(message.id) else { return }
     // A broadcast mirror is still one broadcast, never a newly private edit.
     let owner = message.sourceChannel == "0" ? nil : conversation.owner
     guard owner != nil || message.sourceChannel == "0" else { return }
@@ -868,12 +871,12 @@ struct OverlayConversationView: View {
       }
       OverlayConversationMessageContent(
         message: message, palette: palette, showsActivity: message.id == activeCaptureMessageID)
-      if let remaining = message.holdSecondsRemaining {
+      if allowsLiveActions, let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       } else {
         HStack {
           messageFooter(message)
-          if !conversation.isHumanInbox, let onReply,
+          if allowsLiveActions, !conversation.isHumanInbox, let onReply,
             message.captureState != .receiving, message.withdrawn != true
           {
             Spacer(minLength: 8)
@@ -954,7 +957,7 @@ struct OverlayConversationView: View {
       message: message, palette: palette,
       pending: pendingControls.contains(message.id), error: controlErrors[message.id],
       onControl: { stop in onControl(message, stop) },
-      receipts: messageReceipts(message))
+      receipts: messageReceipts(message), allowsPlayback: allowsLiveActions)
   }
 
   private func addressedQuestion(
@@ -998,8 +1001,11 @@ private struct OverlayConversationMessageFooter<Receipts: View>: View {
   let error: String?
   let onControl: (Bool) -> Void
   let receipts: Receipts
+  var allowsPlayback = true
 
-  private var supportsPlayback: Bool { message.kind == .reply && message.supportsSpeechPlayback }
+  private var supportsPlayback: Bool {
+    allowsPlayback && message.kind == .reply && message.supportsSpeechPlayback
+  }
   private var active: Bool {
     message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
   }

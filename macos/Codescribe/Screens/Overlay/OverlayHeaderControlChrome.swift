@@ -251,9 +251,15 @@ final class OverlayHintPanel {
 
   /// Sidebar hints sit over the document, outside the rail's scroll clip.
   static func frame(size: CGSize, leading anchor: NSRect, within visible: NSRect) -> NSRect {
+    let left = anchor.minX - gap - size.width
+    let right = anchor.maxX + gap
+    // A column against the left screen edge previews on its right. Clamping
+    // the left candidate onto the row used to cover the very control hovered.
+    let x = left >= visible.minX + screenInset ? left
+      : right + size.width <= visible.maxX - screenInset ? right : left
     let origin = NSPoint(
       x: min(
-        max(anchor.minX - gap - size.width, visible.minX + screenInset),
+        max(x, visible.minX + screenInset),
         visible.maxX - screenInset - size.width),
       y: min(
         max(anchor.midY - size.height / 2, visible.minY + screenInset),

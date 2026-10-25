@@ -4985,6 +4985,17 @@
         }
       }
     },
+    "Close conversation" : {
+      "comment" : "Close a historical window without claiming it returns to the active group.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zamknij rozmowę"
+          }
+        }
+      }
+    },
     "Close overlay" : {
       "localizations" : {
         "pl" : {
@@ -7461,7 +7472,7 @@
       }
     },
     "Dock all agents" : {
-      "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
+      "comment" : "Intercom action: return detached windows to the visible group, including minimized windows, preserving drafts and sessions.",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -9449,6 +9460,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Układ interkomu"
+          }
+        }
+      }
+    },
+    "Intercom menu" : {
+      "comment" : "Four-dot menu for conversations and window layout.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Menu interkomu"
           }
         }
       }
@@ -15981,6 +16003,17 @@
         }
       }
     },
+    "Saved conversation" : {
+      "comment" : "Historical exact-owner window; live agent commands are unavailable.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisana rozmowa"
+          }
+        }
+      }
+    },
     "Saved conversations" : {
       "comment" : "Previous or unbound agent conversations; their immutable owner is retained",
       "localizations" : {
@@ -20969,6 +21002,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozmiar widżetu"
+          }
+        }
+      }
+    },
+    "Window layout" : {
+      "comment" : "Intercom menu: docking and visibility actions.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Układ okien"
           }
         }
       }

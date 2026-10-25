@@ -453,7 +453,8 @@ private struct OverlayFlatAudioInk: ViewModifier {
   func body(content: Content) -> some View {
     if flat {
       content.conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+        hoverBackground: CSColor.hairline(0.12))
     } else {
       content
     }

@@ -22,6 +22,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var visible = false
   @ObservationIgnored private var positioning = false
   @ObservationIgnored private var invalidated = false
+  /// A reconciliation receipt, never an archive authority. Only newly observed
+  /// canonical archives retire windows; explicitly reopened history stays open.
+  @ObservationIgnored private var reconciledArchivedOwners: Set<OverlayConversationOwner> = []
   #if DEBUG
     @ObservationIgnored private(set) var reconciliationRequests = 0
   #endif
@@ -133,9 +136,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   var minimumHeaderWidth: CGFloat {
     headerMetrics.minimumWidth(paging: headerNeedsPaging)
   }
-  fileprivate var stacksGroupControls: Bool {
-    groupTier == .actions && groupWidth < contentMetrics.actionsWidth
-  }
   fileprivate var rowControls: IntercomRowControls {
     contentMetrics.rowControls(width: groupWidth)
   }
@@ -231,6 +231,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     for identity in presentation.expanded where !identities.contains(identity) {
       detachIntoInstance(identity)
     }
+    let newlyArchived = state.archivedAgentOwners.subtracting(reconciledArchivedOwners)
+    reconciledArchivedOwners = state.archivedAgentOwners
+    if desktop.closeArchivedInstances(owners: newlyArchived) {
+      saveDesktop()
+      materializeInstances()
+    }
     // Only agents absent from the current roster leave the stack. A detached
     // conversation keeps its agent's row as the way back to that window.
     let retained = Set(groupIdentities)
@@ -257,7 +263,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         count: groupIdentities.count, available: screenFrame.height)
     let headerMetrics = self.headerMetrics
     let defaultWidth = headerMetrics.width(
-      showsLabels: false, showsCount: true, paging: headerNeedsPaging)
+      showsCount: true, paging: headerNeedsPaging)
     let width = max(
       // If the screen itself is narrower, the native window clips the row;
       // no audio-hidden tier or claim that all commands fit is introduced.
@@ -427,7 +433,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// detaching the same conversation reopens it. No disconnect, no archive.
   /// The agent's row comes back into the group.
   func closeInstance(_ id: UUID) {
-    let interaction = beginInteraction(action: "intercom.instance.dock")
+    let current = instance(for: id).map { instance in
+      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) } == true
+    } ?? false
+    let interaction = beginInteraction(
+      action: current ? "intercom.instance.dock" : "intercom.instance.closeHistory")
     guard let index = desktop.instances.firstIndex(where: { $0.id == id }) else {
       interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .notFound)
       return
@@ -574,11 +584,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         // instead of queueing another, and the duration is fixed instead of
         // distance-scaled. setFrame(animate:) did neither, so a fast change
         // left the stack dancing long after it settled (Maciej, 2026-10-23).
-        if panel.isVisible && !resizingGroup
+        if panel.isVisible && !resizingGroup && panel.frame.size == frame.size
           && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         {
           NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = 0.1
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().setFrame(frame, display: true)
           }
@@ -656,48 +666,58 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
   }
 
-  /// Separate from group folding: the global control returns to the window
-  /// presentation from before docking, without snapshotting conversation truth.
-  func toggleDockAll() {
-    let action: StaticString =
-      dockedLayout == nil ? "intercom.desktop.dock" : "intercom.desktop.restore"
-    let interaction = beginInteraction(action: action)
+  /// Docking and restoring are explicit menu actions, never an ambiguous toggle.
+  /// Closed and minimized windows keep their records; every current roster row
+  /// becomes visible in the group, including rows hidden by group folding.
+  func dockAll() {
+    let interaction = beginInteraction(action: "intercom.desktop.dock")
     guard !invalidated else {
       interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .lifetimeEnded)
       return
     }
-    if let previous = dockedLayout {
-      dockedLayout = nil
-      let previousIDs = Set(previous.desktop.instances.map(\.id))
-      let newInstances = desktop.instances.filter { !previousIDs.contains($0.id) }
-      desktop = previous.desktop
-      for instance in newInstances { desktop.upsert(instance) }
-      presentation = previous.presentation
-      rowOffset = previous.rowOffset
-      sizes = previous.sizes
-      materializeInstances()
-      reconcile(
-        chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
-      saveDesktop()
-    } else {
+    if dockedLayout == nil {
       dockedLayout = DockedLayout(
         desktop: desktop, presentation: presentation, rowOffset: rowOffset, sizes: sizes)
-      hideAll()
     }
-    // Mutation is observed; native visibility/focus and animation cleanup are not.
+    hideAll(foldGroup: false)
+    interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
+  }
+
+  func restoreDockedLayout() {
+    let interaction = beginInteraction(action: "intercom.desktop.restore")
+    guard !invalidated, let previous = dockedLayout else {
+      interaction.finish(.refused, effect: .noChange, cleanup: .notRequired, reason: .notFound)
+      return
+    }
+    dockedLayout = nil
+    let previousIDs = Set(previous.desktop.instances.map(\.id))
+    let newInstances = desktop.instances.filter { !previousIDs.contains($0.id) }
+    desktop = previous.desktop
+    for instance in newInstances { desktop.upsert(instance) }
+    // A layout snapshot cannot undo a later canonical archive.
+    desktop.closeArchivedInstances(owners: state.archivedAgentOwners)
+    presentation = previous.presentation
+    rowOffset = previous.rowOffset
+    sizes = previous.sizes
+    materializeInstances()
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
+    if desktop.closeArchivedInstances(owners: state.archivedAgentOwners) {
+      materializeInstances()
+    }
+    saveDesktop()
     interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
   }
 
   /// Dock every open fiszka and fold the group in one presentation transaction.
   /// Closed records retain their exact owners, geometry and saved-window road
   /// back. Drafts, sessions and recording remain owned by OverlayState.
-  func hideAll() {
+  func hideAll(foldGroup: Bool = true) {
     guard !invalidated else { return }
     for index in desktop.instances.indices where !desktop.instances[index].closed {
       desktop.instances[index].closed = true
     }
     presentation.expanded.removeAll()
-    presentation.folded = true
+    presentation.folded = foldGroup
     rowOffset = 0
     groupResizeGesture = nil
     resizeHandoff = nil
@@ -1166,103 +1186,63 @@ private struct OverlayIntercomHeader: View {
     let content = metrics.content(
       width: controller.groupWidth, paging: controller.headerNeedsPaging)
     HStack(spacing: IntercomHeaderMetrics.spacing) {
-      Button {
-        controller.toggleGroup()
-      } label: {
-        Image(systemName: "circle.grid.2x2.fill")
-          .csFont(10, .semibold)
-          .contentShape(Capsule())
-          .frame(
-            width: metrics.groupWidth, height: metrics.controlHeight)
-      }
-      .buttonStyle(.plain)
-      .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-      )
-      .accessibilityLabel(
-        controller.presentation.folded
-          ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
-      )
-      .accessibilityIdentifier("overlay-intercom-group-visibility")
-      .help(
-        controller.presentation.folded
-          ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
-      )
-      .contextMenu {
-        // The explicit road back to a saved closed fiszka, independent of
-        // the roster. Reopening is a window operation: no microphone, no
-        // send. It lives on the four-dot control: the rest of the bar is the move
-        // surface, which SwiftUI's menu never reaches.
-        let closed = controller.closedInstances
-        if closed.isEmpty {
-          Text("No saved fiszki")
-        } else {
-          ForEach(closed) { instance in
-            // A digit and a name are not a phrase to translate: verbatim keeps
-            // `%@ · %@` out of the catalog (the l10n gate refused it).
-            Button {
-              controller.reopenInstance(instance.id)
-            } label: {
-              Text(verbatim: instance.displayTitle)
+      Menu {
+        Menu("Conversations") {
+          mailboxMenuItem(
+            broadcast, title: String(localized: "Shared conversation"),
+            symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
+          mailboxMenuItem(
+            inbox, title: String(localized: "Your Inbox"), symbol: "tray",
+            identifier: "overlay-intercom-inbox")
+        }
+        Menu("Window layout") {
+          Button("Dock all agents", systemImage: "rectangle.stack") { controller.dockAll() }
+            .accessibilityIdentifier("overlay-intercom-dock-all")
+          if controller.canRestoreDockedLayout {
+            Button("Restore window layout", systemImage: "arrow.uturn.backward") {
+              controller.restoreDockedLayout()
+            }
+          }
+          Button(
+            controller.presentation.folded
+              ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
+          ) { controller.toggleGroup() }
+          let closed = controller.closedInstances
+          if !closed.isEmpty {
+            Menu("Saved conversations") {
+              ForEach(closed) { instance in
+                Button {
+                  controller.reopenInstance(instance.id)
+                } label: {
+                  Text(verbatim: instance.displayTitle)
+                }
+              }
             }
           }
         }
-      }
-      Menu {
-        mailboxMenuItem(
-          broadcast, title: String(localized: "Shared conversation"),
-          symbol: "bubble.left.and.bubble.right",
-          identifier: "overlay-intercom-all")
-        mailboxMenuItem(
-          inbox, title: String(localized: "Your Inbox"), symbol: "tray",
-          identifier: "overlay-intercom-inbox")
       } label: {
-        HStack(spacing: IntercomHeaderMetrics.mailboxSpacing) {
-          Image(systemName: "bubble.left.and.bubble.right")
-            .csFont(11, .semibold).frame(width: 18 * scale)
-          if content.showsLabels { Text("Conversations").csFont(11, .semibold).lineLimit(1) }
-          Image(systemName: "chevron.down").csFont(6, .semibold).frame(width: 6 * scale)
-        }
-        .padding(.horizontal, content.showsLabels ? IntercomHeaderMetrics.mailboxInset : 0)
-        .frame(width: content.showsLabels ? metrics.mailboxWidth : metrics.controlHeight)
-        .frame(height: metrics.controlHeight)
-        .contentShape(Capsule())
-        .overlay(alignment: .topTrailing) {
-          if [inbox, broadcast].compactMap({ $0 }).contains(where: {
-            state.unreadReplies(in: $0) > 0
-          }) {
-            Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
-              .accessibilityHidden(true)
+        Image(systemName: "circle.grid.2x2.fill")
+          .csFont(10, .semibold)
+          .frame(width: metrics.groupWidth, height: metrics.controlHeight)
+          .contentShape(Rectangle())
+          .overlay(alignment: .topTrailing) {
+            if [inbox, broadcast].compactMap({ $0 }).contains(where: {
+              state.unreadReplies(in: $0) > 0
+            }) {
+              Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
+                .accessibilityHidden(true)
+            }
           }
-        }
       }
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
       .fixedSize()
-      .accessibilityLabel("Conversations")
-      .accessibilityIdentifier("overlay-intercom-conversations-menu")
-      .help("Conversations")
-      Button {
-        controller.toggleDockAll()
-      } label: {
-        Image(systemName: "rectangle.stack").csFont(12, .medium)
-          .frame(
-            width: metrics.controlHeight, height: metrics.controlHeight
-          )
-          .contentShape(Capsule())
-      }
-      .buttonStyle(.plain)
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-      )
-      .accessibilityIdentifier("overlay-intercom-dock-all")
-      .accessibilityLabel(
-        controller.canRestoreDockedLayout
-          ? String(localized: "Restore window layout") : String(localized: "Dock all agents")
-      )
-      .help(
-        controller.canRestoreDockedLayout
-          ? String(localized: "Restore window layout") : String(localized: "Dock all agents"))
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+        hoverBackground: CSColor.hairline(0.12))
+      .accessibilityLabel("Intercom menu")
+      .accessibilityIdentifier("overlay-intercom-menu")
+      .help("Intercom menu")
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
         Text(verbatim: chips.count.formatted()).csMono(10)
@@ -1313,7 +1293,8 @@ private struct OverlayIntercomHeader: View {
     .background(
       OverlayIntercomWindowProjection(
         chips: chips,
-        identities: intercomIdentities(state: state, chips: chips), controller: controller
+        identities: intercomIdentities(state: state, chips: chips),
+        archivedOwners: state.archivedAgentOwners, controller: controller
       )
     )
     .overlay {
@@ -1356,6 +1337,7 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
   @Environment(\.csTextScale) private var scale
   let chips: [OverlayChannelMapChip]
   let identities: [OverlayIntercomCardIdentity]
+  var archivedOwners: Set<OverlayConversationOwner> = []
   weak var controller: OverlayIntercomWidgetController?
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1364,7 +1346,8 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
 
   func updateNSView(_ nsView: NSView, context: Context) {
     context.coordinator.submit(
-      chips: chips, identities: identities, scale: scale, controller: controller)
+      chips: chips, identities: identities, scale: scale, controller: controller,
+      archivedOwners: archivedOwners)
   }
 
   static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -1378,12 +1361,14 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
     private var identities: [OverlayIntercomCardIdentity]?
     private var scale: CGFloat?
     private var visibleFrames: [CGRect]?
+    private var archivedOwners: Set<OverlayConversationOwner>?
     private var pendingTask: Task<Void, Never>?
     private var generation: UInt64 = 0
 
     func submit(
       chips: [OverlayChannelMapChip], identities: [OverlayIntercomCardIdentity], scale: CGFloat,
-      controller: OverlayIntercomWidgetController?, visibleFrames: [CGRect]? = nil
+      controller: OverlayIntercomWidgetController?, visibleFrames: [CGRect]? = nil,
+      archivedOwners: Set<OverlayConversationOwner> = []
     ) {
       guard let controller else {
         cancel()
@@ -1400,6 +1385,7 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
       guard
         self.controller !== controller || self.chips != chips
           || !sameIdentities || self.scale != scale || self.visibleFrames != visibleFrames
+          || self.archivedOwners != archivedOwners
       else { return }
 
       self.controller = controller
@@ -1407,6 +1393,7 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
       self.identities = identities
       self.scale = scale
       self.visibleFrames = visibleFrames
+      self.archivedOwners = archivedOwners
       guard pendingTask == nil else { return }
 
       generation &+= 1
@@ -1433,6 +1420,7 @@ struct OverlayIntercomWindowProjection: NSViewRepresentable {
       identities = nil
       scale = nil
       visibleFrames = nil
+      archivedOwners = nil
     }
   }
 }
@@ -1535,16 +1523,13 @@ private struct OverlayIntercomCard: View {
     VStack(spacing: 0) {
       cardHeader(palette: palette, expanded: expanded)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      if !expanded && controller.stacksGroupControls {
-        stackedControls(palette: palette)
-          .frame(maxWidth: .infinity, alignment: .trailing)
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      }
       if !expanded && content != .header, let conversation {
         OverlayIntercomConversationContext(
           descriptor: state.conversationAgentDescriptor(conversation)
             ?? conversation.owner?.provider,
-          location: state.conversationAgentLocation(conversation), palette: palette)
+          location: state.conversationAgentLocation(conversation), palette: palette,
+          leadingInset: controller.contentMetrics.nameLeadingInset(
+            width: controller.groupWidth, digit: identity.displayDigit))
       }
       if expanded {
         if let conversation {
@@ -1555,11 +1540,7 @@ private struct OverlayIntercomCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       } else if let preview, let conversation {
-        OverlayIntercomConversationBody(
-          state: state, conversation: conversation, palette: palette, focusRevision: 0,
-          presentation: .intercom, showsComposer: preview.showsComposer,
-          messageWindowLimit: 8, composerEditorHeightLimit: 28 * scale
-        )
+        OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
         .frame(height: preview.height)
       }
     }
@@ -1643,7 +1624,8 @@ private struct OverlayIntercomCard: View {
     let hasMessage = conversation?.messages.isEmpty == false
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
-      hintLeading: true, showsHint: !expanded && !hasInlinePreview,
+      hintLeading: true, showsHint: !expanded && controller.groupCardHeight <=
+        OverlayIntercomWidgetLayout.controlHeight(scale: scale) && !hasInlinePreview,
       hintContent: hasMessage
         ? AnyView(
           OverlayIntercomHoverPreview(state: state, identity: identity, palette: palette)
@@ -1652,14 +1634,17 @@ private struct OverlayIntercomCard: View {
       hintSize: hasMessage ? CGSize(width: 360 * scale, height: 240 * scale) : nil)
     // The grip stays separate from the open button at every content tier.
     // Its full-height native hit area never overlaps audio or the agent name.
-    let detachGrip = Image(systemName: "macwindow.badge.plus")
+    let detached = controller.desktop.openInstance(for: identity) != nil
+    let detachGrip = Image(systemName: detached ? "macwindow" : "macwindow.badge.plus")
       .font(.system(size: 10 * scale))
       .frame(
         width: 24 * max(1, scale),
         height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       )
       .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
-      .overlayFastHint(String(localized: "Drag to detach"), palette: palette)
+      .overlayFastHint(
+        detached ? String(localized: "Open conversation") : String(localized: "Drag to detach"),
+        palette: palette)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("Detach conversation")
       .accessibilityAddTraits(.isButton)
@@ -1758,7 +1743,7 @@ private struct OverlayIntercomCard: View {
         .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
         // The road to the pane, then what I hear, then what I say, from the
         // right edge: the microphone is the last to go, the focus the first.
-        if !controller.stacksGroupControls || expanded {
+        Group {
           if row.slots >= 3 {
             OverlayIntercomFocusButton(
               roster: roster, channel: channelRow,
@@ -1780,7 +1765,8 @@ private struct OverlayIntercomCard: View {
           .labelStyle(.iconOnly).buttonStyle(.plain)
           .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
           .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+            hoverBackground: CSColor.hairline(0.12)
           )
           .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
           .accessibilityIdentifier("overlay-intercom-collapse-\(identity.digit)")
@@ -1792,26 +1778,6 @@ private struct OverlayIntercomCard: View {
           ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
           : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
     }
-  }
-
-  private func stackedControls(palette: OverlayAppearancePalette) -> some View {
-    let roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: !reduceMotion,
-      onRevealConversation: onRevealConversation,
-      onOpenConversation: { id in
-        if id == identity.conversationID { controller.expand(identity) }
-      })
-    let channel = intercomChannelRow(state: state, digit: identity.digit)
-    let inactive = channel.map { roster.isInactive($0) } ?? false
-    return HStack(spacing: 3) {
-      OverlayIntercomFocusButton(
-        roster: roster, channel: channel, palette: palette,
-        diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      audioSlot(
-        conversation, palette: palette, speaking: conversation?.replySpeaking == true,
-        open: conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
-    }
-    .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
   }
 
   private func audioSlot(
@@ -1983,7 +1949,8 @@ private struct OverlayIntercomFocusButton: View {
       // Smoked at rest like the wordmark and the audio pair, brighter under
       // the pointer (Maciej, 2026-10-23: "nie tylko w pierwszym").
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+        hoverBackground: CSColor.hairline(0.12)
       )
       .disabled(!action.enabled)
       .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
@@ -2008,12 +1975,22 @@ private struct OverlayIntercomConversationBody: View {
   var messageWindowLimit: Int? = nil
   var composerEditorHeightLimit: CGFloat? = nil
 
+  private var current: Bool {
+    conversation.isHumanInbox
+      || intercomConversation(state: state, digit: conversation.channel).map {
+        $0.id == conversation.id && $0.owner == conversation.owner
+      } == true
+  }
+
   var body: some View {
     OverlayConversationView(
       conversation: conversation, palette: palette, topInset: 0,
       bottomInset: presentation == .intercom ? 8 : 12,
       pendingControls: state.pendingReplyControls, controlErrors: state.replyControlErrors,
-      onControl: { message, stop in Task { await state.controlReply(message, stop: stop) } },
+      onControl: { message, stop in
+        guard current else { return }
+        Task { await state.controlReply(message, stop: stop) }
+      },
       composerFocusRevision: focusRevision,
       draft: Binding(
         get: { state.conversationDrafts[conversation.id] ?? "" },
@@ -2022,10 +1999,14 @@ private struct OverlayIntercomConversationBody: View {
       sendError: state.textMessageErrors[conversation.id]
         ?? (state.draftCapture.errorConversationID == conversation.id
           ? state.draftCapture.error : nil),
-      onSend: { Task { await state.sendConversationText(conversation) } },
+      onSend: {
+        guard current else { return }
+        Task { await state.sendConversationText(conversation) }
+      },
       hidesNavigation: true,
       presentation: presentation,
-      showsComposer: showsComposer,
+      showsComposer: showsComposer && current,
+      allowsLiveActions: current,
       messageWindowLimit: messageWindowLimit,
       composerEditorHeightLimit: composerEditorHeightLimit,
       onComposerEditorActive: { state.noteComposerEditorActive($0) },
@@ -2058,27 +2039,42 @@ private struct OverlayIntercomConversationContext: View {
   let descriptor: String?
   let location: String?
   let palette: OverlayAppearancePalette
+  var leadingInset: CGFloat = 12
 
   var body: some View {
     if descriptor != nil || location != nil {
-      HStack(spacing: 8) {
-        if let descriptor {
-          Text(verbatim: descriptor)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-        Spacer(minLength: 0)
-        if let location {
-          Text(verbatim: location).lineLimit(1).truncationMode(.middle)
-        }
-      }
-      .font(.system(size: 10 * scale))
-      .foregroundStyle(palette.mutedText.color)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 4)
-      .accessibilityElement(children: .combine)
-      .accessibilityIdentifier("overlay-intercom-context")
+      Text(verbatim: [descriptor, location].compactMap { $0 }.joined(separator: " · "))
+        .lineLimit(2)
+        .truncationMode(.middle)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.system(size: 10 * scale))
+        .foregroundStyle(palette.mutedText.color)
+        .padding(.leading, leadingInset)
+        .padding(.trailing, 12)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("overlay-intercom-context")
     }
+  }
+}
+
+/// A compact card previews the latest committed message through the shared
+/// rich-body renderer. It does not mount a second conversation/composer or
+/// squeeze delivery, reply and copy toolbars into the remaining width.
+private struct OverlayIntercomMessagePreview: View {
+  let conversation: OverlayConversation
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    ScrollView {
+      if let message = conversation.messages.last {
+        OverlayConversationMessageContent(message: message, palette: palette)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(12)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .accessibilityIdentifier("overlay-intercom-message-preview")
   }
 }
 
@@ -2092,10 +2088,7 @@ private struct OverlayIntercomHoverPreview: View {
       Text(verbatim: identity.displayDigit + " · " + identity.name).csFont(11, .semibold)
         .padding(.horizontal, 12).padding(.top, 10)
       if let conversation = state.conversations.first(where: { identity.matches($0) }) {
-        OverlayIntercomConversationBody(
-          state: state, conversation: conversation, palette: palette, focusRevision: 0,
-          presentation: .intercom, showsComposer: false, messageWindowLimit: 3
-        )
+        OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
         .allowsHitTesting(false)
       }
     }
@@ -2197,12 +2190,6 @@ private struct OverlayIntercomInstanceCard: View {
     return VStack(spacing: 0) {
       headerRow(instance, conversation: conversation, palette: palette)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      if instanceLayout(instance).stacked {
-        instanceControls(instance, conversation: conversation, palette: palette)
-          .frame(maxWidth: .infinity, alignment: .trailing)
-          .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-          .padding(.trailing, 4)
-      }
       if !mini {
         if let conversation {
           OverlayIntercomConversationBody(
@@ -2245,11 +2232,11 @@ private struct OverlayIntercomInstanceCard: View {
     _ instance: OverlayIntercomInstance, conversation: OverlayConversation?,
     palette: OverlayAppearancePalette
   ) -> some View {
-    let speaking = conversation?.replySpeaking == true
-    let open = conversation.map { state.conversationMicrophoneOpen($0) } ?? false
     let current =
       intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
       == true
+    let speaking = current && conversation?.replySpeaking == true
+    let open = current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
     let mini = instance.minimized
     let layout = instanceLayout(instance)
     let roster = OverlayChannelStatusView.intercomRoster(
@@ -2262,7 +2249,7 @@ private struct OverlayIntercomInstanceCard: View {
     // and focus would act on that agent under this fiszka's name (Copilot on
     // #183). Only the exact owner's row is this window's to control.
     let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
-    let inactive = channelRow.map { roster.isInactive($0) } ?? false
+    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
     let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
@@ -2275,10 +2262,15 @@ private struct OverlayIntercomInstanceCard: View {
       }
       if instance.isHumanInbox {
         Image(systemName: "tray").csFont(11)
+      } else if !current {
+        Image(systemName: "clock.arrow.circlepath").csFont(11)
+          .overlayFastHint(String(localized: "Saved conversation"), palette: palette)
+          .accessibilityLabel("Saved conversation")
+          .accessibilityIdentifier("overlay-intercom-history-\(instance.digit)")
       } else if !mini {
         OverlayIntercomStatusMark(
           roster: roster, channel: channelRow,
-          kind: intercomStatusDot(roster, state: state, digit: instance.digit), palette: palette)
+          kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle, palette: palette)
       } else if layout.tier == .icon {
         Image(systemName: "bubble.left").csFont(11)
           .overlayFastHint(instance.name, palette: palette)
@@ -2307,7 +2299,7 @@ private struct OverlayIntercomInstanceCard: View {
             .accessibilityLabel(Text(verbatim: instance.name))
         }
       }
-      if layout.tier != .icon && !layout.stacked {
+      if layout.tier != .icon {
         if layout.controls.slots >= 3 {
           OverlayIntercomFocusButton(
             roster: roster, channel: channelRow, palette: palette,
@@ -2315,7 +2307,8 @@ private struct OverlayIntercomInstanceCard: View {
         }
         if layout.controls.slots >= 1 {
           OverlayIntercomAudioControls(
-            state: state, conversation: conversation, digit: instance.digit, palette: palette,
+            state: state, conversation: current ? conversation : nil, digit: instance.digit,
+            palette: palette,
             open: open, speaking: speaking, shared: layout.controls.slots == 1)
         }
       }
@@ -2332,7 +2325,8 @@ private struct OverlayIntercomInstanceCard: View {
         }
         .buttonStyle(.plain)
         .conversationActionHover(
-          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+          hoverBackground: CSColor.hairline(0.12)
         )
         .accessibilityIdentifier("overlay-intercom-instance-mini-\(instance.digit)")
       }
@@ -2345,16 +2339,21 @@ private struct OverlayIntercomInstanceCard: View {
       Button {
         controller.closeInstance(instanceID)
       } label: {
-        Label("Collapse", systemImage: OverlayControlSymbols.returnToMini)
+        Label(
+          current ? String(localized: "Collapse") : String(localized: "Close conversation"),
+          systemImage: current ? OverlayControlSymbols.returnToMini : "xmark")
           .labelStyle(.iconOnly)
           .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color,
+        hoverBackground: CSColor.hairline(0.12)
       )
-      .overlayFastHint(String(localized: "Collapse into the group"), palette: palette)
+      .overlayFastHint(
+        current ? String(localized: "Collapse into the group")
+          : String(localized: "Close conversation"), palette: palette)
       .opacity(!mini || hovering ? 1 : 0)
       .allowsHitTesting(!mini || hovering)
       .accessibilityIdentifier("overlay-intercom-instance-close-\(instance.digit)")
@@ -2403,44 +2402,14 @@ private struct OverlayIntercomInstanceCard: View {
   /// Detached windows derive their own content from their own saved frame.
   /// No group tier or group dimensions participate in this decision.
   private func instanceLayout(_ instance: OverlayIntercomInstance)
-    -> (tier: IntercomContentTier, stacked: Bool, controls: IntercomRowControls)
+    -> (tier: IntercomContentTier, controls: IntercomRowControls)
   {
     let metrics = IntercomContentMetrics(
       names: [instance.name], digits: [instance.displayDigit], scale: scale)
     let windowSlots = (instance.minimized ? 26 : 48) * max(1, scale)
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
-    let tier = metrics.tier(width: width, cardHeight: height)
-    return (
-      tier, tier == .actions && width < metrics.actionsWidth, metrics.rowControls(width: width)
-    )
-  }
-
-  private func instanceControls(
-    _ instance: OverlayIntercomInstance,
-    conversation: OverlayConversation?, palette: OverlayAppearancePalette
-  ) -> some View {
-    let roster = OverlayChannelStatusView.intercomRoster(
-      state: state, palette: palette, animates: !reduceMotion,
-      onRevealConversation: onRevealConversation,
-      onOpenConversation: { id in
-        if id == instance.conversationID { controller.focusInstance(instanceID) }
-      })
-    let current =
-      intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
-      == true
-    let channel = current ? intercomChannelRow(state: state, digit: instance.digit) : nil
-    return HStack(spacing: 3) {
-      OverlayIntercomFocusButton(
-        roster: roster, channel: channel, palette: palette,
-        diameter: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      OverlayIntercomAudioControls(
-        state: state, conversation: conversation, digit: instance.digit,
-        palette: palette, open: conversation.map { state.conversationMicrophoneOpen($0) } ?? false,
-        speaking: conversation?.replySpeaking == true)
-    }
-    .modifier(
-      OverlayDisconnectedRowDim(disconnected: channel.map { roster.isInactive($0) } ?? false))
+    return (metrics.tier(width: width, cardHeight: height), metrics.rowControls(width: width))
   }
 
 }

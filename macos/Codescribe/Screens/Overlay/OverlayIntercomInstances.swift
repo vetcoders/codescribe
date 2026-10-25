@@ -104,6 +104,22 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
     }
   }
 
+  /// Archiving retires open windows of the exact lease, without deleting
+  /// geometry, messages or drafts. A later explicit history reopen is separate.
+  @discardableResult
+  mutating func closeArchivedInstances(owners: Set<OverlayConversationOwner>) -> Bool {
+    var changed = false
+    for index in instances.indices where !instances[index].closed {
+      if owners.contains(where: {
+        $0.id == instances[index].ownerID && $0.channel == instances[index].digit
+      }) {
+        instances[index].closed = true
+        changed = true
+      }
+    }
+    return changed
+  }
+
   mutating func remove(_ id: UUID) {
     instances.removeAll { $0.id == id }
   }

@@ -8,6 +8,7 @@ import SwiftUI
 private struct ConversationActionHover: ViewModifier {
   let restingColor: Color
   let hoverColor: Color
+  var hoverBackground: Color = .clear
   @Environment(\.isEnabled) private var isEnabled
   @State private var hovered = false
 
@@ -15,6 +16,12 @@ private struct ConversationActionHover: ViewModifier {
     content
       .foregroundStyle(hovered && isEnabled ? hoverColor : restingColor)
       .opacity(isEnabled ? 1 : 0.35)
+      .background {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(hovered && isEnabled ? hoverBackground : .clear)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
       .csFocusOutline()
       // One mounted region owns hover in both ordinary windows and the
       // nonactivating overlay. A second SwiftUI tracker can deliver an exit
@@ -24,7 +31,10 @@ private struct ConversationActionHover: ViewModifier {
 }
 
 extension View {
-  func conversationActionHover(restingColor: Color, hoverColor: Color) -> some View {
-    modifier(ConversationActionHover(restingColor: restingColor, hoverColor: hoverColor))
+  func conversationActionHover(
+    restingColor: Color, hoverColor: Color, hoverBackground: Color = .clear
+  ) -> some View {
+    modifier(ConversationActionHover(
+      restingColor: restingColor, hoverColor: hoverColor, hoverBackground: hoverBackground))
   }
 }

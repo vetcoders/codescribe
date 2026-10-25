@@ -14,31 +14,25 @@ enum IntercomCardContent: Equatable, Sendable {
 /// Room for the shared rich message renderer after agent identity/context.
 struct IntercomCompactPreviewLayout: Equatable {
   let height: CGFloat
-  let showsComposer: Bool
 }
 
 struct IntercomHeaderContent: Equatable {
-  let showsLabels: Bool
   let showsCount: Bool
-  var horizontalInset: CGFloat { showsLabels ? 12 : 6 }
+  var horizontalInset: CGFloat { 6 }
 }
 
 /// The header's actual children, measured independently of agent-row chrome.
 /// Audio, mailbox and dock hit regions never yield to optional text.
 struct IntercomHeaderMetrics: Equatable {
   static let spacing: CGFloat = 8
-  static let mailboxSpacing: CGFloat = 4
-  static let mailboxInset: CGFloat = 5
   static let spacerMinimum: CGFloat = 4
   let groupWidth: CGFloat
   let controlHeight: CGFloat
   let audioWidth: CGFloat
   let countWidth: CGFloat
-  let mailboxWidth: CGFloat
   let pagingControlWidth: CGFloat
 
   init(agentCount: Int, scale: CGFloat) {
-    let font = NSFont.systemFont(ofSize: 11 * scale, weight: .semibold)
     let mono = CSFont.nsMono(10 * scale)
     func textWidth(_ text: String, font: NSFont) -> CGFloat {
       ceil((text as NSString).size(withAttributes: [.font: font]).width)
@@ -48,35 +42,27 @@ struct IntercomHeaderMetrics: Equatable {
     // OverlayAgentAudioControls: two flat diameter-sized buttons, 6pt apart.
     audioWidth = 2 * controlHeight + 6
     countWidth = textWidth(agentCount.formatted(), font: mono)
-    mailboxWidth =
-      textWidth(String(localized: "Conversations"), font: font)
-      + 24 * scale + 2 * Self.mailboxSpacing + 2 * Self.mailboxInset
     pagingControlWidth = 16 * max(1, scale)
   }
 
-  func width(showsLabels: Bool, showsCount: Bool, paging: Bool) -> CGFloat {
-    let content = IntercomHeaderContent(showsLabels: showsLabels, showsCount: showsCount)
-    // Four-dot toggle, shared mailbox menu, Dock, audio; optional count and two pagers.
-    let children = 4 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
+  func width(showsCount: Bool, paging: Bool) -> CGFloat {
+    let content = IntercomHeaderContent(showsCount: showsCount)
+    // One four-dot menu and audio; optional count and two pagers.
+    let children = 2 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
     return ceil(
-      groupWidth + (showsLabels ? mailboxWidth : controlHeight)
-        + controlHeight + audioWidth + 2 * content.horizontalInset
+      groupWidth + audioWidth + 2 * content.horizontalInset
         + CGFloat(children - 1) * Self.spacing
         + (showsCount ? countWidth + Self.spacerMinimum : 0)
         + (paging ? 2 * pagingControlWidth : 0))
   }
 
   func minimumWidth(paging: Bool) -> CGFloat {
-    width(showsLabels: false, showsCount: false, paging: paging)
+    width(showsCount: false, paging: paging)
   }
 
   func content(width: CGFloat, paging: Bool) -> IntercomHeaderContent {
-    if width >= self.width(showsLabels: true, showsCount: true, paging: paging) {
-      return IntercomHeaderContent(showsLabels: true, showsCount: true)
-    }
     return IntercomHeaderContent(
-      showsLabels: false,
-      showsCount: width >= self.width(showsLabels: false, showsCount: true, paging: paging))
+      showsCount: width >= self.width(showsCount: true, paging: paging))
   }
 }
 
@@ -109,11 +95,6 @@ struct IntercomContentMetrics: Equatable {
   let actionsWidth: CGFloat
   let nameFontSize: CGFloat
   let digitFontSize: CGFloat
-  var stackedActionsWidth: CGFloat {
-    max(
-      minimumNameWidth,
-      3 * OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) + 9)
-  }
 
   init(names: [String], digits: [String], scale: CGFloat) {
     nameFontSize = 11 * scale
@@ -151,8 +132,17 @@ struct IntercomContentMetrics: Equatable {
       slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
   }
 
+  /// Align execution context with the name, after the grip, digit and status.
+  func nameLeadingInset(width: CGFloat, digit: String) -> CGFloat {
+    let scale = nameFontSize / 11
+    let digitWidth = (digit as NSString).size(withAttributes: [.font: CSFont.nsMono(digitFontSize)])
+      .width
+    return 24 * max(1, scale) + 3 + digitWidth + 6 + 12 * scale + 6
+      + (rowControls(width: width).marks ? marksWidth : 0)
+  }
+
   func tier(width: CGFloat, cardHeight: CGFloat) -> IntercomContentTier {
-    if width >= actionsWidth || (width >= stackedActionsWidth && cardHeight >= 2 * iconSide) {
+    if width >= actionsWidth {
       return .actions
     }
     if width >= minimumNameWidth { return .name }
@@ -169,8 +159,8 @@ struct IntercomContentMetrics: Equatable {
     if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
-    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 8
-    if cardHeight >= compactHeaderHeight(width: width, cardHeight: cardHeight) + contextHeight {
+    let contextHeight = 2 * ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 6
+    if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale) + contextHeight {
       return .context
     }
     return .header
@@ -187,29 +177,20 @@ struct IntercomContentMetrics: Equatable {
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
-    let contextHeight = metadataLine + 8
+    let contextHeight = 2 * metadataLine + 6
     let available =
-      cardHeight - compactHeaderHeight(width: width, cardHeight: cardHeight)
+      cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - contextHeight
     let minimum = 3 * lineHeight + metadataLine + 12
     guard available >= minimum else { return nil }
-    let composerHeight =
-      (ComposerControlMetrics.hitTargetSize + 2 * ComposerControlMetrics.verticalPadding + 14)
-      * scale
-    return IntercomCompactPreviewLayout(
-      height: available, showsComposer: available >= minimum + composerHeight)
-  }
-
-  private func compactHeaderHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {
-    let stacked = tier(width: width, cardHeight: cardHeight) == .actions && width < actionsWidth
-    return OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11) * (stacked ? 2 : 1)
+    return IntercomCompactPreviewLayout(height: available)
   }
 
   /// A card stretches with the gesture, from one row up to the space below the
   /// header, revealing context and a read-only message preview (Maciej,
   /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
-  /// while the one-or-two-row snap that replaced them "nie robi nic"). Stacked
-  /// controls appear once the card holds two rows.
+  /// while the one-or-two-row snap that replaced them "nie robi nic"). The
+  /// controls remain beside the name and yield slots as the width shrinks.
   func fittedCardHeight(_ requested: CGFloat, count: Int, available: CGFloat) -> CGFloat {
     guard count > 0 else { return iconSide }
     // The whole roster shares the display budget. Growing one row must not
