@@ -295,14 +295,14 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       for paging in [false, true] {
         let metrics = IntercomHeaderMetrics(
-          agentCount: 12, inboxUnread: 4, broadcastUnread: 3, scale: scale)
+          agentCount: 12, scale: scale)
         let minimum = metrics.minimumWidth(paging: paging)
         let compact = metrics.content(width: minimum, paging: paging)
         XCTAssertFalse(compact.showsLabels)
         XCTAssertFalse(compact.showsCount)
         XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
         XCTAssertGreaterThan(
-          minimum, metrics.groupWidth + metrics.audioWidth + 3 * metrics.controlHeight)
+          minimum, metrics.groupWidth + metrics.audioWidth + 2 * metrics.controlHeight)
         let withCount = metrics.width(showsLabels: false, showsCount: true, paging: paging)
         XCTAssertTrue(metrics.content(width: withCount, paging: paging).showsCount)
         XCTAssertFalse(metrics.content(width: withCount - 0.1, paging: paging).showsCount)
@@ -314,14 +314,14 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testHeaderBudgetRespondsToUnreadGrowthAndActualPagerPresence() {
+  func testHeaderBudgetRespondsToCountAndActualPagerPresence() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let empty = IntercomHeaderMetrics(
-        agentCount: 1, inboxUnread: 0, broadcastUnread: 0, scale: scale)
+        agentCount: 1, scale: scale)
       let busy = IntercomHeaderMetrics(
-        agentCount: 25, inboxUnread: 999, broadcastUnread: 999, scale: scale)
-      XCTAssertGreaterThan(busy.inboxWidth, empty.inboxWidth)
-      XCTAssertGreaterThan(busy.broadcastWidth, empty.broadcastWidth)
+        agentCount: 25, scale: scale)
+      XCTAssertGreaterThan(busy.countWidth, empty.countWidth)
+      XCTAssertEqual(busy.mailboxWidth, empty.mailboxWidth)
       XCTAssertEqual(
         empty.minimumWidth(paging: false), busy.minimumWidth(paging: false),
         "metadata cannot take room from the mandatory commands")
@@ -340,11 +340,11 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         count: 8, offset: 99, visibleHeight: 900, scale: 1, cardHeight: 260), 5..<8)
   }
 
-  func testResizeAndPresentationShareTheThreeMailboxHeaderSlots() {
+  func testResizeHonorsTheSharedMailboxMenuAndHeaderControls() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let screen = CGRect(x: -1440, y: 0, width: 1440, height: 900)
       let metrics = IntercomContentMetrics(names: ["Lena"], digits: ["2"], scale: scale)
-      let floor = 3 * Layout.controlHeight(scale: scale) + 16
+      let floor = IntercomHeaderMetrics(agentCount: 2, scale: scale).minimumWidth(paging: false)
       let base = CGRect(x: -1000, y: 400, width: 400, height: 200)
       let left = metrics.resizedGroupFrame(
         base, delta: CGSize(width: 1000, height: 0), edge: .left,

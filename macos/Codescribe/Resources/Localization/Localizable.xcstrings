@@ -1,6 +1,26 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Conversations" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowy"
+          }
+        }
+      }
+    },
+    "Shared conversation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa wspólna"
+          }
+        }
+      }
+    },
     "Dock all agents" : {
       "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
       "localizations" : {

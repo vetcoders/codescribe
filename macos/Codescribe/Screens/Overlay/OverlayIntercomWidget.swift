@@ -115,12 +115,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   fileprivate private(set) var groupWidth: CGFloat = 0
   fileprivate var headerMetrics: IntercomHeaderMetrics {
-    let inbox = state.conversations.first(where: \.isHumanInbox)
-    let broadcast = intercomConversation(state: state, digit: "0")
-    return IntercomHeaderMetrics(
+    IntercomHeaderMetrics(
       agentCount: state.channelMapLayoutModel.agents.count,
-      inboxUnread: inbox.map { state.unreadReplies(in: $0) } ?? 0,
-      broadcastUnread: broadcast.map { state.unreadReplies(in: $0) } ?? 0,
       scale: effectiveScale)
   }
   fileprivate var headerNeedsPaging: Bool {
@@ -1159,14 +1155,39 @@ private struct OverlayIntercomHeader: View {
           }
         }
       }
-      mailboxControl(
-        inbox, title: String(localized: "Your Inbox"), digit: nil, palette: palette,
-        compact: !content.showsLabels,
-        width: content.showsLabels ? metrics.inboxWidth : metrics.controlHeight)
-      mailboxControl(
-        broadcast, title: String(localized: "All"), digit: "0", palette: palette,
-        compact: !content.showsLabels,
-        width: content.showsLabels ? metrics.broadcastWidth : metrics.controlHeight)
+      Menu {
+        mailboxMenuItem(
+          broadcast, title: String(localized: "Shared conversation"),
+          symbol: "bubble.left.and.bubble.right",
+          identifier: "overlay-intercom-all")
+        mailboxMenuItem(
+          inbox, title: String(localized: "Your Inbox"), symbol: "tray",
+          identifier: "overlay-intercom-inbox")
+      } label: {
+        HStack(spacing: IntercomHeaderMetrics.mailboxSpacing) {
+          Image(systemName: "tray").csFont(11, .semibold).frame(width: 12 * scale)
+          if content.showsLabels { Text("Conversations").csFont(11, .semibold).lineLimit(1) }
+          Image(systemName: "chevron.down").csFont(6, .semibold).frame(width: 6 * scale)
+        }
+        .padding(.horizontal, content.showsLabels ? IntercomHeaderMetrics.mailboxInset : 0)
+        .frame(width: content.showsLabels ? metrics.mailboxWidth : metrics.controlHeight)
+        .frame(height: metrics.controlHeight)
+        .contentShape(Capsule())
+        .overlay(alignment: .topTrailing) {
+          if [inbox, broadcast].compactMap({ $0 }).contains(where: {
+            state.unreadReplies(in: $0) > 0
+          }) {
+            Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
+              .accessibilityHidden(true)
+          }
+        }
+      }
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .accessibilityLabel("Conversations")
+      .accessibilityIdentifier("overlay-intercom-conversations-menu")
+      .help("Conversations")
       Button {
         controller.toggleDockAll()
       } label: {
@@ -1256,51 +1277,22 @@ private struct OverlayIntercomHeader: View {
     .accessibilityIdentifier("overlay-intercom-drag-handle")
   }
 
-  private func mailboxControl(
-    _ conversation: OverlayConversation?, title: String, digit: String?,
-    palette: OverlayAppearancePalette, compact: Bool, width: CGFloat
+  private func mailboxMenuItem(
+    _ conversation: OverlayConversation?, title: String, symbol: String, identifier: String
   ) -> some View {
     let unread = conversation.map { state.unreadReplies(in: $0) } ?? 0
     let selected = conversation != nil && state.selectedConversationID == conversation?.id
     return Button {
       if let conversation { controller.openMailbox(conversation.id) }
     } label: {
-      HStack(spacing: IntercomHeaderMetrics.mailboxSpacing) {
-        if compact {
-          if let digit {
-            Text(verbatim: digit).csMono(10)
-          } else {
-            Image(systemName: "tray").font(.system(size: 11 * scale, weight: .semibold))
-          }
-        } else {
-          if let digit { Text(verbatim: digit).csMono(10) }
-          Text(verbatim: title).csFont(11, .semibold).lineLimit(1)
-          if unread > 0 { Text(verbatim: unread.formatted()).csMono(10) }
-        }
-      }
-      .padding(.horizontal, compact ? 0 : IntercomHeaderMetrics.mailboxInset)
-      .frame(width: width)
-      .frame(minHeight: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      .contentShape(Capsule())
-      .overlay(alignment: .topTrailing) {
-        if compact && unread > 0 {
-          Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
-            .accessibilityHidden(true)
-        }
-      }
-    }
-    .buttonStyle(.plain)
-    .foregroundStyle(selected ? palette.primaryText.color : palette.mutedText.color)
-    .background {
-      if selected { Capsule().fill(palette.primaryText.color.opacity(0.10)) }
+      Label(unread > 0 ? title + " (" + unread.formatted() + ")" : title, systemImage: symbol)
     }
     .disabled(conversation == nil)
-    .accessibilityLabel(Text(verbatim: digit.map { $0 + " · " + title } ?? title))
+    .accessibilityLabel(Text(verbatim: title))
     .accessibilityValue(Text("\(unread) unread replies"))
     .accessibilityAddTraits(selected ? .isSelected : [])
     .accessibilityHint(Text("View conversation without changing the microphone"))
-    .accessibilityIdentifier(digit == nil ? "overlay-intercom-inbox" : "overlay-intercom-all")
-    .overlayFastHint(title, palette: palette)
+    .accessibilityIdentifier(identifier)
   }
 }
 
