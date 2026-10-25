@@ -765,25 +765,10 @@ struct ApiKeyStepView: View {
       && !model.apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  /// An account and a key are alternatives, and the step is skippable, so a
-  /// missing credential is neutral on both rows. Red is kept for a real
-  /// failure — a credential that was read and rejected — which arrives as an
-  /// inline error under the row.
-  private var accountStatusColor: Color {
-    if model.providerAccessPending || model.providerAccessError != nil
-      || model.selectedProviderAccountError != nil
-    {
-      return CSColor.secondaryInk
-    }
-    return model.selectedProviderAccountConnected ? CSColor.oliveLight : CSColor.secondaryInk
-  }
-
-  private var keyStatusColor: Color {
-    if model.providerAccessPending || model.providerAccessError != nil {
-      return CSColor.secondaryInk
-    }
-    return model.selectedProviderKeySet ? CSColor.oliveLight : CSColor.secondaryInk
-  }
+  /// These rows report stored identity only. The existing Settings lane Test
+  /// measures service acceptance; setup must not paint presence as success.
+  private var accountStatusColor: Color { CSColor.secondaryInk }
+  private var keyStatusColor: Color { CSColor.secondaryInk }
 
   private var accountActionTitle: String {
     if model.selectedProviderAccountConnected {
@@ -1210,7 +1195,7 @@ struct DoneStepView: View {
           done: model.providerAccessResolved && !model.providerAccessPending
             && model.providerAccessError == nil && model.selectedProviderKeySet,
           doneLabel: model.selectedProviderKeyStatus,
-          statusLabel: model.selectedProviderKeyStatus)
+          statusLabel: model.selectedProviderKeyStatus, presenceOnly: true)
       }
       if model.selectedProviderHasAccountAccess {
         summaryRow(
@@ -1222,7 +1207,7 @@ struct DoneStepView: View {
             && model.providerAccessError == nil && model.selectedProviderAccountError == nil
             && model.selectedProviderAccountConnected,
           doneLabel: model.selectedProviderAccountStatus,
-          statusLabel: model.selectedProviderAccountStatus)
+          statusLabel: model.selectedProviderAccountStatus, presenceOnly: true)
       }
     }
   }
@@ -1235,14 +1220,14 @@ struct DoneStepView: View {
 
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
-    missingLabel: String? = nil, statusLabel: String? = nil
+    missingLabel: String? = nil, statusLabel: String? = nil, presenceOnly: Bool = false
   ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
         icon: done ? .checkCircleFill : .circleEmpty,
         size: 12,
         weight: .semibold,
-        color: done ? CSColor.oliveLight : CSColor.secondaryInk
+        color: done && !presenceOnly ? CSColor.oliveLight : CSColor.secondaryInk
       )
       Text(label)
         .font(CSFont.ui(13))
@@ -1258,7 +1243,7 @@ struct DoneStepView: View {
                   "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
       )
       .font(CSFont.mono(10, .semibold))
-      .foregroundStyle(done ? CSColor.oliveLight : CSColor.secondaryInk)
+      .foregroundStyle(done && !presenceOnly ? CSColor.oliveLight : CSColor.secondaryInk)
     }
   }
 }
