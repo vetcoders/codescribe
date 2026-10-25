@@ -266,8 +266,19 @@ private struct ThreadRow: View {
   let onExportMarkdown: () -> Void
 
   @FocusState private var renameFieldFocused: Bool
+  @Environment(\.backgroundProminence) private var backgroundProminence
+  @Environment(\.controlActiveState) private var controlActiveState
 
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
+
+  /// Ink of the time and model line and the row glyphs. A resting row in the
+  /// front window takes the readable secondary ink; a selected row keeps the
+  /// list's own secondary style, which inverts on the accent, and so does a
+  /// row in a background window, which dims with its title.
+  private var secondaryStyle: AnyShapeStyle {
+    backgroundProminence != .increased && controlActiveState == .key
+      ? AnyShapeStyle(CSColor.secondaryInk) : AnyShapeStyle(.secondary)
+  }
 
   var body: some View {
     rowContent
@@ -327,7 +338,7 @@ private struct ThreadRow: View {
         if thread.isMaxConsultation {
           Image(systemName: "sparkles")
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryStyle)
             .accessibilityLabel("Max consultation")
         }
         if isEditing {
@@ -358,17 +369,17 @@ private struct ThreadRow: View {
         Text(ThreadRailMeta.timeOnly(from: thread.meta))
           .lineLimit(1)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(secondaryStyle)
 
         if let tag = ModelTag.display(for: thread.model) {
           Text(verbatim: "·")
             .font(.caption)
-            .foregroundStyle(Color.secondary.opacity(0.6))
+            .foregroundStyle(secondaryStyle.opacity(0.6))
           Text(tag)
             .lineLimit(1)
             .truncationMode(.tail)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(secondaryStyle)
         }
       }
     }
@@ -385,7 +396,7 @@ private struct ThreadRow: View {
   private var favoriteLabel: some View {
     Image(systemName: thread.isFavorite ? "star.fill" : "star")
       .font(.system(size: 11, weight: .medium))
-      .foregroundStyle(.secondary)
+      .foregroundStyle(secondaryStyle)
       .frame(width: 16, height: 16)
       .contentShape(Rectangle())
   }
