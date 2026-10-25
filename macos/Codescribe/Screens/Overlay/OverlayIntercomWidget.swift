@@ -1672,6 +1672,13 @@ private struct OverlayIntercomCard: View {
     state.conversations.first { identity.matches($0) }
   }
 
+  private var canOpenConversation: Bool {
+    let current =
+      intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
+    guard current, let conversation else { return false }
+    return identity.digit == "0" || identity.isHumanInbox || conversation.owner != nil
+  }
+
   /// Dragging a collapsed row moves the group; a click still unrolls it.
   private var moveGesture: some Gesture {
     DragGesture(minimumDistance: 4)
@@ -1697,14 +1704,6 @@ private struct OverlayIntercomCard: View {
     VStack(spacing: 0) {
       cardHeader(palette: palette, expanded: expanded)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-      if !expanded && content != .header, let conversation {
-        OverlayIntercomConversationContext(
-          descriptor: state.conversationAgentDescriptor(conversation)
-            ?? conversation.owner?.provider,
-          palette: palette,
-          leadingInset: controller.contentMetrics.nameLeadingInset(
-            width: controller.groupWidth, digit: identity.displayDigit))
-      }
       if expanded {
         if let conversation {
           conversationBody(conversation, palette: palette)
@@ -1713,13 +1712,32 @@ private struct OverlayIntercomCard: View {
           Text("Conversation unavailable").csFont(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-      } else if let preview, let conversation {
-        OverlayIntercomConversationBody(
-          state: state, conversation: conversation, palette: palette, focusRevision: 0,
-          presentation: .intercom, showsComposer: preview.showsComposer,
-          messageWindowLimit: 8, composerEditorHeightLimit: preview.composerEditorHeightLimit
-        )
-        .frame(height: preview.height)
+      } else {
+        Button {
+          controller.expand(identity)
+        } label: {
+          VStack(spacing: 0) {
+            if content != .header, let conversation {
+              OverlayIntercomConversationContext(
+                descriptor: state.conversationAgentDescriptor(conversation)
+                  ?? conversation.owner?.provider,
+                palette: palette,
+                leadingInset: controller.contentMetrics.nameLeadingInset(
+                  width: controller.groupWidth, digit: identity.displayDigit))
+            }
+            if let preview, let conversation {
+              OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
+                .frame(height: preview.height)
+                .allowsHitTesting(false)
+            }
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canOpenConversation)
+        .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
+        .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
       }
     }
     .foregroundStyle(palette.primaryText.color)
@@ -1919,10 +1937,7 @@ private struct OverlayIntercomCard: View {
               : speaking ? palette.primaryText.color : palette.bodyText.color,
             hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
-          .disabled(
-            !current || conversation == nil
-              || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil)
-          )
+          .disabled(!canOpenConversation)
           .modifier(OverlayDetachedRosterValue(detached: detached))
           .accessibilityLabel(String(localized: "Open conversation") + ": " + name)
           .accessibilityActions {
@@ -2276,8 +2291,8 @@ private struct OverlayDetachedRosterValue: ViewModifier {
   }
 }
 
-/// A passive hover previews the latest committed message through the shared
-/// rich-body renderer without mounting an editable conversation.
+/// Cards and passive hovers preview the latest committed message through the
+/// shared rich-body renderer without mounting an editable conversation.
 private struct OverlayIntercomMessagePreview: View {
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
