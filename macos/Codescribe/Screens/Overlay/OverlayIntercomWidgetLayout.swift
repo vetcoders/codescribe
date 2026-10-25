@@ -161,7 +161,7 @@ struct IntercomContentMetrics: Equatable {
     if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
-    let contextHeight = 2 * ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 6
+    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 6
     if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale) + contextHeight {
       return .context
     }
@@ -179,7 +179,7 @@ struct IntercomContentMetrics: Equatable {
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
-    let contextHeight = 2 * metadataLine + 6
+    let contextHeight = metadataLine + 6
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - contextHeight

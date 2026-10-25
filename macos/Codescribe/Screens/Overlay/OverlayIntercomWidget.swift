@@ -1701,7 +1701,7 @@ private struct OverlayIntercomCard: View {
         OverlayIntercomConversationContext(
           descriptor: state.conversationAgentDescriptor(conversation)
             ?? conversation.owner?.provider,
-          location: state.conversationAgentLocation(conversation), palette: palette,
+          palette: palette,
           leadingInset: controller.contentMetrics.nameLeadingInset(
             width: controller.groupWidth, digit: identity.displayDigit))
       }
@@ -2223,43 +2223,37 @@ private struct OverlayIntercomConversationBody: View {
 }
 
 /// Only metadata already projected for this exact conversation is shown.
-/// Provider/model and message time do not imply a repository or working tree.
-/// Each line keeps the name's leading inset. Wrapped text used to center
-/// inside its block and read as an orphan under the agent name.
+/// The canonical descriptor supplies provider, model and declared repository
+/// on one line. Execution coordinates remain outside the card's metadata row.
 private struct OverlayIntercomConversationContext: View {
   @Environment(\.csTextScale) private var scale
   let descriptor: String?
-  let location: String?
   let palette: OverlayAppearancePalette
   var leadingInset: CGFloat = 12
 
-  private var contextLines: [String] {
-    [descriptor, location].compactMap { value in
-      guard let value else { return nil }
-      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-      return trimmed.isEmpty ? nil : trimmed
-    }.prefix(2).map { $0 }
+  private var contextLine: String? {
+    guard let descriptor else { return nil }
+    let trimmed = descriptor.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
   }
 
   var body: some View {
-    if !contextLines.isEmpty {
-      VStack(alignment: .leading, spacing: 1) {
-        ForEach(Array(contextLines.enumerated()), id: \.offset) { _, line in
-          Text(verbatim: line)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-      }
-      .font(.system(size: 10 * scale))
-      .foregroundStyle(palette.mutedText.color)
-      .padding(.leading, leadingInset)
-      .padding(.trailing, 12)
-      .padding(.bottom, 6)
-      .fixedSize(horizontal: false, vertical: true)
-      .accessibilityElement(children: .combine)
-      .accessibilityIdentifier("overlay-intercom-context")
+    if let contextLine {
+      Text(verbatim: contextLine)
+        .lineLimit(1)
+        // Keep the provider at the start and a declared repository at the end.
+        .truncationMode(.middle)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(contextLine)
+        .font(.system(size: 10 * scale))
+        .foregroundStyle(palette.mutedText.color)
+        .padding(.leading, leadingInset)
+        .padding(.trailing, 12)
+        .padding(.bottom, 6)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("overlay-intercom-context")
     }
   }
 }
