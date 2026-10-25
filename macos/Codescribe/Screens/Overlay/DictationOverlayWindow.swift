@@ -35,6 +35,12 @@ struct OverlayCursorState {
   private var cursor: ObjectIdentifier?
   private var region: ObjectIdentifier?
 
+  fileprivate var diagnosticKey:
+    (
+      zone: OverlayPointerZone?, cursor: ObjectIdentifier?, region: ObjectIdentifier?
+    )
+  { (zone, cursor, region) }
+
   mutating func update(
     zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
   ) -> Bool {
@@ -81,6 +87,27 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
   let windowDragRegions = NSHashTable<NSView>.weakObjects()
   private var cursorState = OverlayCursorState()
+
+  enum CursorInvalidationReason {
+    case boundary, mounting, orderOut
+  }
+
+  /// Aggregate evidence only. No timer, user content or cursor decisions live here.
+  private struct PointerMetrics {
+    var since = ProcessInfo.processInfo.systemUptime
+    var decisions = 0
+    var writes = 0
+    var zoneChanges = 0
+    var cursorChanges = 0
+    var regionChanges = 0
+    var boundaryResets = 0
+    var mountingResets = 0
+    var orderOutResets = 0
+    var decisionSeconds = 0.0
+    var cursorSeconds = 0.0
+    var maxCursorSeconds = 0.0
+  }
+  private var pointerMetrics = PointerMetrics()
   /// Selectable SwiftUI text that opens the keyboard gate without owning clicks.
   let selectableTextRegions = NSHashTable<NSView>.weakObjects()
   /// Grow-only expanded height for a candidate width. Nil keeps the remembered
@@ -780,16 +807,28 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// Invalidated by the content boundary on exit/re-entry. A cursor installed
   /// by another window must not suppress our next region entry.
-  func invalidateCursorOwnership() {
+  func invalidateCursorOwnership(reason: CursorInvalidationReason = .boundary) {
     cursorState = OverlayCursorState()
+    guard DiagnosticLog.installed != nil else { return }
+    switch reason {
+    case .boundary: pointerMetrics.boundaryResets += 1
+    case .mounting: pointerMetrics.mountingResets += 1
+    case .orderOut: pointerMetrics.orderOutResets += 1
+    }
   }
 
   override func orderOut(_ sender: Any?) {
-    invalidateCursorOwnership()
+    invalidateCursorOwnership(reason: .orderOut)
     super.orderOut(sender)
   }
 
   private func pointerDecision(at point: NSPoint) -> PointerDecision {
+    let started = DiagnosticLog.installed.map { _ in ProcessInfo.processInfo.systemUptime }
+    defer {
+      if let started {
+        pointerMetrics.decisionSeconds += ProcessInfo.processInfo.systemUptime - started
+      }
+    }
     guard let contentView else { return PointerDecision(zone: .outside) }
     var menu: OverlayMenuCursorRegionView?
     let zone = OverlayPointerZone.resolve(
@@ -826,12 +865,40 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   @discardableResult
   private func applyCursor(_ decision: PointerDecision) -> Bool {
+    let previous = cursorState.diagnosticKey
+    let cursorID = decision.cursor.map(ObjectIdentifier.init)
     let shouldSet = cursorState.update(
-      zone: decision.zone, cursor: decision.cursor.map(ObjectIdentifier.init),
-      region: decision.region)
-    guard shouldSet else { return false }
-    (decision.cursor ?? .arrow).set()
-    return true
+      zone: decision.zone, cursor: cursorID, region: decision.region)
+    let sink = DiagnosticLog.installed
+    let started = sink.map { _ in ProcessInfo.processInfo.systemUptime }
+    if shouldSet { (decision.cursor ?? .arrow).set() }
+    if let sink, let started {
+      let now = ProcessInfo.processInfo.systemUptime
+      pointerMetrics.decisions += 1
+      if previous.zone != decision.zone { pointerMetrics.zoneChanges += 1 }
+      if previous.cursor != cursorID { pointerMetrics.cursorChanges += 1 }
+      if previous.region != decision.region { pointerMetrics.regionChanges += 1 }
+      if shouldSet {
+        pointerMetrics.writes += 1
+        pointerMetrics.cursorSeconds += now - started
+        pointerMetrics.maxCursorSeconds = max(pointerMetrics.maxCursorSeconds, now - started)
+      }
+      // At most one append per two seconds of actual pointer activity. Quiet
+      // windows schedule no work, and native cursor tracking remains unchanged.
+      if now - pointerMetrics.since >= 2 {
+        let m = pointerMetrics
+        sink.append(
+          category: "overlay-pointer",
+          "window=\(windowNumber) surface=\(contentSurface.rawValue) mode=\(presentationMode) "
+            + "seconds=\(now - m.since) decisions=\(m.decisions) writes=\(m.writes) "
+            + "zoneChanges=\(m.zoneChanges) cursorChanges=\(m.cursorChanges) regionChanges=\(m.regionChanges) "
+            + "boundaryResets=\(m.boundaryResets) mountingResets=\(m.mountingResets) orderOutResets=\(m.orderOutResets) "
+            + "decisionMs=\(m.decisionSeconds * 1000) cursorMs=\(m.cursorSeconds * 1000) maxCursorMs=\(m.maxCursorSeconds * 1000)"
+        )
+        pointerMetrics = PointerMetrics()
+      }
+    }
+    return shouldSet
   }
 
   @discardableResult
@@ -1026,7 +1093,7 @@ final class OverlayContentContainer: NSView {
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership()
+    (window as? FloatingOverlayPanel)?.invalidateCursorOwnership(reason: .mounting)
     refreshGrabPad()
   }
 
