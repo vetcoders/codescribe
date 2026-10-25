@@ -505,6 +505,41 @@ pub(crate) struct OpenAgentChannel {
     pub capture_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
 }
 
+/// The Founder speaks to several channels at once and every agent must know
+/// it (Maciej, 2026-10-25: "musicie wiedzieć, że ja teraz nadaję do czterech
+/// agentów"). Each nonzero channel's bus carries the other live channels open
+/// beside it, derived from the registry alone.
+///
+/// Call this with the registry guard held, after every insert or removal.
+/// A removed channel is no longer in `channels` and keeps the snapshot it had
+/// while open, so channels that close together (one silence) still list each
+/// other on their seals. Fn+0 keeps its own recipients and gets no snapshot.
+fn publish_co_audience(channels: &std::collections::HashMap<u8, OpenAgentChannel>) {
+    let mut live: Vec<(u8, &OpenAgentChannel)> = channels
+        .iter()
+        .filter(|(_, open)| matches!(open.mode, ChannelOpenMode::Live))
+        .map(|(digit, open)| (*digit, open))
+        .collect();
+    live.sort_unstable_by_key(|(digit, _)| *digit);
+    for (digit, open) in &live {
+        let Some(bus) = open.transcript_bus.as_ref().filter(|_| *digit != 0) else {
+            continue;
+        };
+        bus.set_co_audience(
+            live.iter()
+                .filter(|(other, _)| other != digit)
+                .map(|(other, peer)| {
+                    serde_json::json!({
+                        "channel": other.to_string(),
+                        "audience": peer.audience,
+                        "session_id": peer.session_id,
+                    })
+                })
+                .collect(),
+        );
+    }
+}
+
 /// Open-channel fact for the overlay. W2 exposes it; the overlay paint is separate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelHudState {
@@ -1180,6 +1215,7 @@ impl RecordingController {
     ) -> Result<bool> {
         let mut channels = self.agent_channels.lock().await;
         if let Some(open) = channels.remove(&digit) {
+            publish_co_audience(&channels);
             drop(channels);
             self.close_open_channel(
                 digit,
@@ -1376,6 +1412,7 @@ impl RecordingController {
                 capture_ledger,
             },
         );
+        publish_co_audience(&channels);
         drop(recorder_guard);
         drop(channels);
         // The tray glyph mirrors the pointer badge: any open channel listens in
@@ -1801,7 +1838,10 @@ impl RecordingController {
                 )
                 .await
             {
-                self.agent_channels.lock().await.insert(digit, retained);
+                let mut channels = self.agent_channels.lock().await;
+                channels.insert(digit, retained);
+                publish_co_audience(&channels);
+                drop(channels);
                 if first_error.is_none() {
                     first_error = Some(error);
                 }
@@ -1836,10 +1876,14 @@ impl RecordingController {
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
-            digits
+            let due: Vec<(u8, OpenAgentChannel)> = digits
                 .into_iter()
                 .filter_map(|digit| channels.remove(&digit).map(|open| (digit, open)))
-                .collect()
+                .collect();
+            if !due.is_empty() {
+                publish_co_audience(&channels);
+            }
+            due
         };
         let mut sealed = Vec::new();
         for (digit, open) in due {

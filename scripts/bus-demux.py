@@ -959,7 +959,9 @@ def slim(
     for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
         if key in event:
             payload[key] = event[key]
-    for key in ("message_id", "occurrences", "hold_until", "user_reply_to", "attachments"):
+    # Which other channels were open beside this one: context for the reader,
+    # never an admission, routing or ownership input.
+    for key in ("message_id", "occurrences", "hold_until", "user_reply_to", "attachments", "co_audience"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1635,7 +1637,7 @@ class EvidenceNormalizer:
         if channel_of_session(str(event.get("session_id") or "")) is not None and event.get("utterance_id") is None:
             clean.pop("utterance_id", None)
         for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id",
-                    "hold_until", "closing_decision"):
+                    "hold_until", "closing_decision", "co_audience"):
             if key in event:
                 clean[key] = event[key]
         return clean
@@ -4573,6 +4575,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
+        "co_audience",
     )
     return {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}

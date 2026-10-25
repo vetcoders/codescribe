@@ -909,6 +909,11 @@ impl std::fmt::Debug for TranscriptBus {
 struct TranscriptBusWriter {
     /// Capture-time recipients are metadata, never transcript identity.
     channel_recipients: Option<serde_json::Value>,
+    /// The other agent channels open beside this one, as the controller's
+    /// registry last published them while this channel was still registered.
+    /// It means "open at emission", not "heard the whole utterance", and is
+    /// never a routing, identity, CAS or ACK input.
+    co_audience: Vec<serde_json::Value>,
     /// Disabled for the rest of this session after any uncertain append.
     file: Option<Box<dyn Write + Send>>,
     sequence: u64,
@@ -2421,6 +2426,16 @@ impl TranscriptBus {
         }
     }
 
+    /// Replace the co-audience snapshot later rows carry. Only the controller
+    /// calls this, under its channel-registry lock; this writer lock is the
+    /// leaf of that order and is never held while the registry is awaited.
+    pub(crate) fn set_co_audience(&self, entries: Vec<serde_json::Value>) {
+        self.writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .co_audience = entries;
+    }
+
     fn with_writer(
         session: TranscriptSession,
         path: PathBuf,
@@ -2431,6 +2446,7 @@ impl TranscriptBus {
             path,
             writer: Mutex::new(TranscriptBusWriter {
                 channel_recipients: None,
+                co_audience: Vec::new(),
                 file,
                 sequence: 0,
                 started: false,
@@ -2888,6 +2904,12 @@ impl TranscriptBus {
                 if let Some(fields) = value.as_object_mut() {
                     fields.insert("recipients".into(), recipients["recipients"].clone());
                     fields.insert("channel".into(), recipients["channel"].clone());
+                    if !writer.co_audience.is_empty() {
+                        fields.insert(
+                            "co_audience".into(),
+                            serde_json::Value::Array(writer.co_audience.clone()),
+                        );
+                    }
                 }
                 super::transcript_bus_maintenance::generation::encode(&value)?
             } else {
