@@ -646,7 +646,7 @@ struct OverlayAgentAudioControls: View {
             .font(.system(size: glyphSize, weight: .semibold))
             .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
             .symbolEffect(
-              .variableColor.iterative,
+              .pulse,
               isActive: Self.microphoneActivityActive(
                 open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
             )
