@@ -411,7 +411,7 @@ private struct TrayNoteStatusRow: View {
   let status: TrayActionStatus
 
   private var isSuccess: Bool { status.kind == .success }
-  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.terracotta }
+  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.terracottaText }
 
   var body: some View {
     HStack(spacing: 6) {

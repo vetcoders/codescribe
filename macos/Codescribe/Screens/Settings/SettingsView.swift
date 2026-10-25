@@ -138,7 +138,7 @@ struct SettingsView: View {
             .fixedSize(horizontal: true, vertical: false)
           Text(verbatim: "v\(model.appVersion)")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
         }
       }
     }
@@ -291,7 +291,7 @@ struct SettingsHealthFooter: View {
       Circle().fill(health.level.color).frame(width: 6, height: 6)
       Text(message)
         .font(.caption)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
       Spacer(minLength: 0)
     }
@@ -308,9 +308,9 @@ extension SettingsHealthLevel {
   fileprivate var color: Color {
     switch self {
     case .healthy: return CSColor.oliveLight
-    case .degraded: return CSColor.amber
-    case .offline: return CSColor.terracotta
-    case .unknown: return Color.secondary
+    case .degraded: return CSColor.amberLight
+    case .offline: return CSColor.terracottaText
+    case .unknown: return CSColor.secondaryInk
     }
   }
 }
@@ -336,7 +336,7 @@ struct SettingsPageHeader: View {
       if let blurb, !blurb.isEmpty {
         Text(blurb)
           .font(SettingsScale.pageBlurb)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -398,7 +398,7 @@ struct SettingsMenuLabel: View {
         .font(mono ? SettingsScale.monoValue : SettingsScale.settingName)
         .foregroundStyle(.primary)
         .lineLimit(1)
-      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: Color.secondary)
+      CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.secondaryInk)
     }
     .accessibilityElement(children: .combine)
   }
@@ -453,7 +453,7 @@ struct RuntimeRow: View {
     HStack(spacing: CSSpace.md) {
       Text(key)
         .font(SettingsScale.metaKey)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: keyWidth, alignment: .leading)
       Text(value)
         .font(mono ? SettingsScale.monoValue : SettingsScale.settingValue)

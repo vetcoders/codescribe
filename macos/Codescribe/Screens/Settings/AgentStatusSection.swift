@@ -63,7 +63,7 @@ struct AgentStatusSection: View {
         if !summary.facts.isEmpty {
           Text(summary.facts)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 3)
             .padding(.leading, 20)
@@ -77,7 +77,7 @@ struct AgentStatusSection: View {
             if !summary.notesCaption.isEmpty {
               Text(summary.notesCaption)
                 .font(SettingsScale.helper)
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(CSColor.secondaryInk)
                 .padding(.leading, 20)
             }
             ForEach(Array(summary.notes.enumerated()), id: \.offset) { _, note in
@@ -163,12 +163,12 @@ struct AgentStatusSection: View {
           VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
             Text("Native capabilities are served by Codescribe's built-in tools.")
               .font(SettingsScale.helper)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
             capabilityMatrixCard
             Text("Tool permissions are managed in the Tools tab.")
               .font(SettingsScale.helper)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
           }
           .padding(.top, SettingsScale.rowGap)
@@ -194,7 +194,7 @@ struct AgentStatusSection: View {
             }
             Text("Servers are added, tested and removed in the MCP tab.")
               .font(SettingsScale.helper)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
           }
           .padding(.top, SettingsScale.rowGap)
@@ -227,7 +227,7 @@ struct AgentStatusSection: View {
       GridRow(alignment: .firstTextBaseline) {
         CSIconView(
           icon: expanded ? .chevronDown : .chevronRight, size: 10, weight: .semibold,
-          color: Color.secondary
+          color: CSColor.secondaryInk
         )
         .gridColumnAlignment(.center)
         Text(title)
@@ -238,7 +238,7 @@ struct AgentStatusSection: View {
         CSIconView(icon: tone.statusIcon, size: 10, weight: .semibold, color: tone.dotColor)
         Text(detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -352,18 +352,18 @@ struct AgentStatusSection: View {
         ForEach(paths, id: \.0) { client, path in
           Text(verbatim: "\(client.displayName): \(tilde(path))")
             .font(SettingsScale.metaKey)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
         }
         Text(status.detail)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
         if let launchDetail = model.creatorAgentBridgeLaunchDetail {
           Text(verbatim: launchDetail)
             .font(SettingsScale.metaKey)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("settings-diagnostics-launch-detail")
@@ -371,10 +371,10 @@ struct AgentStatusSection: View {
         HStack(spacing: CSSpace.xs) {
           Text("Configuration source:")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
           Text(tilde(model.mcpStatus.configPathDisplay))
             .font(SettingsScale.metaKey)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .lineLimit(1)
             .truncationMode(.middle)
             .textSelection(.enabled)
@@ -389,7 +389,7 @@ struct AgentStatusSection: View {
     } label: {
       Text("Technical details")
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
     }
     .accessibilityIdentifier("settings-diagnostics-technical-details")
   }
@@ -472,7 +472,7 @@ struct StatusToneMark: View {
       Circle().fill(tone.dotColor).frame(width: 7, height: 7)
       Text(tone.label)
         .font(SettingsScale.statusBadge)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
     }
     .help(tone.label)
@@ -490,7 +490,7 @@ private struct AgentStatusRow: View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       Text(row.localizedLabel)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
         .frame(width: 170, alignment: .leading)
@@ -519,7 +519,7 @@ private struct CapabilityMatrixRow: View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       Text(row.op)
         .font(SettingsScale.metaKey)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 110, alignment: .leading)
       Text(row.localizedTier.uppercased())
         .font(SettingsScale.statusBadge)
@@ -547,7 +547,7 @@ private struct CapabilityMatrixRow: View {
         if let detail = row.localizedDetail {
           Text(detail)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .lineLimit(1)
         }
       }
@@ -564,9 +564,9 @@ private struct CapabilityMatrixRow: View {
   private var tierColor: Color {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
-    case "enhanced": return CSColor.amber
-    case "unavailable": return CSColor.terracotta
-    default: return Color.secondary
+    case "enhanced": return CSColor.amberLight
+    case "unavailable": return CSColor.terracottaText
+    default: return CSColor.secondaryInk
     }
   }
 }
@@ -578,9 +578,9 @@ extension CsMcpRowTone {
   var dotColor: Color {
     switch self {
     case .good: return CSColor.oliveLight
-    case .warn: return CSColor.amber
-    case .bad: return CSColor.terracotta
-    case .neutral: return Color.secondary
+    case .warn: return CSColor.amberLight
+    case .bad: return CSColor.terracottaText
+    case .neutral: return CSColor.secondaryInk
     }
   }
 

@@ -126,6 +126,38 @@ final class DictionaryRecentTakesTests: XCTestCase {
     XCTAssertEqual(DictionaryRecentTakes.durationLabel(128.9), "2:09")
   }
 
+  /// "Open in Lab" renders only while the Lab section can be selected. On a
+  /// production bundle Lab is hidden and `select(.lab)` returns early, so the
+  /// card must not offer a button that does nothing.
+  @MainActor
+  func testOpenInLabExistsOnlyWhileLabIsAvailable() throws {
+    var opened = 0
+    XCTAssertNil(DictionaryRecentTakes.openLabAction(availability: .hidden) { opened += 1 })
+    let action = try XCTUnwrap(
+      DictionaryRecentTakes.openLabAction(availability: .available) { opened += 1 })
+    action()
+    XCTAssertEqual(opened, 1)
+    // The default reads the Lab section itself; the test bundle is a
+    // production surface, where Lab is hidden.
+    XCTAssertEqual(SettingsSection.lab.availability, .hidden)
+    XCTAssertNil(DictionaryRecentTakes.openLabAction { opened += 1 })
+    XCTAssertEqual(opened, 1)
+  }
+
+  /// The Dictionary pane wires the card through the availability gate, not a
+  /// bare `select(.lab)` closure that would render the button everywhere.
+  func testDictionaryPaneGatesOpenInLabOnLabAvailability() throws {
+    let panel = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/Settings/VoiceLabPanel.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(
+      panel.contains("openLab: DictionaryRecentTakes.openLabAction { model.select(.lab) }"))
+    XCTAssertFalse(panel.contains("DictionaryRecentTakes(configDir: model.configDir) {"))
+  }
+
   private func header(rate: UInt32, blockAlign: UInt16, dataBytes: UInt32) -> Data {
     var data = Data()
     func put(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
