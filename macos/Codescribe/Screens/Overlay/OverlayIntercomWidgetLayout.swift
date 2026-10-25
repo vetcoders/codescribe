@@ -11,11 +11,9 @@ enum IntercomCardContent: Equatable, Sendable {
   case header, context, preview
 }
 
-/// A bounded text projection, independent of the full conversation/editor.
+/// Room for the shared rich message renderer after agent identity/context.
 struct IntercomCompactPreviewLayout: Equatable {
-  let lineLimit: Int
-  let textHeight: CGFloat
-  let showsContext: Bool
+  let height: CGFloat
 }
 
 struct IntercomHeaderContent: Equatable {
@@ -186,25 +184,24 @@ struct IntercomContentMetrics: Equatable {
     return .header
   }
 
-  /// Measure the font actually used by the preview, reserving the real header
-  /// rows first. Narrow, tall cards can wrap text; metadata never crowds out
-  /// the first readable line. No full-message chrome participates here.
+  /// Identity and execution context come first. Only a later, larger card
+  /// has room for a route label and at least three lines of rich message body.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
+    guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
     let font = NSFont.systemFont(ofSize: 13 * scale)
-    let readableWidth = ("Abc…" as NSString).size(withAttributes: [.font: font]).width
+    let readableWidth = ("Message preview" as NSString).size(withAttributes: [.font: font]).width
     guard width - 24 >= readableWidth else { return nil }
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
-    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 8
-    // The preview has 4pt top/bottom padding; context has its own 4pt pair.
-    var available = cardHeight - compactHeaderHeight(width: width, cardHeight: cardHeight) - 8
-    guard available >= lineHeight else { return nil }
-    let showsContext = available >= contextHeight + 2 * lineHeight
-    if showsContext { available -= contextHeight }
-    let lines = min(3, Int((available / lineHeight).rounded(.down)))
-    return IntercomCompactPreviewLayout(
-      lineLimit: lines, textHeight: CGFloat(lines) * lineHeight, showsContext: showsContext)
+    let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
+    let contextHeight = metadataLine + 8
+    let available =
+      cardHeight - compactHeaderHeight(width: width, cardHeight: cardHeight)
+      - contextHeight
+    let minimum = 3 * lineHeight + metadataLine + 12
+    guard available >= minimum else { return nil }
+    return IntercomCompactPreviewLayout(height: available)
   }
 
   private func compactHeaderHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {

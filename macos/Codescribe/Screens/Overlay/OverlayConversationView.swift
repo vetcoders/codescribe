@@ -48,6 +48,63 @@ enum OverlayConversationPresentation: Equatable, Sendable {
   case standard, intercom
 }
 
+/// The same rich body and attachment chips on a conversation bubble or a
+/// larger Intercom preview. Document and capture state stay in their owners.
+struct OverlayConversationMessageContent: View {
+  @Environment(\.csTextScale) private var textScale
+  let message: OverlayConversationMessage
+  let palette: OverlayAppearancePalette
+  var showsActivity = false
+  var previewOnly = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Group {
+        if previewOnly {
+          MarkdownText(
+            raw: OversizedBubblePolicy.head(of: message.bodyText), size: 13,
+            bodyColor: palette.primaryText.color, showsUnderlineCaret: showsActivity)
+        } else if OversizedBubblePolicy.isOversized(message.bodyText) {
+          OversizedMessageBody(fullText: message.bodyText) { head in
+            MarkdownText(
+              raw: head, size: 13, bodyColor: palette.primaryText.color,
+              showsUnderlineCaret: showsActivity)
+          }
+        } else {
+          MarkdownText(
+            raw: message.bodyText, size: 13, bodyColor: palette.primaryText.color,
+            showsUnderlineCaret: showsActivity)
+        }
+      }
+      .fixedSize(horizontal: false, vertical: true)
+      .background(OverlaySelectableTextRegion())
+      .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
+      if let attachments = message.attachments, !attachments.isEmpty {
+        WrapLayout(spacing: 6) {
+          ForEach(attachments, id: \.self) { pointer in
+            HStack(spacing: 4) {
+              AttachmentChip(
+                attachment: MessageAttachment(
+                  name: ConversationAttachmentLabel.display(
+                    fileName: pointer.name, bytes: pointer.bytes),
+                  url: URL(fileURLWithPath: pointer.path),
+                  type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
+              if message.captureState != .receiving, let time = pointer.attachmentTimeLabel {
+                Text(verbatim: time)
+                  .font(.system(size: 10 * textScale))
+                  .monospacedDigit()
+                  .foregroundStyle(palette.mutedText.color)
+                  .accessibilityIdentifier("overlay-attachment-time-\(message.id)-\(pointer.path)")
+              }
+            }
+          }
+        }
+        .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
+      }
+    }
+  }
+}
+
 /// Paints the passive observer's immutable conversation projection.
 struct OverlayConversationView: View {
   @Environment(\.displayScale) private var displayScale
@@ -807,44 +864,8 @@ struct OverlayConversationView: View {
           .foregroundStyle(palette.mutedText.color)
           .lineLimit(2)
       }
-      Group {
-        if OversizedBubblePolicy.isOversized(message.bodyText) {
-          OversizedMessageBody(fullText: message.bodyText) { head in
-            MarkdownText(
-              raw: head, size: 13, bodyColor: palette.primaryText.color,
-              showsUnderlineCaret: message.id == activeCaptureMessageID)
-          }
-        } else {
-          MarkdownText(
-            raw: message.bodyText, size: 13, bodyColor: palette.primaryText.color,
-            showsUnderlineCaret: message.id == activeCaptureMessageID)
-        }
-      }
-      .fixedSize(horizontal: false, vertical: true)
-      .background(OverlaySelectableTextRegion())
-      .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
-      if let attachments = message.attachments, !attachments.isEmpty {
-        WrapLayout(spacing: 6) {
-          ForEach(attachments, id: \.self) { pointer in
-            HStack(spacing: 4) {
-              AttachmentChip(
-                attachment: MessageAttachment(
-                  name: ConversationAttachmentLabel.display(
-                    fileName: pointer.name, bytes: pointer.bytes),
-                  url: URL(fileURLWithPath: pointer.path),
-                  type: pointer.mediaType.isEmpty ? nil : pointer.mediaType))
-              if message.captureState != .receiving, let time = pointer.attachmentTimeLabel {
-                Text(verbatim: time)
-                  .font(.system(size: 10 * textScale))
-                  .monospacedDigit()
-                  .foregroundStyle(palette.mutedText.color)
-                  .accessibilityIdentifier("overlay-attachment-time-\(message.id)-\(pointer.path)")
-              }
-            }
-          }
-        }
-        .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
-      }
+      OverlayConversationMessageContent(
+        message: message, palette: palette, showsActivity: message.id == activeCaptureMessageID)
       if let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
       }

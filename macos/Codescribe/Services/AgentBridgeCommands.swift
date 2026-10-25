@@ -170,6 +170,16 @@ struct AgentPlaybackBinding: Equatable, Sendable {
   var repositoryName: String? = nil
   var workspace: String? = nil
   var frame: AgentFrameBinding? = nil
+  var terminal: AgentTerminalBinding? = nil
+
+  /// Only coordinates supplied by this exact lease. No machine name is inferred.
+  var location: String? {
+    if let frame { return "Frame · \(frame.session) · \(frame.paneID)" }
+    if let terminal {
+      return [terminal.host, terminal.tty].compactMap { $0 }.joined(separator: " · ")
+    }
+    return workspace
+  }
 
   var descriptor: String {
     let provider =
@@ -247,7 +257,8 @@ struct AgentBroadcastPolicy: Equatable, Hashable, Sendable {
         localized: "Channel 0: broadcasts reach this agent — click to leave",
         comment: "Agent row mark: member of channel 0; the mark is a one-click switch")
       : String(
-        localized: "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join",
+        localized:
+          "Off channel 0: broadcasts are skipped, direct messages still arrive — click to join",
         comment: "Agent row mark: not a member of channel 0; the mark is a one-click switch")
   }
 
@@ -256,7 +267,8 @@ struct AgentBroadcastPolicy: Equatable, Hashable, Sendable {
   var quietHelp: String {
     moon
       ? String(
-        localized: "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear",
+        localized:
+          "Do not disturb: nothing wakes the agent, every message waits in its mailbox — click to clear",
         comment: "Agent row mark: the moon is lit; the mark is a one-click switch")
       : String(
         localized: "Messages wake the agent — click for do not disturb",
@@ -405,7 +417,8 @@ extension RealAgentBridgeInstaller {
           workspace: (row["workspace"] as? String).flatMap {
             $0.hasPrefix("/") && $0.count <= 4096 ? $0 : nil
           },
-          frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)))
+          frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)),
+          terminal: (row["terminal"] as? [String: Any]).flatMap(AgentTerminalBinding.init(row:)))
       }
       return result
     }.value

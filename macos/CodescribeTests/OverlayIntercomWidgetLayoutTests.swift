@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -25,42 +26,20 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testTallNarrowCardsUseTheirReadableSpaceForLatestMessage() throws {
-    for scale in [CGFloat(0.8), 1, 1.6, 2] {
-      let metrics = IntercomContentMetrics(names: ["Long agent name"], digits: ["2"], scale: scale)
-      let width = max(metrics.minimumNameWidth, 175 * scale)
-      let preview = try XCTUnwrap(
-        metrics.compactPreviewLayout(width: width, cardHeight: 260 * scale))
-      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 260 * scale), .preview)
-      XCTAssertGreaterThanOrEqual(preview.lineLimit, 1)
-      XCTAssertLessThanOrEqual(preview.lineLimit, 3)
-      XCTAssertGreaterThan(preview.textHeight, 0)
-      XCTAssertLessThan(preview.textHeight, 260 * scale)
-    }
-  }
-
-  func testPreviewGrowsByMeasuredTextLinesWithoutClippingTheHeader() throws {
+  func testTwoAndThreeRowCardsReserveAgentInformationBeforePreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let width = max(metrics.actionsWidth, 400 * scale)
-      let header = Layout.controlHeight(scale: scale)
-      let line = ceil(
-        NSLayoutManager().defaultLineHeight(for: NSFont.systemFont(ofSize: 13 * scale)))
-      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: header + line - 1))
-      let one = try XCTUnwrap(
-        metrics.compactPreviewLayout(width: width, cardHeight: header + line + 8))
-      XCTAssertEqual(one.lineLimit, 1)
-      XCTAssertFalse(one.showsContext, "metadata yields to the first readable message line")
-      XCTAssertEqual(one.textHeight, line)
-      let two = try XCTUnwrap(
-        metrics.compactPreviewLayout(width: width, cardHeight: header + 2 * line + 8))
-      XCTAssertEqual(two.lineLimit, 2)
-      XCTAssertFalse(two.showsContext)
-      XCTAssertEqual(two.textHeight, 2 * line)
-      let three = try XCTUnwrap(
-        metrics.compactPreviewLayout(width: width, cardHeight: header + 3 * line + 8))
-      XCTAssertEqual(three.lineLimit, 3)
-      XCTAssertLessThanOrEqual(header + three.textHeight + 8, header + 3 * line + 8)
+      let row = Layout.controlHeight(scale: scale)
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: row), .header)
+      for height in [2 * row, 3 * row] {
+        XCTAssertEqual(metrics.cardContent(width: width, cardHeight: height), .context)
+        XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: height))
+      }
+      let later = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 8 * row))
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
+      XCTAssertGreaterThan(later.height, 3 * row)
+      XCTAssertLessThan(later.height, 8 * row)
     }
   }
 
@@ -70,6 +49,216 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       XCTAssertNil(metrics.compactPreviewLayout(width: metrics.iconSide, cardHeight: 2000))
       XCTAssertNil(metrics.compactPreviewLayout(width: 500, cardHeight: metrics.iconSide))
       XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: metrics.iconSide), .header)
+    }
+  }
+
+  @MainActor
+  func testAgentMetadataUsesTheExactOwnerAndDeclaredExecutionLocation() throws {
+    let identity = AgentPlaybackIdentity(provider: "codex", session: "fixture", bus: "/fixture/bus")
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "lease_id": identity.leaseID, "channel": "3", "name": "Agent",
+      ]))
+    var binding = AgentPlaybackBinding(
+      identity: identity, model: "gpt-6.1-sol", repositoryName: "codescribe",
+      workspace: "/fixture/codescribe",
+      frame: .init(session: "codescribe", paneID: 3),
+      terminal: .init(host: "iTerm2", hostBundleID: "com.googlecode.iterm2", tty: "/dev/ttys011"))
+    let state = OverlayState()
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: owner.name, owner: owner, messages: [])
+    state.applyBoundAgents(["3": binding])
+    XCTAssertEqual(
+      state.conversationAgentDescriptor(conversation), "Codex · gpt-6.1-sol · codescribe")
+    XCTAssertEqual(state.conversationAgentLocation(conversation), "Frame · codescribe · 3")
+    binding.frame = nil
+    state.applyBoundAgents(["3": binding])
+    XCTAssertEqual(state.conversationAgentLocation(conversation), "iTerm2 · /dev/ttys011")
+    binding.terminal = nil
+    XCTAssertEqual(binding.location, "/fixture/codescribe")
+    binding.workspace = nil
+    XCTAssertNil(binding.location, "No declared location must not invent a host")
+    let replacement = AgentPlaybackIdentity(
+      provider: "codex", session: "replacement", bus: "/fixture/new")
+    state.applyBoundAgents(["3": .init(identity: replacement, model: "other-model")])
+    XCTAssertNil(state.conversationAgentBinding(conversation), "A reused channel is another owner")
+    let wrongLease = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "lease_id": String(repeating: "f", count: 32), "channel": "3", "name": "Agent",
+      ]))
+    state.applyBoundAgents(["3": binding])
+    XCTAssertNil(
+      state.conversationAgentBinding(
+        .init(
+          id: wrongLease.id, channel: "3", name: "Agent", owner: wrongLease, messages: [])))
+  }
+
+  @MainActor
+  func testProductionCardPhaseReviewSheetsPreserveIdentityAndConversationState() throws {
+    func render(
+      channel: String, text: String?, height: CGFloat, dark: Bool,
+      expanded: Bool = false, hover: Bool = false
+    ) throws
+      -> (contentEdges: Int, headerMask: Data)
+    {
+      let session = "fixture-\(channel)"
+      let identity = AgentPlaybackIdentity(provider: "codex", session: session, bus: "/fixture/bus")
+      let owner = try XCTUnwrap(
+        OverlayConversationOwner(row: [
+          "provider": "codex", "provider_session_id": "fixture-\(channel)",
+          "lease_id": identity.leaseID, "channel": channel, "name": "Agent",
+        ]))
+      let messages: [OverlayConversationMessage] =
+        text.map { body in
+          [
+            OverlayConversationMessage(
+              id: "fixture-reply", kind: .reply, text: body, order: 1, emittedAt: "",
+              owner: owner, recipients: [], deliveryID: nil, replyTo: nil,
+              unsolicited: false, playback: nil, busPath: "")
+          ]
+        } ?? []
+      let conversation = OverlayConversation(
+        id: owner.id, channel: channel, name: owner.name, owner: owner, messages: messages)
+      let bridgeRoot = RealAgentBridgeInstaller().bridgeRoot
+      guard bridgeRoot.path.contains("codescribe-test-data.") else {
+        XCTFail("Native fixture requires make test-swift's isolated bridge root")
+        throw CocoaError(.fileWriteNoPermission)
+      }
+      let leases = bridgeRoot.appendingPathComponent("leases", isDirectory: true)
+      try FileManager.default.createDirectory(at: leases, withIntermediateDirectories: true)
+      let leaseURL = leases.appendingPathComponent(identity.leaseID + ".json")
+      let previousLease = try? Data(contentsOf: leaseURL)
+      let lease: [String: Any] = [
+        "schema": "codescribe.agent-bridge.lease.v1", "lease_id": identity.leaseID,
+        "provider": identity.provider, "provider_session_id": identity.session,
+        "bus": identity.bus, "model": "gpt-6.1-sol", "repository_name": "codescribe",
+        "workspace": "/fixture/codescribe", "frame": ["session": "codescribe", "pane_id": 11],
+      ]
+      try JSONSerialization.data(withJSONObject: lease).write(to: leaseURL, options: .atomic)
+      defer {
+        if let previousLease {
+          try? previousLease.write(to: leaseURL, options: .atomic)
+        } else {
+          try? FileManager.default.removeItem(at: leaseURL)
+        }
+      }
+      let state = OverlayState()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+      state.applyChannelRoster([
+        .init(
+          channel: channel, audience: owner.name, provider: owner.provider,
+          providerSessionId: owner.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      ])
+      state.applyBoundAgents([
+        channel: .init(
+          identity: identity, model: "gpt-6.1-sol", repositoryName: "codescribe",
+          workspace: "/fixture/codescribe",
+          frame: .init(session: "codescribe", paneID: 11))
+      ])
+      state.conversationDrafts[conversation.id] = "Preserved draft"
+      let generation = state.captureGeneration
+      let suite = "CodescribeTests.compact.\(UUID().uuidString)"
+      let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+      defer { defaults.removePersistentDomain(forName: suite) }
+      let controller = OverlayIntercomWidgetController(
+        state: state, textScale: TextScaleController(key: suite),
+        desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+      defer { controller.invalidate() }
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      let card = OverlayIntercomCardIdentity(digit: channel, conversation: conversation)
+      let content: AnyView =
+        hover
+        ? AnyView(controller.offscreenHover(card, palette: palette))
+        : AnyView(
+          controller.offscreenCard(
+            card, width: 360, height: height, scale: 1, expanded: expanded))
+      let host = NSHostingView(
+        rootView:
+          content
+          .environment(\.colorScheme, dark ? .dark : .light)
+          .environment(\.csTextScale, 1)
+          .symbolEffectsRemoved()
+          .transaction { $0.disablesAnimations = true }
+          .background(palette.desktopBackground.color))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 360, height: height)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: 360, height: height),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name =
+        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      var contentEdges = 0
+      var header = Data()
+      let headerPixels = Int(30 * CGFloat(bitmap.pixelsHigh) / height)
+      for y in 0..<bitmap.pixelsHigh {
+        var previousBrightness: CGFloat?
+        for x in 0..<bitmap.pixelsWide {
+          let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+          let brightness =
+            color.redComponent * 0.2126 + color.greenComponent * 0.7152 + color.blueComponent
+            * 0.0722
+          let ink = previousBrightness.map { abs(brightness - $0) > 0.06 } ?? false
+          previousBrightness = brightness
+          if y < headerPixels {
+            header.append(ink ? 1 : 0)
+          }
+          if ink && y >= headerPixels { contentEdges += 1 }
+        }
+      }
+      XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+      XCTAssertEqual(controller.interactionWindowCounts.visible, 0)
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertEqual(state.conversationDrafts[conversation.id], "Preserved draft")
+      return (contentEdges, header)
+    }
+    let richMessage = """
+      ## Wynik pracy
+      **Gotowe:** wspólne formatowanie na tafli.
+
+      - Tożsamość i status najpierw
+      - Potem czytelna treść wiadomości
+
+      ```swift
+      let agent = "Agent"
+      print(agent)
+      ```
+      """
+    for dark in [false, true] {
+      // Native control hover and backdrop compositing can change between hosts.
+      // Preserve both review images rather than treating a pixel count as proof
+      // of absent content. The phase policy above pins the metadata-only range.
+      for height in [CGFloat(30), 60, 90] {
+        _ = try render(channel: "3", text: nil, height: height, dark: dark)
+        _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
+      }
+      for height in [CGFloat(150), 220] {
+        let empty = try render(channel: "3", text: nil, height: height, dark: dark)
+        let message = try render(channel: "3", text: richMessage, height: height, dark: dark)
+        XCTAssertGreaterThan(
+          message.contentEdges, empty.contentEdges + 100, "Later phase must paint rich content")
+      }
+      _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
+      _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
+      let three = try render(channel: "3", text: nil, height: 30, dark: dark)
+      let four = try render(channel: "4", text: nil, height: 30, dark: dark)
+      XCTAssertNotEqual(
+        three.headerMask, four.headerMask, "The compact header must paint its digit")
     }
   }
 

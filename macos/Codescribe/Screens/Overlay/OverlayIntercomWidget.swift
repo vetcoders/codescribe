@@ -81,6 +81,32 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     super.init()
   }
 
+  #if DEBUG
+    /// Renders the production card with explicit geometry, without creating or
+    /// presenting its desktop windows. Capture and draft state remain shared.
+    func offscreenCard(
+      _ identity: OverlayIntercomCardIdentity, width: CGFloat, height: CGFloat, scale: CGFloat,
+      expanded: Bool = false
+    ) -> some View {
+      contentMetrics = IntercomContentMetrics(
+        names: state.conversations.map(\.name), digits: state.conversations.map(\.channel),
+        scale: scale)
+      groupWidth = width
+      groupCardHeight = height
+      groupTier = contentMetrics.tier(width: width, cardHeight: height)
+      if expanded { presentation.expand(identity) }
+      return OverlayIntercomCard(
+        state: state, identity: identity, index: 0, controller: self,
+        onRevealConversation: {})
+    }
+
+    func offscreenHover(_ identity: OverlayIntercomCardIdentity, palette: OverlayAppearancePalette)
+      -> some View
+    {
+      OverlayIntercomHoverPreview(state: state, identity: identity, palette: palette)
+    }
+  #endif
+
   private var effectiveScale: CGFloat { textScale.scale }
   fileprivate private(set) var contentMetrics = IntercomContentMetrics(
     names: [], digits: [], scale: 1)
@@ -1454,12 +1480,11 @@ private struct OverlayIntercomCard: View {
           .frame(maxWidth: .infinity, alignment: .trailing)
           .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
       }
-      if !expanded && (content == .context || preview?.showsContext == true), let conversation {
+      if !expanded && content != .header, let conversation {
         OverlayIntercomConversationContext(
-          descriptor: state.conversationAgentDescriptor(conversation),
-          timestamp: conversation.messages.last.flatMap {
-            MessageTimestamp.date(fromISO8601: $0.emittedAt)
-          }, palette: palette)
+          descriptor: state.conversationAgentDescriptor(conversation)
+            ?? conversation.owner?.provider,
+          location: state.conversationAgentLocation(conversation), palette: palette)
       }
       if expanded {
         if let conversation {
@@ -1470,17 +1495,8 @@ private struct OverlayIntercomCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       } else if let preview, let message = conversation?.messages.last {
-        Text(verbatim: message.bodyText)
-          .font(.system(size: 13 * scale))
-          .foregroundStyle(palette.primaryText.color)
-          .lineLimit(preview.lineLimit)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .frame(height: preview.textHeight, alignment: .topLeading)
-          .clipped()
-          .padding(.horizontal, 12)
-          .padding(.vertical, 4)
-          .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
+        OverlayIntercomMessagePreview(message: message, palette: palette)
+          .frame(height: preview.height, alignment: .top)
       }
     }
     .foregroundStyle(palette.primaryText.color)
@@ -1557,6 +1573,19 @@ private struct OverlayIntercomCard: View {
     let inactive = channelRow.map { roster.isInactive($0) } ?? false
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
+    let hasInlinePreview =
+      controller.contentMetrics.cardContent(
+        width: controller.groupWidth, cardHeight: controller.groupCardHeight) == .preview
+    let hasMessage = conversation?.messages.isEmpty == false
+    let nameHint = OverlayHeaderControlChrome(
+      title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
+      hintLeading: true, showsHint: !expanded && !hasInlinePreview,
+      hintContent: hasMessage
+        ? AnyView(
+          OverlayIntercomHoverPreview(state: state, identity: identity, palette: palette)
+            .environment(\.csTextScale, scale)
+            .environment(\.colorScheme, colorScheme)) : nil,
+      hintSize: hasMessage ? CGSize(width: 360 * scale, height: 240 * scale) : nil)
     // The grip stays separate from the open button at every content tier.
     // Its full-height native hit area never overlaps audio or the agent name.
     let detachGrip = Image(systemName: "macwindow.badge.plus")
@@ -1578,7 +1607,6 @@ private struct OverlayIntercomCard: View {
     // the card itself never grows under the pointer.
     if tier == .icon && !expanded {
       HStack(spacing: 3) {
-        detachGrip
         Button {
           controller.expand(identity)
         } label: {
@@ -1586,17 +1614,18 @@ private struct OverlayIntercomCard: View {
             if identity.isHumanInbox {
               Image(systemName: "tray").csFont(11)
             } else {
-              Image(systemName: "bubble.left").csFont(11)
+              Text(verbatim: identity.displayDigit).csMono(10)
+              OverlayIntercomStatusMark(
+                roster: roster, channel: channelRow,
+                kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+                palette: palette, hints: false)
             }
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .overlayFastHint(
-          channelRow.flatMap { inactive ? name + " · " + roster.detail(for: $0) : nil } ?? name,
-          palette: palette, leading: true
-        )
+        .modifier(nameHint)
         .simultaneousGesture(moveGesture)
         .modifier(OverlayDisconnectedRowDim(disconnected: inactive))
         .accessibilityLabel(
@@ -1614,16 +1643,17 @@ private struct OverlayIntercomCard: View {
       HStack(spacing: 3) {
         detachGrip
         HStack(spacing: 6) {
-          if expanded && !identity.isHumanInbox {
+          if !identity.isHumanInbox {
             Text(verbatim: identity.displayDigit).csMono(10)
               .foregroundStyle(palette.mutedText.color)
+              .accessibilityIdentifier("overlay-intercom-digit-\(identity.digit)")
           }
           if let channelRow, row.marks {
             OverlayReceptionMarks(channel: channelRow, palette: palette, textScale: scale)
           }
           if identity.isHumanInbox {
             Image(systemName: "tray").csFont(11)
-          } else if expanded {
+          } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
               kind: intercomStatusDot(roster, state: state, digit: identity.digit),
@@ -1657,6 +1687,7 @@ private struct OverlayIntercomCard: View {
             }
           }
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
+          .modifier(nameHint)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -1955,11 +1986,11 @@ private struct OverlayIntercomConversationBody: View {
 private struct OverlayIntercomConversationContext: View {
   @Environment(\.csTextScale) private var scale
   let descriptor: String?
-  let timestamp: Date?
+  let location: String?
   let palette: OverlayAppearancePalette
 
   var body: some View {
-    if descriptor != nil || timestamp != nil {
+    if descriptor != nil || location != nil {
       HStack(spacing: 8) {
         if let descriptor {
           Text(verbatim: descriptor)
@@ -1967,7 +1998,9 @@ private struct OverlayIntercomConversationContext: View {
             .truncationMode(.middle)
         }
         Spacer(minLength: 0)
-        if let timestamp { MessageTimestampLabel(date: timestamp, compact: true) }
+        if let location {
+          Text(verbatim: location).lineLimit(1).truncationMode(.middle)
+        }
       }
       .font(.system(size: 10 * scale))
       .foregroundStyle(palette.mutedText.color)
@@ -1976,6 +2009,55 @@ private struct OverlayIntercomConversationContext: View {
       .accessibilityElement(children: .combine)
       .accessibilityIdentifier("overlay-intercom-context")
     }
+  }
+}
+
+private struct OverlayIntercomHoverPreview: View {
+  let state: OverlayState
+  let identity: OverlayIntercomCardIdentity
+  let palette: OverlayAppearancePalette
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(verbatim: identity.displayDigit + " · " + identity.name).csFont(11, .semibold)
+        .padding(.horizontal, 12).padding(.top, 10)
+      if let message = state.conversations.first(where: { identity.matches($0) })?.messages.last {
+        OverlayIntercomMessagePreview(message: message, palette: palette, passive: true)
+      }
+    }
+    .foregroundStyle(palette.primaryText.color)
+    .background(palette.desktopBackground.color.opacity(0.9))
+  }
+}
+
+/// A later-size preview projected onto the existing sheet. It uses the same
+/// rich content renderer as full conversation bubbles, with no new document.
+private struct OverlayIntercomMessagePreview: View {
+  @Environment(\.csTextScale) private var scale
+  let message: OverlayConversationMessage
+  let palette: OverlayAppearancePalette
+  var passive = false
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 6) {
+        HStack {
+          Text(verbatim: OverlayChannelStatusView.messageRoute(of: message).label)
+            .font(.system(size: 10 * scale, weight: .semibold))
+          Spacer(minLength: 8)
+          MessageTimestampLabel(date: MessageTimestamp.date(fromISO8601: message.emittedAt))
+            .font(.system(size: 10 * scale))
+        }
+        .foregroundStyle(palette.mutedText.color)
+        OverlayConversationMessageContent(
+          message: message, palette: palette, showsActivity: message.captureState == .receiving,
+          previewOnly: passive)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+    }
+    .csAutohidingScrollers()
   }
 }
 

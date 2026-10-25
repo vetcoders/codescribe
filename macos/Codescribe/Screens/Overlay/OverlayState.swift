@@ -1890,9 +1890,27 @@ final class OverlayState {
     return descriptors
   }
 
+  /// The existing lease reader supplies this projection. Equality avoids an
+  /// Observation invalidation for every unchanged poll.
+  func applyBoundAgents(_ bindings: [String: AgentPlaybackBinding]) {
+    if channelPlaybackAgents != bindings { channelPlaybackAgents = bindings }
+  }
+
+  func conversationAgentBinding(_ conversation: OverlayConversation) -> AgentPlaybackBinding? {
+    guard let owner = conversation.owner else { return nil }
+    return channelPlaybackAgents.values.first {
+      $0.identity.provider == owner.provider
+        && $0.identity.session == owner.providerSessionID
+        && $0.identity.leaseID == owner.leaseID
+    }
+  }
+
   func conversationAgentDescriptor(_ conversation: OverlayConversation) -> String? {
-    guard let identity = playbackIdentity(for: conversation) else { return nil }
-    return channelPlaybackAgents.values.first { $0.identity == identity }?.descriptor
+    conversationAgentBinding(conversation)?.descriptor
+  }
+
+  func conversationAgentLocation(_ conversation: OverlayConversation) -> String? {
+    conversationAgentBinding(conversation)?.location
   }
 
   /// Effective mute per channel: the global block wins over the agent's own
@@ -2054,7 +2072,7 @@ final class OverlayState {
     // even when the value is equal, and the open conversation reads its
     // playback mute, so an unchanged poll re-evaluated it twice a second
     // (UI-88, hania on Silver 23 X: 37% of a core at rest, 16% in mini).
-    if channelPlaybackAgents != bound { channelPlaybackAgents = bound }
+    applyBoundAgents(bound)
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
     if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
