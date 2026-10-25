@@ -491,8 +491,10 @@ else
     echo "    MiniLM not bundled (no runtime consumer); stale copies stripped; CLI/tests use the HF cache."
   fi
 fi
-# Only the two non-secret engine defaults belong in the signed app bundle.
-# The app owns merging them into settings.json at launch, with a backup.
+# Only the non-secret endpoint default belongs in the signed app bundle.
+# Never ship the builder's ASR mode: launch repair would seed it as an explicit
+# user choice and could make first-run setup wait for an unchosen Whisper model.
+# The app owns merging the endpoint into settings.json at launch, with a backup.
 python3 - "$APP/Contents/Resources/operator-pack/settings.json" "${CODESCRIBE_VOICE_LAB_SRC:-$REPO_ROOT/../voice-lab}" "$HOME/.codescribe/src/voice-lab" <<'PY_PACK'
 import json
 import sys
@@ -505,8 +507,10 @@ for pack in (pack for root in roots for pack in sorted((root / "examples").glob(
     if not (pack.parent / "keys").is_dir():
         continue
     source = json.loads(pack.read_text()).get("speech", {}).get("engine", {})
-    engine = {k: source[k] for k in ("cloud_transcription_endpoint", "asr_mode")
-              if isinstance(source.get(k), str) and source[k].strip()}
+    endpoint = source.get("cloud_transcription_endpoint")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        continue
+    engine = {"cloud_transcription_endpoint": endpoint}
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps({"speech": {"engine": engine}}, indent=2) + "\n")
     break

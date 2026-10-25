@@ -57,14 +57,21 @@ Finder, Spotlight or `open`.
 
 ## Operator pack
 
-The build embeds only `speech.engine.cloud_transcription_endpoint` and
-`asr_mode` from the selected Voice Lab pack into
-`Contents/Resources/operator-pack/settings.json`. It never embeds the keys
-folder or the rest of the profile. The app fills these fields only when empty;
-existing choices win. Development can select a checkout with the existing
+The build embeds only `speech.engine.cloud_transcription_endpoint` from the
+selected Voice Lab pack into `Contents/Resources/operator-pack/settings.json`.
+It never embeds `asr_mode`, the keys folder or the rest of the profile. The
+builder's recognition mode is not a choice made by a new user: shipping it
+would seed that mode into a fresh profile and could make setup require an
+unchosen Whisper download. Reusing a build directory replaces the old bundled
+pack, including any previously bundled mode. The app fills the endpoint only
+when empty; existing choices win. Development can select a checkout with the existing
 `CODESCRIBE_VOICE_LAB_SRC` variable. The Voice Lab installer delegates runtime
 and public-key setup with `INSTALL_SETTINGS=0`; configuration merging belongs
 to the app. Without a pack, no cloud endpoint is invented.
+
+Runtime repair still supports `asr_mode` in an explicitly supplied per-user
+pack. Existing user settings, legacy imports and that per-user pack are not
+rewritten by the bundle policy.
 
 A second repair pass over repaired settings performs no write and creates no
 backup. The process retains its first-launch receipt so opening Settings later
