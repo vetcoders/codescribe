@@ -84,6 +84,7 @@ extension OversizedBubblePolicy {
 struct OversizedMessageBody<Head: View>: View {
   let fullText: String
   @ViewBuilder let head: (String) -> Head
+  @Environment(\.colorScheme) private var colorScheme
   @State private var showFull = false
   @Environment(\.csTextScale) private var textScale
 
@@ -113,8 +114,7 @@ struct OversizedMessageBody<Head: View>: View {
         CSIconView(
           icon: showFull ? .chevronDown : .chevronRight,
           size: 8,
-          weight: .semibold,
-          color: CSColor.textTertiary
+          weight: .semibold
         )
         Text(
           showFull
@@ -124,15 +124,18 @@ struct OversizedMessageBody<Head: View>: View {
               comment: "The placeholder is a size, e.g. 142 KB")
         )
         .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(Color.secondary)
       }
       .contentShape(Rectangle())
     }
-    .csFocusRing()
-    .help(
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityHint(
       showFull
-        ? String(localized: "Fold this message back to its head")
-        : String(localized: "Open the full text in a scrollable, selectable view"))
+        ? Text("Fold this message back to its head")
+        : Text("Open the full text in a scrollable, selectable view"))
   }
 }
 
@@ -161,6 +164,14 @@ struct FullTextView: NSViewRepresentable {
   let text: String
   let font: NSFont
 
+  /// The bubble's only AppKit state is the shared scroller policy (Founder,
+  /// 2026-10-18), so the pin is the coordinator.
+  func makeCoordinator() -> CSScrollerPin { CSScrollerPin() }
+
+  static func dismantleNSView(_ scrollView: NSScrollView, coordinator: CSScrollerPin) {
+    coordinator.detach()
+  }
+
   func makeNSView(context: Context) -> NSScrollView {
     // Explicit TextKit 2 stack (viewport-based layout); the convenience
     // `NSTextView.scrollableTextView()` can still wire up TextKit 1.
@@ -185,6 +196,7 @@ struct FullTextView: NSViewRepresentable {
     scrollView.documentView = textView
     scrollView.hasVerticalScroller = true
     scrollView.drawsBackground = false
+    context.coordinator.attach(to: scrollView)
     return scrollView
   }
 

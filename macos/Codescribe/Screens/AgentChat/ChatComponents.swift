@@ -732,26 +732,33 @@ private struct CodeBlockView: View {
       }
     } label: {
       HStack(spacing: 4) {
-        CSIconView(icon: copied ? .check : .copy, size: 9)
+        CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
             ? String(localized: "copied", comment: "Button state after copying")
             : String(localized: "copy", comment: "Button: copy this code block")
         )
-        .font(CSFont.mono(10, .medium))
+        .font(CSFont.ui(10, .semibold))
       }
-      .foregroundStyle(copied ? CSColor.oliveLight : Color.secondary)
       .padding(.horizontal, 7)
       .padding(.vertical, 3)
-      .background(Color.primary.opacity(0.08))
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-      )
     }
-    .csFocusRing()
-    .help("Copy code")
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: copied
+        ? CSColor.oliveLight.opacity(0.8)
+        : OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: copied
+        ? CSColor.oliveLight : OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityLabel(Text(verbatim: codeCopyHint))
+    .accessibilityHint(Text("Copy code"))
+  }
+
+  private var codeCopyHint: String {
+    copied
+      ? String(localized: "copied", comment: "Button state after copying")
+      : String(localized: "Copy code")
   }
 }
 

@@ -14,6 +14,26 @@ final class OverlayHeldDeliveryTests: XCTestCase {
   private let messageID = String(repeating: "a", count: 24)
   private let leaseID = String(repeating: "b", count: 32)
 
+  func testTypedFounderSenderRemainsAUserMessageAcrossRestore() throws {
+    var row = typed()
+    row["source"] = "typed"
+    row["sender"] = ["name": "founder", "channel": "10"]
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(row)
+    for projection in [
+      bus,
+      try JSONDecoder().decode(OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(bus)),
+    ] {
+      let message = try firstMessage(projection)
+      XCTAssertEqual(message.kind, .user)
+      XCTAssertEqual(message.text, "Pierwsza wiadomość")
+      XCTAssertEqual(message.recipients.count, 1)
+      XCTAssertEqual(message.recipients.first?.owner.channel, "1")
+      XCTAssertEqual(message.deliveryStage(at: now), .held)
+      XCTAssertFalse(message.supportsSpeechPlayback)
+    }
+  }
+
   func testTypedFutureHoldParsesMicrosecondsAndExpiresAtTheDeadline() throws {
     var bus = OverlayChannelDelivery.Bus()
     bus.consume(typed())
@@ -166,9 +186,10 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     clean["text"] = "not the document either"
     clean["sequence"] = 6
     bus.consume(clean)
-    let conversation = try XCTUnwrap(bus.conversations(busPath: "", now: now).first {
-      $0.owner != nil
-    })
+    let conversation = try XCTUnwrap(
+      bus.conversations(busPath: "", now: now).first {
+        $0.owner != nil
+      })
     XCTAssertEqual(conversation.messages.count, 1)
     XCTAssertEqual(conversation.messages.first?.text, "Dokument z evidence")
     XCTAssertEqual(conversation.messages.first?.holdSecondsRemaining, 7)
@@ -189,9 +210,10 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     peer["lease_id"] = String(repeating: "c", count: 32)
     second["recipients"] = [peer]
     bus.consume(second)
-    let shared = try XCTUnwrap(bus.conversations(busPath: "", now: now).first {
-      $0.channel == "0"
-    })
+    let shared = try XCTUnwrap(
+      bus.conversations(busPath: "", now: now).first {
+        $0.channel == "0"
+      })
     XCTAssertEqual(shared.messages.count, 1)
     XCTAssertEqual(shared.messages.first?.text, "Poprawiony broadcast")
     XCTAssertEqual(shared.messages.first?.recipients.count, 2)
@@ -210,9 +232,11 @@ final class OverlayHeldDeliveryTests: XCTestCase {
     revision["message_id"] = String(repeating: "3", count: 24)
     revision["identity"] = String(repeating: "3", count: 24)
     bus.consume(revision)
-    let messages = try XCTUnwrap(bus.conversations(busPath: "", now: now).first {
-      $0.owner != nil
-    }).messages
+    let messages = try XCTUnwrap(
+      bus.conversations(busPath: "", now: now).first {
+        $0.owner != nil
+      }
+    ).messages
     XCTAssertEqual(messages.count, 5)
     XCTAssertEqual(Set(messages.map(\.id)).count, 5)
     XCTAssertEqual(messages.filter { $0.text == "Iwo" }.count, 4)
@@ -258,18 +282,21 @@ final class OverlayHeldDeliveryTests: XCTestCase {
       "provider_session_id": "held-fixture", "lease_id": leaseID,
     ]
     bus.consume(revision)
-    XCTAssertEqual(bus.conversations(busPath: "", now: now).flatMap(\.messages).filter {
-      $0.text == "Zmieniony drugi take"
-    }.count, 0)
+    XCTAssertEqual(
+      bus.conversations(busPath: "", now: now).flatMap(\.messages).filter {
+        $0.text == "Zmieniony drugi take"
+      }.count, 0)
     revision["session_id"] = "another-voice-take"
     bus.consume(revision)
-    XCTAssertEqual(bus.conversations(busPath: "", now: now).flatMap(\.messages).filter {
-      $0.text == "Zmieniony drugi take"
-    }.count, 1)
+    XCTAssertEqual(
+      bus.conversations(busPath: "", now: now).flatMap(\.messages).filter {
+        $0.text == "Zmieniony drugi take"
+      }.count, 1)
   }
 
   @MainActor
   func testEditOnAHeldMessageWithdrawsOnceAndReturnsTheTextToAnEmptyComposer() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "")
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "")
@@ -293,6 +320,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditAppendsHeldTextAfterABlankLineWhenTheComposerAlreadyHasTyping() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "Już piszę")
     defer { host.close() }
     XCTAssertEqual(try host.editor().string, "Już piszę")
@@ -313,6 +341,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditWhoseWithdrawThrowsLeavesTheComposerAndShowsTheError() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "zostaje", thrown: HeldWithdrawRefusal())
     defer { host.close() }
     XCTAssertEqual(
@@ -337,6 +366,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testEditOnAnExpiredHoldPublishesNothingAndLeavesTheComposer() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(at: now.addingTimeInterval(7), draft: "zostaje")
     defer { host.close() }
     XCTAssertNil(host.holdSecondsRemaining)
@@ -353,6 +383,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
 
   @MainActor
   func testAHeldBubbleOffersOnlyCancelEditAndSendNow() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let host = try mountHeldComposer(draft: "")
     defer { host.close() }
     for identifier in ["cancel-edit", "release"] {
@@ -425,9 +456,10 @@ final class OverlayHeldDeliveryTests: XCTestCase {
   private func firstMessage(_ bus: OverlayChannelDelivery.Bus, at date: Date? = nil) throws
     -> OverlayConversationMessage
   {
-    try XCTUnwrap(bus.conversations(busPath: "", now: date ?? now).first {
-      $0.owner != nil
-    }?.messages.first)
+    try XCTUnwrap(
+      bus.conversations(busPath: "", now: date ?? now).first {
+        $0.owner != nil
+      }?.messages.first)
   }
 
   @MainActor
@@ -455,7 +487,7 @@ final class OverlayHeldDeliveryTests: XCTestCase {
       contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     let mounted = HeldComposerHost(
       window: window, host: host, log: log, messageID: message.id, messageText: message.text,
       holdSecondsRemaining: message.holdSecondsRemaining)

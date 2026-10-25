@@ -38,13 +38,46 @@ mod w13_clock;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "diagnostic harness: needs CODESCRIBE_REPLAY_WAV and a live SFSpeech bridge"]
 async fn replay_operator_take() {
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_test_writer()
-        .init();
+        .try_init();
 
-    let wav = std::env::var("CODESCRIBE_REPLAY_WAV")
-        .expect("set CODESCRIBE_REPLAY_WAV to the recording to replay");
+    if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
+        let installed = std::path::Path::new(
+            "/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge",
+        );
+        if installed.is_file() {
+            unsafe {
+                std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
+                std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
+            }
+        }
+    }
+    let operator_home = std::env::var("HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.join(".codescribe/data_assets").is_dir())
+        .or_else(|| {
+            std::env::var("CARGO_HOME").ok().and_then(|c| {
+                std::path::PathBuf::from(c)
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+            })
+        })
+        .expect("operator home");
+    if std::env::var_os("CODESCRIBE_MODELS_DIR").is_none() {
+        let models = operator_home.join(".codescribe/models");
+        if models.is_dir() {
+            unsafe { std::env::set_var("CODESCRIBE_MODELS_DIR", models) };
+        }
+    }
+    let wav = std::env::var("CODESCRIBE_REPLAY_WAV").unwrap_or_else(|_| {
+        operator_home
+            .join(".codescribe/data_assets/01_no-to-dobra.wav")
+            .to_string_lossy()
+            .into_owned()
+    });
     let isolated = asr_settings::IsolatedAsrSettings::from_requested_mode();
     let mut settings = isolated.settings.clone();
     if let Ok(mode) = std::env::var("CODESCRIBE_ASR_MODE") {

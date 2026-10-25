@@ -175,11 +175,23 @@ run both arms again.
 of that time (14.4 s in `OverlayRefusalLayoutHangTests`), and the slowest single
 test took 5.4 s. Every test above `SWIFT_TEST_MAX_TEST_SECONDS` (default 10 s)
 is printed and fails the gate. The suite budget, `SWIFT_TEST_MAX_SECONDS`
-(default 60 s), was set as a coarse backstop at about twice that 2026-09-25
+(originally 60 s), was set as a coarse backstop at about twice that 2026-09-25
 measurement. The per-test ceiling targets the one-test hang shape seen in the
-old Keychain regression. The defaults stay 60 s and 10 s. An over-budget run
-requires investigation of the test harness and host load; it does not move
-those limits.
+old Keychain regression.
+
+On 2026-10-19 the full-suite budget was rebaselined to **240 s**, retaining the
+**10 s per-test ceiling**. The current 1774-test run took 192.636 s; the
+1608-test release-line run from 2026-10-16 took 160.422 s. The 1588 common
+tests took 156.260 s then and 155.495 s now. Thus the existing test set did not
+slow down: added render/acceptance coverage outgrew the September budget.
+The 240 s limit leaves about 25% headroom over the measured full suite; it
+does not waive failed assertions, zero-test protection or the independent
+per-test ceiling. The comparison is retained in the local PR 178 release
+receipts (`swift-timing-independent.json`).
+
+An over-budget run still requires investigation of the test harness and host
+load. Do not raise a limit merely to hide a slow test or a blocking operation;
+any later coverage-driven rebaseline needs the same comparison of common tests.
 
 Note on exit codes: the _recipe_ exits 3 (zero tests), 4 (suite over budget),
 or 5 (one or more tests over the per-test ceiling), which
@@ -192,8 +204,8 @@ should branch on non-zero, not on the specific code.
 Static inventory on 2026-10-07, counted in `macos/CodescribeTests`: 82 Swift
 files and 1163 methods whose declaration line is `func test`. A same-day host
 log executed 1162 tests, with 1 test skipped and 0 failures, in 73.510 s.
-Those two counts are not the same number. That run is over
-`SWIFT_TEST_MAX_SECONDS` (default 60). The budget is unchanged. The inventory
+Those two counts are not the same number. That run exceeded the then-current
+60 s suite budget. The coverage-driven rebaseline above is later; this inventory
 still includes the two surfaces the W12 plan could previously only verify by
 compilation:
 
@@ -291,3 +303,40 @@ AppKit AX child graph under XCTest (the same boundary documented by
 assertions. Real Audio button activation, stop/final-pass presentation, calibration
 blocking and accessibility still require a separate signed native acceptance;
 these unit witnesses do not claim that acceptance.
+
+## Invisible fixtures and isolated native acceptance
+
+`BackgroundTestWindow.present` is the only presentation owner for native
+fixtures. By default it keeps the original geometry but sets zero window
+opacity, ignores mouse input and orders to the back. Window levels stay intact
+so the fixture retains the production window policy. The XCTest host
+also prohibits application activation before constructing its scene; its
+Settings placeholder is transparent and parked offscreen. The test-process
+check recognizes XCTest launch markers before the XCTest class is loaded.
+
+Native tests that exercise actual keyboard ownership, external AX, painted-frame
+occlusion, real AppKit morphs, native wheel delivery or visible opacity transitions call
+`BackgroundTestWindow.requireIsolatedGUI`. They report an explicit XCTest skip
+at the start of the test in the ordinary suite. Skips inside XCTest assertion
+autoclosures become unexpected failures, so the gate belongs before any
+assertions. The AX probe also guards its entry point. A background run does
+**not** certify these native behaviors. Run their full gate only in a separate GUI session with
+`CODESCRIBE_TEST_ISOLATED_GUI=1 make test-swift`. This opt-in makes fixture
+windows visible and permits activation in that isolated session. It must never
+be used to run over the Founder's working desktop.
+
+The standalone `scripts/tests/test-window-policy.swift` checks the launch and
+opt-in decision without starting an application or creating a window.
+`BackgroundTestWindowTests` checks the actual native fixture policy in the
+ordinary suite. Direct window-fronting calls belong only to the presentation
+owner; new fixtures must use it too.
+
+The animation and wheel cases retain their real AppKit assertions in the isolated
+GUI gate. A zero-opacity WindowServer fixture is not evidence for those behaviors;
+changing its level or yielding the actor did not make the focused probes pass.
+Local window geometry and layout cases still run without visible pixels.
+
+The standalone fold case also fails on the exact older `0adb8214` source (one
+test, five assertions), even though that version previously passed it in a
+full run. That aggregate pass is not independent native acceptance. The exact
+ordering or fixture dependency remains undiagnosed.

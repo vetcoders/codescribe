@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -75,7 +76,7 @@ extension OpenWindowAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
   private enum Action: Sendable {
-    case showAgent, maxApprovalsChanged
+    case showAgent, toggleWidget, maxApprovalsChanged
     case agentGesture(CsAgentGestureInput)
   }
   private let continuation: AsyncStream<Action>.Continuation
@@ -85,6 +86,7 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
   init(
     maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
     agentGesture: @escaping @MainActor @Sendable (CsAgentGestureInput) -> Void = { _ in },
+    toggleWidget: @escaping @MainActor @Sendable () -> Void = {},
     summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
     let channel = AsyncStream<Action>.makeStream()
@@ -93,6 +95,7 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
       for await action in channel.stream {
         switch action {
         case .showAgent: summonAgent()
+        case .toggleWidget: toggleWidget()
         case .maxApprovalsChanged: await maxApprovalsChanged()
         case .agentGesture(let input): agentGesture(input)
         }
@@ -102,6 +105,10 @@ final class AgentAppActionListener: CsAppActionListener, Sendable {
 
   func onShowAgent() {
     continuation.yield(.showAgent)
+  }
+
+  func onToggleWidget() {
+    continuation.yield(.toggleWidget)
   }
 
   func onMaxApprovalsChanged() {
@@ -168,6 +175,9 @@ struct CodescribeApp: App {
   init() {
     // Before any engine: a test host must not see the live runtime.
     QualityCaptureHost.isolateFromLiveRuntime()
+    if QualityCaptureHost.hidesTestWindows() {
+      _ = NSApplication.shared.setActivationPolicy(.prohibited)
+    }
     switch AgentBridgeCommandLine.request(arguments: CommandLine.arguments) {
     case .notRequested:
       break
@@ -214,22 +224,31 @@ struct CodescribeApp: App {
       configurationInvalidation: AppModel.shared.configurationInvalidation
     )
     let delegate = appDelegate
-    model.onApplyInterfaceLanguage = { beforeTermination in
+    model.onApplyInterfaceLanguage = { [weak model] beforeTermination in
+      let section = model?.section ?? .creator
       try await delegate.restartForInterfaceLanguage(
-        relaunch: .plain, beforeTermination: beforeTermination)
+        relaunch: .reopenSettings(section), beforeTermination: beforeTermination)
     }
+    // Appearance applies at once through AppKit. Sheet colours observe their
+    // preference directly and do not use the language-restart path.
+    model.onApplyAppearance = { AppearancePreference().apply() }
     model.onNewMaxConsultation = {
       AppModel.shared.overlay.state.setMaxPreparationError(nil)
     }
+    // Settings › User checks for updates through the app's one Sparkle owner.
+    // No updater (the XCTest host) leaves the button disabled.
+    if let updater = delegate.updater {
+      model.onCheckForUpdates = { [weak updater] in updater?.checkForUpdates() }
+      updater.$canCheckForUpdates.assign(to: &model.$canCheckForUpdates)
+    }
+    model.onOpenSetupWizard = { [weak delegate] in delegate?.presentSetupWizard() }
     return model
   }
 
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
       if QualityCaptureHost.isRunningTests {
-        // AppDelegate already keeps the XCTest host passive. Its scene must
-        // also avoid opening real model caches before the test runner starts.
-        EmptyView()
+        TestHostScenePlaceholder()
       } else {
         SettingsView(model: settingsModel())
       }
@@ -245,23 +264,114 @@ struct CodescribeApp: App {
         Button("Settings…") { openWindow.presentSettings() }
           .keyboardShortcut(",", modifiers: .command)
       }
+      // The tray's "Setup Wizard" row went without replacement (Settings
+      // already hosts the Creator tab); "Check for Updates…" moved here
+      // instead, right after About — the way iTerm2's app menu places it
+      // (Founder, 19 Oct 2026 recording).
+      CommandGroup(after: .appInfo) {
+        Divider()
+        CheckForUpdatesCommand(appDelegate: appDelegate)
+      }
+      // ⌘M hides an adopted window straight away instead of letting AppKit
+      // miniaturise it first (`DockPresence`); other windows keep the native
+      // Minimize.
+      CommandGroup(replacing: .windowSize) {
+        Button("Minimize") { DockPresence.minimiseKeyWindow() }
+          .keyboardShortcut("m", modifiers: .command)
+        Button("Zoom") { NSApp.keyWindow?.performZoom(nil) }
+      }
     }
   }
 }
 
-/// What the relaunched process opens after an interface-language restart. The
-/// wizard resumes setup where it stopped; Settings relaunches plainly, the same
-/// way its "clear defaults" actions do, and the tray returns in the new language.
+/// Reaches the single `UpdaterService` instance `AppDelegate` creates in
+/// `applicationDidFinishLaunching` — never a second one. `AppDelegate`
+/// publishes `updater` so this command rebuilds once launch populates it;
+/// `CheckForUpdatesButton` then tracks `canCheckForUpdates` directly off that
+/// instance so the item's enabled state stays live after launch.
+private struct CheckForUpdatesCommand: View {
+  @ObservedObject var appDelegate: AppDelegate
+
+  var body: some View {
+    if let updater = appDelegate.updater {
+      CheckForUpdatesButton(updater: updater)
+    } else {
+      Button(
+        String(
+          localized: "Check for Updates…",
+          comment: "App menu item that triggers a Sparkle update check")
+      ) {}
+      .disabled(true)
+    }
+  }
+}
+
+private struct CheckForUpdatesButton: View {
+  @ObservedObject var updater: UpdaterService
+
+  var body: some View {
+    Button(
+      String(
+        localized: "Check for Updates…",
+        comment: "App menu item that triggers a Sparkle update check")
+    ) {
+      updater.checkForUpdates()
+    }
+    .disabled(!updater.canCheckForUpdates)
+  }
+}
+
+/// SwiftUI still creates its Window for empty XCTest content. Configure that
+/// exact host window before it is ordered, without touching the live app or
+/// changing the production Settings scene. AppKit keeps macOS 14 support.
+private struct TestHostScenePlaceholder: NSViewRepresentable {
+  func makeNSView(context: Context) -> TestHostSceneView { TestHostSceneView() }
+  func updateNSView(_ nsView: TestHostSceneView, context: Context) {}
+}
+
+private final class TestHostSceneView: NSView {
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    guard let window else { return }
+    window.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
+    window.isRestorable = false
+    window.isExcludedFromWindowsMenu = true
+    window.alphaValue = 0
+    window.ignoresMouseEvents = true
+    window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+    window.orderOut(nil)
+  }
+}
+
+/// What the relaunched process opens after an idle-guarded restart. The wizard
+/// resumes setup where it stopped; a restart pressed in Settings (interface
+/// language) reopens Settings on the section the user was in and
+/// brings it to the front, so the restart reads as "the app comes back here"
+/// rather than as the app vanishing under the previous window (Founder,
+/// 2026-10-21). The "clear defaults" actions still relaunch plainly.
 enum InterfaceLanguageRelaunch: Equatable {
   case resumeSetup
+  case reopenSettings(SettingsSection)
   case plain
+
+  static let openSettingsFlag = "--open-settings"
 
   /// Extra process arguments for `open --args`; empty means a plain launch.
   var launchArguments: [String] {
     switch self {
     case .resumeSetup: ["--resume-onboarding"]
+    case .reopenSettings(let section): [Self.openSettingsFlag, section.rawValue]
     case .plain: []
     }
+  }
+
+  /// The section a relaunched process should open Settings on, if the
+  /// arguments carry one. An unknown section name opens nothing.
+  static func settingsSection(arguments: [String]) -> SettingsSection? {
+    guard let flag = arguments.firstIndex(of: openSettingsFlag),
+      arguments.indices.contains(flag + 1)
+    else { return nil }
+    return SettingsSection(rawValue: arguments[flag + 1])
   }
 }
 
@@ -286,7 +396,7 @@ enum InterfaceLanguageRestartError: Error, Equatable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private static let showAgentNotification = Notification.Name("com.vetcoders.codescribe.showAgent")
   private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
@@ -357,7 +467,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private let terminationCoordinator = AppTerminationCoordinator()
   private var idleRestartCoordinator: IdleRestartCoordinator?
   // First-run onboarding wizard host. Presented at launch when the core gate
-  // (`shouldShowOnboarding`) reports setup is due.
+  // (`shouldShowOnboarding`) reports setup is due, and on demand from
+  // Settings › Creator through `presentSetupWizard()`.
   private lazy var onboarding = OnboardingWindowController(
     engine: RealOnboardingEngine(),
     applyInterfaceLanguage: { [weak self] beforeTermination in
@@ -370,8 +481,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var languageRestartLease: FileHandle?
   // Sparkle update channel. Created in didFinishLaunching (after the
   // duplicate-instance/test-host guard) so the XCTest host never starts a
-  // scheduled updater alongside the live app.
-  private var updater: UpdaterService?
+  /// Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
+  /// gate), `present()` always fronts the window — resume when onboarding is
+  /// still due, or re-run from Welcome after completion.
+  func presentSetupWizard() {
+    onboarding.present()
+  }
+
+  // scheduled updater alongside the live app. Published so the app menu's
+  // "Check for Updates…" command (CodescribeApp.settingsWindow) rebuilds once
+  // launch populates it; Settings › User reads it for its own button. The
+  // buttons track the instance's `canCheckForUpdates` directly rather than
+  // through this delegate.
+  @Published private(set) var updater: UpdaterService?
   private let vocabularyAB = VocabularyABAction()
 
   /// True when the process is the XCTest host, not a user launch. The unit-test
@@ -448,7 +570,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// cannot reach. The ⌘, command in the main menu performs exactly that
   /// action, so the Dock entry performs the command item instead of growing a
   /// second opening path.
-  private func presentSettingsFromDock() {
+  @discardableResult
+  private func presentSettingsFromDock() -> Bool {
     let items = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(\.items)
     guard
       let item = items.first(where: {
@@ -457,13 +580,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       let menu = item.menu
     else {
       appLogger.error("dock_settings: the ⌘, Settings command is not in the main menu")
-      return
+      return false
     }
     menu.performActionForItem(at: menu.index(of: item))
+    return true
+  }
+
+  /// After a restart pressed in Settings, reopen Settings on the same section.
+  /// The ⌘, command item appears once SwiftUI has built the main menu, which
+  /// can be a tick after launch, so the open retries briefly instead of
+  /// assuming the menu is ready.
+  private func reopenSettingsAfterRelaunch(_ section: SettingsSection, attempt: Int = 0) {
+    SettingsDeepLink.shared.present(section)
+    guard !presentSettingsFromDock() else { return }
+    guard attempt < 10 else {
+      appLogger.error(
+        "relaunch_settings: gave up reopening Settings › \(section.rawValue, privacy: .public)")
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      self?.reopenSettingsAfterRelaunch(section, attempt: attempt + 1)
+    }
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
+    // Light, dark or system, before the first window resolves a colour.
+    AppearancePreference().apply()
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
@@ -546,6 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         root: URL(fileURLWithPath: hotkeys.idleRestartDirectory()),
         acquireLease: { try await RealAgentBridgeInstaller.acquireIdleLanguageRestartLease() },
         reserveCapture: { [hotkeys] in try await hotkeys.reserveIdleRestart() },
+        founderComposing: { [model] in model.overlay.state.founderComposing },
         terminate: {
           RunLoop.main.perform { MainActor.assumeIsolated { NSApp.terminate(nil) } }
         })
@@ -570,6 +714,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       // Completed installs retain their launch permission repair. First-run
       // permission prompts belong to the wizard's explained chapter.
       ensureSpeechRecognitionAtLaunch()
+      if let section = InterfaceLanguageRelaunch.settingsSection(arguments: CommandLine.arguments) {
+        DispatchQueue.main.async { [weak self] in self?.reopenSettingsAfterRelaunch(section) }
+      }
     }
   }
 
@@ -686,16 +833,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)
     }
-    model.tray.onCheckForUpdates = { [weak self] in
-      self?.updater?.checkForUpdates()
-    }
-    // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
-    // gate), `present()` always fronts the window — resume when onboarding is
-    // still due, or re-run from Welcome after completion.
-    model.tray.onOpenSetupWizard = { [onboarding] in
-      onboarding.present()
-    }
-
     // ── Notes ──
     model.tray.onOpenNotesFolder = { [notes] in
       NSWorkspace.shared.open(URL(fileURLWithPath: notes.notesDir()))
@@ -929,6 +1066,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     idleRestartCoordinator?.invalidate()
     trayPanel.dismiss()
     model.chat.invalidate()
+    model.overlay.stopIntercomPresentation()
     appActionListener?.invalidate()
     voiceDeliveryListener?.invalidate()
     trayStatus.invalidate()
@@ -1013,6 +1151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func textScaleController(for window: NSWindow?) -> TextScaleController? {
     guard let window else { return nil }
     if window is FloatingOverlayPanel { return model.overlay.textScale }
+    if window is OverlayIntercomPanel { return model.overlay.intercomTextScale }
     if window == agentWindow { return model.chatTextScale }
     return nil
   }
@@ -1108,21 +1247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let root = TextScaleRoot(controller: model.chatTextScale) {
       AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
     }
-    let hosting = NSHostingController(rootView: root)
-    // `HidingWindow`: the yellow button and ⌘M order this window out instead of
-    // miniaturising it, and `DockPresence.adopt` below puts the minimise bit
-    // back into the style mask (Founder decision, 2026-10-10).
-    let window = HidingWindow(contentViewController: hosting)
-    window.setContentSize(NSSize(width: 1120, height: 720))
-    window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-    window.isReleasedWhenClosed = false
-    // LSUIElement accessory: join the active Space so a passive
-    // `orderFrontRegardless` is actually visible during voice delivery.
-    window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+    let window = AgentWindowChrome.makeWindow(content: NSHostingController(rootView: root))
     window.center()
-    DockPresence.adopt(window)
-    // After adopt: style-mask repair must not leave a second painted "Agent" row.
-    AgentWindowChrome.apply(window)
     agentWindow = window
     return window
   }
@@ -1213,6 +1339,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       },
       agentGesture: { [weak self] input in
         self?.model.overlay.handleAgentGesture(input)
+      },
+      toggleWidget: { [weak self] in
+        self?.model.overlay.toggleWidget()
+        appLogger.info("Widget toggle command handled")
       },
       summonAgent: { [weak action] in
         action?.perform()
@@ -1342,7 +1472,6 @@ func codescribeDebugInfo(
       "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
       "configured ASR mode: \(settings.asrMode ?? "not specified")",
       "configured input device: \(settings.audioInputDevice ?? "system default")",
-      "formatting enabled: \(settings.aiFormattingEnabled)",
       "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
       "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
       "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",

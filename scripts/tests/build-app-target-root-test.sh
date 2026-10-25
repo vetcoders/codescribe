@@ -90,8 +90,33 @@ elif name == "cargo":
         print("{broken-json")
     print(json.dumps({"reason": "build-finished", "success": mode != "unfinished"}))
 elif name == "install_name_tool":
-    assert args[:2] == ["-id", "@rpath/libcodescribe_ffi.dylib"] and len(args) == 3
-    record(sha256=identity(args[2], "libcodescribe_ffi.dylib"))
+    # The build tree's copy is renamed before the link; the bundle's copy and
+    # the app's load command are named again after it.
+    embedded = Path(args[-1]).parent.name == "Frameworks"
+    if args[0] == "-id" and not embedded:
+        assert args[:2] == ["-id", "@rpath/libcodescribe_ffi.dylib"] and len(args) == 3
+        record(sha256=identity(args[2], "libcodescribe_ffi.dylib"))
+    elif args[0] == "-id":
+        assert args[:2] == ["-id", "@rpath/libcodescribe_ffi.dylib"] and len(args) == 3, args
+        assert Path(args[2]).read_bytes() == b"fresh:libcodescribe_ffi.dylib", args
+        Path(str(args[2]) + ".id").write_text(args[1])
+        record()
+    else:
+        assert args[0] == "-change" and len(args) == 4, args
+        assert args[2] == "@rpath/libcodescribe_ffi.dylib" and Path(args[3]).name == "Codescribe", args
+        Path(str(args[3]) + ".ffi").write_text(args[2])
+        record()
+elif name == "otool":
+    assert args[0] == "-L" and len(args) == 2, args
+    path = Path(args[1])
+    if path.name == "Codescribe":
+        marker = Path(str(path) + ".ffi")
+        ffi = marker.read_text() if marker.exists() else str(out / "deps/libcodescribe_ffi.dylib")
+        print(f"{path}:\n\t{ffi} (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)")
+    else:
+        marker = Path(str(path) + ".id")
+        own = marker.read_text() if marker.exists() else str(out / "deps/libcodescribe_ffi.dylib")
+        print(f"{path}:\n\t{own} (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)")
 elif name == "uniffi-bindgen":
     assert Path(sys.argv[0]) == out / "uniffi-bindgen", sys.argv[0]
     assert Path(sys.argv[0]).read_bytes() == (Path(spec["tools"]) / "bindgen-template").read_bytes()
@@ -115,6 +140,8 @@ elif name == "xcodebuild":
     import plistlib
     bundle_id = "com.vetcoders.codescribe.dev" if config == "Debug" else "com.vetcoders.codescribe"
     (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
+    (contents / "MacOS").mkdir()
+    (contents / "MacOS/Codescribe").write_bytes(b"fresh:Codescribe")
 elif name == "cp":
     import subprocess
     assert len(args) == 2, args
@@ -186,7 +213,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"), signing_identity=signing_identity)
     spec_path = case / "spec.json"
     spec_path.write_text(json.dumps(spec))
-    for name in ["cargo", "git", "install_name_tool", "bindgen-template", "xcodegen", "xcodebuild", "swiftc", "cp", "codesign", "security"]:
+    for name in ["cargo", "git", "install_name_tool", "otool", "bindgen-template", "xcodegen", "xcodebuild", "swiftc", "cp", "codesign", "security"]:
         p = tools / name
         p.write_text("#!" + sys.executable + "\n" + stub)
         p.chmod(0o755)

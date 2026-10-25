@@ -18,9 +18,9 @@ use tempfile::TempDir;
 mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{
-    ModelDiscovery, ModelSource, STT_OPT_IN_ENV, WHISPER_FP16_MODEL, discover_local_whisper_model,
+    ModelDiscovery, ModelSource, WHISPER_FP16_MODEL, discover_local_whisper_model,
     discover_local_whisper_model_for, discover_local_whisper_model_for_with_root,
-    expand_models_root, model_discovery_hint, parse_opt_in, skip_unless_opt_in, test_audio_path,
+    expand_models_root, model_discovery_hint, parse_opt_in, test_audio_path,
     whisper_model_missing_parts,
 };
 
@@ -48,15 +48,8 @@ fn resolve_model_or_skip(suite: &str) -> Option<ModelDiscovery> {
 ///
 /// Run with: CODESCRIBE_E2E_STT=1 cargo test --test e2e_stt_transcription
 #[test]
+#[serial]
 fn e2e_stt_transcribe_test_audio() {
-    if skip_unless_opt_in(
-        STT_OPT_IN_ENV,
-        "STT transcription E2E",
-        "Deterministic discovery/gating checks still run by default.",
-    ) {
-        return;
-    }
-
     let found = match resolve_model_or_skip("STT transcription E2E") {
         Some(found) => found,
         None => return,
@@ -116,15 +109,8 @@ fn e2e_stt_transcribe_test_audio() {
 
 /// Test language detection
 #[test]
+#[serial]
 fn e2e_stt_detect_language() {
-    if skip_unless_opt_in(
-        STT_OPT_IN_ENV,
-        "STT language detection E2E",
-        "Set CODESCRIBE_E2E_STT=1 when local model tests are needed.",
-    ) {
-        return;
-    }
-
     let found = match resolve_model_or_skip("STT language detection E2E") {
         Some(found) => found,
         None => return,
@@ -152,15 +138,8 @@ fn e2e_stt_detect_language() {
 
 /// Test that model initialization is idempotent
 #[test]
+#[serial]
 fn e2e_stt_model_init_stable() {
-    if skip_unless_opt_in(
-        STT_OPT_IN_ENV,
-        "STT model init stability E2E",
-        "Set CODESCRIBE_E2E_STT=1 to run model-loading checks.",
-    ) {
-        return;
-    }
-
     let found = match resolve_model_or_skip("STT model init stability E2E") {
         Some(found) => found,
         None => return,

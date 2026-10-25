@@ -2,6 +2,7 @@ import SwiftUI
 
 enum AudioInputDisplayTone: Equatable {
   case healthy
+  case neutral
   case fallback
   case unavailable
 }
@@ -148,6 +149,17 @@ func audioRetentionDetail(_ choice: String) -> String? {
   }
 }
 
+private func audioCalibrationBlocksRecording(_ admission: CsAdmissionReadiness) -> Bool {
+  guard !admission.ready else { return false }
+  switch admission.code {
+  case "admission_calibration_missing", "admission_calibration_no_profile",
+    "admission_calibration_refused", "admission_calibration_unusable":
+    return true
+  default:
+    return false
+  }
+}
+
 /// Stable four-step projection of recording readiness. The bridge verdict is
 /// still authoritative; this only makes its prerequisites visible together so
 /// users do not discover them one failed take at a time. The panel reads this
@@ -201,7 +213,15 @@ func audioReadinessSteps(
         detail: String(
           localized: "Codescribe has measured how loudly you speak into this microphone.")
       )
-    } else {
+    } else if admission.ready {
+      calibration = AudioReadinessStep(
+        id: .calibration,
+        tone: .neutral,
+        title: String(localized: "Optional", comment: "Status chip"),
+        detail: String(
+          localized: "Measure about 10 seconds of normal speech on the current microphone.")
+      )
+    } else if audioCalibrationBlocksRecording(admission) {
       calibration = AudioReadinessStep(
         id: .calibration,
         tone: .unavailable,
@@ -209,6 +229,12 @@ func audioReadinessSteps(
         detail: String(
           localized: "Measure about 10 seconds of normal speech on the current microphone.")
       )
+    } else {
+      calibration = AudioReadinessStep(
+        id: .calibration, tone: .neutral,
+        title: String(localized: "Microphone not calibrated yet"),
+        detail: String(
+          localized: "Measure about 10 seconds of normal speech on the current microphone."))
     }
   } else {
     calibration = AudioReadinessStep(
@@ -231,7 +257,7 @@ func audioReadinessSteps(
       detail: String(localized: "Complete step 1 before checking this.")
     )
   } else if let admission {
-    if admission.code == "admission_seal_vad_unavailable" {
+    if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
       sealLane = AudioReadinessStep(
         id: .sealLane,
         tone: .unavailable,
@@ -242,25 +268,32 @@ func audioReadinessSteps(
       // One title plus the readable switch state; the sentence also says who
       // owns the switch, because an override keeps the Lab switch read-only.
       let detail: String
-      switch (admission.sealLaneSource == "env_override", admission.sealLaneArmed) {
-      case (true, true):
+      let laneBlocks = !admission.ready && admission.code == "admission_seal_lane_disarmed"
+      switch (
+        admission.sealLaneSource == "env_override", admission.sealLaneArmed, laneBlocks
+      ) {
+      case (true, true, _):
         detail = String(
           localized: "On, set by the \(admission.sealLaneEnv) override; the switch is read-only.",
           comment: "The placeholder is an environment variable name")
-      case (true, false):
+      case (true, false, true):
         detail = String(
           localized:
             "Off, set by the \(admission.sealLaneEnv) override. Recording stays blocked until the override is removed.",
           comment: "The placeholder is an environment variable name")
-      case (false, true):
+      case (false, true, _):
         detail = String(localized: "On. Change it with the switch in Settings › Lab.")
-      case (false, false):
+      case (false, false, true):
         detail = String(
           localized: "Off. Recording cannot start until it is turned on in Settings › Lab.")
+      case (_, false, false):
+        detail = String(
+          localized: "audio.readiness.sealLane.off", defaultValue: "Off",
+          comment: "Value of the committing fragments row; keep it as short as the UI allows")
       }
       sealLane = AudioReadinessStep(
         id: .sealLane,
-        tone: admission.sealLaneArmed ? .healthy : .unavailable,
+        tone: admission.sealLaneArmed ? .healthy : (laneBlocks ? .unavailable : .neutral),
         title: sealLaneTitle,
         detail: detail
       )
@@ -318,7 +351,7 @@ func audioReadinessSteps(
       tone: admission.ready ? .healthy : .unavailable,
       title: admission.ready
         ? String(localized: "Ready to record")
-        : String(localized: "Finish setup above"),
+        : admissionDisplayState(admission).title,
       detail: admission.ready
         ? recordingStartHint(dictationShortcut)
         : admission.message
@@ -385,7 +418,8 @@ func audioReadinessSummary(
   let prerequisites = steps.filter { $0.id != .recording }
   let blocker =
     prerequisites.first { $0.tone == .unavailable }
-    ?? (recordingStep.tone == .healthy ? nil : prerequisites.first { $0.tone == .fallback })
+    ?? (admission == nil && recordingStep.tone != .healthy
+      ? prerequisites.first { $0.tone == .fallback } : nil)
 
   if let blocker {
     return AudioReadinessSummary(
@@ -428,12 +462,14 @@ func audioReadinessRemedy(
   case .microphone:
     return microphonePermission == .granted ? .none : .microphonePermission
   case .calibration:
-    guard microphonePermission == .granted, let admission else { return .none }
+    guard microphonePermission == .granted, let admission,
+      audioCalibrationBlocksRecording(admission)
+    else { return .none }
     let sealed = admission.calibrationVersion != nil && admission.calibrationStatus == "sealed"
     return sealed ? .none : .calibrate
   case .sealLane:
     // An override is removed outside the app; Lab cannot edit it.
-    guard let admission, admission.code != "admission_seal_vad_unavailable",
+    guard let admission, !admission.ready, admission.code == "admission_seal_lane_disarmed",
       admission.sealLaneSource != "env_override", !admission.sealLaneArmed
     else { return .none }
     return .openLab
@@ -466,6 +502,19 @@ func audioCalibrationFact(
       tone: .healthy
     )
   }
+  if admission.ready {
+    return AudioReadinessFact(
+      id: .calibration,
+      label: label,
+      value: String(localized: "Optional", comment: "Status chip"),
+      tone: .neutral
+    )
+  }
+  if !audioCalibrationBlocksRecording(admission) {
+    return AudioReadinessFact(
+      id: .calibration, label: label,
+      value: String(localized: "Not calibrated"), tone: .neutral)
+  }
   return AudioReadinessFact(
     id: .calibration,
     label: label,
@@ -484,7 +533,7 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
     return AudioReadinessFact(
       id: .sealLane, label: label, value: audioReadinessCheckingValue(), tone: .fallback)
   }
-  if admission.code == "admission_seal_vad_unavailable" {
+  if !admission.ready, admission.code == "admission_seal_vad_unavailable" {
     return AudioReadinessFact(
       id: .sealLane,
       label: label,
@@ -508,7 +557,8 @@ func audioSealLaneFact(_ admission: CsAdmissionReadiness?) -> AudioReadinessFact
       value: String(
         localized: "audio.readiness.sealLane.off", defaultValue: "Off",
         comment: "Value of the committing fragments row; keep it as short as the UI allows"),
-      tone: .unavailable)
+      tone: !admission.ready && admission.code == "admission_seal_lane_disarmed"
+        ? .unavailable : .neutral)
 }
 
 private func audioReadinessCheckingValue() -> String {
@@ -604,15 +654,20 @@ func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisp
   }
   if readiness.ready {
     let device = readiness.deviceName ?? String(localized: "input device")
-    let version = readiness.calibrationVersion ?? String(localized: "measured profile")
+    let detail: String
+    if let version = readiness.calibrationVersion, readiness.sealLaneArmed {
+      detail = String(
+        localized: "Calibration \(version); seal lane armed.",
+        comment: "The placeholder is a calibration profile version")
+    } else {
+      detail = String(localized: "Ready to record")
+    }
     return AudioInputDisplayState(
       tone: .healthy,
       title: String(
         localized: "Ready to record on \(device)",
         comment: "The placeholder is an input device name"),
-      detail: String(
-        localized: "Calibration \(version); seal lane armed.",
-        comment: "The placeholder is a calibration profile version")
+      detail: detail
     )
   }
   let title: String
@@ -721,45 +776,44 @@ struct AudioPanel: View {
           axHint: "Re-reads the microphone list; readiness is checked below"
         ) { model.refreshAudioInput() }
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       .id(SettingsAnchor.audioInput)
       inputDeviceSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Recording readiness"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
         .id(SettingsAnchor.audioReadiness)
       admissionSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
         .task {
           recordingControls = model.audioRecordingControls()
           await model.refreshAdmission()
         }
 
       SettingsSectionLabel(String(localized: "Audio retention"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       retentionSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       SettingsSectionLabel(String(localized: "Recording start sound"))
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
       feedbackSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
   }
 
   /// One compact card: the choice, the input that is actually recording, and a
   /// notice only when the two disagree or no microphone is reachable at all.
   private var inputDeviceSection: some View {
     let card = audioInputCardState(model.audioInput)
-    return VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 12) {
+    return VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
+      HStack(spacing: SettingsScale.rowInsetH) {
         Text("Input device")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
-        Spacer(minLength: 12)
+        Spacer(minLength: 0)
         Picker("Input device", selection: inputDeviceBinding) {
           Text(
             String(
@@ -777,23 +831,28 @@ struct AudioPanel: View {
             }
           }
         }
+        .pickerStyle(.menu)
         .labelsHidden()
-        // Content-sized up to a cap: a long device name truncates in the
-        // button and stays whole in the menu; the narrow window never clips.
-        .frame(maxWidth: 300)
+        // Content-sized up to a cap, same as the retention picker's own
+        // content sizing: a long device name truncates in the button and
+        // stays whole in the menu. The cap is a trailing-aligned frame: a
+        // centred one left a short device name floating 36 pt short of the
+        // retention picker's right edge below (views review, 2026-10-20).
+        .fixedSize()
+        .frame(maxWidth: 300, alignment: .trailing)
         .accessibilityLabel("Audio input device")
         .accessibilityValue(inputDeviceAccessibilityValue)
       }
 
       Text(card.current)
-        .font(CSFont.ui(11.5))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
 
       if let notice = card.notice {
         Text(notice)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(statusColor(card.noticeTone ?? .fallback))
           .fixedSize(horizontal: false, vertical: true)
@@ -807,7 +866,7 @@ struct AudioPanel: View {
   /// that can satisfy it locally: a ~10 s guided measurement through the real
   /// recorder path. No value is ever invented here.
   private var admissionSection: some View {
-    VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if let error = model.admissionReadError {
         statusRow(
           color: CSColor.terracotta,
@@ -828,7 +887,7 @@ struct AudioPanel: View {
 
       if let notice = model.calibrationNotice {
         Text(notice)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .accessibilityLabel("Calibration result")
       }
@@ -853,7 +912,7 @@ struct AudioPanel: View {
             // verbatim and the value stays selectable.
             GridRow {
               Text(verbatim: detail.label)
-                .font(CSFont.mono(10, .semibold))
+                .font(CSFont.ui(10, .semibold))
                 .foregroundStyle(Color.secondary)
                 .gridColumnAlignment(.leading)
               Text(verbatim: detail.value)
@@ -898,41 +957,36 @@ struct AudioPanel: View {
 
       Divider()
         .overlay(Color.primary.opacity(0.12))
-        .padding(.vertical, 8)
+        .padding(.vertical, SettingsScale.rowGap)
 
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text(calibration.label)
-          .font(CSFont.ui(12.5))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(calibration.value)
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.controlLabel)
           .foregroundStyle(statusColor(calibration.tone))
         Spacer(minLength: 0)
         calibrationControl(recordingState: recordingState, tray: tray)
       }
-      .padding(.vertical, 5)
+      .padding(.vertical, SettingsScale.controlInsetV)
       .accessibilityElement(children: .contain)
 
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text(sealLane.label)
-          .font(CSFont.ui(12.5))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Spacer(minLength: 0)
         Text(sealLane.value)
-          .font(CSFont.ui(11.5, .medium))
+          .font(SettingsScale.controlLabel)
           .foregroundStyle(statusColor(sealLane.tone))
       }
-      .padding(.vertical, 5)
-      .help(Text("Required before a recording can start."))
+      .padding(.vertical, SettingsScale.controlInsetV)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(sealLane.label)
       .accessibilityValue(sealLane.value)
-      .accessibilityHint("Required before a recording can start. The switch is on the Lab desk.")
       .accessibilityIdentifier("audio-readiness-committing-status")
     }
-    .padding(CSSpace.md)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Recording readiness")
   }
@@ -944,24 +998,23 @@ struct AudioPanel: View {
     _ summary: AudioReadinessSummary,
     recordingState: OverlayState?, tray: TrayViewModel?, stopRequested: Binding<Bool>
   ) -> some View {
-    HStack(alignment: .top, spacing: 10) {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
       CSIconView(
         icon: summary.tone == .healthy ? .checkCircleFill : .warning,
         size: 13,
         weight: .semibold,
         color: statusColor(summary.tone)
       )
-      .padding(.top, 2)
       .accessibilityHidden(true)
 
-      VStack(alignment: .leading, spacing: 5) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(summary.title)
-          .font(CSFont.ui(13.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
         if let detail = summary.detail {
           Text(detail)
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .lineSpacing(2)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -987,30 +1040,31 @@ struct AudioPanel: View {
     case .none:
       EmptyView()
     case .microphonePermission:
-      Button(microphonePermissionActionTitle) {
+      SettingsChipButton {
         resolveMicrophonePermission()
+      } label: {
+        Text(microphonePermissionActionTitle)
+          .font(SettingsScale.controlLabel)
+          .foregroundStyle(CSColor.chromeAccent)
       }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
       .accessibilityHint("Grants Codescribe access to the microphone selected above")
     case .calibrate:
-      Button(model.calibrationPending ? "Measuring…" : "Calibrate") {
+      SettingsChipButton(
+        model.calibrationPending ? "Measuring…" : "Calibrate",
+        tint: CSColor.chromeAccent,
+        enabled: canCalibrateMicrophone(recordingState, tray: tray)
+      ) {
         Task { await calibrateMicrophone(recordingState, tray: tray) }
       }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
-      .disabled(!canCalibrateMicrophone(recordingState, tray: tray))
       .accessibilityLabel("Calibrate microphone")
       .accessibilityHint("Measures about ten seconds of normal speech; audio is not kept")
     case .openLab:
       // Production builds carry no Lab desk; the problem is still stated, but
       // the panel does not offer a destination that is not there.
       if SettingsSection.lab.availability == .available {
-        Button("Open Lab") {
+        SettingsChipButton("Open Lab", tint: CSColor.chromeAccent) {
           model.select(.lab)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
         .accessibilityHint("Opens the Lab desk, which owns the committing switch")
         .accessibilityIdentifier("audio-readiness-open-lab")
       }
@@ -1026,37 +1080,38 @@ struct AudioPanel: View {
         .controlSize(.small)
         .accessibilityLabel("Finishing recording")
     } else if recordingState?.recording == true {
-      Button(
-        String(
-          localized: "audio.readiness.stop", defaultValue: "Stop",
-          comment: "Button on the readiness status line: stop the running take")
-      ) {
+      let enabled =
+        !(stopRequested.wrappedValue || recordingState?.warmingUp == true
+          || recordingState?.transcribing == true || model.calibrationPending)
+      SettingsChipButton(enabled: enabled) {
         guard !stopRequested.wrappedValue else { return }
         stopRequested.wrappedValue = true
         recordingState?.stop()
+      } label: {
+        Text(
+          String(
+            localized: "audio.readiness.stop", defaultValue: "Stop recording",
+            comment: "Button on the readiness status line: stop the running take")
+        )
+        .font(SettingsScale.controlLabel)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.small)
-      .tint(CSColor.chromeAccent)
-      .disabled(
-        stopRequested.wrappedValue || recordingState?.warmingUp == true
-          || recordingState?.transcribing == true || model.calibrationPending
-      )
       .accessibilityLabel("Stop recording")
       .accessibilityHint("Stops the active take in the shared recorder")
       .accessibilityIdentifier("audio-readiness-stop-recording")
     } else {
-      Button(
-        String(
-          localized: "audio.readiness.start", defaultValue: "Start",
-          comment: "Button on the readiness status line: start a take")
-      ) {
+      let enabled = canStartRecording(recordingState, tray: tray)
+      SettingsChipButton(enabled: enabled) {
         startRecording(recordingState, tray: tray)
+      } label: {
+        Text(
+          String(
+            localized: "audio.readiness.start", defaultValue: "Start recording",
+            comment: "Button on the readiness status line: start a take")
+        )
+        .font(SettingsScale.controlLabel)
+        .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
       }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.small)
-      .tint(CSColor.chromeAccent)
-      .disabled(!canStartRecording(recordingState, tray: tray))
       .accessibilityLabel("Start recording")
       .accessibilityHint("Starts a real dictation session in the shared recorder")
       .accessibilityIdentifier("audio-readiness-start-recording")
@@ -1086,13 +1141,12 @@ struct AudioPanel: View {
         }
         .accessibilityLabel("Calibration capture progress")
       }
-      Button(model.calibrationPending ? "Measuring…" : "Recalibrate") {
+      SettingsChipButton(
+        model.calibrationPending ? "Measuring…" : "Recalibrate",
+        tint: CSColor.chromeAccent, enabled: enabled
+      ) {
         Task { await calibrateMicrophone(recordingState, tray: tray) }
       }
-      .csFocusRing()
-      .font(CSFont.mono(10.5, .semibold))
-      .foregroundStyle(enabled ? CSColor.chromeAccent : Color.secondary)
-      .disabled(!enabled)
       .accessibilityLabel("Calibrate microphone")
       .accessibilityHint("Measures about ten seconds of normal speech; audio is not kept")
     }
@@ -1161,10 +1215,10 @@ struct AudioPanel: View {
   /// The choice, and a sentence only where one is needed: `Forever` says
   /// everything in the value itself.
   private var retentionSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 12) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      HStack(spacing: SettingsScale.rowInsetH) {
         Text("Keep completed recordings")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         Spacer(minLength: 0)
         Picker(
@@ -1188,7 +1242,7 @@ struct AudioPanel: View {
       // actually expire something carry one.
       if let detail = audioRetentionDetail(model.audioRetention) {
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1197,35 +1251,33 @@ struct AudioPanel: View {
   }
 
   private var feedbackSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(spacing: 12) {
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
+      HStack(spacing: SettingsScale.rowInsetH) {
         Text("Play a signal")
-          .font(.body.weight(.semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(.primary)
         Spacer(minLength: 0)
         Toggle("", isOn: soundFeedbackBinding)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
+          .settingsSwitch()
           .accessibilityLabel("Recording start sound")
           .accessibilityValue(model.settings.beepOnStart ? "On" : "Off")
       }
 
-      VStack(alignment: .leading, spacing: 7) {
-        HStack {
-          Text("Volume")
-            .font(CSFont.ui(12.5, .medium))
-            .foregroundStyle(Color.secondary)
-          Spacer(minLength: 0)
-          Text(verbatim: "\(Int((model.settings.soundVolume * 100).rounded()))%")
-            .font(CSFont.mono(10.5, .semibold))
-            .foregroundStyle(Color.primary)
-        }
+      HStack(spacing: SettingsScale.rowInsetH) {
+        Text("Volume")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(.primary)
+        Spacer(minLength: 0)
         Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)
           .tint(CSColor.chromeAccent)
           .disabled(!model.settings.beepOnStart)
+          .frame(width: 170)
           .accessibilityLabel("Recording start sound volume")
           .accessibilityValue("\(Int((model.settings.soundVolume * 100).rounded())) percent")
+        Text(verbatim: "\(Int((model.settings.soundVolume * 100).rounded()))%")
+          .font(SettingsScale.monoValue)
+          .foregroundStyle(Color.primary)
+          .frame(width: 38, alignment: .trailing)
       }
     }
     .settingsGroupedInset()
@@ -1277,23 +1329,21 @@ struct AudioPanel: View {
       Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
-          .font(CSFont.ui(12.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(detail)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .lineSpacing(2)
           .foregroundStyle(Color.secondary)
       }
       Spacer(minLength: 0)
     }
-    .padding(CSSpace.md)
-    .background(Color.primary.opacity(0.06))
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
   }
 
   private func statusColor(_ tone: AudioInputDisplayTone) -> Color {
     switch tone {
     case .healthy: return CSColor.oliveLight
+    case .neutral: return Color.secondary
     case .fallback: return CSColor.amber
     case .unavailable: return CSColor.terracotta
     }

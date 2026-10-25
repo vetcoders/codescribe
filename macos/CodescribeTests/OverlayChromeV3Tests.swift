@@ -77,7 +77,7 @@ final class OverlayChromeV3Tests: XCTestCase {
         (panel as? FloatingOverlayPanel)?.invalidatePresence()
       }
       panel.setContentSize(NSSize(width: width, height: 280))
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       let root = try XCTUnwrap(panel.contentView)
       root.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -108,7 +108,7 @@ final class OverlayChromeV3Tests: XCTestCase {
         (panel as? FloatingOverlayPanel)?.invalidatePresence()
       }
       panel.setContentSize(NSSize(width: width, height: 350))
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       let root = try XCTUnwrap(panel.contentView)
       root.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))

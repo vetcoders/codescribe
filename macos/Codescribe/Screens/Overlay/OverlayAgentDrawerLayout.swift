@@ -1,27 +1,103 @@
 import SwiftUI
 
-/// Wide/narrow hosting decision for the agents roster, shared by the overlay
-/// canvas (docked column) and the conversation surface (pill stack and the
-/// name pill's width). One threshold in one text scale, so ⌘+ moves both
-/// surfaces together (mockup `szuflada-agentow.html`, Founder 2026-10-16).
+/// The user's explicit choice of visible panes. Geometry never changes it.
+enum OverlayAgentsLayout: String {
+  /// Conversation and roster, side by side at every window width.
+  case split
+  /// Roster with the conversation folded to its own reveal edge.
+  case agents
+  /// Conversation with the roster folded to its rail of agent pills.
+  case rail
+}
+
+/// Geometry for the roster column. An ordinary reveal always leaves the
+/// conversation beside it; only an explicit pane fold chooses the agents view.
 enum OverlayAgentDrawerLayout {
-  /// Docking needs the drawer and an unsqueezed conversation side by side.
-  /// At very large text a medium window falls back to pills instead.
-  static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
-    windowWidth >= (300 + 520) * textScale
+  static let widthDefaultsKey = "Overlay.agentDrawerWidth.v1"
+
+  /// The host can grow to this floor when a side column is requested. During
+  /// a smaller frame's transition both panes still receive a positive width.
+  static func minimumSplitWindowWidth(textScale: CGFloat) -> CGFloat {
+    (240 + 320) * textScale
   }
 
-  /// The preference is in unscaled points. Shrinking the window clamps the
-  /// displayed width without changing that preference or squeezing the chat.
+  static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
+    windowWidth > 0
+  }
+
+  /// A selected conversation keeps the explicit pane choice, independently
+  /// of the current width. Transcription reveals the roster only on request.
+  static func listPinned(
+    layout: OverlayAgentsLayout, docked: Bool, conversationSelected: Bool
+  ) -> Bool {
+    guard conversationSelected else { return false }
+    return layout != .rail
+  }
+
+  /// Clamp a remembered width to the current split instead of replacing the
+  /// conversation with a full-width roster when the window becomes narrower.
   static func drawerWidth(
     textScale: CGFloat, preferredWidth: CGFloat = 300, windowWidth: CGFloat = .infinity
   ) -> CGFloat {
     let preferred = preferredWidth.isFinite ? preferredWidth : 300
-    let maximum = min(560 * textScale, max(0, windowWidth - 520 * textScale))
-    let minimum = min(240 * textScale, maximum)
-    return min(maximum, max(minimum, preferred * textScale))
+    let width = max(240 * textScale, preferred * textScale)
+    guard windowWidth.isFinite else { return width }
+    let available = max(0, windowWidth)
+    let conversation =
+      available >= minimumSplitWindowWidth(textScale: textScale)
+      ? minimumConversationWidth(textScale: textScale) : available * 0.55
+    return min(width, max(0, available - conversation))
   }
 
-  /// The name pill and every pill in the stack share this width: 224 at 1.0.
+  static func minimumConversationWidth(textScale: CGFloat) -> CGFloat { 320 * textScale }
+
+  /// A folded conversation keeps a real edge column for its reveal control.
+  static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
+
+  /// The roster covers the window: the conversation beside it is hidden.
+  static func fillsWindow(drawerWidth: CGFloat, windowWidth: CGFloat) -> Bool {
+    windowWidth.isFinite && drawerWidth >= windowWidth - 0.5
+  }
+
+  /// Before the corner buttons the agents view was a roster dragged across
+  /// the window, stored as this oversized width. Read once, to migrate it.
+  static let legacyFillsWindowWidth: CGFloat = 100_000
+
+  /// Only an explicit resize crossing the conversation floor chooses the
+  /// agents view. A narrow window or an oversized saved width never does.
+  static func rememberedWidth(
+    textScale: CGFloat, preferredWidth: CGFloat, windowWidth: CGFloat
+  ) -> CGFloat? {
+    guard preferredWidth.isFinite, textScale > 0 else { return nil }
+    if windowWidth >= minimumSplitWindowWidth(textScale: textScale),
+      preferredWidth * textScale > windowWidth - minimumConversationWidth(textScale: textScale)
+    {
+      return nil
+    }
+    return drawerWidth(
+      textScale: textScale, preferredWidth: preferredWidth, windowWidth: windowWidth) / textScale
+  }
+
+  static func widestSplitWidth(textScale: CGFloat, windowWidth: CGFloat) -> CGFloat {
+    max(0, windowWidth - minimumConversationWidth(textScale: textScale)) / textScale
+  }
+
+  /// The widest pill sets the column: the broadcast glyph (12), one
+  /// monospaced digit (about 7.2 at 12-point semibold) and the pill's
+  /// horizontal padding (2 × 6), all scaled, plus the fixed 3-point
+  /// glyph-to-digit spacing from `railPill`.
+  static func railPillWidth(textScale: CGFloat) -> CGFloat {
+    (12 + 7.2 + 12) * textScale + 3
+  }
+
+  /// A 2-point inset on each side of the widest pill and the panel's resize
+  /// band at the trailing edge. The band is the native resize target itself,
+  /// not an additional gutter: the pills end before it starts, so they stay
+  /// fully clickable while the edge resize keeps working.
+  static func railWidth(textScale: CGFloat) -> CGFloat {
+    railPillWidth(textScale: textScale) + 4 + OverlayResizeHit.band
+  }
+
+  /// The name pill's width: 224 at 1.0.
   static func pillWidth(textScale: CGFloat) -> CGFloat { 224 * textScale }
 }

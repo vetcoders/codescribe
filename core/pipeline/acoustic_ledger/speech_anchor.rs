@@ -336,6 +336,223 @@ impl AcousticLedger {
         )
     }
 
+    /// An owner fence partitions delivery, not the capture's speech. The
+    /// measured words of every owner disjoint from this one within one
+    /// second of its edges, whose original range lies inside one of the
+    /// actual `decodes`, join this owner's ordered correspondence problem.
+    /// They supply context only: an admission may not mutate their owner.
+    ///
+    /// The nearest map entry is not the neighbour: live windows leave short
+    /// occurrences that overlap this owner and sort between it and the next
+    /// one (dcc26684: 7.08-7.28 s after the owner 6.50-14.88 s, 5.70-7.30 s
+    /// before it), and taking only that entry saw no neighbour at all.
+    pub(super) fn adjacent_boundary_words(
+        &self,
+        owner: &OccurrenceIdentity,
+        decodes: &[(u64, u64)],
+    ) -> Vec<WordSlot> {
+        let Some(tolerance) = self.capture_rate_hz.map(u64::from) else {
+            return Vec::new();
+        };
+        let adjacent = self.committed.iter().filter(|(neighbor, _)| {
+            neighbor.same_capture(owner)
+                && (neighbor.sample_end <= owner.sample_start
+                    || owner.sample_end <= neighbor.sample_start)
+                && neighbor.sample_end.saturating_add(tolerance) >= owner.sample_start
+                && neighbor.sample_start <= owner.sample_end.saturating_add(tolerance)
+        });
+        let mut words = Vec::new();
+        for (_, held) in adjacent {
+            words.extend(
+                held.slots
+                    .iter()
+                    .filter(|source| {
+                        self.word_anchor_identity(source).is_some()
+                            && !normalize_word_token(&source.text).is_empty()
+                            && source.sample_end >= owner.sample_start.saturating_sub(tolerance)
+                            && source.sample_start <= owner.sample_end.saturating_add(tolerance)
+                            && self
+                                .original_anchor_word_range(source)
+                                .is_some_and(|range| {
+                                    decodes.iter().any(|(start, end)| {
+                                        *start <= range.sample_start && range.sample_end <= *end
+                                    })
+                                })
+                    })
+                    .cloned(),
+            );
+        }
+        words
+    }
+
+    /// A phrase-grain callback still names single words. When its sequence
+    /// only partly matches the word pins another producer holds over the same
+    /// observed speech, each single-word pin that aligns in order with a held
+    /// word is that word and adopts its geometry: one producer's displaced
+    /// clock cannot found a second copy of one spoken word beside it. The
+    /// adjacent owners' boundary words take part as context: a pin aligned
+    /// with one of them is that neighbour's word, refused here as cross-owner
+    /// correspondence, provided the callback also aligns a word of this owner.
+    /// Phrase pins and unaligned words keep their declared ranges. The
+    /// alignment is monotone and a repeated spelling aligns only when both
+    /// sides repeat it equally, so repetitions keep their positions. A
+    /// measured Whisper word never inherits another producer's clock.
+    pub(super) fn declared_sequence_alignment<'a>(
+        &mut self,
+        observation: &ObservationIdentity,
+        words: &'a [WordPin],
+    ) -> Option<Vec<(WordSlot, &'a WordPin)>> {
+        if observation.producer == ObservationProducer::Whisper {
+            return None;
+        }
+        let owner = observation.occurrence.clone();
+        let tolerance = u64::from(self.capture_rate_hz?);
+        let words = words
+            .iter()
+            .filter(|pin| !pin.text.trim().is_empty())
+            .collect::<Vec<_>>();
+        let decodes = words
+            .iter()
+            .filter_map(|pin| pin.decode_sample_start.zip(pin.decode_sample_end))
+            .collect::<Vec<_>>();
+        let mut held = self
+            .slots_of(&owner)?
+            .iter()
+            .filter(|slot| self.word_pin_observations.contains(&slot.observation))
+            .cloned()
+            .chain(self.adjacent_boundary_words(&owner, &decodes))
+            .filter(|slot| slot.producer != observation.producer)
+            .collect::<Vec<_>>();
+        held.sort_by_key(|slot| (slot.sample_start, slot.sample_end));
+        if held.is_empty() || words.is_empty() {
+            return None;
+        }
+        let correspondence = {
+            let speech = self.speech_evidence.as_ref()?;
+            if !speech
+                .identity()
+                .matches(&owner.session, owner.capture_epoch)
+                || !speech.is_observed()
+            {
+                return None;
+            }
+            let over_speech = |start: u64, end: u64| {
+                speech.ranges().iter().any(|range| {
+                    range.session == owner.session
+                        && range.capture_epoch == owner.capture_epoch
+                        && range.sample_start < end
+                        && start < range.sample_end
+                })
+            };
+            let held_tokens = held
+                .iter()
+                .map(|slot| normalize_word_token(&slot.text))
+                .collect::<Vec<_>>();
+            let offered_tokens = words
+                .iter()
+                .map(|pin| {
+                    (pin.text.split_whitespace().count() == 1)
+                        .then(|| normalize_word_token(&pin.text))
+                        .filter(|token| !token.is_empty())
+                })
+                .collect::<Vec<_>>();
+            let mut held_counts = BTreeMap::new();
+            let mut offered_counts = BTreeMap::new();
+            for token in &held_tokens {
+                *held_counts.entry(token.as_str()).or_insert(0_usize) += 1;
+            }
+            for token in offered_tokens.iter().flatten() {
+                *offered_counts.entry(token.as_str()).or_insert(0_usize) += 1;
+            }
+            let matches = |i: usize, j: usize| {
+                let (held, pin) = (&held[i], words[j]);
+                offered_tokens[j].as_deref().is_some_and(|token| {
+                    token == held_tokens[i]
+                        && (held_counts.get(token) == Some(&1)
+                            || offered_counts.get(token) == held_counts.get(token))
+                }) && over_speech(held.sample_start, held.sample_end)
+                    && over_speech(pin.sample_start, pin.sample_end)
+                    && held.sample_start <= pin.sample_end.saturating_add(tolerance)
+                    && pin.sample_start <= held.sample_end.saturating_add(tolerance)
+            };
+            let mut lengths = vec![vec![0_usize; words.len() + 1]; held.len() + 1];
+            for i in (0..held.len()).rev() {
+                for j in (0..words.len()).rev() {
+                    lengths[i][j] = if matches(i, j) {
+                        1 + lengths[i + 1][j + 1]
+                    } else {
+                        lengths[i + 1][j].max(lengths[i][j + 1])
+                    };
+                }
+            }
+            let mut correspondence: Vec<Option<usize>> = vec![None; words.len()];
+            let (mut i, mut j) = (0, 0);
+            while i < held.len() && j < words.len() {
+                if matches(i, j) && lengths[i][j] == 1 + lengths[i + 1][j + 1] {
+                    correspondence[j] = Some(i);
+                    i += 1;
+                    j += 1;
+                } else if lengths[i + 1][j] > lengths[i][j + 1] {
+                    i += 1;
+                } else {
+                    j += 1;
+                }
+            }
+            correspondence
+        };
+        let in_owner = |index: &usize| held[*index].observation.occurrence == owner;
+        // A boundary word alone cannot tell a replay from a genuine repetition:
+        // cross-owner correspondence needs an aligned word of this owner too.
+        let correspondence = if correspondence.iter().flatten().any(in_owner) {
+            correspondence
+        } else {
+            correspondence
+                .into_iter()
+                .map(|index| index.filter(in_owner))
+                .collect()
+        };
+        if correspondence.iter().all(Option::is_none) {
+            return None;
+        }
+        let declared = |pin: &WordPin| WordSlot {
+            sample_start: pin.sample_start.max(owner.sample_start),
+            sample_end: pin.sample_end.min(owner.sample_end),
+            text: pin.text.clone(),
+            producer: observation.producer,
+            observation: observation.clone(),
+            witness: SlotWitness::Unwitnessed,
+            confidence: pin.confidence,
+            surface_rewritten: pin.surface_rewritten,
+        };
+        let mut output = Vec::with_capacity(words.len());
+        let mut refused = Vec::new();
+        for (pin, index) in words.into_iter().zip(correspondence) {
+            match index.map(|index| &held[index]) {
+                Some(source) if source.observation.occurrence != owner => {
+                    refused.push((declared(pin), source.clone()));
+                }
+                Some(source) => output.push((
+                    WordSlot {
+                        sample_start: source.sample_start,
+                        sample_end: source.sample_end,
+                        ..declared(pin)
+                    },
+                    pin,
+                )),
+                None => output.push((declared(pin), pin)),
+            }
+        }
+        for (word, source) in refused {
+            self.refuse_word_slot(
+                observation,
+                &word,
+                vec![source],
+                "cross_owner_sequence_correspondence",
+            );
+        }
+        Some(output)
+    }
+
     pub fn word_anchor_identity(&self, slot: &WordSlot) -> Option<&WordAnchorIdentity> {
         let slot = self.geometry_preserving_word_source(slot)?;
         self.anchor_word_state
@@ -596,56 +813,15 @@ impl AcousticLedger {
             return None;
         }
         let mut prior = self.slots_of(owner).unwrap_or(&[]).to_vec();
-        // An owner fence partitions delivery, not the capture's speech. Keep
-        // the adjacent owner's witnessed boundary words in this same ordered
-        // correspondence problem when the actual decode includes them. They
-        // supply context only: this admission may not mutate their owner.
         let boundary_tolerance = self.capture_rate_hz.map(u64::from);
-        if let Some(tolerance) = boundary_tolerance.filter(|_| pins.len() > 1) {
-            let adjacent = self
-                .committed
-                .range(..owner.clone())
-                .next_back()
-                .into_iter()
-                .chain(
-                    self.committed
-                        .range((
-                            std::ops::Bound::Excluded(owner.clone()),
-                            std::ops::Bound::Unbounded,
-                        ))
-                        .next(),
-                );
-            for (neighbor, held) in adjacent {
-                if !neighbor.same_capture(owner)
-                    || !(neighbor.sample_end <= owner.sample_start
-                        || owner.sample_end <= neighbor.sample_start)
-                {
-                    continue;
-                }
-                prior.extend(
-                    held.slots
-                        .iter()
-                        .filter(|source| {
-                            self.word_anchor_identity(source).is_some()
-                                && !normalize_word_token(&source.text).is_empty()
-                                && source.sample_end >= owner.sample_start.saturating_sub(tolerance)
-                                && source.sample_start <= owner.sample_end.saturating_add(tolerance)
-                                && self
-                                    .original_anchor_word_range(source)
-                                    .is_some_and(|range| {
-                                        pins.iter().any(|pin| {
-                                            pin.decode_sample_start
-                                                .zip(pin.decode_sample_end)
-                                                .is_some_and(|(start, end)| {
-                                                    start <= range.sample_start
-                                                        && range.sample_end <= end
-                                                })
-                                        })
-                                    })
-                        })
-                        .cloned(),
-                );
-            }
+        let decodes = pins
+            .iter()
+            .filter_map(|pin| pin.decode_sample_start.zip(pin.decode_sample_end))
+            .collect::<Vec<_>>();
+        let neighbour_words = self.adjacent_boundary_words(owner, &decodes);
+        // Sequence correspondence needs more than one pin of context.
+        if pins.len() > 1 {
+            prior.extend(neighbour_words.iter().cloned());
             prior.sort_by_key(|source| (source.sample_start, source.sample_end));
         }
         let anchored_prior = prior
@@ -794,6 +970,55 @@ impl AcousticLedger {
                     *source = None;
                     sequence = false;
                 }
+            }
+        }
+        // One producer cannot hold two words on the same PCM. A pin whose
+        // declared range covers most of the original range of a word the same
+        // producer holds in an adjacent owner is that word decoded again,
+        // whatever its spelling. Take dcc26684: a recovery window declared
+        // "długoscią" over 14.12-15.60 s, routed by its midpoint to the owner
+        // ending at 14.88 s, while the next owner held "długością" over the
+        // same speech; the document read "długoscią długością". The evidence
+        // is shared PCM, not sequence, so it holds for a lone pin too: edge
+        // deferral had left that recovery callback with "długoscią" alone.
+        // A plain word that covers most of the neighbour's word is that word.
+        // A token Whisper glued from several words (a separator inside it)
+        // may hold the neighbour's word and another one: it is that word only
+        // when the two ranges lie almost wholly over each other, three
+        // quarters of each (bad24852: a 4.24 s "release.dmdn" shared 51% of
+        // itself with "Release..." and also carried "DMDN"). One bar for both
+        // failed on Lena's replays either way: one half refused that glued
+        // token, three quarters lost dbb410fa and 0d3ede90 again.
+        for index in 0..pins.len() {
+            if correspondence[index].is_some() {
+                continue;
+            }
+            let (pin_start, pin_end) = pins[index].declared();
+            let glued = pins[index]
+                .text
+                .trim_matches(|ch: char| !ch.is_alphanumeric())
+                .chars()
+                .any(|ch| !ch.is_alphanumeric());
+            let neighbour = neighbour_words.iter().find(|held| {
+                held.producer == observation.producer
+                    && !correspondence.contains(&Some(*held))
+                    && self.original_anchor_word_range(held).is_some_and(|range| {
+                        let shared = range
+                            .sample_end
+                            .min(pin_end)
+                            .saturating_sub(range.sample_start.max(pin_start));
+                        let held_length = range.sample_end.saturating_sub(range.sample_start);
+                        if glued {
+                            shared * 4 >= held_length * 3
+                                && shared * 4 >= pin_end.saturating_sub(pin_start) * 3
+                        } else {
+                            shared * 2 >= held_length
+                        }
+                    })
+            });
+            if neighbour.is_some() {
+                correspondence[index] = neighbour;
+                sequence = false;
             }
         }
         // A partial Apple phrase has no independently timed unmatched words.

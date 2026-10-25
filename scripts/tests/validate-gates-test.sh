@@ -41,6 +41,7 @@ selftest = '"${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?'
 generation = '( cd macos && xcodegen generate ) || exit $?'
 bridge_directory = 'mkdir -p "$CODESCRIBE_DATA_DIR/agent-bridge" || exit $?'
 bridge_export = 'export TEST_RUNNER_CODESCRIBE_AGENT_BRIDGE_HOME="$CODESCRIBE_DATA_DIR/agent-bridge"'
+gui_export = 'export TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI="${CODESCRIBE_TEST_ISOLATED_GUI:-0}"'
 
 with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     base = Path(tmp)
@@ -166,6 +167,15 @@ with tempfile.TemporaryDirectory(prefix='validate-gates-test-') as tmp:
     check('separate-shell-isolation', make=replace(make_source, rule, rule.replace(
         '\t@$(TEST_DATA_DIR_SETUP); \\\n', '\t@$(TEST_DATA_DIR_SETUP)\n')), diagnostic='[invocation]')
     check('missing-helper', helper=None, diagnostic='[helper-missing]')
+    for label, new in (
+        ('gui-export-missing', ''),
+        ('gui-export-not-forwarded', gui_export.replace('TEST_RUNNER_', '')),
+        ('gui-export-default-visible', gui_export.replace(':-0', ':-1')),
+        ('gui-export-always-visible', 'export TEST_RUNNER_CODESCRIBE_TEST_ISOLATED_GUI=1'),
+        ('gui-export-commented', '# ' + gui_export),
+        ('gui-export-unreachable', 'if false; then\n' + gui_export + '\nfi'),
+    ):
+        check(label, helper=replace(helper_source, gui_export, new), diagnostic='[runner-gui-policy]')
     for label, old, new in (
         ('missing-bridge-directory', bridge_directory, ''),
         ('bridge-directory-no-failfast', bridge_directory, bridge_directory.split(' ||')[0]),
@@ -284,16 +294,16 @@ sys.exit(0)
         passed += 1
         print(f'PASS verify-wiring-{harness_exit}: make exit={result.returncode}', flush=True)
 
-    # Reuse all 38 scenarios, then independently inspect their recorded order.
+    # Reuse all 39 scenarios, then independently inspect their recorded order.
     swift_evidence = evidence / 'swift-path'
     result = subprocess.run(['/bin/bash', str(source / 'scripts/tests/test-swift-target-root-test.sh'),
                              str(source), str(swift_evidence)], text=True, capture_output=True)
     (evidence / 'swift-path.stdout').write_text(result.stdout)
     (evidence / 'swift-path.stderr').write_text(result.stderr)
     (evidence / 'swift-path.exit').write_text(str(result.returncode) + '\n')
-    assert result.returncode == 0 and 'scenarios=38 passed=38 failed=0' in result.stdout, result
+    assert result.returncode == 0 and 'scenarios=39 passed=39 failed=0' in result.stdout, result
     receipts = list(swift_evidence.glob('*.json'))
-    assert len(receipts) == 38, len(receipts)
+    assert len(receipts) == 39, len(receipts)
     for path in receipts:
         receipt = json.loads(path.read_text())
         names = [c['tool'] for c in receipt['calls'] if 'selected' not in c]
@@ -307,7 +317,7 @@ sys.exit(0)
             assert 'xcodegen' in names and not set(names) & {'xcrun', 'xcodebuild'}, names
         if path.stem.endswith('-metadata-error'):
             assert 'cargo' in names and not set(names) & {'xcodegen', 'xcrun', 'xcodebuild'}, names
-    passed += 38
-    print('PASS real Make/helper: 38 scenarios plus event-order/short-circuit assertions', flush=True)
+    passed += 39
+    print('PASS real Make/helper: 39 scenarios plus event-order/short-circuit assertions', flush=True)
 print(f'validate-gates-test: scenarios={passed} passed={passed} failed=0')
 PY

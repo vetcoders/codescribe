@@ -38,6 +38,13 @@ def parse_wake_notice(line):
         notice.update(kind="codescribe_listener_problem", problem=text.split(" ")[2])
     elif text.startswith("no message "):
         notice["kind"] = "codescribe_wait_idle"
+        still = re.search(r"still unacknowledged: ([0-9a-f, ]+)\.", text)
+        if still:
+            notice["unacked_delivery_ids"] = still[1].split(", ")
+    elif "unacknowledged delivery ids: " in text:
+        listed = re.findall(r"([0-9a-f]{24})", re.search(r"unacknowledged delivery ids: ([^.]*)\.", text)[1])
+        notice.update(kind="codescribe_mailbox_reminder", unacked_delivery_ids=listed,
+                      pending_count=int(re.search(r"pending (\d+)", text)[1]))
     else:
         listed = re.findall(r"([0-9a-f]{24})(?: \[([^\]]*)\])?", re.search(r"new delivery ids: ([^.]*)\.", text)[1])
         notice.update(kind="codescribe_mailbox_ready", pending_count=int(re.search(r"pending (\d+)", text)[1]),
@@ -73,11 +80,11 @@ class MailboxFixture(unittest.TestCase):
                     kind="message", source="typed", text="Iwo", bus=str(self.bus),
                     emitted_at="2026-10-11T19:03:00Z", message_id=identity)
 
-    def save(self):
+    def save(self, **fields):
         DEMUX.atomic_json(self.lease_path, {
             "schema": DEMUX.LEASE_SCHEMA, "lease_id": self.lease, "provider": self.PROVIDER,
             "provider_session_id": self.session, "bus": str(self.bus),
-            "pending": self.pending, "cursor": 0,
+            "pending": self.pending, "cursor": 0, **fields,
         })
 
     def call(self, name, values=None, cancel=None):
@@ -876,10 +883,9 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.environ = {"CLAUDE_CODE_SESSION_ID": self.session, "CLAUDE_PID": str(os.getpid())}
 
     def save(self):
-        super().save()
-        state = DEMUX.read_json(self.lease_path)
-        state["pid"] = os.getpid()  # a live follower owns this lease
-        DEMUX.atomic_json(self.lease_path, state)
+        # A live follower owns this lease. One write: a waiter woken between a
+        # pid-less lease and its pid would announce a lost follower.
+        super().save(pid=os.getpid())
 
     def bind(self, provider="claude-code"):
         with DEMUX.channel_bindings(self.root) as bindings:
@@ -923,9 +929,11 @@ class ClaudeCodeWakeTests(MailboxFixture):
         code, notice = self.wake()
         self.assertEqual(code, MCP.WAKE_EXIT)
         self.assertEqual(notice["channel"], "7", "the head still names the agent's own channel")
+        # A peer's channel-0 broadcast names this agent in peer_to only to
+        # route the copy; it is still addressed to everyone (2026-10-18).
         self.assertEqual(notice["addressed"], {broadcast: "channel 0 (all audience)",
                                                direct: "channel 7 (fable)",
-                                               peer: "channel 0 (fable)"})
+                                               peer: "channel 0 (all audience)"})
         self.assert_not_acknowledged()
 
     def test_arrival_during_silence_wakes_without_reading(self):
@@ -950,6 +958,47 @@ class ClaudeCodeWakeTests(MailboxFixture):
         self.wake()
         record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
         self.assertEqual(record["announced"], self.ids[1:])
+
+    def test_unacknowledged_delivery_is_reminded_once(self):
+        """Olek, 2026-10-18: the ledger is written before the notice, so a lost
+        notice left the delivery announced and silent until a new one came."""
+        with patch.object(MCP, "REMIND_SECONDS", 0.2):
+            code, notice = self.wake()
+            self.assertEqual(notice["new_delivery_ids"], self.ids)
+            self.call("read")
+            self.call("ack", {"delivery_ids": self.ids[:1]})
+            code, notice = self.wake(window=3)
+            self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_mailbox_reminder"))
+            self.assertEqual((notice["unacked_delivery_ids"], notice["pending_count"]), (self.ids[1:], 4))
+            # Reminded once: the six-hour receipt then names them without a new wake.
+            code, notice = self.wake(window=0.6)
+            self.assertEqual(notice["kind"], "codescribe_wait_idle")
+            self.assertEqual(notice["unacked_delivery_ids"], self.ids[1:])
+            record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
+            self.assertEqual(record["reminded"], self.ids[1:])
+            # Read and ACK end it: no reminder, no list.
+            for _ in self.ids[1:]:  # codescribe_read returns one delivery at a time
+                self.call("ack", {"delivery_ids": self.call("read")["read_delivery_ids"]})
+            code, notice = self.wake(window=0.6)
+            self.assertEqual(notice["kind"], "codescribe_wait_idle")
+            self.assertNotIn("unacked_delivery_ids", notice)
+        self.assertEqual(DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])["announced"], [])
+
+    def test_ledger_written_before_reminders_reminds_nobody_at_once(self):
+        record = MCP.wake_paths(self.root, self.lease)[1]
+        record.parent.mkdir(parents=True, exist_ok=True)
+        DEMUX.atomic_json(record, {"lease_id": self.lease, "announced": self.ids})
+        code, notice = self.wake(window=0.4)
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.assertEqual(sorted(DEMUX.read_json(record)["announced_at"]), self.ids)
+        self.assert_not_acknowledged()
+
+    def test_reminder_is_left_to_a_live_until_event_task(self):
+        self.wake()
+        with patch.object(MCP, "REMIND_SECONDS", 0.1), \
+             DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
+            self.assertEqual(self.wake(window=0.5), (0, None))
+        self.assert_not_acknowledged()
 
     def test_only_claude_code_owner_of_an_attached_channel_waits(self):
         for environ in ({}, {"CLAUDE_CODE_SESSION_ID": "another-claude-session"}):
@@ -994,6 +1043,63 @@ class ClaudeCodeWakeTests(MailboxFixture):
         code, notice = self.wake()
         self.assertEqual(notice["kind"], "codescribe_wait_idle")
         self.assert_not_acknowledged()
+
+    def until_event(self, *extra):
+        """This same lease's CLI `--watch --until-event` task."""
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / "bus-demux.py"), "--watch", "--until-event",
+             "--provider", self.PROVIDER, "--session", self.session,
+             "--bridge-home", str(self.root), *extra],
+            capture_output=True, text=True, timeout=10)
+
+    def test_until_event_task_records_what_it_reported_so_the_waiter_stays_quiet(self):
+        """Maciej, 2026-10-17: agents keep the until-event task beside the hook;
+        one message must wake the conversation once."""
+        result = self.until_event("--max-wait", "0.05")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["kind"], "mailbox_ready")
+        record = DEMUX.read_json(MCP.wake_paths(self.root, self.lease)[1])
+        self.assertEqual(record["announced"], sorted(self.ids))
+        self.assertFalse(DEMUX.lock_held(DEMUX.until_event_lock_path(self.root, self.lease)))
+        code, notice = self.wake()
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+        self.assert_not_acknowledged()
+
+    def test_waiter_leaves_deliveries_to_a_live_until_event_task_and_takes_over_after_it(self):
+        self.pending = []
+        self.save()
+        outcome = queue.Queue()
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease) as announce:
+            threading.Thread(target=lambda: outcome.put(self.wake(window=10)), daemon=True).start()
+            time.sleep(0.3)
+            self.assertTrue(MCP.wake_armed(self.root, self.lease))
+            self.pending = [self.envelope(identity) for identity in self.ids[:2]]
+            self.save()
+            time.sleep(0.5)
+            self.assertTrue(outcome.empty(), "the task wakes the conversation, not the waiter")
+            # The task recorded one delivery; the other it never reported (it
+            # was stopped first), so only that one is the waiter's to announce.
+            announce(self.ids[:1])
+        code, notice = outcome.get(timeout=5)
+        self.assertEqual((code, notice["new_delivery_ids"]), (MCP.WAKE_EXIT, self.ids[1:2]))
+        self.assert_not_acknowledged()
+
+    def test_idle_waiter_steps_down_silently_beside_a_live_until_event_task(self):
+        self.pending = []
+        self.save()
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
+            self.assertEqual(self.wake(window=0.3), (0, None))
+        code, notice = self.wake(window=0.3)
+        self.assertEqual((code, notice["kind"]), (MCP.WAKE_EXIT, "codescribe_wait_idle"))
+
+    def test_lost_follower_is_announced_even_beside_a_live_until_event_task(self):
+        """The task waits only for unread messages; a dead follower stays the waiter's to report."""
+        self.pending = []
+        super().save()  # no live follower pid
+        with DEMUX.until_event_mark(self.root, self.PROVIDER, self.lease):
+            code, notice = self.wake()
+        self.assertEqual((code, notice["kind"], notice["problem"]),
+                         (MCP.WAKE_EXIT, "codescribe_listener_problem", "follower_lost"))
 
     def hook(self, shell, command=None, environ=None):
         entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
@@ -1313,10 +1419,7 @@ class RemoteMailboxTests(MailboxFixture):
                             FAKE_SSH_LOG=str(self.ssh_log))
 
     def save(self):
-        super().save()
-        state = DEMUX.read_json(self.lease_path)
-        state["pid"] = os.getpid()
-        DEMUX.atomic_json(self.lease_path, state)
+        super().save(pid=os.getpid())  # one write; see ClaudeCodeWakeTests.save
 
     def notice(self, said, marker):
         """The notice carrying `marker`. stderr is patched process-wide and the
@@ -1441,6 +1544,10 @@ class PluginContractTests(unittest.TestCase):
         self.assertLessEqual(probe["timeout"], 10)
         self.assertIn("--claude-code-probe", probe["command"])
         self.assertTrue(probe["command"].rstrip().endswith("exit 0"))
+        # Claude Code runs no Stop after a user interrupt (StopFailure after an API
+        # error): the same waiter is armed after every tool call as well, so a
+        # turn that a wake started never ends without one.
+        self.assertEqual(claude["PostToolUse"][0]["hooks"][1], claude["Stop"][0]["hooks"][0])
 
     def test_wait_windows_stay_below_measured_client_deadlines(self):
         self.assertLess(MCP.WAIT_SECONDS["junie"], 180)
@@ -1483,10 +1590,9 @@ class OmpWakeTests(MailboxFixture):
         self.host = os.getpid()
 
     def save(self):
-        super().save()
-        state = DEMUX.read_json(self.lease_path)
-        state["pid"] = os.getpid()  # a live follower owns this lease
-        DEMUX.atomic_json(self.lease_path, state)
+        # A live follower owns this lease. One write: a waiter woken between a
+        # pid-less lease and its pid would announce a lost follower.
+        super().save(pid=os.getpid())
 
     def bind(self, provider="omp"):
         with DEMUX.channel_bindings(self.root) as bindings:

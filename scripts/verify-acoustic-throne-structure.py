@@ -31,7 +31,7 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=8"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=9"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     # The overlay early return calls `OverlayPasteResult::noop()`; the
@@ -46,6 +46,7 @@ AST_BODIES = {
     "detach_closed_take": "core/audio/streaming_recorder.rs",
     "detach_take_state": "core/audio/streaming_recorder.rs",
     "is_settled": "core/audio/streaming_recorder.rs",
+    "prepare_terminal_audio": "core/audio/streaming_recorder.rs",
     "finish": "core/audio/streaming_recorder.rs",
     "copy_stop_error": "core/audio/streaming_recorder.rs",
     "finalize_take_archive": "core/audio/streaming_recorder.rs",
@@ -1822,7 +1823,7 @@ def verify_code_corridors(
                 evidence = structural_ast_evidence(verifier)
                 ast_result = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
                 companions = {"paste_text_from_overlay": ("execute_clipboard_paste", "noop"),
-                              "stop": ('close_capture', 'release_take_pcm_feed', 'release_capture_subscriber', 'finish_closed_capture', 'detach_closed_take', 'detach_take_state', 'is_settled', 'finish', 'copy_stop_error', 'finalize_take_archive')}.get(symbol, ())
+                              "stop": ('close_capture', 'release_take_pcm_feed', 'release_capture_subscriber', 'finish_closed_capture', 'detach_closed_take', 'detach_take_state', 'is_settled', 'prepare_terminal_audio', 'finish', 'copy_stop_error', 'finalize_take_archive')}.get(symbol, ())
                 companion_failures = [failure for row in evidence["contracts"]
                                       if row["symbol"] in companions for failure in row["failures"]]
                 if not ast_result["accepted"] or evidence["failures"] or companion_failures:

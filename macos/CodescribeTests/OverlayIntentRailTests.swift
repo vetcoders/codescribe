@@ -155,9 +155,13 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertTrue(engine.startModes.isEmpty)
     XCTAssertFalse(finalizing.recording)
 
+    // A take whose `started` was lost still passes through finalising; a
+    // preparing answered by a bare stop never captured and is covered by
+    // OverlayStateTests.testAnOrphanedPreparingLeavesTheHeaderReadyToRecord.
     let awaitingProjection = OverlayState.previewListening()
     awaitingProjection.engine = engine
     awaitingProjection.handleRecordingPreparing()
+    awaitingProjection.handleRecordingFinalising()
     awaitingProjection.finishControllerRecording()
     awaitingProjection.relayIntent(.startRecording)
     XCTAssertTrue(engine.startModes.isEmpty)
@@ -378,18 +382,83 @@ final class OverlayIntentRailTests: XCTestCase {
     XCTAssertEqual(engine.policy, settingsBefore)
   }
 
-  func testFloatingActionsKeepProjectedOrderWithCloseInHeader() {
-    let intents: [OverlayIntent] = [
-      .insertPaste, .copy, .retranscribe, .format, .close,
+  /// The column's set is fixed: the same twelve slots, in the same order,
+  /// whatever the projection says. Only `isEnabled` moves — between phases,
+  /// with an unsaved edit, and along the versions cursor.
+  func testFixedActionSetKeepsItsOrderAndOnlyAvailabilityMoves() {
+    let fixedOrder: [OverlayTranscriptActionSlot] = [
+      .history, .versions, .undo, .redo, .previousTake,
+      .intent(.commitRevision), .intent(.discardRevision), .intent(.insertPaste),
+      .intent(.copy), .intent(.retranscribe), .intent(.format), .intent(.sendToAgent),
     ]
-    let layout = OverlayDockLayout(projectedIntents: intents)
+    func slots(
+      _ intents: [OverlayIntent], _ versions: OverlayTranscriptVersionsPresentation = .empty
+    ) -> [OverlayTranscriptActionAvailability] {
+      OverlayIntentRail.actionAvailability(intents: intents, versions: versions)
+    }
+    func enabled(
+      _ intents: [OverlayIntent], _ versions: OverlayTranscriptVersionsPresentation = .empty
+    ) -> Set<OverlayTranscriptActionSlot> {
+      Set(slots(intents, versions).filter(\.isEnabled).map(\.slot))
+    }
 
-    XCTAssertEqual(layout.visibleIntents, intents.filter { $0 != .close })
-    XCTAssertEqual(OverlayDockLayout(projectedIntents: []).visibleIntents, [])
-    XCTAssertEqual(OverlayDockLayout.minimumCanvasWidth, 320)
+    for intents in [
+      [OverlayIntent](),
+      [.finish, .copy, .close],
+      [.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close],
+      [.commitRevision, .discardRevision, .close],
+      [.recoverSuperseded, .discardSuperseded, .finish, .close],
+    ] {
+      XCTAssertEqual(slots(intents).map(\.slot), fixedOrder, "the set changed for \(intents)")
+      XCTAssertEqual(slots(intents).count, 12)
+    }
+
+    // Nothing projected: history alone can run, everything else stays greyed.
+    XCTAssertEqual(enabled([]), [.history])
+    // Listening paints Copy only; the header keeps Finish and Close.
+    XCTAssertEqual(enabled([.finish, .copy, .close]), [.history, .intent(.copy)])
+    // A formatted take lights the document, engine and delivery commands.
+    XCTAssertEqual(
+      enabled([.insertPaste, .copy, .retranscribe, .format, .sendToAgent, .close]),
+      [
+        .history, .intent(.insertPaste), .intent(.copy), .intent(.retranscribe),
+        .intent(.format), .intent(.sendToAgent),
+      ])
+    // An unsaved edit swaps delivery for commit/discard, in the same places.
+    XCTAssertEqual(
+      enabled([.commitRevision, .discardRevision, .close]),
+      [.history, .intent(.commitRevision), .intent(.discardRevision)])
+    // Retained work lights only the previous-take menu that carries it.
+    XCTAssertEqual(
+      enabled([.recoverSuperseded, .discardSuperseded, .finish, .close]),
+      [.history, .previousTake])
+
+    // The versions trio follows the cursor alone: one version greys all
+    // three, the middle of three lights all three, the newest greys Redo.
+    func version(_ step: UInt64, current: Bool) -> OverlayTranscriptVersion {
+      OverlayTranscriptVersion(
+        step: step, source: .raw, text: "v\(step)", emittedAt: "", isCurrent: current)
+    }
+    let one = OverlayTranscriptVersionsPresentation(
+      options: [version(0, current: true)], cursor: 0, blockedReason: nil)
+    XCTAssertEqual(enabled([], one), [.history])
+    let middle = OverlayTranscriptVersionsPresentation(
+      options: [version(0, current: false), version(1, current: true), version(2, current: false)],
+      cursor: 1, blockedReason: nil)
+    XCTAssertEqual(enabled([], middle), [.history, .versions, .undo, .redo])
+    let newest = OverlayTranscriptVersionsPresentation(
+      options: [version(0, current: false), version(1, current: true)], cursor: 1,
+      blockedReason: nil)
+    XCTAssertEqual(enabled([], newest), [.history, .versions, .undo])
+    let blocked = OverlayTranscriptVersionsPresentation(
+      options: middle.options, cursor: 1,
+      blockedReason: OverlayTranscriptVersionsPresentation.dirtyReason)
+    XCTAssertEqual(enabled([], blocked), [.history, .versions])
   }
 
-  func testUnsealedTakeKeepsWarningAndProjectedRailInSeparateOrderedSlots() {
+  /// The unsealed take keeps its recovery actions on the rail; its ledger
+  /// coverage is read in Voice Lab, not in a bar slot (Maciej, 2026-10-19).
+  func testUnsealedTakeKeepsTheRailAndLeavesLedgerCoverageToVoiceLab() {
     let state = projectedState(
       phase: "coverage_refused", text: "Words kept without a seal",
       canPaste: true, canInsert: true, canCopy: true, canRetranscribe: true,
@@ -397,16 +466,15 @@ final class OverlayIntentRailTests: XCTestCase {
     state.setPresentationMode(.expanded)
     let slots = OverlayBottomChromeSlots(
       mode: state.mode, hasPresentationStatus: state.presentationStatus != nil,
-      isCollapsed: state.isCollapsed, showsDiagnostics: true)
+      isCollapsed: state.isCollapsed)
 
     XCTAssertEqual(state.mode, .coverageRefused)
-    XCTAssertEqual(slots.ordered, [.rail, .coverageWarning])
-    XCTAssertTrue(slots.showsCoverageWarning)
+    XCTAssertEqual(slots.ordered, [.rail])
+    XCTAssertFalse(slots.showsCoverageWarning)
     XCTAssertEqual(
       OverlayIntentRail.projectedIntents(for: state),
       [.insertPaste, .copy, .retranscribe, .format, .close])
     XCTAssertNotNil(state.coverageRefusalNotice)
-    XCTAssertFalse(state.coverageRefusalDetail.isEmpty)
   }
 
   func testSealedTakeKeepsRailWithoutReservingWarningSlot() {
@@ -488,7 +556,8 @@ final class OverlayIntentRailTests: XCTestCase {
     await fulfillment(of: [cloud], timeout: 1)
     XCTAssertEqual(engine.receivedTranscribePath, "cloud:/tmp/overlay-intent-boundary.wav")
     for _ in 0..<50 { await Task.yield() }
-    XCTAssertFalse(state.retranscribePending, "finish the first committed projection before the next pass")
+    XCTAssertFalse(
+      state.retranscribePending, "finish the first committed projection before the next pass")
 
     let local = expectation(description: "bare intent runs the local HQ pass")
     engine.onTranscribeFile = { local.fulfill() }
@@ -552,7 +621,8 @@ final class OverlayIntentRailTests: XCTestCase {
     )
     XCTAssertEqual(OverlayIntentRail.recoveryIntents(for: clean), [])
     XCTAssertEqual(
-      OverlayIntentRail.projectedIntents(for: clean), [.insertPaste, .copy, .retranscribe, .format, .close])
+      OverlayIntentRail.projectedIntents(for: clean),
+      [.insertPaste, .copy, .retranscribe, .format, .close])
     XCTAssertTrue(OverlayIntentRail.projectedIntents(for: clean).contains(.format))
     XCTAssertEqual(clean.mode, .error)
     XCTAssertEqual(clean.activeText, "draft")
@@ -741,7 +811,7 @@ final class OverlayIntentRailTests: XCTestCase {
   func testDockRendersAtWindowFloorWithRoundedCanvasCorners() throws {
     let state = OverlayState.previewListening()
     let size = CGSize(
-      width: OverlayDockLayout.minimumCanvasWidth,
+      width: DictationOverlayWindow.minSize.width,
       height: DictationOverlayWindow.minSize.height
     )
 

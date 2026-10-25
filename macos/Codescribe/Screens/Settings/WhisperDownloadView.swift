@@ -3,49 +3,58 @@ import SwiftUI
 /// The same opt-in control observes the same retained store in both surfaces.
 /// Model selection and removal remain in Settings, outside this shared control.
 struct WhisperDownloadView: View {
+  /// `.full` lists the source, size and location under the name (the setup
+  /// model step). `.summary` keeps the name and state up front and moves that
+  /// technical block under a collapsed Details disclosure (the setup summary).
+  /// Both keep the download, progress and error controls visible.
+  enum Presentation {
+    case full
+    case summary
+  }
+
   @ObservedObject var store: WhisperDownloadStore
   var downloadEnabled = true
+  var presentation: Presentation = .full
   @Environment(\.locale) private var locale
   /// A multi-gigabyte transfer starts on a second, deliberate press.
   @State private var confirmingDownload = false
+  @State private var detailsExpanded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 12) {
+      // The state belongs to the model named beside it, so it sits next to the
+      // heading instead of drifting to the far edge of whatever hosts this control.
+      HStack(spacing: 10) {
         Text(
           String(
             localized: LocalizedStringResource(
               "Whisper model", locale: locale, comment: "Shared Whisper download control heading"))
         )
-        .font(.body.weight(.semibold))
-        Spacer(minLength: 0)
+        .font(SettingsScale.settingName)
         Text(installLabel)
           .font(.caption.weight(.medium))
           .foregroundStyle(store.status.available ? CSColor.oliveLight : Color.secondary)
+        Spacer(minLength: 0)
       }
-      Text(store.status.modelId).font(.callout)
-      Text(
-        String(
-          localized: LocalizedStringResource(
-            "Hugging Face · \(store.status.repo) · \(store.status.sizeHint)", locale: locale,
-            comment:
-              "Download source: first placeholder is a repository id, second is approximate disk size"
-          ))
-      )
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-      if let path = store.status.path {
-        Text(path).font(.caption).textSelection(.enabled)
-      } else if !store.status.embedded {
-        Text(
-          String(
-            localized: LocalizedStringResource(
-              "Default location: \(store.status.modelsDir)", locale: locale,
-              comment: "Default model storage folder; the placeholder is a directory path"))
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      Text(store.status.modelId).font(SettingsScale.helper)
+      switch presentation {
+      case .full:
+        technicalDetails
+      case .summary:
+        DisclosureGroup(isExpanded: $detailsExpanded) {
+          technicalDetails
+            .padding(.top, 6)
+        } label: {
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Details", locale: locale,
+                comment: "Setup summary: disclosure with the Whisper model's source, size and path"))
+          )
+          .font(SettingsScale.helper)
+          .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("whisper-download-details")
       }
 
       if store.inFlight {
@@ -65,7 +74,7 @@ struct WhisperDownloadView: View {
                 "Downloading…", locale: locale,
                 comment: "Whisper download progress with no file detail yet"))
         )
-        .font(.callout)
+        .font(SettingsScale.helper)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         Button(cancelDownloadTitle, action: store.cancel)
@@ -73,7 +82,7 @@ struct WhisperDownloadView: View {
           .disabled(store.cancelling)
       } else if !store.status.available {
         if let error = store.error {
-          Text(error).font(.callout).foregroundStyle(CSColor.terracotta)
+          Text(error).font(SettingsScale.helper).foregroundStyle(CSColor.terracotta)
             .fixedSize(horizontal: false, vertical: true)
         } else if store.interruption == .cancelled {
           Text(
@@ -82,7 +91,7 @@ struct WhisperDownloadView: View {
                 "Download stopped. The model is not installed.", locale: locale,
                 comment: "The user cancelled the Whisper download; the partial file is removed"))
           )
-          .font(.callout)
+          .font(SettingsScale.helper)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("whisper-download-stopped")
@@ -101,6 +110,35 @@ struct WhisperDownloadView: View {
     }
     .onAppear {
       if downloadEnabled { store.refresh() }
+    }
+  }
+
+  /// Source, size and on-disk location of the model.
+  private var technicalDetails: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Hugging Face · \(store.status.repo) · \(store.status.sizeHint)", locale: locale,
+            comment:
+              "Download source: first placeholder is a repository id, second is approximate disk size"
+          ))
+      )
+      .font(SettingsScale.helper)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      if let path = store.status.path {
+        Text(path).font(.caption).textSelection(.enabled)
+      } else if !store.status.embedded {
+        Text(
+          String(
+            localized: LocalizedStringResource(
+              "Default location: \(store.status.modelsDir)", locale: locale,
+              comment: "Default model storage folder; the placeholder is a directory path"))
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
     }
   }
 

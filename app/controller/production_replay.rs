@@ -22,7 +22,7 @@ use codescribe_core::pipeline::contracts::{
 };
 use codescribe_core::pipeline::replay_card::{ReplayBuild, ReplayCard};
 use codescribe_core::pipeline::streaming::{
-    APPLE_FINAL_OVERLAP_WARNING_CODE, replay_buffered_engine_session,
+    APPLE_FINAL_OVERLAP_WARNING_CODE, replay_buffered_engine_session, retained_formatter_deadline,
 };
 
 use crate::presentation::emitter::{PresentationEmitter, TranscriptReducer};
@@ -471,12 +471,22 @@ async fn replay_recorded_take_on_worker(
     let started = std::time::Instant::now();
     let replayed = replay_buffered_engine_session(&samples, config, sink.clone()).await;
     let elapsed_seconds = started.elapsed().as_secs_f64();
-    let finished = match Arc::get_mut(&mut sink) {
-        Some(sink) => {
+    // Formatter jobs the take accepted outlive its acoustic session on their
+    // own owner, which holds the sink until they settle or its deadline drops
+    // them. The live emitter keeps receiving those results, so the document
+    // is finished only after that owner lets go.
+    let owner_deadline = std::time::Instant::now() + retained_formatter_deadline(&settings);
+    let finished = loop {
+        if let Some(sink) = Arc::get_mut(&mut sink) {
             sink.presentation.finish().await;
-            Ok(())
+            break Ok(());
         }
-        None => Err(anyhow!("replay sink still shared after the session joined")),
+        if std::time::Instant::now() >= owner_deadline {
+            break Err(anyhow!(
+                "replay sink still shared after the retained formatter deadline"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
     drop(bus);
     let rows = std::fs::read_to_string(&bus_path);
@@ -755,7 +765,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "explicit P0 PCM replay; needs signed Apple bridge and cached local Whisper"]
     async fn forensic_formatter_refusal_keeps_full_live_pcm_session() {
         use crate::presentation::emitter::PresentationEmitter;
         use codescribe_core::llm::provider::{CustomProvider, WireFamily};
@@ -780,8 +789,28 @@ mod tests {
             }
         }
 
-        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
-            .expect("explicitly select the private P0 audio fixture");
+        if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
+            let installed =
+                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+            if installed.is_file() {
+                unsafe {
+                    std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
+                    std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
+                }
+            }
+        }
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
+            Path::new(&std::env::var("HOME").expect("HOME"))
+                .join(".vibecrafted/artifacts/vetcoders/codescribe/2026_1006/reports/word-ledger-integration/5c8ec179-0755-4e0f-a883-6e0cd2e7d93b.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
+        // The incident recording is operator-private (never in the repo, never
+        // on a CI runner). Without it this witness has nothing to replay.
+        if !Path::new(&wav).is_file() {
+            eprintln!("skipping forensic live PCM replay: fixture not present at {wav}");
+            return;
+        }
         assert_eq!(
             hex::encode(Sha256::digest(std::fs::read(&wav).unwrap())),
             "bbc3a7e22ad871e7f733a857d53c372143367b8d7ad58f7d98f607e63146df6b",
@@ -798,7 +827,7 @@ mod tests {
             drop(listener);
             let provider = CustomProvider::new("p0-replay-refusal", WireFamily::OpenAiResponses, &endpoint).unwrap();
             let settings = UserSettings {
-                asr_mode: Some("local_power".into()), ai_formatting_enabled: Some(true),
+                asr_mode: Some("local_power".into()),
                 formatting_level: Some("smart".into()),
                 llm_formatting_provider: Some(format!("custom:{}", provider.id)),
                 llm_formatting_model: Some("replay-refusal".into()),
@@ -812,7 +841,6 @@ mod tests {
             let snapshot = Arc::new(codescribe_core::config::Config::load_runtime_snapshot_without_keychain().unwrap());
             assert_eq!(snapshot.llm_lanes().formatting().endpoint(), endpoint);
             assert!(snapshot.llm_lanes().formatting().request_available());
-            assert!(snapshot.values().ai_formatting_enabled);
             assert_eq!(snapshot.formatting_policy(), codescribe_core::config::FormattingPolicy::Smart);
             let calibration = snapshot.energy_calibration_for_capture("MacBook Pro Microphone", rate).unwrap();
             assert_eq!(calibration.version, "cal2-macbook-pro-microphone-1791099372411@48000hz");
@@ -964,10 +992,45 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "explicit private PCM replay; needs signed Apple bridge and cached local Whisper"]
     async fn forensic_saved_pcm_produces_authenticated_projection() {
-        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV")
-            .expect("explicitly select the private audio fixture");
+        if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
+            let installed =
+                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+            if installed.is_file() {
+                unsafe {
+                    std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
+                    std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
+                }
+            }
+        }
+        let operator_home = std::env::var("HOME")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|h| h.join(".codescribe/data_assets").is_dir())
+            .or_else(|| {
+                std::env::var("CARGO_HOME").ok().and_then(|c| {
+                    std::path::PathBuf::from(c)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+            })
+            .expect("operator home");
+        let _models_dir = codescribe_core::test_isolation::EnvGuard::set(
+            "CODESCRIBE_MODELS_DIR",
+            operator_home.join(".codescribe/models"),
+        );
+        let wav = std::env::var("CODESCRIBE_STREAM_TEST_WAV").unwrap_or_else(|_| {
+            operator_home
+                .join(".codescribe/data_assets/01_no-to-dobra.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
+        // Same contract as tests/assets/data_assets/README.md: a private clip
+        // that is absent on this host (every CI runner) skips, it does not fail.
+        if !Path::new(&wav).is_file() {
+            eprintln!("skipping forensic saved PCM projection: fixture not present at {wav}");
+            return;
+        }
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || runtime.block_on(async move {
             let (samples, rate) = codescribe_core::audio::load_audio_file(Path::new(&wav))

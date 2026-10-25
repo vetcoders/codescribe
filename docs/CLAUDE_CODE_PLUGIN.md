@@ -66,10 +66,29 @@ hooks:
 - The agent reads with `codescribe_read`, ACKs the exact `read_delivery_ids`,
   works and replies, then ends the turn. The next `Stop` re-arms the hook; one
   lock per lease keeps a single waiter.
+- The same waiter command also runs as a second `PostToolUse` hook, so the first
+  tool call of a turn that a wake started arms the next waiter. Claude Code runs
+  no `Stop` hook after a user interrupt and runs `StopFailure` instead after an
+  API error; before this, such a turn left the conversation without a waiter until
+  someone typed. With a waiter already armed the extra hook returns at once.
+- A `cs-bus --watch --until-event` background task of the same lease takes
+  precedence while it lives: the task holds `runtime/until-event/LEASE.lock`
+  shared (every provider's task does; `cs-bus --status` reports it as
+  `listener.until_event_alive`) and records what it reported in the announced
+  ledger before it exits.
+  The waiter stays armed but announces no delivery while that mark is held, and
+  an idle waiter ends silently instead of spending a turn on its six-hour re-arm.
+  One message wakes the conversation once; when the task is gone the waiter takes
+  over and announces anything the task never reported.
 - Announced IDs stay recorded until acknowledged, so a message left unread does
-  not wake every turn. A lost follower or refused mailbox is announced once as
+  not wake every turn. The ledger is written before the notice, so a notice can
+  be lost after it (a remote waiter released when the local one wins, a dropped
+  ssh); a delivery still unacknowledged ten minutes after its announcement wakes
+  the conversation once more as `codescribe_mailbox_reminder`. That is one retry,
+  not a guarantee. A lost follower or refused mailbox is announced once as
   `codescribe_listener_problem`. After six silent hours the hook wakes once with
-  `codescribe_wait_idle` only to re-arm. Detach or Claude Code exit ends it quietly.
+  `codescribe_wait_idle` only to re-arm; it lists any delivery still
+  unacknowledged. Detach or Claude Code exit ends it quietly.
 - The hook never reads, ACKs or replies. `codescribe_status` reports
   `native_wake_armed`.
 - Inside a running turn the `PostToolUse` hook runs `cs-bus --claude-code-probe`

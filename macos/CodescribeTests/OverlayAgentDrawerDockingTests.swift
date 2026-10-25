@@ -6,8 +6,8 @@ import XCTest
 
 /// Falsifiers for the agents-drawer cut (Founder, 2026-10-16; mockup
 /// `szuflada-agentow.html`): the roster docks as a right-hand column on wide
-/// windows, becomes a pill stack under the name pill on narrow ones, and the
-/// bubble cap follows ⌘+ text scale. RED before, GREEN after.
+/// windows and remains a side column on narrow ones (Founder, 2026-10-22).
+/// Pane choice is explicit; the bubble cap follows ⌘+ text scale.
 @MainActor
 final class OverlayAgentDrawerDockingTests: XCTestCase {
 
@@ -69,23 +69,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 
   // MARK: - Threshold (deliverables 1 and 3)
 
-  func testDockingThresholdFollowsTextScale() {
-    XCTAssertTrue(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 1200, textScale: 1.0),
-      "1200 at 1.0 docks")
-    XCTAssertFalse(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 800, textScale: 1.0),
-      "800 at 1.0 falls back to pills")
-    XCTAssertFalse(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 1200, textScale: 1.6),
-      "1200 at 1.6 needs 1312 — pills, so large text never squeezes bubbles")
-    XCTAssertTrue(
-      OverlayAgentDrawerLayout.isDocked(windowWidth: 820, textScale: 1.0),
-      "the exact 820 × scale boundary docks")
-    XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: 1312, textScale: 1.6))
-    XCTAssertFalse(OverlayAgentDrawerLayout.isDocked(windowWidth: 819.9, textScale: 1.0))
+  func testSideColumnIsIndependentOfWidthAndOrdinaryWidthsNeverHideConversation() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      for width in [CGFloat(320), 480, 560, 680, 719.9, 720, 1200] {
+        XCTAssertTrue(OverlayAgentDrawerLayout.isDocked(windowWidth: width, textScale: scale))
+        let column = OverlayAgentDrawerLayout.drawerWidth(
+          textScale: scale, preferredWidth: 900, windowWidth: width)
+        XCTAssertGreaterThan(column, 0)
+        XCTAssertLessThan(column, width, "an ordinary projection cannot hide the conversation")
+        if width >= OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: scale) {
+          XCTAssertGreaterThanOrEqual(width - column, 320 * scale - 0.001)
+        }
+      }
+    }
     XCTAssertEqual(OverlayAgentDrawerLayout.drawerWidth(textScale: 1.4), 420, accuracy: 0.001)
-    XCTAssertEqual(OverlayAgentDrawerLayout.pillWidth(textScale: 1.0), 224, accuracy: 0.001)
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.drawerWidth(
+        textScale: 1, preferredWidth: 900, windowWidth: 1200), 880, accuracy: 0.001)
+    XCTAssertNil(
+      OverlayAgentDrawerLayout.rememberedWidth(
+        textScale: 1, preferredWidth: 900, windowWidth: 1200),
+      "only an explicit edge drag folds the conversation")
   }
 
   func testBubbleCapScalesWithTextAndYieldsToTheWindow() {
@@ -96,116 +100,102 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       OverlayConversationView.bubbleCap(contentWidth: 2000, textScale: 1.4), 924,
       accuracy: 0.001, "⌘+ grows the cap with the letters")
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0), (700 - 40) * 0.82,
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.0), (700 - 40) * 0.92,
       accuracy: 0.001)
     XCTAssertEqual(
-      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4), (700 - 40) * 0.82,
+      OverlayConversationView.bubbleCap(contentWidth: 700, textScale: 1.4), (700 - 40) * 0.92,
       accuracy: 0.001, "the window bound wins regardless of scale")
   }
 
-  // MARK: - Pill stack content (deliverable 2)
+  // MARK: - Narrow list (below the threshold, 2026-10-19)
 
-  func testPillStackListsEveryConversationExceptTheSelectedOneInRosterOrder() throws {
+  func testNarrowListCoversTheWindowAndSelectionReturnsToTheConversation() throws {
     let (broadcast, lena, astra) = try rosterFixture()
-    var quietDelivery = OverlayChannelDelivery(
-      channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false)
-    quietDelivery.broadcastPolicy = .quiet
-    let view = OverlayChannelStatusView(
-      channels: [
-        OverlayChannelDelivery(
-          channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
-        quietDelivery,
-      ],
-      unavailable: false, palette: .dark, animates: false,
-      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
-      conversations: [broadcast, lena, astra], selectedConversationID: lena.id,
-      unreadCounts: [astra.id: 4], onSelectConversation: { _ in })
-    let entries = view.pillEntries
-    XCTAssertEqual(
-      entries.map(\.id), [broadcast.id, astra.id],
-      "0 · All first, then the roster order; never the selected one, never a transcription row")
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let recorder = OverlayDrawerFrameRecorder()
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
+        .frame(width: 700, height: 500))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
+    XCTAssertTrue(state.agentDrawerDocked)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1)
+    state.foldAgentList()
+    settle()
+    XCTAssertEqual(recorder.frame, .zero)
 
-    let zero = try XCTUnwrap(entries.first { $0.id == broadcast.id })
-    XCTAssertEqual(zero.title, String(localized: "0 · All"))
-    XCTAssertTrue(zero.isBroadcast)
-    let agent = try XCTUnwrap(entries.first { $0.id == astra.id })
-    XCTAssertEqual(agent.title, "3 · astra")
-    XCTAssertEqual(agent.descriptor, "codex", "the pill shows the provider descriptor")
-    XCTAssertEqual(agent.unread, 4)
-    XCTAssertEqual(agent.broadcastPolicy, .quiet, "a quiet broadcast policy marks the pill")
-    XCTAssertNil(zero.broadcastPolicy, "the shared channel has no membership of its own")
-    XCTAssertEqual(zero.dot, .broadcast, "the shared channel wears the antenna, not a delivery dot")
+    state.showAgentMonitor()
+    settle()
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertEqual(recorder.frame.minX, 400, accuracy: 1)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the conversation remains beside it")
+    XCTAssertEqual(recorder.frame.maxY, 500, accuracy: 1, "and the full height")
+
+    state.selectConversation(astra.id)
+    settle()
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertFalse(state.showsAgentMonitor, "choosing a row returns to the conversation")
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "selecting a row preserves split")
   }
 
-  func testPillSelectionChangesTheConversationAndClosesTheStack() throws {
-    let (broadcast, lena, _) = try rosterFixture()
+  func testFoldSurvivesGeometryAndExplicitUnfoldKeepsRouteAndDraft() throws {
+    let (_, lena, _) = try rosterFixture()
     let state = OverlayState()
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.selectConversation(broadcast.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.selectConversation(lena.id)
-
-    XCTAssertEqual(state.selectedConversationID, lena.id)
-    XCTAssertFalse(state.showsAgentMonitor, "selecting a pill closes the stack")
-  }
-
-  func testPillStackClosesOnEscapeAndStealsNeitherColorNorScroll() throws {
-    // Maciej, 2026-10-17: the open stack steals neither color nor scrolling.
-    // Esc and the name pill's toggle route to hideAgentSidebar.
-    let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.selectConversation(lena.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
+    state.conversationDrafts[lena.id] = "draft survives panel changes"
+    let selection = state.selectedConversationID
+    let generation = state.captureGeneration
     state.hideAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor)
-    XCTAssertEqual(state.selectedConversationID, lena.id, "closing keeps the conversation")
-
-    let conversation = try overlaySource("OverlayConversationView.swift")
-    // The stack mounts in the top overlay, directly under the name pill row.
-    let topOverlay = try section(
-      of: conversation, from: ".overlay(alignment: .top)", to: "private var composer")
-    XCTAssertTrue(
-      topOverlay.contains("if let pillStack = agentPillStack"),
-      "the stack mounts under the name pill")
-    XCTAssertFalse(
-      conversation.contains("overlay-agent-pill-dismiss"),
-      "no full-area catcher: the conversation keeps its clicks and its scroll")
-    XCTAssertFalse(
-      conversation.contains("agentPillStack == nil ? 1 : "),
-      "the open stack never dims the conversation or the composer")
-    XCTAssertTrue(topOverlay.contains(".onExitCommand"), "Esc closes the stack")
-    let roster = try overlaySource("OverlayChannelStatusView.swift")
-    XCTAssertTrue(
-      roster.contains("overlay-agent-pill-stack"), "the pill stack carries its identifier")
+    for docked in [true, false, true] {
+      state.setAgentDrawerDocked(docked)
+      XCTAssertEqual(state.agentsLayout, .rail)
+      XCTAssertFalse(state.showsAgentMonitor)
+      XCTAssertFalse(state.agentListPinned)
+    }
+    state.unfoldAgentList()
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertTrue(state.agentListPinned)
+    XCTAssertEqual(state.selectedConversationID, selection)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertEqual(state.conversationDrafts[lena.id], "draft survives panel changes")
   }
 
   // MARK: - Docked column (deliverables 1 and 4)
 
-  func testDockingEngagementClosesThePillStackAndKeepsSelectionAndDraft() throws {
-    let (broadcast, lena, _) = try rosterFixture()
+  func testGeometryReportingDoesNotChangeExplicitPaneStateOrDraft() throws {
+    let (_, lena, _) = try rosterFixture()
     let state = OverlayState()
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
     state.selectConversation(lena.id)
     state.conversationDrafts[lena.id] = "half-typed draft"
     state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-    let focusRevision = state.conversationFocusRevision
-
-    state.setAgentDrawerDocked(true)
-
-    XCTAssertFalse(state.showsAgentMonitor, "the pill stack closes when docking engages")
-    XCTAssertEqual(state.selectedConversationID, lena.id, "the selection survives the switch")
-    XCTAssertEqual(state.conversationDrafts[lena.id], "half-typed draft", "drafts survive")
-    XCTAssertEqual(
-      state.conversationFocusRevision, focusRevision,
-      "no scroll-reset signal crosses a pure mode switch")
-
-    state.setAgentDrawerDocked(false)
-    XCTAssertFalse(state.showsAgentMonitor, "undocking does not reopen the stack")
+    let shown = state.showsAgentMonitor
+    let focus = state.conversationFocusRevision
+    for docked in [true, false, true] {
+      state.setAgentDrawerDocked(docked)
+      XCTAssertEqual(state.showsAgentMonitor, shown)
+      XCTAssertEqual(state.agentsLayout, .split)
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+      XCTAssertEqual(state.conversationDrafts[lena.id], "half-typed draft")
+      XCTAssertEqual(state.conversationFocusRevision, focus)
+    }
   }
 
   func testDockedNamePillFocusesTheSelectedRowInsteadOfOpening() throws {
@@ -221,6 +211,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertFalse(state.showsAgentMonitor, "docked: nothing opens, the column is already there")
     XCTAssertEqual(
       state.agentDrawerFocusRevision, focus + 1, "docked: the click focuses the current row")
+  }
+
+  /// Maciej, 2026-10-19 on div0 (keyboard navigation on): the system focus
+  /// ring sat on "0 · All" while the selection bar and the composer were on
+  /// another agent. Keyboard focus in the roster is a SwiftUI `FocusState`
+  /// that an XCTest mount does not drive, so the wiring is pinned in source.
+  func testRosterKeyboardFocusFollowsTheSelectedRow() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let body = try section(
+      of: source, from: "private struct OverlayAgentMonitorBody", to: "\n}\n")
+    XCTAssertTrue(
+      body.contains(".defaultFocus($rowFocus, focusedRowID)"),
+      "focus entering the roster lands on the open conversation, not the first row")
+    XCTAssertTrue(
+      body.contains(".onChange(of: focusedRowID)"),
+      "a focused row follows a selection made with the pointer")
+    // `monitorBody` reads the installed text scale, then builds the column here.
+    let wiring = try section(of: source, from: "private func scaledMonitorBody(", to: "\n  }\n")
+    XCTAssertTrue(
+      wiring.contains("focusedRowID: selectedConversationID"),
+      "the followed row is the selected conversation")
   }
 
   func testDockedDrawerReservesTheScaledColumnBesideTheConversation() throws {
@@ -243,7 +254,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
       panel.contentView = host
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
@@ -262,7 +273,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       panel.orderOut(nil)
     }
 
-    // Narrow: no docked column at all, and the pill stack publishes its own frame.
+    // Narrow: no docked column at all; the list appears only when asked for.
     let (broadcast, lena, _) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
@@ -272,17 +283,17 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       rootView:
         DictationOverlayView(state: state)
         .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 }
-        .frame(width: 800, height: 500))
+        .frame(width: 700, height: 500))
     host.sizingOptions = []
     let panel = NSPanel(
-      contentRect: CGRect(x: 0, y: 0, width: 800, height: 500),
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     host.layoutSubtreeIfNeeded()
-    XCTAssertEqual(recorder.frame, .zero, "800 wide at 1.0: no docked column")
+    XCTAssertEqual(recorder.frame, .zero, "700 wide at 1.0: no docked column")
     panel.orderOut(nil)
   }
 
@@ -302,7 +313,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       contentRect: CGRect(x: 0, y: 0, width: 1200, height: 500),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     func settle() {
       host.layoutSubtreeIfNeeded()
@@ -325,36 +336,573 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.selectConversation(lena.id)
     settle()
     XCTAssertFalse(state.showsAgentMonitor)
-    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation it is permanent")
+    XCTAssertEqual(recorder.frame, .zero, "selecting a conversation preserves the explicit fold")
   }
 
-  func testDockedTranscriptionOpensAndClosesTheColumnThroughTheFlag() throws {
+  func testWideningUnderTheOpenListDocksItAsTheColumn() throws {
     let (broadcast, lena, _) = try rosterFixture()
-    let state = OverlayState()
+    let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
-    state.setAgentDrawerDocked(true)
-    XCTAssertFalse(state.dockedRosterColumnShown)
-
+    let recorder = OverlayDrawerFrameRecorder()
+    // No fixed frame: the panel's content size is the window the layout reads.
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { recorder.frame = $0 })
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: 700, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    func settle() {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
     state.showAgentMonitor()
-    XCTAssertTrue(
-      state.showsAgentMonitor, "no conversation: the click opens, it has nothing to focus")
-    XCTAssertTrue(state.dockedRosterColumnShown)
+    settle()
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the list is already a side column")
+
+    // Docking engages while the list is open on the transcription: the list
+    // becomes the column instead of vanishing.
+    panel.setContentSize(NSSize(width: 1200, height: 500))
+    settle()
+    XCTAssertTrue(state.agentDrawerDocked)
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "the open list docks as the column")
+    XCTAssertEqual(recorder.frame.maxX, 1200, accuracy: 1)
 
     state.selectConversation(lena.id)
+    settle()
     XCTAssertFalse(state.showsAgentMonitor, "selection closes the flag")
-    XCTAssertTrue(state.dockedRosterColumnShown, "beside a conversation the column stays")
+    XCTAssertEqual(recorder.frame.width, 300, accuracy: 1, "beside a conversation the column stays")
 
     state.showTranscription()
+    settle()
     XCTAssertNil(state.selectedConversationID)
-    XCTAssertFalse(state.dockedRosterColumnShown, "back on the transcription the column is gone")
+    XCTAssertEqual(recorder.frame, .zero, "back on the transcription the column is gone")
+  }
 
-    // Docking engages while the stack is open on the transcription: the stack
-    // becomes the column instead of vanishing.
-    state.setAgentDrawerDocked(false)
+  // MARK: - The keyboard follows the list (2026-10-19)
+
+  func testTheListTakesTheKeyboardFromTheComposerAndGivesItBack() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let (panel, host) = keyboardPanel(DictationOverlayView(state: state), width: 700)
+    let other = NSWindow(
+      contentRect: CGRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled],
+      backing: .buffered, defer: false)
+    other.isReleasedWhenClosed = false
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
+      panel.close()
+      other.close()
+    }
+    let editor = try XCTUnwrap(composerEditor(in: host))
+    try BackgroundTestWindow.requireIsolatedGUI()
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(editor))
+    XCTAssertTrue(panel.isKeyWindow)
+
+    let rosterFocus = state.agentDrawerFocusRevision
+    state.hideAgentsCanvas()
+    settle(host)
+    XCTAssertFalse(
+      panel.firstResponder === editor, "the explicitly folded composer releases the keyboard")
+    XCTAssertGreaterThan(
+      state.agentDrawerFocusRevision, rosterFocus, "the list's selected row is asked to take it")
+    let key = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, characters: "x",
+        charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+    panel.sendEvent(key)
+    XCTAssertEqual(editor.string, "", "nothing is typed into a field nobody can see")
+
+    state.chooseConversation(astra.id)
+    settle(host)
+    XCTAssertTrue(
+      panel.firstResponder === editor,
+      "choosing a row reveals the conversation and restores its keyboard")
+
     state.showAgentMonitor()
-    state.setAgentDrawerDocked(true)
-    XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertTrue(state.dockedRosterColumnShown)
+    settle(host)
+    state.hideAgentSidebar()
+    settle(host)
+    XCTAssertTrue(panel.firstResponder === editor, "so does closing the list")
+
+    // The keyboard went to another window: the list opens and closes without
+    // taking it back.
+    try BackgroundTestWindow.takeKeyboard(other)
+    settle(host)
+    XCTAssertFalse(panel.isKeyWindow)
+    state.showAgentMonitor()
+    settle(host)
+    state.hideAgentSidebar()
+    settle(host)
+    XCTAssertFalse(panel.isKeyWindow, "a panel without the keyboard takes nothing")
+    XCTAssertFalse(panel.firstResponder === editor)
+  }
+
+  func testTheRosterOverTheWholeWindowTakesTheKeyboardToo() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    defaults.set(480.0, forKey: "Overlay.agentDrawerWidth.v1")
+    let (broadcast, lena, _) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena]))
+    state.selectConversation(lena.id)
+    let (panel, host) = keyboardPanel(
+      DictationOverlayView(state: state).defaultAppStorage(defaults), width: 1200)
+    defer {
+      panel.makeFirstResponder(nil)
+      panel.releaseKeyAfterTranscript()
+      panel.close()
+    }
+    let editor = try XCTUnwrap(composerEditor(in: host))
+    try BackgroundTestWindow.requireIsolatedGUI()
+    panel.takeKeyForTranscript()
+    XCTAssertTrue(panel.makeFirstResponder(editor))
+
+    // Geometry does not fold a pane. The explicit conversation button does.
+    let rosterFocus = state.agentDrawerFocusRevision
+    state.hideAgentsCanvas()
+    panel.setContentSize(NSSize(width: 780, height: 500))
+    settle(host)
+    XCTAssertTrue(state.agentDrawerDocked)
+    XCTAssertFalse(panel.firstResponder === editor, "the covered composer lets the keyboard go")
+    XCTAssertGreaterThan(state.agentDrawerFocusRevision, rosterFocus)
+
+    state.showAgentsCanvas()
+    panel.setContentSize(NSSize(width: 1200, height: 500))
+    settle(host)
+    XCTAssertTrue(panel.firstResponder === editor, "the explicit reveal restores the keyboard")
+  }
+
+  /// A real overlay panel that can take the keyboard, as the composer tests use.
+  private func keyboardPanel(_ root: some View, width: CGFloat) -> (FloatingOverlayPanel, NSView) {
+    let host = NSHostingView(rootView: root)
+    host.sizingOptions = []
+    let panel = FloatingOverlayPanel(
+      contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+      defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.delegate = panel
+    panel.becomesKeyOnlyIfNeeded = true
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    settle(host)
+    return (panel, host)
+  }
+
+  private func settle(_ host: NSView) {
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+  }
+
+  private func composerEditor(in view: NSView) -> NSTextView? {
+    if let text = view as? NSTextView, text.isEditable,
+      String(describing: type(of: text)).contains("MessageTextView")
+    {
+      return text
+    }
+    for subview in view.subviews {
+      if let text = composerEditor(in: subview) { return text }
+    }
+    return nil
+  }
+
+  // MARK: - Corner buttons and the rail (Maciej, 2026-10-19)
+
+  func testListPinnedFollowsTheLayoutAtEveryWidth() {
+    for docked in [true, false] {
+      XCTAssertTrue(
+        OverlayAgentDrawerLayout.listPinned(
+          layout: .agents, docked: docked, conversationSelected: true),
+        "the agents view covers any width")
+      XCTAssertFalse(
+        OverlayAgentDrawerLayout.listPinned(
+          layout: .rail, docked: docked, conversationSelected: true),
+        "folded, the list comes only when asked for")
+      for layout in [OverlayAgentsLayout.split, .agents, .rail] {
+        XCTAssertFalse(
+          OverlayAgentDrawerLayout.listPinned(
+            layout: layout, docked: docked, conversationSelected: false),
+          "the transcription keeps its width until the list is asked for")
+      }
+    }
+    XCTAssertTrue(
+      OverlayAgentDrawerLayout.listPinned(layout: .split, docked: true, conversationSelected: true))
+    XCTAssertTrue(
+      OverlayAgentDrawerLayout.listPinned(
+        layout: .split, docked: false, conversationSelected: true),
+      "geometry cannot change the selected pane layout")
+    let widest = OverlayAgentDrawerLayout.widestSplitWidth(textScale: 1.0, windowWidth: 780)
+    XCTAssertEqual(widest, 460, accuracy: 0.001)
+    XCTAssertFalse(
+      OverlayAgentDrawerLayout.fillsWindow(
+        drawerWidth: OverlayAgentDrawerLayout.drawerWidth(
+          textScale: 1.0, preferredWidth: widest, windowWidth: 780),
+        windowWidth: 780),
+      "the conversation slides out at its 320-point minimum")
+    XCTAssertEqual(OverlayAgentDrawerLayout.railWidth(textScale: 1.2), 60.44, accuracy: 0.001)
+  }
+
+  func testTheLayoutIsRememberedAndTheDraggedAgentsViewMigrates() throws {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    defaults.set(
+      OverlayAgentDrawerLayout.legacyFillsWindowWidth,
+      forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
+    let state = OverlayState()
+    state.restoreAgentsLayout(defaults: defaults)
+    XCTAssertEqual(
+      state.agentsLayout, .agents, "a roster once dragged across the window is the agents view")
+    XCTAssertEqual(
+      defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey), 300,
+      "and the stored width is a width again")
+    XCTAssertEqual(defaults.string(forKey: OverlayState.agentsLayoutDefaultsKey), "agents")
+
+    state.setAgentsLayout(.rail)
+    let relaunched = OverlayState()
+    relaunched.restoreAgentsLayout(defaults: defaults)
+    XCTAssertEqual(relaunched.agentsLayout, .rail, "the choice survives a relaunch")
+  }
+
+  func testChoosingARowInTheAgentsViewSlidesTheConversationOut() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let state = OverlayState()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    state.hideAgentsCanvas()
+    XCTAssertEqual(state.agentsLayout, .agents)
+    XCTAssertTrue(state.agentListPinned, "the agents view is on screen unasked, at any width")
+
+    state.selectConversation(astra.id)
+    XCTAssertEqual(
+      state.agentsLayout, .agents, "the Agents button and a followed reply keep the agents view")
+
+    state.chooseConversation(lena.id)
+    XCTAssertEqual(state.selectedConversationID, lena.id)
+    XCTAssertEqual(
+      state.agentsLayout, .split, "a row chosen in the list slides the conversation out")
+
+    state.foldAgentList()
+    XCTAssertEqual(state.agentsLayout, .rail)
+    state.chooseConversation(astra.id)
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertEqual(
+      state.agentsLayout, .rail, "a pill switches the conversation and the list stays folded")
+  }
+
+  func testCornerButtonsMoveTheWideWindowBetweenTheThreeLayouts() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let state = OverlayState.previewFormatted()
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lena, astra]))
+    state.selectConversation(lena.id)
+    let drawer = OverlayDrawerFrameRecorder()
+    let rail = OverlayDrawerFrameRecorder()
+    let (panel, settle) = try recordedPanel(state: state, width: 1200, drawer: drawer, rail: rail)
+    defer { panel.orderOut(nil) }
+    XCTAssertTrue(state.agentDrawerDocked)
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "split: the column beside the chat")
+
+    state.hideAgentsCanvas()
+    settle()
+    let edge = OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: 1)
+    XCTAssertEqual(drawer.frame.minX, edge, accuracy: 1, "the conversation keeps its reveal edge")
+    XCTAssertEqual(drawer.frame.width, 1200 - edge, accuracy: 1)
+
+    state.showAgentsCanvas()
+    settle()
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "the chat slides back at the kept width")
+
+    state.foldAgentList()
+    settle()
+    XCTAssertEqual(state.agentsLayout, .rail)
+    XCTAssertEqual(drawer.frame, .zero, "sidebar.right folds the column away")
+    XCTAssertEqual(
+      rail.frame.width, OverlayAgentDrawerLayout.railWidth(textScale: 1), accuracy: 1,
+      "into the rail of pills")
+    XCTAssertEqual(rail.frame.maxX, 1200, accuracy: 1)
+
+    state.showAgentMonitor()
+    settle()
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "the Agents button still opens the list")
+    XCTAssertEqual(rail.frame, .zero)
+    state.chooseConversation(astra.id)
+    settle()
+    XCTAssertEqual(state.agentsLayout, .split, "an explicit reveal remains selected")
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1)
+    XCTAssertEqual(rail.frame, .zero)
+
+    state.unfoldAgentList()
+    settle()
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertEqual(drawer.frame.width, 300, accuracy: 1, "the rail's sidebar.right unfolds it")
+    XCTAssertEqual(rail.frame, .zero)
+  }
+
+  func testConversationAndRosterFoldIndependentlyAtEveryWidth() throws {
+    let (_, lena, _) = try rosterFixture()
+    for docked in [false, true] {
+      let state = OverlayState()
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena]))
+      state.selectConversation(lena.id)
+      state.setAgentDrawerDocked(docked)
+      state.hideAgentsCanvas()
+      XCTAssertEqual(state.agentsLayout, .agents)
+      state.showAgentsCanvas()
+      XCTAssertEqual(state.agentsLayout, .split)
+      state.foldAgentList()
+      XCTAssertEqual(state.agentsLayout, .rail)
+      state.unfoldAgentList()
+      XCTAssertEqual(state.agentsLayout, .split)
+      XCTAssertEqual(state.selectedConversationID, lena.id)
+    }
+  }
+
+  func testEachPaneOwnsItsOwnToggleAndRailHoverCannotUndoFold() throws {
+    let roster = try overlaySource("OverlayChannelStatusView.swift")
+    let header = try section(
+      of: roster, from: "private func scaledMonitorBody(", to: "} content: { rowFocus in")
+    XCTAssertFalse(header.contains("symbol: \"sidebar.left\""))
+    XCTAssertTrue(header.contains("symbol: \"sidebar.right\""))
+    let overlay = try overlaySource("DictationOverlayView.swift")
+    let controls = try section(
+      of: overlay, from: "private func conversationEdgeControls",
+      to: "private func agentsSidebarControls")
+    XCTAssertTrue(controls.contains("sidebar.left"))
+    XCTAssertTrue(controls.contains("state.hideAgentsCanvas()"))
+    let rail = try section(
+      of: overlay, from: "private func agentRail", to: "private func agentDrawerResizeHandle")
+    XCTAssertTrue(rail.contains("onUnfold: { state.unfoldAgentList() }"))
+    XCTAssertFalse(rail.contains("onContinuousHover"))
+  }
+
+  /// The overlay over a suite of its own defaults, reporting the column's and
+  /// the rail's frames.
+  private func recordedPanel(
+    state: OverlayState, width: CGFloat,
+    drawer: OverlayDrawerFrameRecorder, rail: OverlayDrawerFrameRecorder
+  ) throws -> (NSPanel, () -> Void) {
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+    let host = NSHostingView(
+      rootView:
+        DictationOverlayView(state: state)
+        .defaultAppStorage(defaults)
+        .onPreferenceChange(OverlayDrawerFramePreferenceKey.self) { drawer.frame = $0 }
+        .onPreferenceChange(OverlayAgentRailFramePreferenceKey.self) { rail.frame = $0 }
+        .frame(width: width, height: 500))
+    host.sizingOptions = []
+    let panel = NSPanel(
+      contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    // Long enough for the 0.24 s slide of a leaving pane to end.
+    let settle = {
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+      host.layoutSubtreeIfNeeded()
+    }
+    settle()
+    return (panel, settle)
+  }
+
+  func testNumberedRailButtonsStayOutsideResizeAndSelectWithoutUnfolding() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (broadcast, lena, astra) = try rosterFixture()
+    let savedCursor = NSCursor.current
+    defer { savedCursor.set() }
+    for scale: CGFloat in [0.8, 1, 1.6] {
+      let state = OverlayState.previewFormatted()
+      state.applyConversationSnapshot(
+        .init(
+          deliveries: [
+            OverlayChannelDelivery(
+              channel: "2", agent: "lena", deliveryID: "rail-lena", stage: .received, isOpen: false),
+            OverlayChannelDelivery(
+              channel: "3", agent: "astra", deliveryID: "rail-astra", stage: .received,
+              isOpen: false),
+          ], conversations: [broadcast, lena, astra]))
+      state.applyChannelRoster(
+        [broadcast, lena, astra].map {
+          CsChannelRosterState(
+            channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+            providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+            autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+        })
+      state.selectConversation(lena.id)
+      state.foldAgentList()
+      state.conversationDrafts[lena.id] = "keep this draft"
+      let generation = state.captureGeneration
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+      host.sizingOptions = []
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 1200, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+        defer: false)
+      panel.contentView = OverlayContentContainer(hosting: host)
+      BackgroundTestWindow.present(panel)
+      defer { panel.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      for (digit, target) in [("3", astra.id), ("0", broadcast.id)] {
+        let identifier = "overlay-agent-rail-\(digit)"
+        let button = try XCTUnwrap(
+          NativeAccessibilityProbe.waitForElements(identifier).elements.first)
+        XCTAssertEqual(button.role, "AXButton")
+        let screenTop = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+        let screenRect = NSRect(
+          x: button.x, y: screenTop - button.y - button.height,
+          width: button.width, height: button.height)
+        let rect = panel.convertFromScreen(screenRect)
+        XCTAssertLessThan(rect.maxX, panel.frame.width - OverlayResizeHit.band)
+        for x in [rect.minX + 1, rect.midX, rect.maxX - 1] {
+          let point = NSPoint(x: x, y: rect.midY)
+          XCTAssertNil(OverlayResizeHit.edge(at: point, in: host.bounds))
+          XCTAssertTrue(panel.cursor(at: point) === NSCursor.arrow)
+          let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+              with: .mouseMoved, location: point, modifierFlags: [], timestamp: 1,
+              windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+              clickCount: 0, pressure: 0))
+          panel.sendEvent(event)
+          RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+          XCTAssertFalse(state.showsAgentMonitor, "hover must not replace the numbered target")
+          XCTAssertEqual(state.agentsLayout, .rail)
+          XCTAssertFalse(panel.isUserResizing)
+        }
+        _ = try NativeAccessibilityProbe.query(identifier, press: true)
+        XCTAssertEqual(state.selectedConversationID, target)
+        XCTAssertEqual(state.agentsLayout, .rail)
+        XCTAssertFalse(state.showsAgentMonitor)
+      }
+      XCTAssertEqual(state.conversationDrafts[lena.id], "keep this draft")
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertFalse(panel.isKeyWindow)
+    }
+  }
+
+  /// The numbered pills must take real mouseDown/mouseUp through the panel —
+  /// an AXPress proves the action exists, not that a click reaches it past
+  /// the panel's own resize band and window-drag routing. Channel 0 leads:
+  /// it is the first pill under the disclosure control.
+  func testNumberedRailButtonsTakeNativeClicksWithoutResizeOrUnfolding() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (broadcast, lena, astra) = try rosterFixture()
+    for scale: CGFloat in [0.8, 1, 1.6] {
+      let state = OverlayState.previewFormatted()
+      state.applyConversationSnapshot(
+        .init(
+          deliveries: [
+            OverlayChannelDelivery(
+              channel: "2", agent: "lena", deliveryID: "rail-lena", stage: .received, isOpen: false),
+            OverlayChannelDelivery(
+              channel: "3", agent: "astra", deliveryID: "rail-astra", stage: .received,
+              isOpen: false),
+          ], conversations: [broadcast, lena, astra]))
+      state.applyChannelRoster(
+        [broadcast, lena, astra].map {
+          CsChannelRosterState(
+            channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+            providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+            autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+        })
+      state.selectConversation(lena.id)
+      state.foldAgentList()
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.csTextScale, scale)
+          .defaultAppStorage(try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))))
+      host.sizingOptions = []
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 100, y: 100, width: 1200, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered,
+        defer: false)
+      panel.contentView = OverlayContentContainer(hosting: host)
+      BackgroundTestWindow.present(panel)
+      defer { panel.orderOut(nil) }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      let startFrame = panel.frame
+
+      func windowRect(of identifier: String) throws -> NSRect {
+        let element = try XCTUnwrap(
+          NativeAccessibilityProbe.waitForElements(identifier).elements.first)
+        let screenTop = try XCTUnwrap(NSScreen.screens.first).frame.maxY
+        return panel.convertFromScreen(
+          NSRect(
+            x: element.x, y: screenTop - element.y - element.height,
+            width: element.width, height: element.height))
+      }
+      func send(_ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 0) throws {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: 1,
+            windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+            clickCount: clickCount, pressure: type == .leftMouseUp ? 0 : 1))
+        panel.sendEvent(event)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      }
+      func nativeClick(at point: NSPoint) throws {
+        try send(.leftMouseDown, at: point, clickCount: 1)
+        XCTAssertFalse(panel.isUserResizing, "a pill click must not become a resize")
+        try send(.leftMouseUp, at: point, clickCount: 1)
+      }
+
+      // Pointer travel from the disclosure control down to the first pill
+      // keeps the pill as the click target; the list stays folded.
+      let unfold = try windowRect(of: "overlay-agent-rail-unfold")
+      let zero = try windowRect(of: "overlay-agent-rail-0")
+      for step in 0...4 {
+        let point = NSPoint(
+          x: unfold.midX + (zero.midX - unfold.midX) * CGFloat(step) / 4,
+          y: unfold.midY + (zero.midY - unfold.midY) * CGFloat(step) / 4)
+        try send(.mouseMoved, at: point)
+        XCTAssertFalse(state.showsAgentMonitor)
+        XCTAssertEqual(state.agentsLayout, .rail)
+      }
+
+      // Unselected agent, then already-selected agent, then channel 0 twice:
+      // every native click lands on its own conversation and nothing else.
+      let three = try windowRect(of: "overlay-agent-rail-3")
+      try nativeClick(at: NSPoint(x: three.midX, y: three.midY))
+      XCTAssertEqual(state.selectedConversationID, astra.id)
+      try nativeClick(at: NSPoint(x: three.midX, y: three.midY))
+      XCTAssertEqual(state.selectedConversationID, astra.id)
+      try nativeClick(at: NSPoint(x: zero.midX, y: zero.midY))
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      try nativeClick(at: NSPoint(x: zero.midX, y: zero.midY))
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      XCTAssertEqual(state.agentsLayout, .rail)
+      XCTAssertFalse(state.showsAgentMonitor)
+      XCTAssertEqual(panel.frame, startFrame)
+
+      // The band itself still belongs to the native resize: a press there
+      // starts a resize and selects nothing.
+      let bandPoint = NSPoint(x: panel.frame.width - OverlayResizeHit.band / 2, y: zero.midY)
+      try send(.leftMouseDown, at: bandPoint, clickCount: 1)
+      XCTAssertTrue(panel.isUserResizing)
+      XCTAssertEqual(state.selectedConversationID, broadcast.id)
+      try send(.leftMouseUp, at: bandPoint, clickCount: 1)
+      XCTAssertFalse(panel.isUserResizing)
+      XCTAssertEqual(panel.frame, startFrame)
+      XCTAssertFalse(panel.isKeyWindow)
+    }
   }
 
   // MARK: - Row model and broadcast regression (deliverable 1, 878667f9f)
@@ -362,16 +910,329 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
   func testDockedRowsKeepProviderModelVisibleAlongsideTimePreviewAndBadge() throws {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let row = try section(
-      of: source, from: "private func channelRow(", to: "private func conversationRow(")
-    XCTAssertTrue(row.contains("lineLimit(2)"), "rows carry a two-line message preview")
+      of: source, from: "func channelRow(", to: "private func conversationRow(")
+    let visual = try overlaySource("OverlayAgentRosterLabel.swift")
+    XCTAssertTrue(visual.contains("lineLimit(2)"), "rows carry a two-line message preview")
     XCTAssertTrue(row.contains("drawerPreview("), "rows render the last message preview")
     XCTAssertTrue(
-      row.contains("overlay-agent-descriptor-"),
+      visual.contains("overlay-agent-descriptor-"),
       "wide rows must show the same provider/model identity as narrow pills")
-    XCTAssertTrue(row.contains(".help("), "descriptor and status live in the row tooltip")
+    // Astra's revised full-view contract (2026-10-22): the row's descriptor
+    // and status carry NO metadata hint — the information is inline. Action
+    // labels (like the archive control's help) keep their hints.
+    XCTAssertFalse(
+      row.contains(".overlayFastHint(tooltip"),
+      "a metadata fast hint would duplicate the inline descriptor/status")
     XCTAssertTrue(
-      row.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
+      visual.contains("overlay-channel-delivery-"), "the status dot keeps the delivery identifier")
     XCTAssertTrue(row.contains("overlay-agent-row-"), "row identifier kept")
+  }
+
+  /// Astra's full-view contract (2026-10-22, brief rev c11709ef): the classic
+  /// full roster carries all actions and information inline. A secondary
+  /// click anywhere on it resolves no big agent menu — "Write / Forward…",
+  /// microphone, playback, Show in Agents and archive never hang off a row —
+  /// and no AppKit tooltip duplicates the inline metadata. The resolved
+  /// policy menu on 0 · All is the positive control that the scan sees real
+  /// menus at all.
+  func testFullRosterResolvesNoBigAgentMenuAndCarriesNoSystemTooltips() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    let channels = [
+      OverlayChannelDelivery(
+        channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
+      OverlayChannelDelivery(
+        channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
+    ]
+    // The roster is fully armed (Astra on f105d23f4): every action callback
+    // and owner fixture is present, so the absence of the big menu is proven
+    // against the surface that could actually compose it.
+    var view = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      agentDescriptors: ["2": "codex · gpt-6", "3": "codex · gpt-6"],
+      onToggleChannel: { _ in },
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false, "3": false]
+    view.onTogglePlayback = { _ in }
+    view.onShowAgentInMonitor = { _ in }
+    view.archiveCandidates = [
+      "2": try XCTUnwrap(lena.owner), "3": try XCTUnwrap(astra.owner),
+    ]
+    view.onArchiveAgent = { _ in }
+    view.onFocusAgentPanel = { _ in }
+    view.panelFocusAvailable = true
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 1600).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 900)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    BackgroundTestWindow.present(window)
+    host.layoutSubtreeIfNeeded()
+
+    // The same localization keys the production menu uses, so the markers
+    // survive a Polish (or any) runtime language (Astra, T4).
+    let forbidden = [
+      String(localized: "Write / Forward…"), String(localized: "Speak to agent"),
+      String(localized: "Stop speaking to agent"), String(localized: "Mute agent replies"),
+      String(localized: "Unmute agent replies"), String(localized: "Show in Agents"),
+      String(localized: "Disconnect and archive agent"),
+      String(localized: "Remove from list and move to archive"),
+    ]
+    func titles(of menu: NSMenu) -> [String] {
+      menu.items.flatMap { [$0.title] + ($0.submenu.map(titles(of:)) ?? []) }
+    }
+    var resolvedMenus = 0
+    let step: CGFloat = 12
+    for x in stride(from: CGFloat(6), to: host.bounds.width, by: step) {
+      for y in stride(from: CGFloat(6), to: host.bounds.height, by: step) {
+        let point = NSPoint(x: x, y: y)
+        guard
+          let event = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: host.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 9_200,
+            clickCount: 1, pressure: 1)
+        else { continue }
+        var view = host.hitTest(point)
+        var menu: NSMenu?
+        while let current = view, menu == nil {
+          menu = current.menu(for: event)
+          view = current.superview
+        }
+        guard let menu else { continue }
+        resolvedMenus += 1
+        menu.delegate?.menuNeedsUpdate?(menu)
+        let resolved = titles(of: menu)
+        for title in resolved {
+          for marker in forbidden {
+            XCTAssertFalse(
+              title.contains(marker),
+              "the big agent menu leaked into the full roster at \(point): \(resolved)")
+          }
+        }
+      }
+    }
+    XCTAssertGreaterThan(
+      resolvedMenus, 0, "the scan resolved no menu at all, so absence proves nothing")
+
+    var tooltips: [String] = []
+    func walk(_ view: NSView) {
+      if let tip = view.toolTip, !tip.isEmpty { tooltips.append(tip) }
+      for child in view.subviews { walk(child) }
+    }
+    walk(host)
+    XCTAssertTrue(
+      tooltips.isEmpty,
+      "the full roster shows its information inline, never as system tooltips: \(tooltips)")
+
+    // The matcher itself is proven on a sentinel first: a probe carrying the
+    // REAL agentPillMenu(for: "2") must expose the forbidden commands, and
+    // performing its write item must reach the spied conversation target.
+    var sentinelSelected: String?
+    var sentinel = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+      onToggleChannel: { _ in },
+      conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+      onSelectConversation: { sentinelSelected = $0 })
+    sentinel.onTogglePlayback = { _ in }
+    sentinel.mutedChannels = ["2": false]
+    let probeHost = NSHostingView(
+      rootView: VStack {
+        Text(verbatim: "menu-probe").frame(width: 180, height: 40)
+          .modifier(sentinel.agentPillMenu(for: "2", showsInlineError: false))
+        Text(verbatim: "hint-probe").frame(width: 180, height: 40)
+          .overlayFastHint("probe-hint", palette: .dark)
+      }
+      .frame(width: 200, height: 120))
+    probeHost.frame = NSRect(x: 0, y: 0, width: 200, height: 120)
+    let probeWindow = NSWindow(
+      contentRect: probeHost.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    probeWindow.isReleasedWhenClosed = false
+    defer { probeWindow.orderOut(nil) }
+    probeWindow.contentView = probeHost
+    BackgroundTestWindow.present(probeWindow)
+    probeHost.layoutSubtreeIfNeeded()
+
+    func resolvedMenu(in container: NSView, of window: NSWindow, at point: NSPoint) -> NSMenu? {
+      guard
+        let event = NSEvent.mouseEvent(
+          with: .rightMouseDown, location: container.convert(point, to: nil),
+          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: window.windowNumber, context: nil, eventNumber: 9_300,
+          clickCount: 1, pressure: 1)
+      else { return nil }
+      var view = container.hitTest(point)
+      while let current = view {
+        if let menu = current.menu(for: event) { return menu }
+        view = current.superview
+      }
+      return nil
+    }
+    let probeMenu = resolvedMenu(
+      in: probeHost, of: probeWindow, at: NSPoint(x: 100, y: probeHost.bounds.height - 20))
+    let probeTitles = probeMenu.map(titles(of:)) ?? []
+    XCTAssertTrue(
+      forbidden.contains { marker in probeTitles.contains { $0.contains(marker) } },
+      "the sentinel agent menu must trip the matcher, or absence proves nothing: \(probeTitles)")
+    // Required, never conditional (Astra and Olga on bdadd84fc): another
+    // forbidden command could satisfy the matcher while a missing Write
+    // silently skipped the spy.
+    let requiredMenu = try XCTUnwrap(probeMenu, "the sentinel resolves a real menu")
+    let writeIndex = try XCTUnwrap(
+      requiredMenu.items.firstIndex(where: {
+        $0.title.contains(String(localized: "Write / Forward…"))
+      }), "the sentinel menu must carry the Write command: \(probeTitles)")
+    requiredMenu.performActionForItem(at: writeIndex)
+    XCTAssertEqual(sentinelSelected, lena.id, "the write command reaches its exact conversation")
+
+    // The custom hint panel is the other tooltip owner (overlayFastHint →
+    // OverlayHintPanel). The probe proves hover really presents a readable
+    // hint; then every roster region is hovered, and a hint repeating the
+    // inline metadata — descriptor, preview, session — is the duplicated
+    // tooltip the contract forbids. An action label is not a duplicate.
+    func regions(in view: NSView) -> [OverlayMenuCursorRegionView] {
+      var found: [OverlayMenuCursorRegionView] = []
+      if let region = view as? OverlayMenuCursorRegionView { found.append(region) }
+      for child in view.subviews { found.append(contentsOf: regions(in: child)) }
+      return found
+    }
+    let probeRegions = regions(in: probeHost)
+    XCTAssertFalse(probeRegions.isEmpty, "the hint probe composes a hover region")
+    var sawProbeHint = false
+    for region in probeRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if OverlayHintPanel.shared.presentedTitle == "probe-hint" {
+        sawProbeHint = true
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+        XCTAssertNil(
+          OverlayHintPanel.shared.presentedTitle,
+          "leaving the control must withdraw its hint")
+      } else {
+        region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+      }
+    }
+    XCTAssertTrue(sawProbeHint, "hover must present the probe hint, or absence proves nothing")
+
+    let metadata = ["codex", "gpt-6", "PR is green", "on it", "lena-session", "astra-session"]
+    let rosterRegions = regions(in: host)
+    XCTAssertFalse(rosterRegions.isEmpty, "the roster composes hover regions")
+    for region in rosterRegions {
+      let center = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+      region.updateHover(at: center)
+      if let hint = OverlayHintPanel.shared.presentedTitle {
+        for marker in metadata {
+          XCTAssertFalse(
+            hint.contains(marker), "a hover hint duplicates inline roster metadata: \(hint)")
+        }
+      }
+      region.updateHover(at: NSPoint(x: -1_000, y: -1_000))
+    }
+  }
+
+  /// Olga's chosen execution proof (2026-10-22): a real AX press on the
+  /// composed roster's inline microphone reaches exactly its agent, exactly
+  /// once. One agent and no All row keeps the shared identifier unique.
+  /// Runs only in the isolated GUI window (make test-swift), through the
+  /// independent AX client — never a self-query on the main thread.
+  func testInlineMicrophonePressReachesItsAgentOnce() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let (_, lena, _) = try rosterFixture()
+    var toggles: [UInt8] = []
+    var view = OverlayChannelStatusView(
+      channels: [
+        OverlayChannelDelivery(
+          channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false)
+      ],
+      unavailable: false, palette: .dark, animates: false,
+      hudStates: ["2": hud(session: "lena-session")],
+      onToggleChannel: { toggles.append($0) },
+      conversations: [lena], selectedConversationID: lena.id,
+      onSelectConversation: { _ in })
+    view.mutedChannels = ["2": false]
+    view.onTogglePlayback = { _ in }
+    let host = NSHostingView(
+      rootView: view.monitorBody(maximumHeight: 800).environment(\.csTextScale, 1)
+        .frame(width: 360))
+    host.frame = NSRect(x: 0, y: 0, width: 360, height: 400)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.orderOut(nil) }
+    window.contentView = host
+    try BackgroundTestWindow.takeKeyboard(window)
+    host.layoutSubtreeIfNeeded()
+
+    let elements = try NativeAccessibilityProbe.waitForElements("overlay-agent-microphone")
+    XCTAssertEqual(
+      elements.elements.count, 1,
+      "one agent and no All row leave exactly one microphone: \(elements.elements)")
+    let pressed = try NativeAccessibilityProbe.query("overlay-agent-microphone", press: true)
+    XCTAssertEqual(pressed.pressStatus, 0, "the AX press must land: \(pressed.trace)")
+    let deadline = Date().addingTimeInterval(2)
+    while toggles.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertEqual(toggles, [2], "the press reaches its exact agent, exactly once")
+  }
+
+  /// ⌘+ grew the docked column and the conversation, but the roster's own text
+  /// stayed at 1.0 (Maciej, 2026-10-19): the overlay calls `monitorBody` on a
+  /// status view that is never installed, so its environment read the default.
+  func testDockedRosterTextFollowsTheOverlayTextScale() throws {
+    let (broadcast, lena, astra) = try rosterFixture()
+    // The roster's height is its text: a heading and three rows. Measured
+    // alone at a fixed width, it grows with the scale only if the text does.
+    // `fittingSize` reads 0 with `sizingOptions = []`, so the roster reports
+    // its own ideal height.
+    func rosterHeight(at scale: CGFloat) -> CGFloat {
+      let recorder = OverlayRosterHeightRecorder()
+      let view = OverlayChannelStatusView(
+        channels: [
+          OverlayChannelDelivery(
+            channel: "2", agent: "lena", deliveryID: "receipt-2", stage: .received, isOpen: false),
+          OverlayChannelDelivery(
+            channel: "3", agent: "astra", deliveryID: "receipt-3", stage: .received, isOpen: false),
+        ],
+        unavailable: false, palette: .dark, animates: false,
+        hudStates: ["2": hud(session: "lena-session"), "3": hud(session: "astra-session")],
+        conversations: [broadcast, lena, astra], selectedConversationID: broadcast.id,
+        onSelectConversation: { _ in })
+      let host = NSHostingView(
+        rootView:
+          view.monitorBody(maximumHeight: 4000)
+          .environment(\.csTextScale, scale)
+          .frame(width: 300)
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            recorder.height = $0
+          })
+      host.sizingOptions = []
+      host.frame = CGRect(x: 0, y: 0, width: 300, height: 4000)
+      // The scroll viewport takes the rows' measured height one pass later.
+      for _ in 0..<3 {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      }
+      return recorder.height
+    }
+    let normal = rosterHeight(at: 1)
+    let large = rosterHeight(at: 1.5)
+    XCTAssertGreaterThan(normal, 40, "the roster lays out its heading and rows")
+    XCTAssertLessThan(normal, 1000, "the viewport took the rows' height, not the 4000 pt bound")
+    // Fixed paddings and glyphs do not scale, so the whole is below 1.5×; before
+    // the fix nothing in the roster scaled and the ratio was 1.
+    XCTAssertGreaterThan(
+      large, normal * 1.1,
+      "the docked roster's text grows with ⌘+ like the conversation: \(normal) → \(large)")
   }
 
   func testRememberedDrawerWidthLeavesConversationSpaceAndScalesWithText() throws {
@@ -383,7 +1244,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     state.selectConversation(lena.id)
     state.conversationDrafts[lena.id] = "unfinished message"
     for (width, scale, expected) in [
-      (1200.0, 1.0, 480.0), (900.0, 1.0, 380.0),
+      (1200.0, 1.0, 480.0), (900.0, 1.0, 480.0),
       (1400.0, 1.4, 672.0),
     ] as [(CGFloat, CGFloat, CGFloat)] {
       let recorder = OverlayDrawerFrameRecorder()
@@ -398,13 +1259,13 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
         contentRect: CGRect(x: 0, y: 0, width: width, height: 500),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
       panel.contentView = host
-      panel.orderFrontRegardless()
+      BackgroundTestWindow.present(panel)
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       host.layoutSubtreeIfNeeded()
       XCTAssertEqual(recorder.frame.width, expected, accuracy: 1)
       XCTAssertEqual(recorder.frame.minX, width - expected, accuracy: 1)
-      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 520 * scale - 1)
+      XCTAssertGreaterThanOrEqual(recorder.frame.minX, 320 * scale - 1)
       XCTAssertEqual(state.selectedConversationID, lena.id)
       XCTAssertEqual(state.conversationDrafts[lena.id], "unfinished message")
       panel.orderOut(nil)
@@ -462,6 +1323,29 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(
       preview(message(.reply, owner: lenaOwner, source: "3")),
       "lena → 3: first line second line")
+    func route(_ message: OverlayConversationMessage) -> String {
+      OverlayChannelStatusView.messageRoute(of: message).label
+    }
+    XCTAssertEqual(
+      route(message(.user, to: [lenaOwner, astraOwner], source: "2")), "You → lena, astra")
+    XCTAssertEqual(route(message(.reply, owner: lenaOwner, source: "10")), "lena → You")
+    var attachmentOnly = message(.user, to: [lenaOwner], source: "2")
+    attachmentOnly.text = "[attachment] shot.png (image/png, 4 bytes): /tmp/shot.png"
+    attachmentOnly.attachments = [
+      OverlayMessageAttachment(
+        name: "shot.png", path: "/tmp/shot.png", mediaType: "image/png", bytes: 4)
+    ]
+    XCTAssertEqual(attachmentOnly.bodyText, "")
+    XCTAssertEqual(
+      route(attachmentOnly), "You → lena", "a file-only delivery still names its route")
+    XCTAssertEqual(preview(attachmentOnly), "You → lena: ")
+    let bubbles = try overlaySource("OverlayConversationView.swift")
+    XCTAssertTrue(bubbles.contains("messageRoute(of: message)"))
+    XCTAssertTrue(bubbles.contains("overlay-message-route-"))
+    XCTAssertTrue(bubbles.contains("owner.id != conversation.owner?.id"))
+    XCTAssertFalse(
+      bubbles.contains("overlay-message-reply"),
+      "a visual reply control is not a delivery until the envelope carries the source id")
   }
 
   func testAgentRowStaysWithinFiveLinesAndKeepsUnreadApartFromReceipts() throws {
@@ -470,11 +1354,13 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let source = try overlaySource("OverlayChannelStatusView.swift")
     let label = try section(
       of: source, from: "private func rosterRowLabel(", to: "func rowStateText(")
-    let limits = label.components(separatedBy: ".lineLimit(").dropFirst().compactMap {
+    let visual = try overlaySource("OverlayAgentRosterLabel.swift")
+    let limits = (visual + label).components(separatedBy: ".lineLimit(").dropFirst().compactMap {
       Int($0.prefix { $0.isNumber })
     }
     XCTAssertEqual(limits.reduce(0, +), 5, "every text in the row is capped, five lines in all")
-    XCTAssertTrue(label.contains("unreadBadge(count)"), "unread rides the title line as a badge")
+    XCTAssertTrue(
+      visual.contains("OverlayAgentUnreadBadge("), "unread rides the title line as a badge")
     XCTAssertFalse(label.contains("unread replies\")"), "no separate unread line")
     XCTAssertTrue(label.contains("rowStateText("), "receipt and reader share one state line")
   }
@@ -492,14 +1378,27 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertTrue(
       monitor.contains("OverlayBroadcastPolicyMenu("),
       "the docked 0 · All row carries every member's wake policy")
-    let pills = try XCTUnwrap(
-      source.range(of: "struct OverlayAgentPillStack"), "the pill stack exists")
-    XCTAssertTrue(
-      String(source[pills.lowerBound...]).contains("OverlayBroadcastPolicyMenu("),
-      "pill rows carry the same wake policy menu")
     XCTAssertTrue(
       source.contains("members: broadcastMembers.filter { $0.channel == channel.channel }"),
       "an agent's own docked row carries only its own policy")
+  }
+
+  /// A bound channel whose reader died keeps its row, dimmed as one unit,
+  /// and its microphone sleeps (Maciej, 2026-10-17).
+  func testDockedRowDimsADisconnectedReaderAndSleepsItsMicrophone() throws {
+    let source = try overlaySource("OverlayChannelStatusView.swift")
+    let modifier = try section(
+      of: source, from: "struct OverlayDisconnectedRowDim: ViewModifier {", to: "\n}\n")
+    XCTAssertTrue(modifier.contains(".opacity(disconnected ? Self.opacity : 1)"))
+    XCTAssertTrue(modifier.contains(".grayscale(disconnected ? 1 : 0)"))
+    let docked = try section(
+      of: source, from: "func channelRow(", to: "private func rosterRowLabel(")
+    XCTAssertTrue(
+      docked.contains("&& !hasDeadFollower(channel),"),
+      "the docked row's microphone sleeps for a dead reader")
+    XCTAssertTrue(
+      docked.contains("OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel))"),
+      "the docked row dims as one unit")
   }
 
   // MARK: - Hosting structure (deliverables 1 and 4)
@@ -524,14 +1423,16 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let column = try section(
       of: overlay, from: "private func agentDrawerColumn", to: "// MARK: Header")
     XCTAssertTrue(
-      column.contains("channelStatusView.monitorBody"), "the column hosts the same roster body")
+      column.contains("var roster = channelStatusView")
+        && column.contains("return roster.monitorBody("),
+      "the column hosts the same roster body")
     XCTAssertTrue(column.contains("overlay-agent-sidebar"))
     XCTAssertTrue(
       canvas.contains("setAgentDrawerDocked"), "the canvas reports docked mode to the state")
     let conversation = try overlaySource("OverlayConversationView.swift")
     XCTAssertTrue(
       conversation.contains("OverlayAgentDrawerLayout.pillWidth(textScale: textScale)"),
-      "the name pill and the stack share 224 × scale")
+      "the name pill keeps 224 × scale")
   }
 
   // MARK: - Wide-window evacuation (Maciej, 2026-10-17)
@@ -558,7 +1459,7 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       "the content margin follows the evacuated row")
   }
 
-  /// Broadcast-policy choices in the pill's context menu are checkboxes, so
+  /// Broadcast-policy choices in a roster row's context menu are checkboxes, so
   /// they must use the menu Toggle's native state column like the header
   /// menu's checkboxes, not a checkmark squatting in the icon slot.
   func testPolicyMenuUsesNativeCheckboxToggles() throws {
@@ -575,4 +1476,9 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
 @MainActor
 private final class OverlayDrawerFrameRecorder {
   var frame = CGRect.zero
+}
+
+@MainActor
+private final class OverlayRosterHeightRecorder {
+  var height: CGFloat = 0
 }

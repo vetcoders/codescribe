@@ -13,6 +13,13 @@ import SwiftUI
 // launch command, URL, environment keys, authentication, permission rule and
 // handshake identity live behind a per-card disclosure, and the on-disk
 // mechanics behind the tab-level "Technical details".
+//
+// Round 16: "Add server" is an ordinary section title above its card, not an
+// uppercase mono eyebrow inside it; the card actions are the one Settings
+// chip; and the form sits on the shared card with the pane's own spacing
+// (Founder brief, round 16, 2026-10-18). Round 20 dropped the empty-state card
+// that used to sit above the form when there were no servers yet: the form
+// already is the only action, so the pane opens straight on it (UI-28).
 
 struct MCPServersSection: View {
   @ObservedObject var model: SettingsViewModel
@@ -21,10 +28,11 @@ struct MCPServersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      if model.mcpServers.isEmpty {
-        emptyState
-      } else {
-        VStack(spacing: 7) {
+      // No empty-state card any more (UI-28, round 20): with no servers, the
+      // pane opens straight on the "Add server" form below instead of a card
+      // that only restated what the form already offers.
+      if !model.mcpServers.isEmpty {
+        VStack(spacing: CSSpace.xs) {
           ForEach(model.mcpServers, id: \.name) { server in
             MCPServerRow(
               server: server,
@@ -33,24 +41,39 @@ struct MCPServersSection: View {
               permissionLevel: model.mcpServerPermissionLevel(server.name),
               onToggle: { model.toggleMcpServer(server) },
               onTest: { model.testMcpServer(server.name) },
-              onRemove: { model.requestMcpServerRemoval(server.name) }
+              onRemove: { model.requestMcpServerRemoval(server.name) },
+              onSave: { command, args, endpoint, token in
+                model.updateMcpServer(
+                  server, command: command, args: args, endpoint: endpoint, token: token)
+              }
             )
           }
         }
       }
 
-      MCPAddServerForm { name, command, args, endpoint, token in
+      // The form's title is a section title above its card, like every other
+      // section of the pane — never an uppercase eyebrow inside the card.
+      SettingsSectionHeaderRow(
+        String(
+          localized: "Add server",
+          comment: "MCP servers: header of the form that adds a server")
+      )
+      .padding(.top, model.mcpServers.isEmpty ? 0 : SettingsScale.sectionGap)
+
+      MCPServerForm { name, command, args, endpoint, token in
         model.addMcpServer(
           name: name, command: command, args: args,
           endpoint: endpoint, token: token
         )
       }
-      .padding(.top, 12)
+      .padding(.top, SettingsScale.headerGap)
 
       DisclosureGroup(isExpanded: $showingTechnicalDetails) {
-        VStack(alignment: .leading, spacing: 6) {
+        // The group takes its content's width; without this frame the pane
+        // centres it under the form (Founder, 2026-10-23 01:20).
+        VStack(alignment: .leading, spacing: CSSpace.xs) {
           Text("Edited on disk in mcp.json. Hand edits (env, custom fields) are preserved.")
-            .font(CSFont.mono(11, .medium))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
           Text(verbatim: "~/.codescribe/mcp.json")
@@ -61,20 +84,21 @@ struct MCPServersSection: View {
             confirmingClear = true
           } label: {
             Text("Move MCP configuration to Trash…")
-              .font(CSFont.mono(10.5, .semibold))
+              .font(SettingsScale.controlLabel)
               .foregroundStyle(CSColor.danger)
           }
           .csFocusRing()
-          .padding(.top, 6)
+          .padding(.top, CSSpace.xs)
           .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
         }
-        .padding(.top, 6)
+        .padding(.top, CSSpace.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
       } label: {
         Text("Technical details")
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
       }
-      .padding(.top, 14)
+      .padding(.top, SettingsScale.sectionGap)
       .accessibilityIdentifier("settings-mcp-technical-details")
     }
     .alert("Move MCP configuration to Trash?", isPresented: $confirmingClear) {
@@ -84,7 +108,7 @@ struct MCPServersSection: View {
       }
     } message: {
       Text(
-        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, threads, preferences, and API keys stay untouched."
+        "Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, conversations, preferences, and API keys stay untouched."
       )
     }
     // Removing one server is the same class of action as clearing the file:
@@ -107,31 +131,6 @@ struct MCPServersSection: View {
       )
     }
   }
-
-  private var emptyState: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("No MCP servers yet — this is optional.")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
-      Text(
-        "MCP servers extend the Agent with extra tools like code search, PR review, or web search. Add your first server below, or skip it and wire one any time."
-      )
-      .font(CSFont.mono(11, .medium))
-      .foregroundStyle(Color.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.vertical, 14)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
-  }
 }
 
 // MARK: - One server card (name · state · last test · actions · details)
@@ -146,14 +145,17 @@ struct MCPServerRow: View {
   let onToggle: () -> Void
   let onTest: () -> Void
   let onRemove: () -> Void
+  let onSave: (String, [String], String, String) -> MCPAddFailure?
 
   @State private var showingDetails = false
+  @State private var isEditing = false
 
   init(
     server: CsMcpServer, pending: Bool, result: CsMcpTestResult?,
     permissionLevel: String?, initiallyShowingDetails: Bool = false,
     onToggle: @escaping () -> Void, onTest: @escaping () -> Void,
-    onRemove: @escaping () -> Void
+    onRemove: @escaping () -> Void,
+    onSave: @escaping (String, [String], String, String) -> MCPAddFailure? = { _, _, _, _ in nil }
   ) {
     self.server = server
     self.pending = pending
@@ -162,6 +164,7 @@ struct MCPServerRow: View {
     self.onToggle = onToggle
     self.onTest = onTest
     self.onRemove = onRemove
+    self.onSave = onSave
     _showingDetails = State(initialValue: initiallyShowingDetails)
   }
 
@@ -181,32 +184,47 @@ struct MCPServerRow: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      HStack(alignment: .top, spacing: 10) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
+      HStack(alignment: .top, spacing: CSSpace.sm) {
+        // A setting name inside a card: the "Add server" title above the form
+        // is the section rung, and a card's own name never matches it.
         Text(server.name)
-          .font(CSFont.ui(13.5, .semibold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
           .fixedSize(horizontal: false, vertical: true)
           .layoutPriority(1)
-        Spacer(minLength: 10)
-        HStack(spacing: 7) {
+        Spacer(minLength: CSSpace.sm)
+        HStack(spacing: CSSpace.xs) {
           enabledButton
           testButton
+          SettingsChipButton(action: { isEditing.toggle() }) {
+            Text("Edit").font(SettingsScale.controlLabel)
+          }
+          .accessibilityIdentifier("settings-mcp-edit-\(server.name)")
           removeButton
         }
         .fixedSize(horizontal: true, vertical: false)
       }
 
+      if isEditing {
+        MCPServerForm(server: server, onCancel: { isEditing = false }) {
+          _, command, args, endpoint, token in
+          let failure = onSave(command, args, endpoint, token)
+          if failure == nil { isEditing = false }
+          return failure
+        }
+      }
+
       DisclosureGroup(isExpanded: $showingDetails) {
-        details.padding(.top, 7)
+        details.padding(.top, CSSpace.xs)
       } label: {
-        HStack(spacing: 8) {
+        HStack(spacing: CSSpace.sm) {
           lastTestLine
             .layoutPriority(1)
-          Spacer(minLength: 10)
+          Spacer(minLength: CSSpace.sm)
           HStack(spacing: 5) {
             Text("Details")
-              .font(CSFont.ui(11))
+              .font(SettingsScale.helper)
             Image(systemName: "chevron.right")
               .font(.system(size: 8, weight: .semibold))
               .rotationEffect(.degrees(showingDetails ? 90 : 0))
@@ -218,8 +236,7 @@ struct MCPServerRow: View {
       }
       .disclosureGroupStyle(MCPServerRowDisclosureStyle())
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
+    .padding(SettingsScale.cardPadding)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .fill(accent.opacity(0.05))
@@ -253,7 +270,7 @@ struct MCPServerRow: View {
 
   private func resultLine(text: String, color: Color) -> some View {
     Text(text)
-      .font(CSFont.mono(11, .semibold))
+      .font(CSFont.ui(11, .semibold))
       .foregroundStyle(color)
       .lineLimit(2)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -334,10 +351,15 @@ struct MCPServerRow: View {
 
   // MARK: Actions
 
+  // All three are `SettingsChipButton`: one chip family across Settings, so
+  // the card no longer carries three hand-rolled shapes at a seventh radius.
+  // The state still reads in colour — on the power glyph and the label, where
+  // it belongs — instead of tinting a button's whole background.
+
   /// The configured state. Clicking flips the `enabled` flag in mcp.json; it
   /// never connects or disconnects anything by itself.
   private var enabledButton: some View {
-    Button(action: onToggle) {
+    SettingsChipButton(action: onToggle) {
       HStack(spacing: 5) {
         CSIconView(
           icon: .power, size: 8, weight: .semibold,
@@ -347,58 +369,28 @@ struct MCPServerRow: View {
             ? String(localized: "mcp.server.enabled", defaultValue: "Enabled")
             : String(localized: "mcp.server.disabled", defaultValue: "Disabled"))
       }
-      .font(CSFont.mono(10, .semibold))
+      .font(SettingsScale.controlLabel)
       .foregroundStyle(server.enabled ? CSColor.oliveLight : Color.secondary)
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(accent.opacity(0.10))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(accent.opacity(0.22), lineWidth: 1)
-      )
     }
-    .csFocusRing()
     .help(server.enabled ? "Disable this server" : "Enable this server")
   }
 
   private var testButton: some View {
-    Button(action: onTest) {
+    SettingsChipButton(enabled: !pending, action: onTest) {
       Text("Test", comment: "Button label: run a connection test")
-        .font(CSFont.mono(10, .semibold))
+        .font(SettingsScale.controlLabel)
         .foregroundStyle(pending ? Color.secondary : Color.primary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(Color.primary.opacity(0.08))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-        )
     }
-    .csFocusRing()
-    .disabled(pending)
     .help("Spawn the server and list its tools")
   }
 
   private var removeButton: some View {
-    Button(action: onRemove) {
+    SettingsChipButton(action: onRemove) {
+      // A glyph has no cap height to pad against: the square matches the line
+      // height of the two labelled chips beside it, so all three are one row.
       CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracotta)
-        .frame(width: 28, height: 26)
-        .background(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(Color.primary.opacity(0.08))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-        )
+        .frame(width: 14, height: 14)
     }
-    .csFocusRing()
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
     .accessibilityHint("Asks for confirmation before removing the server from mcp.json.")
     .help("Remove this server from mcp.json…")
@@ -431,7 +423,7 @@ private struct MCPServerRowDisclosureStyle: DisclosureGroupStyle {
 
 // MARK: - Add-server form
 
-private struct MCPAddServerForm: View {
+private struct MCPServerForm: View {
   /// Returns nil on success, otherwise the store's refusal translated for the
   /// form. A failed add keeps every field as typed so the fix is one edit away,
   /// and the message sits under the field it names.
@@ -440,17 +432,38 @@ private struct MCPAddServerForm: View {
       _ name: String, _ command: String, _ args: [String],
       _ endpoint: String, _ token: String
     ) -> MCPAddFailure?
+  let server: CsMcpServer?
+  let onCancel: (() -> Void)?
+
+  private struct Argument: Identifiable {
+    let id = UUID()
+    var value: String
+  }
 
   @State private var remote = false
   @State private var name: String = ""
   @State private var command: String = ""
-  @State private var argsText: String = ""
+  @State private var arguments: [Argument] = []
   @State private var endpoint: String = ""
   @State private var token: String = ""
   @State private var addError: MCPAddFailure?
   @FocusState private var focusedField: Field?
 
   private enum Field { case name, endpoint, token, command, args }
+
+  init(
+    server: CsMcpServer? = nil, onCancel: (() -> Void)? = nil,
+    onAdd: @escaping (String, String, [String], String, String) -> MCPAddFailure?
+  ) {
+    self.server = server
+    self.onCancel = onCancel
+    self.onAdd = onAdd
+    _remote = State(initialValue: server?.transport == "remote")
+    _name = State(initialValue: server?.name ?? "")
+    _command = State(initialValue: server?.command ?? "")
+    _arguments = State(initialValue: (server?.args ?? []).map { Argument(value: $0) })
+    _endpoint = State(initialValue: server?.endpoint ?? "")
+  }
 
   /// The field a refusal points at, if the form has one for it.
   private static func field(for failure: MCPAddFailure.Field?) -> Field? {
@@ -471,25 +484,23 @@ private struct MCPAddServerForm: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      Text("Add server", comment: "MCP servers: header of the form that adds a server")
-        .textCase(.uppercase)
-        .font(CSFont.mono(10, .semibold))
-        .tracking(0.5)
-        .foregroundStyle(Color.secondary)
-
+    // No title inside the card: `MCPServersSection` puts "Add server" above it
+    // as an ordinary section title (Founder brief, round 16, 2026-10-18).
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       Picker("Transport", selection: $remote) {
         Text("Local process").tag(false)
         Text("HTTP connection").tag(true)
       }
       .pickerStyle(.segmented)
       .labelsHidden()
+      .controlSize(.small)
 
       labeledField("Server name", placeholder: "e.g. prview", text: $name, focus: .name)
+        .disabled(server != nil)
       if remote {
         labeledField(
           "Server URL", placeholder: "https://…/mcp", text: $endpoint, focus: .endpoint)
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: CSSpace.xxs) {
           fieldLabel("Access token (optional)")
           // The label is the field's accessibility name; the visible caption
           // above stays a plain Text so the chrome matches the other fields.
@@ -499,15 +510,37 @@ private struct MCPAddServerForm: View {
             .settingsInputChrome(isFocused: focusedField == .token)
             .onSubmit(submit)
           Text("The token is stored in the macOS Keychain, never in mcp.json.")
-            .font(CSFont.ui(10.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .fixedSize(horizontal: false, vertical: true)
+          if server?.authRef.isEmpty == false {
+            Text("Leave the token empty to keep the saved token.")
+              .font(SettingsScale.helper)
+              .foregroundStyle(Color.secondary)
+          }
         }
       } else {
         labeledField(
-          "Launch command", placeholder: "e.g. prview", text: $command, focus: .command)
-        labeledField(
-          "Command arguments", placeholder: "e.g. mcp", text: $argsText, focus: .args)
+          "Launch command", placeholder: "e.g. /usr/local/bin/prview", text: $command,
+          focus: .command)
+        Text("Enter only the executable here. Add each command argument separately below.")
+          .font(SettingsScale.helper)
+          .foregroundStyle(Color.secondary)
+        fieldLabel("Command arguments")
+        ForEach($arguments) { $argument in
+          HStack {
+            TextField("Argument", text: $argument.value)
+              .settingsInputChrome(isFocused: focusedField == .args)
+              .focused($focusedField, equals: .args)
+            SettingsChipButton(action: { arguments.removeAll { $0.id == argument.id } }) {
+              Image(systemName: "minus")
+            }
+            .accessibilityLabel("Remove argument")
+          }
+        }
+        SettingsChipButton(action: { arguments.append(Argument(value: "")) }) {
+          Text("Add argument").font(SettingsScale.controlLabel)
+        }
       }
 
       // A refusal without a field of its own (store I/O, an unknown message)
@@ -519,24 +552,19 @@ private struct MCPAddServerForm: View {
 
       HStack {
         Spacer(minLength: 0)
-        SettingsSaveButton(title: "Add", enabled: canAdd, action: submit)
+        if let onCancel {
+          SettingsChipButton(action: onCancel) { Text("Cancel") }
+        }
+        SettingsSaveButton(title: server == nil ? "Add" : "Save", enabled: canAdd, action: submit)
       }
     }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 13)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.06))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .settingsGroupedInset()
   }
 
   private func fieldLabel(_ title: LocalizedStringKey) -> some View {
     Text(title)
-      .font(CSFont.ui(11, .medium))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
   }
 
@@ -544,17 +572,22 @@ private struct MCPAddServerForm: View {
   /// name (`TextField(title…)` with the label hidden), so VoiceOver reads
   /// "Server name" and not the placeholder or the typed text. A refusal that
   /// names this field renders right under it.
+  ///
+  /// A long launch command, argument list or URL is not clipped: the field
+  /// keeps one line and scrolls its own content, and the full value is one
+  /// tooltip away while the field is not focused.
   private func labeledField(
     _ title: LocalizedStringKey, placeholder: LocalizedStringKey, text: Binding<String>,
     focus: Field
   ) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: CSSpace.xxs) {
       fieldLabel(title)
       TextField(title, text: text, prompt: Text(placeholder))
         .labelsHidden()
         .focused($focusedField, equals: focus)
         .settingsInputChrome(isFocused: focusedField == focus)
         .onSubmit(submit)
+        .help(text.wrappedValue)
       if let addError, Self.field(for: addError.visibleField(remote: remote)) == focus {
         errorLine(addError)
       }
@@ -565,7 +598,7 @@ private struct MCPAddServerForm: View {
   /// differ, stay one hover away instead of on the screen.
   private func errorLine(_ failure: MCPAddFailure) -> some View {
     Text(verbatim: failure.message)
-      .font(CSFont.mono(10.5, .medium))
+      .font(SettingsScale.helper)
       .foregroundStyle(CSColor.terracotta)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
@@ -575,16 +608,12 @@ private struct MCPAddServerForm: View {
 
   private func submit() {
     guard canAdd else { return }
-    let args =
-      argsText
-      .split(whereSeparator: { $0 == " " || $0 == "\t" })
-      .map(String.init)
     // The name goes through untouched: the store rejects surrounding
     // whitespace rather than trimming it, and the form shows that refusal.
     addError = onAdd(
       name,
       remote ? "" : command.trimmingCharacters(in: .whitespaces),
-      remote ? [] : args,
+      remote ? [] : arguments.map(\.value),
       remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
       remote ? token : ""
     )?.forTransport(remote: remote, endpoint: endpoint)
@@ -596,7 +625,7 @@ private struct MCPAddServerForm: View {
     }
     name = ""
     command = ""
-    argsText = ""
+    arguments = []
     endpoint = ""
     token = ""
   }

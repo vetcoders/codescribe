@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -333,6 +333,10 @@ pub(crate) fn channel_session_line(line: &ChannelSessionLine<'_>) -> Value {
         "utterance_silence_sec": line.utterance_silence_sec,
         "provider": line.provider,
         "provider_session_id": line.provider_session_id,
+        // This controller publishes each take's closing decision (a closing
+        // seal or a publication refusal) before its non-open row. Followers
+        // must not turn a draft into a delivery for a session that says so.
+        "publication": "controller",
     })
 }
 
@@ -917,6 +921,75 @@ fn marker_delivery_id(path: &Path) -> Option<&str> {
     is_delivery_id(stem).then_some(stem)
 }
 
+struct CachedMarker {
+    len: u64,
+    modified: SystemTime,
+    ino: u64,
+    /// `None` keeps a body that is not JSON from being parsed again.
+    body: Option<std::sync::Arc<Value>>,
+}
+
+fn marker_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, CachedMarker>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, CachedMarker>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// A proven marker that fails its checks stays in `known_seals` and is
+/// revisited whenever the proof epoch moves, which on a busy bus is most
+/// passes of the 500 ms loop (sample 2026-10-19: ~10% of a core opening and
+/// parsing the same bodies). Its parsed body is reused while the file keeps
+/// its length, mtime and inode; the checks themselves still run every pass.
+fn marker_body(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<std::sync::Arc<Value>>> {
+    let len = metadata.len();
+    let ino = file_ino(metadata);
+    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    {
+        let cache = marker_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(hit) = cache.get(path)
+            && hit.len == len
+            && hit.ino == ino
+            && hit.modified == modified
+        {
+            return Ok(hit.body.clone());
+        }
+    }
+    #[cfg(test)]
+    tests::MARKER_BODY_READS.with(|reads| reads.set(reads.get() + 1));
+    // One bounded read and a slice parse: serde's reader path issues a read
+    // per byte through the buffer's slow path.
+    let mut bytes = Vec::with_capacity(len as usize);
+    fs::File::open(path)?
+        .take(1 << 20)
+        .read_to_end(&mut bytes)?;
+    let body = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .map(std::sync::Arc::new);
+    let unchanged = fs::symlink_metadata(path).ok().is_some_and(|after| {
+        after.len() == len && file_ino(&after) == ino && after.modified().ok() == Some(modified)
+    });
+    if unchanged {
+        let mut cache = marker_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if cache.len() >= 8192 {
+            cache.clear();
+        }
+        cache.insert(
+            path.to_path_buf(),
+            CachedMarker {
+                len,
+                modified,
+                ino,
+                body: body.clone(),
+            },
+        );
+    }
+    Ok(body)
+}
+
 fn read_marker(
     path: &Path,
     lease: &LeaseRecord,
@@ -929,14 +1002,8 @@ fn read_marker(
     if !metadata.is_file() || metadata.len() > 1 << 20 {
         return Ok(None);
     }
-    let file = fs::File::open(path)?;
-    #[cfg(test)]
-    tests::MARKER_BODY_READS.with(|reads| reads.set(reads.get() + 1));
-    // Keep the physical read bound inside the buffer. Serde's reader otherwise
-    // turns the recurring marker scan into one file syscall for every byte.
-    let value: Value = match serde_json::from_reader(BufReader::new(file.take(1 << 20))) {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
+    let Some(value) = marker_body(path, &metadata)? else {
+        return Ok(None);
     };
     let Some(object) = value.as_object() else {
         return Ok(None);
@@ -1699,6 +1766,43 @@ mod tests {
         MARKER_BODY_READS.with(|reads| reads.set(0));
         assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
         assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 0);
+    }
+
+    #[test]
+    fn a_proven_rejected_marker_body_is_read_once_across_epochs() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        let rejected = format!("{:024x}", 7);
+        // Proven by a seal row, but the body names another lease: the scan
+        // must refuse it and keep refusing it on every later pass.
+        write_json(
+            &bridge
+                .join("acknowledgments")
+                .join(LEASE_ID)
+                .join(format!("{rejected}.json")),
+            &json!({"lease_id": "fedcba9876543210fedcba9876543210", "delivery_id": rejected}),
+        );
+        fs::write(&bus, seal_row(&rejected)).unwrap();
+        MARKER_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        assert_eq!(MARKER_BODY_READS.with(|reads| reads.get()), 1);
+        for ordinal in 100..103 {
+            // Each new seal moves the proof epoch and reopens the directory.
+            OpenOptions::new()
+                .append(true)
+                .open(&bus)
+                .unwrap()
+                .write_all(seal_row(&format!("{ordinal:024x}")).as_bytes())
+                .unwrap();
+            assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        }
+        assert_eq!(
+            MARKER_BODY_READS.with(|reads| reads.get()),
+            1,
+            "an unchanged rejected marker must not be reopened per epoch"
+        );
+        assert!(ack_rows(&bus).is_empty());
     }
 
     #[test]

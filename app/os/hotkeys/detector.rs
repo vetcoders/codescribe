@@ -63,6 +63,9 @@ pub enum HoldMode {
 pub enum HotkeyEvent {
     /// Front the existing Agent window without starting recording or sending.
     ShowAgent,
+    /// Show the collapsed overlay widget, or hide it while nothing records.
+    /// UI-only like [`Self::ShowAgent`]: it never touches the microphone.
+    ToggleWidget,
     /// Deliver the current in-memory deferred transcript at the active caret.
     InsertHere,
     /// Hold gesture detected (press/release configured modifier combo)
@@ -278,6 +281,8 @@ pub enum HotkeyPhysicalKey {
     Fn,
     Space,
     V,
+    /// ASCII uppercase letter other than V, for the user's widget chord.
+    Letter(u8),
     /// Top-row or keypad digit. `0` is the broadcast channel.
     Digit(u8),
     Other,
@@ -380,6 +385,8 @@ pub struct HotkeyDetector {
     last_hid_key_down: Option<Instant>,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
+    /// The widget chord's key is down; key repeat must not toggle twice.
+    toggle_widget_key_down: bool,
     insert_here_v_down: bool,
     /// Edge-trigger for `arm_ignored` diagnostics (visibility only).
     wrong_arm_logged: bool,
@@ -422,6 +429,7 @@ impl Default for HotkeyDetector {
             last_hid_key_down: None,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
+            toggle_widget_key_down: false,
             insert_here_v_down: false,
             wrong_arm_logged: false,
             arm_modifier_down: false,
@@ -492,6 +500,9 @@ impl HotkeyDetector {
                 }
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
+                }
+                if widget_shortcut_key_matches(config.widget_shortcut.key, key) {
+                    self.toggle_widget_key_down = false;
                 }
                 if key == HotkeyPhysicalKey::V {
                     self.insert_here_v_down = false;
@@ -739,6 +750,14 @@ impl HotkeyDetector {
             }
             self.show_agent_space_down = true;
             return Some(HotkeyEvent::ShowAgent);
+        }
+
+        if widget_shortcut_matches(config.widget_shortcut, key, modifiers) {
+            if self.toggle_widget_key_down {
+                return None;
+            }
+            self.toggle_widget_key_down = true;
+            return Some(HotkeyEvent::ToggleWidget);
         }
 
         let dictation_binding = config.mode_bindings.dictation;
@@ -1112,6 +1131,37 @@ pub(super) fn channel_chord_matches(
     }
 }
 
+/// Whether a physical key is the one the widget chord ends with.
+fn widget_shortcut_key_matches(
+    wanted: crate::config::WidgetShortcutKey,
+    key: HotkeyPhysicalKey,
+) -> bool {
+    use crate::config::WidgetShortcutKey;
+    match (wanted, key) {
+        (WidgetShortcutKey::Space, HotkeyPhysicalKey::Space) => true,
+        (WidgetShortcutKey::Letter(b'V'), HotkeyPhysicalKey::V) => true,
+        (WidgetShortcutKey::Letter(wanted), HotkeyPhysicalKey::Letter(pressed)) => {
+            wanted == pressed
+        }
+        _ => false,
+    }
+}
+
+/// Whether a key-down is exactly the configured widget chord: the chord's
+/// key with precisely its modifiers held and Fn up.
+fn widget_shortcut_matches(
+    shortcut: crate::config::WidgetShortcut,
+    key: HotkeyPhysicalKey,
+    modifiers: HotkeyModifierSnapshot,
+) -> bool {
+    widget_shortcut_key_matches(shortcut.key, key)
+        && modifiers.ctrl == shortcut.ctrl
+        && modifiers.option == shortcut.option
+        && modifiers.cmd == shortcut.cmd
+        && modifiers.shift == shortcut.shift
+        && !modifiers.fn_key
+}
+
 fn deferred_insert_modifiers_match(
     shortcut: DeferredInsertShortcut,
     modifiers: HotkeyModifierSnapshot,
@@ -1375,6 +1425,7 @@ mod tests {
             double_tap_interval_ms: 200,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
             channel_modifier: ChannelModifier::Ctrl,
+            widget_shortcut: crate::config::WidgetShortcut::default(),
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
             middle_mouse_agent_gesture: false,
@@ -1530,6 +1581,146 @@ mod tests {
             ),
             Some(HotkeyEvent::ShowAgent),
             "a new physical Space press must emit exactly one new command"
+        );
+    }
+
+    #[test]
+    /// The default ⌃⇧B emits ToggleWidget once per physical press; repeats and wrong mods are silent.
+    fn detector_toggle_widget_command_table_emits_once_per_b_press() {
+        let config = fn_hold_double_option_config();
+        let base = Instant::now();
+        let control_shift = mods(true, false, true, false, false);
+        let b = HotkeyPhysicalKey::Letter(b'B');
+
+        let cases = [
+            (mods(true, false, false, false, false), None),
+            (mods(false, false, true, false, false), None),
+            (mods(false, false, true, true, false), None),
+            (mods(true, true, true, false, false), None),
+            (mods(true, false, true, false, true), None),
+            (control_shift, Some(HotkeyEvent::ToggleWidget)),
+            // Auto-repeat is another key-down before key-up and must not toggle twice.
+            (control_shift, None),
+        ];
+
+        let mut detector = HotkeyDetector::default();
+        for (index, (modifiers, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::KeyDown {
+                        now: base + Duration::from_millis(index as u64),
+                        key: b,
+                        modifiers,
+                    },
+                    config,
+                ),
+                expected,
+                "unexpected command detection at table row {index}"
+            );
+        }
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyUp {
+                    key: b,
+                    modifiers: control_shift,
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(10),
+                    key: b,
+                    modifiers: control_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ToggleWidget),
+            "a new physical B press must emit exactly one new command"
+        );
+    }
+
+    #[test]
+    /// A user-chosen chord (⌥⌘Space) replaces ⌃⇧B outright and never collides with the Agent summon.
+    fn detector_toggle_widget_follows_the_configured_chord() {
+        let mut config = fn_hold_double_option_config();
+        config.widget_shortcut = "option+cmd+space"
+            .parse()
+            .expect("a valid custom widget chord");
+        let base = Instant::now();
+        let option_command = mods(false, true, false, true, false);
+        let mut detector = HotkeyDetector::default();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base,
+                    key: HotkeyPhysicalKey::Letter(b'B'),
+                    modifiers: mods(true, false, true, false, false),
+                },
+                config,
+            ),
+            None,
+            "the old default must not fire once the chord was changed"
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: mods(false, false, true, true, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ShowAgent),
+            "⌘⇧Space stays the Agent summon"
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(2),
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: option_command,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ToggleWidget)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(3),
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: option_command,
+                },
+                config,
+            ),
+            None,
+            "key repeat must not toggle twice"
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyUp {
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: option_command,
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(20),
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: option_command,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ToggleWidget)
         );
     }
 

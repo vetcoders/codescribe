@@ -73,10 +73,14 @@ final class SettingsWindowChromeTests: XCTestCase {
       defer: false
     )
     window.isReleasedWhenClosed = false
-    window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+    window.contentViewController = NSHostingController(
+      rootView: SettingsView(model: model)
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    )
     window.setContentSize(NSSize(width: contentWidth, height: 760))
     window.setFrameOrigin(NSPoint(x: 80, y: 80))
-    window.orderFrontRegardless()
+    BackgroundTestWindow.present(window)
     return window
   }
 
@@ -96,7 +100,7 @@ final class SettingsWindowChromeTests: XCTestCase {
 
   private func sidebarMaterial(in window: NSWindow) -> NSVisualEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is SettingsSidebarVisualEffectNSView } as? NSVisualEffectView
+    return first(in: content) { $0 is CSSidebarVisualEffectNSView } as? NSVisualEffectView
   }
 
   private func frame(_ view: NSView) -> NSRect {

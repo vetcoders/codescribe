@@ -18,7 +18,12 @@ struct SettingsTabBar: View {
   var body: some View {
     ViewThatFits(in: .horizontal) {
       bar
-      ScrollView(.horizontal, showsIndicators: false) { bar }
+      // The tab strip keeps its sideways scrolling; the pin only makes sure a
+      // scroller the system forces back is the overlay one (Founder,
+      // 2026-10-18).
+      ScrollView(.horizontal, showsIndicators: false) {
+        bar.csAutohidingScrollers(.includesHorizontal)
+      }
     }
     .controlSize(.regular)
     .accessibilityIdentifier("settings-tabs-\(section.rawValue)")
@@ -97,7 +102,7 @@ struct SettingsTabSegments: NSViewRepresentable {
 
   /// Writes labels only where they differ, so a redraw does not reset segments
   /// that already read correctly.
-  private static func apply(titles: [String], to control: NSSegmentedControl) {
+  static func apply(titles: [String], to control: NSSegmentedControl) {
     if control.segmentCount != titles.count {
       control.segmentCount = titles.count
     }

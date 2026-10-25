@@ -97,7 +97,7 @@ final class MarkdownLinkPointerTests: XCTestCase {
         .frame(width: 400, height: 100, alignment: .topLeading))
     host.frame = NSRect(x: 0, y: 0, width: 420, height: 120)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     host.layoutSubtreeIfNeeded()

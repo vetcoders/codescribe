@@ -193,11 +193,11 @@ Codescribe/
 │   ├── Screens/
 │   │   ├── Overlay/              # OverlayState.swift — projection display/delivery boundary
 │   │   ├── AgentChat/            # Assistive chat surface
-│   │   ├── Settings/             # Settings window + SettingsViewModel
+│   │   ├── Settings/             # Settings window, SettingsViewModel, SettingsScale
 │   │   ├── Onboarding/           # First-run flow
 │   │   └── Tray/                 # Menu bar UI
 │   ├── Services/                 # UpdaterService (Sparkle), platform services
-│   └── DesignSystem/             # Tokens, shared components
+│   └── DesignSystem/             # Tokens, shared components, CSSidebarColumn
 │
 ├── bin/                          # CLI binaries
 │   ├── codescribe-teacher.rs     # Teacher / correction replay
@@ -295,7 +295,7 @@ match (hotkey, flags) {
     // Act-on-selection is a delivery lane when a selection is present (W10-D),
     // not a separate dead Cmd chord.
     (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
-    (Toggle, _)       => /* respects AI_FORMATTING_ENABLED */
+    (Toggle, _)       => /* respects FORMATTING_LEVEL */
 }
 ```
 
@@ -315,39 +315,139 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
 | `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
+### The sidebar (Agent and Settings)
+
+Both windows are a `NavigationSplitView` with the same sidebar. There is one
+owner for that column — `DesignSystem/CSSidebarColumn.swift` — and neither
+window keeps a copy of what it owns. After a side-by-side on 2026-10-18 the
+Founder chose the Settings column as the reference, so the Agent rail adopts
+it rather than the other way round.
+
+`CSSidebarColumn` owns the system sidebar list style (with it the section
+headers, selection, hover and focus), the sidebar search field, the shared
+glass behind the column (`CSSidebarMaterial`, a `.sidebar` `NSVisualEffectView`
+blending `behindWindow`, with an opaque canvas under Reduce Transparency or
+Increase Contrast), the column bounds and the two slots a window may fill.
+
+- **Width** is a named parameter, not a number per window:
+  `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;
+  `.content` (267 / 267 / 360) is the wider column the Agent rail used while
+  it carried two-line rows, kept as the other half of the choice.
+- **The toggle** is the split view's own, beside the traffic lights in both
+  windows; `csSidebarToggle(expanded:)` only binds `⌃⌘S` to the same action.
+  Each window persists its own flag (`Settings.sidebarExpanded.v1`,
+  `AgentChat.sidebarExpanded.v1`); the button, a divider drag and the
+  shortcut all write it. A second, hand-placed toolbar button would sit
+  beside the system one, not replace it. The Agent window shows the system
+  toggle only because `AgentWindowChrome.makeWindow` creates it with its
+  final style mask before attaching the content: a window built from the
+  controller and given `.fullSizeContentView` afterwards gets no toggle at
+  all. The app and `CSSidebarColumnTests` build the Agent window through that
+  one factory.
+- **The slots** carry what belongs to a window's function and nothing else.
+  Agent fills the header slot, under the search field and above the rows, with **New conversation** —
+  the agent's first action, a create glyph and its label on a plain row —
+  and has no footer: the reference sidebar ends with its last row, not with
+  a pill. Settings fills the footer slot with the health line — a coloured
+  status dot and secondary system text that deep-links to the section owning
+  the problem — and has no header.
+
+Window floors stayed where they were when the rail narrowed. Both windows
+size their detail floor from the rail's ideal width, because that is the width
+the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
+column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
+column.
+
+### The Settings scale
+
+The Settings central pane has one scale and one owner for it:
+`Screens/Settings/SettingsScale.swift`. The sidebar is not part of it — the
+navigation column stays with `CSSidebarColumn` (see "The sidebar" above).
+
+`CSSpace`, `CSRadius` and `CSFont` are shared with the overlay, the tray, the
+Agent window and onboarding, so the pane cannot be resized by editing them:
+that would resize those surfaces too. `SettingsScale` is the pane's own rung
+of the same scale. It names each role once — page frame, section rhythm,
+card, control, type — and resolves to a shared token wherever a shared token
+already carries the value, so it is a role map rather than a second rhythm.
+A panel reads the role, never a bare number.
+
+- **Page frame.** `settingsPage()` is the one frame every panel wears, tabbed
+  or not: a 24 pt gutter and a 20 pt top and bottom inset. A tabbed pane adds
+  only the strip's own 8 pt band above the page.
+- **Header pattern.** Titles of peer sections sit _above_ the cards, setting
+  names sit _inside_ them, and a header is never smaller or lighter than what
+  it introduces: `pageTitle` (16 semibold) > `sectionTitle` (13.5 semibold) ≥
+  `settingName` (12.5 semibold) > `helper` (11.5), all at primary strength
+  except the helper rung. `SettingsSectionLabel` and `SettingsSectionHeaderRow`
+  in `SettingsView.swift` are the only header owners, and they have no rung
+  above `sectionTitle`: the sections of a page are peers, so none outranks
+  another. Sections are 20 pt apart and a title sits
+  6 pt above its card, so a title visibly belongs to what follows it.
+- **Card.** 12 pt padding inside a `CSRadius.card` corner, 8 pt between two
+  stacked settings. The radius stays shared on purpose: it is the product's
+  shape language, not a density knob. `settingsGroupedInset(padding:)` in
+  `SettingsView.swift` draws the card, and a dense list — the per-tool
+  permission rows — passes a tighter inset to that same owner instead of
+  drawing a box of its own.
+- **Control family.** Every flat Settings action is a `SettingsChipButton`
+  (`KeyRows.swift`): one label rung, 10 / 5 insets and `CSRadius.chip` for
+  both the chip and the focus ring it wears, so the keyboard outline follows
+  the chip's own shape. Text fields (`settingsInputChrome`) and the accent
+  `SettingsSaveButton` sit on the same 10 / 5 insets, so a field and the
+  actions beside it are one height — in Settings and in onboarding, which
+  shares that field chrome. Every switch takes its shape from
+  `settingsSwitch()` (`SettingsView.swift`): a small macOS switch, tinted,
+  with its label carried by the `SettingsControlRow` that holds it, so the
+  switches of a page line up in one trailing column. A slider track stops at
+  `SettingsScale.sliderWidth` and its value reads at the track's end, not at
+  the far edge of the pane.
+- **Sheet.** `CSPalette.sheet` is the one colour behind every content area
+  and the overlay canvas. Its two hexes read the observable
+  `SheetShadePreference` (Settings › Creator › Appearance). Selecting a shade
+  saves it and repaints existing views immediately; the palette and overlay
+  projection do not cache the choice. Shipped values stay in `SheetShade`.
+  Light, dark or system is `AppearancePreference`, handed to `NSApp` at launch
+  and on change.
+
 ### Agent window header
 
 The detail chrome (`AgentChatView.swift`) carries one title — the current
-thread's — and nothing that competes with it. The native titlebar keeps the
+conversation's — and nothing that competes with it. The native titlebar keeps the
 window title, dragging and the close / minimise / fullscreen controls; the
 content never repeats a window-level header. The minimise button and ⌘M are
 enabled but hide the window (`HidingWindow` / `DockPresence`) instead of
 miniaturising it, so App Exposé never shows an empty tile; the tray's
 "Open chat", the summon shortcut and the passive voice reveal bring it back.
+The Settings window follows the same rule through `DockPresence`: its window
+class belongs to SwiftUI, so the yellow button is retargeted to hide, ⌘M is
+the app's Minimize command, and any other miniaturise is undone into a hide.
 
-- **Left:** the sidebar toggle (`⌃⌘S`) immediately before the thread title,
-  followed by the turn count, the thread's model and the live turn status.
-  The toggle lives in the detail chrome so it stays reachable while the
-  native sidebar is collapsed.
+- **Left:** the sidebar toggle, then the wordmark, then the conversation title
+  followed by the turn count, the conversation's model and the live turn status.
+  The toggle belongs to the shared sidebar column (see "The sidebar" above),
+  so it stays reachable while the column is collapsed and behaves exactly as
+  it does in Settings.
 - **Right:** exactly two controls. The pin (always on top) shows its state
   rather than hinting at it — pinned is the filled glyph on an accent plate
   with the `selected` trait and an "On" Accessibility value, unpinned is the
   outline glyph with no plate. It writes only `AgentChat.alwaysOnTop.v1`;
   `AgentWindowCapabilities` applies the window level.
-- **"•••" menu:** the single home for the header's actions — thread section
-  (Rename, Add to / Remove from favorites, Markdown exports when the thread
-  is persisted), the "Conversation width" submenu (Standard / Wide / Full
-  width, the conversation column's density — not the window size), "Open
-  settings", and the destructive "Delete Thread" last, behind the shared
+- **"•••" menu:** the single home for the header's actions — conversation section
+  (Rename, Add to / Remove from favorites, Markdown exports when the conversation
+  is persisted), the "Conversation width" submenu (a native picker — Standard / Wide / Full
+  width with the system check mark on the active mode; the conversation
+  column's density, not the window size), "Open
+  settings", and the destructive "Delete Conversation" last, behind the shared
   confirmation. There is no separate width selector or Settings gear in the
   chrome.
 
-An empty thread does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
+An empty conversation does not scroll: `ChatLayoutPolicy.emptyStateHeight` sizes the
 no-turns block to the viewport minus everything else the scroll document
 carries (list padding on both edges, the stack gap and the live-edge anchor),
 so the content fits exactly instead of overshooting by those points.
 
-### Thread history interactions
+### Conversation history interactions
 
 The rail (`ThreadRail.swift`) and the detail toolbar menu (`AgentChatView.swift`)
 share three contracts:
@@ -355,7 +455,7 @@ share three contracts:
 - **Selection is one action with three entry points.** A pointer click, the
   row's Accessibility activation and the keyboard all call the same `select`
   path in `ThreadRail`. To Accessibility a row is a single button labelled
-  with the thread title, with the `selected` trait on the open thread and
+  with the conversation title, with the `selected` trait on the open conversation and
   Rename / Add to favorites / Delete as named actions, worded exactly as the
   header menu words them; while a title is being renamed
   the row exposes its children so the text field stays reachable. Rows are
@@ -365,12 +465,12 @@ share three contracts:
   like the app's other custom buttons.
 - **Deletion always confirms.** Both the rail's context menu and the toolbar
   menu present the same `ThreadDeleteConfirmation`; the dialog names the
-  thread and Cancel keeps it. There is no undo path, and the copy says so.
+  conversation and Cancel keeps it. There is no undo path, and the copy says so.
 - **Markdown export reports its outcome.** The toolbar menu names the fixed
-  destination (the Transcripts folder from Settings › About › Local data) in a
+  destination (the Transcripts folder from Settings › User › Local data) in a
   section header; there is no file chooser. After the write, an alert shows
   the file name and folder with "Reveal in Finder" and "Open" buttons, or an
-  "Export failed" alert naming the thread and the folder to check. Finder is
+  "Export failed" alert naming the conversation and the folder to check. Finder is
   never opened as a side effect of the menu action. `ThreadExportOutcome`
   carries the result; `RealThreadsEngine` still collapses the bridge error
   into `nil`, so the failure alert cannot quote the underlying reason.

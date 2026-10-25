@@ -637,6 +637,11 @@ pub enum TrailEvent {
     CoverageDiagnostics {
         diagnostics: super::acoustic_ledger::CoverageDiagnostics,
     },
+    /// A measured silent window was accounted without invoking a decoder.
+    DecodeSkippedNoSpeech {
+        decode: OccurrenceIdentity,
+        speech: TrailSpeechEvidence,
+    },
     DecodeWork {
         observation: ObservationIdentity,
         decode: OccurrenceIdentity,
@@ -764,46 +769,68 @@ impl TrailSink {
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                let mut file = options.open(path)?;
-                let mut write = |record: &TrailRecord| -> io::Result<()> {
-                    serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
-                    file.write_all(b"\n")
-                };
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session: session.clone(),
-                    capture_epoch: epoch,
-                    observed_ns: 0,
-                    event: TrailEvent::Start {
-                        sample_clock: "capture_samples".into(),
+                // serde_json writes token by token: unbuffered, every token was
+                // its own write(2), ~10-14% of a core during a take (hania on
+                // Silver, 23 X: 9.2 MB in 116 s, 18 records/s).
+                let mut file = io::BufWriter::new(options.open(path)?);
+                let write =
+                    |file: &mut io::BufWriter<fs::File>, record: &TrailRecord| -> io::Result<()> {
+                        serde_json::to_writer(&mut *file, record).map_err(io::Error::other)?;
+                        file.write_all(b"\n")
+                    };
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session: session.clone(),
+                        capture_epoch: epoch,
+                        observed_ns: 0,
+                        event: TrailEvent::Start {
+                            sample_clock: "capture_samples".into(),
+                        },
                     },
-                })?;
+                )?;
+                file.flush()?;
                 let mut last_ns = 0;
                 let mut record_count = 0;
-                for record in receiver {
+                while let Ok(record) = receiver.recv() {
                     last_ns = record.observed_ns;
-                    write(&record)?;
+                    write(&mut file, &record)?;
                     record_count += 1;
+                    // Write what is already queued, then flush once: one write(2)
+                    // per burst, and the file is never behind an idle queue.
+                    while let Ok(record) = receiver.try_recv() {
+                        last_ns = record.observed_ns;
+                        write(&mut file, &record)?;
+                        record_count += 1;
+                    }
+                    file.flush()?;
                 }
                 let count = dropped.load(Ordering::Relaxed);
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session: session.clone(),
-                    capture_epoch: epoch,
-                    observed_ns: last_ns,
-                    event: TrailEvent::Checkpoint { record_count },
-                })?;
-                write(&TrailRecord {
-                    schema: SCHEMA.into(),
-                    session,
-                    capture_epoch: epoch,
-                    observed_ns: last_ns,
-                    event: TrailEvent::End {
-                        dropped_records: count,
-                        persistence_complete: count == 0,
-                        evidence_complete: false,
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session: session.clone(),
+                        capture_epoch: epoch,
+                        observed_ns: last_ns,
+                        event: TrailEvent::Checkpoint { record_count },
                     },
-                })?;
+                )?;
+                write(
+                    &mut file,
+                    &TrailRecord {
+                        schema: SCHEMA.into(),
+                        session,
+                        capture_epoch: epoch,
+                        observed_ns: last_ns,
+                        event: TrailEvent::End {
+                            dropped_records: count,
+                            persistence_complete: count == 0,
+                            evidence_complete: false,
+                        },
+                    },
+                )?;
                 file.flush()
             })?;
         sinks.insert(key.clone(), Arc::downgrade(&state));
@@ -851,6 +878,19 @@ pub(super) fn is_enabled(occurrence: &OccurrenceIdentity) -> bool {
 }
 
 /// The only enqueue corridor; JSON encoding and filesystem access live in the worker.
+pub(super) fn record_decode_skipped_no_speech(
+    decode: &OccurrenceIdentity,
+    speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+) {
+    record(
+        decode,
+        TrailEvent::DecodeSkippedNoSpeech {
+            decode: decode.clone(),
+            speech: TrailSpeechEvidence::from_evidence(speech),
+        },
+    );
+}
+
 pub(super) fn record_decode_work(
     ledger: &AcousticLedger,
     observation: &ObservationIdentity,
@@ -1231,6 +1271,7 @@ fn validate_envelope(records: &[TrailRecord]) -> io::Result<()> {
             TrailEvent::Qualification { evidence, .. } => Some(&evidence.occurrence),
             TrailEvent::Decision { decision } => Some(&decision.observation.occurrence),
             TrailEvent::DecodeWork { observation, .. } => Some(&observation.occurrence),
+            TrailEvent::DecodeSkippedNoSpeech { decode, .. } => Some(decode),
             TrailEvent::Frontier { occurrence, .. } => Some(occurrence),
             TrailEvent::SlotStart { operation } => Some(&operation.observation.occurrence),
             TrailEvent::SlotEnd { operation } => Some(&operation.observation.occurrence),
@@ -1506,6 +1547,36 @@ fn replay_validated(
         match &row.event {
             // Observer snapshots cannot mutate replay or interrupt a slot batch.
             TrailEvent::RecoveryRequired { .. } | TrailEvent::CoverageDiagnostics { .. } => {}
+            TrailEvent::DecodeSkippedNoSpeech { decode, speech } => {
+                let evidence = speech.evidence()?;
+                if !evidence
+                    .identity()
+                    .matches(&decode.session, decode.capture_epoch)
+                    || evidence.producer()
+                        != super::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    || decode.sample_start >= decode.sample_end
+                    || evidence
+                        .availability()
+                        .observed_samples()
+                        .is_none_or(|end| end < decode.sample_end)
+                    || evidence.ranges().iter().any(|range| {
+                        range.session != decode.session
+                            || range.capture_epoch != decode.capture_epoch
+                            || range.sample_start >= range.sample_end
+                            || speech
+                                .observed_samples
+                                .is_none_or(|end| range.sample_end > end)
+                            || (range.sample_start < decode.sample_end
+                                && decode.sample_start < range.sample_end)
+                    })
+                {
+                    return Err(io::Error::other(
+                        "speechless decode skip lacks measured silence",
+                    ));
+                }
+                // Planning diagnostics do not manufacture a decoder return,
+                // lexical vote or ledger mutation during replay.
+            }
             TrailEvent::DecodeWork {
                 observation,
                 decode,
@@ -1710,24 +1781,34 @@ mod tests {
 
     // Root-owned controls: measured fixture PCM, actual admissions and disk replay.
     fn forensic_trail_measured_ledger(owner: &OccurrenceIdentity) -> AcousticLedger {
-        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
         let mut pcm = vec![0.0_f32; 16_000];
         pcm[2_000..6_000].fill(0.2);
         pcm[8_000..12_000].fill(0.2);
+        forensic_trail_ledger_over(owner, &pcm, &[(2_000, 12_000)])
+    }
+
+    /// A ledger qualified over `pcm` that holds the capture-energy ladder the
+    /// trail records, `speech` being the ranges that ladder measures.
+    fn forensic_trail_ledger_over(
+        owner: &OccurrenceIdentity,
+        pcm: &[f32],
+        speech: &[(u64, u64)],
+    ) -> AcousticLedger {
+        use crate::audio::capture_receipt::{CaptureEnergyOwner, CaptureLevelAccumulator};
         let energy = CaptureEnergyOwner::bind(&owner.session, owner.capture_epoch);
         let mut writer = CaptureLevelAccumulator::bound_to(&energy);
         for chunk in pcm.chunks(1_000) {
             writer.push_samples(chunk);
         }
-        let speech =
+        let ladder =
             energy.session_active_speech_ranges(&owner.session, owner.capture_epoch, 16_000);
         assert_eq!(
-            speech
+            ladder
                 .ranges()
                 .iter()
                 .map(|range| (range.sample_start, range.sample_end))
                 .collect::<Vec<_>>(),
-            vec![(2_000, 12_000)]
+            speech
         );
         let integral = pcm
             .iter()
@@ -1753,7 +1834,7 @@ mod tests {
                 )
                 .is_qualified()
         );
-        ledger.record_speech_evidence(&speech);
+        ledger.record_speech_evidence(&ladder);
         ledger
     }
 
@@ -2289,14 +2370,23 @@ mod tests {
         let owner = OccurrenceIdentity::new("forensic-trail-partition", 18, 0, 16_000);
         let sink =
             TrailSink::open_in(dir.path(), &owner.session, owner.capture_epoch, 128).unwrap();
-        let mut ledger = forensic_trail_measured_ledger(&owner);
+        // Speech under the two decoded words and measured room quiet (about
+        // -86 dBFS, under the active-speech floor) around them. The 250 ms
+        // pause is longer than the ladder's merge gap, so the ladder the trail
+        // records measures it quiet and the partition replays exactly; D5
+        // retires the coarse label only over measured absence.
+        let mut pcm = vec![5.0e-5_f32; 16_000];
+        pcm[2_000..6_000].fill(0.2);
+        pcm[10_000..14_000].fill(0.2);
+        let mut ledger =
+            forensic_trail_ledger_over(&owner, &pcm, &[(2_000, 6_000), (10_000, 14_000)]);
         let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, owner.clone());
         assert!(ledger.admit(&apple, "niejasna hipoteza").is_insert());
         let original = ledger.slots_of(&owner).unwrap()[0].clone();
         let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1, owner.clone());
         let children = [
             WordPin::new(2_000, 6_000, "na").with_decode_window(0, 16_000),
-            WordPin::new(8_000, 12_000, "prawdę").with_decode_window(0, 16_000),
+            WordPin::new(10_000, 14_000, "prawdę").with_decode_window(0, 16_000),
         ];
         assert!(
             ledger
@@ -2318,7 +2408,7 @@ mod tests {
             vec![
                 owner.clone(),
                 OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 2_000, 6_000),
-                OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 8_000, 12_000),
+                OccurrenceIdentity::new(&owner.session, owner.capture_epoch, 10_000, 14_000),
             ]
         );
         assert_eq!(
@@ -2327,7 +2417,7 @@ mod tests {
                 .iter()
                 .map(|slot| (slot.sample_start, slot.sample_end))
                 .collect::<Vec<_>>(),
-            vec![(2_000, 6_000), (8_000, 12_000)]
+            vec![(2_000, 6_000), (10_000, 14_000)]
         );
         drop(sink);
         let rows = read_trail(&trail_path(dir.path(), &owner.session).unwrap()).unwrap();
@@ -2511,16 +2601,18 @@ mod tests {
             "group-split" => {
                 ledger.admit(&apple, "na prawdę");
                 // Decode scope proves the coarse owner was examined; word clocks
-                // stay inside that scope and retain their own physical gap.
+                // stay inside that scope. The capture is speech throughout, so
+                // the PCM between and around the words is speech no output word
+                // covers: D5 (absence is not evidence) keeps the coarse slot and
+                // the scoped reading waits as an alternative.
                 let mut scoped_children = children.clone();
                 scoped_children[0].sample_start = 2_000;
                 scoped_children[0].sample_end = 6_000;
                 scoped_children[1].sample_start = 8_000;
                 scoped_children[1].sample_end = 12_000;
                 let scoped_children = scoped_children.map(|pin| pin.with_decode_window(0, 16_000));
+                let source = ledger.slots_of(&owner).unwrap().to_vec();
                 let receipt = ledger.admit_word_slots(&whisper, &scoped_children);
-                // The lexical projection is unchanged; the accepted slot
-                // operation still records its new word geometry.
                 assert_eq!(
                     receipt,
                     MutationReceipt::Preserve {
@@ -2529,23 +2621,29 @@ mod tests {
                     }
                 );
                 assert_eq!(ledger.text_of(&owner), Some("na prawdę"));
-                let operation = ledger.slot_operations().last().unwrap();
-                assert_eq!(operation.kind, SlotOperationKind::Split);
-                assert_eq!(operation.source_ranges[0], owner);
-                assert_eq!(
-                    operation
-                        .outputs
+                assert_eq!(ledger.slots_of(&owner).unwrap(), source);
+                assert!(
+                    !ledger
+                        .slot_operations()
                         .iter()
-                        .map(|slot| (slot.sample_start, slot.sample_end))
-                        .collect::<Vec<_>>(),
-                    [(2_000, 6_000), (8_000, 12_000)]
+                        .any(|operation| operation.kind == SlotOperationKind::Split)
                 );
+                assert!(ledger.slot_alternatives().iter().any(|alternative| {
+                    alternative.observation == whisper
+                        && alternative.sources == source
+                        && alternative.reason == "absence_requires_acoustic_evidence"
+                }));
             }
             "explicit-split" => {
                 ledger.admit_word_slots(&apple, &[WordPin::new(0, 16_000, "na prawdę")]);
                 let target = SlotTarget::from(&ledger.slots_of(&owner).unwrap()[0]);
+                // The capture is speech throughout, so the split's words abut:
+                // D5 lets a split retire its source only over speech its words
+                // account for.
+                let mut abutting = children.clone();
+                abutting[1].sample_start = 4_000;
                 ledger
-                    .split_word_slot(&whisper, &target, &children)
+                    .split_word_slot(&whisper, &target, &abutting)
                     .unwrap();
                 assert_eq!(
                     ledger.slot_operations().last().unwrap().kind,

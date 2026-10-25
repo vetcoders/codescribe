@@ -32,7 +32,7 @@ Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in ref
   retain the lease, cursor, name, voice and existing follower. Reattach the same
   session only if recovery or helper adoption is needed. Recover the relevant
   [conversation history](references/history.md); an empty mailbox is not an empty chat.
-- **Answer by voice:** follow **Reply** after reading and acknowledging.
+- **Answer by voice:** follow **Reply** after read and ACK.
 - **A mailbox on another Mac:** follow [Remote bus](references/remote.md). Use
   `--remote HOST` consistently; local MCP tools do not read the remote mailbox.
 - **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
@@ -49,26 +49,27 @@ Never invent a session or borrow another chat's identity. Reuse an established
 name. Ask for a name/channel only when the request and session do not supply them.
 Validate the channel as one digit 1–9. Quote arguments as data.
 
-Check `cs-bus --version` and `cs-say --version` when starting or diagnosing a
-connection. If they are absent from PATH, use `~/.local/bin/cs-bus` and
-`~/.local/bin/cs-say`. Missing helpers do not authorize installation or an app restart.
+Check `cs-bus --version` and `cs-say --version` at connect or when diagnosing;
+if absent from PATH, use `~/.local/bin/cs-bus` and `~/.local/bin/cs-say`.
+Missing helpers authorize no installation or app restart.
 
 ```bash
 cs-bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
 cs-bus --status --provider PROVIDER --session SESSION
 ```
 
-Replace the uppercase placeholders with this chat's values. Add `--voice VOICE`
-only when requested; otherwise keep the stored profile. Retain the attach
-receipt, especially `lease_id`, `follower_pid`, `follower_events` and `wakeup`.
-The engine creates or reuses **one follower**. Do not also start `--follow`.
+Placeholders are this chat's values. Add `--voice VOICE` only when requested;
+otherwise keep the stored profile. Keep the attach receipt, especially
+`lease_id`, `follower_pid`, `follower_events` and `wakeup`. The engine creates or
+reuses **one follower**. Do not also start `--follow`. In a vc-frame workspace,
+rename your own tab `Name · repo · harness`: [Tab identity](references/vc-frame-tab.md).
 
 For an established agent name, restoring the relevant conversation context is
 part of connecting. Follow [Conversation history](references/history.md) after
 attachment: match the provider/session/lease, open the matching current or saved
 conversation and read the relevant messages. Channel reuse does not transfer
 another agent's history, and opening a chat does not load it into model context.
-Report what was actually read; never claim a full import from an attach receipt.
+Report what was read; an attach receipt is not an import.
 
 An occupied slot belongs to its reported owner. Do not choose another slot,
 edit bindings or kill its reader. For an ended session of **the same name**, use
@@ -78,15 +79,15 @@ recovery and inherited messages. An undrained reader must resume, not be killed.
 ## Arm wakeup for this provider
 
 Follow [Monitor and agent wakeup](references/monitor.md) before ending the turn.
-Use the Codescribe plugin in Claude Code; otherwise use its completion-notifying
-background task. Kimi also requires a completion task. Codex and other providers
-with output notifications reuse one monitor over
-`cs-bus --watch --bell --provider PROVIDER --session SESSION`.
-Native queue, a bare background shell or `tail -F` alone does not prove wakeup.
+Claude Code uses the Codescribe plugin or a completion-notifying background
+task; so do Kimi and agy. Codex runs `cs-bus --watch --until-event` in one `tty`
+exec cell beside `codex-queue`; other output-notifying providers reuse one
+`--watch --bell` monitor. A queue, bare shell or `tail -F` alone proves no wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
 
-Channel 0: `off` skips broadcasts; `quiet` (Steer) queues all messages without waking.
-See [Monitor](references/monitor.md#channel-0-reception).
+Channel 0 (`--broadcast off`) skips broadcasts; the moon (`--quiet on`, do not
+disturb) queues every message from every channel without waking. The two are
+independent. See [Monitor](references/monitor.md#channel-0-reception).
 
 Report `attached_unverified` until a fresh named utterance reaches this chat and
 gets a reply without a typed nudge. Then report `listening_verified` — the only
@@ -170,8 +171,9 @@ truncated result is not proof of complete receipt.
 
 Write concise prose for the Founder: result and next concrete action. Keep raw
 JSON, PCM receipts and command logs in diagnostics; do not narrate every ACK.
-For requested voice, follow [Voice reply](references/voice-reply.md) and use the
-**owned ID just read** (plugin: `codescribe_reply`):
+Unless asked for quiet, also speak it: follow
+[Voice reply](references/voice-reply.md) with the **owned ID just read**
+(plugin: `codescribe_reply`):
 
 ```bash
 cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
@@ -215,4 +217,4 @@ Use the same `--bus` and `--bridge-home` overrides on every operation when this
 session has them. Never print credentials or unfiltered environment/config dumps.
 Detailed references: [Attach](references/attach.md),
 [Monitor](references/monitor.md), [CLI](references/cli.md),
-[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) shows the message path.
+[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) draws the message path.

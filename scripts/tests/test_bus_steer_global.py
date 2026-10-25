@@ -131,7 +131,7 @@ class SteerGlobalTests(unittest.TestCase):
             self.assertEqual(DEMUX.read_pending_command(self.args()), 0)
         snapshot = emitted.call_args.args[0]
         self.assertEqual(snapshot["read_delivery_ids"], [direct["delivery_id"]])
-        self.assertEqual(snapshot["broadcast"], {"policy": "quiet"})
+        self.assertEqual(snapshot["broadcast"], {"policy": "quiet", "membership": "on", "quiet": True})
         with mock.patch.object(DEMUX, "emit"):
             self.assertEqual(DEMUX.acknowledge_delivery(self.args(ack=[direct["delivery_id"]])), 0)
         self.assertTrue(DEMUX.delivery_acknowledged(self.root, self.lease_id, direct["delivery_id"], direct))

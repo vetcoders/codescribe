@@ -351,10 +351,6 @@ private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
 
 struct VoiceLabPanel: View {
   @ObservedObject var model: SettingsViewModel
-  /// Word pins and PCM slots are engine apparatus. Founder, 2026-10-12: what
-  /// we need to develop the engine sits behind the Voice Lab gate; the
-  /// production app shows its results, not the apparatus.
-  @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var editor = VoiceLabEditorState()
   @FocusState private var focusedCorrectionID: String?
   @State private var correctionIndex = 0
@@ -425,33 +421,36 @@ struct VoiceLabPanel: View {
 
       Divider()
         .overlay(Color.primary.opacity(0.12))
-        .padding(.top, CSSpace.lg)
+        .padding(.top, SettingsScale.sectionGap)
 
-      if DeveloperSurface.isPowerModeEnabled(labMode: labMode) {
-        DictionaryWordPins(configDir: model.configDir)
-          .padding(.top, CSSpace.section)
-      }
+      // The page leads with what happened on this Mac today, in human terms
+      // (Maciej, 2026-10-21: the Dictionary must not sit on a three-week-old
+      // correction). Acoustic forensics of the same takes live in Lab.
+      DictionaryRecentTakes(configDir: model.configDir) { model.select(.lab) }
+        .padding(.top, CSSpace.section)
 
       if ruleCandidatesSectionVisible(model.ruleCandidates) {
-        ProvidersSectionHeader(
+        SettingsSectionHeaderRow(
           String(localized: "Suggested rules · \(model.ruleCandidates.count)")
         )
-        .padding(.top, CSSpace.section)
+        .padding(.top, SettingsScale.sectionGap)
         ruleCandidatesSection
-          .padding(.top, CSSpace.control)
+          .padding(.top, SettingsScale.headerGap)
       }
 
       // Pagination rides the section header, so the card below starts with
       // the take itself (Founder brief, round 15, 2026-10-10).
-      ProvidersSectionHeader(String(localized: "Recent corrections")) {
+      SettingsSectionHeaderRow(String(localized: "Recent corrections")) {
         correctionPager
       }
       .padding(.top, CSSpace.section)
-      correctionsSection
+      correctionFreshness
         .padding(.top, CSSpace.control)
+      correctionsSection
+        .padding(.top, SettingsScale.headerGap)
 
-      ProvidersSectionHeader(String(localized: "Dictionary rules"))
-        .padding(.top, CSSpace.section)
+      SettingsSectionHeaderRow(String(localized: "Dictionary rules"))
+        .padding(.top, SettingsScale.sectionGap)
       if let caption = lexiconOriginCaption {
         Text(caption)
           .font(CSFont.ui(11))
@@ -460,12 +459,11 @@ struct VoiceLabPanel: View {
           .accessibilityIdentifier("dictionary-rules-provenance")
       }
       lexiconSection
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
 
       diagnosticsSection
     }
-    .padding(.horizontal, CSSpace.xl)
-    .padding(.vertical, CSSpace.section)
+    .settingsPage()
     // The sound belongs to the visible row: navigating away from the row
     // or from the panel ends it. Without these, NSSound kept playing after
     // the Settings window was closed.
@@ -481,8 +479,7 @@ struct VoiceLabPanel: View {
     HStack(alignment: .top, spacing: CSSpace.md) {
       VStack(alignment: .leading, spacing: 0) {
         SettingsPageHeader(
-          String(localized: "Dictionary and corrections"),
-          blurb: String(localized: "Browse corrections and dictionary rules.")
+          String(localized: "Dictionary and corrections")
         )
         countersRow
           .padding(.top, CSSpace.sm)
@@ -576,7 +573,7 @@ struct VoiceLabPanel: View {
             comment: "Dictionary: disclosure over telemetry coverage")
         )
       }
-      .padding(.top, CSSpace.section)
+      .padding(.top, SettingsScale.sectionGap)
       .accessibilityIdentifier("dictionary-diagnostics")
     }
   }
@@ -624,6 +621,24 @@ struct VoiceLabPanel: View {
     .buttonStyle(.plain)
     .disabled(!enabled)
     .accessibilityLabel(Text(label))
+  }
+
+  @ViewBuilder
+  private var correctionFreshness: some View {
+    if let latest = corrections.max(by: { $0.timestampMs < $1.timestampMs }) {
+      Text("Last correction on this Mac: \(timestampLabel(latest.timestampMs))")
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .accessibilityIdentifier("dictionary-last-correction")
+      Text("No newer correction has been saved on this Mac.")
+        .font(CSFont.ui(11))
+        .foregroundStyle(Color.secondary)
+    } else if model.voiceLabReadError == nil {
+      Text("Last correction on this Mac: none saved")
+        .font(CSFont.ui(11.5, .medium))
+        .foregroundStyle(Color.secondary)
+        .accessibilityIdentifier("dictionary-last-correction")
+    }
   }
 
   @ViewBuilder
@@ -737,7 +752,7 @@ struct VoiceLabPanel: View {
           if row.isLowConfidence {
             Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
               .textCase(.uppercase)
-              .font(CSFont.mono(9.5, .semibold))
+              .font(CSFont.ui(9.5, .semibold))
               .foregroundStyle(CSColor.terracotta)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
@@ -751,7 +766,7 @@ struct VoiceLabPanel: View {
               comment: "Dictionary badge: the session closed before this take was reviewed"
             )
             .textCase(.uppercase)
-            .font(CSFont.mono(9.5, .semibold))
+            .font(CSFont.ui(9.5, .semibold))
             .foregroundStyle(CSColor.chromeAccent)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -1238,7 +1253,8 @@ struct VoiceLabPanel: View {
             .disabled(safeIndex == 0)
           Spacer()
           Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.ui(10.5, .medium))
+            .monospacedDigit()
             .foregroundStyle(Color.secondary)
           Spacer()
           Button("Next") {
@@ -1317,7 +1333,7 @@ struct VoiceLabPanel: View {
                 Button("Teach") {
                   model.teachRuleCandidate(target: candidate.target, variant: variant)
                 }
-                .font(CSFont.mono(10.5, .semibold))
+                .font(CSFont.ui(10.5, .semibold))
                 .controlSize(.small)
                 .disabled(model.voiceLabTeachPending)
                 .accessibilityLabel("Teach \(variant) as \(candidate.target)")
@@ -1334,7 +1350,8 @@ struct VoiceLabPanel: View {
               .disabled(safeIndex == 0)
             Spacer()
             Text("\(safeIndex + 1) of \(model.ruleCandidates.count)")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.ui(10.5, .medium))
+              .monospacedDigit()
               .foregroundStyle(Color.secondary)
             Spacer()
             Button("Next") {

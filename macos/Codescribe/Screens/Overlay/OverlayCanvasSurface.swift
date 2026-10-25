@@ -6,6 +6,8 @@ import SwiftUI
 struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
+  @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
 
@@ -13,8 +15,9 @@ struct OverlayCanvasSurface<Content: View>: View {
     content
       .background {
         OverlayCanvasBackdrop(
-          palette: palette, reduceTransparency: reduceTransparency,
-          increasedContrast: contrast == .increased)
+          palette: palette,
+          reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
+          increasedContrast: (contrastOverride ?? contrast) == .increased)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
@@ -64,7 +67,8 @@ struct OverlayCanvasBackdrop: View {
   /// sheet constant in both states; only the 16 % of desktop hint still follows
   /// the window.
   static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
-    palette.desktopBackground.nsColor.withAlphaComponent(0.84)
+    let alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+    return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
   }
 }
 
@@ -119,13 +123,27 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 }
 
 /// Header and composer use the same system-owned control surface.
+///
+/// A surface flush with the window's own edges must carry the window's corner,
+/// not the pill's: the header spans the full width at the very top, so its
+/// `CSRadius.pill` circular corner sat inside the canvas's `CSRadius.window`
+/// continuous clip and the two curves read as a cut-off right end (Founder,
+/// 2026-10-18). The composer floats inside the sheet and keeps the pill radius;
+/// the corner style is `.continuous` for both, the way every other shape on
+/// this canvas is drawn.
 struct OverlayControlGlass: ViewModifier {
+  var cornerRadius: CGFloat = CSRadius.pill
+  var isEnabled = true
+
   @ViewBuilder
   func body(content: Content) -> some View {
+    let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     if #available(macOS 26.0, *) {
-      content.glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
     } else {
-      content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+      content.background {
+        if isEnabled { shape.fill(.regularMaterial) }
+      }
     }
   }
 }

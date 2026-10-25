@@ -46,7 +46,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let control = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
     parent.contentView?.addSubview(control)
-    parent.orderFrontRegardless()
+    BackgroundTestWindow.present(parent)
     defer { parent.orderOut(nil) }
     let owner = OverlayHintAnchor()
     owner.view = control
@@ -98,24 +98,30 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
   }
 
-  func testHeaderControlsRestHoverAndLeaveInLightAndDark() throws {
+  func testHeaderControlsRestHoverAndLeaveInLight() throws {
+    try assertHeaderControlsRestHoverAndLeave(palette: .light)
+  }
+
+  func testHeaderControlsRestHoverAndLeaveInDark() throws {
+    try assertHeaderControlsRestHoverAndLeave(palette: .dark)
+  }
+
+  private func assertHeaderControlsRestHoverAndLeave(palette: OverlayAppearancePalette) throws {
     let loose = OverlayState()
-    for palette in [OverlayAppearancePalette.light, OverlayAppearancePalette.dark] {
-      let name = palette.appearance == .dark ? "dark" : "light"
-      try assertNeutralHover(
-        "transcription-\(name)", palette: palette, view: HeaderHoverTranscription(palette: palette))
-      try assertNeutralHover(
-        "agents-\(name)", palette: palette,
-        view: HeaderHoverAgents(palette: palette, unread: true))
-      try assertNeutralHover(
-        "pin-resting-\(name)", palette: palette,
-        view: OverlayPinButton(state: loose, palette: palette))
-      try assertNeutralHover(
-        "presentation-\(name)", palette: palette,
-        view: headerHoverControls(palette: palette, microphone: false, preview: true))
-      try assertMicrophoneKeepsActivity(name, palette: palette)
-      try assertDisabledMicrophoneStaysCalm(name, palette: palette)
-    }
+    let name = palette.appearance == .dark ? "dark" : "light"
+    try assertNeutralHover(
+      "transcription-\(name)", palette: palette, view: HeaderHoverTranscription(palette: palette))
+    try assertNeutralHover(
+      "agents-\(name)", palette: palette,
+      view: HeaderHoverAgents(palette: palette, unread: true))
+    try assertNeutralHover(
+      "pin-resting-\(name)", palette: palette,
+      view: OverlayPinButton(state: loose, palette: palette))
+    try assertNeutralHover(
+      "presentation-\(name)", palette: palette,
+      view: headerHoverControls(palette: palette, microphone: false, preview: true))
+    try assertMicrophoneKeepsActivity(name, palette: palette)
+    try assertDisabledMicrophoneStaysCalm(name, palette: palette)
   }
 
   /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"
@@ -197,8 +203,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
 
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
+    XCTAssertTrue(roster.contains("title: headerTitle, accent: .agents, palette: palette"))
     XCTAssertTrue(
-      roster.contains("title: String(localized: \"Agents\"), accent: .agents, palette: palette"))
+      roster.contains("guard agentCaptureOpen else { return String(localized: \"Agents\") }"),
+      "without an agent recording the hover chrome still says Agents")
     XCTAssertFalse(roster.contains(".help(\"Agents\")"))
 
     let menu = try source("Overlay/OverlayHeaderMenu.swift")
@@ -209,32 +217,43 @@ final class OverlayHeaderChromeTests: XCTestCase {
     XCTAssertFalse(menu.contains(".help(help)"))
   }
 
-  /// The floating name pill toggles the Agents drawer for All as for one
-  /// agent (Maciej, 2026-10-17: with the clickable scrim gone, the second
-  /// click is the pointer's way back out); interactive glass gives it the
-  /// system's hover and press feedback.
-  func testConversationNamePillTogglesTheAgentsDrawer() throws {
-    let conversation = try source("Overlay/OverlayConversationView.swift")
-    XCTAssertTrue(conversation.contains("Button(action: onShowAgents) { namePillLabel }"))
-    XCTAssertTrue(conversation.contains(".modifier(OverlayNamePillGlass(interactive: true))"))
-    XCTAssertTrue(
-      conversation.contains(
-        "content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())"))
-    let overlay = try source("Overlay/DictationOverlayView.swift")
-    XCTAssertTrue(overlay.contains("if state.showsAgentMonitor {"))
-    XCTAssertTrue(overlay.contains("state.hideAgentSidebar()"))
-
-    let state = OverlayState()
-    let broadcast = OverlayConversation(
-      id: "pill-all", channel: "0", name: "All", owner: nil, messages: [])
-    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast]))
-    state.selectConversation(broadcast.id)
-    state.showAgentMonitor()
-    XCTAssertTrue(state.showsAgentMonitor)
-    XCTAssertEqual(state.selectedConversationID, broadcast.id, "the drawer keeps the conversation")
-    state.hideAgentSidebar()
-    XCTAssertFalse(state.showsAgentMonitor, "the same pill click closes the open stack")
-    XCTAssertEqual(state.selectedConversationID, broadcast.id, "closing keeps the conversation")
+  /// A name pill invokes only the supplied Frame action. With no target it
+  /// remains a passive label; the rail owns revealing the agents list.
+  func testConversationNamePillUsesOnlyAnAvailableFrameAction() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let conversation = OverlayConversation(
+      id: "pill-agent", channel: "3", name: "Astra", owner: nil, messages: [])
+    var focused = 0
+    for available in [false, true] {
+      let action: (() -> Void)? = available ? { focused += 1 } : nil
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .dark, topInset: 48, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant(""), sending: false, sendError: nil, onSend: {},
+        onFocusAgentPanel: action)
+      let host = NSHostingView(rootView: view.frame(width: 600, height: 400))
+      let window = NSWindow(
+        contentRect: NSRect(x: 150, y: 150, width: 600, height: 400),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      BackgroundTestWindow.present(window)
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+      let label = try XCTUnwrap(
+        NativeAccessibilityProbe.waitForElements("overlay-conversation-name").elements.first)
+      _ = try NativeAccessibilityProbe.query("overlay-conversation-name", press: true)
+      if available {
+        XCTAssertEqual(label.role, "AXButton")
+        XCTAssertEqual(focused, 1, "the press reaches the supplied Frame action")
+      } else {
+        XCTAssertNotEqual(label.role, "AXButton", "a passive name offers no button")
+        XCTAssertEqual(focused, 0)
+      }
+      XCTAssertFalse(window.isKeyWindow)
+      XCTAssertFalse(NSApp.isActive, "the synthetic AX press must not activate the host")
+    }
   }
 
   /// Clicking an agent's name in its reply bubble jumps to that agent's own
@@ -330,7 +349,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let host = NSHostingView(rootView: controls)
     host.frame = NSRect(x: 0, y: 0, width: 180, height: 46)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     headerSettle(host)
     let regions = panel.menuCursorRegions.allObjects.compactMap {
@@ -399,7 +418,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let frames = try hoverFrames(view, palette: palette)
     for role in [palette.successStatus, palette.agentAccent, palette.processingStatus] {
       XCTAssertFalse(
-        headerContains(frames.rest, near: role, tolerance: 0.16),
+        headerContainsHue(
+          frames.rest, near: headerRendered(role, palette: palette), tolerance: 0.16),
         "\(name) rests on a role color")
     }
     XCTAssertGreaterThan(
@@ -466,7 +486,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
     let host = NSHostingView(rootView: root)
     host.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
     panel.contentView = host
-    panel.orderFrontRegardless()
+    BackgroundTestWindow.present(panel)
     defer { panel.orderOut(nil) }
     headerSettle(host)
     try headerPointer(false, on: host)
@@ -637,10 +657,64 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func headerContains(
     _ pixels: [HeaderPixel], near token: OverlayColorToken, tolerance: CGFloat
   ) -> Bool {
-    let target = headerPixel(token.nsColor)
-    return pixels.contains { pixel in
+    headerContains(pixels, near: headerPixel(token.nsColor), tolerance: tolerance)
+  }
+
+  private func headerContains(
+    _ pixels: [HeaderPixel], near target: HeaderPixel, tolerance: CGFloat
+  ) -> Bool {
+    pixels.contains { pixel in
       pixel.alpha > 0.45 && headerDistance(pixel, target) < tolerance
     }
+  }
+
+  /// A role colour is a hue, not a lightness. The olive status is muted
+  /// enough that a neutral grey of its lightness lies 0.13 from it, and the
+  /// antialiased rim of the Agents button's unread dot (primary text, black
+  /// or white) paints such greys in both appearances (div0 swiftc probe,
+  /// 2026-10-19: 0.127 light, 0.133 dark; without the dot 0.272 and 0.175).
+  /// Only a pixel with at least half the role's chroma can wear the role; a
+  /// glyph painted in the agent violet still matches at 0.000.
+  private func headerContainsHue(
+    _ pixels: [HeaderPixel], near target: HeaderPixel, tolerance: CGFloat
+  ) -> Bool {
+    let floor = headerChroma(target) / 2
+    return pixels.contains { pixel in
+      pixel.alpha > 0.45 && headerChroma(pixel) >= floor
+        && headerDistance(pixel, target) < tolerance
+    }
+  }
+
+  private func headerChroma(_ pixel: HeaderPixel) -> CGFloat {
+    max(pixel.red, pixel.green, pixel.blue) - min(pixel.red, pixel.green, pixel.blue)
+  }
+
+  /// A role colour as this raster paints it. The raster comes back through
+  /// the display's colour transform: on div0 (2026-10-19) the dark sheet
+  /// #16161C reads 0.113 instead of 0.086 and the muted grey 0.667 instead of
+  /// 0.604, which put the resting grey 0.158 from the nominal olive and only
+  /// 0.175 from the olive as painted. Comparing a painted glyph with a
+  /// nominal token measures the display, not the control.
+  private func headerRendered(
+    _ token: OverlayColorToken, palette: OverlayAppearancePalette
+  ) -> HeaderPixel {
+    let size = NSSize(width: 8, height: 8)
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 280, y: 460, width: size.width, height: size.height),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
+    let host = NSHostingView(
+      rootView: Rectangle().fill(token.color)
+        .frame(width: size.width, height: size.height)
+        .preferredColorScheme(palette.appearance == .dark ? .dark : .light))
+    host.frame = NSRect(origin: .zero, size: size)
+    panel.contentView = host
+    BackgroundTestWindow.present(panel)
+    defer { panel.orderOut(nil) }
+    headerSettle(host)
+    let raster = headerRaster(host)
+    guard !raster.pixels.isEmpty else { return headerPixel(token.nsColor) }
+    return raster.pixels[raster.pixels.count / 2]
   }
 
   // A one-device-pixel 80%-opacity stroke is composited with the background;
@@ -743,6 +817,69 @@ final class OverlayHeaderChromeTests: XCTestCase {
       Color.red.opacity(OverlayAgentAudioControls.litGlassOpacity))
     XCTAssertLessThanOrEqual(OverlayAgentAudioControls.litGlassOpacity, 0.35)
     XCTAssertNil(OverlayAgentAudioControls.litGlass(nil), "an unlit control keeps plain glass")
+  }
+
+  /// Founder's website shots (2026-10-18): bubbles stayed legible under the
+  /// header glass, a mouse brought back legacy scrollers, the expandable
+  /// receipt sat right of a plain one and a jargon badge rode on replies.
+  func testConversationFadesUnderTheHeaderAndKeepsItsChromeQuiet() throws {
+    let conversation = try source("Overlay/OverlayConversationView.swift")
+    XCTAssertTrue(conversation.contains(".safeAreaBar(edge: .top, spacing: 0)"), "header is a bar")
+    XCTAssertTrue(conversation.contains(".scrollEdgeEffectStyle(.soft, for: .top)"))
+    XCTAssertFalse(conversation.contains("scrollEdgeEffectHidden(true, for: [.top, .bottom])"))
+    XCTAssertTrue(conversation.contains(".csAutohidingScrollers()"), "one scroller owner")
+    let scroller = try source("../DesignSystem/CSScroller.swift")
+    XCTAssertTrue(scroller.contains("scrollView.scrollerStyle = .overlay"))
+    XCTAssertTrue(scroller.contains("NSScroller.preferredScrollerStyleDidChangeNotification"))
+    XCTAssertFalse(
+      try source("Overlay/OverlayCanvasSurface.swift").contains("scrollerStyle"),
+      "the overlay keeps no scroller policy of its own")
+    XCTAssertTrue(
+      conversation.contains(".menuStyle(.borderlessButton)"), "the receipt stays a native menu")
+    XCTAssertTrue(
+      conversation.contains(".padding(.leading, -Self.receiptMenuLabelInset)"),
+      "receipt keeps the edge")
+    XCTAssertFalse(conversation.contains("\"Unsolicited reply\""))
+  }
+
+  /// Founder, 2026-10-18: "te scrolle muszą zniknąć". SwiftUI's indicator
+  /// visibility cannot keep that promise with a mouse attached, so no screen
+  /// rests on it; every surface goes through `CSScrollerPin`.
+  func testNoScreenRestsOnSwiftUIScrollIndicatorsAlone() throws {
+    let screens = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().appendingPathComponent("Codescribe/Screens")
+    let files = try XCTUnwrap(
+      FileManager.default.enumerator(at: screens, includingPropertiesForKeys: nil)
+    )
+    .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    XCTAssertFalse(files.isEmpty)
+    for file in files {
+      // Comments may still name what stood there; code may not.
+      let code = try String(contentsOf: file, encoding: .utf8)
+        .split(separator: "\n")
+        .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        .joined(separator: "\n")
+      XCTAssertFalse(
+        code.contains(".scrollIndicators(.hidden)"), "\(file.lastPathComponent) hides by hope")
+      XCTAssertFalse(code.contains("overlayAutohidingScroller"), file.lastPathComponent)
+    }
+  }
+
+  /// Store-minted attachment names never reach a chip.
+  func testAttachmentChipNamesThePictureOrTheChosenFile() {
+    let hash = String(repeating: "a1", count: 32)
+    let image = String(localized: "Image")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "inline_\(hash).png"), image)
+    let size = ByteCountFormatter.string(fromByteCount: 2_048, countStyle: .file)
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "inline_\(hash).png", bytes: 2_048),
+      "\(image) · \(size)")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_\(hash)_report.pdf"), "report.pdf")
+    XCTAssertEqual(
+      ConversationAttachmentLabel.display(fileName: "clipboard_short_report.pdf"),
+      "clipboard_short_report.pdf", "only a full content hash is peeled")
+    XCTAssertEqual(ConversationAttachmentLabel.display(fileName: "notes.txt"), "notes.txt")
   }
 
   private func source(_ relative: String) throws -> String {

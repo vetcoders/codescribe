@@ -45,6 +45,57 @@ private final class StoppedClock: @unchecked Sendable {
   func advance(_ seconds: TimeInterval) { lock.withLock { stored += seconds } }
 }
 
+/// Counts status reads and how many ran on the main thread.
+private final class StatusReadLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var reads = 0
+  private var mainReads = 0
+
+  var count: Int { lock.withLock { reads } }
+  var onMain: Int { lock.withLock { mainReads } }
+
+  func record(onMain: Bool) {
+    lock.withLock {
+      reads += 1
+      if onMain { mainReads += 1 }
+    }
+  }
+
+  func reset() { lock.withLock { (reads, mainReads) = (0, 0) } }
+}
+
+/// Counts model reads and where they ran, and can hold the first one open. The
+/// store reads off the main actor, so this is locked rather than isolated.
+private final class StatusReads: @unchecked Sendable {
+  private let lock = NSLock()
+  private var reads = 0
+  private var mainThreadReads = 0
+  private let firstReadGate: DispatchSemaphore?
+
+  init(holdingFirstRead: Bool = false) {
+    firstReadGate = holdingFirstRead ? DispatchSemaphore(value: 0) : nil
+  }
+
+  var count: Int { lock.withLock { reads } }
+  var onMainThread: Int { lock.withLock { mainThreadReads } }
+
+  func releaseFirstRead() { firstReadGate?.signal() }
+
+  func read() -> CsWhisperModelStatus {
+    let number = lock.withLock {
+      reads += 1
+      if Thread.isMainThread { mainThreadReads += 1 }
+      return reads
+    }
+    if number == 1 { firstReadGate?.wait() }
+    var status = CsWhisperModelStatus.sampleUnavailable
+    status.available = true
+    status.path = "/fixture/whisper"
+    return status
+  }
+
+}
+
 @MainActor
 final class WhisperDownloadStoreTests: XCTestCase {
   /// 1539 MB: the shape of the real weights file, in whole megabytes.
@@ -72,6 +123,66 @@ final class WhisperDownloadStoreTests: XCTestCase {
     await Task.yield()
     XCTAssertEqual(transfer.starts, 0)
     XCTAssertFalse(store.inFlight)
+  }
+
+  /// Lena 19 X: each Settings sidebar click froze the app for 0.2-0.35 s while
+  /// the model bundle was validated on the main thread.
+  func testSettingsPageChangeValidatesTheModelOffTheMainThread() async {
+    let reads = StatusReadLog()
+    let store = WhisperDownloadStore(
+      statusProvider: {
+        reads.record(onMain: pthread_main_np() != 0)
+        return .sampleUnavailable
+      },
+      download: { _ in .sampleUnavailable })
+    let settings = SettingsViewModel(
+      engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(.allGranted),
+      whisperDownloadStore: store, servingStatusProvider: { nil })
+    reads.reset()
+    settings.refreshForCurrentSection()
+    await awaitCondition { reads.count > 0 }
+    XCTAssertEqual(reads.count, 1)
+    XCTAssertEqual(reads.onMain, 0, "a page change must not validate the model on the main thread")
+  }
+
+  /// A Settings page switch refreshes the model status; the bundle validation
+  /// behind it must not hold the main thread (sidebar lag, 2026-10-19).
+  func testRefreshReadsTheModelOffTheMainThreadAndPublishesIt() async {
+    let reads = StatusReads()
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    await store.refresh().value
+    XCTAssertEqual(reads.count, 1)
+    XCTAssertEqual(reads.onMainThread, 0)
+    XCTAssertTrue(store.status.available)
+    XCTAssertEqual(store.readiness, .installed)
+  }
+
+  func testRefreshesBeforeAReadBeginsShareThatRead() async {
+    let reads = StatusReads()
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    let first = store.refresh()
+    let second = store.refresh()
+    store.refresh()
+    await first.value
+    await second.value
+    XCTAssertEqual(reads.count, 1, "the one read began after all three requests")
+  }
+
+  func testARefreshDuringARunningReadGetsAReadThatStartsAfterIt() async {
+    let reads = StatusReads(holdingFirstRead: true)
+    let store = WhisperDownloadStore(
+      statusProvider: { reads.read() }, download: { _ in .sampleUnavailable })
+    let running = store.refresh()
+    await awaitCondition { reads.count == 1 }
+    let later = store.refresh()
+    reads.releaseFirstRead()
+    await later.value
+    XCTAssertEqual(reads.count, 2, "the running read began before the second request")
+    await running.value
+    XCTAssertTrue(store.status.available)
+
   }
 
   func testOpeningTheSetupModelStepNeverStartsARequestedModelTransfer() async {

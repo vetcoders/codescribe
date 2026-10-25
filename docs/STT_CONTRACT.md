@@ -182,9 +182,9 @@ casing, commas and whitespace keep their existing bytes, including when the last
 owner spans a long take or its live shaping cache is incomplete. Explicit human
 formatting remains a separate action. The main overlay field projects the
 committed document throughout capture and terminal review; unresolved recognizer
-words remain visibly labelled “Also heard · not committed” in a separate,
-scrollable review area. This projection change neither admits those words nor
-certifies delivery coverage or restored recognition quality. Untimed Apple
+words and ledger coverage are reviewed in Voice Lab, not in the overlay (Maciej,
+2026-10-19). This projection change neither admits those words nor certifies
+delivery coverage or restored recognition quality. Untimed Apple
 partial revisions never inherit PCM identity from word indexes or token counts.
 
 ### File observations and Apple backend identity (2026-10-02)
@@ -629,6 +629,14 @@ The Whisper download listener also answers `is_cancelled`, polled between body
 chunks: a stopped transfer deletes its `.partial` file and fails with the core
 cancellation marker, so the model stays not installed. Reading the status
 drops a `.partial` stranded beside a bundle that is already complete.
+
+`whisper_model_status` validates the whole bundle, tokenizer included, so a
+read takes a few hundred milliseconds. `WhisperDownloadStore.refresh()` runs it
+off the main actor: a Settings page switch or a setup step shows the last known
+state and repaints when the read lands. Refreshes asked for during a read share
+it and one read that starts after them, and a read never overwrites the status a
+transfer wrote. Setup's Finish waits for a read begun after the click; an explicit
+Download click reads synchronously before it claims a transfer.
 
 ### 3.3 Dictation overlay / tray
 

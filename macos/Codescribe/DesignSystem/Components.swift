@@ -44,10 +44,14 @@ struct CSWindowHeaderChrome: ViewModifier {
 /// (Maciej, 2026-10-14: the title bar only above the messages, never over the
 /// sidebar; the same in Settings).
 ///
+/// A sheet-toned fade replaced this glass for a day; Maciej preferred the glass
+/// and the Founder kept it in both windows (2026-10-19).
+///
 /// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
 /// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
 /// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
-/// tall as the column's top safe-area inset, which is the toolbar, and lifted
+/// tall as the column's top safe-area inset, which is the toolbar (in Agent,
+/// the toolbar plus the conversation header row inset below it), and lifted
 /// into it. Toolbar items stay in the titlebar above it and keep their clicks.
 struct CSDetailHeaderGlass: ViewModifier {
   @State private var height: CGFloat = 0
@@ -398,17 +402,33 @@ struct StaticStatusPill: View {
   }
 }
 
-/// Wordmark lockup: brand dot + lowercase "codescribe".
-struct Wordmark: View {
+/// Wordmark lockup: brand dot + lowercase "codescribe", the product name and
+/// never translated copy. The lockup is a label, so the word itself never
+/// answers the pointer; a surface that needs a control there hands in its own
+/// dot, the way the overlay hands in its close button.
+struct Wordmark<Dot: View>: View {
   var size: CGFloat = 15
-  var dotColor: Color = CSColor.terracotta
+  var spacing: CGFloat = 9
+  /// False draws the dot alone, where a surface puts its own content in the
+  /// word's place: the overlay's mini header carries its channel counter.
+  var showsWord = true
+  @ViewBuilder var dot: () -> Dot
   var body: some View {
-    HStack(spacing: 9) {
-      ModeDot(color: dotColor, size: size * 0.6)
-      Text(verbatim: "codescribe")
-        .font(CSFont.ui(size, .bold))
-        .tracking(-0.3)
-        .foregroundStyle(CSColor.textHigh)
+    HStack(spacing: spacing) {
+      dot()
+      if showsWord {
+        Text(verbatim: "codescribe")
+          .font(CSFont.ui(size, .bold))
+          .tracking(-0.3)
+          .foregroundStyle(CSColor.textHigh)
+          .allowsHitTesting(false)
+      }
     }
+  }
+}
+
+extension Wordmark where Dot == ModeDot {
+  init(size: CGFloat = 15, dotColor: Color = CSColor.terracotta) {
+    self.init(size: size) { ModeDot(color: dotColor, size: size * 0.6) }
   }
 }

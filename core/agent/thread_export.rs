@@ -43,7 +43,7 @@ pub fn thread_to_markdown(thread: &Thread, assistant_only: bool) -> String {
     let exported_at = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let title = thread.title.trim();
     let heading = if title.is_empty() {
-        "Untitled thread"
+        "Untitled conversation"
     } else {
         title
     };

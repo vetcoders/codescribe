@@ -9,13 +9,31 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
+import sys
 import time
 import uuid
 
 
 class Refusal(Exception):
     pass
+
+
+#: Refusals that end once the application is idle again: a take is active or
+#: settling, the Founder is writing to an agent, an agent turn holds the
+#: runtime lease, or the request itself went stale. `--wait` retries only
+#: these; every other refusal is final.
+RETRYABLE = frozenset({
+    "capture_busy_or_not_ready",
+    "founder_composing",
+    "idle_lease_unavailable",
+    "restart_in_progress",
+    "expired_request",
+    "restart_request_not_delivered",
+    "another_restart_request_is_active",
+    "timeout_without_forced_termination",
+})
 
 
 def run(arguments: list[str]) -> subprocess.CompletedProcess:
@@ -56,13 +74,18 @@ def supported(root: Path, app: Path, running: set[int]) -> list[dict]:
 
 
 def loaded_matches(pid: int, app: Path) -> bool:
+    return loaded_state(pid, app) is True
+
+
+def loaded_state(pid: int, app: Path) -> bool | None:
+    """Whether the process runs the installed main and FFI binaries; None if unreadable."""
     required = [
         app / "Contents/MacOS/Codescribe",
         app / "Contents/Frameworks/libcodescribe_ffi.dylib",
     ]
     result = run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Ffin"])
     if result.returncode != 0:
-        return False
+        return None
     loaded = {}
     inode = None
     for line in result.stdout.splitlines():
@@ -75,13 +98,13 @@ def loaded_matches(pid: int, app: Path) -> bool:
     return all(path.is_file() and loaded.get(str(path)) == path.stat().st_ino for path in required)
 
 
-def wait_until(probe, deadline: float):
+def wait_until(probe, deadline: float, reason: str = "timeout_without_forced_termination"):
     while time.monotonic() < deadline:
         value = probe()
         if value:
             return value
         time.sleep(0.1)
-    raise Refusal("timeout_without_forced_termination")
+    raise Refusal(reason)
 
 
 CARRIED_ENV_PREFIX = "CODESCRIBE_"
@@ -105,7 +128,14 @@ def launch_new_generation(app: Path, carried: list[str]):
     return run(arguments)
 
 
-def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: Path | None = None) -> dict:
+def restart(
+    app: Path,
+    root: Path,
+    timeout: float,
+    quit_only: bool,
+    launch_app: Path | None = None,
+    newer_only: bool = False,
+) -> dict:
     launch = launch_app or app
     running = pids()
     if not running:
@@ -115,6 +145,14 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: 
         raise Refusal("running_process_does_not_support_atomic_restart_or_is_ambiguous")
     ready = candidates[0]
     old_pid = ready["pid"]
+    if newer_only:
+        # An install replaces the bundle's files, so the running process keeps
+        # the old inodes. Same inodes means nothing newer was installed.
+        loaded = loaded_state(old_pid, launch)
+        if loaded is None:
+            raise Refusal("loaded_identity_unavailable")
+        if loaded:
+            return {"status": "current", "pid": old_pid, "commit": ready.get("commit") or None}
     if not quit_only:
         signature = run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launch)])
         if signature.returncode != 0:
@@ -158,7 +196,9 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: 
         return None
 
     receipt = wait_until(final_receipt, deadline)
-    wait_until(lambda: old_pid not in pids(), deadline)
+    # After acceptance the application is going down; a timeout from here on
+    # is a failed transition, never a busy owner to retry.
+    wait_until(lambda: old_pid not in pids(), deadline, "old_generation_did_not_exit")
     if quit_only:
         return {"status": "quit_idle", "old_pid": old_pid, "native_receipt": receipt}
     carried = carried_environment()
@@ -172,12 +212,13 @@ def restart(app: Path, root: Path, timeout: float, quit_only: bool, launch_app: 
                 return candidate
         return None
 
-    new = wait_until(new_generation, time.monotonic() + timeout)
+    new = wait_until(new_generation, time.monotonic() + timeout, "new_generation_not_verified")
     with (launch / "Contents/Info.plist").open("rb") as handle:
         info = plistlib.load(handle)
     return {
         "status": "restarted",
         "old_pid": old_pid,
+        "old_commit": ready.get("commit") or None,
         "new_pid": new["pid"],
         "version": info.get("CFBundleShortVersionString"),
         "build": info.get("CSBuildNumber"),
@@ -201,9 +242,36 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--quit-only", action="store_true", help="Reserve idle and exit for an installer")
+    parser.add_argument(
+        "--newer-only",
+        action="store_true",
+        help="Restart only when the running process did not load the installed main and FFI binaries.",
+    )
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=0,
+        help="Retry busy refusals until the application is idle, for up to N seconds (at most 86400).",
+    )
+    parser.add_argument("--interval", type=float, default=15, help="Seconds between --wait attempts")
+    parser.add_argument(
+        "--announce", action="store_true", help="Play the outcome sound and speak its text"
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="Return at once; a background waiter appends its JSON lines to waiter.log.",
+    )
     arguments = parser.parse_args()
     if not 0 < arguments.timeout <= 60:
         parser.error("--timeout must be greater than zero and at most 60 seconds")
+    if not 0 <= arguments.wait <= 86400:
+        parser.error("--wait must be between 0 and 86400 seconds")
+    if not 1 <= arguments.interval <= 600:
+        parser.error("--interval must be between 1 and 600 seconds")
+    if arguments.quit_only and (arguments.newer_only or arguments.wait):
+        parser.error("--quit-only belongs to an installer; it takes no --newer-only or --wait")
+    unattended = arguments.newer_only or arguments.wait > 0
     helper = Path.home() / ".local/bin/cs-bus"
     try:
         location = run([str(helper), "--print-agent-turn-lease-path"])
@@ -213,24 +281,97 @@ def main() -> int:
         root = lease_path.with_name("restart-if-idle")
         if not root.is_dir() or root.is_symlink() or root.stat().st_uid != os.getuid():
             raise Refusal("running_process_does_not_support_atomic_restart")
-        descriptor = os.open(root / "request.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        with os.fdopen(descriptor, "w"):
+        if arguments.wait:
+            # One waiter at a time. A later install needs no second one: every
+            # attempt compares against the bundle installed at that moment.
+            waiter = os.open(root / "wait.lock", os.O_RDWR | os.O_CREAT, 0o600)
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise Refusal("another_restart_request_is_active") from error
-            result = restart(
-                arguments.app.resolve(),
-                root,
-                arguments.timeout,
-                arguments.quit_only,
-                arguments.launch_app.resolve() if arguments.launch_app else None,
-            )
-        print(json.dumps(result, ensure_ascii=False))
+                fcntl.flock(waiter, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"status": "deferred_to_active_waiter"}, ensure_ascii=False))
+                return 0
+        if arguments.detach:
+            log = root / "waiter.log"
+            sys.stdout.flush()
+            child = os.fork()
+            if child:
+                # The child keeps the inherited wait lock after this exit.
+                print(json.dumps({"status": "armed", "pid": child, "log": str(log)}, ensure_ascii=False))
+                return 0
+            # A new session survives the shell or make that armed it.
+            os.setsid()
+            output = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+            os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+            os.dup2(output, 1)
+            os.dup2(output, 2)
+        deadline = time.monotonic() + arguments.wait
+        while True:
+            try:
+                result = attempt(root, arguments)
+                break
+            except Refusal as refusal:
+                if str(refusal) not in RETRYABLE or time.monotonic() + arguments.interval > deadline:
+                    raise
+                print(json.dumps({"status": "waiting", "reason": str(refusal), "at": stamp()}),
+                      file=sys.stderr, flush=True)
+                time.sleep(arguments.interval)
+        print(json.dumps({**result, "at": stamp()}, ensure_ascii=False), flush=True)
+        if arguments.announce:
+            announce(result)
         return 0
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
-        print(json.dumps({"status": "refused", "reason": str(error)}, ensure_ascii=False))
+        if unattended and str(error) == "application_not_running":
+            # Nothing to restart: the Founder closed the application.
+            print(json.dumps({"status": "not_running", "at": stamp()}, ensure_ascii=False), flush=True)
+            return 0
+        refused = {"status": "refused", "reason": str(error)}
+        print(json.dumps({**refused, "at": stamp()}, ensure_ascii=False), flush=True)
+        if arguments.announce:
+            announce(refused)
         return 75
+
+
+def attempt(root: Path, arguments: argparse.Namespace) -> dict:
+    descriptor = os.open(root / "request.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "w"):
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise Refusal("another_restart_request_is_active") from error
+        return restart(
+            arguments.app.resolve(),
+            root,
+            arguments.timeout,
+            arguments.quit_only,
+            arguments.launch_app.resolve() if arguments.launch_app else None,
+            arguments.newer_only,
+        )
+
+
+def stamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def announce(result: dict) -> None:
+    """Play the outcome sound, then speak its text with the installed helper."""
+    if result.get("status") == "restarted":
+        sound, phrase = "Glass", "Zrobione"
+    elif result.get("status") == "refused":
+        sound, phrase = "Basso", "Restart się nie udał"
+    else:
+        return
+    commands = [["/usr/bin/afplay", f"/System/Library/Sounds/{sound}.aiff"]]
+    cs_say = shutil.which("cs-say") or str(Path.home() / ".local/bin/cs-say")
+    speech = [cs_say, phrase]
+    voice = os.environ.get("RESTART_ANNOUNCE_VOICE")
+    if voice:
+        speech.extend(["--voice", voice])
+    commands.append(speech)
+    for command in commands:
+        try:
+            run(command)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 if __name__ == "__main__":

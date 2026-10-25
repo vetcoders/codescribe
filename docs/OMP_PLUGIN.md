@@ -85,7 +85,9 @@ cs-bus --omp-wake --provider omp --session <id> --host-pid <omp pid>
   with `codescribe_read`, ACKs the exact `read_delivery_ids`, works and replies,
   then ends the turn; the next `agent_end` re-arms.
 - Announced IDs stay recorded until acknowledged, so a message left unread does
-  not wake every turn. A lost follower or refused mailbox is announced once as
+  not wake every turn. A delivery still unacknowledged ten minutes after its
+  announcement starts one more turn as `codescribe_mailbox_reminder`, in case the
+  first notice was lost. A lost follower or refused mailbox is announced once as
   `codescribe_listener_problem`. After six silent hours the helper returns a
   `codescribe_wait_idle` receipt; the extension re-arms without a model turn.
 - Exit 0 (this session owns no channel, the host pid is gone, or another waiter

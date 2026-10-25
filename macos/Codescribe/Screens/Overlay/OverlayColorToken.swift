@@ -13,6 +13,27 @@ struct OverlayColorToken: Equatable, Sendable {
     self.alpha = alpha
   }
 
+  /// One `CSPalette` role sampled for a fixed appearance. The overlay reasons
+  /// about exact sRGB components — contrast over glass, composited veils — and
+  /// a dynamic `NSColor` cannot answer that outside a drawing appearance, so
+  /// the role is resolved once instead of being restated as a second value.
+  init(_ role: NSColor, in appearance: OverlayAppearance) {
+    let resolved = OverlayColorToken.resolved(role, in: appearance)
+    let red = UInt32((resolved.redComponent * 255).rounded())
+    let green = UInt32((resolved.greenComponent * 255).rounded())
+    let blue = UInt32((resolved.blueComponent * 255).rounded())
+    self.init(red << 16 | green << 8 | blue, alpha: Double(resolved.alphaComponent))
+  }
+
+  private static func resolved(_ color: NSColor, in appearance: OverlayAppearance) -> NSColor {
+    var resolved = color
+    NSAppearance(named: appearance == .dark ? .darkAqua : .aqua)?
+      .performAsCurrentDrawingAppearance {
+        resolved = NSColor(cgColor: color.cgColor) ?? color
+      }
+    return resolved.usingColorSpace(.sRGB) ?? resolved
+  }
+
   var components: (red: Double, green: Double, blue: Double) {
     (
       Double((rgb >> 16) & 0xFF) / 255,

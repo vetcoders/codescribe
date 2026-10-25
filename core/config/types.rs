@@ -332,6 +332,220 @@ impl FromStr for DeferredInsertShortcut {
     }
 }
 
+/// The key a [`WidgetShortcut`] ends with: one Latin letter or Space. Digits
+/// belong to the channel chords and Fn to dictation, so neither is offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WidgetShortcutKey {
+    /// ASCII uppercase letter, `b'A'..=b'Z'`.
+    Letter(u8),
+    Space,
+}
+
+impl WidgetShortcutKey {
+    /// Carbon virtual keycode (ANSI layout) the CoreGraphics tap reports.
+    pub fn keycode(self) -> i64 {
+        match self {
+            Self::Space => 49,
+            Self::Letter(letter) => match letter {
+                b'A' => 0,
+                b'S' => 1,
+                b'D' => 2,
+                b'F' => 3,
+                b'H' => 4,
+                b'G' => 5,
+                b'Z' => 6,
+                b'X' => 7,
+                b'C' => 8,
+                b'V' => 9,
+                b'B' => 11,
+                b'Q' => 12,
+                b'W' => 13,
+                b'E' => 14,
+                b'R' => 15,
+                b'Y' => 16,
+                b'T' => 17,
+                b'O' => 31,
+                b'U' => 32,
+                b'I' => 34,
+                b'P' => 35,
+                b'L' => 37,
+                b'J' => 38,
+                b'K' => 40,
+                b'N' => 45,
+                b'M' => 46,
+                _ => -1,
+            },
+        }
+    }
+
+    /// The letter for a Carbon ANSI keycode, if it is one the chord may end with.
+    pub fn from_keycode(keycode: i64) -> Option<Self> {
+        if keycode == 49 {
+            return Some(Self::Space);
+        }
+        (b'A'..=b'Z')
+            .map(Self::Letter)
+            .find(|key| key.keycode() == keycode)
+    }
+
+    fn wire_token(self) -> String {
+        match self {
+            Self::Space => "space".to_string(),
+            Self::Letter(letter) => (letter as char).to_ascii_lowercase().to_string(),
+        }
+    }
+
+    fn glyph(self) -> String {
+        match self {
+            Self::Space => "Space".to_string(),
+            Self::Letter(letter) => (letter as char).to_string(),
+        }
+    }
+}
+
+/// The user's own chord for showing or hiding the collapsed widget
+/// (`WIDGET_SHORTCUT`). Any combination of Control, Option, Command and Shift
+/// plus one letter or Space; at least one of Control, Option or Command, so a
+/// plain or Shift-only letter keeps typing. `Command+Shift+Space` stays the
+/// Agent summon. Default `ctrl+shift+b` (Founder, 2026-10-23: "B jak bus").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WidgetShortcut {
+    pub ctrl: bool,
+    pub option: bool,
+    pub cmd: bool,
+    pub shift: bool,
+    pub key: WidgetShortcutKey,
+}
+
+impl Default for WidgetShortcut {
+    fn default() -> Self {
+        Self {
+            ctrl: true,
+            option: false,
+            cmd: false,
+            shift: true,
+            key: WidgetShortcutKey::Letter(b'B'),
+        }
+    }
+}
+
+impl WidgetShortcut {
+    /// Canonical settings.json / env token, e.g. `ctrl+shift+b`: modifiers in
+    /// the order ctrl, option, cmd, shift, then the key. [`FromStr`] round-trips it.
+    pub fn wire_id(self) -> String {
+        let mut parts = Vec::with_capacity(5);
+        if self.ctrl {
+            parts.push("ctrl".to_string());
+        }
+        if self.option {
+            parts.push("option".to_string());
+        }
+        if self.cmd {
+            parts.push("cmd".to_string());
+        }
+        if self.shift {
+            parts.push("shift".to_string());
+        }
+        parts.push(self.key.wire_token());
+        parts.join("+")
+    }
+
+    /// Chord rendered with macOS modifier glyphs in the system order
+    /// (Control, Option, Shift, Command), e.g. `⌃⇧B`.
+    pub fn label(self) -> String {
+        let mut label = String::new();
+        if self.ctrl {
+            label.push('⌃');
+        }
+        if self.option {
+            label.push('⌥');
+        }
+        if self.shift {
+            label.push('⇧');
+        }
+        if self.cmd {
+            label.push('⌘');
+        }
+        label.push_str(&self.key.glyph());
+        label
+    }
+
+    /// Why a chord is refused, if it is. Shared by parsing and the recorder.
+    fn validate(self) -> Result<Self, String> {
+        if !(self.ctrl || self.option || self.cmd) {
+            return Err(
+                "Widget shortcut needs Control, Option or Command: a plain or Shift-only key types"
+                    .into(),
+            );
+        }
+        if self.cmd
+            && self.shift
+            && !self.ctrl
+            && !self.option
+            && self.key == WidgetShortcutKey::Space
+        {
+            return Err("Command+Shift+Space already summons the Agent window".into());
+        }
+        Ok(self)
+    }
+}
+
+impl FromStr for WidgetShortcut {
+    /// Parse error payload for widget-shortcut wire identifiers.
+    type Err = String;
+
+    /// Accept `ctrl`/`control`, `option`/`alt`/`opt`, `cmd`/`command`, `shift`
+    /// in any order joined by `+`, ending with one letter or `space`.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut shortcut = Self {
+            ctrl: false,
+            option: false,
+            cmd: false,
+            shift: false,
+            key: WidgetShortcutKey::Space,
+        };
+        let mut key = None;
+        for token in value
+            .split('+')
+            .map(|token| token.trim().to_ascii_lowercase())
+        {
+            match token.as_str() {
+                "ctrl" | "control" => shortcut.ctrl = true,
+                "option" | "alt" | "opt" => shortcut.option = true,
+                "cmd" | "command" => shortcut.cmd = true,
+                "shift" => shortcut.shift = true,
+                "space" => key = Some(WidgetShortcutKey::Space),
+                letter if letter.len() == 1 && letter.as_bytes()[0].is_ascii_lowercase() => {
+                    key = Some(WidgetShortcutKey::Letter(
+                        letter.as_bytes()[0].to_ascii_uppercase(),
+                    ))
+                }
+                other => return Err(format!("Unknown widget shortcut token: {other:?}")),
+            }
+        }
+        let Some(key) = key else {
+            return Err(format!(
+                "Widget shortcut {value:?} names no key (a letter or space)"
+            ));
+        };
+        shortcut.key = key;
+        shortcut.validate()
+    }
+}
+
+impl Serialize for WidgetShortcut {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.wire_id())
+    }
+}
+
+impl<'de> Deserialize<'de> for WidgetShortcut {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// One persisted work-mode-to-gesture pair. The binding list is stored as a
 /// sequence rather than a map so the settings UI can keep a stable row order.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -621,6 +835,12 @@ pub struct Config {
     #[serde(default = "default_light_plus_sentence_pause_sec")]
     pub light_plus_sentence_pause_sec: f32,
 
+    /// Lab slider for live word admission, from -100 (fewer repeated and
+    /// stray words, more cut words) to +100 (the reverse). 0 is today's engine.
+    /// Sampled once at take start.
+    #[serde(default)]
+    pub ledger_sensitivity: i32,
+
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
@@ -628,6 +848,10 @@ pub struct Config {
     /// Modifier held with a digit to open an agent channel. Command is unrepresentable.
     #[serde(default)]
     pub channel_modifier: ChannelModifier,
+
+    /// The user's chord that shows or hides the collapsed widget.
+    #[serde(default)]
+    pub widget_shortcut: WidgetShortcut,
 
     /// Quick Fn press below the hold delay toggles dictation. Off until chosen.
     #[serde(default)]
@@ -648,10 +872,6 @@ pub struct Config {
     pub whisper_language: Language,
 
     // ===== AI Formatting =====
-    /// Whether AI formatting is enabled for transcriptions
-    #[serde(default)]
-    pub ai_formatting_enabled: bool,
-
     /// User-owned automatic paste policy for non-assistive dictation
     /// (`PASTE_MODE`). Assistive, empty/no-speech, Notes save-only, and safety
     /// branches remain controller-owned vetoes in every mode.
@@ -844,8 +1064,10 @@ impl std::fmt::Debug for Config {
                 "light_plus_sentence_pause_sec",
                 &self.light_plus_sentence_pause_sec,
             )
+            .field("ledger_sensitivity", &self.ledger_sensitivity)
             .field("deferred_insert_shortcut", &self.deferred_insert_shortcut)
             .field("channel_modifier", &self.channel_modifier)
+            .field("widget_shortcut", &self.widget_shortcut)
             .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
             .field("middle_mouse_acts_as_fn", &self.middle_mouse_acts_as_fn)
             .field(
@@ -853,7 +1075,6 @@ impl std::fmt::Debug for Config {
                 &self.middle_mouse_agent_gesture,
             )
             .field("whisper_language", &self.whisper_language)
-            .field("ai_formatting_enabled", &self.ai_formatting_enabled)
             .field("paste_mode", &self.paste_mode)
             .field("transcript_send_mode", &self.transcript_send_mode)
             .field(
@@ -923,13 +1144,14 @@ impl Default for Config {
             whisper_adaptive_buffer: false,
             format_on_device: false,
             light_plus_sentence_pause_sec: default_light_plus_sentence_pause_sec(),
+            ledger_sensitivity: 0,
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             channel_modifier: ChannelModifier::default(),
+            widget_shortcut: WidgetShortcut::default(),
             fn_tap_toggles_dictation: false,
             middle_mouse_acts_as_fn: false,
             middle_mouse_agent_gesture: false,
             whisper_language: Language::default(),
-            ai_formatting_enabled: false,
             paste_mode: PasteMode::default(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
@@ -989,6 +1211,7 @@ impl Config {
             normalize_whisper_context_window_sec(self.whisper_context_window_sec);
         self.light_plus_sentence_pause_sec =
             normalize_light_plus_sentence_pause_sec(self.light_plus_sentence_pause_sec);
+        self.ledger_sensitivity = normalize_ledger_sensitivity(self.ledger_sensitivity);
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
@@ -1003,7 +1226,69 @@ impl Config {
 /// Config type parser/default regression tests (bindings, prompt, badge scale).
 #[cfg(test)]
 mod tests {
-    use super::{Config, DeferredInsertShortcut, ShortcutBinding};
+    use super::{
+        Config, DeferredInsertShortcut, ShortcutBinding, WidgetShortcut, WidgetShortcutKey,
+    };
+
+    #[test]
+    fn widget_shortcut_defaults_to_ctrl_shift_b_and_round_trips() {
+        let default = WidgetShortcut::default();
+        assert_eq!(default.wire_id(), "ctrl+shift+b");
+        assert_eq!(default.label(), "⌃⇧B");
+        assert_eq!(Config::default().widget_shortcut, default);
+        assert_eq!("ctrl+shift+b".parse::<WidgetShortcut>(), Ok(default));
+        assert_eq!(
+            "Control + Shift + B".parse::<WidgetShortcut>(),
+            Ok(default),
+            "aliases and case must not matter"
+        );
+        let custom = "alt+cmd+space"
+            .parse::<WidgetShortcut>()
+            .expect("custom chord");
+        assert_eq!(custom.key, WidgetShortcutKey::Space);
+        assert_eq!(custom.wire_id(), "option+cmd+space");
+        assert_eq!(custom.label(), "⌥⌘Space");
+        let decoded: Config =
+            serde_json::from_str(r#"{"widget_shortcut":"ctrl+option+k"}"#).expect("decode");
+        assert_eq!(decoded.widget_shortcut.wire_id(), "ctrl+option+k");
+        assert_eq!(decoded.widget_shortcut.key.keycode(), 40);
+    }
+
+    #[test]
+    fn widget_shortcut_refuses_typing_keys_and_the_agent_summon() {
+        assert!(
+            "b".parse::<WidgetShortcut>().is_err(),
+            "a bare letter types"
+        );
+        assert!(
+            "shift+b".parse::<WidgetShortcut>().is_err(),
+            "Shift alone types"
+        );
+        assert!("ctrl+shift".parse::<WidgetShortcut>().is_err(), "no key");
+        assert!(
+            "ctrl+shift+1".parse::<WidgetShortcut>().is_err(),
+            "digits are channels"
+        );
+        assert!("fn+b".parse::<WidgetShortcut>().is_err(), "Fn is dictation");
+        assert!(
+            "cmd+shift+space".parse::<WidgetShortcut>().is_err(),
+            "Agent summon"
+        );
+        assert!("ctrl+cmd+shift+space".parse::<WidgetShortcut>().is_ok());
+        assert_eq!(
+            WidgetShortcutKey::from_keycode(11),
+            Some(WidgetShortcutKey::Letter(b'B'))
+        );
+        assert_eq!(
+            WidgetShortcutKey::from_keycode(49),
+            Some(WidgetShortcutKey::Space)
+        );
+        assert_eq!(
+            WidgetShortcutKey::from_keycode(18),
+            None,
+            "the 1 key is a channel digit"
+        );
+    }
 
     /// Legacy shortcut aliases must fail parse so old broken names do not resurrect.
     #[test]

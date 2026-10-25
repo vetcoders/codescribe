@@ -8,6 +8,8 @@ use crate::stt::tail_provider::{
 };
 
 const RATE: u32 = 16_000;
+/// Calibrated existence floor of the capture device; the take is 0.25 RMS.
+const EXISTENCE_FLOOR_RMS: f32 = 0.01;
 
 fn capture(
     capacity: usize,
@@ -19,6 +21,7 @@ fn capture(
 ) {
     let mut state = AppleSealState::new_for_session(RATE, "capture-owner-proof".into(), 4);
     state.energy_calibration = Some(EnergyCalibration::new("capture-owner-proof", 1.0, 1));
+    state.existence_floor_rms = Some(EXISTENCE_FLOOR_RMS);
     let pcm = vec![0.25; seconds * RATE as usize];
     state.audio.push(&pcm);
     CaptureLevelAccumulator::bound_to(&state.capture_energy).push_samples(&pcm);
@@ -26,6 +29,20 @@ fn capture(
     state.tail_patch = Some(tail);
     let (tx, _) = mpsc::unbounded_channel();
     (state, tx, jobs)
+}
+
+/// Component `i` of a numeric run that starts at `first`. Components are
+/// distinct words: identical neighbours on one span are one occurrence unless
+/// each has its own voiced segment (D4), which a 10 ms component cannot have.
+fn numeral(first: u64, i: usize) -> String {
+    (first + i as u64).to_string()
+}
+
+fn numerals(first: u64, words: usize) -> String {
+    (0..words)
+        .map(|i| numeral(first, i))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn register_owner(
@@ -41,7 +58,13 @@ fn register_owner(
     );
     assert!(qualify_owned_occurrence(state, &owner));
     let pins = (0..words)
-        .map(|i| WordPin::new(128_000 + i as u64 * 200, 128_160 + i as u64 * 200, "56"))
+        .map(|i| {
+            WordPin::new(
+                128_000 + i as u64 * 200,
+                128_160 + i as u64 * 200,
+                numeral(56, i),
+            )
+        })
         .collect::<Vec<_>>();
     {
         let mut ledger = state.acoustic_ledger.lock().unwrap();
@@ -57,8 +80,8 @@ fn register_owner(
         100,
         PendingAppleSeal {
             occurrence: owner.clone(),
-            raw_text: vec!["56"; words].join(" "),
-            layer1_baseline: vec!["56"; words].join(" "),
+            raw_text: numerals(56, words),
+            layer1_baseline: numerals(56, words),
             start_ts: 8.0,
             end_ts: 8.5,
             segments: Vec::new(),
@@ -72,12 +95,12 @@ fn take_requests(jobs: &mut mpsc::Receiver<TailPatchRequest>) -> Vec<TailPatchRe
     std::iter::from_fn(|| jobs.try_recv().ok()).collect()
 }
 
-fn completion(request: &TailPatchRequest, words: usize, label: &str) -> TailPatchCompletion {
+fn completion(request: &TailPatchRequest, words: usize, first: u64) -> TailPatchCompletion {
     let segments = (0..words)
         .map(|i| TimedTailSegment {
             confidence: None,
             grain: TailSegmentGrain::Word,
-            text: label.into(),
+            text: numeral(first, i),
             range: TailSampleRange {
                 session: request.provider_request.identity.range.session.clone(),
                 capture_epoch: request.provider_request.identity.range.capture_epoch,
@@ -88,7 +111,7 @@ fn completion(request: &TailPatchRequest, words: usize, label: &str) -> TailPatc
         .collect::<Vec<_>>();
     let payload = TailProviderPayload {
         identity: request.provider_request.identity.clone(),
-        text: vec![label; words].join(" "),
+        text: numerals(first, words),
         segments,
         avg_logprob: Some(-0.2),
         compression_ratio: Some(1.1),
@@ -101,6 +124,7 @@ fn completion(request: &TailPatchRequest, words: usize, label: &str) -> TailPatc
             stability: TailEvidenceStability::Final,
             timing_quality: TailTimingQuality::ExactSampleRange,
             avg_logprob: Some(-0.2),
+            vad_selected_samples: None,
         },
     };
     payload.validate().unwrap();
@@ -227,8 +251,8 @@ fn replay_and_early_owners_share_grid_and_at_most_one_bounded_numeric_witness() 
         state.pump_capture_windows(&tx);
         let requests = take_requests(&mut jobs);
         assert_eq!(requests.len(), 3);
-        for (request, label) in requests.iter().zip(["1286", "999", "1286"]) {
-            state.complete_whisper_window(&tx, completion(request, 40, label), 15.0);
+        for (request, first) in requests.iter().zip([1286, 999, 1286]) {
+            state.complete_whisper_window(&tx, completion(request, 40, first), 15.0);
         }
         if late {
             owner = Some(register_owner(&mut state, &tx, 40));
@@ -243,7 +267,7 @@ fn replay_and_early_owners_share_grid_and_at_most_one_bounded_numeric_witness() 
             assert!(range.sample_start < 128_000 && range.sample_end >= 136_000);
             assert!(range.sample_end - range.sample_start <= 9 * u64::from(RATE));
             trial.provider_request.validate_pcm(&trial.audio).unwrap();
-            state.complete_whisper_window(&tx, completion(trial, 40, "1286"), 15.1);
+            state.complete_whisper_window(&tx, completion(trial, 40, 1286), 15.1);
         }
         let before = state.acoustic_ledger.lock().unwrap().word_choices().len();
         for _ in 0..3 {
@@ -255,10 +279,7 @@ fn replay_and_early_owners_share_grid_and_at_most_one_bounded_numeric_witness() 
             before,
             "replay minted an extra vote"
         );
-        assert_eq!(
-            ledger.text_of(&owner),
-            Some(vec!["1286"; 40].join(" ").as_str())
-        );
+        assert_eq!(ledger.text_of(&owner), Some(numerals(1286, 40).as_str()));
         assert!(!ledger.has_word_conflicts());
         assert_eq!(
             ledger.slots_of(&owner).unwrap().len(),

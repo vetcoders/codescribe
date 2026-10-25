@@ -53,6 +53,35 @@ final class IdleRestartCoordinatorTests: XCTestCase {
     XCTAssertEqual(terminated, 1)
   }
 
+  /// Maciej, 2026-10-23: a restart-if-idle quit the app under a long message
+  /// he was typing. Writing to an agent refuses before the lease is taken,
+  /// and words typed while the lease was being acquired refuse as well.
+  func testFounderComposingRefusesBeforeAndAfterTheLease() async throws {
+    let root = try fixture()
+    let composing = CaptureState()
+    composing.busy = true
+    var reservations = 0
+    var terminated = 0
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: { try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) },
+      reserveCapture: {
+        reservations += 1
+        return true
+      },
+      founderComposing: { composing.busy }, terminate: { terminated += 1 })
+    let typing = try request(root)
+    await coordinator.handle(typing)
+    XCTAssertEqual(try receipt(root, typing)["reason"] as? String, "founder_composing")
+    XCTAssertEqual(reservations, 0, "a draft in progress never reaches capture reservation")
+    XCTAssertEqual(terminated, 0)
+    composing.busy = false
+    let idle = try request(root)
+    await coordinator.handle(idle)
+    XCTAssertEqual(try receipt(root, idle)["status"] as? String, "accepted")
+    XCTAssertEqual(terminated, 1)
+  }
+
   func testCaptureBeginningDuringLeaseCheckStillRefuses() async throws {
     let root = try fixture()
     let entered = expectation(description: "lease check entered")

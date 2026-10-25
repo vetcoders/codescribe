@@ -193,6 +193,16 @@ def section(text, version):
 def previous_boundary(root, changelog, target, explicit):
     if explicit:
         return git(root, "rev-parse", explicit + "^{commit}")
+    inventory = root / f"docs/releases/{target}-commits.json"
+    if inventory.exists():
+        recorded = json.loads(inventory.read_text())
+        start = recorded.get("from_sha", "")
+        if recorded.get("version") != target or not re.fullmatch(r"[0-9a-f]{40}", start):
+            raise ValueError(f"Invalid recorded release boundary: {inventory}")
+        # A squash tag and an integration branch can represent the same work
+        # with different ancestry. Refresh the range already reviewed for this
+        # version; only --from may deliberately replace that boundary.
+        return git(root, "rev-parse", start + "^{commit}")
     choices = []
     tagged_versions = set()
     for tag in git(root, "tag", "--merged", "HEAD").splitlines():
@@ -277,15 +287,25 @@ def run(args):
         changelog = changelog_path.read_text()
         expected = {manifest: cargo.encode(), changelog_path: changelog.encode()}
         if args.command == "bump":
-            parts = list(version_tuple(current))
             index = {"major": 0, "minor": 1, "patch": 2}[args.kind]
-            parts[index] += 1
-            parts[index + 1:] = [0] * (2 - index)
-            target = args.to_version or ".".join(map(str, parts))
-            # A not-yet-tagged generated release is still being prepared. Repeated
-            # bumps refresh that note rather than silently skipping another version.
-            tags = git(root, "tag", "--merged", "HEAD", "--list", "v" + current).splitlines()
-            if not args.to_version and not tags and f"<!-- release-notes:{current}:start -->" in changelog:
+            def advance(value):
+                parts = list(version_tuple(value))
+                parts[index] += 1
+                parts[index + 1:] = [0] * (2 - index)
+                return ".".join(map(str, parts))
+            target = args.to_version or advance(current)
+            # HEAD's manifest is the committed version. A working-tree version that
+            # differs from it is an uncommitted bump: repeating the same kind
+            # refreshes it; another kind or explicit target never stacks on it,
+            # because its promoted notes and inventory belong to that version.
+            committed = cargo_version(git(root, "show", "HEAD:./" + Path(os.path.relpath(manifest, root)).as_posix()))
+            if args.to_version and committed != current and args.to_version != current:
+                raise ValueError(f"Uncommitted version {current} is pending over committed {committed}; "
+                                 f"commit or revert it before preparing {args.to_version}")
+            if not args.to_version and committed != current:
+                if advance(committed) != current:
+                    raise ValueError(f"Uncommitted version {current} is not a {args.kind} bump of committed "
+                                     f"{committed}; commit or revert it first")
                 target = current
             if version_tuple(target) < version_tuple(current):
                 raise ValueError("Version rollback is not a bump")
@@ -310,7 +330,10 @@ def run(args):
             inventory_path: (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode(),
             changelog_path: update_changelog(changelog, target, date, end, commits,
                 promote=args.command == "bump" and not existing,
-                summarize=not args.inventory_only).encode(),
+                # A commit title is not a verified product claim. Bump records
+                # history and promotes authored notes; prose generation is an
+                # explicit notes operation, never a side effect of numbering.
+                summarize=args.command == "notes" and not args.inventory_only).encode(),
         }
         if args.command == "bump" and target != current:
             changes[manifest] = replace_cargo_version(cargo, current, target).encode()

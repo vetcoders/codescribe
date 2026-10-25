@@ -52,6 +52,13 @@ enum ChatWidthMode: String, CaseIterable, Identifiable {
   static func resolve(_ raw: String) -> ChatWidthMode {
     ChatWidthMode(rawValue: raw) ?? .wide
   }
+
+  /// The mode a quick toggle moves to: Standard → Wide → Full width → Standard.
+  var next: ChatWidthMode {
+    let all = Self.allCases
+    let index = all.firstIndex(of: self) ?? 0
+    return all[(index + 1) % all.count]
+  }
 }
 
 /// Container-relative bubble widths for AgentChat.
@@ -267,7 +274,14 @@ struct MessageList: View {
               // the composer below is the only other point of gravity. The
               // height accounts for everything else inside the document, so
               // the empty thread fills the viewport without scrolling it.
+              // Horizontally it shares the turns' geometry: the same list
+              // padding, centered in the conversation column (beside an open
+              // context panel too), wrapping on the Agent turns' measure.
               AgentEmptyThread()
+                .frame(
+                  maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                    containerWidth: containerWidth, mode: widthMode)
+                )
                 .frame(
                   maxWidth: .infinity,
                   minHeight: ChatLayoutPolicy.emptyStateHeight(
@@ -275,10 +289,16 @@ struct MessageList: View {
                   alignment: .center
                 )
             }
+            let dayBreaks = Self.dayBreaks(in: visibleMessages)
             ForEach(visibleMessages) { message in
-              turn(message, containerWidth: containerWidth, mode: widthMode)
-                .frame(maxWidth: .infinity, alignment: alignment(message.role))
-                .id(message.id)
+              VStack(spacing: ChatLayoutPolicy.turnSpacing) {
+                if let day = dayBreaks[message.id] {
+                  MessageDaySeparator(date: day)
+                }
+                turn(message, containerWidth: containerWidth, mode: widthMode)
+                  .frame(maxWidth: .infinity, alignment: alignment(message.role))
+              }
+              .id(message.id)
             }
             Color.clear
               .frame(height: ChatLayoutPolicy.liveEdgeAnchorHeight)
@@ -308,6 +328,7 @@ struct MessageList: View {
               _ = followState.handle(event)
             }
           )
+          .csAutohidingScrollers()
         }
         .scrollContentBackground(.hidden)
         // The document height is exact (see `emptyStateHeight`), so this only
@@ -411,6 +432,25 @@ struct MessageList: View {
     return signature
   }
 
+  /// Turns that open a new calendar day, keyed to that day. The full date
+  /// lives in one separator above such a turn instead of in every bubble;
+  /// a turn without a time neither starts nor breaks a day.
+  static func dayBreaks(
+    in messages: some Collection<ChatMessage>,
+    calendar: Calendar = .autoupdatingCurrent
+  ) -> [UUID: Date] {
+    var breaks: [UUID: Date] = [:]
+    var previous: Date?
+    for message in messages {
+      guard let current = message.timestamp else { continue }
+      if MessageTimestamp.startsNewDay(previous: previous, current: current, calendar: calendar) {
+        breaks[message.id] = current
+      }
+      previous = current
+    }
+    return breaks
+  }
+
   private func alignment(_ role: ChatRole) -> Alignment {
     role == .you ? .trailing : .leading
   }
@@ -448,10 +488,11 @@ private let agentEmptyThreadDetail = String(
   localized: "Write or dictate a message to start the conversation.")
 
 /// Quiet first screen for a thread that has no turns yet: one calm voice
-/// glyph, one question, one line about typing or dictating. The chrome
-/// already names the thread, so the headline does not repeat the title
+/// glyph, one question, one line about typing or dictating. The conversation
+/// header already names the thread, so the headline does not repeat the title
 /// (Founder brief 2026-10-10). No starter prompts — Codescribe is not an
-/// assistant for everything.
+/// assistant for everything (Founder review, round 4: no starter buttons, no
+/// "Summarize conversation", no memory or tool promises).
 private struct AgentEmptyThread: View {
   var body: some View {
     VStack(spacing: 10) {
@@ -468,7 +509,6 @@ private struct AgentEmptyThread: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .multilineTextAlignment(.center)
-    .frame(maxWidth: 420)
     .accessibilityElement(children: .combine)
   }
 }
@@ -477,10 +517,18 @@ private struct AgentEmptyThread: View {
 /// folded away and loads one more window per click. Deliberately a plain row,
 /// not infinite scroll — paging must stay an explicit operator action so the
 /// hang guard cannot be defeated by an idle scroll position.
-private struct ShowEarlierButton: View {
+struct ShowEarlierButton: View {
   let hiddenCount: Int
+  /// Turns one click renders; the overlay conversation pages a smaller window.
+  let window: Int
   let action: () -> Void
   @State private var hovering = false
+
+  init(hiddenCount: Int, window: Int = MessageList.turnWindow, action: @escaping () -> Void) {
+    self.hiddenCount = hiddenCount
+    self.window = window
+    self.action = action
+  }
 
   var body: some View {
     Button(action: action) {
@@ -505,7 +553,7 @@ private struct ShowEarlierButton: View {
     .csFocusRing(cornerRadius: CSRadius.pill)
     .onHover { hovering = $0 }
     .accessibilityLabel("Show earlier messages")
-    .help("Render the previous \(MessageList.turnWindow) turns")
+    .help("Render the previous \(window) turns")
   }
 }
 
@@ -693,7 +741,7 @@ private struct YouTurn: View {
         HStack(spacing: 8) {
           Text("You")
           Spacer(minLength: 8)
-          MessageTimestampLabel(date: message.timestamp)
+          MessageTimestampLabel(date: message.timestamp, compact: true)
         }
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
@@ -720,8 +768,9 @@ private struct YouTurn: View {
             app: message.contextApp
           )
         }
-        HStack {
-          Spacer(minLength: 0)
+        // Actions sit in one quiet row at the bubble's bottom-leading edge,
+        // the same place as on Agent turns.
+        MessageActionRow {
           CopyMessageButton(text: copyText)
         }
       }
@@ -779,6 +828,7 @@ private struct YouTurn: View {
 private struct ContextChip: View {
   let selection: String?
   let app: String?
+  @Environment(\.colorScheme) private var colorScheme
   @State private var expanded = false
 
   var body: some View {
@@ -790,17 +840,19 @@ private struct ContextChip: View {
           CSIconView(
             icon: expanded ? .chevronDown : .chevronRight,
             size: 8,
-            weight: .semibold,
-            color: CSColor.textTertiary
+            weight: .semibold
           )
           Text("context")
             .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textTertiary)
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing()
-      .help("Selection and app captured with this voice turn")
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+        hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+      )
+      .accessibilityHint(Text("Selection and app captured with this voice turn"))
 
       if expanded {
         VStack(alignment: .leading, spacing: 5) {
@@ -854,6 +906,7 @@ private struct ContextChip: View {
 /// restored turns with a nil URL surface an honest missing-asset state.
 struct AttachmentChip: View {
   let attachment: MessageAttachment
+  @Environment(\.colorScheme) private var colorScheme
   @State private var thumbnail: NSImage?
   @State private var showPreview = false
 
@@ -869,11 +922,10 @@ struct AttachmentChip: View {
             .frame(width: 18, height: 18)
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         } else {
-          CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
+          CSIconView(icon: .photo, size: 11)
         }
         Text(attachment.name)
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(Color.primary)
+          .font(CSFont.ui(10.5, .medium))
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
@@ -887,15 +939,15 @@ struct AttachmentChip: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
-    // Inside the overlay panel the chip floats above message text whose
-    // tracking set the I-beam (Maciej, 2026-10-17 01:15Z); the region claims
-    // the arrow there and registers nothing in an ordinary window.
-    .background { OverlayMenuCursorRegion() }
-    .help(
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityHint(
       attachment.url == nil
-        ? String(localized: "Preview attachment (original file may be missing)")
-        : String(localized: "Preview attachment")
+        ? Text("Preview attachment (original file may be missing)")
+        : Text("Preview attachment")
     )
     .onAppear {
       if thumbnail == nil, let url = attachment.url {
@@ -938,7 +990,7 @@ struct AttachmentPreviewSheet: View {
       HStack(alignment: .firstTextBaseline) {
         VStack(alignment: .leading, spacing: 4) {
           Text(attachment.name)
-            .font(CSFont.mono(13, .semibold))
+            .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
           Text(attachment.type)
@@ -962,6 +1014,9 @@ struct AttachmentPreviewSheet: View {
               )
               .padding(Self.imageInset)
               .frame(maxWidth: .infinity, maxHeight: .infinity)
+              // A zoomed picture scrolls on both axes; only the style is
+              // pinned (Founder, 2026-10-18).
+              .csAutohidingScrollers(.includesHorizontal)
           }
           .frame(minHeight: 280, maxHeight: 480)
           .background(Color.primary.opacity(0.04))
@@ -1306,7 +1361,7 @@ private struct ToolTurn: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         Spacer(minLength: 0)
-        MessageTimestampLabel(date: message.timestamp)
+        MessageTimestampLabel(date: message.timestamp, compact: true)
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
       }
@@ -1346,8 +1401,7 @@ private struct ToolTurn: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
-      HStack {
-        Spacer(minLength: 0)
+      MessageActionRow {
         CopyMessageButton(text: copyText)
       }
     }
@@ -1419,18 +1473,14 @@ private struct AssistantTurn: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       VStack(alignment: .leading, spacing: 9) {
+        // Author and time only: the content comes first, and the actions
+        // wait in the quiet row under it.
         HStack(spacing: 8) {
           Text("Agent")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
-          speechButton
-          if !message.isThinking && !message.text.isEmpty {
-            RenderModeButton(mode: message.renderMode) {
-              onToggleRenderMode(message.id)
-            }
-          }
           Spacer(minLength: 8)
-          MessageTimestampLabel(date: message.timestamp)
+          MessageTimestampLabel(date: message.timestamp, compact: true)
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
@@ -1490,9 +1540,17 @@ private struct AssistantTurn: View {
           }
         }
         if !message.isThinking {
-          HStack {
-            Spacer(minLength: 0)
+          // Copy · Speak · raw/rich. The last one switches how this one
+          // message renders (markdown or the exact streamed text); it is not
+          // a response mode.
+          MessageActionRow {
             CopyMessageButton(text: message.text)
+            speechButton
+            if !message.text.isEmpty {
+              RenderModeButton(mode: message.renderMode) {
+                onToggleRenderMode(message.id)
+              }
+            }
           }
         }
       }
@@ -1631,14 +1689,15 @@ private struct RawText: View {
   }
 }
 
-/// Inline raw↔rich toggle in the assistant meta row, next to "copy". The label
-/// names the mode a click switches TO (mirrors the copy button's action-verb
-/// style). Mutation goes through the store via `onToggleRenderMode` — the view
-/// holds no render-mode state.
+/// Inline raw↔rich toggle, the last item of the assistant's action row after
+/// "copy" and "Speak". It switches how this one message renders: markdown, or
+/// the exact text that streamed in. The label names the mode a click switches
+/// TO (mirrors the copy button's action-verb style). Mutation goes through the
+/// store via `onToggleRenderMode` — the view holds no render-mode state.
 private struct RenderModeButton: View {
   let mode: MessageRenderMode
   let action: () -> Void
-  @State private var hovering = false
+  @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
     Button(action: action) {
@@ -1651,13 +1710,26 @@ private struct RenderModeButton: View {
         )
         .font(CSFont.mono(10, .medium))
       }
-      .foregroundStyle(hovering ? Color.secondary : CSColor.textTertiary)
     }
-    .csFocusRing()
-    .onHover { hovering = $0 }
-    .help(
-      mode == .raw
-        ? String(localized: "Render as markdown") : String(localized: "Show raw text"))
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
+    .accessibilityHint(mode == .raw ? Text("Render as markdown") : Text("Show raw text"))
+  }
+}
+
+/// One quiet row of message actions at a turn's bottom-leading edge: the same
+/// place on You, Agent and tool turns, the same 10 pt faint controls as before.
+struct MessageActionRow<Content: View>: View {
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    HStack(spacing: 12) {
+      content
+      Spacer(minLength: 0)
+    }
   }
 }
 
@@ -1683,16 +1755,18 @@ private struct CopyButton: View {
   }
 }
 
-/// Subtle inline "copy" affordance in a turn's meta row (mono 10, faint until
+/// Subtle inline "copy" affordance in a turn's action row (10 pt, faint until
 /// hovered). Copies the raw pre-render text via the same `chatCopy` path the
 /// context menu uses, then flips to a green "copied" for ~1.5s. Disabled when
 /// there is nothing to copy.
 struct CopyMessageButton: View {
   let text: String
-  var labelFont: Font = CSFont.mono(10, .medium)
+  var labelFont: Font = CSFont.ui(10, .semibold)
   var restingColor: Color = CSColor.textTertiary
+  /// Overlay passes its palette. Agent chat resolves the same tokens from the scheme.
+  var palette: OverlayAppearancePalette? = nil
+  @Environment(\.colorScheme) private var colorScheme
   @State private var copied = false
-  @State private var hovering = false
 
   var body: some View {
     Button {
@@ -1703,7 +1777,7 @@ struct CopyMessageButton: View {
       }
     } label: {
       HStack(spacing: 4) {
-        CSIconView(icon: copied ? .check : .copy, size: 9)
+        CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
             ? String(localized: "copied", comment: "Button state after copying")
@@ -1711,17 +1785,41 @@ struct CopyMessageButton: View {
         )
         .font(labelFont)
       }
-      .foregroundStyle(labelColor)
     }
-    .csFocusRing()
+    .buttonStyle(.plain)
+    .conversationActionHover(
+      restingColor: copied ? CSColor.oliveLight.opacity(0.8) : restingColor,
+      hoverColor: copied ? CSColor.oliveLight : actionPalette.primaryText.color
+    )
     .disabled(text.isEmpty)
-    .onHover { hovering = $0 }
-    .help("Copy message")
+    .accessibilityLabel(Text(verbatim: copyStateLabel))
+    .accessibilityHint(Text(verbatim: copyAccessibilityHint))
   }
 
-  private var labelColor: Color {
-    if copied { return CSColor.oliveLight }
-    return hovering ? Color.secondary : restingColor
+  private var actionPalette: OverlayAppearancePalette {
+    palette ?? OverlayAppearancePalette.resolve(colorScheme)
+  }
+
+  /// VoiceOver names the action. An empty message stays disabled and says so.
+  private var copyStateLabel: String {
+    if text.isEmpty {
+      return String(
+        localized: "Nothing to copy",
+        comment: "Disabled copy control when the message is empty")
+    }
+    if copied {
+      return String(localized: "copied", comment: "Button state after copying")
+    }
+    return String(localized: "Copy message")
+  }
+
+  private var copyAccessibilityHint: String {
+    if text.isEmpty {
+      return String(
+        localized: "Nothing to copy",
+        comment: "Disabled copy control when the message is empty")
+    }
+    return String(localized: "Copy message")
   }
 }
 
@@ -1757,6 +1855,7 @@ private struct PulseDot: View {
 
 /// Shared by the permanent turn action and its context-menu entry.
 struct AssistantSpeechButton: View {
+  @Environment(\.colorScheme) private var colorScheme
   let messageID: UUID
   let isSpeaking: Bool
   let unavailableReason: String?
@@ -1775,9 +1874,12 @@ struct AssistantSpeechButton: View {
     )
     .buttonStyle(.plain)
     .font(CSFont.mono(10, .medium))
-    .foregroundStyle(Color.secondary)
+    .conversationActionHover(
+      restingColor: OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
+      hoverColor: OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+    )
     .disabled(isDisabled)
-    .help(help)
+    .accessibilityHint(Text(verbatim: help))
     .accessibilityIdentifier("assistant-speak-\(messageID)")
   }
 }

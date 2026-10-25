@@ -1,22 +1,38 @@
 import SwiftUI
 
-/// Immediate, non-interactive hint. It never changes layout or opens a panel.
+/// Non-interactive hint. Every caller uses the header's anchor and the one
+/// shared panel, so a scroll view cannot clip the label and a system tooltip
+/// never appears beside it. `floating` places the hint beside a narrow rail;
+/// otherwise it sits below the control, as on the header. A nil accent draws
+/// no ring and does not change the control's own hover wash.
 struct OverlayMiniTooltip: ViewModifier {
   let title: String
   let palette: OverlayAppearancePalette
   var enabled = true
-  @State private var hovered = false
+  var floating = false
+  var withinWindow = false
 
   func body(content: Content) -> some View {
-    OverlayTooltipLayout {
-      content
-        .onHover { hovered = $0 }
-      if hovered && enabled {
-        OverlayTooltipChip(title: title, palette: palette)
-          .allowsHitTesting(false)
-      }
-    }
-    .zIndex(hovered && enabled ? 1 : 0)
+    content.modifier(
+      OverlayHeaderControlChrome(
+        title: title, accent: nil, palette: palette, hintLeading: floating,
+        hintWithinWindow: withinWindow,
+        showsHint: enabled && !title.isEmpty))
+  }
+}
+
+extension View {
+  /// Immediate click-through hint on `OverlayHintPanel`. The hint does not
+  /// take keyboard or mouse focus. `leading` is the rail placement.
+  func overlayFastHint(
+    _ title: String,
+    palette: OverlayAppearancePalette,
+    leading: Bool = false,
+    enabled: Bool = true
+  ) -> some View {
+    modifier(
+      OverlayMiniTooltip(
+        title: title, palette: palette, enabled: enabled, floating: leading))
   }
 }
 
@@ -78,6 +94,17 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   let palette: OverlayAppearancePalette
   @Binding var presented: String?
   var action: (() -> Void)? = nil
+  var showsTooltip = true
+  /// An unavailable control stays on screen, greyed to the rail's disabled
+  /// opacity, and neither fires its action nor opens its detail. Its tooltip
+  /// still names it, so the reason it cannot run stays one hover away.
+  var isEnabled = true
+  /// Transcript actions hint over their document, inside the owning window.
+  /// Header and footer controls keep their existing compact hint placement.
+  var keepsHintInsideWindow = false
+  /// The transcript column sits on the trailing edge, so its menus open over
+  /// the document. Other chrome keeps the menu below the control.
+  var popoverArrow: Edge = .top
   @ViewBuilder var label: LabelContent
   @ViewBuilder var detail: (@escaping () -> Void) -> Detail
   @State private var hovered = false
@@ -93,24 +120,32 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     } label: {
       label
         .foregroundStyle(palette.primaryText.color)
+        .opacity(isEnabled ? 1 : 0.35)
         .padding(2)
         .background {
           RoundedRectangle(cornerRadius: CSRadius.chip)
-            .fill(palette.primaryText.color.opacity(hovered ? 0.14 : 0))
+            .fill(
+              palette.primaryText.color.opacity(isEnabled && hovered ? 0.14 : 0))
         }
         .contentShape(Rectangle())
     }
     .csFocusRing()
+    .disabled(!isEnabled)
+    .focusable(false)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
     .onHover { hovered = $0 }
-    .modifier(OverlayMiniTooltip(title: title, palette: palette, enabled: presented == nil))
+    .modifier(
+      OverlayMiniTooltip(
+        title: title, palette: palette, enabled: showsTooltip && presented == nil,
+        floating: popoverArrow == .trailing, withinWindow: keepsHintInsideWindow)
+    )
     .popover(
       isPresented: Binding(
         get: { presented == id },
         set: { if !$0 && presented == id { presented = nil } }
       ),
-      attachmentAnchor: .rect(.bounds), arrowEdge: .top
+      attachmentAnchor: .rect(.bounds), arrowEdge: popoverArrow
     ) {
       detail { presented = nil }
         .font(CSFont.ui(12, .medium))

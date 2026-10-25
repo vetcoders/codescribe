@@ -26,7 +26,10 @@
 pub mod admission;
 /// Fn+digit agent channels. Not a take and not a `State` variant.
 mod agent_channel;
-pub use agent_channel::{AgentArchiveRequest, ChannelHudState, ChannelOpenRefusal};
+pub use agent_channel::{
+    AgentArchiveRequest, ChannelHudState, ChannelOpenRefusal, FOUNDER_AUDIENCE, FOUNDER_CHANNEL,
+    founder_bus_path_at,
+};
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -234,7 +237,16 @@ mod archived_format_outcome_tests {
     }
 }
 
-fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy, source: &str) {
+fn log_formatter_revision(
+    receipt: &UserRevisionCommit,
+    level: FormattingPolicy,
+    source: &str,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) {
+    let prompt = runtime_settings
+        .ai_execution()
+        .formatter()
+        .formatting_prompt();
     info!(
         session_id = %receipt.session_id,
         source_revision = receipt.source_revision,
@@ -242,6 +254,9 @@ fn log_formatter_revision(receipt: &UserRevisionCommit, level: FormattingPolicy,
         provenance_receipt = %receipt.provenance_receipt,
         format_level = level.as_str(),
         source,
+        prompt_source = prompt.map(|p| p.source().as_str()).unwrap_or("none"),
+        prompt_sha256 = prompt.map(|p| p.composed_sha256()).unwrap_or("none"),
+        settings_sha256 = runtime_settings.digest().as_str(),
         "formatter revision committed"
     );
 }
@@ -1854,7 +1869,7 @@ pub struct RecordingController {
     hold_mode: Arc<RwLock<HoldMode>>,
 
     /// Whether to force RAW mode (Ctrl Hold without Shift = always raw, ignores AI toggle)
-    /// Toggle mode (Double Option) keeps this false and respects AI_FORMATTING_ENABLED setting.
+    /// Toggle mode (Double Option) keeps this false and respects the FORMATTING_LEVEL setting.
     force_raw_mode: Arc<RwLock<bool>>,
     /// Whether to force AI formatting for the current session (e.g., left double Option)
     force_ai_mode: Arc<RwLock<bool>>,
@@ -2661,7 +2676,12 @@ impl RecordingController {
         let receipt = presentation
             .apply_formatter_revision(session_id, source_revision, format_level, result)
             .map_err(anyhow::Error::new)?;
-        log_formatter_revision(&receipt, format_level, level_source);
+        log_formatter_revision(
+            &receipt,
+            format_level,
+            level_source,
+            runtime_settings.as_ref(),
+        );
         self.sync_live_archive(&presentation, &receipt.session_id)
             .await;
         Ok(receipt)
@@ -2751,12 +2771,19 @@ impl RecordingController {
             }
             _ => None,
         };
+        let prompt = runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt();
         info!(
             format_level = format_level.as_str(),
             source = level_source,
             outcome = outcome.label(),
             source_revision,
             revision = revision.as_ref().map(|revision| revision.revision),
+            prompt_source = prompt.map(|p| p.source().as_str()).unwrap_or("none"),
+            prompt_sha256 = prompt.map(|p| p.composed_sha256()).unwrap_or("none"),
+            settings_sha256 = runtime_settings.digest().as_str(),
             "archived transcript formatting settled"
         );
         Ok(ArchivedFormatReceipt { outcome, revision })
@@ -2766,6 +2793,12 @@ impl RecordingController {
         &self,
         requested_level: Option<FormattingPolicy>,
     ) -> Arc<RuntimeSettingsSnapshot> {
+        if self.runtime_settings_refresh_pending.load(Ordering::SeqCst) {
+            let _serial_guard = self.serial_lock.lock().await;
+            if self.current_state().await == State::Idle {
+                let _ = self.refresh_pending_runtime_settings_locked().await;
+            }
+        }
         let settings = self.runtime_settings_arc().await;
         match requested_level {
             Some(level) => Arc::new(settings.with_formatting_level(level)),
@@ -4740,6 +4773,64 @@ impl RecordingController {
         settle_failed_start_chrome();
     }
 
+    /// End an admitted ordinary hold that turned out to be the prefix of an
+    /// agent-channel chord. **Callers hold `serial_lock`.**
+    ///
+    /// Applies only to a non-assistive Raw `RecHold` whose base key is the
+    /// channel modifier (the predicate the delayed hold start uses). A Fn held
+    /// past the start delay before the digit was admitted as dictation; the
+    /// digit proves it was the chord's prefix (Founder, 2026-10-23: the take
+    /// pasted a stray word into the terminal on key-up). The take releases its
+    /// capture through the recorder's discard stop, the same one the pre-active
+    /// hold unwind uses: nothing is pasted, copied, routed or sent, and no
+    /// session archive is written. The Bus session ends once with
+    /// `chord_prefix`, which the overlay receives as the lifecycle terminal.
+    /// Afterwards the controller is Idle, so the later key-up is a no-op.
+    /// Returns whether the hold was abandoned.
+    async fn abandon_chord_prefix_hold(&self) -> bool {
+        if self.current_state().await != State::RecHold
+            || *self.assistive_mode.read().await
+            || !matches!(*self.hold_mode.read().await, HoldMode::Raw)
+        {
+            return false;
+        }
+        let bindings = crate::os::hotkeys::get_mode_hotkey_bindings();
+        let channel_modifier = crate::os::hotkeys::get_channel_modifier();
+        if !Self::ordinary_hold_shares_channel_modifier(bindings.dictation, channel_modifier) {
+            return false;
+        }
+        let abandoned_id = self.session_id.read().await.clone();
+        info!(
+            session = abandoned_id.as_deref().unwrap_or(""),
+            ?channel_modifier,
+            "Hold abandoned: it was the prefix of a channel chord; nothing is delivered"
+        );
+        self.cancel_pending_hold_start().await;
+        {
+            let mut recorder_guard = self.recorder.lock().await;
+            if let Some(rec) = recorder_guard.as_mut() {
+                if let Err(stop_err) = rec.stop_and_discard_path().await {
+                    warn!("Chord-prefix hold: discard stop failed: {stop_err}");
+                }
+                Self::clear_recorder_callbacks(rec);
+            }
+        }
+        *self.active_presentation.write().await = None;
+        *self.pre_overlay_frontmost_app.write().await = None;
+        self.reset_session_fields(TranscriptSessionEndReason::ChordPrefix)
+            .await;
+        set_assistive_session(false);
+        // The chord's channel normally opened beside the hold and shows the
+        // pointer badge; only the tray settles, and it stays Listening while
+        // a channel listens.
+        if self.has_open_agent_channels().await {
+            crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Idle);
+        } else {
+            settle_failed_start_chrome();
+        }
+        true
+    }
+
     /// Unwind session state after a start that never produced a recording, so a
     /// failed start leaves nothing behind for the next hotkey press.
     async fn reset_session_after_start_failure(&self, context: &str) {
@@ -5076,6 +5167,7 @@ impl RecordingController {
                 .build()
                 .ok();
             let mut lab_batcher = lab_feed::LabFeedBatcher::new(std::time::Instant::now());
+            let lab_frames_url = lab_feed::lab_frames_url();
             while let Some(rms) = level_rx.recv().await {
                 // Cleanup drops the callback sender. Do not drain a buffered
                 // sample after that boundary: it belongs to the closed session
@@ -5102,9 +5194,10 @@ impl RecordingController {
                     let payload = lab_feed::frames_payload(&batch);
                     let client = client.clone();
                     let state = Arc::clone(&lab_state);
+                    let url = lab_frames_url.clone();
                     tokio::spawn(async move {
                         let delivered = client
-                            .post(lab_feed::LAB_FRAMES_URL)
+                            .post(url)
                             .json(&payload)
                             .send()
                             .await
@@ -5189,7 +5282,7 @@ impl RecordingController {
     /// appropriate handlers based on current state and event type.
     ///
     /// ## Mode Determination (NEW architecture):
-    /// - **Hold + assistive=false**: force RAW mode (ignores AI_FORMATTING_ENABLED)
+    /// - **Hold + assistive=false**: force RAW mode (ignores FORMATTING_LEVEL)
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
@@ -6017,7 +6110,7 @@ impl RecordingController {
 
         let live_formatting_agent = if !assistive
             && !*self.force_raw_mode.read().await
-            && config.ai_formatting_enabled
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
         {
             match self
                 .selected_max_consultation(runtime_settings.as_ref())
@@ -6134,6 +6227,19 @@ impl RecordingController {
             }
 
             if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
+                let bindings = crate::os::hotkeys::get_mode_hotkey_bindings();
+                let channel_modifier = crate::os::hotkeys::get_channel_modifier();
+                if RecordingController::ordinary_hold_shares_channel_modifier(
+                    bindings.dictation,
+                    channel_modifier,
+                ) && controller.has_open_agent_channels().await
+                {
+                    info!(
+                        ?channel_modifier,
+                        "Hold-start declined: the hold key is the channel modifier and a channel is open; the digit chord closes it"
+                    );
+                    return;
+                }
                 if let Err(error) = controller.close_agent_channels_for_dictation().await {
                     error!(%error, "Hold-start refused: agent channel did not close");
                     return;
@@ -6588,7 +6694,7 @@ impl RecordingController {
         let live_formatting_agent = if !is_assistive
             && capture_turn.schedules_live_formatting()
             && !*self.force_raw_mode.read().await
-            && config.ai_formatting_enabled
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
         {
             match self
                 .selected_max_consultation(runtime_settings.as_ref())
@@ -7389,7 +7495,8 @@ impl RecordingController {
     }
 
     async fn select_paste_projection(&self, raw: String) -> String {
-        let policy = self.runtime_settings_arc().await.formatting_policy();
+        let runtime_settings = self.runtime_settings_arc().await;
+        let policy = runtime_settings.formatting_policy();
         if !matches!(
             policy,
             FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
@@ -7401,6 +7508,21 @@ impl RecordingController {
         };
         if presentation.literal_delivery() {
             return raw;
+        }
+        if matches!(
+            policy,
+            FormattingPolicy::Correction | FormattingPolicy::Smart
+        ) {
+            presentation
+                .wait_for_occurrence_projections(
+                    policy,
+                    &raw,
+                    runtime_settings
+                        .ai_execution()
+                        .request_timing()
+                        .attempt_timeout(),
+                )
+                .await;
         }
         let Some(projection) = presentation.delivery_projection(policy, &raw) else {
             return raw;
@@ -7483,7 +7605,7 @@ impl RecordingController {
     /// - `assistive=true`: ALWAYS AI augmentation (HoldMode::Chat / HoldMode::Selection)
     /// - `force_raw=true`: ALWAYS raw transcript (HoldMode::Raw)
     /// - `force_ai=true`: ALWAYS AI formatting (left double Option)
-    /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
+    /// - Neither: Toggle mode - respects the FORMATTING_LEVEL setting
     async fn process_recording(
         &self,
         session_id: Option<String>,
@@ -7635,11 +7757,6 @@ impl RecordingController {
             self.current_state().await,
             State::RecHold | State::RecToggle
         )
-    }
-
-    /// Check if controller is busy processing
-    pub async fn is_busy(&self) -> bool {
-        self.current_state().await == State::Busy
     }
 }
 
@@ -13094,6 +13211,81 @@ mod formatter_revision_request_tests {
         }
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn prompt_save_during_active_take_preserves_running_generation_then_updates_next_request_snapshot()
+     {
+        use codescribe_core::config::prompts::{
+            PromptKind, PromptSource, PromptWriteReason, write_prompt,
+        };
+        use codescribe_core::test_isolation::EnvGuard;
+
+        let temp = tempfile::tempdir().unwrap();
+        let _data_dir = EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            temp.path().to_str().expect("utf-8 temp dir"),
+        );
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        assert_eq!(
+            before
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .unwrap()
+                .source(),
+            PromptSource::BuiltInFallback
+        );
+
+        // While a take is active, saving a custom Smart prompt defers refresh so
+        // the running take's sealed generation remains untouched.
+        *controller.state.write().await = State::RecToggle;
+        write_prompt(
+            PromptKind::FormattingSmart,
+            "Custom Smart prompt v2 with explicit paragraph breaks",
+            PromptWriteReason::SettingsSave,
+        )
+        .unwrap();
+        assert!(
+            !controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .unwrap()
+        );
+        assert!(Arc::ptr_eq(
+            &before,
+            &controller.runtime_settings_arc().await
+        ));
+        assert!(
+            controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+
+        // Once the take returns to Idle, the next formatter request consumes the
+        // deferred refresh and seals the saved prompt into the new snapshot.
+        *controller.state.write().await = State::Idle;
+        let next_request = controller
+            .formatter_revision_settings(Some(FormattingPolicy::Smart))
+            .await;
+        let sealed_prompt = next_request
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .unwrap();
+        assert_eq!(sealed_prompt.source(), PromptSource::CustomFile);
+        assert!(
+            sealed_prompt
+                .composed_content()
+                .contains("Custom Smart prompt v2 with explicit paragraph breaks")
+        );
+        assert!(
+            !controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+    }
+
     #[derive(Clone, Default)]
     struct ReceiptLog(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -13118,6 +13310,8 @@ mod formatter_revision_request_tests {
 
     #[test]
     fn formatter_log_names_level_and_source_without_changing_reducer_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = snapshot(root.path(), FormattingPolicy::Smart);
         for source in ["request", "settings"] {
             let log = ReceiptLog::default();
             let subscriber = tracing_subscriber::fmt()
@@ -13133,11 +13327,14 @@ mod formatter_revision_request_tests {
                 provenance_receipt: "formatter-test-4-5-0".into(),
             };
             tracing::subscriber::with_default(subscriber, || {
-                log_formatter_revision(&receipt, FormattingPolicy::Smart, source);
+                log_formatter_revision(&receipt, FormattingPolicy::Smart, source, &settings);
             });
             let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
             assert!(text.contains("format_level=\"smart\""));
             assert!(text.contains(&format!("source=\"{source}\"")));
+            assert!(text.contains("prompt_source=\"built_in_fallback\""));
+            assert!(text.contains("prompt_sha256="));
+            assert!(text.contains("settings_sha256="));
             assert!(text.contains("provenance_receipt=formatter-test-4-5-0"));
             assert_eq!(receipt.provenance_receipt, "formatter-test-4-5-0");
             assert_eq!(receipt.source_revision, 4);

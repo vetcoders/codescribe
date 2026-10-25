@@ -45,6 +45,86 @@ struct SessionLease {
     /// store under `acknowledgments/<lease_id>/` is the receipt truth.
     #[serde(default)]
     pending: Vec<PendingDelivery>,
+    /// The vc-frame pane the follower inherited at attach (`frame_context`
+    /// in the helper), or null when its process held no pane coordinates.
+    #[serde(default)]
+    frame: Option<serde_json::Value>,
+    /// The iTerm2 or Terminal.app tab hosting the session (`terminal_context`
+    /// in the helper), or null when neither terminal was identified.
+    #[serde(default)]
+    terminal: Option<serde_json::Value>,
+    /// The Codex app thread of a Codex follower (`codex_context` in the
+    /// helper): `thread_id`, `app_bundle_id`, `rollout`, `remote`; null for
+    /// every other provider.
+    #[serde(default)]
+    codex: Option<serde_json::Value>,
+}
+
+impl SessionLease {
+    /// A pane the follower can focus: a numeric `pane_id` and a session name.
+    fn has_frame_pane(&self) -> bool {
+        self.frame.as_ref().is_some_and(|frame| {
+            frame.get("pane_id").is_some_and(serde_json::Value::is_u64)
+                && frame
+                    .get("session")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|session| !session.trim().is_empty())
+        })
+    }
+
+    /// A terminal tab the follower can focus: a non-empty `host_bundle_id`.
+    fn has_terminal_host(&self) -> bool {
+        self.terminal.as_ref().is_some_and(|terminal| {
+            terminal
+                .get("host_bundle_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|bundle| !bundle.trim().is_empty())
+        })
+    }
+
+    /// The Codex app thread the lease names. The id goes into a
+    /// `codex://threads/<id>` link, so only the helper's own id alphabet
+    /// (8-128 letters, digits, `-`, `_`) is accepted.
+    fn codex_thread(&self) -> Option<CodexThread> {
+        let codex = self.codex.as_ref()?;
+        let thread_id = codex.get("thread_id")?.as_str()?.trim();
+        let well_formed = (8..=128).contains(&thread_id.len())
+            && thread_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        if !well_formed {
+            return None;
+        }
+        Some(CodexThread {
+            thread_id: thread_id.to_string(),
+            rollout: codex
+                .get("rollout")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+}
+
+/// A Codex follower's thread in the Codex desktop app. Unlike the host
+/// facts, it does not need a live follower: the app opens the thread itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexThread {
+    /// The Codex thread id, which is the follower's provider session id.
+    pub thread_id: String,
+    /// The local Codex store holds the thread's rollout, so the app can open
+    /// it. A Codex Cloud thread has none and the app answers "no rollout
+    /// found" for its link.
+    pub rollout: bool,
+}
+
+/// Where a live follower can bring its agent to the front. Both facts come
+/// from the same lease; neither changes whether the follower is alive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FollowerHosts {
+    /// The lease names a vc-frame pane.
+    pub frame_pane: bool,
+    /// The lease names an iTerm2 or Terminal.app tab.
+    pub terminal_tab: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +235,21 @@ pub fn live_follower_sessions_at(
     now: f64,
     ttl_seconds: f64,
 ) -> HashSet<(String, String)> {
-    let mut sessions = HashSet::new();
+    live_follower_hosts_at(root, now, ttl_seconds)
+        .into_keys()
+        .collect()
+}
+
+/// Every live follower session (same convention as
+/// [`live_follower_sessions_at`]) mapped to whether its lease names a vc-frame
+/// pane and a terminal tab. One scan serves the liveness and the host facts
+/// the roster shows.
+pub fn live_follower_hosts_at(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+) -> HashMap<(String, String), FollowerHosts> {
+    let mut sessions: HashMap<(String, String), FollowerHosts> = HashMap::new();
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
             lease.provider.as_deref().map(str::trim),
@@ -163,10 +257,38 @@ pub fn live_follower_sessions_at(
         ) && !provider.is_empty()
             && !session.is_empty()
         {
-            sessions.insert((provider.to_lowercase(), session.to_string()));
+            let hosts = sessions
+                .entry((provider.to_lowercase(), session.to_string()))
+                .or_default();
+            hosts.frame_pane |= lease.has_frame_pane();
+            hosts.terminal_tab |= lease.has_terminal_host();
         }
     });
     sessions
+}
+
+/// Every provider session whose newest lease (highest `heartbeat_unix`)
+/// names a Codex app thread, whether or not its follower is alive: Codex app
+/// followers are usually dead between turns, and opening the thread needs no
+/// follower. Pairs are keyed like [`live_follower_hosts_at`].
+pub fn codex_threads_at(root: &Path) -> HashMap<(String, String), CodexThread> {
+    let mut newest: HashMap<(String, String), (f64, Option<CodexThread>)> = HashMap::new();
+    for_each_lease_summary(root, |summary| {
+        if newest
+            .get(&summary.session)
+            .is_some_and(|(heartbeat, _)| *heartbeat >= summary.heartbeat_unix)
+        {
+            return;
+        }
+        newest.insert(
+            summary.session.clone(),
+            (summary.heartbeat_unix, summary.codex_thread.clone()),
+        );
+    });
+    newest
+        .into_iter()
+        .filter_map(|(session, (_, thread))| thread.map(|thread| (session, thread)))
+        .collect()
 }
 
 /// For every live follower session, when its oldest unacknowledged delivery
@@ -225,16 +347,12 @@ pub fn unread_backlog_since_at(
     oldest
 }
 
-/// Bounded scan of the lease directory, invoking `visit` for every lease that
-/// is well-formed, active, and heartbeat-fresh. Everything else fails open.
-fn for_each_fresh_lease(
-    root: &Path,
-    now: f64,
-    ttl_seconds: f64,
-    mut visit: impl FnMut(&SessionLease),
-) {
+/// The bounded set of lease files: the first `MAX_LEASE_FILES` `*.json`
+/// names in order, each no larger than the helper can write, with the
+/// metadata read for that check.
+fn lease_files(root: &Path) -> Vec<(PathBuf, fs::Metadata)> {
     let Ok(entries) = fs::read_dir(root.join("leases")) else {
-        return;
+        return Vec::new();
     };
     let mut paths = entries
         .filter_map(Result::ok)
@@ -246,13 +364,96 @@ fn for_each_fresh_lease(
         .collect::<Vec<_>>();
     paths.sort();
     paths.truncate(MAX_LEASE_FILES);
-    for path in paths {
-        let Ok(metadata) = fs::metadata(&path) else {
-            continue;
-        };
-        if metadata.len() > MAX_LEASE_BYTES {
-            continue;
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            (metadata.len() <= MAX_LEASE_BYTES).then_some((path, metadata))
+        })
+        .collect()
+}
+
+/// One lease file parsed as the helper wrote it, or `None` when it is
+/// unreadable, malformed or of another schema.
+fn read_lease(path: &Path) -> Option<SessionLease> {
+    let bytes = fs::read(path).ok()?;
+    let lease = serde_json::from_slice::<SessionLease>(&bytes).ok()?;
+    (lease.schema == LEASE_SCHEMA).then_some(lease)
+}
+
+/// What [`codex_threads_at`] needs from one lease file, whatever its
+/// heartbeat age.
+struct LeaseSummary {
+    session: (String, String),
+    heartbeat_unix: f64,
+    codex_thread: Option<CodexThread>,
+}
+
+/// A lease file's summary, valid while its length and modification time stay
+/// the same.
+struct CachedLeaseSummary {
+    len: u64,
+    modified: Option<SystemTime>,
+    summary: Option<LeaseSummary>,
+}
+
+/// Summaries of the lease files last scanned, by path. The roster polls
+/// twice a second and dead followers keep multi-megabyte mailboxes that never
+/// change again; a file is parsed only when it was rewritten.
+static LEASE_SUMMARIES: OnceLock<Mutex<HashMap<PathBuf, CachedLeaseSummary>>> = OnceLock::new();
+
+/// Bounded scan of every well-formed lease with a provider session, live or
+/// dead, invoking `visit` with its summary. Unchanged files are not parsed
+/// again. Everything else fails open.
+fn for_each_lease_summary(root: &Path, mut visit: impl FnMut(&LeaseSummary)) {
+    let files = lease_files(root);
+    let cache = LEASE_SUMMARIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    let scanned: HashSet<PathBuf> = files.iter().map(|(path, _)| path.clone()).collect();
+    cache.retain(|path, _| !path.starts_with(root) || scanned.contains(path));
+    for (path, metadata) in files {
+        let len = metadata.len();
+        let modified = metadata.modified().ok();
+        let current = cache
+            .get(&path)
+            .is_some_and(|cached| cached.len == len && cached.modified == modified);
+        if !current {
+            let summary = read_lease(&path).and_then(|lease| {
+                let provider = lease.provider.as_deref()?.trim();
+                let session = lease.provider_session_id.as_deref()?.trim();
+                if provider.is_empty() || session.is_empty() || !lease.heartbeat_unix.is_finite() {
+                    return None;
+                }
+                Some(LeaseSummary {
+                    session: (provider.to_lowercase(), session.to_string()),
+                    heartbeat_unix: lease.heartbeat_unix,
+                    codex_thread: lease.codex_thread(),
+                })
+            });
+            cache.insert(
+                path.clone(),
+                CachedLeaseSummary {
+                    len,
+                    modified,
+                    summary,
+                },
+            );
         }
+        if let Some(summary) = cache.get(&path).and_then(|cached| cached.summary.as_ref()) {
+            visit(summary);
+        }
+    }
+}
+
+/// Bounded scan of the lease directory, invoking `visit` for every lease that
+/// is well-formed, active, and heartbeat-fresh. Everything else fails open.
+fn for_each_fresh_lease(
+    root: &Path,
+    now: f64,
+    ttl_seconds: f64,
+    mut visit: impl FnMut(&SessionLease),
+) {
+    for (path, metadata) in lease_files(root) {
         // The helper rewrites the whole lease, `heartbeat_unix: time.time()`
         // included, so a file last modified outside the window cannot hold a
         // fresh heartbeat. Dead followers keep multi-megabyte mailboxes, and
@@ -267,19 +468,11 @@ fn for_each_fresh_lease(
         {
             continue;
         }
-        let Ok(bytes) = fs::read(&path) else {
-            continue;
-        };
-        let Ok(lease) = serde_json::from_slice::<SessionLease>(&bytes) else {
+        let Some(lease) = read_lease(&path) else {
             continue;
         };
         let age = now - lease.heartbeat_unix;
-        if lease.schema != LEASE_SCHEMA
-            || !lease.active
-            || !age.is_finite()
-            || age < 0.0
-            || age > ttl_seconds
-        {
+        if !lease.active || !age.is_finite() || age < 0.0 || age > ttl_seconds {
             continue;
         }
         visit(&lease);
@@ -381,6 +574,309 @@ mod tests {
             live,
             HashSet::from([("claude-code".to_string(), "sess-1".to_string())])
         );
+    }
+
+    fn write_framed_lease(root: &Path, file: &str, session: &str, frame: serde_json::Value) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "claude-code",
+                "provider_session_id": session,
+                "frame": frame,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_lease_naming_a_frame_pane_reports_frame_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        write_framed_lease(
+            temp.path(),
+            "framed.json",
+            "in-pane",
+            serde_json::json!({"session": "codescribe", "pane_id": 3}),
+        );
+        // A daemon-hosted session attaches without pane coordinates.
+        write_framed_lease(
+            temp.path(),
+            "daemon.json",
+            "daemon",
+            serde_json::Value::Null,
+        );
+        write_framed_lease(
+            temp.path(),
+            "paneless.json",
+            "paneless",
+            serde_json::json!({"session": "codescribe"}),
+        );
+        // Pre-frame helpers never wrote the field at all.
+        write_session_lease(temp.path(), "old.json", "claude-code", "old", true, 990.0);
+
+        let hosts = live_follower_hosts_at(temp.path(), 1_000.0, 120.0);
+        let frames: HashMap<_, _> = hosts
+            .iter()
+            .map(|(key, hosts)| (key.clone(), hosts.frame_pane))
+            .collect();
+        let key = |session: &str| ("claude-code".to_string(), session.to_string());
+        assert_eq!(frames.get(&key("in-pane")), Some(&true));
+        assert_eq!(frames.get(&key("daemon")), Some(&false));
+        assert_eq!(frames.get(&key("paneless")), Some(&false));
+        assert_eq!(frames.get(&key("old")), Some(&false));
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0).len(),
+            4,
+            "the pane fact never changes who is alive"
+        );
+    }
+
+    fn write_terminal_lease(root: &Path, file: &str, session: &str, terminal: serde_json::Value) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "igor",
+                "active": true,
+                "heartbeat_unix": 995.0,
+                "provider": "codex",
+                "provider_session_id": session,
+                "frame": null,
+                "terminal": terminal,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_lease_naming_a_terminal_host_reports_terminal_detected() {
+        let temp = tempfile::tempdir().unwrap();
+        write_terminal_lease(
+            temp.path(),
+            "iterm.json",
+            "in-iterm",
+            serde_json::json!({
+                "host": "iterm2",
+                "host_bundle_id": "com.googlecode.iterm2",
+                "tty": "/dev/ttys005",
+                "session_id": "6F3C1A2B-0000-4000-8000-000000000005",
+            }),
+        );
+        write_terminal_lease(
+            temp.path(),
+            "terminal.json",
+            "in-terminal",
+            serde_json::json!({
+                "host": "apple-terminal",
+                "host_bundle_id": "com.apple.Terminal",
+                "tty": "/dev/ttys002",
+                "session_id": null,
+            }),
+        );
+        // Neither iTerm2 nor Terminal.app hosts this session.
+        write_terminal_lease(
+            temp.path(),
+            "elsewhere.json",
+            "elsewhere",
+            serde_json::Value::Null,
+        );
+        write_terminal_lease(
+            temp.path(),
+            "blank.json",
+            "blank",
+            serde_json::json!({"host": "iterm2", "host_bundle_id": " "}),
+        );
+        // Pre-terminal helpers never wrote the field at all.
+        write_session_lease(temp.path(), "old.json", "codex", "old", true, 990.0);
+
+        let hosts = live_follower_hosts_at(temp.path(), 1_000.0, 120.0);
+        let terminal = |session: &str| {
+            hosts
+                .get(&("codex".to_string(), session.to_string()))
+                .map(|hosts| hosts.terminal_tab)
+        };
+        assert_eq!(terminal("in-iterm"), Some(true));
+        assert_eq!(terminal("in-terminal"), Some(true));
+        assert_eq!(terminal("elsewhere"), Some(false));
+        assert_eq!(terminal("blank"), Some(false));
+        assert_eq!(terminal("old"), Some(false));
+        assert!(
+            hosts.values().all(|hosts| !hosts.frame_pane),
+            "a terminal tab is not a vc-frame pane"
+        );
+        assert_eq!(
+            live_follower_sessions_at(temp.path(), 1_000.0, 120.0).len(),
+            5,
+            "the terminal fact never changes who is alive"
+        );
+    }
+
+    const CODEX_THREAD: &str = "c0ffee01-0000-7000-8000-000000000001";
+
+    fn write_codex_lease(
+        root: &Path,
+        file: &str,
+        provider: &str,
+        session: &str,
+        heartbeat: f64,
+        codex: serde_json::Value,
+    ) {
+        let dir = root.join("leases");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": LEASE_SCHEMA,
+                "name": "leon",
+                "active": true,
+                "heartbeat_unix": heartbeat,
+                "provider": provider,
+                "provider_session_id": session,
+                "frame": null,
+                "terminal": null,
+                "codex": codex,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn codex_facts(thread_id: &str, rollout: bool, remote: bool) -> serde_json::Value {
+        serde_json::json!({
+            "thread_id": thread_id,
+            "app_bundle_id": "com.openai.codex",
+            "rollout": rollout,
+            "remote": remote,
+        })
+    }
+
+    #[test]
+    fn a_codex_thread_is_reported_whether_or_not_its_follower_is_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        // Codex app followers are usually dead between turns.
+        write_codex_lease(
+            temp.path(),
+            "stale.json",
+            "codex",
+            CODEX_THREAD,
+            800.0,
+            codex_facts(CODEX_THREAD, true, false),
+        );
+        write_codex_lease(
+            temp.path(),
+            "cloud.json",
+            "Codex",
+            "cloud-thread-0001",
+            995.0,
+            codex_facts("cloud-thread-0001", false, true),
+        );
+        write_codex_lease(
+            temp.path(),
+            "claude.json",
+            "claude-code",
+            "claude-session",
+            995.0,
+            serde_json::Value::Null,
+        );
+        // An id outside the helper's alphabet never becomes a link.
+        write_codex_lease(
+            temp.path(),
+            "odd.json",
+            "codex",
+            "odd-session",
+            995.0,
+            codex_facts("../../etc", true, false),
+        );
+        // Pre-Codex-thread helpers never wrote the field at all.
+        write_session_lease(temp.path(), "old.json", "codex", "old-session", true, 990.0);
+
+        let threads = codex_threads_at(temp.path());
+        let key = |session: &str| ("codex".to_string(), session.to_string());
+        assert_eq!(
+            threads.get(&key(CODEX_THREAD)),
+            Some(&CodexThread {
+                thread_id: CODEX_THREAD.to_string(),
+                rollout: true,
+            }),
+            "a stale lease still names its thread"
+        );
+        assert_eq!(
+            threads.get(&key("cloud-thread-0001")),
+            Some(&CodexThread {
+                thread_id: "cloud-thread-0001".to_string(),
+                rollout: false,
+            }),
+            "a cloud thread without a local rollout is reported as such"
+        );
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        assert!(
+            !live_follower_sessions_at(temp.path(), 1_000.0, 120.0).contains(&key(CODEX_THREAD)),
+            "the thread fact never makes a dead follower alive"
+        );
+    }
+
+    #[test]
+    fn the_newest_lease_of_a_session_names_its_thread_and_a_rewrite_is_read_again() {
+        let temp = tempfile::tempdir().unwrap();
+        write_codex_lease(
+            temp.path(),
+            "a.json",
+            "codex",
+            CODEX_THREAD,
+            900.0,
+            codex_facts(CODEX_THREAD, true, false),
+        );
+        write_codex_lease(
+            temp.path(),
+            "b.json",
+            "codex",
+            CODEX_THREAD,
+            950.0,
+            codex_facts(CODEX_THREAD, false, false),
+        );
+        let key = ("codex".to_string(), CODEX_THREAD.to_string());
+        assert_eq!(
+            codex_threads_at(temp.path())
+                .get(&key)
+                .map(|thread| thread.rollout),
+            Some(false)
+        );
+
+        // The helper found the rollout later and rewrote the newer lease.
+        write_codex_lease(
+            temp.path(),
+            "b.json",
+            "codex",
+            CODEX_THREAD,
+            960.0,
+            codex_facts(CODEX_THREAD, true, false),
+        );
+        assert_eq!(
+            codex_threads_at(temp.path())
+                .get(&key)
+                .map(|thread| thread.rollout),
+            Some(true)
+        );
+
+        // A newer lease without Codex facts names no thread.
+        write_codex_lease(
+            temp.path(),
+            "c.json",
+            "codex",
+            CODEX_THREAD,
+            970.0,
+            serde_json::Value::Null,
+        );
+        assert!(codex_threads_at(temp.path()).is_empty());
     }
 
     /// A lease shaped like the helper's: identity plus a mailbox of `padding`

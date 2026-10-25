@@ -2733,7 +2733,7 @@ mod tests {
     /// Correction-level edits, so every raw-level fix — the least reworded,
     /// safest teaching signal there is — was silently skipped and no candidate
     /// ever reached the gate. Shaped on the 2026-09-28 receipt:
-    /// "Cloud już" → "Klaudiusz" (a 2→1 replace run). Smart/Max stay out.
+    /// "Cloud flare" → "Cloudflare" (a 2→1 replace run). Smart/Max stay out.
     #[test]
     #[serial]
     fn off_level_edits_teach_while_smart_and_max_stay_out() {
@@ -2745,8 +2745,8 @@ mod tests {
         while body.chars().count() < 200 {
             body.push_str("tekst ");
         }
-        let heard = format!("{body}a Cloud już ogarnia bus");
-        let meant = format!("{body}a Klaudiusz ogarnia bus");
+        let heard = format!("{body}a Cloud flare ogarnia bus");
+        let meant = format!("{body}a Cloudflare ogarnia bus");
         let lines = [
             replay_record(1, "off", &heard, &heard, &meant),
             replay_record(2, "smart", "x", "smart var", "Smart Canon"),
@@ -2760,8 +2760,8 @@ mod tests {
             1,
             "the raw-level fix extracts; smart/max edits never enter: {table:?}"
         );
-        assert_eq!(table[0].variant, "Cloud już");
-        assert_eq!(table[0].canonical, "Klaudiusz");
+        assert_eq!(table[0].variant, "Cloud flare");
+        assert_eq!(table[0].canonical, "Cloudflare");
     }
 
     /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.

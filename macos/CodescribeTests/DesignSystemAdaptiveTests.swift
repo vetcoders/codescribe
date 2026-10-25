@@ -79,6 +79,7 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       ("terracottaLight", CSPalette.terracottaLight),
       ("assistiveLight", CSPalette.assistiveLight),
       ("oliveLight", CSPalette.oliveLight),
+      ("oliveStatus", CSPalette.oliveStatus),
       ("amber", CSPalette.amber),
       ("modeProcessing", CSPalette.modeProcessing),
       ("dangerLight", CSPalette.dangerLight),

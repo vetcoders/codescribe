@@ -200,6 +200,141 @@ struct OverlayPresentationStatus: Equatable {
   let calibrationVersion: String?
 }
 
+/// Where an agent's focus button lands. A Frame pane wins whenever it is known
+/// and a compatible `vc-frame` is installed; otherwise the agent's iTerm2 or
+/// Terminal.app tab, which the follower selects itself (UI-69); otherwise a
+/// Codex agent's thread in the Codex app, which the overlay opens itself
+/// through `codex://threads/<id>` (UI-70).
+enum OverlayAgentPanelFocusTarget: Equatable, Sendable {
+  case frame
+  case terminal
+  case codexThread
+
+  static func resolve(
+    _ hud: OverlayChannelHudProjection?, frameFocusAvailable: Bool
+  ) -> OverlayAgentPanelFocusTarget? {
+    if frameFocusAvailable, hud?.frameDetected == true { return .frame }
+    if hud?.terminalDetected == true { return .terminal }
+    if hud?.codexThreadUrl != nil, hud?.codexThreadLocal == true { return .codexThread }
+    return nil
+  }
+
+  /// A Codex Cloud thread and no other destination: the Codex app's local
+  /// store cannot open its link ("no rollout found"), so the button rests
+  /// greyed and says where the thread lives instead.
+  static func isCodexCloudThread(
+    _ hud: OverlayChannelHudProjection?, frameFocusAvailable: Bool
+  ) -> Bool {
+    resolve(hud, frameFocusAvailable: frameFocusAvailable) == nil
+      && hud?.codexThreadUrl != nil && hud?.codexThreadLocal == false
+  }
+
+  /// Frame and terminal focus are carried out by the agent's follower; the
+  /// Codex app opens a thread link with no follower at all.
+  var needsLiveFollower: Bool { self != .codexThread }
+
+  var help: String {
+    switch self {
+    case .frame:
+      String(localized: "Focus agent panel in Frame", comment: "Frame focus button help")
+    case .terminal:
+      String(
+        localized: "Show the agent's terminal tab",
+        comment: "Terminal focus button help: brings the agent's iTerm2 or Terminal tab to front")
+    case .codexThread:
+      String(
+        localized: "Show the agent's Codex thread",
+        comment: "Codex focus button help: opens the agent's thread in the ChatGPT (Codex) app")
+    }
+  }
+
+  var requestingText: String {
+    switch self {
+    case .frame:
+      String(localized: "Opening panel in Frame…", comment: "Frame focus in flight")
+    case .terminal:
+      String(localized: "Opening the agent's terminal…", comment: "Terminal focus in flight")
+    // Never shown: the overlay opens the link at once and answers directly.
+    case .codexThread: help
+    }
+  }
+
+  var succeededText: String {
+    switch self {
+    case .frame:
+      String(localized: "Focused in Frame")
+    case .terminal:
+      String(
+        localized: "Terminal tab shown",
+        comment: "Terminal focus result: the agent's tab is in front")
+    case .codexThread:
+      String(
+        localized: "Codex thread opened",
+        comment: "Codex focus result: the ChatGPT (Codex) app opened the agent's thread")
+    }
+  }
+
+  var timeoutText: String {
+    switch self {
+    case .frame:
+      String(
+        localized: "No response from agent panel in Frame.",
+        comment: "Frame focus result: timeout")
+    case .terminal:
+      String(
+        localized: "No response from the agent's terminal.",
+        comment: "Terminal focus result: timeout")
+    // Opening a link waits for nobody, so it cannot time out.
+    case .codexThread: failureText
+    }
+  }
+
+  var failureText: String {
+    switch self {
+    case .frame:
+      String(localized: "Could not focus panel in Frame")
+    case .terminal:
+      String(
+        localized: "Could not show the agent's terminal tab",
+        comment: "Terminal focus result: generic failure")
+    case .codexThread:
+      String(
+        localized: "Could not open the agent's Codex thread",
+        comment: "Codex focus result: macOS did not open the codex:// link")
+    }
+  }
+
+  /// Help of the greyed button of a Codex Cloud thread.
+  static var codexCloudThreadHelp: String {
+    String(
+      localized: "Codex Cloud thread: open it in ChatGPT",
+      comment: "Codex focus button help: a Codex Cloud thread the desktop app cannot open")
+  }
+}
+
+/// Immediate (<1 frame) and receipt-reconciled UI state for an agent panel focus
+/// request (`codescribe.agent-panel-focus.v1` → `codescribe.agent-panel-focus-result.v1`).
+struct OverlayAgentPanelFocusState: Equatable, Sendable {
+  enum Phase: Equatable, Sendable {
+    case requesting
+    case succeeded
+    case failed
+  }
+
+  let requestID: String
+  let owner: OverlayConversationOwner
+  var phase: Phase
+  var statusText: String
+  var updatedAt: Date
+  /// The destination the request was sent for; the receipt may name a
+  /// different one when the follower's knowledge moved meanwhile.
+  var target: OverlayAgentPanelFocusTarget = .frame
+
+  var isRequesting: Bool { phase == .requesting }
+  var isSucceeded: Bool { phase == .succeeded }
+  var isFailed: Bool { phase == .failed }
+}
+
 /// One superseded take, retained as a single identity-associated unit.
 ///
 /// Retention used to be two disconnected slots — a projection and a draft
@@ -567,6 +702,10 @@ final class OverlayState {
   /// the counter halts at the session's true duration instead of ticking
   /// through the final pass.
   private(set) var captureEndedAtUptime: TimeInterval?
+  /// The clock was started by the dictation lifecycle. An agent channel take
+  /// runs the same counter without ever entering that lifecycle, so its stamps
+  /// must not read as a dictation awaiting its text.
+  private(set) var captureClockIsDictation = false
 
   // MARK: Panel placement (persisted; the window orchestrator repositions live)
   /// Anchored placement: one of six screen anchors, applied on every show().
@@ -704,6 +843,9 @@ final class OverlayState {
     // Any later presentation write supersedes a fold that could be undone.
     automaticFoldInFlight = nil
     if expanding {
+      if windowContentSurface == .agents, selectedConversationID == nil {
+        showsAgentMonitor = true
+      }
       autoCollapse.noteExpansion(from: presentationMode)
     } else {
       autoCollapse.forget()
@@ -712,7 +854,8 @@ final class OverlayState {
       presentationMode = mode
       if mode != .expanded {
         showsAgentMonitor = false
-        endAgentChoosing()
+        // A hosted chooser lives on the Intercom, not on this panel's form.
+        if agentChooserHost == nil { endAgentChoosing() }
       }
       onPresentationModeChanged?(mode)
     }
@@ -770,9 +913,19 @@ final class OverlayState {
   var autoCollapseRestoreMode: OverlayPresentationMode? { autoCollapse.restoreMode }
   var autoCollapseDeadline: TimeInterval? { autoCollapse.deadline }
 
-  /// Window-side holds (hidden panel, resize or drag in progress, open menu or
-  /// popover), supplied by the panel's owner. Standalone states have none.
+  /// Window-side holds for folding and hiding (hidden panel, resize or drag,
+  /// open menu or popover). Standalone states have none.
   @ObservationIgnored var autoCollapseExternalHold: () -> Bool = { false }
+
+  var presentationInteractionHeld: Bool {
+    isPointerHovering || autoCollapseExternalHold()
+  }
+
+  /// Entering a native menu suspends dismissal; its final close starts the
+  /// full interval again, just like leaving the panel with the pointer.
+  func presentationInteractionDidChange() {
+    restartAutoHideCountdown()
+  }
 
   /// Reading time comes from the canonical text actually selected on screen.
   /// At 180 words/minute a long reply is not folded on the chosen idle base.
@@ -800,9 +953,9 @@ final class OverlayState {
   /// Editing, an uncommitted draft, the pointer over the panel, the focused
   /// composer, a live capture and reply playback are active interactions.
   private var autoCollapseInteractionHeld: Bool {
-    isEditingTranscript || isRevisionDraftDirty || isPointerHovering || composerEditorActive
-      || activeCaptureOwnsPresentation || channelAudioCaptureActive || selectedReplyPlaybackActive
-      || autoCollapseExternalHold()
+    isEditingTranscript || isRevisionDraftDirty || presentationInteractionHeld
+      || composerEditorActive || activeCaptureOwnsPresentation || channelAudioCaptureActive
+      || selectedReplyPlaybackActive
   }
 
   private func autoCollapseDeadlineReached() {
@@ -830,7 +983,7 @@ final class OverlayState {
     automaticFoldInFlight = nil
     guard presentationMode == fold.mode, nowProvider() < fold.landsAt else { return }
     applyPresentationMode(.expanded, cause: .automatic)
-    showsAgentMonitor = fold.agentMonitor && !dockedColumnAlreadyOnScreen
+    showsAgentMonitor = fold.agentMonitor && !agentListPinned
   }
 
   func clearPointerHover() {
@@ -890,7 +1043,7 @@ final class OverlayState {
       cancelAutoHide()
     } else if terminal {
       if pinWasHolding { pinReleaseArmed = true }
-      restartAutoHideCountdown(atUnpinClick: pinReleaseArmed)
+      restartAutoHideCountdown()
     }
   }
   var onRecordingPreparing: (() -> Void)?
@@ -922,6 +1075,7 @@ final class OverlayState {
   @ObservationIgnored private var admittedComposerSessions: Set<String> = []
 
   func connectComposer(to store: AgentChatStore) {
+    otherComposerOwnsCapture = { [weak store] in store?.hasComposerCaptureRequest == true }
     receiverOwnsRecovery = { [weak store] in store != nil }
     onComposerTranscript = { [weak store] text, sessionID in
       store?.receiveDictationTranscript(text, captureID: sessionID) ?? .retained(text)
@@ -1066,8 +1220,8 @@ final class OverlayState {
   static let pinReleaseDelaySeconds: TimeInterval = 3
   /// Set by the Unpin of a panel the pin was holding; the countdown it arms
   /// ends in `onPinReleased` (a fade) instead of the ordinary `onClose`. The
-  /// click's own hover does not hold it; a later pointer entry pauses it like
-  /// any countdown. Re-pinning or a new take clears it.
+  /// pointer or native menu holds it until the interaction ends. Re-pinning
+  /// or a new take clears it.
   @ObservationIgnored private var pinReleaseArmed = false
   /// The pin's release: the controller fades the resting panel out.
   @ObservationIgnored var onPinReleased: (() -> Void)?
@@ -1115,6 +1269,7 @@ final class OverlayState {
     if engine is ControllerDictationEngine {
       let root = OverlayChannelDeliveryReader.productionRoot()
       restoreReadState(root: root)
+      restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
           root: root, sharedBus: URL(fileURLWithPath: agentConversationBusPath())))
@@ -1125,6 +1280,44 @@ final class OverlayState {
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
   private(set) var channelRosterNames: [String: String] = [:]
+  @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
+  var channelMapEnabled: Bool { channelMapPreference.enabled }
+  /// Compact's chips: the horizontal strip alone carries them in the header.
+  var channelMapInHeader: Bool {
+    channelMapEnabled && channelMapPreference.layout == .horizontal
+  }
+  /// Mini is one widget in both layouts and keeps its channel counter; only
+  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
+  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
+  var channelMapInMini: Bool { channelMapEnabled }
+  /// The vertical layout's counter wears stacked cards and leads to the
+  /// Intercom group instead of compact.
+  var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
+
+  /// The view observes the same presentation preference as Creator. Refitting
+  /// changes chrome only: no channel selection, microphone or document event.
+  func channelMapPreferenceChanged() {
+    onChannelMapLayoutChanged?()
+  }
+  /// The Agent channel chord's modifier, named in the compact channel map's
+  /// shortcut hints. Settings own it in `settings.json`; no change event
+  /// reaches the overlay, so the map re-reads it when it appears and when the
+  /// pointer enters it, before any hint is shown.
+  private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
+  /// The window owner refits mini and compact to the channel map (see
+  /// `noteChannelMapLayout`).
+  @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
+  /// The window owner returns compact to its natural width, forgetting a
+  /// width the user gave it (see `activateChannelMapCounter`).
+  @ObservationIgnored var onRestoreMidiNaturalWidth: (() -> Void)?
+  /// The composition root brings the vertical layout's Intercom group forward
+  /// (see `activateChannelMapCounter`).
+  @ObservationIgnored var onRevealIntercom: (() -> Void)?
+  @ObservationIgnored private var channelMapLayoutKey: [String] = []
+  /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
+  @ObservationIgnored var agentChannelModifierSetting: () -> String = {
+    CodescribeConfig().loadSettings().channelModifier
+  }
   /// An empty pre-controller response is not evidence of disconnected agents.
   private(set) var hasLoadedChannelRoster = false
   private(set) var channelToggleError: String?
@@ -1143,33 +1336,88 @@ final class OverlayState {
   @ObservationIgnored var archiveAgentCommand:
     ((OverlayConversationOwner, Bool) async throws -> Void)?
   private(set) var selectedConversationID: String?
-  /// Wide windows pin the roster as a docked column; the pill stack only
-  /// exists below the threshold. Reported by the overlay's layout pass.
+  /// Folding hides the roster but retains which canvas will unfold.
+  private(set) var windowContentSurface: OverlayContentSurface = .transcription
+  /// Whether the current frame can host the roster column. Width never
+  /// changes the user's pane choice. Reported by the layout pass.
   private(set) var agentDrawerDocked = false
-  /// Bumped when the name pill asks the docked column to focus its selected row.
+  /// Bumped when an explicit roster reveal or the name pill asks the list
+  /// to focus its selected row.
   private(set) var agentDrawerFocusRevision: UInt64 = 0
+  /// The panes the list's corner buttons chose (Maciej, 2026-10-19). Stored
+  /// only once `restoreAgentsLayout(defaults:)` ran, so a test state never
+  /// writes the app's defaults.
+  private(set) var agentsLayout: OverlayAgentsLayout = .split
+  @ObservationIgnored private var agentsLayoutDefaults: UserDefaults?
+  static let agentsLayoutDefaultsKey = "Overlay.agentsLayout.v1"
 
-  /// The docked column is permanent beside a conversation. The transcription
-  /// surface keeps its full width (OverlayChromeV3Tests) and shows the column
-  /// only while the roster was asked for, so `showsAgentMonitor` still drives
-  /// it there.
-  private var dockedColumnAlreadyOnScreen: Bool {
-    agentDrawerDocked && selectedConversationID != nil
-  }
-  /// What the wide canvas hosts as the roster column this pass.
-  var dockedRosterColumnShown: Bool {
-    agentDrawerDocked && (selectedConversationID != nil || showsAgentMonitor)
+  /// The explicit pane choice keeps the roster beside a selected conversation.
+  /// A hide must change that choice as well as the transient reveal flag.
+  var agentListPinned: Bool {
+    OverlayAgentDrawerLayout.listPinned(
+      layout: agentsLayout, docked: agentDrawerDocked,
+      conversationSelected: selectedConversationID != nil)
   }
 
-  /// The layout owns the call. Engaging the docked column beside a
-  /// conversation closes the pill stack; the selection, drafts and scroll
-  /// follow survive the switch. On the transcription surface the open stack
-  /// becomes the column instead of vanishing.
   func setAgentDrawerDocked(_ docked: Bool) {
-    guard docked != agentDrawerDocked else { return }
     agentDrawerDocked = docked
-    if docked, selectedConversationID != nil { showsAgentMonitor = false }
   }
+
+  /// The layout chosen last, read before the panel first shows. A roster
+  /// once dragged across the window was stored as an oversized width; it
+  /// becomes the agents view, and the width the default again.
+  func restoreAgentsLayout(defaults: UserDefaults) {
+    agentsLayoutDefaults = defaults
+    if let stored = defaults.string(forKey: Self.agentsLayoutDefaultsKey)
+      .flatMap(OverlayAgentsLayout.init(rawValue:))
+    {
+      agentsLayout = stored
+    } else if defaults.double(forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
+      >= OverlayAgentDrawerLayout.legacyFillsWindowWidth
+    {
+      defaults.set(300.0, forKey: OverlayAgentDrawerLayout.widthDefaultsKey)
+      setAgentsLayout(.agents)
+    }
+  }
+
+  func setAgentsLayout(_ layout: OverlayAgentsLayout) {
+    guard layout != agentsLayout else { return }
+    agentsLayout = layout
+    agentsLayoutDefaults?.set(layout.rawValue, forKey: Self.agentsLayoutDefaultsKey)
+    if layout == .split { onAgentSidebarPresented?() }
+    onChannelPresentationChanged?()
+  }
+
+  /// The conversation edge reveals its canvas beside the list at any width.
+  func showAgentsCanvas() {
+    setAgentsLayout(.split)
+  }
+
+  /// The conversation edge folds only its own canvas.
+  func hideAgentsCanvas() {
+    setAgentsLayout(.agents)
+  }
+
+  /// The roster's own button folds it, preserving selection and drafts.
+  func foldAgentList() {
+    hideAgentSidebar()
+  }
+
+  /// The roster's rail always requests a side column, never a covering list.
+  func unfoldAgentList() {
+    setAgentsLayout(.split)
+    showAgentMonitor(expand: false)
+    focusAgentRoster()
+  }
+
+  /// A row chosen in the list, or with the middle-click chooser. In the
+  /// agents view the conversation slides out: the list is the switcher
+  /// (Maciej, 2026-10-19). A followed reply or the Agents button keeps it.
+  func chooseConversation(_ id: String) {
+    if agentsLayout == .agents { setAgentsLayout(.split) }
+    selectConversation(id)
+  }
+
   /// The agent conversation viewed last. The transcription clears the
   /// selection; this keeps the way back for the Agents button.
   @ObservationIgnored private var lastAgentConversationID: String?
@@ -1185,6 +1433,8 @@ final class OverlayState {
   private var playbackMutes: [AgentPlaybackIdentity: Bool] = [:]
   /// Read-only paint from the helper's policy receipts; never persisted here.
   private var broadcastPolicies: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  /// Every reception change goes through this one owner; tests inject their own.
+  @ObservationIgnored var broadcastLedger = OverlayBroadcastPolicyLedger.shared
   private var channelPlaybackAgents: [String: AgentPlaybackBinding] = [:]
   private var pendingPlaybackIdentities: Set<AgentPlaybackIdentity> = []
   @ObservationIgnored private var playbackPreferenceRevision: UInt64 = 0
@@ -1193,6 +1443,13 @@ final class OverlayState {
   private var pendingChannelConversation: CsChannelRosterState?
   private(set) var replyControlErrors: [String: String] = [:]
   private(set) var pendingReplyControls: Set<String> = []
+  @ObservationIgnored var controlBusReply:
+    @MainActor (String, String, String, String, String, Bool) async throws -> Void = {
+      replyID, ticket, provider, session, busPath, stop in
+      try await RealAgentBridgeInstaller.controlBusReply(
+        replyID: replyID, ticket: ticket, provider: provider,
+        session: session, busPath: busPath, stop: stop)
+    }
   /// Reply ids the user has read. Durable when `restoreReadState(root:)` ran:
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
@@ -1284,6 +1541,7 @@ final class OverlayState {
       }
       agentArchiveRevision &+= 1
       archivedAgentOwners.insert(owner)
+      noteChannelMapLayout()
       onChannelPresentationChanged?()
     } catch {
       agentArchiveError = String(
@@ -1316,6 +1574,295 @@ final class OverlayState {
     return String(
       localized: "the helper returned no valid receipt",
       comment: "Archive refusal reason: unknown failure")
+  }
+
+  // MARK: Agent panel focus in Frame (`codescribe.agent-panel-focus.v1`)
+
+  /// Starts false (fail-closed) so the first render never advertises panel
+  /// focus before `supportsAgentPanelFocus` confirms a compatible `vc-frame`.
+  private(set) var agentPanelFocusAvailable: Bool = false
+  private(set) var agentPanelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  @ObservationIgnored var detectAgentPanelFocusAvailability: @MainActor () async -> Bool = {
+    await RealAgentBridgeInstaller.supportsAgentPanelFocus()
+  }
+  @ObservationIgnored var requestAgentPanelFocusCommand:
+    @MainActor (OverlayAgentPanelFocusRequest) async throws -> Void = { request in
+      try await RealAgentBridgeInstaller.publishAgentPanelFocus(request)
+    }
+  @ObservationIgnored var activateTerminalHost: @MainActor (Int32?, String?) -> Bool = {
+    hostPID, hostBundleID in
+    RealAgentBridgeInstaller.activateAgentTerminalHost(
+      hostPID: hostPID, hostBundleID: hostBundleID)
+  }
+  /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
+  @ObservationIgnored var openCodexThreadLink: @MainActor (URL) -> Bool = { url in
+    NSWorkspace.shared.open(url)
+  }
+  @ObservationIgnored var panelFocusTimeoutDuration: Duration = .seconds(6)
+  @ObservationIgnored var panelFocusSuccessHoldDuration: Duration = .seconds(3)
+
+  func setAgentPanelFocusAvailable(_ available: Bool) {
+    guard agentPanelFocusAvailable != available else { return }
+    agentPanelFocusAvailable = available
+    // `vc-frame` gates only the Frame path; a terminal request stays.
+    if !available, agentPanelFocusStates.values.contains(where: { $0.target == .frame }) {
+      agentPanelFocusStates = agentPanelFocusStates.filter { $0.value.target != .frame }
+    }
+    onChannelPresentationChanged?()
+  }
+
+  /// Where this channel's focus button would land; nil when neither a usable
+  /// Frame pane nor a terminal tab is known.
+  func agentPanelFocusTarget(for channel: String) -> OverlayAgentPanelFocusTarget? {
+    OverlayAgentPanelFocusTarget.resolve(
+      channelHudStates[channel], frameFocusAvailable: agentPanelFocusAvailable)
+  }
+
+  /// A saved conversation, a dead follower or an unknown destination must
+  /// never advertise a focus action. A Codex thread is the exception to the
+  /// follower: the app opens its link itself.
+  func canFocusAgentPanel(_ owner: OverlayConversationOwner) -> Bool {
+    guard !channelStatusUnavailable,
+      archiveCandidate(for: owner.channel) == owner,
+      let target = agentPanelFocusTarget(for: owner.channel)
+    else { return false }
+    return !target.needsLiveFollower || channelHudStates[owner.channel]?.followerAlive == true
+  }
+
+  /// Help and accessibility hint for the conversation's focus action.
+  func agentPanelFocusHelp(_ owner: OverlayConversationOwner) -> String? {
+    canFocusAgentPanel(owner) ? agentPanelFocusTarget(for: owner.channel)?.help : nil
+  }
+
+  /// Appends a `codescribe.agent-panel-focus.v1` request onto the agent's bus
+  /// while immediately (<1 frame) updating the row state with a spinner. A
+  /// Codex thread sends no request: the overlay opens its link directly.
+  func focusAgentPanel(_ owner: OverlayConversationOwner) {
+    guard canFocusAgentPanel(owner),
+      let target = agentPanelFocusTarget(for: owner.channel),
+      agentPanelFocusStates[owner.channel]?.isRequesting != true
+    else { return }
+    if target == .codexThread {
+      openAgentCodexThread(owner)
+      return
+    }
+    let request = OverlayAgentPanelFocusRequest(owner: owner)
+    agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+      requestID: request.requestID,
+      owner: owner,
+      phase: .requesting,
+      statusText: target.requestingText,
+      updatedAt: Date(),
+      target: target
+    )
+    onChannelPresentationChanged?()
+
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await self.requestAgentPanelFocusCommand(request)
+      } catch {
+        guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID else {
+          return
+        }
+        self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+          requestID: request.requestID,
+          owner: owner,
+          phase: .failed,
+          statusText: Self.panelFocusFailureReason(error, target: target),
+          updatedAt: Date(),
+          target: target
+        )
+        self.onChannelPresentationChanged?()
+      }
+    }
+
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await Task.sleep(for: self.panelFocusTimeoutDuration)
+      } catch {
+        return
+      }
+      guard self.agentPanelFocusStates[owner.channel]?.requestID == request.requestID,
+        self.agentPanelFocusStates[owner.channel]?.phase == .requesting
+      else { return }
+      self.agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+        requestID: request.requestID,
+        owner: owner,
+        phase: .failed,
+        statusText: target.timeoutText,
+        updatedAt: Date(),
+        target: target
+      )
+      self.onChannelPresentationChanged?()
+    }
+  }
+
+  /// Opens the agent's Codex thread in the Codex app. Opening a URL is not
+  /// driving a terminal, so unlike Frame and terminal focus no follower acts
+  /// and the row answers at once (UI-70).
+  private func openAgentCodexThread(_ owner: OverlayConversationOwner) {
+    let target = OverlayAgentPanelFocusTarget.codexThread
+    let requestID = OverlayAgentPanelFocusRequest.makeRequestID()
+    let opened: Bool
+    if let link = channelHudStates[owner.channel]?.codexThreadUrl,
+      let url = URL(string: link), url.scheme == "codex"
+    {
+      opened = openCodexThreadLink(url)
+    } else {
+      opened = false
+    }
+    agentPanelFocusStates[owner.channel] = OverlayAgentPanelFocusState(
+      requestID: requestID,
+      owner: owner,
+      phase: opened ? .succeeded : .failed,
+      statusText: opened ? target.succeededText : target.failureText,
+      updatedAt: Date(),
+      target: target
+    )
+    if opened {
+      foldAfterAgentPanelFocus()
+    }
+    onChannelPresentationChanged?()
+    guard opened else { return }
+    let channel = owner.channel
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
+      } catch {
+        return
+      }
+      if self.agentPanelFocusStates[channel]?.requestID == requestID,
+        self.agentPanelFocusStates[channel]?.phase == .succeeded
+      {
+        self.agentPanelFocusStates.removeValue(forKey: channel)
+        self.onChannelPresentationChanged?()
+      }
+    }
+  }
+
+  private func reconcileAgentPanelFocusResults(
+    _ results: [String: OverlayPanelFocusResult]
+  ) {
+    guard !results.isEmpty, !agentPanelFocusStates.isEmpty else { return }
+    var changed = false
+    for (channel, state) in agentPanelFocusStates {
+      guard state.phase == .requesting, let result = results[state.requestID] else { continue }
+      changed = true
+      // The receipt names where the follower aimed; an older follower names
+      // nothing and only ever aimed at Frame.
+      let target = Self.panelFocusTarget(of: result) ?? state.target
+      if result.isSuccess {
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .succeeded,
+          statusText: target.succeededText,
+          updatedAt: Date(),
+          target: target
+        )
+        foldAfterAgentPanelFocus()
+        let hostPID: Int32?
+        let hostBundleID: String
+        if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
+          hostPID = nil
+          hostBundleID = terminalBundleID
+        } else {
+          let fallbackFrame = channelPlaybackAgents[channel]?.frame
+          hostPID = result.frame?.hostPID ?? fallbackFrame?.hostPID
+          hostBundleID =
+            result.frame?.hostBundleID ?? fallbackFrame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+        }
+        _ = activateTerminalHost(hostPID, hostBundleID)
+        let requestID = state.requestID
+        Task { @MainActor [weak self] in
+          guard let self else { return }
+          do {
+            try await Task.sleep(for: self.panelFocusSuccessHoldDuration)
+          } catch {
+            return
+          }
+          if self.agentPanelFocusStates[channel]?.requestID == requestID,
+            self.agentPanelFocusStates[channel]?.phase == .succeeded
+          {
+            self.agentPanelFocusStates.removeValue(forKey: channel)
+            self.onChannelPresentationChanged?()
+          }
+        }
+      } else {
+        agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+          requestID: state.requestID,
+          owner: state.owner,
+          phase: .failed,
+          statusText: Self.panelFocusStatusReason(for: result, requested: state.target),
+          updatedAt: Date(),
+          target: target
+        )
+      }
+    }
+    if changed {
+      onChannelPresentationChanged?()
+    }
+  }
+
+  private func foldAfterAgentPanelFocus() {
+    guard presentationMode == .expanded else { return }
+    let target = autoCollapse.restoreMode ?? .midi
+    applyPresentationMode(target, cause: .user)
+  }
+
+  private static func panelFocusFailureReason(
+    _ error: Error, target: OverlayAgentPanelFocusTarget
+  ) -> String {
+    if let csError = error as? CsError {
+      let trimmed = csError.userFacingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    return description.isEmpty ? target.failureText : description
+  }
+
+  static func panelFocusTarget(of result: OverlayPanelFocusResult) -> OverlayAgentPanelFocusTarget?
+  {
+    switch result.target {
+    case "frame": .frame
+    case "iterm2", "terminal": .terminal
+    default: nil
+    }
+  }
+
+  static func panelFocusStatusReason(
+    for result: OverlayPanelFocusResult, requested: OverlayAgentPanelFocusTarget
+  ) -> String {
+    let target = panelFocusTarget(of: result) ?? requested
+    switch result.status {
+    case "pane_missing":
+      return String(localized: "Panel not found in Frame")
+    case "terminal_missing":
+      return String(
+        localized: "Agent's terminal tab not found",
+        comment: "Terminal focus result: no iTerm2 or Terminal tab matches the agent")
+    case "automation_denied":
+      return String(
+        localized:
+          "Terminal control not allowed. Allow it in System Settings › Privacy & Security › Automation.",
+        comment: "Terminal focus result: macOS refused Automation control of the terminal app")
+    case "no_frame":
+      // A Frame request answered so lost its pane; a terminal request knew
+      // neither destination by the time it landed.
+      if requested == .frame {
+        return String(localized: "Agent is not running in Frame")
+      }
+      return String(
+        localized: "No terminal known for this agent",
+        comment: "Focus result: the follower knows neither a Frame pane nor a terminal tab")
+    case "stale":
+      return String(localized: "Panel focus request expired")
+    default:
+      return target.failureText
+    }
   }
 
   private func playbackIdentity(for conversation: OverlayConversation) -> AgentPlaybackIdentity? {
@@ -1391,6 +1938,7 @@ final class OverlayState {
       return !channelStatusUnavailable && channelHudStates["0"] != nil
     }
     guard !channelStatusUnavailable, let owner = conversation.owner,
+      conversations.contains(where: { $0.id == conversation.id && $0.owner?.id == owner.id }),
       !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
       let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
@@ -1407,11 +1955,15 @@ final class OverlayState {
       && channelHudStates[conversation.channel]?.open == true
   }
 
-  func toggleConversationMicrophone(_ conversation: OverlayConversation) async {
+  func toggleConversationMicrophone(
+    _ conversation: OverlayConversation, keepsAgentList: Bool = false,
+    preservesPresentation: Bool = false
+  ) async {
     guard canToggleConversationMicrophone(conversation),
       let digit = OverlayChannelStatusView.toggleDigit(for: conversation.channel)
     else { return }
-    await toggleAgentChannel(digit)
+    await toggleAgentChannel(
+      digit, keepsAgentList: keepsAgentList, preservesPresentation: preservesPresentation)
   }
 
   func toggleConversationPlayback(_ conversation: OverlayConversation) async {
@@ -1476,6 +2028,7 @@ final class OverlayState {
 
   private func refreshPlaybackMutes() async {
     let revision = playbackPreferenceRevision
+    let broadcastRevision = broadcastLedger.revision
     let roster = channelRoster
     var candidates: [String: AgentPlaybackIdentity] = [:]
     for (channel, hud) in channelHudStates {
@@ -1492,16 +2045,31 @@ final class OverlayState {
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
     let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
+    let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
       return
     }
-    channelPlaybackAgents = bound
-    broadcastPolicies = broadcastSnapshot
-    if !globalPlaybackPending { globalPlaybackMuted = globalSnapshot }
+    setAgentPanelFocusAvailable(panelFocusAvailable)
+    // This runs every 500 ms. An Observation write invalidates every reader
+    // even when the value is equal, and the open conversation reads its
+    // playback mute, so an unchanged poll re-evaluated it twice a second
+    // (UI-88, hania on Silver 23 X: 37% of a core at rest, 16% in mini).
+    if channelPlaybackAgents != bound { channelPlaybackAgents = bound }
+    // A reception change during this poll makes its receipts older than the
+    // change's read-back; the next poll paints them instead.
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
+      broadcastPolicies != broadcastSnapshot
+    {
+      broadcastPolicies = broadcastSnapshot
+    }
+    if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
+      globalPlaybackMuted = globalSnapshot
+    }
     // A poll started before a click may carry the old receipt for that identity.
     let retained = playbackMutes.filter { pendingPlaybackIdentities.contains($0.key) }
-    playbackMutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
+    let mutes = snapshot.filter { !pendingPlaybackIdentities.contains($0.key) }
       .merging(retained, uniquingKeysWith: { _, current in current })
+    if playbackMutes != mutes { playbackMutes = mutes }
   }
 
   func unreadReplies(in conversation: OverlayConversation) -> Int {
@@ -1523,6 +2091,7 @@ final class OverlayState {
     revisionFocusCommitTask?.cancel()
     revisionFocusCommitTask = nil
     selectedConversationID = id
+    windowContentSurface = id == nil ? .transcription : .agents
     if let id { lastAgentConversationID = id }
     conversationFocusRevision &+= 1
     showsAgentMonitor = false
@@ -1551,17 +2120,21 @@ final class OverlayState {
   }
 
   private func showAgentMonitor(expansion: OverlayPresentationCause?) {
+    windowContentSurface = .agents
+    if agentsLayout == .rail { setAgentsLayout(.split) }
     onAgentSidebarPresented?()
     pendingChannelConversation = nil
-    if dockedColumnAlreadyOnScreen {
-      // Docked beside a conversation: the column is already on screen, so the
-      // click focuses the selected row instead of opening anything (mockup,
-      // Founder 2026-10-16).
+    if agentListPinned {
+      // The explicit pane choice already presents the roster.
       agentDrawerFocusRevision &+= 1
     } else {
       showsAgentMonitor = true
     }
-    if let expansion { expandAgentSurface(cause: expansion) }
+    if let expansion {
+      expandAgentSurface(cause: expansion)
+    } else {
+      onChannelPresentationChanged?()
+    }
   }
 
   /// The Agents button. Founder, 2026-10-15: reaching an agent took mini →
@@ -1569,6 +2142,20 @@ final class OverlayState {
   /// in a conversation the press opens the drawer to change agents, and on
   /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
+    // Maciej, 2026-10-19 08:52: "całe nagrywanie agentowe przenosimy na
+    // przycisk fioletowy, który nam rozwija agenta, jeśli jest zwinięty. I
+    // jeśli już ma nagranie, to po prostu pulsuje jako mikrofon." While a
+    // channel records, the press opens that agent; on it, the press stops it.
+    if let recording = recordingAgentConversationID {
+      if agentsButtonStopsRecording {
+        if let conversation = conversations.first(where: { $0.id == recording }) {
+          Task { await toggleConversationMicrophone(conversation) }
+        }
+      } else {
+        selectConversation(recording)
+      }
+      return
+    }
     if showsAgentMonitor && !isCollapsed {
       hideAgentSidebar()
     } else if !isCollapsed && selectedConversationID != nil {
@@ -1578,6 +2165,26 @@ final class OverlayState {
     } else {
       showAgentMonitor()
     }
+  }
+
+  /// The conversation whose microphone is open: the one on screen when it
+  /// records, else the lowest open channel's.
+  var recordingAgentConversationID: String? {
+    let recording = conversations.filter { conversationMicrophoneOpen($0) }
+    if let selectedConversationID, recording.contains(where: { $0.id == selectedConversationID }) {
+      return selectedConversationID
+    }
+    return recording.min { $0.channel < $1.channel }?.id
+  }
+
+  /// The recording agent is on screen, so the Agents press is its stop. In
+  /// mini the press is always the stop, whichever channel records (Maciej,
+  /// 2026-10-20: "intuicyjnie to jest zatrzymanie nadawania do tego, co
+  /// aktualnie jest w nasłuchu"); it never opens another channel or the monitor.
+  var agentsButtonStopsRecording: Bool {
+    guard let recording = recordingAgentConversationID else { return false }
+    if presentationMode == .mini { return true }
+    return !isCollapsed && !showsAgentMonitor && selectedConversationID == recording
   }
 
   /// Where one press on Agents lands: the conversation with the newest unread
@@ -1601,9 +2208,17 @@ final class OverlayState {
     return newest(live.filter { !$0.messages.isEmpty })?.id
   }
 
+  /// The list now covers the conversation, so its selected row takes the
+  /// keyboard the hidden composer gave up (2026-10-19).
+  func focusAgentRoster() {
+    agentDrawerFocusRevision &+= 1
+  }
+
   func hideAgentSidebar() {
     endAgentChoosing()
     showsAgentMonitor = false
+    setAgentsLayout(.rail)
+    windowContentSurface = selectedConversationID == nil ? .transcription : .agents
     markVisibleConversationRead()
     onChannelPresentationChanged?()
   }
@@ -1626,6 +2241,18 @@ final class OverlayState {
   }
 
   private(set) var agentGesturePhase: AgentGesturePhase = .idle
+
+  /// The vertical Intercom hosts the chooser instead of the big overlay: the
+  /// wheel walks its rows and a left click opens that row's conversation
+  /// there (Maciej, 2026-10-23 seal: "mieliśmy przenieść … na ten nowy
+  /// lewitujący widget, a to nie zostało zrobione"). The middle click and the
+  /// capture lease stay this machine's; only the surface changes.
+  struct AgentChooserHost {
+    /// The rows the widget shows, in its order.
+    let targets: () -> [OverlayConversation]
+    let open: (String) -> Void
+  }
+  @ObservationIgnored var agentChooserHost: AgentChooserHost?
   /// Test seam over the Rust capture lease. Each renewal holds it 30 s.
   @ObservationIgnored var agentChooserCapture: (Bool) -> Void = {
     setAgentChooserCapture(active: $0)
@@ -1644,20 +2271,20 @@ final class OverlayState {
     return nil
   }
 
-  /// What the list on screen shows, in its order: 0 · All, then the roster.
-  /// The pill stack leaves out the conversation already open; the docked
-  /// column lists it too.
+  /// What the list on screen shows, in its order: 0 · All, then the roster,
+  /// the conversation already open included, at every window width. A host
+  /// lists its own rows.
   var agentGestureTargets: [OverlayConversation] {
+    if let agentChooserHost { return agentChooserHost.targets() }
     let current = OverlayChannelStatusView.currentConversations(
       conversations: conversations, archivedOwners: archivedAgentOwners,
       hudStates: channelHudStates)
-    let ordered = OverlayChannelStatusView.rosterOrder(
+    return OverlayChannelStatusView.rosterOrder(
       current: current, channels: visibleChannelRows.filter { $0.channel != "0" })
-    return dockedRosterColumnShown ? ordered : ordered.filter { $0.id != selectedConversationID }
   }
 
   private var agentListOnScreen: Bool {
-    !isCollapsed && (showsAgentMonitor || dockedColumnAlreadyOnScreen)
+    !isCollapsed && (showsAgentMonitor || agentListPinned)
   }
 
   func handleAgentGesture(_ input: CsAgentGestureInput) {
@@ -1672,9 +2299,11 @@ final class OverlayState {
       moveAgentFocus(from: focus, by: Int(steps))
     case (.choosing(let focus), .leftClick):
       endAgentChoosing()
-      if let focus { selectConversation(focus) }
+      guard let focus else { break }
+      if let agentChooserHost { agentChooserHost.open(focus) } else { chooseConversation(focus) }
     case (.choosing, .cancel):
-      hideAgentSidebar()
+      // The hosted chooser never opened the big overlay's list.
+      if agentChooserHost == nil { hideAgentSidebar() } else { endAgentChoosing() }
     case (_, .scroll), (_, .leftClick), (_, .cancel):
       // A lease that outlived its chooser: hand the input back now.
       agentChooserCapture(false)
@@ -1691,14 +2320,14 @@ final class OverlayState {
   }
 
   private func beginAgentChoosing() {
-    showAgentMonitor(expansion: .user)
+    if agentChooserHost == nil { showAgentMonitor(expansion: .user) }
     agentGesturePhase = .choosing(focus: agentGestureTargets.first?.id)
     renewAgentChooser()
   }
 
   private func moveAgentFocus(from focus: String?, by steps: Int) {
     // Something else took the surface while choosing: the wheel brings it back.
-    if !agentListOnScreen { showAgentMonitor(expansion: .user) }
+    if agentChooserHost == nil, !agentListOnScreen { showAgentMonitor(expansion: .user) }
     let targets = agentGestureTargets
     if !targets.isEmpty {
       let current = focus.flatMap { id in targets.firstIndex { $0.id == id } }
@@ -1750,8 +2379,10 @@ final class OverlayState {
     // A stale error must not end this talk when the toggle below returns early
     // behind one still pending; a failure of this toggle sets a fresh one.
     channelToggleError = nil
+    // A hosted take stays on the Intercom row; the big overlay follows nothing.
+    let hosted = agentChooserHost != nil
     Task {
-      await performAgentChannelToggle(digit, keepsAgentList: false)
+      await performAgentChannelToggle(digit, keepsAgentList: false, preservesPresentation: hosted)
       if channelToggleError != nil, agentGesturePhase == .talking(channel: channel) {
         agentGesturePhase = .idle
       }
@@ -1769,7 +2400,10 @@ final class OverlayState {
       beginAgentChoosing()
       return
     }
-    Task { await performAgentChannelToggle(digit, keepsAgentList: false) }
+    let hosted = agentChooserHost != nil
+    Task {
+      await performAgentChannelToggle(digit, keepsAgentList: false, preservesPresentation: hosted)
+    }
   }
 
   private func expandAgentSurface(cause: OverlayPresentationCause) {
@@ -1783,11 +2417,23 @@ final class OverlayState {
   private func followChannelConversation(_ row: CsChannelRosterState) {
     pendingChannelConversation = row
     resolveChannelConversation()
-    if expandedByDefault { expandAgentSurface(cause: .automatic) }
+    if channelOpenExpandsSurface { expandAgentSurface(cause: .automatic) }
+  }
+
+  /// Whether a channel the controller just opened unfolds the overlay onto the
+  /// Agents canvas. With the channel map on, mini and compact keep their form:
+  /// the strip's chip or counter already shows the open digit, and the chord
+  /// is meant to be readable without unfolding (bus intercom spec §1, §14 W3).
+  /// With the map off, or when the overlay is already expanded, the canvas
+  /// follows the open channel as before. Replies, dictation and the preferred
+  /// expansion keep their own paths.
+  private var channelOpenExpandsSurface: Bool {
+    expandedByDefault && !(channelMapEnabled && isCollapsed)
   }
 
   private func resolveChannelConversation() {
     guard let row = pendingChannelConversation else { return }
+    windowContentSurface = .agents
     let matches = conversations.filter { conversation in
       guard conversation.channel == row.channel else { return false }
       if row.channel == "0" { return conversation.owner == nil }
@@ -1799,7 +2445,7 @@ final class OverlayState {
     guard matches.count == 1 else {
       selectedConversationID = nil
       // No conversation to dock beside: the flag shows the roster, as the
-      // column on a wide window or as the pill stack on a narrow one.
+      // column on a wide window or as the full-width list on a narrow one.
       showsAgentMonitor = true
       return
     }
@@ -1868,10 +2514,14 @@ final class OverlayState {
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
+      noteChannelMapLayout()
       onChannelPresentationChanged?()
     }
     applyChannelDelivery(snapshot.deliveries)
+    reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
     let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
+    resolveWaitingCaptureAttachments(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -1898,6 +2548,9 @@ final class OverlayState {
       !conversations.contains(where: { $0.id == selectedConversationID })
     {
       self.selectedConversationID = nil
+      // Inventory can retire an owner, but cannot choose a different canvas.
+      // Keep Agents open as its roster until the user picks another owner.
+      if windowContentSurface == .agents { showsAgentMonitor = true }
     }
     resolveChannelConversation()
     let retained = Set(conversations.flatMap(\.replyIDs))
@@ -1942,6 +2595,16 @@ final class OverlayState {
     if composerEditorActive { return true }
     guard let composerTypingDeadline else { return false }
     return composerTypingDeadline - nowProvider() > 0
+  }
+
+  /// The Founder is writing to an agent: the composer is active, keys fell
+  /// within the typing horizon, or a draft waits unsent. An idle restart must
+  /// not quit the app under it (Maciej, 2026-10-23).
+  var founderComposing: Bool {
+    composerRetainsAutomaticReplyFocus
+      || conversationDrafts.values.contains {
+        !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      }
   }
 
   /// Bring one newly admitted reply's owner into the existing surface.
@@ -2000,13 +2663,35 @@ final class OverlayState {
   }
 
   var conversationDrafts: [String: String] = [:]
+  var conversationReplies: [String: OverlayUserReplyReference] = [:]
+  var draftCapture = OverlayDraftCapture()
+  struct CaptureAttachmentDraft {
+    var target: OverlayCaptureAttachmentTarget?
+    var paths: [String]
+    var captureSessionID: String? = nil
+    var pastedAt: Date = Date()
+  }
+  @ObservationIgnored private var activeCaptureAttachmentSessions:
+    [OverlayCaptureAttachmentSession] = []
+  private(set) var captureAttachmentDrafts: [String: CaptureAttachmentDraft] = [:]
+  private(set) var pendingCaptureAttachmentSends: Set<String> = []
+  private(set) var captureAttachmentErrors: [String: String] = [:]
+  @ObservationIgnored var publishCaptureAttachments:
+    @MainActor ([String], OverlayCaptureAttachmentTarget) async throws -> Void = { paths, target in
+      try await RealAgentBridgeInstaller.stageCaptureAttachments(paths: paths, target: target)
+    }
+  @ObservationIgnored private var pendingDraftProjections: [String: CsTranscriptProjectionEvent] =
+    [:]
+  @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner?, String) async throws -> Void = {
-      owner, text in try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text)
-    }
+    @MainActor (OverlayConversationOwner?, String, OverlayUserReplyReference?) async throws -> Void =
+      {
+        owner, text, reply in
+        try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text, userReplyTo: reply)
+      }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
     guard conversation.owner != nil || conversation.channel == "0",
@@ -2015,20 +2700,180 @@ final class OverlayState {
       !pendingTextMessages.contains(conversation.id)
     else { return }
     pendingTextMessages.insert(conversation.id)
+    let reply = conversationReplies[conversation.id]
     textMessageErrors.removeValue(forKey: conversation.id)
     defer { pendingTextMessages.remove(conversation.id) }
+    // Files pasted after the words, while the capture still waited for a
+    // segment that never came, ride with the message the Founder sends now
+    // instead of waiting for a take that is not coming (Maciej, 2026-10-23:
+    // "wyślę załącznik, to już nie trafia nigdy, nawet na Enter").
+    let adopted = adoptWaitingCaptureAttachments(in: conversation.id)
+    let parts = ConversationDraft.split(draft)
+    let outgoing =
+      adopted.isEmpty
+      ? draft
+      : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     do {
-      try await publishConversationText(conversation.owner, draft)
+      try await publishConversationText(conversation.owner, outgoing, reply)
       // A newer draft belongs to the Founder, even if publication finishes late.
-      if conversationDrafts[conversation.id] == draft { conversationDrafts[conversation.id] = "" }
+      if conversationDrafts[conversation.id] == draft {
+        conversationDrafts[conversation.id] = ""
+        if conversationReplies[conversation.id] == reply {
+          conversationReplies.removeValue(forKey: conversation.id)
+        }
+      }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
     }
   }
 
+  func toggleDraftMicrophone(in conversation: OverlayConversation) async {
+    draftCapture.onStartResolved = { [weak self] in
+      guard let self else { return }
+      let waiting = Array(pendingDraftProjections.values)
+      pendingDraftProjections.removeAll()
+      for projection in waiting { admitComposerDelivery(projection, affectsCurrentCapture: false) }
+    }
+    await draftCapture.toggle(
+      conversationID: conversation.id,
+      busy: audioCaptureActive || otherComposerOwnsCapture?() == true)
+  }
+
+  func draftMicrophoneBusy(in conversation: OverlayConversation) -> Bool {
+    draftCapture.transitioning
+      || (draftCapture.hasRequest && draftCapture.conversationID != conversation.id)
+      || (!draftCapture.hasRequest && (audioCaptureActive || otherComposerOwnsCapture?() == true))
+  }
+
+  /// Return true only when the live voice lane takes responsibility for these
+  /// paths. Ordinary draft dictation keeps its attachments for manual Send.
+  func stageConversationAttachments(_ paths: [String], in conversation: OverlayConversation) -> Bool
+  {
+    guard !draftCapture.hasRequest else { return false }
+    let existing = captureAttachmentDrafts[conversation.id]
+    let target =
+      existing?.target
+      ?? conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget).first
+    guard target != nil || existing != nil || conversationMicrophoneOpen(conversation) else {
+      return false
+    }
+    var staged = existing ?? CaptureAttachmentDraft(target: target, paths: [])
+    if staged.captureSessionID == nil {
+      staged.captureSessionID =
+        target?.captureSessionID
+        ?? captureSessionForPaste(in: conversation, at: staged.pastedAt)?.id
+    }
+    for path in paths where !staged.paths.contains(path) { staged.paths.append(path) }
+    guard !staged.paths.isEmpty else { return false }
+    captureAttachmentDrafts[conversation.id] = staged
+    Task { await sendCaptureAttachments(in: conversation.id) }
+    return true
+  }
+
+  /// A late first projection may resolve a paste only onto a capture already
+  /// open at paste time, addressed to this exact conversation. A successor take
+  /// cannot inherit pending files just because the same agent number is reused.
+  private func captureSessionForPaste(in conversation: OverlayConversation, at pastedAt: Date)
+    -> OverlayCaptureAttachmentSession?
+  {
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let plain = ISO8601DateFormatter()
+    let candidates = activeCaptureAttachmentSessions.filter { session in
+      guard session.includes(conversation),
+        let opened = parser.date(from: session.openedAt) ?? plain.date(from: session.openedAt)
+      else { return false }
+      return opened <= pastedAt
+    }
+    guard Set(candidates.map(\.id)).count == 1 else { return nil }
+    return candidates.first
+  }
+
+  private func resolveWaitingCaptureAttachments(in projected: [OverlayConversation]) {
+    for (id, original) in captureAttachmentDrafts where original.target == nil {
+      guard let conversation = projected.first(where: { $0.id == id }),
+        let session = captureSessionForPaste(in: conversation, at: original.pastedAt),
+        original.captureSessionID == nil || original.captureSessionID == session.id,
+        let target = conversation.messages.reversed().compactMap(\.activeCaptureAttachmentTarget)
+          .first(where: {
+            $0.captureSessionID == session.id && $0.recipientIDs.sorted() == session.recipientIDs
+          })
+      else { continue }
+      var resolved = original
+      resolved.captureSessionID = session.id
+      resolved.target = target
+      captureAttachmentDrafts[id] = resolved
+      captureAttachmentErrors.removeValue(forKey: id)
+      Task { await sendCaptureAttachments(in: id) }
+    }
+  }
+
+  /// Take the files a capture never claimed. A staged draft with a target is
+  /// already on its way to that take and stays; one still waiting for a first
+  /// segment hands its paths to the caller and is withdrawn.
+  private func adoptWaitingCaptureAttachments(in conversationID: String) -> [String] {
+    guard let staged = captureAttachmentDrafts[conversationID], staged.target == nil,
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return [] }
+    captureAttachmentDrafts.removeValue(forKey: conversationID)
+    captureAttachmentErrors.removeValue(forKey: conversationID)
+    return staged.paths
+  }
+
+  func sendCaptureAttachments(in conversationID: String) async {
+    guard let staged = captureAttachmentDrafts[conversationID], !staged.paths.isEmpty,
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return }
+    guard let target = staged.target else {
+      // Waiting for the first committed segment is normal, not an I/O failure.
+      // The existing snapshot stream will resolve the same capture and drain it.
+      return
+    }
+    pendingCaptureAttachmentSends.insert(conversationID)
+    captureAttachmentErrors.removeValue(forKey: conversationID)
+    var succeeded = false
+    defer {
+      pendingCaptureAttachmentSends.remove(conversationID)
+      if succeeded, captureAttachmentDrafts[conversationID]?.paths.isEmpty == false {
+        Task { await sendCaptureAttachments(in: conversationID) }
+      }
+    }
+    do {
+      try await publishCaptureAttachments(staged.paths, target)
+      succeeded = true
+      if var current = captureAttachmentDrafts[conversationID], current.target == staged.target {
+        current.paths.removeAll { staged.paths.contains($0) }
+        captureAttachmentDrafts[conversationID] = current.paths.isEmpty ? nil : current
+      }
+    } catch {
+      captureAttachmentErrors[conversationID] = error.userFacingMessage
+    }
+  }
+
+  func retryCaptureAttachments(in conversationID: String) async {
+    guard captureAttachmentDrafts[conversationID] != nil,
+      !pendingCaptureAttachmentSends.contains(conversationID)
+    else { return }
+    resolveWaitingCaptureAttachments(in: conversations)
+    // Preserve an already selected segment. The append owner revalidates its
+    // exact historical coordinates even while newer speech advances the bus.
+    await sendCaptureAttachments(in: conversationID)
+  }
+
+  func removeCaptureAttachment(_ path: String, in conversationID: String) {
+    guard !pendingCaptureAttachmentSends.contains(conversationID),
+      var staged = captureAttachmentDrafts[conversationID]
+    else { return }
+    staged.paths.removeAll { $0 == path }
+    captureAttachmentDrafts[conversationID] = staged.paths.isEmpty ? nil : staged
+    if staged.paths.isEmpty { captureAttachmentErrors.removeValue(forKey: conversationID) }
+  }
+
   func controlReply(_ message: OverlayConversationMessage, stop: Bool) async {
     guard message.kind == .reply, message.supportsSpeechPlayback,
-      let owner = message.owner, let replyID = message.replyID
+      let provider = message.playbackProvider, !provider.isEmpty,
+      let session = message.playbackProviderSessionID, !session.isEmpty,
+      let replyID = message.replyID
     else { return }
     let active = message.playback.map { ["waiting", "playing"].contains($0.state) } ?? false
     guard stop ? active : !active && !pendingReplyControls.contains(message.id) else { return }
@@ -2043,9 +2888,8 @@ final class OverlayState {
     replyControlErrors.removeValue(forKey: message.id)
     defer { pendingReplyControls.remove(message.id) }
     do {
-      try await RealAgentBridgeInstaller.controlBusReply(
-        replyID: replyID, ticket: ticket, provider: owner.provider,
-        session: owner.providerSessionID, busPath: message.busPath, stop: stop)
+      try await controlBusReply(
+        replyID, ticket, provider, session, message.busPath, stop)
     } catch {
       replyControlErrors[message.id] = error.userFacingMessage
     }
@@ -2071,7 +2915,8 @@ final class OverlayState {
       var projected = row
       if let identity = playbackIdentity(for: row.channel) {
         projected.broadcastIdentity = identity
-        projected.broadcastPolicy = broadcastPolicies[identity] ?? .on
+        projected.broadcastPolicy = broadcastLedger.policy(
+          for: identity, polled: broadcastPolicies[identity] ?? .on)
       }
       return projected
     }.sorted { $0.channel < $1.channel }
@@ -2177,6 +3022,55 @@ final class OverlayState {
     channelObservationTask = nil
   }
 
+  /// The compact channel map as the window owner sizes it: the projection
+  /// the strip renders, without selection, click targets or unread marks,
+  /// which do not change the width the window reserves.
+  var channelMapLayoutModel: OverlayChannelMapModel {
+    OverlayChannelMapModel(
+      channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
+      unreadDigits: [])
+  }
+
+  /// Reports a change of the map's agents or names, or of its open digits.
+  /// Mini's counter turns from the agent count into the open digits, so
+  /// mini's width follows the chord; compact's natural width ignores open
+  /// microphones (channel 0's chip included), so the chord never resizes the
+  /// strip and its refit is a no-op.
+  private func noteChannelMapLayout() {
+    let map = channelMapLayoutModel
+    let key =
+      map.agents.map { $0.digit + "\u{1F}" + $0.name }
+      + ["\u{1E}" + map.openDigits.joined(separator: ",")]
+    guard key != channelMapLayoutKey else { return }
+    channelMapLayoutKey = key
+    onChannelMapLayoutChanged?()
+  }
+
+  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
+  /// compact, where the chips are clickable, as the form toggle's "Expand to
+  /// compact widget" does. Compact shows the counter when the user narrowed
+  /// it, so there the click returns the strip to its natural width and the
+  /// chips come back. In the vertical layout the chips live in the Intercom
+  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
+  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
+  /// conversation or touches capture.
+  func activateChannelMapCounter() {
+    if channelMapCounterStacked {
+      onRevealIntercom?()
+      return
+    }
+    switch presentationMode {
+    case .mini: setPresentationMode(.midi)
+    case .midi: onRestoreMidiNaturalWidth?()
+    case .expanded: break
+    }
+  }
+
+  func refreshAgentChannelModifier() {
+    let modifier = OverlayChannelChordModifier(setting: agentChannelModifierSetting())
+    if modifier != agentChannelModifier { agentChannelModifier = modifier }
+  }
+
   func applyChannelRoster(_ snapshot: [CsChannelRosterState]) {
     let names = Dictionary(
       snapshot.map { ($0.channel, $0.audience) }, uniquingKeysWith: { _, latest in latest })
@@ -2191,6 +3085,10 @@ final class OverlayState {
             },
             followerAlive: row.followerAlive,
             provider: row.provider, providerSessionID: row.providerSessionId,
+            frameDetected: row.frameDetected,
+            terminalDetected: row.terminalDetected,
+            codexThreadUrl: row.codexThreadUrl,
+            codexThreadLocal: row.codexThreadLocal,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
             })
@@ -2214,6 +3112,7 @@ final class OverlayState {
     hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
+    noteChannelMapLayout()
     if wasCapturingAudio != audioCaptureActive {
       levelMeter.reset()
       hasMeasuredAudioLevel = false
@@ -2234,7 +3133,7 @@ final class OverlayState {
       followChannelConversation(row)
     } else if followed.count > 1 {
       // Simultaneous recipients belong to the existing aggregate conversation.
-      let expansion: OverlayPresentationCause? = expandedByDefault ? .automatic : nil
+      let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
       selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
       if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
     }
@@ -2253,7 +3152,7 @@ final class OverlayState {
       // dictation keeps its own clock.
       if !recording {
         if channelAudioCaptureActive {
-          beginCaptureClock()
+          beginCaptureClock(dictation: false)
         } else {
           freezeCaptureClock()
         }
@@ -2266,18 +3165,25 @@ final class OverlayState {
   /// docked roster); while that list is shown, opening stays in it. A click
   /// here is the hand's: it disarms the middle click that would close a
   /// gesture-opened microphone (Maciej, 2026-10-17 12:19Z).
-  func toggleAgentChannel(_ digit: UInt8, keepsAgentList: Bool = false) async {
+  func toggleAgentChannel(
+    _ digit: UInt8, keepsAgentList: Bool = false, preservesPresentation: Bool = false
+  ) async {
     if case .talking = agentGesturePhase { agentGesturePhase = .idle }
-    await performAgentChannelToggle(digit, keepsAgentList: keepsAgentList)
+    await performAgentChannelToggle(
+      digit, keepsAgentList: keepsAgentList, preservesPresentation: preservesPresentation)
   }
 
-  private func performAgentChannelToggle(_ digit: UInt8, keepsAgentList: Bool) async {
+  private func performAgentChannelToggle(
+    _ digit: UInt8, keepsAgentList: Bool, preservesPresentation: Bool = false
+  ) async {
     let channel = String(digit)
     guard (0...9).contains(digit), let engine,
       !pendingChannelToggles.contains(channel)
     else { return }
     pendingChannelToggles.insert(channel)
-    if keepsAgentList, showsAgentMonitor { agentListHeldOpens.insert(channel) }
+    if preservesPresentation || (keepsAgentList && showsAgentMonitor) {
+      agentListHeldOpens.insert(channel)
+    }
     defer {
       pendingChannelToggles.remove(channel)
       agentListHeldOpens.remove(channel)
@@ -2296,6 +3202,7 @@ final class OverlayState {
     let wasOpen = hasOpenChannel
     channelDelivery = snapshot
     channelStatusUnavailable = false
+    noteChannelMapLayout()
     if hasOpenChannel {
       cancelAutoHide()
     } else if wasOpen && terminal {
@@ -2344,13 +3251,14 @@ final class OverlayState {
       && (audioReady || vadActive)
   }
 
-  /// The header status light, or nil when no take is live. Projection only:
-  /// phase from the reducer, mode from the tray feed, silence from measured
-  /// capture level.
+  /// The header microphone's light, or nil when no dictation take is live.
+  /// Projection only: phase from the reducer, mode from the tray feed, silence
+  /// from measured capture level. An open agent channel never paints it: the
+  /// violet "Start dictation" microphone started a dictation where Maciej
+  /// expected a stop (2026-10-19 08:50). The header microphone is dictation's
+  /// alone; agent capture lives on the Agents button (08:52).
   var recordingLight: OverlayRecordingLight? {
-    // A channel owns live capture independently of the ordinary take's phase.
-    if channelAudioCaptureActive { return .agent }
-    return OverlayRecordingLight.resolve(
+    OverlayRecordingLight.resolve(
       mode: mode, terminal: terminal, recording: recording, transcribing: transcribing,
       indicatorMode: indicatorMode, silent: levelMeter.isSilent)
   }
@@ -2369,6 +3277,21 @@ final class OverlayState {
   /// frozen value after stop.
   var showsSessionTimer: Bool {
     captureStartedAtUptime != nil
+  }
+
+  /// A dictation clock no terminal projection has closed yet.
+  var dictationClockOpen: Bool {
+    captureStartedAtUptime != nil && captureClockIsDictation
+  }
+
+  /// A dictation take between its stop and its terminal projection: the header
+  /// shows a disabled stop and a new start is refused. An agent take used to
+  /// leave the header there under its frozen length, with nothing recording,
+  /// because the channel clock passed for a stopped dictation (Maciej,
+  /// 2026-10-19, div0: stop and 02:07 while idle).
+  var isFinalizingDictation: Bool {
+    !terminal
+      && (transcribing || mode == .finalizing || (!recording && dictationClockOpen))
   }
 
   /// The visible dictation canvas stays ready even before a take starts.
@@ -2482,24 +3405,6 @@ final class OverlayState {
     }
   }
 
-  /// Read-only words Rust keeps visible without mutation authority — for
-  /// example a Whisper alternative the ledger refused as a whole-span
-  /// replacement — in PCM order. They ride the capture-bound compact paint,
-  /// never `formattedText`, so no canvas, copy, or delivery path reads them.
-  /// Capture completion does not settle alternatives. Keep the same capture's
-  /// evidence available for review until Rust removes it or a new capture resets paint.
-  var liveEvidence: [CsUnanchoredEvidence] {
-    guard let paint = compactProjection,
-      !retiredProjectionSessions.contains(paint.sessionId)
-    else { return [] }
-    if let document = latestTranscriptProjection {
-      guard document.sessionId == paint.sessionId,
-        document.captureEpoch == 0 || document.captureEpoch == paint.captureEpoch
-      else { return [] }
-    }
-    return paint.evidence
-  }
-
   /// Post-take review owns the floating panel. The formatted / no-speech
   /// surface must not yield to an Assistive tray tick — that path calls
   /// `hide()` and arms Agent auto-send.
@@ -2509,25 +3414,6 @@ final class OverlayState {
   var blocksAssistiveOverlayHide: Bool {
     presentationStatus != nil || mode == .formatted || mode == .coverageRefused
       || mode == .noSpeech
-  }
-
-  /// The refusal card reports retained delivery, measured coverage and the
-  /// missing seal separately. None of these facts grants terminal acceptance.
-  var coverageRefusalDetail: String {
-    if retainedComposerDelivery != nil {
-      return String(
-        localized:
-          "The handover came back. These words are retained here — recover them before the next take."
-      )
-    }
-    if latestTranscriptProjection?.sealCoverage?.status == .complete {
-      return String(
-        localized:
-          "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
-      )
-    }
-    return String(
-      localized: "No seal was recorded for this take, so nothing here is certified complete.")
   }
 
   /// Availability is refreshed at events and action opening, never during paint.
@@ -2564,11 +3450,7 @@ final class OverlayState {
   /// Start through the same controller and current mode snapshot as the tray.
   /// Preparing synchronously reserves this take against a second click.
   func start(language: CsLanguage? = nil) {
-    guard let engine, !recording,
-      terminal || (!transcribing && mode != .finalizing && captureStartedAtUptime == nil)
-    else {
-      return
-    }
+    guard let engine, !recording, !isFinalizingDictation else { return }
     let assistive = engine.startsInAssistiveMode()
     prepareForExternalStart()
     Task { @MainActor in await self.runStart(assistive: assistive, language: language) }
@@ -2592,14 +3474,31 @@ final class OverlayState {
       : String(format: "%02d:%02d", m, s)
   }
 
-  private func beginCaptureClock() {
+  private func beginCaptureClock(dictation: Bool = true) {
     captureStartedAtUptime = nowProvider()
     captureEndedAtUptime = nil
+    captureClockIsDictation = dictation
   }
 
   private func freezeCaptureClock() {
     guard captureStartedAtUptime != nil, captureEndedAtUptime == nil else { return }
     captureEndedAtUptime = nowProvider()
+  }
+
+  private func clearCaptureClock() {
+    captureStartedAtUptime = nil
+    captureEndedAtUptime = nil
+    captureClockIsDictation = false
+  }
+
+  /// While a channel is live its take owns the counter. A dictation that was
+  /// recording when the channel opened beside it (the roster leaves an open
+  /// dictation's clock alone) hands the counter over once it stops, so no
+  /// dictation clock outlives it under the channel.
+  private func handCaptureClockToLiveChannel() {
+    if captureClockIsDictation || captureStartedAtUptime == nil {
+      beginCaptureClock(dictation: false)
+    }
   }
 
   /// Stop the mic and flip to the finalized transcript returned by the core.
@@ -3526,8 +4425,21 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      beginCaptureClock()
-      applyPreferredExpansion(forTake: true)
+      // The dictation clock is evidence of capture and starts at `started`.
+      // A preparing the controller never turns into a take (Fn released
+      // inside the hold delay, a hold declined beside an open channel) is
+      // answered with a bare stop; a clock opened here froze at 00:00 and,
+      // with no terminal ever coming, held the header on a disabled stop
+      // until the next take (Founder, 2026-10-23). The previous take's frozen
+      // clock ends with its document; a live channel keeps the counter, and
+      // a dictation clock still standing under it would reopen this reset
+      // document as "awaiting text" (the hang-up chord's Fn-down did that).
+      if channelAudioCaptureActive {
+        handCaptureClockToLiveChannel()
+      } else {
+        clearCaptureClock()
+      }
+      applyTakeStartPresentation()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -3548,14 +4460,11 @@ final class OverlayState {
       admitNewCapture()
       resetTranscript()
       errorMessage = nil
-      beginCaptureClock()
-      applyPreferredExpansion(forTake: true)
-    }
-    if captureStartedAtUptime == nil {
-      beginCaptureClock()
+      applyTakeStartPresentation()
     }
     recording = true
     if !captureDidStart {
+      beginCaptureClock()
       followDictationCapturePresentation()
     }
     captureDidStart = true
@@ -3574,8 +4483,13 @@ final class OverlayState {
     audioReady = false
     vadActive = false
     isFinalPass = false
-    freezeCaptureClock()
-    if !channelAudioCaptureActive {
+    // A live channel's clock is frozen by the roster when its last channel
+    // closes; an orphaned preparing during that take must not stop it early,
+    // and a dictation that stopped beside the channel hands the counter over.
+    if channelAudioCaptureActive {
+      handCaptureClockToLiveChannel()
+    } else {
+      freezeCaptureClock()
       levelMeter.reset()
       hasMeasuredAudioLevel = false
     }
@@ -3596,6 +4510,10 @@ final class OverlayState {
     cancelWarmupWatchdog()
     warmingUp = false
     transcribing = true
+    // Finalising proves a capture ran even when its `started` was lost (a
+    // lagged broadcast is repainted from controller truth). That take still
+    // owes its terminal text, so it keeps a dictation clock to await it.
+    if !captureDidStart { beginCaptureClock() }
     freezeCaptureClock()
     if !channelAudioCaptureActive {
       levelMeter.reset()
@@ -3662,9 +4580,7 @@ final class OverlayState {
       && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  /// `atUnpinClick`: the Unpin click itself has the pointer on the header, so
-  /// that hover cannot hold the release it starts.
-  private func restartAutoHideCountdown(atUnpinClick: Bool = false) {
+  private func restartAutoHideCountdown() {
     // Every auto-hide restart is user or presentation activity (drag, resize,
     // edit end, draft resolution, terminal status, archive action).
     noteAutoCollapseActivity()
@@ -3699,7 +4615,7 @@ final class OverlayState {
     }
     // A take under review (caret in the canvas, or an uncommitted draft) is
     // never auto-hidden out from under the user.
-    guard isTerminalMode, atUnpinClick || !isPointerHovering, !isEditingTranscript,
+    guard isTerminalMode, !presentationInteractionHeld, !isEditingTranscript,
       !isRevisionDraftDirty
     else {
       cancelAutoHide()
@@ -3806,9 +4722,13 @@ final class OverlayState {
       cancelAutoHide()
       return
     }
-    // A pointer that entered after the arming cancelled this wake; one still
-    // resting where it clicked Unpin does not hold the release.
-    guard isTerminalMode, pinReleaseArmed || !isPointerHovering, let deadline = autoHideDeadline
+    // Cancellation and a stale wake can race. Recheck the live interaction,
+    // including the pointer that was already on the Unpin button.
+    guard !presentationInteractionHeld else {
+      cancelAutoHide()
+      return
+    }
+    guard isTerminalMode, let deadline = autoHideDeadline
     else { return }
     let remaining = deadline - nowProvider()
     if remaining > 0 {
@@ -3947,6 +4867,21 @@ final class OverlayState {
   }
 
   func handleError(message: String) {
+    if let projection = latestTranscriptProjection,
+      draftCapture.destination(for: projection.sessionId) != nil,
+      draftCapture.hasRequest
+    {
+      Task {
+        await draftCapture.failed(sessionID: projection.sessionId, message: message)
+        if !draftCapture.hasRequest {
+          let retained =
+            latestTranscriptProjection?.sessionId == projection.sessionId
+            ? latestTranscriptProjection! : projection
+          admitComposerDelivery(retained)
+        }
+      }
+      return
+    }
     // Since the bridge-side warning split (`warning_is_user_terminal`), quality
     // receipts (`tail_patch_under_commit`, `layer1_lane_degraded`,
     // `apple_final_window_overlap_normalized`, ...) never reach `on_error` —
@@ -4072,6 +5007,14 @@ final class OverlayState {
   /// receipts, or product actions in Swift — and it may only close the capture
   /// its own identity addresses.
   func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    if event.terminal, let sessionID = event.sessionId,
+      draftCapture.destination(for: sessionID) != nil
+    {
+      if let projection = latestTranscriptProjection, projection.sessionId == sessionID {
+        admitComposerDelivery(projection)
+      }
+      draftCapture.completed(sessionID: sessionID)
+    }
     let addressing = statusAddressing(for: event)
     let presentedHeadline = AdmissionRefusalCopy.headline(
       code: event.code, fallback: event.headline)
@@ -4193,6 +5136,7 @@ final class OverlayState {
           admitComposerDelivery(projection, affectsCurrentCapture: false)
         }
         if endedProjectionSessions.insert(projection.sessionId).inserted {
+          draftCapture.completed(sessionID: projection.sessionId)
           onCaptureEnded?(projection.sessionId)
         }
       }
@@ -4383,6 +5327,7 @@ final class OverlayState {
       if projection.delivery == .composerPending {
         admitComposerDelivery(projection)
       }
+      draftCapture.completed(sessionID: projection.sessionId)
       onCaptureEnded?(projection.sessionId)
       // Release capture before flipping `finalized`; abort uses the previous
       // value to decide whether the app-level stopped callback is still owed.
@@ -4500,6 +5445,19 @@ final class OverlayState {
     // controller-rendered delivery envelope separately for this one sink.
     let text = projection.deliveryText ?? projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    if let destination = draftCapture.destination(for: projection.sessionId) {
+      let parts = ConversationDraft.split(conversationDrafts[destination] ?? "")
+      conversationDrafts[destination] = ConversationDraft.compose(
+        text: parts.text.isEmpty ? text : parts.text + "\n" + text,
+        attachments: parts.attachments)
+      admittedComposerSessions.insert(projection.sessionId)
+      retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
+      return
+    }
+    if draftCapture.awaitingStart {
+      pendingDraftProjections[projection.sessionId] = projection
+      return
+    }
     guard let onComposerTranscript else {
       retainComposerDelivery(
         text, sessionID: projection.sessionId,
@@ -5076,12 +6034,29 @@ final class OverlayState {
     onTranscriptPresentationChanged?()
   }
 
+  /// A new ordinary capture shows its own canvas in the preferred take-start
+  /// form. A take the composer owns starts where its microphone was pressed:
+  /// the conversation and its composer stay on screen. The preferred form
+  /// used to apply anyway and folded an expanded Agents canvas to the strip
+  /// (Maciej, 2026-10-23, take 0250cc19: "zamyka mi widok agenta").
+  private func applyTakeStartPresentation() {
+    guard !draftCapture.hasRequest else { return }
+    selectDictationSurfaceIfNeeded()
+    applyPreferredExpansion(forTake: true)
+  }
+
   /// A new ordinary capture shows its own canvas. The controller's roster
   /// resolves a channel snapshot that still describes the preceding capture.
-  private func followDictationCapturePresentation() {
-    if !hasOpenChannel, indicatorMode != .assistive, !showsMyDictation {
+  private func selectDictationSurfaceIfNeeded() {
+    guard !draftCapture.hasRequest else { return }
+    if !hasOpenChannel, indicatorMode != .assistive, windowContentSurface != .transcription {
       selectConversation(nil)
     }
+  }
+
+  private func followDictationCapturePresentation() {
+    guard !draftCapture.hasRequest else { return }
+    selectDictationSurfaceIfNeeded()
     guard let engine else { return }
     let generation = captureGeneration
     let focusRevision = conversationFocusRevision
@@ -5091,7 +6066,8 @@ final class OverlayState {
         conversationFocusRevision == focusRevision, recording, !finalized
       else { return }
       applyChannelRoster(roster)
-      guard !roster.contains(where: \.open), indicatorMode != .assistive, !showsMyDictation
+      guard !roster.contains(where: \.open), indicatorMode != .assistive,
+        windowContentSurface != .transcription
       else { return }
       selectConversation(nil)
     }
@@ -5465,7 +6441,7 @@ extension OverlayState {
       recording || warmingUp || transcribing
       || (archivedTranscript == nil && !terminal
         && (mode == .listening || mode == .finalizing)
-        && (captureStartedAtUptime != nil || latestTranscriptProjection != nil))
+        && (dictationClockOpen || latestTranscriptProjection != nil))
     if captureInFlight {
       return String(
         localized: "Finish the current take before opening a saved transcript.",

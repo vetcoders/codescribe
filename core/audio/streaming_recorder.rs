@@ -142,14 +142,10 @@ enum TakeFeedRelease {
 /// Transport admission only: never invoke the executor while opening audio.
 fn live_max_capability(
     intent: CaptureTurnIntent,
-    enabled: bool,
     policy: crate::config::FormattingPolicy,
     agent: Option<&Arc<dyn crate::ai_formatting::FormattingAgent>>,
 ) -> Option<Arc<dyn crate::ai_formatting::FormattingAgent>> {
-    if intent.schedules_live_formatting()
-        && enabled
-        && policy == crate::config::FormattingPolicy::Max
-    {
+    if intent.schedules_live_formatting() && policy == crate::config::FormattingPolicy::Max {
         agent.cloned()
     } else {
         None
@@ -1352,7 +1348,6 @@ impl StreamingRecorder {
         let capture_turn = self.capture_turn;
         let live_formatting_agent = live_max_capability(
             capture_turn,
-            runtime_settings.values().ai_formatting_enabled,
             runtime_settings.formatting_policy(),
             self.live_formatting_agent.as_ref(),
         );
@@ -2597,32 +2592,24 @@ mod tests {
         use crate::config::FormattingPolicy;
         let agent: Arc<dyn crate::ai_formatting::FormattingAgent> = Arc::new(TransportOnlyAgent);
         for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
-            for enabled in [false, true] {
-                for policy in [
-                    FormattingPolicy::Off,
-                    FormattingPolicy::Correction,
-                    FormattingPolicy::Smart,
-                    FormattingPolicy::Max,
-                ] {
-                    let selected = live_max_capability(intent, enabled, policy, Some(&agent));
-                    let admitted = intent == CaptureTurnIntent::HandsFree
-                        && enabled
-                        && policy == FormattingPolicy::Max;
-                    assert_eq!(selected.is_some(), admitted);
-                    if let Some(selected) = selected {
-                        assert!(Arc::ptr_eq(&selected, &agent));
-                    }
+            for policy in [
+                FormattingPolicy::Off,
+                FormattingPolicy::Correction,
+                FormattingPolicy::Smart,
+                FormattingPolicy::Max,
+            ] {
+                let selected = live_max_capability(intent, policy, Some(&agent));
+                let admitted =
+                    intent == CaptureTurnIntent::HandsFree && policy == FormattingPolicy::Max;
+                assert_eq!(selected.is_some(), admitted);
+                if let Some(selected) = selected {
+                    assert!(Arc::ptr_eq(&selected, &agent));
                 }
             }
         }
         assert!(
-            live_max_capability(
-                CaptureTurnIntent::HandsFree,
-                true,
-                FormattingPolicy::Max,
-                None,
-            )
-            .is_none()
+            live_max_capability(CaptureTurnIntent::HandsFree, FormattingPolicy::Max, None)
+                .is_none()
         );
     }
 
@@ -3391,38 +3378,48 @@ mod tests {
 
     /// Live mic: SpeechSession emits chunks for lt/eq/gt VAD block sizes (opt-in).
     #[test]
-    #[ignore] // Manual: requires microphone + Silero model (set CODESCRIBE_E2E_MIC=1)
     fn test_vad_gate_live_chunk_sizes() {
-        if !env_bool("CODESCRIBE_E2E_MIC") {
-            eprintln!("Skipping mic gate test (set CODESCRIBE_E2E_MIC=1 to enable)");
-            return;
-        }
+        let (wav_path, remove_after) = if env_bool("CODESCRIBE_E2E_MIC") {
+            let record_sec = env_f32("CODESCRIBE_E2E_MIC_SEC", 6.0).max(2.0);
+            println!("Speak now for ~{:.1}s...", record_sec);
 
-        let model_path = vad::default_model_path();
-        if !model_path.exists() {
-            eprintln!(
-                "Skipping: Silero VAD model not found at {}",
-                model_path.display()
-            );
-            return;
-        }
+            let mut recorder = Recorder::new().expect("Failed to create recorder");
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let path = rt
+                .block_on(async {
+                    recorder.start().await.expect("Failed to start recorder");
+                    tokio::time::sleep(Duration::from_secs_f32(record_sec)).await;
+                    recorder.stop().await.expect("Failed to stop recorder")
+                })
+                .expect("No WAV produced");
+            (path, true)
+        } else {
+            let path = std::env::var("HOME")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .filter(|h| h.join(".codescribe/data_assets").is_dir())
+                .or_else(|| {
+                    std::env::var("CARGO_HOME").ok().and_then(|c| {
+                        std::path::PathBuf::from(c)
+                            .parent()
+                            .map(std::path::Path::to_path_buf)
+                    })
+                })
+                .expect("operator home")
+                .join(".codescribe/data_assets/01_no-to-dobra.wav");
+            if !path.is_file() {
+                // Operator-local corpus acceptance: the hosted runner has no
+                // data_assets, and a missing fixture is not a VAD regression.
+                eprintln!(
+                    "skipping test_vad_gate_live_chunk_sizes: private corpus not present at {}",
+                    path.display()
+                );
+                return;
+            }
+            (path, false)
+        };
 
-        let record_sec = env_f32("CODESCRIBE_E2E_MIC_SEC", 6.0).max(2.0);
-        println!("Speak now for ~{:.1}s...", record_sec);
-
-        let mut recorder = Recorder::new().expect("Failed to create recorder");
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let wav_path = rt
-            .block_on(async {
-                recorder.start().await.expect("Failed to start recorder");
-                tokio::time::sleep(Duration::from_secs_f32(record_sec)).await;
-                recorder.stop().await.expect("Failed to stop recorder")
-            })
-            .expect("No WAV produced");
-
-        let (samples, sample_rate) =
-            load_audio_file(&wav_path).expect("Failed to load recorded audio");
-
+        let (samples, sample_rate) = load_audio_file(&wav_path).expect("Failed to load audio");
         let mut resampler = vad::Resampler::new(sample_rate);
         let samples_16k = resampler.resample(&samples);
         let chunk_sec = 4.0f32;
@@ -3460,7 +3457,9 @@ mod tests {
             );
         }
 
-        let _ = fs::remove_file(&wav_path);
+        if remove_after {
+            let _ = fs::remove_file(&wav_path);
+        }
     }
 
     /// Opt-in flag: true only for `1` or case-insensitive `true`.
@@ -3698,7 +3697,7 @@ mod tests {
         let edge_cases = [
             "192322_nie-zmienia-to_raw.wav",
             "133135_no-dobra-teraz_raw.wav",
-            "182340_klaudiusz-zacznijmy-od_raw.wav",
+            "182340_ada-zacznijmy-od_raw.wav",
             "001615_dziekuje---dziekuje_raw.wav",
             "184818_dzien-dobry-chcialem_raw.wav",
         ];

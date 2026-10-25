@@ -5,22 +5,31 @@ import SwiftUI
 // (`listToolCapabilities`) and durable settings.json agent.permissions via the
 // MCP admin bridge. Identity contract: `server:tool` / `native:name`.
 //
-// One column, two bands: the category defaults with the safety note that says
-// what no setting here can lift, then the individual tools (search, source
-// popup, full-width cards). The sources used to be a sidebar beside the cards;
-// it took the width the tool names need, so the names truncated to an ellipsis
-// ("Aicx index sta…"). The sources moved into a popup, the cards took the full
-// width, and a name now wraps instead of truncating
-// (Founder brief, round 12, 2026-10-10).
+// One column, two bands: "Defaults" under its own section title with the
+// safety note that says what no setting here can lift, then the per-tool
+// catalog with no title of its own (search and source on one row, a trailing
+// count, then full-width cards — UI-26, round 20). The sources used to be
+// a sidebar beside the cards; it took the width the tool names need, so the
+// names truncated to an ellipsis ("Aicx index sta…"). The sources moved into a
+// popup, the cards took the full width, and a name now wraps instead of
+// truncating (Founder brief, round 12, 2026-10-10).
 //
-// Every `Allow · Ask · Deny` picker in the defaults sits at its own width
-// (`fixedSize`): a segmented control cannot shrink below its labels, and a
-// frame narrower than them lets it spill over both edges of its card. The
-// Settings window follows the content minimum, so a row of three such pickers
-// also forced the window wider than the screen and made it jump when this tab
-// opened. Defaults are therefore one row per category; a tool card instead
-// puts its picker on a row of its own at full width, which is exactly what
-// frees the name's line.
+// Round 16 made the per-tool cards compact: one card owner
+// (`settingsGroupedInset`), the scale's own type rungs instead of five ad hoc
+// sizes, a tighter inset, a small picker, and the raw identifier dropped to the
+// quietest rung while staying selectable. The "Defaults" title is
+// `SettingsSectionHeaderRow`, so it never reads weaker than the settings
+// under it (Founder brief, round 16, 2026-10-18).
+//
+// Every `Allow · Ask · Deny` picker — in the defaults and in a tool card
+// alike — sits at its own width (`fixedSize`) pinned to the row's trailing
+// edge behind a `Spacer`: a segmented control cannot shrink below its labels,
+// and a frame narrower than them lets it spill over both edges of its card.
+// The Settings window follows the content minimum, so a row of three such
+// pickers also forced the window wider than the screen and made it jump when
+// this tab opened. Defaults are therefore one row per category; a tool card
+// puts its picker on a row of its own, right-aligned to the same edge
+// (UI-25, round 20).
 
 struct ToolPermissionsSection: View {
   @ObservedObject var model: SettingsViewModel
@@ -38,41 +47,46 @@ struct ToolPermissionsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
+      // Both bands carry the same header rung, so "Defaults" is no longer a
+      // setting name standing in for a section title.
+      SettingsSectionHeaderRow(String(localized: "Defaults"))
+
       defaultsCard
+        .padding(.top, SettingsScale.headerGap)
 
       // The real resolution order, so nobody reads "Deny wins over everything"
       // into a screen where a tool rule outranks its server's rule.
       Text(
-        "A rule for one tool outranks its server's rule, and both outrank these defaults. Destructive tools are always blocked, and reading a path that may hold secrets always asks first."
+        "Tool settings apply first, then the server's, then the defaults. Destructive operations are blocked. Access to places that may hold secrets needs consent."
       )
-      .font(CSFont.ui(11.5))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      .padding(.top, CSSpace.control)
+      .padding(.top, SettingsScale.headerGap)
 
       if model.toolCapabilities.isEmpty {
         // Discovery spawns every configured MCP server, so the first pass
         // takes seconds: say so instead of showing an empty catalog.
         if model.toolCatalogLoading {
           loadingCapabilities
-            .padding(.top, 12)
+            .padding(.top, SettingsScale.rowGap)
         } else {
           emptyCapabilities
-            .padding(.top, 12)
+            .padding(.top, SettingsScale.rowGap)
         }
       } else {
-        Rectangle()
-          .fill(Color.primary.opacity(0.12))
-          .frame(height: 1)
-          .padding(.top, CSSpace.section)
-
-        // The count is the whole catalog, not the number of individual rules.
-        ToolsSectionHeader(String(localized: "Individual tools")) {
+        // No title here any more (UI-26, round 20): the search field, the
+        // source filter and the list below already read as their own band
+        // without a repeated "Individual tools" caption. The count is the
+        // whole catalog, not the number of individual rules, and keeps its
+        // trailing position on a row of its own.
+        HStack {
+          Spacer(minLength: 0)
           Text("\(model.toolCapabilities.count) tools", comment: "Plural: count of tools")
-            .font(CSFont.ui(11.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
         }
-        .padding(.top, CSSpace.lg)
+        .padding(.top, SettingsScale.sectionGap)
 
         ToolOverridesBrowser(
           model: model,
@@ -80,41 +94,28 @@ struct ToolPermissionsSection: View {
           searchText: $searchText,
           selectedServer: $selectedServer
         )
-        .padding(.top, CSSpace.control)
+        .padding(.top, SettingsScale.headerGap)
       }
     }
     .onAppear { model.reloadToolPermissions() }
   }
 
   private var defaultsCard: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Defaults")
-        .font(CSFont.ui(12.5, .semibold))
-        .foregroundStyle(Color.primary)
-        .accessibilityAddTraits(.isHeader)
-
+    VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       defaultRow(title: "Read data", selection: $model.readOnlyDefaultPicker)
       defaultRow(title: "Changes, processes and network", selection: $model.sideEffectDefaultPicker)
       defaultRow(title: "Unclassified", selection: $model.globalDefaultPicker)
     }
-    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
+    .settingsGroupedInset()
   }
 
   private func defaultRow(title: LocalizedStringKey, selection: Binding<String>) -> some View {
-    HStack(spacing: 12) {
+    HStack(spacing: CSSpace.md) {
       Text(title)
-        .font(CSFont.ui(12.5, .medium))
+        .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
-      Spacer(minLength: 12)
+      Spacer(minLength: CSSpace.md)
       Picker(title, selection: selection) {
         Text("Allow", comment: "Tool permission level").tag("allow")
         Text("Ask", comment: "Tool permission level").tag("ask")
@@ -127,47 +128,22 @@ struct ToolPermissionsSection: View {
   }
 
   private var loadingCapabilities: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: CSSpace.sm) {
       ProgressView()
         .controlSize(.small)
       Text("Discovering tools from the MCP servers…")
-        .font(CSFont.mono(11, .medium))
+        .font(SettingsScale.helper)
         .foregroundStyle(Color.secondary)
     }
-    .padding(.vertical, 10)
+    .padding(.vertical, CSSpace.sm)
     .accessibilityIdentifier("settings-tool-catalog-loading")
   }
 
   private var emptyCapabilities: some View {
     Text("No tools registered yet — open the Agent once or add an MCP server.")
-      .font(CSFont.mono(11, .medium))
+      .font(SettingsScale.helper)
       .foregroundStyle(Color.secondary)
-      .padding(.vertical, 10)
-  }
-}
-
-/// "Individual tools" header with its live counter on the same line. Reads one
-/// step stronger than the shared `SettingsSectionLabel`, same shape as
-/// `ProvidersSectionHeader` and `WorkspaceSectionHeader` — a local header, not
-/// a global restyle (Founder brief, round 12, 2026-10-10).
-private struct ToolsSectionHeader<Trailing: View>: View {
-  let text: String
-  @ViewBuilder var trailing: () -> Trailing
-
-  init(_ text: String, @ViewBuilder trailing: @escaping () -> Trailing) {
-    self.text = text
-    self.trailing = trailing
-  }
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
-      Text(text)
-        .font(CSFont.ui(13, .semibold))
-        .foregroundStyle(Color.primary)
-        .accessibilityAddTraits(.isHeader)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      trailing()
-    }
+      .padding(.vertical, CSSpace.sm)
   }
 }
 
@@ -360,8 +336,8 @@ enum ToolPermissionLabels {
         comment: "Native tool name: search the contents of files")
     case "search_threads":
       return String(
-        localized: "tools.native.search_threads", defaultValue: "Search in threads",
-        comment: "Native tool name: search the Agent's own threads")
+        localized: "tools.native.search_threads", defaultValue: "Search in conversations",
+        comment: "Native tool name: search the Agent's own conversations")
     case "stop_process":
       return String(
         localized: "tools.native.stop_process", defaultValue: "Stop a process",
@@ -429,7 +405,7 @@ enum ToolPermissionLabels {
     switch source {
     case "tool": return String(localized: "Individual rule")
     case "server": return String(localized: "Server rule")
-    case "thread": return String(localized: "Overridden for this thread")
+    case "thread": return String(localized: "Overridden for this conversation")
     default: return String(localized: "Category default")
     }
   }
@@ -507,66 +483,76 @@ struct ToolCapabilityRow: View {
     // share its line with a `fixedSize` segmented picker, which left it too
     // little room and truncated it to "Aicx index sta…"
     // (Founder brief, round 12, 2026-10-10).
-    VStack(alignment: .leading, spacing: CSSpace.sm) {
-      VStack(alignment: .leading, spacing: 3) {
+    //
+    // Round 16 pulled the three facts together: name, the rule that decided
+    // the level and the category sit in one block at two type rungs, the raw
+    // identifier drops to the quietest rung under them — still whole and now
+    // selectable — and the picker follows at `controlSize(.small)`.
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
+      VStack(alignment: .leading, spacing: 2) {
         HStack(alignment: .firstTextBaseline, spacing: CSSpace.md) {
           Text(item.displayName)
-            .font(CSFont.ui(12.5, .semibold))
+            .font(SettingsScale.settingName)
             .foregroundStyle(Color.primary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-          // Which rule produced the level below. A noun, readable without
-          // color, capped so a long translation wraps instead of eating the
-          // name's line.
+          // Where the level below comes from, in the same words the defaults
+          // band uses: "Category default", "Server rule" or "Individual rule".
+          // At the helper rung, not a rung below it, so a tool that follows
+          // its category says so as plainly as the name is written. Capped so
+          // a long translation wraps instead of eating the name's line.
           Text(ToolPermissionLabels.ruleCaption(item.ruleSource))
-            .font(CSFont.ui(10.5))
+            .font(SettingsScale.helper)
             .foregroundStyle(Color.secondary)
             .multilineTextAlignment(.trailing)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 150, alignment: .trailing)
         }
         Text(verbatim: item.sourceSummary)
-          .font(CSFont.ui(11))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
+        // The technical identity, in the background but never hidden: the
+        // scale's quietest mono rung, whole, and selectable so it can be
+        // copied into a config or a bug report.
         Text(item.identity)
-          .font(CSFont.mono(10, .medium))
+          .font(SettingsScale.metaKey)
           .foregroundStyle(Color.secondary)
+          .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .help(fullIdentification)
 
-      Picker("Permission for \(item.displayName)", selection: $level) {
-        Text("Allow", comment: "Tool permission level").tag("allow")
-        Text("Ask", comment: "Tool permission level").tag("ask")
-        Text("Deny", comment: "Tool permission level").tag("deny")
+      // Right-aligned to one shared edge with the defaults rows above
+      // (`defaultRow`): a trailing `Spacer` plus `fixedSize`, not a stretched
+      // control centred in its row (UI-25, round 20).
+      HStack(spacing: CSSpace.md) {
+        Spacer(minLength: 0)
+        Picker("Permission for \(item.displayName)", selection: $level) {
+          Text("Allow", comment: "Tool permission level").tag("allow")
+          Text("Ask", comment: "Tool permission level").tag("ask")
+          Text("Deny", comment: "Tool permission level").tag("deny")
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .fixedSize()
       }
-      .labelsHidden()
-      .pickerStyle(.segmented)
-      .frame(maxWidth: .infinity)
 
       // The action names what it does, not "inheritance", and only a tool that
-      // actually carries an individual rule can drop one.
+      // actually carries an individual rule can drop one. One button family:
+      // the same chip every other flat Settings action uses.
       if item.hasIndividualRule, let restoreInheritance {
-        Button(action: restoreInheritance) {
+        SettingsChipButton(action: restoreInheritance) {
           Text("Remove rule")
-            .font(CSFont.ui(10.5, .medium))
+            .font(SettingsScale.controlLabel)
+            .foregroundStyle(Color.primary)
         }
-        .buttonStyle(.link)
         .accessibilityIdentifier("settings-tool-restore-\(item.identity)")
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-    )
+    .settingsGroupedInset(padding: CSSpace.sm)
   }
 }

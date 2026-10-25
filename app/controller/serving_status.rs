@@ -4,7 +4,7 @@
 //! ASR product mode. The controller publishes after each
 //! adjudication so the UI can show Apple→Whisper fallback honestly.
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::RwLock;
 
 /// Last engine/mode/disposition that actually served a stop path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,46 +49,17 @@ impl LastServingVerdict {
     }
 }
 
-/// Push listener for serving-status changes (see [`set_serving_status_sink`]).
-type ServingStatusSink = Arc<dyn Fn(LastServingVerdict) + Send + Sync + 'static>;
-
 /// Process-global slot holding the most recent verdict.
+static STORE: RwLock<Option<LastServingVerdict>> = RwLock::new(None);
+
 fn store() -> &'static RwLock<Option<LastServingVerdict>> {
-    /// Lazy once-cell for the last published serving verdict.
-    static STORE: OnceLock<RwLock<Option<LastServingVerdict>>> = OnceLock::new();
-    STORE.get_or_init(|| RwLock::new(None))
-}
-
-/// Process-global slot holding the optional push listener.
-fn sink_slot() -> &'static RwLock<Option<ServingStatusSink>> {
-    /// Lazy once-cell for the optional serving-status push listener.
-    static SINK: OnceLock<RwLock<Option<ServingStatusSink>>> = OnceLock::new();
-    SINK.get_or_init(|| RwLock::new(None))
-}
-
-/// Register (or replace) a process-local listener for serving-status changes.
-/// NOT wired yet: the shipped Settings path is snapshot-on-refresh/panel-entry
-/// via UniFFI `current_serving_verdict()` (polling, not push). This sink exists
-/// for a future push upgrade; until a caller lands it stays dead code.
-#[allow(dead_code)]
-pub fn set_serving_status_sink(sink: Option<ServingStatusSink>) {
-    let mut guard = sink_slot()
-        .write()
-        .unwrap_or_else(|error| error.into_inner());
-    *guard = sink;
+    &STORE
 }
 
 /// Publish the last serving verdict after adjudication.
 pub fn publish_last_serving(verdict: LastServingVerdict) {
-    {
-        let mut guard = store().write().unwrap_or_else(|error| error.into_inner());
-        *guard = Some(verdict.clone());
-    }
-    if let Ok(guard) = sink_slot().read()
-        && let Some(sink) = guard.as_ref()
-    {
-        sink(verdict);
-    }
+    let mut guard = store().write().unwrap_or_else(|error| error.into_inner());
+    *guard = Some(verdict);
 }
 
 /// Snapshot the last published serving verdict, if any.
@@ -112,9 +83,9 @@ pub fn clear_last_serving() {
 /// may hold it across awaits (`lock().await`); sync tests use `blocking_lock`.
 #[cfg(test)]
 pub fn test_store_lock() -> &'static tokio::sync::Mutex<()> {
-    /// Lazy once-cell for the test-only store serialization lock.
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    /// Test-only store serialization lock.
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
 }
 
 // Label formatting lives Swift-side (`formatActiveSTT` in SettingsViewModel,

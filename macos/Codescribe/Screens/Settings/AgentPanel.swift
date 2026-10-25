@@ -43,23 +43,15 @@ struct AgentPanel: View {
 
 /// Two request lanes sharing one visual grammar while preserving their distinct
 /// promoted config keys (`LLM_<LANE>_PROVIDER`, `LLM_<LANE>_MODEL`).
+///
+/// Lanes only. The send timers moved up to `AgentLanesTab`, where the two
+/// Codescribe Bus ones stand together: a bus hold had no business sitting on
+/// top of the provider/model grammar (Founder review, 2026-10-18).
 struct LLMLanesSection: View {
   @ObservedObject var model: SettingsViewModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      SettingsControlRow(
-        title: String(localized: "Hold before sending"),
-        subtitle: String(
-          localized: "Edit or withdraw a message to an agent during this window. 0 sends immediately.")
-      ) {
-        Stepper(value: model.agentSendHoldSeconds, in: 0...30) {
-          Text("\(Int(model.settings.agentSendHoldSec)) sec")
-            .monospacedDigit()
-        }
-        .accessibilityIdentifier("agent-send-hold-seconds")
-      }
-
+    VStack(alignment: .leading, spacing: CSSpace.md) {
       if let notice = model.laneResetNotice {
         LaneResetNotice(text: notice)
       }
@@ -82,6 +74,7 @@ private struct LLMLaneEditor: View {
 
   @State private var modelDraft = ""
   @FocusState private var modelFocused: Bool
+  @State private var probeSample = ""
 
   private var laneModel: LLMLaneModel { model.llmLane(lane) }
 
@@ -121,22 +114,53 @@ private struct LLMLaneEditor: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
       VStack(alignment: .leading, spacing: 2) {
         Text(lane.title)
-          .font(CSFont.ui(14.5, .bold))
+          .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Text(lane.subtitle)
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(Color.secondary)
         Text(model.laneUsageDescription(lane))
-          .font(CSFont.ui(11.5))
+          .font(SettingsScale.helper)
           .foregroundStyle(laneModel.availabilityTint)
           .fixedSize(horizontal: false, vertical: true)
       }
 
       // The settings keys behind these rows live under "Active configuration
       // details" on the tab; the card itself stays free of identifiers.
+      if lane == .formatting {
+        // One short row (audit of this page, 2026-10-21): where Correction and
+        // Smart run. Routing details and the .env override live in the guide.
+        SettingsControlRow(
+          title: String(
+            localized: "Formatting engine",
+            comment: "Settings row: Apple on this Mac or the cloud provider formats the text"),
+          subtitle: String(
+            localized: "Apple on your Mac first; this provider steps in when Apple fails.",
+            comment: "Formatting engine row explanation"),
+          inset: 10
+        ) {
+          Picker(
+            "",
+            selection: Binding(
+              get: { model.settings.formatOnDevice },
+              set: { model.setFormatOnDevice($0) }
+            )
+          ) {
+            Text("Cloud provider", comment: "Formatting engine choice").tag(false)
+            Text("Apple on this Mac (experimental)", comment: "Formatting engine choice").tag(true)
+          }
+          .labelsHidden()
+          .fixedSize()
+          .accessibilityLabel(
+            String(
+              localized: "Formatting engine",
+              comment: "Settings row: Apple on this Mac or the cloud provider formats the text"))
+        }
+      }
+
       SettingsControlRow(title: String(localized: "Provider"), inset: 10) {
         Menu {
           ForEach(model.providers, id: \.id) { provider in
@@ -165,11 +189,18 @@ private struct LLMLaneEditor: View {
         .accessibilityValue(laneModel.providerDisplayName)
       }
 
+      // Above the Model row on purpose: this line reports the provider's model
+      // list, and when there is none it tells you to type an ID — which has to
+      // point at a field the eye reaches next, not one it already passed
+      // (Founder review, 2026-10-18).
+      discoveryFooter
+
       // The source caption sits under the row title: a third line under the
       // field made the card tall for one short word.
-      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10) {
-        VStack(alignment: .trailing, spacing: 8) {
-          // Discovery state ("discovering…", cached, failed) is the footer line below.
+      SettingsControlRow(title: String(localized: "Model"), subtitle: modelSourceCaption, inset: 10)
+      {
+        VStack(alignment: .trailing, spacing: CSSpace.xs) {
+          // Discovery state ("discovering…", cached, failed) is the line above.
           if laneModel.usesDiscoveredPicker {
             let current =
               laneModel.modelOptions.first { $0.id == laneModel.resolvedModel }?.displayName
@@ -199,7 +230,7 @@ private struct LLMLaneEditor: View {
           // list does not know is still a valid model for the lane (D2).
           // The field holds the stored override; with none, the placeholder
           // is the provider default that actually resolved.
-          HStack(spacing: 8) {
+          HStack(spacing: CSSpace.sm) {
             TextField(laneModel.resolvedModel, text: $modelDraft)
               .settingsInputChrome(isFocused: modelFocused)
               .focused($modelFocused)
@@ -211,59 +242,204 @@ private struct LLMLaneEditor: View {
               modelDraft = ""
               model.setLLMModel("", for: lane)
             }
-            .font(CSFont.ui(11.5, .semibold))
+            .font(SettingsScale.controlLabel)
             .foregroundStyle(Color.secondary)
             .csFocusRing()
             .disabled(!hasOverride)
             .help("Clear this model override")
             .accessibilityLabel("Reset \(lane.title) model")
           }
-
         }
         .frame(width: 440)
         .onAppear { modelDraft = laneModel.configuredModel }
         .onChange(of: laneModel.configuredModel) { _, stored in modelDraft = stored }
       }
 
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 8) {
-          if failureShownOnAgent {
-            Text("Same provider as the Agent; the model list error is shown above.")
-              .font(CSFont.ui(11.5))
-              .foregroundStyle(Color.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          } else {
-            Circle()
-              .fill(discoveryDotColor.opacity(0.85))
-              .frame(width: 7, height: 7)
-            Text(laneModel.discoveryDescription)
-              .font(CSFont.ui(11.5))
-              .foregroundStyle(Color.secondary)
-              .fixedSize(horizontal: false, vertical: true)
+      reasoningRow
+      if lane == .formatting {
+        formattingTestRow
+      }
+    }
+  }
+
+  /// How long the lane's model may think, in oh-my-pi's levels. Formatting
+  /// transforms text it already has, so it asks for none unless the user opts
+  /// in (Maciej, 2026-10-22). The Agent keeps the model's own reasoning until a
+  /// level is chosen. A provider that refuses a level is asked again lower.
+  private var reasoningRow: some View {
+    let isFormatting = lane == .formatting
+    return SettingsControlRow(
+      title: String(
+        localized: "Reasoning",
+        comment: "Settings row: how long the lane's model may think before answering"),
+      subtitle: isFormatting
+        ? String(
+          localized:
+            "None answers fastest. Higher levels are slower; choose one only if a model needs it.",
+          comment: "Formatting reasoning row explanation")
+        : String(
+          localized:
+            "Model default keeps what the model does on its own. In the chat: /effort.",
+          comment: "Agent reasoning row explanation"),
+      inset: 10
+    ) {
+      Picker(
+        "",
+        selection: Binding(
+          get: {
+            isFormatting
+              ? model.settings.llmFormattingReasoning : model.settings.llmAssistiveReasoning
+          },
+          set: { level in
+            if isFormatting {
+              model.setFormattingReasoning(level)
+            } else {
+              model.setAgentReasoning(level)
+            }
           }
-          Spacer(minLength: 0)
-          SettingsRefreshButton(
-            busy: laneModel.discovery.status == "loading",
-            axLabel: "Refresh \(lane.title) models"
-          ) { model.refreshModelDiscovery(providerId: laneModel.providerId) }
+        )
+      ) {
+        if !isFormatting {
+          Text("Model default", comment: "Agent reasoning level: the model's own").tag("default")
         }
-        // The provider's own words, on request only; the main line stays plain.
-        if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
-          DisclosureGroup("Error details") {
-            Text(details)
-              .font(CSFont.mono(10.5))
-              .foregroundStyle(Color.secondary)
-              .textSelection(.enabled)
-              .fixedSize(horizontal: false, vertical: true)
-              .padding(.top, 4)
-          }
-          .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
-          .accessibilityIdentifier("lane-discovery-error-details")
+        ForEach(ReasoningLevel.all) { level in
+          Text(level.title).tag(level.id)
         }
       }
-      .padding(.leading, 2)
+      .labelsHidden()
+      .fixedSize()
+      .accessibilityLabel("\(lane.title) reasoning")
     }
+  }
+
+  /// One request through the live formatter path, so a provider is proven
+  /// before a take depends on it (Maciej, 2026-10-22). Empty text sends a
+  /// built-in raw transcript.
+  private var formattingTestRow: some View {
+    SettingsControlRow(
+      title: String(localized: "Test", comment: "Settings row: send one formatting request now"),
+      subtitle: String(
+        localized: "Formats a raw transcript, or your text, the way dictation does.",
+        comment: "Formatting test row explanation"),
+      inset: 10
+    ) {
+      VStack(alignment: .leading, spacing: CSSpace.sm) {
+        HStack(spacing: CSSpace.sm) {
+          TextField(
+            String(
+              localized: "tak jeśli nie stosuje się zaleceń dokumentacji…",
+              comment: "Formatting test placeholder: a raw unpunctuated transcript"),
+            text: $probeSample, axis: .vertical
+          )
+          .lineLimit(1...4)
+          .settingsInputChrome(isFocused: false)
+          .accessibilityLabel("Formatting test text")
+          Button {
+            model.testFormatting(sample: probeSample)
+          } label: {
+            if model.formattingProbePending {
+              ProgressView().controlSize(.small)
+            } else {
+              Text("Test", comment: "Button: send one formatting request")
+            }
+          }
+          .disabled(model.formattingProbePending)
+          .accessibilityLabel("Test formatting")
+        }
+        if let probe = model.formattingProbe {
+          formattingProbeResult(probe)
+        }
+      }
+      .frame(width: 440)
+    }
+  }
+
+  private func formattingProbeResult(_ probe: CsFormattingProbe) -> some View {
+    let seconds = { (ms: UInt64) in String(format: "%.1f s", Double(ms) / 1000) }
+    let verdict: String
+    let color: Color
+    switch probe.status {
+    case "applied":
+      verdict = String(localized: "Formatted", comment: "Formatting test verdict")
+      color = .green
+    case "unchanged":
+      verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
+      color = .green
+    case "skipped":
+      verdict = String(
+        localized: "Not sent: formatting is off or runs on the Agent",
+        comment: "Formatting test verdict")
+      color = .secondary
+    case "timed_out":
+      verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
+      color = .orange
+    default:
+      verdict = String(localized: "Failed; see the log", comment: "Formatting test verdict")
+      color = .red
+    }
+    let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
+    return VStack(alignment: .leading, spacing: CSSpace.xs) {
+      HStack(spacing: CSSpace.sm) {
+        Circle().fill(color.opacity(0.85)).frame(width: 7, height: 7)
+        Text(verdict)
+        Text(
+          "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"
+        )
+        .foregroundStyle(Color.secondary)
+      }
+      .font(SettingsScale.helper)
+      if !probe.output.isEmpty, probe.status != "skipped" {
+        Text(probe.output)
+          .font(SettingsScale.helper)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("formatting-test-result")
+  }
+
+  /// The model-list state for this lane: where the list came from, a refresh,
+  /// and the provider's own error text on request.
+  private var discoveryFooter: some View {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
+      HStack(spacing: CSSpace.sm) {
+        if failureShownOnAgent {
+          Text("Same provider as the Agent; the model list error is shown above.")
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          Circle()
+            .fill(discoveryDotColor.opacity(0.85))
+            .frame(width: 7, height: 7)
+          Text(laneModel.discoveryDescription)
+            .font(SettingsScale.helper)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 0)
+        SettingsRefreshButton(
+          busy: laneModel.discovery.status == "loading",
+          axLabel: "Refresh \(lane.title) models"
+        ) { model.refreshModelDiscovery(providerId: laneModel.providerId) }
+      }
+      // The provider's own words, on request only; the main line stays plain.
+      if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
+        DisclosureGroup("Error details") {
+          Text(details)
+            .font(CSFont.mono(10.5))
+            .foregroundStyle(Color.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 4)
+        }
+        .font(SettingsScale.helper)
+        .foregroundStyle(Color.secondary)
+        .accessibilityIdentifier("lane-discovery-error-details")
+      }
+    }
+    .padding(.leading, 2)
   }
 
   /// Provider name, plus a marker for a host the user added by hand. The

@@ -30,7 +30,7 @@ use tracing::{debug, info, trace, warn};
 use crate::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 
 use super::account_auth;
-use super::provider::{ProviderKind, WireFamily, capability_policy};
+use super::provider::{ProviderKind, ReasoningEffort, WireFamily, capability_policy};
 use super::responses_output::{ResponsesOutputItem, extract_output_channels};
 use super::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
@@ -203,7 +203,9 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
 /// stored id is poison for THIS key, so drop it and go unchained.
 pub(crate) fn is_stale_chain_error(error: &anyhow::Error) -> bool {
-    error.to_string().contains("previous_response_not_found")
+    let msg = error.to_string();
+    msg.contains("previous_response_not_found")
+        || (msg.contains("response_not_found") && msg.contains("previous_response_id"))
 }
 
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
@@ -390,6 +392,7 @@ async fn request_responses_thread_title(
         max_output_tokens: Some(THREAD_TITLE_MAX_TOKENS),
         temperature: None,
         store: None,
+        reasoning: None,
         stream: false,
     };
 
@@ -565,8 +568,72 @@ struct ResponsesRequest {
     /// `Some(false)` only on an account backend that keeps no server chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
+    /// Formatting only; see [`reasoning_ladder`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningParam>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+}
+
+/// The Responses `reasoning` object; only `effort` is sent.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct ReasoningParam {
+    effort: &'static str,
+}
+
+/// Reasoning efforts a formatting request asks for, the selected level first,
+/// ending in no field at all. Formatting transforms text it already has: the
+/// local Qwen 3.5 9B on MTPLX, left at its server's `auto`, thought for
+/// 14 190 tokens (180 s) over one 30-word sentence without answering, and
+/// answered in 1.4 s with effort `none` (2026-10-22). Maciej the same day: ask
+/// with none or low, higher levels opt-in. A provider that refuses a rung by
+/// name gets the next one. A lane without a level (the Agent) sends no field.
+fn reasoning_ladder(lane: &RuntimeLlmLane) -> &'static [Option<&'static str>] {
+    match lane.reasoning() {
+        None => &[None],
+        Some(ReasoningEffort::None) => &[Some("none"), Some("low"), None],
+        Some(ReasoningEffort::Minimal) => &[Some("minimal"), None],
+        Some(ReasoningEffort::Low) => &[Some("low"), None],
+        Some(ReasoningEffort::Medium) => &[Some("medium"), None],
+        Some(ReasoningEffort::High) => &[Some("high"), None],
+        Some(ReasoningEffort::XHigh) => &[Some("xhigh"), None],
+    }
+}
+
+/// The rung each formatting endpoint, model and level reached in this
+/// process, so a refusal is paid once and not on every live formatter job.
+static FORMATTING_REASONING_RUNG: OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = OnceLock::new();
+
+fn reasoning_rung_key(lane: &RuntimeLlmLane) -> String {
+    let level = lane.reasoning().map_or("-", ReasoningEffort::as_str);
+    format!("{}\n{}\n{level}", lane.endpoint(), lane.model())
+}
+
+fn reasoning_rung(lane: &RuntimeLlmLane) -> usize {
+    FORMATTING_REASONING_RUNG
+        .get_or_init(Default::default)
+        .lock()
+        .map(|rungs| rungs.get(&reasoning_rung_key(lane)).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+fn remember_reasoning_rung(lane: &RuntimeLlmLane, rung: usize) {
+    if let Ok(mut rungs) = FORMATTING_REASONING_RUNG
+        .get_or_init(Default::default)
+        .lock()
+    {
+        rungs.insert(reasoning_rung_key(lane), rung);
+    }
+}
+
+/// A request refused for its `reasoning` field: buddy's MTPLX build wants
+/// `auto|low|…` and refuses `none`; OpenAI refuses `reasoning.effort` on a
+/// model that does not reason. Both come back as a 400 naming the field
+/// before any stream opens, so the same attempt can be sent again.
+fn is_reasoning_param_rejected(error: &anyhow::Error) -> bool {
+    super::provider::is_reasoning_param_rejection(&error.to_string())
 }
 
 /// Instructions for a Responses request: the `instructions` PARAM goes only on
@@ -975,6 +1042,103 @@ pub async fn format_text_with_status_for_policy(
     .await
 }
 
+/// Settings › Formatting › Test sample: a raw transcript as the engines hand
+/// it to the formatter, lowercase and unpunctuated (take 6493bab0, 2026-10-22).
+pub const FORMATTING_PROBE_SAMPLE: &str = "tak jeśli nie stosuje się zaleceń dokumentacji \
+     i nie czyta się specyfikacji to instrukcja się przenosi w polu które jest niedozwolone";
+
+/// How one Settings formatting test ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormattingProbeStatus {
+    /// The provider answered with formatted text.
+    Applied,
+    /// The provider answered with the input unchanged.
+    Unchanged,
+    /// The level is off or Max, or the text is below the formatting floor.
+    Skipped,
+    /// Every attempt failed; the reason is in the log.
+    Failed,
+    /// No answer within a live formatter job's deadline.
+    TimedOut,
+}
+
+/// One formatting request sent from Settings, measured.
+#[derive(Debug, Clone)]
+pub struct FormattingProbe {
+    pub status: FormattingProbeStatus,
+    pub input: String,
+    pub output: String,
+    pub elapsed: Duration,
+    /// The live channel's deadline the request had to meet.
+    pub deadline: Duration,
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<&'static str>,
+}
+
+/// Format `sample` (or [`FORMATTING_PROBE_SAMPLE`]) once, exactly as a live
+/// take's formatter job does: same generation, prompt, lane, reasoning level
+/// and deadline (Maciej, 2026-10-22: the provider screen needs a one-request
+/// test, and the test must hold for the live channel, not post-processing).
+pub async fn probe_formatting(
+    sample: Option<&str>,
+    language: Option<&str>,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> FormattingProbe {
+    let input = sample
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(FORMATTING_PROBE_SAMPLE)
+        .to_string();
+    let lane = runtime_settings.llm_lanes().formatting();
+    let deadline = runtime_settings
+        .ai_execution()
+        .request_timing()
+        .attempt_timeout();
+    let ladder = reasoning_ladder(lane);
+    let measured = |status, output: String, elapsed| FormattingProbe {
+        status,
+        input: input.clone(),
+        output,
+        elapsed,
+        deadline,
+        provider: lane.provider_display_name().to_string(),
+        model: lane.model().to_string(),
+        reasoning: ladder[reasoning_rung(lane).min(ladder.len() - 1)],
+    };
+    // Off sends nothing and Max runs on the Agent lane: neither is this lane.
+    if matches!(
+        runtime_settings.formatting_policy(),
+        FormattingPolicy::Off | FormattingPolicy::Max
+    ) {
+        return measured(
+            FormattingProbeStatus::Skipped,
+            input.clone(),
+            Duration::ZERO,
+        );
+    }
+    let started = std::time::Instant::now();
+    let reply = tokio::time::timeout(
+        deadline,
+        format_text_with_status_for_policy(&input, language, runtime_settings, None),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let (status, output) = match reply {
+        Err(_) => (FormattingProbeStatus::TimedOut, String::new()),
+        Ok(result) => (
+            match result.status {
+                AiFormatStatus::Applied => FormattingProbeStatus::Applied,
+                AiFormatStatus::AiNoop => FormattingProbeStatus::Unchanged,
+                AiFormatStatus::Skipped => FormattingProbeStatus::Skipped,
+                AiFormatStatus::Failed => FormattingProbeStatus::Failed,
+            },
+            result.text,
+        ),
+    };
+    measured(status, output, elapsed)
+}
+
 /// The single implementation every public formatting entry point funnels into.
 ///
 /// Order of the pipeline matters and is load-bearing:
@@ -1096,11 +1260,39 @@ async fn format_text_with_status_channels_for_policy(
         let mut system_prompt = sealed_prompt.composed_content().to_string();
         if assistive {
             if attempt == 0 {
-                info!("Using assistive mode (model: {})", lane.model());
+                info!(
+                    model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
+                    "Using assistive mode (model: {})",
+                    lane.model()
+                );
             }
-        } else {
-            if attempt == 0 {
-                info!("Using formatting mode (model: {})", lane.model());
+        } else if attempt == 0 {
+            if runtime_settings.values().format_on_device {
+                info!(
+                    policy = policy.as_str(),
+                    cloud_model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
+                    "Using formatting mode (on-device: Apple FoundationModels, cloud fallback: {})",
+                    lane.model()
+                );
+            } else {
+                info!(
+                    policy = policy.as_str(),
+                    model = lane.model(),
+                    prompt_source = sealed_prompt.source().as_str(),
+                    prompt_sha256 = sealed_prompt.composed_sha256(),
+                    base_prompt_sha256 = sealed_prompt.base_sha256(),
+                    settings_sha256 = runtime_settings.digest().as_str(),
+                    "Using formatting mode (model: {})",
+                    lane.model()
+                );
             }
         }
 
@@ -1200,6 +1392,7 @@ async fn format_text_with_status_channels_for_policy(
             warn!(%reason, "no formatting engine available; preserving the source text");
             break;
         }
+        let used_on_device = on_device_output.is_some();
         let result_opt = if on_device_output.is_some() {
             on_device_output
         } else if should_stream {
@@ -1352,7 +1545,16 @@ async fn format_text_with_status_channels_for_policy(
                 }
             }
 
+            let engine = if used_on_device {
+                "apple-on-device"
+            } else {
+                lane.model()
+            };
             info!(
+                engine,
+                policy = policy.as_str(),
+                prompt_source = sealed_prompt.source().as_str(),
+                prompt_sha256 = sealed_prompt.composed_sha256(),
                 "Formatted via AI ({} -> {} chars, assistive={}, content_match={}, raw_like={})",
                 text.len(),
                 formatted.len(),
@@ -1399,19 +1601,66 @@ async fn call_provider_once(
             call_anthropic_messages(user_message, system_prompt, assistive, lane).await
         }
         WireFamily::OpenAiResponses => {
-            if streaming_enabled {
-                call_llm_endpoint_streaming(
+            let ladder = if assistive {
+                &[None][..]
+            } else {
+                reasoning_ladder(lane)
+            };
+            let mut rung = reasoning_rung(lane).min(ladder.len() - 1);
+            loop {
+                let reasoning = ladder[rung];
+                let result = call_responses_once(
                     user_message,
                     system_prompt,
                     assistive,
                     lane,
-                    stream_context,
+                    streaming_enabled,
+                    stream_context.clone(),
+                    reasoning,
                 )
-                .await
-            } else {
-                call_llm_endpoint(user_message, system_prompt, assistive, lane).await
+                .await;
+                match result {
+                    Err(error)
+                        if rung + 1 < ladder.len() && is_reasoning_param_rejected(&error) =>
+                    {
+                        rung += 1;
+                        warn!(
+                            model = lane.model(),
+                            refused = reasoning.unwrap_or("-"),
+                            next = ladder[rung].unwrap_or("no field"),
+                            "Formatting provider refused its reasoning effort; asking again"
+                        );
+                        remember_reasoning_rung(lane, rung);
+                    }
+                    result => return result,
+                }
             }
         }
+    }
+}
+
+/// One Responses request, streamed or JSON, at one reasoning effort.
+async fn call_responses_once(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    lane: &RuntimeLlmLane,
+    streaming_enabled: bool,
+    stream_context: StreamRequestContext,
+    reasoning: Option<&'static str>,
+) -> Result<ProviderOutput> {
+    if streaming_enabled {
+        call_llm_endpoint_streaming(
+            user_message,
+            system_prompt,
+            assistive,
+            lane,
+            stream_context,
+            reasoning,
+        )
+        .await
+    } else {
+        call_llm_endpoint(user_message, system_prompt, assistive, lane, reasoning).await
     }
 }
 
@@ -1426,10 +1675,9 @@ async fn call_anthropic_messages(
     assistive: bool,
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    let api_key = lane.credential().request_api_key().unwrap_or_default();
-    if let Some(reason) = lane.request_unavailable_reason() {
-        anyhow::bail!("{reason}");
-    }
+    let api_key = lane_request_credential(lane, true)
+        .await?
+        .unwrap_or_default();
     call_anthropic_messages_resolved(
         user_message,
         system_prompt,
@@ -1557,6 +1805,7 @@ fn responses_chain_request(
     model: String,
     stream: bool,
     account_backend: bool,
+    reasoning: Option<&'static str>,
 ) -> (
     crate::state::conversation::AiMode,
     Option<String>,
@@ -1593,6 +1842,7 @@ fn responses_chain_request(
         max_output_tokens: None,
         temperature,
         store: account_backend.then_some(false),
+        reasoning: reasoning.map(|effort| ReasoningParam { effort }),
         stream,
     };
     (ai_mode, previous_response_id, request)
@@ -1607,6 +1857,7 @@ async fn call_llm_endpoint(
     system_prompt: &str,
     assistive: bool,
     lane: &RuntimeLlmLane,
+    reasoning: Option<&'static str>,
 ) -> Result<ProviderOutput> {
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
@@ -1639,27 +1890,61 @@ async fn call_llm_endpoint(
         temperature
     );
 
-    let (ai_mode, _previous_response_id, request) =
-        responses_chain_request(user_message, system_prompt, assistive, model, false, false);
+    let (ai_mode, previous_response_id, request) = responses_chain_request(
+        user_message,
+        system_prompt,
+        assistive,
+        model.clone(),
+        false,
+        false,
+        reasoning,
+    );
 
-    // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
-    // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
-    let mut request_builder = get_client()
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request);
-    if !api_key.trim().is_empty() {
-        request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
-        if !bearer_only {
-            request_builder = request_builder.header("x-api-key", &api_key);
+    let send_once = |req: &ResponsesRequest| {
+        let mut builder = get_client()
+            .post(&endpoint)
+            .header("Content-Type", "application/json")
+            .json(req);
+        if !api_key.trim().is_empty() {
+            builder = builder.header("Authorization", format!("Bearer {}", api_key));
+            if !bearer_only {
+                builder = builder.header("x-api-key", &api_key);
+            }
         }
-    }
-    let response = request_builder.send().await.context("Request failed")?;
+        builder
+    };
+    let mut response = send_once(&request).send().await.context("Request failed")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP {} - {}", status, body);
+        if previous_response_id.is_some() && is_stale_chain_error(&anyhow::anyhow!("{body}")) {
+            warn!(
+                "Clearing rejected previous_response_id for {:?} and retrying unchained",
+                ai_mode
+            );
+            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            let (_, _, unchained) = responses_chain_request(
+                user_message,
+                system_prompt,
+                assistive,
+                model,
+                false,
+                false,
+                reasoning,
+            );
+            response = send_once(&unchained)
+                .send()
+                .await
+                .context("Request failed")?;
+            if !response.status().is_success() {
+                let retry_status = response.status();
+                let retry_body = response.text().await.unwrap_or_default();
+                anyhow::bail!("HTTP {} - {}", retry_status, retry_body);
+            }
+        } else {
+            anyhow::bail!("HTTP {} - {}", status, body);
+        }
     }
 
     let responses_result: ResponsesResponse =
@@ -1690,12 +1975,13 @@ async fn call_llm_endpoint(
 /// refreshed when near expiry, for this request only. Returns
 /// `(secret, bearer_only)` — account tokens must not also go out as `x-api-key`.
 async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
-    if let Some(reason) = lane.request_unavailable_reason() {
-        anyhow::bail!("{reason}");
-    }
-    if lane.credential().account_auth()
-        && let Some(vendor) = lane.vendor()
-    {
+    let account_vendor = lane
+        .credential()
+        .account_auth()
+        .then(|| lane.vendor())
+        .flatten();
+    let api_key = lane_request_credential(lane, account_vendor.is_none()).await?;
+    if let Some(vendor) = account_vendor {
         let token = account_auth::access_token(vendor).await.map_err(|error| {
             anyhow::anyhow!(
                 "{} account authentication failed: {error}",
@@ -1704,10 +1990,31 @@ async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
         })?;
         return Ok((token, true));
     }
-    Ok((
-        lane.credential().request_api_key().unwrap_or_default(),
-        false,
-    ))
+    Ok((api_key.unwrap_or_default(), false))
+}
+
+/// The lane's request-time credential verdict, taken on the blocking pool:
+/// refusal when no credential truth exists now, else the stored API key when
+/// `read_api_key`. Both read the Keychain on a cold cache, and a Keychain call
+/// can wait on a macOS authorization dialog for as long as it stays open. A
+/// live take polls its formatter jobs inline, so a read on the polling thread
+/// stopped the whole session and every job deadline with it (replay cbf54ca9,
+/// 2026-10-21).
+async fn lane_request_credential(
+    lane: &RuntimeLlmLane,
+    read_api_key: bool,
+) -> Result<Option<String>> {
+    let lane = lane.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(reason) = lane.request_unavailable_reason() {
+            anyhow::bail!("{reason}");
+        }
+        Ok(read_api_key
+            .then(|| lane.credential().request_api_key())
+            .flatten())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("credential storage task ended: {error}"))?
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API) through the sealed lane.
@@ -1717,6 +2024,7 @@ async fn call_llm_endpoint_streaming(
     assistive: bool,
     lane: &RuntimeLlmLane,
     stream_context: StreamRequestContext,
+    reasoning: Option<&'static str>,
 ) -> Result<ProviderOutput> {
     let model = lane.model().to_string();
     let (api_key, bearer_only) = resolve_lane_auth(lane).await?;
@@ -1762,9 +2070,10 @@ async fn call_llm_endpoint_streaming(
         user_message,
         system_prompt,
         assistive,
-        model,
+        model.clone(),
         true,
         account_backend,
+        reasoning,
     );
 
     let StreamRequestContext {
@@ -1776,13 +2085,43 @@ async fn call_llm_endpoint_streaming(
         get_client(),
         &endpoint,
         &api_key,
-        callbacks,
+        callbacks.clone(),
         initial_response_timeout,
         inter_chunk_timeout,
     )
     .with_auth_header_mode(auth_header_mode)
-    .with_extra_headers(extra_headers);
-    let streamed = manager.stream(&request).await?;
+    .with_extra_headers(extra_headers.clone());
+    let streamed = match manager.stream(&request).await {
+        Ok(streamed) => streamed,
+        Err(err) if previous_response_id.is_some() && is_stale_chain_error(&err) => {
+            warn!(
+                "Clearing rejected previous_response_id for {:?} and retrying SSE unchained",
+                ai_mode
+            );
+            crate::state::conversation::reset_conversation_for_mode(ai_mode);
+            let (_, _, unchained) = responses_chain_request(
+                user_message,
+                system_prompt,
+                assistive,
+                model,
+                true,
+                account_backend,
+                reasoning,
+            );
+            let retry_manager = ResponsesStreamingManager::new(
+                get_client(),
+                &endpoint,
+                &api_key,
+                callbacks,
+                initial_response_timeout,
+                inter_chunk_timeout,
+            )
+            .with_auth_header_mode(auth_header_mode)
+            .with_extra_headers(extra_headers);
+            retry_manager.stream(&unchained).await?
+        }
+        Err(err) => return Err(err),
+    };
     let output = ProviderOutput {
         assistant_text: streamed.assistant_text,
         reasoning_text: streamed.reasoning_text,
@@ -1869,6 +2208,10 @@ mod tests {
             "HTTP 400 Bad Request - {{\"error\":{{\"code\":\"previous_response_not_found\"}}}}"
         );
         assert!(is_stale_chain_error(&stale));
+        let buddy_404 = anyhow::anyhow!(
+            "HTTP 404 Not Found - {{\"error\":{{\"message\":\"response 'resp-1' was not found\",\"type\":\"invalid_request_error\",\"param\":\"previous_response_id\",\"code\":\"response_not_found\"}}}}"
+        );
+        assert!(is_stale_chain_error(&buddy_404));
         let pair = anyhow::anyhow!("HTTP 400 - instructions and previous_response_id together");
         assert!(!is_stale_chain_error(&pair));
         let auth = anyhow::anyhow!("HTTP 401 Unauthorized - missing scopes");
@@ -1893,6 +2236,7 @@ mod tests {
             store: None,
             max_output_tokens: None,
             temperature: None,
+            reasoning: None,
             stream: false,
         };
         let wire = serde_json::to_value(&request).expect("serialize");
@@ -2117,7 +2461,9 @@ mod tests {
     #[serial]
     /// The timeout wraps body download, not just the response headers. The mock
     /// answers `200` immediately and then trickles the body; a timeout applied
-    /// only to the header phase would let this call run past its budget.
+    /// only to the header phase would let this call run past its budget. The
+    /// budget leaves a loaded host time to connect: at 100 ms, half the runs on
+    /// a build machine timed out before the request arrived.
     async fn thread_title_timeout_covers_response_body() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -2127,8 +2473,10 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_chunked_body(|writer| {
-                std::thread::sleep(Duration::from_millis(300));
-                writer.write_all(br#"{"id":"late","output":[]}"#)
+                // Beats, not one sleep: see `trickle_until_the_client_leaves`.
+                writer.write_all(br#"{"id":"late","#)?;
+                trickle_until_the_client_leaves(writer, b" ", Duration::from_millis(1500))?;
+                writer.write_all(br#""output":[]}"#)
             })
             .create_async()
             .await;
@@ -2140,7 +2488,7 @@ mod tests {
         );
 
         let error =
-            generate_thread_title_with_provider("Raw input", &provider, Duration::from_millis(100))
+            generate_thread_title_with_provider("Raw input", &provider, Duration::from_millis(500))
                 .await
                 .expect_err("slow response body must be covered by the whole-call timeout");
         assert!(error.to_string().contains("timed out"));
@@ -2319,6 +2667,30 @@ mod tests {
         "LLM_ASSISTIVE_MODEL",
     ];
 
+    /// The formatter lane's credential verdict and key read happen off the
+    /// polling thread: a live take polls formatter jobs inline, and a cold
+    /// Keychain read can wait on an authorization dialog indefinitely.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn formatter_lane_credentials_are_read_off_the_polling_thread() {
+        let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+        let mut env = TestEnv::clean();
+        env.set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_str().expect("utf-8 test data path"),
+        );
+        for key in LANE_SELECTOR_ENV_KEYS {
+            env.guards.push(EnvGuard::remove(key));
+        }
+        env.guards.push(EnvGuard::remove("LLM_OPENAI_API_KEY"));
+        let snapshot = Config::load_runtime_snapshot().expect("seal lane topology");
+        let lane = snapshot.llm_lanes().formatting().clone();
+        let _bundle = crate::config::keychain::test_support::install_bundle(&[]);
+        let probe = crate::config::keychain::CredentialAcquisitionProbe::forbid();
+        let _ = lane_request_credential(&lane, true).await;
+        assert!(probe.attempts().is_empty(), "{:?}", probe.attempts());
+    }
+
     /// Both lanes on one Custom row at the mock server, sealed before any key
     /// exists (the production controller built through `new_without_keychain`);
     /// the key that appears in the Keychain bundle afterwards is what every
@@ -2414,6 +2786,7 @@ mod tests {
                 "test system prompt",
                 assistive,
                 snapshot.llm_lanes().lane(kind),
+                None,
             )
             .await
             .unwrap_or_else(|error| panic!("{} lane request failed: {error}", kind.as_str()));
@@ -2496,6 +2869,7 @@ mod tests {
                 initial_response_timeout: Duration::from_secs(2),
                 inter_chunk_timeout: Duration::from_secs(2),
             },
+            None,
         )
         .await
         .unwrap();
@@ -2726,5 +3100,377 @@ mod tests {
         assert!(should_retry_provider_error(&anyhow::anyhow!(
             "SSE stream inter-chunk timeout"
         )));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stale_previous_response_id_resets_chain_and_retries_unchained() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let mut server = mockito::Server::new_async().await;
+        crate::state::conversation::set_response_id_for_mode(
+            crate::state::conversation::AiMode::Assistive,
+            "resp-expired-123".to_string(),
+        );
+
+        let stale_mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(json!({
+                "previous_response_id": "resp-expired-123"
+            })))
+            .with_status(404)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "error": {
+                        "message": "response 'resp-expired-123' was not found",
+                        "type": "invalid_request_error",
+                        "param": "previous_response_id",
+                        "code": "response_not_found"
+                    }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let unchained_mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Regex(r#""instructions":"system prompt""#.to_string()))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fresh-456\"}}\n\n\
+                 data: {\"type\":\"response.output_text.delta\",\"delta\":\"Fresh answer.\"}\n\n\
+                 data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fresh-456\"}}\n\n",
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let endpoint = format!("{}/v1/responses", server.url());
+        let provider = crate::llm::provider::CustomProvider::new(
+            "test-buddy",
+            crate::llm::provider::WireFamily::OpenAiResponses,
+            &endpoint,
+        )
+        .unwrap();
+        let user_settings = crate::config::UserSettings {
+            llm_assistive_provider: Some(format!("custom:{}", provider.id)),
+            llm_assistive_model: Some("buddy".into()),
+            llm_custom_providers: vec![provider],
+            ..Default::default()
+        };
+        user_settings.save().unwrap();
+        let settings = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let output = call_llm_endpoint_streaming(
+            "pytanie",
+            "system prompt",
+            true,
+            settings.llm_lanes().assistive(),
+            StreamRequestContext {
+                callbacks: StreamCallbacks {
+                    assistant: None,
+                    reasoning: None,
+                },
+                initial_response_timeout: Duration::from_secs(5),
+                inter_chunk_timeout: Duration::from_secs(5),
+            },
+            None,
+        )
+        .await
+        .expect("stale previous_response_id must recover via unchained retry");
+
+        assert_eq!(output.assistant_text, "Fresh answer.");
+        assert_eq!(
+            crate::state::conversation::get_previous_response_id_for_mode(
+                crate::state::conversation::AiMode::Assistive
+            )
+            .as_deref(),
+            Some("resp-fresh-456")
+        );
+        stale_mock.assert_async().await;
+        unchained_mock.assert_async().await;
+    }
+
+    fn sse_answer(text: &str) -> String {
+        format!(
+            "data: {{\"type\":\"response.created\",\"response\":{{\"id\":\"r\"}}}}\n\n\
+             data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{text}\"}}\n\n\
+             data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"r\",\"status\":\"completed\"}}}}\n\n"
+        )
+    }
+
+    fn quick_stream() -> StreamRequestContext {
+        StreamRequestContext {
+            callbacks: StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            initial_response_timeout: Duration::from_secs(5),
+            inter_chunk_timeout: Duration::from_secs(5),
+        }
+    }
+
+    /// A slow mock body: writes `beat` every 50 ms for `span`. Dropping a
+    /// mockito chunked stream joins its writer thread on the server's own
+    /// runtime, so one long sleep after the client gave up froze that pooled
+    /// server for the rest of the sleep, and the next test handed it saw no
+    /// response at all. A beat fails as soon as the client is gone.
+    fn trickle_until_the_client_leaves(
+        writer: &mut dyn std::io::Write,
+        beat: &[u8],
+        span: Duration,
+    ) -> std::io::Result<()> {
+        let started = std::time::Instant::now();
+        while started.elapsed() < span {
+            std::thread::sleep(Duration::from_millis(50));
+            writer.write_all(beat)?;
+        }
+        Ok(())
+    }
+
+    /// Both lanes on one custom Responses provider at `endpoint`.
+    fn custom_lanes(endpoint: &str) -> RuntimeSettingsSnapshot {
+        custom_lanes_reasoning(endpoint, None)
+    }
+
+    fn custom_lanes_reasoning(endpoint: &str, reasoning: Option<&str>) -> RuntimeSettingsSnapshot {
+        custom_lanes_with(endpoint, "mtplx-9b", reasoning)
+    }
+
+    /// The refused rung is remembered per endpoint, model and level for the
+    /// whole process, and mockito hands a later test the same port, so a test
+    /// that teaches a refusal names its own model.
+    fn custom_lanes_with(
+        endpoint: &str,
+        model: &str,
+        reasoning: Option<&str>,
+    ) -> RuntimeSettingsSnapshot {
+        let provider = crate::llm::provider::CustomProvider::new(
+            "test-mtplx",
+            crate::llm::provider::WireFamily::OpenAiResponses,
+            endpoint,
+        )
+        .unwrap();
+        crate::config::UserSettings {
+            llm_formatting_provider: Some(format!("custom:{}", provider.id)),
+            llm_formatting_model: Some(model.into()),
+            llm_formatting_reasoning: reasoning.map(str::to_string),
+            formatting_level: Some("smart".into()),
+            llm_assistive_provider: Some(format!("custom:{}", provider.id)),
+            llm_assistive_model: Some(model.into()),
+            llm_custom_providers: vec![provider],
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        Config::load_runtime_snapshot_without_keychain().unwrap()
+    }
+
+    /// A server that refuses effort `none` and accepts `low`. The formatter
+    /// asks again one rung lower, and the next request starts there.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_steps_down_the_reasoning_ladder_once_per_provider() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let mut server = mockito::Server::new_async().await;
+        let refused = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(
+                json!({"reasoning": {"effort": "none"}}),
+            ))
+            .with_status(400)
+            .with_body(
+                json!({"error": {
+                    "message": "reasoning_effort must be one of: auto, low, medium, high, xhigh",
+                    "type": "invalid_request_error"
+                }})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let accepted = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(
+                json!({"reasoning": {"effort": "low"}}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer("Sformatowane."))
+            .expect(2)
+            .create_async()
+            .await;
+        let settings =
+            custom_lanes_with(&format!("{}/v1/responses", server.url()), "ladder-9b", None);
+        for _ in 0..2 {
+            crate::state::conversation::reset_conversation_for_mode(
+                crate::state::conversation::AiMode::Formatting,
+            );
+            let output = call_provider_once(
+                WireFamily::OpenAiResponses,
+                "surowy tekst",
+                "format only",
+                false,
+                settings.llm_lanes().formatting(),
+                true,
+                quick_stream(),
+            )
+            .await
+            .expect("the low rung answers");
+            assert_eq!(output.assistant_text, "Sformatowane.");
+        }
+        refused.assert_async().await;
+        accepted.assert_async().await;
+    }
+
+    /// The Agent lane keeps its model's own reasoning: no field is sent.
+    #[tokio::test]
+    #[serial]
+    async fn assistive_requests_carry_no_reasoning_field() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Assistive,
+        );
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_request(|request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap()).unwrap();
+                body.get("reasoning").is_none()
+            })
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer("Odpowiedź."))
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes(&format!("{}/v1/responses", server.url()));
+        let output = call_provider_once(
+            WireFamily::OpenAiResponses,
+            "pytanie",
+            "system prompt",
+            true,
+            settings.llm_lanes().assistive(),
+            true,
+            quick_stream(),
+        )
+        .await
+        .expect("assistive answers");
+        assert_eq!(output.assistant_text, "Odpowiedź.");
+        mock.assert_async().await;
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Assistive,
+        );
+    }
+
+    /// A level the user opted into goes out as chosen.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_sends_the_opted_in_reasoning_level() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(
+                json!({"reasoning": {"effort": "medium"}}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer("Gotowe."))
+            .expect(1)
+            .create_async()
+            .await;
+        let settings =
+            custom_lanes_reasoning(&format!("{}/v1/responses", server.url()), Some("medium"));
+        let output = call_provider_once(
+            WireFamily::OpenAiResponses,
+            "surowy tekst",
+            "format only",
+            false,
+            settings.llm_lanes().formatting(),
+            true,
+            quick_stream(),
+        )
+        .await
+        .expect("medium answers");
+        assert_eq!(output.assistant_text, "Gotowe.");
+        mock.assert_async().await;
+    }
+
+    /// The Settings test meets the live deadline on a provider that answers,
+    /// and says so plainly when one only thinks.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_probe_reports_an_answer_and_a_silent_thinker() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let _deadline = EnvGuard::set("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "1500");
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let mut server = mockito::Server::new_async().await;
+        let answers = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::PartialJson(
+                json!({"reasoning": {"effort": "none"}}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer(
+                "Tak, jeśli nie stosuje się zaleceń dokumentacji.",
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes(&format!("{}/v1/responses", server.url()));
+        let probe = probe_formatting(None, Some("pl"), &settings).await;
+        answers.assert_async().await;
+        assert_eq!(probe.status, FormattingProbeStatus::Applied, "{probe:?}");
+        assert_eq!(probe.input, FORMATTING_PROBE_SAMPLE);
+        assert!(probe.output.starts_with("Tak, jeśli"));
+        assert!(probe.elapsed < probe.deadline);
+        assert_eq!(probe.reasoning, Some("none"));
+        assert_eq!(probe.model, "mtplx-9b");
+
+        let mut silent = mockito::Server::new_async().await;
+        let _thinks = silent
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_chunked_body(|writer| {
+                writer.write_all(
+                    b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"t\"}}\n\n",
+                )?;
+                trickle_until_the_client_leaves(
+                    writer,
+                    b"data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"t\"}}\n\n",
+                    Duration::from_secs(4),
+                )
+            })
+            .create_async()
+            .await;
+        let settings = custom_lanes(&format!("{}/v1/responses", silent.url()));
+        let probe = probe_formatting(
+            Some("własny tekst do sformatowania przez model"),
+            None,
+            &settings,
+        )
+        .await;
+        assert_eq!(probe.status, FormattingProbeStatus::TimedOut, "{probe:?}");
+        assert_eq!(probe.input, "własny tekst do sformatowania przez model");
+        assert!(probe.elapsed >= Duration::from_millis(1500));
     }
 }

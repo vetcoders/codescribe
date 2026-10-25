@@ -82,6 +82,18 @@ struct OverlayChannelHudProjection: Equatable {
   let followerAlive: Bool?
   var provider: String? = nil
   var providerSessionID: String? = nil
+  /// Whether the live follower's lease names a vc-frame pane. False means a
+  /// focus request has nowhere to land; nil means no claim.
+  var frameDetected: Bool? = nil
+  /// Whether the live follower's lease names an iTerm2 or Terminal.app tab
+  /// the follower can bring to front; nil means no claim.
+  var terminalDetected: Bool? = nil
+  /// `codex://threads/<id>` of a Codex agent's thread in the Codex app,
+  /// known whether or not its follower is alive; nil means no thread.
+  var codexThreadUrl: String? = nil
+  /// Whether the local Codex store holds that thread, so the link opens;
+  /// false is a Codex Cloud thread.
+  var codexThreadLocal: Bool? = nil
   /// When the live follower's oldest unacknowledged delivery was emitted.
   /// The second liveness layer: a reader process can heartbeat while the
   /// conversation behind it reads nothing (Founder, 2026-10-14).
@@ -126,8 +138,10 @@ struct OverlayAgentStatusMark: View {
           spinner
         }
       } else if let character = glyph.character {
+        // A status sign, not code: the system face carries it (Founder's mono
+        // policy, 2026-10-18). The slot below already fixes its box.
         Text(character)
-          .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+          .font(.system(size: fontSize, weight: .medium))
           .fixedSize()
       }
     }
@@ -144,12 +158,31 @@ struct OverlayAgentStatusMark: View {
   }
 }
 
+/// The one horizontal flip the overlay's megaphones share: the header's agent
+/// button and the broadcast row both face left (Maciej, 2026-10-20).
+struct OverlayHorizontalMirror: ViewModifier {
+  let mirrored: Bool
+
+  func body(content: Content) -> some View {
+    content.scaleEffect(x: mirrored ? -1 : 1, y: 1)
+  }
+}
+
+extension View {
+  func overlayMirrored(_ mirrored: Bool = true) -> some View {
+    modifier(OverlayHorizontalMirror(mirrored: mirrored))
+  }
+}
+
 /// Compact circular glyph for the widget header; capture stays with its owner.
 struct OverlayMicrophoneGlyph: View {
   @Environment(\.displayScale) private var displayScale
   private let mark: Mark
   let tint: Color
   var plateOpacity: Double = 0.12
+  /// Flips a symbol horizontally; only the agent megaphone, which faces left
+  /// toward the wordmark (Maciej, 2026-10-20).
+  var mirrored = false
   static let diameter: CGFloat = 22
 
   private enum Mark {
@@ -158,10 +191,11 @@ struct OverlayMicrophoneGlyph: View {
     case character(String, pointSize: CGFloat)
   }
 
-  init(symbol: String, tint: Color, plateOpacity: Double = 0.12) {
+  init(symbol: String, tint: Color, plateOpacity: Double = 0.12, mirrored: Bool = false) {
     mark = .symbol(symbol)
     self.tint = tint
     self.plateOpacity = plateOpacity
+    self.mirrored = mirrored
   }
 
   init(character: String, tint: Color, plateOpacity: Double = 0.12) {
@@ -188,6 +222,7 @@ struct OverlayMicrophoneGlyph: View {
     case .symbol(let symbol):
       Image(systemName: symbol)
         .font(.system(size: 9, weight: .semibold))
+        .overlayMirrored(mirrored)
     case .character(let character, let pointSize):
       Text(verbatim: character)
         .font(.system(size: pointSize))
@@ -199,7 +234,7 @@ struct OverlayMicrophoneGlyph: View {
 /// A bound channel whose reader process is gone keeps its row, greyed and
 /// faded, so the roster shows at a glance who cannot hear (Maciej,
 /// 2026-10-17: "takie sesje na starcie dawać od razu wyszarzonymi"). The
-/// microphone sleeps; the cross still archives it; recorded replies still play.
+/// audio pair sleeps; the cross and reception policy remain actionable.
 struct OverlayDisconnectedRowDim: ViewModifier {
   static let opacity: Double = 0.45
   let disconnected: Bool
@@ -208,6 +243,52 @@ struct OverlayDisconnectedRowDim: ViewModifier {
     content
       .opacity(disconnected ? Self.opacity : 1)
       .grayscale(disconnected ? 1 : 0)
+  }
+}
+
+/// The two pane actions. The canvas edge mounts its own control; the roster
+/// header mounts only its own fold. Both use the same state commands.
+struct OverlayAgentsSidebarControls {
+  /// The conversation, or the transcription, is on screen beside the list.
+  var canvasShown: Bool
+  var canvasIsTranscription: Bool
+  var onToggleCanvas: () -> Void
+  var onFoldList: () -> Void
+
+  var canvasTitle: String {
+    switch (canvasShown, canvasIsTranscription) {
+    case (true, true): String(localized: "Hide transcription")
+    case (true, false): String(localized: "Hide conversation")
+    case (false, true): String(localized: "Show transcription")
+    case (false, false): String(localized: "Show conversation")
+    }
+  }
+}
+
+/// A corner button of the agents list, blended into the background (Maciej,
+/// 2026-10-19: "wtopione w tło"): a muted glyph with the rows' hover wash.
+struct OverlaySidebarToggleButton: View {
+  let symbol: String
+  let title: String
+  let identifier: String
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 13 * textScale))
+        .frame(width: 22 * textScale, height: 22 * textScale)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .focusable(false)
+    .foregroundStyle(palette.mutedText.color)
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
+    .accessibilityLabel(Text(verbatim: title))
+    .accessibilityHint(Text(verbatim: title))
+    .accessibilityIdentifier(identifier)
   }
 }
 
@@ -224,11 +305,16 @@ struct OverlayRowHoverHighlight: ViewModifier {
   var enabled = true
   @State private var hovered = false
 
-  /// Tray plain rows use `CSColor.surfaceRaised(0.05)`. The clear branch
-  /// still names the row's canvas so a disabled row stays on its palette.
+  /// A veil, not a surface: `surfaceRaised` lifts dark glass with 5 % white
+  /// but paints paper with 80 % of it, which is the milky blob the Founder
+  /// saw in the drawer (2026-10-18). `hairline` keeps the same white veil on
+  /// ink and shades paper instead of bleaching it. Half the strength of
+  /// `OverlayRosterRowSelection`, so pointing at a row never reads as being
+  /// on it. The clear branch still names the row's canvas so a disabled row
+  /// stays on its palette.
   private var wash: Color {
     guard hovered, enabled else { return palette.desktopBackground.color.opacity(0) }
-    return CSColor.surfaceRaised(0.05)
+    return CSColor.hairline(0.05)
   }
 
   func body(content: Content) -> some View {
@@ -243,6 +329,43 @@ struct OverlayRowHoverHighlight: ViewModifier {
       .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
       .background {
         OverlayMenuCursorRegion { hovered = enabled && $0 }
+      }
+  }
+}
+
+/// One mark for "this is the open conversation", worn by every roster row:
+/// the shared channel and the agents under it, in the drawer. Before the
+/// Founder's 2026-10-18 review the roster carried two — a grey wash on an
+/// agent row, an accent wash on "0 · All" — and both read as milky glass.
+/// The mark is a slim accent bar on the leading edge, where no other row
+/// chrome lives, over a veil only a step deeper than hover: the bar says
+/// which row, the veil says the whole row. `OverlayGestureFocusRing` keeps
+/// the full accent outline, so the middle-click chooser's focus and the open
+/// conversation stay two different marks even on the same row.
+struct OverlayRosterRowSelection: ViewModifier {
+  let palette: OverlayAppearancePalette
+  let selected: Bool
+  var cornerRadius: CGFloat = 10
+
+  func body(content: Content) -> some View {
+    content
+      .background {
+        if selected {
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(CSColor.hairline(0.09))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .overlay(alignment: .leading) {
+        if selected {
+          Capsule()
+            .fill(palette.agentAccent.color)
+            .frame(width: 3)
+            .padding(.vertical, 3)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
       }
   }
 }
@@ -279,14 +402,73 @@ struct OverlayGestureFocusRing<RingShape: InsettableShape>: ViewModifier {
 }
 
 /// The system owns button material, contrast and pointer feedback alongside the composer.
+/// `chrome: false` keeps the hit target and drops the glass: the Intercom paints
+/// the same glyphs straight onto its fiszka (Maciej, 2026-10-23: "ta sama
+/// kolejność to nie te same okrągłe pile — robisz to prosto na powierzchni").
 struct OverlayAgentControlStyle: ViewModifier {
+  var diameter: CGFloat? = nil
+  var chrome = true
   @ViewBuilder
   func body(content: Content) -> some View {
-    if #available(macOS 26.0, *) {
+    if !chrome {
+      content.buttonStyle(OverlayFlatControlButtonStyle(diameter: diameter ?? 22))
+    } else if let diameter {
+      content.buttonStyle(OverlaySizedAudioButtonStyle(diameter: diameter))
+    } else if #available(macOS 26.0, *) {
       content.buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.regular)
     } else {
       content.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.regular)
     }
+  }
+}
+
+private struct OverlaySizedAudioButtonStyle: ButtonStyle {
+  let diameter: CGFloat
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(width: diameter, height: diameter)
+      .contentShape(Circle())
+      .modifier(OverlayControlGlass(cornerRadius: diameter / 2))
+      .opacity(configuration.isPressed ? 0.7 : 1)
+  }
+}
+
+/// Sets a glyph's ink only when it has one of its own; nil inherits.
+struct OverlayGlyphInk: ViewModifier {
+  let ink: AnyShapeStyle?
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if let ink { content.foregroundStyle(ink) } else { content }
+  }
+}
+
+/// Flat on an Intercom fiszka the audio pair rests in the muted ink of the
+/// glyphs beside it (minimise, dock, the bar's count) and brightens under the
+/// pointer as they do. Semibold primary ink read hyper-white there (Maciej,
+/// 2026-10-23: "Przydym też troszkę te hiperbiałe przyciski").
+private struct OverlayFlatAudioInk: ViewModifier {
+  let flat: Bool
+  let palette: OverlayAppearancePalette
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if flat {
+      content.conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
+    } else {
+      content
+    }
+  }
+}
+
+/// The same square hit target without a surface of its own: the host's
+/// capsule is the surface.
+private struct OverlayFlatControlButtonStyle: ButtonStyle {
+  let diameter: CGFloat
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .frame(width: diameter, height: diameter)
+      .contentShape(Rectangle())
+      .opacity(configuration.isPressed ? 0.6 : 1)
   }
 }
 
@@ -305,8 +487,53 @@ struct OverlayAgentAudioControls: View {
   /// indikator na głośniku." The speaker of the agent whose reply is playing
   /// turns violet and animates its waves.
   var speaking = false
+  /// All keeps a matched pair, one third more prominent than agent controls;
+  /// a surface with one control height (the Intercom bar) opts out.
+  var broadcastEmphasis = true
+  /// Glass circles in the roster and the conversation header; the Intercom
+  /// fiszka is itself the surface and paints the pair flat on it.
+  var chrome = true
+  /// The conversation header supplies its measured base height; All scales
+  /// both controls together from that base.
+  var diameter: CGFloat? = nil
+  /// A narrow Intercom row has one place for the pair (Maciej, 2026-10-23:
+  /// "może być na jednym miejscu z mikrofonem"): the microphone, which
+  /// yields to the speaker while the agent talks so it can be muted.
+  var shared = false
 
   private var speakingNow: Bool { speaking && muted == false }
+
+  /// An open microphone keeps the shared place: that take is still running.
+  static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
+    speaking && muted == false && !open
+  }
+  private var showsSpeaker: Bool {
+    !shared || Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
+  private var showsMicrophone: Bool {
+    !shared || !Self.sharedShowsSpeaker(speaking: speaking, muted: muted, open: open)
+  }
+
+  static let broadcastScale: CGFloat = 1.33
+  static let controlFrame: CGFloat = 16
+  private var controlScale: CGFloat { broadcast && broadcastEmphasis ? Self.broadcastScale : 1 }
+  private var glyphSize: CGFloat {
+    (diameter.map { min(24, max(12, $0 * 0.42)) } ?? 12) * controlScale
+  }
+
+  /// The broadcast row speaks through a left-facing outline megaphone; agent
+  /// rows wear the live-speech glyph, a microphone with a waveform (Maciej,
+  /// 2026-10-23: "to jest ewidentnie symbol dyktowania live"). The plain
+  /// microphone is the composer's dictation verb. Open state keeps its pulse
+  /// and takes the same violet as a speaker that is playing a reply.
+  static let liveSpeechSymbol = "waveform.badge.mic"
+
+  var microphoneSymbol: String {
+    broadcast ? "megaphone" : Self.liveSpeechSymbol
+  }
+
+  /// Recording shares the active-speaker accent. The pulse is unchanged.
+  private var recordingAccent: Color { palette.agentAccent.color }
 
   /// Founder, 2026-10-15: the lit speaker swallowed its glyph, because the
   /// glass took the whole accent and so did the symbol; "Wyraźne, ale nie
@@ -316,6 +543,17 @@ struct OverlayAgentAudioControls: View {
 
   static func litGlass(_ color: Color?) -> Color? {
     color?.opacity(litGlassOpacity)
+  }
+
+  /// A lit glyph keeps its whole colour. At rest a glass circle keeps the
+  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph sets
+  /// no ink and takes the one `OverlayFlatAudioInk` puts around it. An
+  /// explicit `.foreground` resolved to the full primary instead, so every
+  /// flat control read hyper-white beside the smoked wordmark (Maciej,
+  /// 2026-10-23: "przydym też troszkę te hiperbiałe przyciski").
+  private func glyphInk(lit: Color?) -> AnyShapeStyle? {
+    if let lit { return AnyShapeStyle(lit) }
+    return chrome ? AnyShapeStyle(palette.primaryText.color) : nil
   }
 
   private var microphoneLabel: String {
@@ -336,6 +574,22 @@ struct OverlayAgentAudioControls: View {
     return muted == true
       ? String(localized: "Unmute agent replies") : String(localized: "Mute agent replies")
   }
+  /// The sentence the old system tooltip showed, including "Speaking" while a reply plays.
+  private var speakerHint: String {
+    speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel
+  }
+
+  /// Names a speaker that cannot run. A missing mute state keeps the status
+  /// sentence; a refused control says the action is unavailable.
+  private var speakerAccessibilityHint: String {
+    if muted == nil { return String(localized: "Playback status unavailable") }
+    if !playbackEnabled {
+      return String(
+        localized: "Playback unavailable", comment: "Disabled agent speaker control")
+    }
+    return speakerHint
+  }
+
   private var playbackValue: String {
     if muted == nil { return String(localized: "Playback status unavailable") }
     if broadcast {
@@ -351,48 +605,168 @@ struct OverlayAgentAudioControls: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Button(action: onMicrophone) {
-        Image(systemName: open ? "mic.fill" : "mic")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(open ? Color.red : palette.primaryText.color)
-          .symbolEffect(.pulse, isActive: open && !reduceMotion)
-          .frame(width: 16, height: 16)
+      if showsSpeaker {
+        Button(action: onPlayback) {
+          Image(
+            systemName: muted == nil
+              ? "speaker.badge.exclamationmark"
+              : muted == true
+                ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+          )
+          .font(.system(size: glyphSize, weight: .semibold))
+          .modifier(OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil)))
+          .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+          .frame(width: Self.controlFrame * controlScale, height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
+        .csFocusOutline()
+        .disabled(!playbackEnabled || muted == nil)
+        .overlayFastHint(speakerHint, palette: palette)
+        .accessibilityLabel(Text(verbatim: playbackLabel))
+        .accessibilityValue(Text(verbatim: playbackValue))
+        .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
+        .accessibilityIdentifier("overlay-agent-speaker")
       }
-      .tint(Self.litGlass(open ? Color.red : nil))
-      .csFocusOutline()
-      .disabled(!microphoneEnabled)
-      .help(microphoneLabel)
-      .accessibilityLabel(microphoneLabel)
-      .accessibilityValue(
-        open ? String(localized: "Microphone active") : String(localized: "Microphone off")
-      )
-      .accessibilityIdentifier("overlay-agent-microphone")
 
-      Button(action: onPlayback) {
-        Image(
-          systemName: muted == nil
-            ? "speaker.badge.exclamationmark"
-            : muted == true
-              ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+      if showsMicrophone {
+        Button(action: onMicrophone) {
+          Image(systemName: microphoneSymbol)
+            .overlayMirrored(broadcast)
+            .font(.system(size: glyphSize, weight: .semibold))
+            .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
+            .symbolEffect(.pulse, isActive: open && !reduceMotion)
+            .frame(
+              width: Self.controlFrame * controlScale,
+              height: Self.controlFrame * controlScale)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(open ? recordingAccent : nil))
+        .csFocusOutline()
+        .disabled(!microphoneEnabled)
+        .overlayFastHint(microphoneLabel, palette: palette)
+        .accessibilityLabel(Text(verbatim: microphoneLabel))
+        .accessibilityValue(
+          Text(
+            verbatim: open
+              ? String(localized: "Microphone active") : String(localized: "Microphone off"))
         )
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(speakingNow ? palette.agentAccent.color : palette.primaryText.color)
-        .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-        .frame(width: 16, height: 16)
+        .accessibilityHint(
+          Text(
+            verbatim: microphoneEnabled
+              ? microphoneLabel
+              : String(
+                localized: "Microphone unavailable",
+                comment: "Disabled agent microphone control"))
+        )
+        .accessibilityIdentifier("overlay-agent-microphone")
       }
-      .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-      .csFocusOutline()
-      .disabled(!playbackEnabled || muted == nil)
-      .help(speakingNow ? String(localized: "Speaking") + ". " + playbackLabel : playbackLabel)
-      .accessibilityLabel(playbackLabel)
-      .accessibilityValue(playbackValue)
-      .accessibilityIdentifier("overlay-agent-speaker")
     }
-    .modifier(OverlayAgentControlStyle())
+    .modifier(
+      OverlayAgentControlStyle(diameter: diameter.map { $0 * controlScale }, chrome: chrome)
+    )
     // Founder, 2026-10-15: an I-beam showed between and over these buttons.
     // They float above message and transcript text, whose tracking set the
     // text cursor; the pair and its gap claim the arrow like the drawer does.
     .background { OverlayMenuCursorRegion() }
+  }
+}
+
+/// A rendered command carries its real availability and existing owner callback.
+/// It never owns a second conversation, recorder or preference.
+struct OverlayAgentPillMenuAction {
+  let title: String
+  let symbol: String
+  let identifier: String
+  let enabled: Bool
+  let perform: () -> Void
+}
+
+struct OverlayAgentPillMenuActions {
+  let write: OverlayAgentPillMenuAction
+  let microphone: OverlayAgentPillMenuAction?
+  let playback: OverlayAgentPillMenuAction?
+  let showInAgents: OverlayAgentPillMenuAction?
+  let focus: OverlayAgentPillMenuAction?
+  let archive: OverlayAgentPillMenuAction?
+}
+
+/// The one owner of reception changes (Copilot on #183). The marks, the pill
+/// menu and the Intercom each kept their own pending flag and built the next
+/// policy from the roster's cached receipt, which the poll refreshes only
+/// every 500 ms: the moon and then the antenna inside that window wrote `.off`
+/// over the lit moon. A change now starts from the latest read-back, holds
+/// every surface for that agent until the helper's new receipt is read back,
+/// and a poll that began before the write cannot paint the old receipt over it.
+@MainActor
+@Observable
+final class OverlayBroadcastPolicyLedger {
+  static let shared = OverlayBroadcastPolicyLedger()
+
+  private(set) var pending: Set<AgentPlaybackIdentity> = []
+  /// Receipts read back after this app's own writes, shown until a poll that
+  /// started after the last write reports.
+  private(set) var readBacks: [AgentPlaybackIdentity: AgentBroadcastPolicy] = [:]
+  @ObservationIgnored private(set) var revision: UInt64 = 0
+  @ObservationIgnored private let write:
+    @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws -> Void
+  @ObservationIgnored private let readBack:
+    @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy?
+
+  init(
+    write:
+      @escaping @MainActor (AgentBroadcastPolicy, AgentPlaybackIdentity) async throws ->
+      Void = { policy, identity in
+        try await OverlayBroadcastPolicyMenu.setPolicy(policy, for: identity)
+      },
+    readBack: @escaping @MainActor (AgentPlaybackIdentity) async -> AgentBroadcastPolicy? = {
+      identity in
+      await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: [identity])[identity]
+    }
+  ) {
+    self.write = write
+    self.readBack = readBack
+  }
+
+  func policy(for identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy)
+    -> AgentBroadcastPolicy
+  {
+    readBacks[identity] ?? polled
+  }
+
+  func isPending(_ identity: AgentPlaybackIdentity?) -> Bool {
+    identity.map { pending.contains($0) } ?? false
+  }
+
+  /// Edits one axis of the latest policy. A second change while one is in
+  /// flight for the same agent, or an edit that changes nothing, writes
+  /// nothing.
+  func change(
+    _ identity: AgentPlaybackIdentity, polled: AgentBroadcastPolicy,
+    _ edit: (inout AgentBroadcastPolicy) -> Void
+  ) async throws {
+    guard !pending.contains(identity) else { return }
+    let base = policy(for: identity, polled: polled)
+    var next = base
+    edit(&next)
+    guard next != base else { return }
+    pending.insert(identity)
+    revision &+= 1
+    defer {
+      pending.remove(identity)
+      revision &+= 1
+    }
+    try await write(next, identity)
+    // Published before the hold lifts, so the next click starts from it.
+    readBacks[identity] = await readBack(identity) ?? next
+  }
+
+  /// A poll that started at `revision` may paint its receipts only when no
+  /// change began or ended meanwhile; it is then newer than every read-back.
+  func admitsPoll(startedAt revision: UInt64) -> Bool {
+    guard revision == self.revision, pending.isEmpty else { return false }
+    if !readBacks.isEmpty { readBacks = [:] }
+    return true
   }
 }
 
@@ -406,7 +780,8 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   let palette: OverlayAppearancePalette
   let enabled: Bool
   var errorAlignment: HorizontalAlignment = .leading
-  @State private var pending: Set<AgentPlaybackIdentity> = []
+  var agentActions: OverlayAgentPillMenuActions? = nil
+  var showsInlineError = true
   @State private var commandError: String?
 
   @MainActor
@@ -424,8 +799,20 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     } else {
       VStack(alignment: errorAlignment, spacing: 2) {
         content.contextMenu {
+          if let commandError, !showsInlineError {
+            Text(verbatim: commandError)
+            Divider()
+          }
           if members.count == 1, let member = members.first {
+            if let agentActions {
+              agentCommands(agentActions)
+              Divider()
+            }
             policyActions(for: member)
+            if let archive = agentActions?.archive {
+              Divider()
+              agentCommand(archive, role: .destructive)
+            }
           } else {
             ForEach(members) { member in
               Menu {
@@ -440,7 +827,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             }
           }
         }
-        if let commandError {
+        if let commandError, showsInlineError {
           Text(verbatim: commandError)
             .foregroundStyle(palette.errorStatus.color)
             .accessibilityIdentifier("overlay-broadcast-policy-error")
@@ -450,19 +837,36 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   }
 
   @ViewBuilder
+  private func agentCommands(_ actions: OverlayAgentPillMenuActions) -> some View {
+    agentCommand(actions.write)
+    if let microphone = actions.microphone { agentCommand(microphone) }
+    if let playback = actions.playback { agentCommand(playback) }
+    if let showInAgents = actions.showInAgents { agentCommand(showInAgents) }
+    if let focus = actions.focus { agentCommand(focus) }
+  }
+
+  private func agentCommand(
+    _ command: OverlayAgentPillMenuAction, role: ButtonRole? = nil
+  ) -> some View {
+    Button(role: role, action: command.perform) {
+      Label(command.title, systemImage: command.symbol)
+    }
+    .disabled(!command.enabled)
+    .accessibilityIdentifier(command.identifier)
+  }
+
+  @ViewBuilder
   private func policyActions(for channel: OverlayChannelDelivery) -> some View {
-    // Two STATE checkboxes in the menu's native state column (Maciej,
-    // 2026-10-17): "Channel 0" is membership in the zero broadcasts, "Steer"
-    // is wake-versus-queue — and since the soft-queue decision, Steer governs
-    // every delivery, direct and peer included. (channel0, steer) maps onto
-    // the wire policy: (on, on) = on, (on, off) = quiet, (off, _) = off.
+    // Channel 0 is membership; Do not disturb is the moon. Two axes, each its
+    // own box, neither greyed by the other (Maciej, 2026-10-23: the moon must
+    // light "w dowolnym momencie, nie tylko jeśli kanał 0 jest wyłączony").
     let locked =
       !enabled || channel.broadcastIdentity == nil
-      || channel.broadcastIdentity.map { pending.contains($0) } == true
+      || OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
     Toggle(
       isOn: Binding(
-        get: { channel.broadcastPolicy != .off },
-        set: { member in apply(member ? .on : .off, to: channel) }
+        get: { channel.broadcastPolicy.member },
+        set: { member in apply(to: channel) { $0.member = member } }
       )
     ) {
       Text("Channel 0", comment: "Pill context menu: membership in channel-zero broadcasts")
@@ -470,30 +874,29 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
     .disabled(locked)
     Toggle(
       isOn: Binding(
-        // Off keeps directs waking (the wire has no off+quiet state), so the
-        // disabled Steer box must still read ticked — an unticked box over
-        // deliveries that ring would lie (stasiu's falsifier, 2026-10-17).
-        get: { channel.broadcastPolicy != .quiet },
-        set: { steer in apply(steer ? .on : .quiet, to: channel) }
+        get: { channel.broadcastPolicy.moon },
+        set: { moon in apply(to: channel) { $0.moon = moon } }
       )
     ) {
       Text(
-        "Steer (otherwise queued)",
-        comment: "Pill context menu: deliveries wake the agent; unticked, they queue silently")
+        "Do not disturb",
+        comment:
+          "Agent pill menu: ticked, deliveries wait in the mailbox without waking the agent"
+      )
     }
-    .disabled(locked || channel.broadcastPolicy == .off)
+    .disabled(locked)
   }
 
-  private func apply(_ policy: AgentBroadcastPolicy, to channel: OverlayChannelDelivery) {
-    guard policy != channel.broadcastPolicy, let identity = channel.broadcastIdentity,
-      !pending.contains(identity)
-    else { return }
-    pending.insert(identity)
+  private func apply(
+    to channel: OverlayChannelDelivery, _ edit: @escaping (inout AgentBroadcastPolicy) -> Void
+  ) {
+    let ledger = OverlayBroadcastPolicyLedger.shared
+    guard let identity = channel.broadcastIdentity, !ledger.isPending(identity) else { return }
+    let polled = channel.broadcastPolicy
     commandError = nil
     Task { @MainActor in
-      defer { pending.remove(identity) }
       do {
-        try await Self.setPolicy(policy, for: identity)
+        try await ledger.change(identity, polled: polled, edit)
       } catch {
         commandError = String(localized: "Couldn't change broadcast reception.")
       }
@@ -501,10 +904,85 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   }
 }
 
+/// The agent's two reception marks beside its name, each a one-click switch
+/// (Maciej, 2026-10-23: "symbole broadcastu zrób klikalnymi"): the antenna
+/// joins or leaves channel 0, the moon lights or clears do-not-disturb. They
+/// move independently and neither greys the other. The roster, the Intercom
+/// fiszki and the pill menu all issue the same command through the helper.
+struct OverlayReceptionMarks: View {
+  let channel: OverlayChannelDelivery
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  var enabled = true
+
+  private var policy: AgentBroadcastPolicy { channel.broadcastPolicy }
+  /// Any surface's change in flight holds these marks too.
+  private var pending: Bool {
+    OverlayBroadcastPolicyLedger.shared.isPending(channel.broadcastIdentity)
+  }
+
+  var body: some View {
+    HStack(spacing: 3) {
+      mark(
+        symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+        help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
+      ) {
+        apply { $0.member.toggle() }
+      }
+      // The moon speaks through its shape alone: a dimmed outline when clear,
+      // a filled moon in the row's own text colour when lit. The amber of
+      // `processingStatus` made it a yellow warning beside the name (Maciej,
+      // 2026-10-23: "żółty księżyc zamiast kontur ↔ wypełnienie, brzydko").
+      mark(
+        symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color,
+        unlitOpacity: 0.45,
+        help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
+      ) {
+        apply { $0.moon.toggle() }
+      }
+    }
+    .accessibilityIdentifier("overlay-reception-marks-\(channel.channel)")
+  }
+
+  private func mark(
+    symbol: String, lit: Bool, litColor: Color, unlitOpacity: Double = 1,
+    help: String, identifier: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 10 * textScale))
+        .foregroundStyle(lit ? litColor : palette.mutedText.color.opacity(unlitOpacity))
+        .frame(width: 14 * textScale, height: 14 * textScale)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled || pending || channel.broadcastIdentity == nil)
+    .overlayFastHint(help, palette: palette)
+    .accessibilityLabel(Text(verbatim: help))
+    .accessibilityIdentifier(identifier)
+  }
+
+  private func apply(_ edit: @escaping (inout AgentBroadcastPolicy) -> Void) {
+    guard let identity = channel.broadcastIdentity, !pending else { return }
+    let polled = policy
+    Task { @MainActor in
+      // A refused command leaves the mark as the receipt still says; the pill
+      // menu's inline error is the place that names the refusal.
+      try? await OverlayBroadcastPolicyLedger.shared.change(identity, polled: polled, edit)
+    }
+  }
+}
+
 /// A quiet notification affordance opens the full monitor on the overlay canvas.
 struct OverlayChannelStatusView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.csTextScale) private var textScale
+  /// Not `@Environment`: the overlay calls `monitorBody` on this value from its
+  /// own body, so the struct is never installed and an environment property
+  /// reads its default. ⌘+ grew the docked column and the conversation while
+  /// the roster's text stayed at 1.0 (Maciej, 2026-10-19). `monitorBody` sets
+  /// the scale read where the column is installed.
+  private var textScale: CGFloat = 1
 
   let channels: [OverlayChannelDelivery]
   let rosterReady: Bool
@@ -523,7 +1001,12 @@ struct OverlayChannelStatusView: View {
   let unreadCounts: [String: Int]
   let onSelectConversation: ((String?) -> Void)?
   let onShowMonitor: (() -> Void)?
+  /// Explicitly show this agent in the list. Unlike the header toggle, this
+  /// callback never closes a panel or stops a recording.
+  var onShowAgentInMonitor: ((String) -> Void)? = nil
   var headerSelected = false
+  /// The recording agent is on screen: a press stops its capture.
+  var agentMicrophoneStops = false
   var mutedChannels: [String: Bool] = [:]
   var pendingMuteChannels: Set<String> = []
   var onTogglePlayback: ((String) -> Void)?
@@ -533,9 +1016,14 @@ struct OverlayChannelStatusView: View {
   var archivedOwners: Set<OverlayConversationOwner> = []
   var onArchiveAgent: ((OverlayConversationOwner) -> Void)?
   var archiveError: String?
+  var panelFocusStates: [String: OverlayAgentPanelFocusState] = [:]
+  var panelFocusAvailable = false
+  var onFocusAgentPanel: ((OverlayConversationOwner) -> Void)?
   /// The row the middle-click chooser has focused, and the hover that moves it.
   var gestureFocusID: String?
   var onGestureHover: ((String) -> Void)?
+  /// The list header's corner buttons; nil leaves the header bare.
+  var sidebarControls: OverlayAgentsSidebarControls?
   var searchModel: OverlayConversationSearchModel?
   @State private var internalSearchModel = OverlayConversationSearchModel()
 
@@ -575,6 +1063,98 @@ struct OverlayChannelStatusView: View {
     self.searchModel = searchModel
   }
 
+  /// Common roster and command projection. A floating card can override only
+  /// conversation presentation; the execution and broadcast policy stay shared.
+  static func intercomRoster(
+    state: OverlayState, palette: OverlayAppearancePalette, animates: Bool,
+    onRevealConversation: (() -> Void)? = nil,
+    onOpenConversation: ((String) -> Void)? = nil
+  ) -> OverlayChannelStatusView {
+    let ownedConversations = Self.currentConversations(
+      conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
+      hudStates: state.channelHudStates)
+    var view = OverlayChannelStatusView(
+      channels: state.visibleChannelRows.filter { $0.channel != "0" },
+      unavailable: state.channelStatusUnavailable,
+      palette: palette, animates: animates,
+      hudStates: state.channelHudStates,
+      agentDescriptors: state.channelAgentDescriptors,
+      onToggleChannel: { digit in
+        guard let conversation = ownedConversations.first(where: { $0.channel == String(digit) })
+        else { return }
+        Task {
+          await state.toggleConversationMicrophone(
+            conversation, keepsAgentList: true, preservesPresentation: onOpenConversation != nil)
+        }
+      },
+      toggleError: state.channelToggleError,
+      pendingToggleChannels: state.pendingChannelToggles,
+      conversations: state.conversations,
+      selectedConversationID: state.selectedConversationID,
+      unreadCounts: Dictionary(
+        uniqueKeysWithValues: state.conversations.map {
+          ($0.id, state.unreadReplies(in: $0))
+        }),
+      // A row or a rail pill: in the agents view the conversation slides out.
+      onSelectConversation: { id in
+        if let id {
+          if let onOpenConversation {
+            onOpenConversation(id)
+          } else {
+            state.chooseConversation(id)
+            onRevealConversation?()
+          }
+        } else {
+          state.selectConversation(nil)
+        }
+      },
+      onShowMonitor: state.toggleAgentSidebar,
+      // The drawer value is rebuilt on every body pass and only its
+      // `monitorBody(...)` is installed, so a `@State` on it never persists:
+      // each HUD tick handed the drawer a fresh, empty search model and the
+      // query vanished mid-typing. The overlay state owns the model.
+      searchModel: state.savedConversationSearch,
+      rosterReady: state.hasLoadedChannelRoster
+    )
+    view.mutedChannels = state.channelPlaybackMuted
+    view.headerSelected =
+      !state.isCollapsed && state.windowContentSurface == .agents
+    view.agentMicrophoneStops = state.agentsButtonStopsRecording
+    view.pendingMuteChannels = state.pendingPlaybackChannels
+    view.onTogglePlayback = { channel in
+      guard let conversation = ownedConversations.first(where: { $0.channel == channel }) else {
+        return
+      }
+      Task { await state.toggleConversationPlayback(conversation) }
+    }
+    view.playbackError = state.playbackPreferenceError
+    view.archiveCandidates = Dictionary(
+      uniqueKeysWithValues: state.visibleChannelRows.compactMap {
+        state.archiveCandidate(for: $0.channel).map { ($0.channel, $0) }
+      })
+    view.pendingArchives = state.pendingAgentArchives
+    view.archivedOwners = state.archivedAgentOwners
+    view.onArchiveAgent = { owner in Task { await state.archiveAgent(owner) } }
+    view.archiveError = state.agentArchiveError
+    view.panelFocusStates = state.agentPanelFocusStates
+    view.panelFocusAvailable = state.agentPanelFocusAvailable
+    // The view resolves the destination per row; `vc-frame` gates only Frame.
+    view.onFocusAgentPanel = { state.focusAgentPanel($0) }
+    view.gestureFocusID = state.agentGestureFocusID
+    view.onGestureHover = { state.hoverAgentGestureTarget($0) }
+    view.onShowAgentInMonitor = { [view] digit in
+      if let channel = view.channels.first(where: { $0.channel == digit }),
+        let conversation = view.conversation(for: channel)
+      {
+        state.chooseConversation(conversation.id)
+      }
+      state.showAgentMonitor()
+      state.focusAgentRoster()
+      onRevealConversation?()
+    }
+    return view
+  }
+
   static func toggleDigit(for channel: String) -> UInt8? {
     guard let digit = UInt8(channel), (0...9).contains(digit) else { return nil }
     return digit
@@ -591,6 +1171,12 @@ struct OverlayChannelStatusView: View {
 
   func hasDeadFollower(_ channel: OverlayChannelDelivery) -> Bool {
     hudStates[channel.channel]?.followerAlive == false
+  }
+
+  /// Nobody reads this channel: its follower is gone, or alive with a backlog
+  /// unread past the stall horizon.
+  func isInactive(_ channel: OverlayChannelDelivery) -> Bool {
+    hasDeadFollower(channel) || hasStalledFollower(channel)
   }
 
   func hasStalledFollower(_ channel: OverlayChannelDelivery) -> Bool {
@@ -618,8 +1204,29 @@ struct OverlayChannelStatusView: View {
     return title + " (" + String(count) + ")"
   }
 
-  var body: some View {
-    Button(action: showMonitor) {
+  /// Open agent capture is violet and pulsing. Its glyph distinguishes an
+  /// individual microphone from an explicit channel-zero broadcast.
+  var agentCaptureOpen: Bool {
+    hudStates.values.contains(where: \.open)
+  }
+
+  private var headerTitle: String {
+    guard agentCaptureOpen else { return String(localized: "Agents") }
+    let action =
+      agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
+    return action + ". " + OverlayRecordingLight.agent.tooltip
+  }
+
+  @ViewBuilder
+  private var headerGlyph: some View {
+    if agentCaptureOpen {
+      let broadcasting = hudStates["0"]?.open == true
+      OverlayMicrophoneGlyph(
+        symbol: broadcasting ? "megaphone" : OverlayAgentAudioControls.liveSpeechSymbol,
+        tint: OverlayRecordingLight.agent.color, mirrored: broadcasting
+      )
+      .symbolEffect(.pulse, isActive: animates && !reduceMotion)
+    } else {
       // The chrome owns the selected wash; the glyph drops its own plate.
       OverlayMicrophoneGlyph(
         character: OverlayHeaderGlyph.agents,
@@ -627,29 +1234,37 @@ struct OverlayChannelStatusView: View {
           ? OverlayHeaderAccent.agents.selectionTint(in: palette) : palette.mutedText.color,
         plateOpacity: headerSelected ? 0 : 0.12
       )
-      .contentShape(Circle())
-      .overlay(alignment: .topTrailing) {
-        if unreadCounts.values.contains(where: { $0 > 0 }) {
-          Circle()
-            .fill(palette.primaryText.color)
-            .frame(width: 5, height: 5)
-            .offset(x: 2, y: -2)
-            .accessibilityLabel("Unread replies")
-            .accessibilityIdentifier("overlay-unread-replies")
+    }
+  }
+
+  var body: some View {
+    Button(action: showMonitor) {
+      headerGlyph
+        .contentShape(Circle())
+        .overlay(alignment: .topTrailing) {
+          if unreadCounts.values.contains(where: { $0 > 0 }) {
+            Circle()
+              .fill(palette.primaryText.color)
+              .frame(width: 5, height: 5)
+              .offset(x: 2, y: -2)
+              .accessibilityLabel("Unread replies")
+              .accessibilityIdentifier("overlay-unread-replies")
+          }
         }
-      }
     }
     .buttonStyle(.plain)
     .csFocusOutline()
     .fixedSize()
     .modifier(
       OverlayHeaderControlChrome(
-        title: String(localized: "Agents"), accent: .agents, palette: palette,
+        title: headerTitle, accent: .agents, palette: palette,
         selected: headerSelected)
     )
-    .accessibilityLabel("Agents")
+    .accessibilityLabel(
+      agentMicrophoneStops ? String(localized: "Stop recording") : String(localized: "Agents")
+    )
     .accessibilityAddTraits(headerSelected ? .isSelected : [])
-    .accessibilityValue(glyph.label)
+    .accessibilityValue(agentCaptureOpen ? OverlayRecordingLight.agent.name : glyph.label)
     .accessibilityIdentifier("overlay-agent-glyph")
   }
 
@@ -676,30 +1291,290 @@ struct OverlayChannelStatusView: View {
   /// The roster body. Wide windows dock it as the right-hand column, so the
   /// header carries the agent count, not a close button; `focusRevision` is the
   /// docked name pill's channel for focusing the selected row. The middle-click
-  /// chooser's focus scrolls into view, as in the pill stack. The narrow
-  /// window's surface is `pillStack(onSelect:onDismiss:)`.
+  /// chooser's focus scrolls into view. Below the threshold the same body
+  /// covers the whole window.
   func monitorBody(maximumHeight: CGFloat, focusRevision: UInt64 = 0) -> some View {
+    OverlayTextScaleReader { scale in
+      var installed = self
+      installed.textScale = scale
+      return installed.scaledMonitorBody(
+        maximumHeight: maximumHeight, focusRevision: focusRevision)
+    }
+  }
+
+  /// The folded list (Maciej, 2026-10-19: "zostawia pigułki"): one pill per
+  /// row of the list, channel 0 first, under the `sidebar.right` that
+  /// unfolds it. A pill switches the conversation and the list stays folded.
+  func railBody(maximumHeight: CGFloat, onUnfold: @escaping () -> Void) -> some View {
+    OverlayTextScaleReader { scale in
+      var installed = self
+      installed.textScale = scale
+      return installed.scaledRailBody(maximumHeight: maximumHeight, onUnfold: onUnfold)
+    }
+  }
+
+  private func scaledRailBody(
+    maximumHeight: CGFloat, onUnfold: @escaping () -> Void
+  ) -> some View {
+    let unfold = 22 * textScale
+    return VStack(spacing: 8) {
+      OverlaySidebarToggleButton(
+        symbol: "sidebar.right", title: String(localized: "Show agents list"),
+        identifier: "overlay-agent-rail-unfold", palette: palette, textScale: textScale,
+        action: onUnfold)
+      ScrollView(.vertical) {
+        VStack(spacing: 6) {
+          if let broadcast = currentConversations.first(where: { $0.channel == "0" }) {
+            railPill(broadcast, channel: nil)
+          }
+          ForEach(channels) { channel in
+            railPill(conversation(for: channel), channel: channel)
+          }
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity)
+        .csAutohidingScrollers()
+      }
+      .frame(maxHeight: max(0, maximumHeight - unfold - 8))
+    }
+    // The list header sits 8 points into the roster content: the unfold
+    // button lands where `sidebar.right` folded it.
+    .padding(.top, 8)
+    .frame(maxWidth: .infinity)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("overlay-agent-rail-pills")
+  }
+
+  /// Status dot and channel number; the open conversation in the agent
+  /// accent, unread replies as the row badge's colour. The pill itself is the
+  /// shared `OverlayChannelPill`, the one drawing of a channel's digit.
+  private func railPill(
+    _ conversation: OverlayConversation?, channel: OverlayChannelDelivery?
+  ) -> some View {
+    let digit = channel?.channel ?? "0"
+    let selected = conversation != nil && conversation?.id == selectedConversationID
+    let unread = conversation.flatMap { unreadCounts[$0.id] } ?? 0
+    let title = channel.map { notificationTitle(for: $0) } ?? broadcastHeader
+    let canOpen = conversation != nil && onSelectConversation != nil
+    let hint =
+      canOpen
+      ? title + ". "
+        + String(localized: "View conversation without changing the microphone")
+      : String(
+        localized: "No conversation on this channel",
+        comment: "Disabled mini-rail channel pill")
+    return OverlayChannelPill(
+      form: .rail,
+      display: OverlayChannelPill.Display(
+        figure: digit, dot: channel.map { statusDotKind(for: $0) } ?? .broadcast,
+        disconnected: channel.map { hasDeadFollower($0) } ?? false, unread: unread > 0,
+        selected: selected, enabled: canOpen),
+      hint: hint, accessibilityText: title, identifier: "overlay-agent-rail-\(digit)",
+      palette: palette, textScale: textScale
+    ) {
+      if let conversation { onSelectConversation?(conversation.id) }
+    }
+    .accessibilityHint(Text(verbatim: hint))
+    .modifier(agentPillMenu(for: digit))
+  }
+
+  /// The collapsed overlay's channel map: another surface of this roster's
+  /// projections. Bound digits come from the roster snapshot (`hudStates`),
+  /// names from the same rows the list shows, unread marks from the same
+  /// counts, the selected chip from the same selection as a rail pill's, and
+  /// a chip is clickable only where a rail pill would be.
+  var channelMapModel: OverlayChannelMapModel {
+    let current = onSelectConversation == nil ? [] : currentConversations
+    return OverlayChannelMapModel(
+      channels: channels, hudStates: hudStates,
+      selectedDigit: currentConversations.first(where: { $0.id == selectedConversationID })?
+        .channel,
+      selectableDigits: Set(current.map(\.channel)),
+      unreadDigits: Set(current.filter { (unreadCounts[$0.id] ?? 0) > 0 }.map(\.channel)))
+  }
+
+  /// A map chip's click: the digit's current conversation, through the same
+  /// selection path and the same owner match as its rail pill. A digit with
+  /// no current conversation selects nothing; capture is never touched.
+  func selectChannelConversation(_ digit: String) {
+    guard let conversation = currentConversations.first(where: { $0.channel == digit }) else {
+      return
+    }
+    onSelectConversation?(conversation.id)
+  }
+
+  /// Write/Forward opens this owner's existing composer even when its
+  /// conversation is already selected; it never turns into panel focus.
+  func writeToAgent(_ channel: OverlayChannelDelivery) {
+    guard let conversation = conversation(for: channel) else { return }
+    onSelectConversation?(conversation.id)
+  }
+
+  func showAgentInMonitor(_ channel: OverlayChannelDelivery) {
+    onShowAgentInMonitor?(channel.channel)
+  }
+
+  func focusAgentPanel(_ channel: OverlayChannelDelivery) {
+    guard showsPanelFocusButton(for: channel), !panelFocusUnreachable(channel),
+      panelFocusStates[channel.channel]?.isRequesting != true,
+      let owner = archiveCandidates[channel.channel]
+    else { return }
+    onFocusAgentPanel?(owner)
+  }
+
+  func archiveAgent(_ channel: OverlayChannelDelivery) {
+    guard !isOpen(channel), let owner = archiveCandidates[channel.channel],
+      !pendingArchives.contains(owner)
+    else { return }
+    onArchiveAgent?(owner)
+  }
+
+  /// One menu projection for the header, folded rail, list and floating
+  /// intercom. Broadcast policy execution remains in its existing modifier.
+  func agentPillMenu(
+    for digit: String, showsInlineError: Bool = true
+  ) -> OverlayBroadcastPolicyMenu {
+    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0",
+      let actions = agentPillMenuActions(for: digit)
+    else {
+      return OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
+    }
+    return OverlayBroadcastPolicyMenu(
+      members: [channel], palette: palette, enabled: !unavailable,
+      agentActions: actions, showsInlineError: showsInlineError)
+  }
+
+  /// The commands behind one agent's pill menu, with their real availability.
+  /// The Intercom draws its focus button from the same `focus` action, so a
+  /// fiszka and the menu never disagree on where the agent can be reached.
+  func agentPillMenuActions(for digit: String) -> OverlayAgentPillMenuActions? {
+    guard let channel = channels.first(where: { $0.channel == digit }), digit != "0" else {
+      return nil
+    }
+    let microphoneEnabled =
+      !unavailable && onToggleChannel != nil
+      && !pendingToggleChannels.contains(digit)
+      && Self.toggleDigit(for: digit) != nil && !hasDeadFollower(channel)
+    let muted = mutedChannels[digit]
+    let focusState = panelFocusStates[digit]
+    let owner = archiveCandidates[digit]
+    return OverlayAgentPillMenuActions(
+      write: OverlayAgentPillMenuAction(
+        title: String(localized: "Write / Forward…"), symbol: "square.and.pencil",
+        identifier: "overlay-agent-menu-write-\(digit)",
+        enabled: conversation(for: channel) != nil && onSelectConversation != nil,
+        perform: { writeToAgent(channel) }),
+      microphone: onToggleChannel == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: isOpen(channel)
+            ? String(localized: "Stop speaking to agent")
+            : String(localized: "Speak to agent"),
+          symbol: OverlayAgentAudioControls.liveSpeechSymbol,
+          identifier: "overlay-agent-menu-microphone-\(digit)", enabled: microphoneEnabled,
+          perform: { if microphoneEnabled { toggle(channel) } }),
+      playback: onTogglePlayback == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: muted == nil
+            ? String(localized: "Playback status unavailable")
+            : muted == true
+              ? String(localized: "Unmute agent replies")
+              : String(localized: "Mute agent replies"),
+          symbol: muted == true ? "speaker.slash" : "speaker.wave.2",
+          identifier: "overlay-agent-menu-playback-\(digit)",
+          enabled: muted != nil && !pendingMuteChannels.contains(digit),
+          perform: {
+            if muted != nil, !pendingMuteChannels.contains(digit) { onTogglePlayback?(digit) }
+          }),
+      showInAgents: onShowAgentInMonitor == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: String(localized: "Show in Agents"), symbol: "person.2",
+          identifier: "overlay-agent-menu-show-\(digit)", enabled: true,
+          perform: { showAgentInMonitor(channel) }),
+      focus: !showsPanelFocusButton(for: channel)
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: panelFocusTarget(for: channel)?.help
+            ?? panelFocusHelp(for: channel, state: nil),
+          symbol: panelFocusSymbol(nil, target: panelFocusTarget(for: channel)),
+          identifier: "overlay-agent-menu-focus-\(digit)",
+          enabled: !panelFocusUnreachable(channel) && focusState?.isRequesting != true,
+          perform: { focusAgentPanel(channel) }),
+      archive: owner == nil || onArchiveAgent == nil
+        ? nil
+        : OverlayAgentPillMenuAction(
+          title: hasDeadFollower(channel)
+            ? String(localized: "Remove from list and move to archive")
+            : String(localized: "Disconnect and archive agent"),
+          symbol: "archivebox",
+          identifier: "overlay-agent-menu-archive-\(digit)",
+          enabled: !isOpen(channel) && owner.map { !pendingArchives.contains($0) } == true,
+          perform: { archiveAgent(channel) }))
+  }
+
+  private func scaledMonitorBody(maximumHeight: CGFloat, focusRevision: UInt64) -> some View {
     OverlayAgentMonitorBody(
       maximumHeight: maximumHeight, palette: palette,
       focusRevision: focusRevision, focusedRowID: selectedConversationID,
-      scrollTargetID: gestureFocusID
+      scrollTargetID: gestureFocusID.flatMap { id in
+        currentConversations.first(where: { $0.channel == "0" })?.id == id ? nil : id
+      }
     ) {
-      HStack {
+      HStack(spacing: 6) {
         Text("Agents").font(.system(size: 13 * textScale, weight: .semibold))
         Spacer()
         Text(verbatim: String(channels.count))
-          .font(.system(size: 11 * textScale, design: .monospaced))
+          .font(.system(size: 11 * textScale))
+          .monospacedDigit()
           .foregroundStyle(palette.mutedText.color)
           .accessibilityHidden(true)
+        if let sidebarControls {
+          OverlaySidebarToggleButton(
+            symbol: "sidebar.right", title: String(localized: "Hide agents list"),
+            identifier: "overlay-agent-sidebar-fold", palette: palette,
+            textScale: textScale, action: sidebarControls.onFoldList)
+        }
       }
-    } content: { rowFocus in
-      VStack(alignment: .leading, spacing: 8) {
-        if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
-          onSelectConversation != nil
-        {
-          rowGlassContainer(
-            HStack(spacing: 6) {
-              broadcastRow(broadcast, rowFocus: rowFocus)
+    } pinned: { rowFocus in
+      if let broadcast = currentConversations.first(where: { $0.channel == "0" }),
+        onSelectConversation != nil
+      {
+        rowGlassContainer(
+          VStack(alignment: .leading, spacing: 2) {
+            broadcastRow(broadcast, rowFocus: rowFocus)
+            // The pair sits beside the preview, not in the Agents header
+            // and not in the agent-row footer. Three lines belong to All.
+            HStack(alignment: .center, spacing: 8) {
+              if let last = broadcast.messages.last {
+                let unread = unreadCounts[broadcast.id] ?? 0
+                // The preview opens the conversation like an agent row's
+                // preview does; only the All pair beside it keeps its own
+                // actions (Founder, 2026-10-23: a click on it did nothing).
+                Button {
+                  onSelectConversation?(broadcast.id)
+                } label: {
+                  Text(verbatim: Self.drawerPreview(message: last))
+                    .font(.system(size: 12.5 * textScale))
+                    .foregroundStyle(
+                      unread > 0 ? palette.bodyText.color : palette.mutedText.color
+                    )
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(
+                  Text(
+                    verbatim: String(
+                      localized: "View conversation without changing the microphone"))
+                )
+                .accessibilityIdentifier("overlay-all-preview")
+              } else {
+                Spacer(minLength: 0)
+              }
               OverlayAgentAudioControls(
                 open: hudStates["0"]?.open == true, muted: mutedChannels["0"],
                 microphoneEnabled: !unavailable && hudStates["0"] != nil
@@ -712,19 +1587,31 @@ struct OverlayChannelStatusView: View {
               .fixedSize()
               .accessibilityIdentifier("overlay-channel-toggle-0")
             }
-          )
-          .modifier(
-            OverlayGestureFocusRing(
-              focused: broadcast.id == gestureFocusID,
-              shape: RoundedRectangle(cornerRadius: 10), palette: palette,
-              targetID: broadcast.id, onHover: onGestureHover)
-          )
-          .id(broadcast.id)
-          .modifier(
-            OverlayBroadcastPolicyMenu(
-              members: broadcastMembers, palette: palette, enabled: !unavailable))
-        }
-        Divider()
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        )
+        // The shared channel is a roster row: the same padding, the same
+        // selection mark and the same hover as the agents under it.
+        .padding(.vertical, 3)
+        .padding(.horizontal, 5)
+        .modifier(
+          OverlayRosterRowSelection(
+            palette: palette, selected: selectedConversationID == broadcast.id)
+        )
+        .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
+        .modifier(
+          OverlayGestureFocusRing(
+            focused: broadcast.id == gestureFocusID,
+            shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+            targetID: broadcast.id, onHover: onGestureHover)
+        )
+        .id(broadcast.id)
+        .modifier(
+          OverlayBroadcastPolicyMenu(
+            members: broadcastMembers, palette: palette, enabled: !unavailable))
+      }
+    } content: { rowFocus in
+      VStack(alignment: .leading, spacing: 6) {
         detailsContent(rowFocus: rowFocus)
           .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.primaryText.color)
@@ -778,8 +1665,51 @@ struct OverlayChannelStatusView: View {
     currentConversations.first { $0.channel == channel.channel }
   }
 
+  /// Where this row's focus button lands: the Frame pane when one is known
+  /// and `vc-frame` can reach it, otherwise the agent's terminal tab,
+  /// otherwise a Codex agent's thread in the Codex app.
+  func panelFocusTarget(for channel: OverlayChannelDelivery) -> OverlayAgentPanelFocusTarget? {
+    OverlayAgentPanelFocusTarget.resolve(
+      hudStates[channel.channel], frameFocusAvailable: panelFocusAvailable)
+  }
+
+  /// The row's only known destination is a Codex Cloud thread.
+  func hasCodexCloudThread(_ channel: OverlayChannelDelivery) -> Bool {
+    OverlayAgentPanelFocusTarget.isCodexCloudThread(
+      hudStates[channel.channel], frameFocusAvailable: panelFocusAvailable)
+  }
+
+  /// Frame and terminal destinations need a live follower; a Codex thread
+  /// does not, and a Codex Cloud thread shows its button greyed.
+  func showsPanelFocusButton(for channel: OverlayChannelDelivery) -> Bool {
+    guard archiveCandidates[channel.channel] != nil, onFocusAgentPanel != nil else {
+      return false
+    }
+    if hasCodexCloudThread(channel) { return true }
+    guard let target = panelFocusTarget(for: channel) else { return false }
+    return !target.needsLiveFollower || hudStates[channel.channel]?.followerAlive == true
+  }
+
+  /// The focus button is rendered but cannot act: a disconnected follower
+  /// for Frame or a terminal, no destination at all, or a Codex Cloud thread.
+  /// A local Codex thread opens with the follower disconnected.
+  func panelFocusUnreachable(_ channel: OverlayChannelDelivery) -> Bool {
+    if hasCodexCloudThread(channel) { return true }
+    if panelFocusTarget(for: channel)?.needsLiveFollower == false { return false }
+    return hasDeadFollower(channel) || hasNoTerminalTarget(channel)
+  }
+
   func viewConversation(_ channel: OverlayChannelDelivery) {
     guard let conversation = conversation(for: channel) else { return }
+    if selectedConversationID == conversation.id,
+      showsPanelFocusButton(for: channel),
+      let owner = archiveCandidates[channel.channel],
+      !panelFocusUnreachable(channel),
+      let onFocusAgentPanel
+    {
+      onFocusAgentPanel(owner)
+      return
+    }
     onSelectConversation?(conversation.id)
   }
 
@@ -787,7 +1717,7 @@ struct OverlayChannelStatusView: View {
     overlayGlassGroup(content)
   }
 
-  private func channelRow(
+  func channelRow(
     _ channel: OverlayChannelDelivery, rowFocus: FocusState<String?>.Binding? = nil
   ) -> some View {
     let conversation = conversation(for: channel)
@@ -803,13 +1733,17 @@ struct OverlayChannelStatusView: View {
     if let conversation, let count = unreadCounts[conversation.id], count > 0 {
       tooltipParts.append(String(localized: "\(count) unread replies"))
     }
+    tooltipParts.append(channel.broadcastPolicy.statusHelp)
     let tooltip = tooltipParts.joined(separator: ". ")
+    let identityHint =
+      conversation == nil
+      ? String(localized: "No messages yet")
+      : String(localized: "View conversation without changing the microphone")
     let label = rosterRowLabel(
-      title: "\(channel.channel) · \(conversation?.name ?? channel.agent)",
-      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel),
-      receiptText: receiptText)
+      title: conversation?.name ?? channel.agent,
+      statusChannel: channel, conversation: conversation, dot: statusDotKind(for: channel))
     return rowGlassContainer(
-      HStack(spacing: 6) {
+      VStack(alignment: .leading, spacing: 4) {
         Group {
           if let conversation, onSelectConversation != nil {
             Button {
@@ -819,68 +1753,133 @@ struct OverlayChannelStatusView: View {
             }
             .buttonStyle(.plain)
             .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
+          } else if showsPanelFocusButton(for: channel),
+            let owner = archiveCandidates[channel.channel],
+            !panelFocusUnreachable(channel),
+            let onFocusAgentPanel
+          {
+            Button {
+              onFocusAgentPanel(owner)
+            } label: {
+              label
+            }
+            .buttonStyle(.plain)
           } else {
             label.accessibilityElement(children: .combine)
           }
         }
         .foregroundStyle(palette.primaryText.color)
-        .help(
-          (conversation == nil
-            ? String(localized: "No messages yet")
-            : String(localized: "View conversation without changing the microphone"))
-            + ". " + status
-        )
         .accessibilityLabel(Text(verbatim: notificationTitle(for: channel)))
         .accessibilityValue(Text(verbatim: tooltip))
+        .accessibilityHint(Text(verbatim: identityHint))
         .accessibilityIdentifier("overlay-view-conversation-\(conversation?.id ?? channel.channel)")
 
-        OverlayAgentAudioControls(
-          open: open, muted: mutedChannels[channel.channel],
-          microphoneEnabled: !unavailable && onToggleChannel != nil
-            && !pendingToggleChannels.contains(channel.channel)
-            && Self.toggleDigit(for: channel.channel) != nil
-            && !hasDeadFollower(channel),
-          playbackEnabled: onTogglePlayback != nil
-            && !pendingMuteChannels.contains(channel.channel),
-          palette: palette, onMicrophone: { toggle(channel) },
-          onPlayback: { onTogglePlayback?(channel.channel) },
-          speaking: conversation?.replySpeaking == true
-        )
-        .fixedSize()
-        .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
-        // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
-        // tam zawsze"); only an open microphone or an archive in flight
-        // disables it, and the help says which.
-        if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
-          let archiveHelp = archiveHelp(for: channel)
-          Button {
-            onArchiveAgent?(owner)
-          } label: {
-            Image(systemName: "xmark")
-              .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(palette.primaryText.color)
-              .frame(width: 16, height: 16)
+        // The controls occupy only the footer. Identity, time and preview
+        // above use the entire row instead of a narrow column beside them.
+        HStack(spacing: 8) {
+          rosterRowState(channel, receiptText: receiptText)
+          Spacer(minLength: 0)
+          HStack(spacing: 6) {
+            if showsPanelFocusButton(for: channel),
+              let owner = archiveCandidates[channel.channel],
+              let onFocusAgentPanel
+            {
+              let focusState = panelFocusStates[channel.channel]
+              let focusHelp = panelFocusHelp(for: channel, state: focusState)
+              Button {
+                onFocusAgentPanel(owner)
+              } label: {
+                Group {
+                  if focusState?.isRequesting == true {
+                    ProgressView()
+                      .controlSize(.mini)
+                  } else {
+                    Image(
+                      systemName: panelFocusSymbol(
+                        focusState,
+                        target: panelFocusTarget(for: channel)
+                          ?? (hasCodexCloudThread(channel)
+                            ? OverlayAgentPanelFocusTarget.codexThread : nil))
+                    )
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(
+                      focusState?.isSucceeded == true
+                        ? palette.successStatus.color
+                        : focusState?.isFailed == true
+                          ? palette.errorStatus.color
+                          : panelFocusUnreachable(channel)
+                            ? palette.mutedText.color : palette.primaryText.color
+                    )
+                  }
+                }
+                .frame(width: 16, height: 16)
+              }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .disabled(focusState?.isRequesting == true || panelFocusUnreachable(channel))
+              .modifier(
+                OverlayHeaderControlChrome(title: focusHelp, accent: nil, palette: palette)
+              )
+              .accessibilityLabel(Text(verbatim: focusHelp))
+              .accessibilityIdentifier("overlay-focus-panel-\(channel.channel)")
+            }
+            OverlayAgentAudioControls(
+              open: open, muted: mutedChannels[channel.channel],
+              microphoneEnabled: !unavailable && onToggleChannel != nil
+                && !pendingToggleChannels.contains(channel.channel)
+                && Self.toggleDigit(for: channel.channel) != nil
+                && !hasDeadFollower(channel),
+              playbackEnabled: onTogglePlayback != nil
+                && !pendingMuteChannels.contains(channel.channel)
+                && !hasDeadFollower(channel),
+              palette: palette, onMicrophone: { toggle(channel) },
+              onPlayback: { onTogglePlayback?(channel.channel) },
+              speaking: conversation?.replySpeaking == true
+            )
+            .fixedSize()
+            .accessibilityIdentifier("overlay-channel-toggle-\(channel.channel)")
+            // The cross is on every bound row (Founder, 2026-10-14: "x dostępny
+            // tam zawsze"); only an open microphone or an archive in flight
+            // disables it, and the help says which.
+            if let owner = archiveCandidates[channel.channel], onArchiveAgent != nil {
+              let archiveHelp = archiveHelp(for: channel)
+              Button {
+                onArchiveAgent?(owner)
+              } label: {
+                Image(systemName: "xmark")
+                  .font(.system(size: 12, weight: .semibold))
+                  .foregroundStyle(palette.primaryText.color)
+                  .frame(width: 16, height: 16)
+              }
+              .modifier(OverlayAgentControlStyle())
+              .csFocusOutline()
+              .disabled(pendingArchives.contains(owner) || open)
+              .overlayFastHint(archiveHelp, palette: palette)
+              .accessibilityLabel(Text(verbatim: archiveHelp))
+              .accessibilityHint(Text(verbatim: archiveHelp))
+              .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
+            }
           }
-          .modifier(OverlayAgentControlStyle())
-          .csFocusOutline()
-          .disabled(pendingArchives.contains(owner) || open)
-          .help(archiveHelp)
-          .accessibilityLabel(Text(verbatim: archiveHelp))
-          .accessibilityIdentifier("overlay-archive-agent-\(channel.channel)")
+          .fixedSize(horizontal: true, vertical: false)
+          .accessibilityIdentifier("overlay-agent-row-controls-\(channel.channel)")
         }
+        .padding(.trailing, 6)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     )
-    .padding(.vertical, 4)
-    .padding(.horizontal, 6)
-    .background(
-      selectedConversationID == conversation?.id && conversation != nil
-        ? palette.mutedText.color.opacity(0.10) : .clear,
-      in: RoundedRectangle(cornerRadius: 10)
+    .padding(.vertical, 3)
+    .padding(.horizontal, 5)
+    .modifier(
+      OverlayRosterRowSelection(
+        palette: palette,
+        selected: conversation != nil && selectedConversationID == conversation?.id)
     )
     .modifier(
       OverlayRowHoverHighlight(
         palette: palette, cornerRadius: 10,
-        enabled: conversation != nil && onSelectConversation != nil)
+        enabled: (conversation != nil && onSelectConversation != nil)
+          || (showsPanelFocusButton(for: channel) && !panelFocusUnreachable(channel))
+      )
     )
     .modifier(
       OverlayGestureFocusRing(
@@ -889,150 +1888,159 @@ struct OverlayChannelStatusView: View {
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
-    .help(tooltip)
     .modifier(OverlayDisconnectedRowDim(disconnected: hasDeadFollower(channel)))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("overlay-agent-row-\(channel.channel)")
-    .modifier(
-      OverlayBroadcastPolicyMenu(
-        members: broadcastMembers.filter { $0.channel == channel.channel },
-        palette: palette, enabled: !unavailable))
   }
 
-  /// One roster row in at most five lines (Maciej, 2026-10-17: "ustalmy budżet
-  /// 5 wierszy"): identity with the channel-0 mark, the unread badge and the
-  /// time; the provider descriptor; a two-line preview that names who
-  /// addressed whom; one state line. The badge counts replies the Founder has
-  /// not opened, the state line carries the agent's receipts, so the two
-  /// never mix.
-  @ViewBuilder
+  /// Compose display values here; the visual shell never reads state or
+  /// executes commands. Identity/descriptor/preview use the full row above
+  /// its separate state-and-controls footer (five text lines at most).
   private func rosterRowLabel(
     title: String, statusChannel: OverlayChannelDelivery?,
-    conversation: OverlayConversation?, dot: OverlayAgentPillEntry.DotKind,
-    receiptText: String? = nil
+    conversation: OverlayConversation?, dot: OverlayAgentDotKind,
+    includePreview: Bool = true
   ) -> some View {
-    HStack(alignment: .top, spacing: 7) {
-      OverlayAgentStatusDot(kind: dot, palette: palette)
-        .padding(.top, 5 * textScale)
-        .accessibilityLabel(
-          Text(verbatim: statusChannel.map { shortStatus(for: $0) } ?? "")
-        )
-        .accessibilityValue(
-          Text(verbatim: statusChannel.map { detail(for: $0) } ?? "")
-        )
-        .accessibilityIdentifier(
-          statusChannel.map { "overlay-channel-delivery-\($0.channel)" }
-            ?? "overlay-channel-delivery"
-        )
-      VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: 6) {
-          // Maciej 2026-10-17: names were cut to "6…r" in the sidebar because
-          // the fixed-size time won the squeeze. The name is offered room
-          // first and the time is compact.
-          Text(verbatim: title)
-            .font(.system(size: 13.5 * textScale, weight: .semibold))
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .layoutPriority(1)
-          if let statusChannel {
-            broadcastPolicyMark(statusChannel.broadcastPolicy)
-              .accessibilityIdentifier("overlay-broadcast-policy-\(statusChannel.channel)")
-          }
-          Spacer(minLength: 4)
-          if let conversation, let count = unreadCounts[conversation.id], count > 0 {
-            unreadBadge(count)
-              .accessibilityIdentifier("overlay-agent-unread-replies-\(conversation.id)")
-          }
-          if let last = conversation?.messages.last,
-            let date = MessageTimestamp.date(fromISO8601: last.emittedAt)
-          {
-            MessageTimestampLabel(date: date, compact: true)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-          }
-        }
-        if let statusChannel, let descriptor = agentDescriptor(for: statusChannel) {
-          Text(verbatim: descriptor)
-            .font(.system(size: 11 * textScale))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .help(descriptor)
-            .accessibilityIdentifier("overlay-agent-descriptor-\(statusChannel.channel)")
-        }
-        if let conversation, let last = conversation.messages.last {
-          Text(verbatim: Self.drawerPreview(message: last))
-            .font(.system(size: 12.5 * textScale))
-            .foregroundStyle(
-              (unreadCounts[conversation.id] ?? 0) > 0
-                ? palette.bodyText.color : palette.mutedText.color
-            )
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        if let statusChannel {
-          Text(verbatim: rowStateText(for: statusChannel, receiptText: receiptText))
-            .font(.system(size: 11 * textScale, weight: .medium))
-            .foregroundStyle(palette.mutedText.color)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .accessibilityIdentifier("overlay-agent-state-\(statusChannel.channel)")
-        }
+    let last = conversation?.messages.last
+    return OverlayAgentRosterLabel(
+      title: title, channel: statusChannel?.channel, conversationID: conversation?.id,
+      descriptor: statusChannel.flatMap { agentDescriptor(for: $0) },
+      preview: includePreview ? last.map { Self.drawerPreview(message: $0) } : nil,
+      timestamp: last.flatMap { MessageTimestamp.date(fromISO8601: $0.emittedAt) },
+      unreadCount: conversation.flatMap { unreadCounts[$0.id] } ?? 0,
+      dot: dot, statusLabel: statusChannel.map { shortStatus(for: $0) } ?? "",
+      statusDetail: statusChannel.map { detail(for: $0) } ?? "",
+      reception: statusChannel, receptionEnabled: !unavailable, palette: palette,
+      textScale: textScale)
+  }
+
+  private func rosterRowState(
+    _ channel: OverlayChannelDelivery, receiptText: String?
+  ) -> some View {
+    HStack(spacing: 5) {
+      if panelFocusStates[channel.channel]?.isRequesting == true {
+        ProgressView()
+          .controlSize(.mini)
+          .accessibilityIdentifier("overlay-agent-focus-spinner-\(channel.channel)")
       }
+      Text(verbatim: rowStateText(for: channel, receiptText: receiptText))
+        .font(.system(size: 11 * textScale, weight: .medium))
+        .foregroundStyle(rowStateColor(for: channel))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .accessibilityIdentifier("overlay-agent-state-\(channel.channel)")
     }
-    .contentShape(Rectangle())
   }
 
   /// The receipt of the newest delivery, then the reader's state when there is
   /// no receipt or the reader is gone or stalled: one line, never two.
+  ///
+  /// A failed Frame focus never takes this line: Maciej, 2026-10-19, "czemu te
+  /// errors nie mogą się chować do ładnych mini glifków statusu, tylko straszą
+  /// do końca". The failure lives on the focus button's glyph and its help.
   func rowStateText(for channel: OverlayChannelDelivery, receiptText: String?) -> String {
+    if let focusState = panelFocusStates[channel.channel], !focusState.isFailed {
+      return focusState.statusText
+    }
     guard let receiptText else { return shortStatus(for: channel) }
     guard hasDeadFollower(channel) || hasStalledFollower(channel) else { return receiptText }
     return receiptText + " · " + shortStatus(for: channel)
   }
 
-  /// Every agent row and pill wears its channel-0 state: the antenna in the
-  /// accent while deliveries wake, the queue tray while they wait, the
-  /// slashed antenna off channel 0.
-  private func broadcastPolicyMark(_ policy: AgentBroadcastPolicy) -> some View {
-    Image(systemName: policy.statusSymbol)
-      .font(.system(size: 10 * textScale))
-      .foregroundStyle(policy == .on ? palette.agentAccent.color : palette.mutedText.color)
-      .help(policy.statusHelp)
-      .accessibilityLabel(policy.statusHelp)
+  private func rowStateColor(for channel: OverlayChannelDelivery) -> Color {
+    guard let focusState = panelFocusStates[channel.channel] else {
+      return palette.mutedText.color
+    }
+    switch focusState.phase {
+    case .requesting: return palette.processingStatus.color
+    case .succeeded: return palette.successStatus.color
+    case .failed: return palette.mutedText.color
+    }
+  }
+
+  /// The live follower named neither a vc-frame pane nor a terminal tab, so a
+  /// focus request has nowhere to land: the control rests greyed instead of
+  /// failing on click (Maciej, 2026-10-19: "przycisków kierowania do frame
+  /// brak gdy frame session nie wykryty u agenta - wyszarzony"). No claim at
+  /// all is not a refusal.
+  func hasNoTerminalTarget(_ channel: OverlayChannelDelivery) -> Bool {
+    guard let hud = hudStates[channel.channel] else { return false }
+    return hud.frameDetected != true && hud.terminalDetected != true
+      && (hud.frameDetected == false || hud.terminalDetected == false)
+  }
+
+  func panelFocusSymbol(
+    _ state: OverlayAgentPanelFocusState?, target: OverlayAgentPanelFocusTarget? = nil
+  ) -> String {
+    if state?.isSucceeded == true { return "checkmark" }
+    if state?.isFailed == true { return "exclamationmark.triangle" }
+    switch state?.target ?? target {
+    case .some(.terminal): return "terminal"
+    case .some(.codexThread): return "bubble.left.and.text.bubble.right"
+    case .some(.frame), nil: return "macwindow.on.rectangle"
+    }
+  }
+
+  func panelFocusHelp(
+    for channel: OverlayChannelDelivery, state: OverlayAgentPanelFocusState?
+  ) -> String {
+    if hasCodexCloudThread(channel) {
+      return OverlayAgentPanelFocusTarget.codexCloudThreadHelp
+    }
+    if panelFocusTarget(for: channel) == .codexThread {
+      return state?.statusText ?? OverlayAgentPanelFocusTarget.codexThread.help
+    }
+    if hasDeadFollower(channel) {
+      return String(localized: "Agent is disconnected")
+    }
+    if hasNoTerminalTarget(channel) {
+      // A follower older than terminal focus only ever claimed a pane.
+      return hudStates[channel.channel]?.terminalDetected == nil
+        ? String(
+          localized: "Agent is not in a Frame pane",
+          comment: "Frame focus help: the follower attached without vc-frame pane coordinates")
+        : String(
+          localized: "No terminal known for this agent",
+          comment: "Focus result: the follower knows neither a Frame pane nor a terminal tab")
+    }
+    if let state {
+      return state.statusText
+    }
+    return (panelFocusTarget(for: channel) ?? .frame).help
   }
 
   /// The "0 · All" row keeps the roster's model; its title carries the
   /// broadcast wake count and its context menu every member's policy.
+  ///
+  /// The shared channel stands apart from the agent rows through structure,
+  /// not colour: it leads the roster, it wears the antenna where an agent
+  /// wears its status dot, and a divider parts it from the agents under it.
+  /// Both decisions are recorded here — Maciej, 2026-10-17: "wyróżnić bardziej
+  /// kanał ogólny", which arrived as an accent wash behind the row; Founder,
+  /// 2026-10-18: that wash "wygląda tragicznie" and goes. The intent stayed,
+  /// its paint did not.
   private func broadcastRow(
     _ broadcast: OverlayConversation, rowFocus: FocusState<String?>.Binding?
   ) -> some View {
     Button {
       onSelectConversation?(broadcast.id)
     } label: {
+      // Preview lives beside the All controls, so this button keeps the
+      // identity line (name, antenna, clock) and does not nest those controls.
       rosterRowLabel(
-        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast)
+        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast,
+        includePreview: false)
     }
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
     .foregroundStyle(palette.primaryText.color)
-    .help(String(localized: "View conversation without changing the microphone"))
-    // The shared channel stands apart from the agent rows: an accent wash,
-    // deeper while selected (Maciej, 2026-10-17: "wyróżnić bardziej kanał ogólny").
-    .background(
-      palette.agentAccent.color.opacity(selectedConversationID == broadcast.id ? 0.18 : 0.08),
-      in: RoundedRectangle(cornerRadius: 10)
+    .overlayFastHint(
+      String(localized: "View conversation without changing the microphone"), palette: palette
+    )
+    .accessibilityHint(
+      Text(verbatim: String(localized: "View conversation without changing the microphone"))
     )
     .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
-  }
-
-  private func unreadBadge(_ count: Int) -> some View {
-    Text(verbatim: String(count))
-      .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
-      .foregroundStyle(palette.processingStatus.color)
-      .padding(.horizontal, 6).padding(.vertical, 2)
-      .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
-      .accessibilityLabel("\(count) unread replies")
   }
 
   private func conversationRow(
@@ -1067,7 +2075,7 @@ struct OverlayChannelStatusView: View {
             .accessibilityIdentifier("overlay-saved-conversation-history-loading")
         }
         if let count = unreadCounts[conversation.id], count > 0 {
-          unreadBadge(count)
+          OverlayAgentUnreadBadge(count: count, palette: palette, textScale: textScale)
         }
         Image(systemName: selectedConversationID == conversation.id ? "checkmark" : "chevron.right")
           .font(.system(size: 10, weight: .medium))
@@ -1079,7 +2087,12 @@ struct OverlayChannelStatusView: View {
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
     .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9, outset: 6))
-    .help("View conversation without changing the microphone")
+    .overlayFastHint(
+      String(localized: "View conversation without changing the microphone"), palette: palette
+    )
+    .accessibilityHint(
+      Text(verbatim: String(localized: "View conversation without changing the microphone"))
+    )
     .accessibilityIdentifier("overlay-view-conversation-\(conversation.id)")
   }
 
@@ -1143,30 +2156,31 @@ struct OverlayChannelStatusView: View {
           DisclosureGroup("Saved conversations") {
             savedConversationsContent
           }
+          .font(.system(size: 13 * textScale))
         }
       }
       if unavailable {
         Text("Channel status unavailable — last open state retained")
-          .font(.system(size: 13, weight: .medium))
+          .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.processingStatus.color)
           .accessibilityIdentifier("overlay-channel-status-unavailable")
       }
       if let toggleError {
         // A refused toggle is an error, not a pending state (N roster palette).
         Text("Channel toggle failed: \(toggleError)")
-          .font(.system(size: 13, weight: .medium))
+          .font(.system(size: 13 * textScale, weight: .medium))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-channel-toggle-error")
       }
       if let playbackError {
         Text(verbatim: playbackError)
-          .font(.system(size: 11))
+          .font(.system(size: 11 * textScale))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-agent-playback-error")
       }
       if let archiveError {
         Text(verbatim: archiveError)
-          .font(.system(size: 11))
+          .font(.system(size: 11 * textScale))
           .foregroundStyle(palette.errorStatus.color)
           .accessibilityIdentifier("overlay-agent-archive-error")
       }
@@ -1207,7 +2221,9 @@ struct OverlayChannelStatusView: View {
                 .foregroundStyle(palette.mutedText.color)
             }
             .buttonStyle(.plain)
+            .overlayFastHint(String(localized: "Clear search"), palette: palette)
             .accessibilityLabel(Text("Clear search"))
+            .accessibilityHint(Text("Clear search"))
             .accessibilityIdentifier("overlay-saved-conversations-search-clear")
           }
         }
@@ -1242,7 +2258,8 @@ struct OverlayChannelStatusView: View {
         Text("Search failed")
           .font(.system(size: 10 * textScale, weight: .medium))
           .foregroundStyle(palette.errorStatus.color)
-          .help(error)
+          .overlayFastHint(error, palette: palette)
+          .accessibilityHint(Text(verbatim: error))
           .accessibilityIdentifier("overlay-saved-conversations-search-error")
       } else if activeSearchModel.isEffectivePartial {
         HStack(spacing: 4) {
@@ -1349,7 +2366,7 @@ struct OverlayChannelStatusView: View {
     if unavailable { return "exclamationmark.triangle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
     if hasStalledFollower(channel) { return "zzz" }
-    if isOpen(channel) { return "mic.fill" }
+    if isOpen(channel) { return OverlayAgentAudioControls.liveSpeechSymbol }
     switch channel.stage {
     case nil: return "circle"
     case .held: return "hourglass"
@@ -1361,10 +2378,11 @@ struct OverlayChannelStatusView: View {
   /// The roster dot shares the row's status predicates: lit while listening or
   /// with delivery progress, a ring for an asleep channel or one with no
   /// deliveries yet (mockup `.dot`).
-  func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentPillEntry.DotKind {
+  func statusDotKind(for channel: OverlayChannelDelivery) -> OverlayAgentDotKind {
     if unavailable { return .idle }
+    if hasDeadFollower(channel) { return .sleeping }
     if isOpen(channel) { return .listening }
-    if hasDeadFollower(channel) || hasStalledFollower(channel) { return .sleeping }
+    if hasStalledFollower(channel) { return .sleeping }
     if channel.broadcastSkipped { return .idle }
     switch channel.stage {
     case .received: return .received
@@ -1403,21 +2421,8 @@ struct OverlayChannelStatusView: View {
       comment: "Channel row; the placeholder is the delivery state of that channel")
   }
 
-  /// One pill per conversation other than the selected one, 0 · All first.
-  /// Transcription is not a row: the header's own control opens it (Maciej,
-  /// 2026-10-17: "te transkrypcje możemy wywalić z listy").
-  var pillEntries: [OverlayAgentPillEntry] {
-    rosterOrderedConversations
-      .filter { $0.id != selectedConversationID }
-      .map(pillEntry(for:))
-  }
-
   /// Channel 0 first, then the bound channels in roster order, then any
   /// passive current conversation the roster snapshot has not caught up with.
-  var rosterOrderedConversations: [OverlayConversation] {
-    Self.rosterOrder(current: currentConversations, channels: channels)
-  }
-
   static func rosterOrder(
     current: [OverlayConversation], channels: [OverlayChannelDelivery]
   ) -> [OverlayConversation] {
@@ -1437,49 +2442,43 @@ struct OverlayChannelStatusView: View {
     return ordered
   }
 
-  private func pillEntry(for conversation: OverlayConversation) -> OverlayAgentPillEntry {
-    let channel = channels.first { $0.channel == conversation.channel }
-    let descriptor = channel.flatMap { agentDescriptor(for: $0) } ?? conversation.owner?.provider
-    return OverlayAgentPillEntry(
-      id: conversation.id, conversationID: conversation.id,
-      title:
-        conversation.channel == "0"
-        ? String(localized: "0 · All") : "\(conversation.channel) · \(conversation.name)",
-      // The shared channel's wake count lives on its broadcast disclosure.
-      descriptor: conversation.channel == "0" ? nil : descriptor,
-      unread: unreadCounts[conversation.id] ?? 0,
-      dot: conversation.channel == "0"
-        ? .broadcast : (channel.map { statusDotKind(for: $0) } ?? .received),
-      broadcastPolicy: channel?.broadcastPolicy,
-      isBroadcast: conversation.channel == "0",
-      disconnected: channel.map(hasDeadFollower) ?? false,
-      controls: pillControls(for: conversation, channel: channel))
+  /// Who addressed whom, from the message's own source channel and frozen
+  /// recipients. The row or conversation showing the message does not choose
+  /// the names. An empty audience means there is no arrow.
+  struct MessageRoute: Equatable {
+    var speaker: String
+    var audience: String?
+
+    var label: String {
+      guard let audience, !audience.isEmpty else { return speaker }
+      return "\(speaker) → \(audience)"
+    }
   }
 
-  /// The pill row's microphone and speaker, wired exactly like the docked
-  /// column's row (`channelRow`) and its 0 · All row (Founder, 2026-10-16:
-  /// "identyczne piguły mikrofon + głośnik + nazwa + agent/model/repo jakie te
-  /// agenty mają na swoich kartach").
-  private func pillControls(
-    for conversation: OverlayConversation, channel: OverlayChannelDelivery?
-  ) -> OverlayAgentPillEntry.Controls {
-    let id = conversation.channel
-    let digit = Self.toggleDigit(for: id)
-    let broadcast = id == "0"
-    // A dead reader cannot be spoken to; its recorded replies still play.
-    let disconnected = channel.map(hasDeadFollower) ?? false
-    return OverlayAgentPillEntry.Controls(
-      channel: id,
-      open: channel.map { isOpen($0) } ?? (hudStates[id]?.open == true),
-      muted: mutedChannels[id],
-      microphoneEnabled: !unavailable && onToggleChannel != nil && digit != nil
-        && !pendingToggleChannels.contains(id) && (!broadcast || hudStates[id] != nil)
-        && !disconnected,
-      playbackEnabled: onTogglePlayback != nil && !pendingMuteChannels.contains(id),
-      broadcast: broadcast,
-      speaking: conversation.replySpeaking,
-      onMicrophone: { if let digit { onToggleChannel?(digit) } },
-      onPlayback: { onTogglePlayback?(id) })
+  static func messageRoute(of message: OverlayConversationMessage) -> MessageRoute {
+    let named = recipientNames(of: message)
+    if message.kind == .user {
+      if message.sourceChannel == "0" {
+        return MessageRoute(speaker: String(localized: "You"), audience: String(localized: "All"))
+      }
+      if let named { return MessageRoute(speaker: String(localized: "You"), audience: named) }
+      if let channel = message.sourceChannel {
+        return MessageRoute(speaker: String(localized: "You"), audience: channel)
+      }
+      return MessageRoute(speaker: String(localized: "You"), audience: nil)
+    }
+    guard let sender = message.owner?.name, !sender.isEmpty else {
+      return MessageRoute(speaker: "", audience: nil)
+    }
+    // A reply without a destination, or one addressed on channel 10, answered
+    // the Founder. Channel 0 is the broadcast, whatever the current row is.
+    guard let destination = message.sourceChannel, destination != "10" else {
+      return MessageRoute(speaker: sender, audience: String(localized: "You"))
+    }
+    if destination == "0" {
+      return MessageRoute(speaker: sender, audience: String(localized: "All"))
+    }
+    return MessageRoute(speaker: sender, audience: named ?? destination)
   }
 
   /// The drawer's one-glance preview of the last message, naming who
@@ -1487,39 +2486,12 @@ struct OverlayChannelStatusView: View {
   /// whom"). The route comes from the message itself — its source channel and
   /// frozen recipients — never from the row showing it: a broadcast copied
   /// into an agent's row still reads "→ All". Newlines fold so the two-line
-  /// cap holds.
+  /// cap holds. Attachment-only messages still carry the route.
   static func drawerPreview(message: OverlayConversationMessage) -> String {
     let body = message.bodyText.replacingOccurrences(of: "\n", with: " ")
-    let target = recipientNames(of: message) ?? message.sourceChannel
-    if message.kind == .user {
-      if message.sourceChannel == "0" {
-        return String(
-          localized: "You → All: \(body)",
-          comment: "Drawer preview of the user's channel-0 broadcast; the placeholder is the text")
-      }
-      guard let target else {
-        return String(
-          localized: "You: \(body)",
-          comment: "Drawer preview of the user's own message; the placeholder is the text")
-      }
-      return String(
-        localized: "You → \(target): \(body)",
-        comment: "Drawer preview of the user's direct message: the agent names, then the text")
-    }
-    guard let sender = message.owner?.name, !sender.isEmpty else { return body }
-    // A peer message records its destination channel; a reply without one
-    // answered the Founder.
-    guard let destination = message.sourceChannel else {
-      return String(
-        localized: "\(sender) → You: \(body)",
-        comment: "Drawer preview of an agent's reply to the user: the agent, then the text")
-    }
-    if destination == "0" {
-      return String(
-        localized: "\(sender) → All: \(body)",
-        comment: "Drawer preview of an agent's message to channel 0: the agent, then the text")
-    }
-    return "\(sender) → \(target ?? destination): \(body)"
+    let route = messageRoute(of: message)
+    guard !route.speaker.isEmpty else { return body }
+    return "\(route.label): \(body)"
   }
 
   /// The frozen recipients' names in publication order, at most two named.
@@ -1534,60 +2506,15 @@ struct OverlayChannelStatusView: View {
     let named = names.prefix(2).joined(separator: ", ")
     return names.count == 2 ? named : "\(named) +\(names.count - 2)"
   }
-
-  /// The narrow-window roster surface under the name pill, built from the
-  /// same projection as the docked column.
-  func pillStack(
-    onSelect: @escaping (String?) -> Void, onDismiss: @escaping () -> Void
-  ) -> OverlayAgentPillStack {
-    OverlayAgentPillStack(
-      palette: palette, entries: pillEntries,
-      broadcastMembers: broadcastMembers, broadcastEnabled: !unavailable,
-      onSelect: onSelect, onDismiss: onDismiss,
-      focusedConversationID: gestureFocusID, onHoverConversation: onGestureHover)
-  }
 }
 
-/// One narrow-mode pill: a conversation switch target under the name pill.
-struct OverlayAgentPillEntry: Identifiable {
-  /// Status dot kinds, mapped to palette tones by the pill view; the shared
-  /// channel's `broadcast` draws an antenna instead of a dot.
-  enum DotKind {
-    case broadcast, listening, received, waiting, sleeping, idle
-  }
-
-  let id: String
-  let conversationID: String
-  let title: String
-  let descriptor: String?
-  let unread: Int
-  let dot: DotKind
-  /// This agent's channel-0 state, marked on every agent pill; nil on the
-  /// shared channel's own pill and on a conversation without a bound channel.
-  let broadcastPolicy: AgentBroadcastPolicy?
-  let isBroadcast: Bool
-  /// The roster keeps this channel's binding but its reader process is gone
-  /// (the shape a restarted host leaves): the row dims and its microphone sleeps.
-  let disconnected: Bool
-  /// The row's microphone and speaker.
-  let controls: Controls
-
-  /// What `OverlayAgentAudioControls` needs for one row, resolved by the
-  /// roster view from the same projection as the docked column's rows.
-  struct Controls {
-    let channel: String
-    let open: Bool
-    let muted: Bool?
-    let microphoneEnabled: Bool
-    let playbackEnabled: Bool
-    let broadcast: Bool
-    let speaking: Bool
-    let onMicrophone: () -> Void
-    let onPlayback: () -> Void
-  }
+/// Roster status dot kinds, mapped to palette tones by `OverlayAgentStatusDot`;
+/// the shared channel's `broadcast` draws an antenna instead of a dot.
+enum OverlayAgentDotKind {
+  case broadcast, listening, received, waiting, sleeping, idle
 }
 
-/// Glass pills and their controls morph as one group on macOS 26; older
+/// Glass rows and their controls morph as one group on macOS 26; older
 /// systems render the content as it is. Main-actor like the views that call
 /// it: a nonisolated generic cannot hand a `View` conformance to
 /// `GlassEffectContainer` (Swift 6.2 isolated conformances).
@@ -1605,7 +2532,7 @@ private func overlayGlassGroup<Content: View>(_ content: Content) -> some View {
 /// The shared channel wears an antenna: it has no reader of its own.
 struct OverlayAgentStatusDot: View {
   @Environment(\.csTextScale) private var textScale
-  let kind: OverlayAgentPillEntry.DotKind
+  let kind: OverlayAgentDotKind
   let palette: OverlayAppearancePalette
 
   private var filled: Bool {
@@ -1647,182 +2574,6 @@ struct OverlayAgentStatusDot: View {
   }
 }
 
-/// The narrow-window roster: one glass row per conversation directly under
-/// the name pill, a mirror of the header's own cluster: the row's microphone
-/// and speaker lead, the pill (dot, name, agent/model/repo, unread) trails,
-/// right edges under the name pill, so pills stand in one column and controls
-/// under controls (Founder, 2026-10-16: "czy ten placement nie powinien być
-/// precyzyjniejszy"). Clicking a pill selects; Esc
-/// closes; wake policy rides each row's context menu (Maciej, 2026-10-17,
-/// "Słowo"). Rows stagger in unless the user asked for reduced motion.
-struct OverlayAgentPillStack: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.csTextScale) private var textScale
-  let palette: OverlayAppearancePalette
-  let entries: [OverlayAgentPillEntry]
-  let broadcastMembers: [OverlayChannelDelivery]
-  let broadcastEnabled: Bool
-  let onSelect: (String?) -> Void
-  let onDismiss: () -> Void
-  /// The middle-click chooser's focus; the stack scrolls to keep it in view.
-  var focusedConversationID: String?
-  var onHoverConversation: ((String) -> Void)?
-  @State private var revealed = false
-
-  var body: some View {
-    ScrollViewReader { proxy in
-      stack
-        .onChange(of: focusedConversationID) { _, focused in
-          guard let focused else { return }
-          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-            proxy.scrollTo(focused, anchor: .center)
-          }
-        }
-    }
-  }
-
-  private var stack: some View {
-    ScrollView(.vertical) {
-      overlayGlassGroup(
-        VStack(alignment: .trailing, spacing: 6) {
-          ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-            Group {
-              pillEntryView(entry)
-              if entry.isBroadcast {
-                // A hairline parts the shared channel from the agents under it.
-                Rectangle()
-                  .fill(palette.agentAccent.color.opacity(0.35))
-                  .frame(height: 1)
-                  .padding(.horizontal, 10)
-                  .accessibilityHidden(true)
-              }
-            }
-            .opacity(revealed ? 1 : 0)
-            .offset(y: revealed ? 0 : -10)
-            .animation(
-              reduceMotion ? nil : .easeOut(duration: 0.2).delay(Double(index) * 0.026),
-              value: revealed)
-          }
-        }
-      )
-      .padding(.vertical, 2)
-    }
-    .scrollIndicators(.hidden)
-    .frame(width: OverlayAgentDrawerLayout.pillWidth(textScale: textScale))
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-agent-pill-stack")
-    .onAppear { revealed = true }
-    .onExitCommand { onDismiss() }
-    .background {
-      GeometryReader { proxy in
-        Color.clear.preference(
-          key: OverlayDrawerFramePreferenceKey.self,
-          value: proxy.frame(in: .named("overlay-canvas")))
-      }
-      .allowsHitTesting(false)
-    }
-  }
-
-  @ViewBuilder
-  private func pillEntryView(_ entry: OverlayAgentPillEntry) -> some View {
-    let pill = Button {
-      onSelect(entry.conversationID)
-    } label: {
-      HStack(spacing: 9) {
-        OverlayAgentStatusDot(kind: entry.dot, palette: palette)
-        VStack(alignment: .leading, spacing: 1) {
-          HStack(spacing: 4) {
-            Text(verbatim: entry.title)
-              .font(.system(size: 13 * textScale, weight: .bold))
-            if let policy = entry.broadcastPolicy {
-              Image(systemName: policy.statusSymbol)
-                .font(.system(size: 10 * textScale))
-                .foregroundStyle(
-                  policy == .on ? palette.agentAccent.color : palette.mutedText.color
-                )
-                .help(policy.statusHelp)
-                .accessibilityLabel(policy.statusHelp)
-            }
-          }
-          .lineLimit(1)
-          .truncationMode(.middle)
-          if let descriptor = entry.descriptor, !descriptor.isEmpty {
-            Text(verbatim: descriptor)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-        }
-        Spacer(minLength: 4)
-        if entry.unread > 0 {
-          Text(verbatim: String(entry.unread))
-            .font(.system(size: 11 * textScale, weight: .semibold, design: .monospaced))
-            .foregroundStyle(palette.processingStatus.color)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(palette.processingStatus.color.opacity(0.12), in: Capsule())
-            .accessibilityLabel("\(entry.unread) unread replies")
-        }
-      }
-      .foregroundStyle(palette.primaryText.color)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 5)
-      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .csFocusOutline()
-    .background(
-      entry.isBroadcast ? palette.agentAccent.color.opacity(0.14) : .clear, in: Capsule()
-    )
-    .modifier(OverlayNamePillGlass(interactive: true))
-    .modifier(
-      OverlayGestureFocusRing(
-        focused: entry.conversationID == focusedConversationID, shape: Capsule(),
-        palette: palette, targetID: entry.conversationID, onHover: onHoverConversation)
-    )
-    .help(
-      entry.disconnected
-        ? String(localized: "Disconnected")
-        : String(localized: "View conversation without changing the microphone")
-    )
-    .accessibilityIdentifier("overlay-agent-pill-\(entry.id)")
-    let controls = entry.controls
-    HStack(spacing: 6) {
-      OverlayAgentAudioControls(
-        open: controls.open, muted: controls.muted,
-        microphoneEnabled: controls.microphoneEnabled,
-        playbackEnabled: controls.playbackEnabled,
-        palette: palette, onMicrophone: controls.onMicrophone,
-        onPlayback: controls.onPlayback, broadcast: controls.broadcast,
-        speaking: controls.speaking
-      )
-      .fixedSize()
-      .accessibilityIdentifier("overlay-agent-pill-controls-\(controls.channel)")
-      pill
-    }
-    .modifier(OverlayDisconnectedRowDim(disconnected: entry.disconnected))
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("overlay-agent-pill-row-\(entry.id)")
-    // Maciej, 2026-10-17 01:15Z: the stack floats above the transcript, whose
-    // tracking set the I-beam, and the panel resets the cursor only above its
-    // registered regions. The row, its audio pair and the gap between claim
-    // the arrow the way the docked drawer column does.
-    .background { OverlayMenuCursorRegion() }
-    .modifier(
-      OverlayBroadcastPolicyMenu(
-        members: policyMembers(for: entry), palette: palette,
-        enabled: broadcastEnabled, errorAlignment: .trailing))
-  }
-
-  /// The 0 · All row carries every member's wake policy; an agent's own row
-  /// carries only its own.
-  private func policyMembers(for entry: OverlayAgentPillEntry) -> [OverlayChannelDelivery] {
-    if entry.isBroadcast { return broadcastMembers }
-    return broadcastMembers.filter { $0.channel == entry.controls.channel }
-  }
-}
-
 /// Applies `.focused(equals:)` when the docked column handed a binding down;
 /// test harnesses and legacy call sites render the row without one.
 private struct OptionalRowFocus: ViewModifier {
@@ -1858,6 +2609,14 @@ struct ChannelRosterStyle: Equatable {
   }
 }
 
+/// Reads `\.csTextScale` where it is installed and hands it to a builder.
+private struct OverlayTextScaleReader<Content: View>: View {
+  @Environment(\.csTextScale) private var textScale
+  let content: (CGFloat) -> Content
+
+  var body: some View { content(textScale) }
+}
+
 struct ChannelRosterContent<Content: View>: View {
   let palette: OverlayAppearancePalette
   @ViewBuilder let content: Content
@@ -1879,7 +2638,7 @@ struct ChannelRosterContent<Content: View>: View {
 /// visible. The focus state is the docked column's name-pill channel: bumping
 /// `focusRevision` moves keyboard focus to the selected conversation's row.
 /// `scrollTargetID` is the middle-click chooser's focus, kept in view.
-private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
+private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let maximumHeight: CGFloat
   let palette: OverlayAppearancePalette
@@ -1887,15 +2646,18 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
   var focusedRowID: String? = nil
   var scrollTargetID: String? = nil
   @State private var headerHeight: CGFloat = 22
+  @State private var pinnedHeight: CGFloat = 0
   @State private var contentHeight: CGFloat?
   @FocusState private var rowFocus: String?
   @ViewBuilder let header: Header
+  let pinnedBuilder: (FocusState<String?>.Binding) -> Pinned
   let contentBuilder: (FocusState<String?>.Binding) -> Content
 
   init(
     maximumHeight: CGFloat, palette: OverlayAppearancePalette,
     focusRevision: UInt64 = 0, focusedRowID: String? = nil, scrollTargetID: String? = nil,
     @ViewBuilder header: () -> Header,
+    @ViewBuilder pinned: @escaping (FocusState<String?>.Binding) -> Pinned,
     @ViewBuilder content: @escaping (FocusState<String?>.Binding) -> Content
   ) {
     self.maximumHeight = maximumHeight
@@ -1904,12 +2666,14 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
     self.focusedRowID = focusedRowID
     self.scrollTargetID = scrollTargetID
     self.header = header()
+    pinnedBuilder = pinned
     contentBuilder = content
   }
 
   private var viewportHeight: CGFloat {
-    let available = max(0, maximumHeight - headerHeight - 8 - 16)
-    return min(contentHeight ?? available, available)
+    OverlayAgentMonitorLayout.viewportHeight(
+      maximumHeight: maximumHeight, headerHeight: headerHeight, pinnedHeight: pinnedHeight,
+      contentHeight: contentHeight)
   }
 
   var body: some View {
@@ -1922,6 +2686,14 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
           } action: {
             headerHeight = $0
           }
+        pinnedBuilder($rowFocus)
+          .fixedSize(horizontal: false, vertical: true)
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            pinnedHeight = $0
+          }
+          .accessibilityIdentifier("overlay-agent-monitor-pinned-all")
         ScrollViewReader { proxy in
           ScrollView(.vertical) {
             contentBuilder($rowFocus)
@@ -1931,10 +2703,11 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
               } action: {
                 contentHeight = $0
               }
+              .csAutohidingScrollers()
           }
-          .scrollIndicators(.visible)
           .frame(height: viewportHeight)
           .clipped()
+          .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
@@ -1944,8 +2717,28 @@ private struct OverlayAgentMonitorBody<Header: View, Content: View>: View {
         }
       }
     }
+    // With keyboard navigation on (System Settings › Keyboard) every row is
+    // focusable, and the system ring stayed on "0 · All", the first row, while
+    // clicks moved the selection bar: two marks naming two rows, and a message
+    // typed under the ring went to the bar's agent (Maciej, 2026-10-19, div0).
+    // Focus entering the roster lands on the open conversation, and a focused
+    // row follows the selection.
+    .defaultFocus($rowFocus, focusedRowID)
     .onChange(of: focusRevision) { _, _ in
       rowFocus = focusedRowID
     }
+    .onChange(of: focusedRowID) { _, id in
+      if rowFocus != nil, let id { rowFocus = id }
+    }
+  }
+}
+
+/// Measured header and pinned All consume space before the scrolling agents.
+enum OverlayAgentMonitorLayout {
+  static func viewportHeight(
+    maximumHeight: CGFloat, headerHeight: CGFloat, pinnedHeight: CGFloat, contentHeight: CGFloat?
+  ) -> CGFloat {
+    let available = max(0, maximumHeight - headerHeight - pinnedHeight - 16 - 16)
+    return min(contentHeight ?? available, available)
   }
 }

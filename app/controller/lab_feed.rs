@@ -10,8 +10,12 @@
 
 use std::time::{Duration, Instant};
 
-/// Where the Lab relay listens. Loopback-only by the Lab's own contract.
-pub(crate) const LAB_FRAMES_URL: &str = "http://127.0.0.1:8765/lab/live-frames";
+/// The Lab's preferred port when Codescribe has not recorded another one.
+const DEFAULT_LAB_PORT: u16 = 8765;
+/// Written by the Swift `VoiceLabRuntime` when it finds or spawns the Lab:
+/// `:8765` is often held by another loopback tool (screenscribe), so the
+/// Lab can live on the next free candidate port.
+const LAB_PORT_FILE: &str = ".codescribe/voice-lab/port";
 
 /// One POST at most every this often while samples keep arriving.
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
@@ -43,6 +47,25 @@ impl LabFeedBatcher {
         }
         None
     }
+}
+
+/// Where the Lab relay listens. Loopback-only by the Lab's own contract.
+/// Read once per broadcast session, so a Lab that moved ports between takes
+/// is followed without a restart.
+pub(crate) fn lab_frames_url() -> String {
+    let port = directories::BaseDirs::new()
+        .and_then(|dirs| std::fs::read_to_string(dirs.home_dir().join(LAB_PORT_FILE)).ok())
+        .and_then(|raw| parse_lab_port(&raw))
+        .unwrap_or(DEFAULT_LAB_PORT);
+    frames_url(port)
+}
+
+fn parse_lab_port(raw: &str) -> Option<u16> {
+    raw.trim().parse::<u16>().ok().filter(|port| *port >= 1024)
+}
+
+fn frames_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/lab/live-frames")
 }
 
 /// The relay's wire shape for one batch. `peak` is the batch maximum: the
@@ -97,6 +120,16 @@ mod tests {
         }
         let batch = batcher.offer(63.0, start).expect("size flush");
         assert_eq!(batch.len(), 64);
+    }
+
+    #[test]
+    fn recorded_port_moves_the_relay_and_garbage_keeps_the_default() {
+        assert_eq!(parse_lab_port("8766\n"), Some(8766));
+        assert_eq!(parse_lab_port(" 8770 "), Some(8770));
+        assert_eq!(parse_lab_port(""), None);
+        assert_eq!(parse_lab_port("80"), None);
+        assert_eq!(parse_lab_port("lab"), None);
+        assert_eq!(frames_url(8766), "http://127.0.0.1:8766/lab/live-frames");
     }
 
     #[test]

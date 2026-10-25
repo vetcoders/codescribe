@@ -202,6 +202,14 @@ if [[ "$PROFILE" != "release" && "${CODESCRIBE_DEVELOPER_SURFACE:-0}" == "1" ]];
 fi
 export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
 
+# Every build that is not the release DMG is a nightly; nightlies wear a
+# darker dark mode (Maciej, 2026-10-18). CODESCRIBE_BUILD_CHANNEL overrides.
+if [[ "$PROFILE" == "release" ]]; then
+  CS_BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-stable}"
+else
+  CS_BUILD_CHANNEL="${CODESCRIBE_BUILD_CHANNEL:-nightly}"
+fi
+
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
 # pipeline with a cryptic "command not found". Fail early, actionably.
 require() {
@@ -406,6 +414,7 @@ run_app_xcodebuild() {
     CS_BUILT_AT="$STAMP_BUILT_AT" \
     SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
     CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
+    CS_BUILD_CHANNEL="$CS_BUILD_CHANNEL" \
     build
 }
 
@@ -429,6 +438,35 @@ FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
+# The bundle owns the library its app loads. Step 2 renamed the build-tree
+# copy, but a cargo run on the shared target between step 2 and the link
+# re-creates that copy with rustc's absolute deps/ name; the app then loads
+# the build tree's file, and dies at launch once target/ is cleaned
+# (21 X 2026). So both ends are named here, after the link.
+EMBEDDED_FFI="$FRAMEWORKS/libcodescribe_ffi.dylib"
+install_name_tool -id @rpath/libcodescribe_ffi.dylib "$EMBEDDED_FFI"
+# A Debug build moves the app's code into $SCHEME.debug.dylib (Xcode's
+# ENABLE_DEBUG_DYLIB, for previews) and the executable becomes a stub that
+# loads it, so the library is linked from there.
+APP_MACHO="$MACOS_DIR/$SCHEME"
+if [[ -f "$MACOS_DIR/$SCHEME.debug.dylib" ]]; then
+  APP_MACHO="$MACOS_DIR/$SCHEME.debug.dylib"
+fi
+LINKED_FFI="$(otool -L "$APP_MACHO" | awk '/libcodescribe_ffi\.dylib/ {print $1; exit}')"
+if [[ -z "$LINKED_FFI" ]]; then
+  echo "error: $APP_MACHO does not link libcodescribe_ffi.dylib" >&2
+  exit 1
+fi
+install_name_tool -change "$LINKED_FFI" @rpath/libcodescribe_ffi.dylib "$APP_MACHO"
+for MACHO in "$MACOS_DIR/$SCHEME" "$APP_MACHO" "$EMBEDDED_FFI"; do
+  OUTSIDE="$(otool -L "$MACHO" | tail -n +2 | awk '{print $1}' \
+    | grep -v -E '^(@rpath/|@executable_path/|@loader_path/|/System/|/usr/lib/)' || true)"
+  if [[ -n "$OUTSIDE" ]]; then
+    echo "error: $MACHO loads a library outside the bundle and the OS:" >&2
+    echo "$OUTSIDE" >&2
+    exit 1
+  fi
+done
 cp "$STT_SIDECAR_BIN" "$MACOS_DIR/codescribe-stt-sidecar"
 chmod 755 "$MACOS_DIR/codescribe-stt-sidecar"
 if [[ -n "$EMBEDDER_RUNTIME_SOURCE" ]]; then
