@@ -22,6 +22,12 @@ signature, notarization, staple, payload and receipt checks. The default
 standard/full commands still expect `stable`; a Nightly DMG cannot pass a
 stable payload acceptance.
 
+Notarization has two ordered submissions: first the signed app archive, then
+the DMG containing that already-stapled app. The mounted app must carry its own
+ticket as well as the DMG. Stapling only the external build app after creating
+the image cannot satisfy this check. Retain both Apple submission UUIDs; resume
+the relevant UUID after a timeout instead of submitting again.
+
 Manual verification of the exact completed artifact:
 
 ```sh

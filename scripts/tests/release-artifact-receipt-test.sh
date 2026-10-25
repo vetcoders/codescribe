@@ -63,18 +63,34 @@ SH
 set -eu
 [[ "$1" == create ]] || exit 92
 [[ "${SCENARIO:-}" != dmg-failure ]] || exit 42
-printf 'fixture DMG\n' > "${!#}"
-printf '%s\n' "${!#}" > "$FIXTURE/produced-path"
+destination="${!#}"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == -srcfolder ]]; then
+    [[ -f "$2/Codescribe.app/.notary-stapled" ]] || exit 93
+  fi
+  shift
+done
+echo image-created >> "$FIXTURE/production-order"
+printf 'fixture DMG\n' > "$destination"
+printf '%s\n' "$destination" > "$FIXTURE/produced-path"
 SH
   cat > "$FIXTURE/bin/codesign" <<'SH'
 #!/bin/bash
 [[ "${SCENARIO:-}" != sign-failure ]] || exit 43
+if [[ "${SCENARIO:-}" == dmg-sign-failure && "${!#}" == *.dmg ]]; then exit 46; fi
 exit 0
 SH
   cat > "$FIXTURE/scripts/notarize.sh" <<'SH'
 #!/bin/bash
 set -eu
+if [[ "$1" == --app ]]; then
+  [[ "${SCENARIO:-}" != app-notary-failure ]] || exit 45
+  : > "$2/.notary-stapled"
+  echo app-notarized > "$FIXTURE/production-order"
+  exit 0
+fi
 [[ "${SCENARIO:-}" != notary-failure ]] || exit 44
+echo image-notarized >> "$FIXTURE/production-order"
 # Stapling changes bytes: receipt must hash the result, not the pre-notary DMG.
 printf 'fixture staple\n' >> "$1"
 SH
@@ -142,6 +158,8 @@ success() {
   [[ $(cat "$FIXTURE/head") == bbbbbbbbb ]] || fail 'HEAD race not exercised'
   printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 --channel "$channel" > "$FIXTURE/expected"
   cmp "$FIXTURE/expected" "$FIXTURE/verifier-args" || fail 'verifier argument contract'
+  printf '%s\n' app-notarized image-created image-notarized > "$FIXTURE/expected-order"
+  cmp "$FIXTURE/expected-order" "$FIXTURE/production-order" || fail 'app ticket was not packed before DMG notarization'
   [[ ! -e $(cat "$FIXTURE/receipt-path") ]] || fail 'private receipt not cleaned'
 }
 
@@ -167,7 +185,7 @@ unset TEST_BUILD_CHANNEL
 echo "PASS: unsupported channel refused before build and payload acceptance"
 
 negative_count=1
-for SCENARIO in build-failure dmg-failure sign-failure notary-failure missing malformed wrong-run wrong-variant wrong-version extra unterminated nul shell-data stale changed-artifact; do
+for SCENARIO in build-failure dmg-failure sign-failure dmg-sign-failure app-notary-failure notary-failure missing malformed wrong-run wrong-variant wrong-version extra unterminated nul shell-data stale changed-artifact; do
   scenario=$SCENARIO
   fixture "$scenario"
   # A prior success and its DMG really exist before the later failing invocation.
@@ -183,7 +201,7 @@ for SCENARIO in build-failure dmg-failure sign-failure notary-failure missing ma
   [[ ! -e "$FIXTURE/injected" ]] || fail 'receipt executed as shell'
   [[ ! -e $(cat "$FIXTURE/receipt-path") ]] || fail "$scenario leaked receipt"
   case "$scenario" in
-    build-failure|dmg-failure|sign-failure|notary-failure)
+    build-failure|dmg-failure|sign-failure|dmg-sign-failure|app-notary-failure|notary-failure)
       [[ ! -e "$FIXTURE/success-receipt" ]] || fail "$scenario published success" ;;
   esac
   negative_count=$((negative_count + 1))

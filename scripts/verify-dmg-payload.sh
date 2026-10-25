@@ -373,6 +373,16 @@ if [[ -n "${APP_PATH:-}" ]]; then
     fail "codesign --verify --deep --strict failed on $(basename "$APP_PATH")"
   fi
 
+  if [[ "$SKIP_NOTARY" -eq 0 ]]; then
+    echo ""
+    echo "▶ stapler validate (app inside DMG)"
+    if xcrun stapler validate "$APP_PATH" >/dev/null 2>&1; then
+      ok "packaged app has its own notarization ticket"
+    else
+      fail "app inside DMG is not stapled; staple the app before packaging"
+    fi
+  fi
+
   echo ""
   echo "▶ agent bridge resource proof"
   AGENT_BRIDGE_DIR="$APP_PATH/Contents/Resources/agent-bridge"

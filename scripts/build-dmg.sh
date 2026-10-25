@@ -188,6 +188,12 @@ if [[ "$SIGN" -eq 1 ]]; then
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" >/dev/null
 fi
 
+if [[ "$NOTARIZE" -eq 1 ]]; then
+  # Staple the app before copying it into the image. A later staple of APP_PATH
+  # cannot add the app ticket to the already-created read-only DMG payload.
+  NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" --app "$APP_PATH"
+fi
+
 echo "Creating DMG..."
 rm -f "$DMG_PATH"
 TMP_DMG="$(mktemp -d)/dmg"
@@ -198,7 +204,7 @@ hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$TMP_DMG" -ov -format UDZO "
 
 if [[ "$SIGN" -eq 1 ]]; then
   echo "Codesigning DMG..."
-  codesign --force --sign "$IDENTITY" "$DMG_PATH" || true
+  codesign --force --sign "$IDENTITY" "$DMG_PATH"
 fi
 
 echo "DMG ready: $DMG_PATH"
