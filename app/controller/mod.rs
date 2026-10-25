@@ -2008,6 +2008,10 @@ pub struct RecordingController {
     /// Lock order: this mutex before the recorder mutex.
     agent_channels: Mutex<std::collections::HashMap<u8, agent_channel::OpenAgentChannel>>,
 
+    /// Live members of `agent_channels`, read by every open channel bus as its
+    /// `co_audience`. Replaced whole only while `agent_channels` is held.
+    agent_channel_cohort: crate::presentation::transcript_bus::ChannelCohort,
+
     /// The ack watcher and channel silence cap already have a task.
     channel_guards_started: AtomicBool,
 }
@@ -2237,6 +2241,7 @@ impl RecordingController {
             conversation_task: Arc::new(Mutex::new(None)),
             event_broadcast,
             agent_channels: Mutex::new(std::collections::HashMap::new()),
+            agent_channel_cohort: Arc::default(),
             channel_guards_started: AtomicBool::new(false),
         }
     }
