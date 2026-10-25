@@ -1238,6 +1238,7 @@ impl FormattingFailure {
             // provider body may echo secrets or source text: never retain it.
             if let Some(status) = message
                 .strip_prefix("HTTP ")
+                .or_else(|| message.strip_prefix("Anthropic HTTP "))
                 .and_then(|rest| rest.split_whitespace().next())
                 .and_then(|code| code.parse::<u16>().ok())
                 .filter(|code| (100..=599).contains(code))
@@ -1249,6 +1250,7 @@ impl FormattingFailure {
             }
             if message.starts_with("SSE initial response timeout")
                 || message.starts_with("SSE inter-chunk timeout")
+                || message.starts_with("SSE stream inter-chunk timeout")
                 || message.starts_with("SSE stream deadline")
             {
                 return Self::Timeout;

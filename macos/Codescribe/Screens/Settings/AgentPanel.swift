@@ -425,7 +425,7 @@ private struct LLMLaneEditor: View {
     case "unavailable":
       return String(localized: "No formatting provider is available. Configure an account or API key.")
     case "account_authentication":
-      return String(localized: "Account access failed. Sign in again, then repeat the test.")
+      return String(localized: "Account access failed. Check your connection and account settings, then repeat the test.")
     case "timeout":
       return String(localized: "The request exceeded the formatting deadline. Check the connection or choose a faster model.")
     case "transport":

@@ -2184,13 +2184,13 @@
         }
       }
     },
-    "Account access failed. Sign in again, then repeat the test." : {
+    "Account access failed. Check your connection and account settings, then repeat the test." : {
       "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Nie udało się uzyskać dostępu do konta. Zaloguj się ponownie i powtórz test."
+            "value" : "Nie udało się uzyskać dostępu do konta. Sprawdź połączenie i ustawienia konta, a następnie powtórz test."
           }
         }
       }
