@@ -10,6 +10,7 @@ import nightly from '../data/nightly.json';
     <p class="eyebrow">NIGHTLY · APPLE SILICON</p>
     <h1>Try the latest Codescribe.</h1>
     <p class="intro">The latest changes, ahead of the next stable release.</p>
+    <p>This download lane currently offers the signed Slim build. The application identifies its build channel as <code>{nightly.buildChannel}</code>; the stable download and update feed are unchanged.</p>
     <div class="download">
       <a class="btn btn--primary" href={nightly.url}>Download Nightly.dmg</a>
       <p>v{nightly.version} · build {nightly.build} · {Math.ceil(nightly.bytes / 1_000_000)} MB<br />macOS {nightly.minimumMacOS} or later · signed and notarized</p>
@@ -37,6 +38,8 @@ import nightly from '../data/nightly.json';
       <h2 id="build-title">Build details</h2>
       <dl>
         <dt>Published</dt><dd><time datetime={nightly.publishedAt}>{nightly.publishedAt}</time></dd>
+        <dt>App channel</dt><dd>{nightly.buildChannel}</dd>
+        <dt>Bundle version</dt><dd>{nightly.bundleVersion}</dd>
         <dt>Source</dt><dd><code>{nightly.sourceCommit}</code></dd>
         <dt>SHA-256</dt><dd><code>{nightly.sha256}</code></dd>
       </dl>
