@@ -969,8 +969,6 @@ final class SettingsTruthTests: XCTestCase {
       }), permissionProbe: MockPermissionProbe())
 
     model.setWhisperAdaptiveBuffer(true)
-    model.setFormatOnDevice(true)
-    model.setFormatOnDevice(false)
     model.setSealLedgerEnabled(false)
     model.setAppleLiveEnabled(false)
     model.setSealLedgerEnabled(true)
@@ -986,8 +984,6 @@ final class SettingsTruthTests: XCTestCase {
       writes.map(\.key),
       [
         "WHISPER_ADAPTIVE_BUFFER",
-        "CODESCRIBE_FORMAT_ON_DEVICE",
-        "CODESCRIBE_FORMAT_ON_DEVICE",
         "CODESCRIBE_SEAL_LEDGER_ENABLED",
         "CODESCRIBE_APPLE_LIVE_ENABLED",
         "CODESCRIBE_SEAL_LEDGER_ENABLED",
@@ -996,8 +992,39 @@ final class SettingsTruthTests: XCTestCase {
         "CODESCRIBE_LEDGER_SENSITIVITY",
       ])
     XCTAssertEqual(
-      writes.map(\.value), ["1", "1", "0", "0", "0", "1", "1", "-40", "100"],
+      writes.map(\.value), ["1", "0", "0", "1", "1", "-40", "100"],
       "the ledger slider is clamped to -100...100 before it is written")
+  }
+
+  /// The visible experimental picker is a public product setting. A rejected
+  /// write must remain a visible error, rather than silently changing the UI.
+  func testPublicAppleFormatterChoicePersistsBothValuesAndReportsWriteRefusal() {
+    XCTAssertFalse(DeveloperSurface.isEnabled(), "Run this acceptance case with CS_DEVELOPER_SURFACE=0")
+    var stored = CsSettings.sample
+    stored.formatOnDevice = false
+    var writes: [(String, String)] = []
+    var denyWrite = false
+    let engine = MockSettingsEngine(
+      settingsLoader: { stored },
+      updateConfigObserver: { key, value in
+        writes.append((key, value))
+        if denyWrite { throw CsError.Config(msg: "Fixture formatter setting write refused") }
+        stored.formatOnDevice = value == "1"
+      })
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setFormatOnDevice(true)
+    XCTAssertTrue(model.settings.formatOnDevice)
+    XCTAssertNil(model.lastError)
+    model.setFormatOnDevice(false)
+    XCTAssertFalse(model.settings.formatOnDevice)
+    XCTAssertNil(model.lastError)
+    XCTAssertEqual(writes.map(\.0), Array(repeating: "CODESCRIBE_FORMAT_ON_DEVICE", count: 2))
+    XCTAssertEqual(writes.map(\.1), ["1", "0"])
+    denyWrite = true
+    model.setFormatOnDevice(true)
+    XCTAssertFalse(model.settings.formatOnDevice, "Rejected choice must retain the persisted state")
+    XCTAssertEqual(model.lastError, "Fixture formatter setting write refused")
+    XCTAssertEqual(writes.count, 3)
   }
 
   func testLocalWhisperDiagnosticEnvTokensMatchRuntimePolicy() {
