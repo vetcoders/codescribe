@@ -1056,6 +1056,20 @@ final class OverlayIntercomPanel: NSPanel {
     }
   }
 
+  // ⌘C on a selected bubble in an opened card copied nothing (Maciej,
+  // 2026-10-25). The 19 X repair lived only on the overlay panel; this panel is
+  // non-activating too, so the chord can reach it as a plain keyDown while
+  // another app is active and never touches the Edit menu.
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if performCopyChord(event) { return true }
+    return super.performKeyEquivalent(with: event)
+  }
+
+  override func sendEvent(_ event: NSEvent) {
+    if event.type == .keyDown, performCopyChord(event) { return }
+    super.sendEvent(event)
+  }
+
   override func scrollWheel(with event: NSEvent) {
     if acceptsConversationFocus {
       super.scrollWheel(with: event)
