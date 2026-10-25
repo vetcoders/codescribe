@@ -247,12 +247,19 @@ struct CodescribeApp: App {
 
   private var settingsWindow: some Scene {
     Window("Settings", id: SettingsView.windowID) {
-      if QualityCaptureHost.isRunningTests {
-        TestHostScenePlaceholder()
-      } else {
-        SettingsView(model: settingsModel())
+      Group {
+        if QualityCaptureHost.isRunningTests {
+          TestHostScenePlaceholder()
+        } else {
+          SettingsView(model: settingsModel())
+        }
       }
+      .handlesExternalEvents(preferring: [], allowing: [])
     }
+    // Lifecycle URLs are handled by AppDelegate. Without an explicit empty
+    // match, SwiftUI uses its first scene as the URL fallback and reopens
+    // Settings on every idle-restart attempt, including while typing.
+    .handlesExternalEvents(matching: [])
     .defaultSize(width: 1000, height: 720)
     .windowResizability(.contentMinSize)
     // One unified header plane, as the Agent window has. The scene owns this
