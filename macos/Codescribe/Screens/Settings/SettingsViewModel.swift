@@ -3564,8 +3564,9 @@ final class SettingsViewModel: ObservableObject {
     persist("WHISPER_ADAPTIVE_BUFFER", enabled ? "1" : "0")
   }
 
+  /// This experimental option is presented in public builds, so its setter
+  /// must use the normal persistence/error path there as well.
   func setFormatOnDevice(_ enabled: Bool) {
-    guard DeveloperSurface.isEnabled() else { return }
     persist("CODESCRIBE_FORMAT_ON_DEVICE", enabled ? "1" : "0")
   }
 
