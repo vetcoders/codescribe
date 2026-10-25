@@ -1,10 +1,10 @@
 {
   "version": "0.18.0",
-  "build": "2470",
-  "sourceCommit": "ef028999f4658d22949f9f015b5a6b5ae73b610f",
-  "sha256": "4dc355211b71730e7f7238b371ffb277a4a378f1734252f838bdb0163cab3306",
-  "bytes": 65430517,
-  "minimumMacOS": "14.0",
+  "build": "2491",
+  "sourceCommit": "1ec2bcd65c42d8c39d68a85f7617f41ef9bae6a9",
+  "sha256": "7d84589fd99221d82b353ee475ed78c1650b28d371914211c05c8c7a8e958b09",
+  "bytes": 65465384,
+  "minimumMacOS": "26.0",
   "publishedAt": "2026-10-25",
-  "url": "https://codescribe.vetcoders.io/rc/nightly/Codescribe_0.18.0-20261025-ef028999f_nightly.dmg"
+  "url": "https://codescribe.vetcoders.io/rc/nightly/Codescribe_0.18.0-20261025-1ec2bcd65_nightly.dmg"
 }
