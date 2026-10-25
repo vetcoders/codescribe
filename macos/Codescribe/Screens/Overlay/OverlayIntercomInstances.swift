@@ -26,6 +26,26 @@ struct OverlayIntercomInstance: Codable, Equatable, Identifiable, Sendable {
   /// pill remains the explicit road to show it again.
   var minimized: Bool
   var closed: Bool
+  /// A saved window-opening intent, not an archive or liveness projection.
+  /// Only explicit reopen of an already archived exact owner records this.
+  var historyOpening: HistoryOpening? = nil
+
+  struct HistoryOpening: Codable, Equatable, Sendable {
+    let ownerID: String
+    let conversationID: String
+    let digit: String
+  }
+
+  var explicitlyOpenedHistory: Bool {
+    historyOpening == HistoryOpening(
+      ownerID: ownerID, conversationID: conversationID, digit: digit)
+  }
+
+  mutating func recordHistoryOpening(archivedOwners: Set<OverlayConversationOwner>) {
+    historyOpening = archivedOwners.contains {
+      $0.id == ownerID && $0.channel == digit
+    } ? HistoryOpening(ownerID: ownerID, conversationID: conversationID, digit: digit) : nil
+  }
 
   var isHumanInbox: Bool {
     digit == "10" && conversationID == "10" && ownerID.isEmpty
@@ -109,11 +129,30 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
   @discardableResult
   mutating func closeArchivedInstances(owners: Set<OverlayConversationOwner>) -> Bool {
     var changed = false
-    for index in instances.indices where !instances[index].closed {
+    for index in instances.indices
+    where !instances[index].closed && !instances[index].explicitlyOpenedHistory {
       if owners.contains(where: {
         $0.id == instances[index].ownerID && $0.channel == instances[index].digit
       }) {
         instances[index].closed = true
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  /// A positive current-owner projection supersedes an older history-opening
+  /// intent. Absence alone may be startup hydration and clears nothing.
+  @discardableResult
+  mutating func clearHistoryOpenings(for identities: [OverlayIntercomCardIdentity]) -> Bool {
+    var changed = false
+    for index in instances.indices where instances[index].historyOpening != nil {
+      let instance = instances[index]
+      if !instance.explicitlyOpenedHistory || identities.contains(where: {
+        $0.conversationID == instance.conversationID && $0.ownerID == instance.ownerID
+          && $0.digit == instance.digit
+      }) {
+        instances[index].historyOpening = nil
         changed = true
       }
     }

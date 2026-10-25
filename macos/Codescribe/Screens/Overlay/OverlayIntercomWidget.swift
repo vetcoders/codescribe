@@ -226,6 +226,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard !invalidated, visible, let header else { return }
     if availableHeight != screenFrame.height { availableHeight = screenFrame.height }
     identities = intercomIdentities(state: state, chips: chips)
+    let clearedHistoryOpening = desktop.clearHistoryOpenings(for: identities)
     // Channel reuse cannot replace the editor underneath a draft. The old
     // exact owner's open card survives as a durable detached instance.
     for identity in presentation.expanded where !identities.contains(identity) {
@@ -233,8 +234,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     let newlyArchived = state.archivedAgentOwners.subtracting(reconciledArchivedOwners)
     reconciledArchivedOwners = state.archivedAgentOwners
-    if desktop.closeArchivedInstances(owners: newlyArchived) {
+    let retiredInstances = desktop.closeArchivedInstances(owners: newlyArchived)
+    if retiredInstances || clearedHistoryOpening {
       saveDesktop()
+    }
+    if retiredInstances {
       materializeInstances()
     }
     // Only agents absent from the current roster leave the stack. A detached
@@ -501,6 +505,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     let wasClosed = desktop.instances[index].closed
+    desktop.instances[index].recordHistoryOpening(archivedOwners: state.archivedAgentOwners)
     desktop.instances[index].closed = false
     saveDesktop()
     materializeInstances()
@@ -690,9 +695,21 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     dockedLayout = nil
+    let latestInstances = desktop.instances
     let previousIDs = Set(previous.desktop.instances.map(\.id))
     let newInstances = desktop.instances.filter { !previousIDs.contains($0.id) }
     desktop = previous.desktop
+    // Geometry snapshots must not discard a later exact-owner history-open
+    // receipt, including when reopen reused an existing instance UUID.
+    for index in desktop.instances.indices {
+      let restored = desktop.instances[index]
+      if let latest = latestInstances.first(where: {
+        $0.id == restored.id && $0.ownerID == restored.ownerID
+          && $0.conversationID == restored.conversationID && $0.digit == restored.digit
+      }) {
+        desktop.instances[index].historyOpening = latest.historyOpening
+      }
+    }
     for instance in newInstances { desktop.upsert(instance) }
     // A layout snapshot cannot undo a later canonical archive.
     desktop.closeArchivedInstances(owners: state.archivedAgentOwners)
