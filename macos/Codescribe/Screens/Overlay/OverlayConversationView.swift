@@ -26,14 +26,19 @@ private struct BubbleOwnerNameButton: View {
 
 /// Maciej (2026-10-17): held controls hover like the owner name and Copy — muted at rest, brighter on hover.
 private struct OverlayHeldControlButton: View {
+  @Environment(\.csTextScale) private var textScale
   let title: LocalizedStringKey
+  let symbol: String
   let hint: String
   let palette: OverlayAppearancePalette
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      Text(title)
+      Label(title, systemImage: symbol)
+        .labelStyle(.iconOnly)
+        .frame(width: 22 * textScale, height: 22 * textScale)
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .conversationActionHover(
@@ -41,6 +46,7 @@ private struct OverlayHeldControlButton: View {
     )
     .accessibilityLabel(Text(title))
     .accessibilityHint(Text(verbatim: hint))
+    .help(Text(title))
   }
 }
 
@@ -864,27 +870,28 @@ struct OverlayConversationView: View {
         message: message, palette: palette, showsActivity: message.id == activeCaptureMessageID)
       if let remaining = message.holdSecondsRemaining {
         heldMessageControls(message, seconds: remaining)
-      }
-      HStack {
-        messageFooter(message)
-        if !conversation.isHumanInbox, let onReply,
-          message.captureState != .receiving, message.withdrawn != true
-        {
-          Spacer(minLength: 8)
-          Button("Reply", systemImage: "arrowshape.turn.up.left") {
-            onReply(message)
-            revisionFocus &+= 1
+      } else {
+        HStack {
+          messageFooter(message)
+          if !conversation.isHumanInbox, let onReply,
+            message.captureState != .receiving, message.withdrawn != true
+          {
+            Spacer(minLength: 8)
+            Button("Reply", systemImage: "arrowshape.turn.up.left") {
+              onReply(message)
+              revisionFocus &+= 1
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10 * textScale, weight: .semibold))
+            .conversationActionHover(
+              restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+            )
+            .accessibilityHint(Text("Reply to this message"))
+            .accessibilityIdentifier("overlay-message-reply-\(message.id)")
           }
-          .buttonStyle(.plain)
-          .font(.system(size: 10 * textScale, weight: .semibold))
-          .conversationActionHover(
-            restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
-          )
-          .accessibilityHint(Text("Reply to this message"))
-          .accessibilityIdentifier("overlay-message-reply-\(message.id)")
         }
+        .background { OverlayMenuCursorRegion() }
       }
-      .background { OverlayMenuCursorRegion() }
     }
     .padding(12)
     .background(
@@ -904,19 +911,29 @@ struct OverlayConversationView: View {
   private func heldMessageControls(_ message: OverlayConversationMessage, seconds: Int)
     -> some View
   {
-    VStack(alignment: .leading, spacing: 5) {
-      Text(verbatim: HeldDeliveryCopy.countdown(seconds: seconds))
+    HStack(spacing: 8) {
+      let error = deliveryControlErrors[message.id]
+      Text(verbatim: error ?? HeldDeliveryCopy.countdown(seconds: seconds))
         .monospacedDigit()
-        .accessibilityIdentifier("overlay-message-hold-countdown-\(message.id)")
-      HStack(spacing: 12) {
+        .lineLimit(1)
+        .foregroundStyle(error == nil ? palette.mutedText.color : palette.errorStatus.color)
+        .help(Text(verbatim: error ?? HeldDeliveryCopy.countdown(seconds: seconds)))
+        .accessibilityIdentifier(
+          error == nil
+            ? "overlay-message-hold-countdown-\(message.id)"
+            : "overlay-message-delivery-error-\(message.id)")
+      Spacer(minLength: 0)
+      HStack(spacing: 4) {
         // One control takes the message back: it leaves the clock and its text
         // returns to the composer, where deleting it is the plain withdraw.
         OverlayHeldControlButton(
-          title: "Cancel/Edit", hint: String(localized: "Cancel/Edit"), palette: palette
+          title: "Cancel/Edit", symbol: "arrow.uturn.backward",
+          hint: String(localized: "Cancel/Edit"), palette: palette
         ) { edit(message) }
         .accessibilityIdentifier("overlay-message-cancel-edit-\(message.id)")
         OverlayHeldControlButton(
-          title: "Send now", hint: String(localized: "Send now"), palette: palette
+          title: "Send now", symbol: "paperplane",
+          hint: String(localized: "Send now"), palette: palette
         ) {
           performDeliveryControl(.release, message: message)
         }
@@ -926,11 +943,6 @@ struct OverlayConversationView: View {
       // I-beam, and the gaps between them are not text either.
       .background { OverlayMenuCursorRegion() }
       .disabled(pendingDeliveryControls.contains(message.id) || message.controlIdentity == nil)
-      if let error = deliveryControlErrors[message.id] {
-        Text(verbatim: error)
-          .foregroundStyle(palette.errorStatus.color)
-          .accessibilityIdentifier("overlay-message-delivery-error-\(message.id)")
-      }
     }
     .font(.system(size: 11 * textScale))
     .foregroundStyle(palette.mutedText.color)
