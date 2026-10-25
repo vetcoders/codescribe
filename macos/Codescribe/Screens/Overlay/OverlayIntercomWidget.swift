@@ -1576,20 +1576,26 @@ private struct OverlayIntercomDragHandle: NSViewRepresentable {
   /// A visible grip shows the open hand; a whole-header surface under the
   /// buttons keeps their arrow.
   var cursorHint = true
+  var minimumDragDistance: CGFloat = 4
+  var onPull: (CGSize) -> Void = { _ in }
   func makeNSView(context: Context) -> OverlayIntercomDragView { OverlayIntercomDragView() }
   func updateNSView(_ nsView: OverlayIntercomDragView, context: Context) {
     nsView.onClick = onClick
     nsView.onDrag = onDrag
     nsView.onDragEnded = onDragEnded
     nsView.cursorHint = cursorHint
+    nsView.minimumDragDistance = minimumDragDistance
+    nsView.onPull = onPull
   }
 }
 
-private final class OverlayIntercomDragView: NSView {
+final class OverlayIntercomDragView: NSView {
   var onClick: () -> Void = {}
   var onDrag: () -> Bool = { true }
   var onDragEnded: () -> Void = {}
   var cursorHint = true
+  var minimumDragDistance: CGFloat = 4
+  var onPull: (CGSize) -> Void = { _ in }
   private var moving = false
   private var dragged = false
   private var mouseDownEvent: NSEvent?
@@ -1601,6 +1607,7 @@ private final class OverlayIntercomDragView: NSView {
     moving = false
     dragged = false
     mouseDownEvent = event
+    onPull(.zero)
     super.mouseDown(with: event)
   }
   // A real drag moves the window (and detaches, where the grip detaches).
@@ -1615,13 +1622,13 @@ private final class OverlayIntercomDragView: NSView {
     let delta = CGSize(
       width: event.locationInWindow.x - dragStart.x,
       height: event.locationInWindow.y - dragStart.y)
-    // Match the row's move threshold: pointer jitter on a grip is still a click.
-    guard delta.width * delta.width + delta.height * delta.height >= 16 else { return }
+    onPull(delta)
+    // A detach grip has a deliberate latch; ordinary window/header moves
+    // retain their small threshold. No window or owner changes before the threshold.
+    guard hypot(delta.width, delta.height) >= minimumDragDistance else { return }
     moving = true
-    guard onDrag() else {
-      moving = false
-      return
-    }
+    onPull(.zero)
+    guard onDrag() else { return }
     dragged = true
     let id = UUID()
     dragCompletion = (id, onDragEnded)
@@ -1639,6 +1646,7 @@ private final class OverlayIntercomDragView: NSView {
     let clicked = !dragged
     if let completion = dragCompletion { finishDrag(completion.id) }
     mouseDownEvent = nil
+    onPull(.zero)
     // A drag already called performDrag. Only a click that stayed under the
     // threshold reaches onClick, and only the top bar uses that to fold.
     if clicked { onClick() }
@@ -1649,6 +1657,7 @@ private final class OverlayIntercomDragView: NSView {
     dragCompletion = nil
     moving = false
     mouseDownEvent = nil
+    onPull(.zero)
     completion.finish()
   }
   override func resetCursorRects() {
@@ -1662,6 +1671,7 @@ private struct OverlayIntercomCard: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var entered = false
+  @State private var detachPull: CGSize = .zero
   let state: OverlayState
   let identity: OverlayIntercomCardIdentity
   let index: Int
@@ -1833,14 +1843,32 @@ private struct OverlayIntercomCard: View {
     let detached = controller.desktop.openInstance(for: identity) != nil
     let detachGrip = Image(systemName: detached ? "macwindow" : "macwindow.badge.plus")
       .font(.system(size: 10 * scale))
+      .offset(x: detachPull.width, y: detachPull.height)
       .frame(
         width: 24 * max(1, scale),
         height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       )
       .overlay(
         OverlayIntercomDragHandle(
-          onDrag: { controller.detachForDrag(identity) },
-          onDragEnded: { controller.finishInstanceDrag() }))
+          onDrag: {
+            let detached = controller.detachForDrag(identity)
+            if detached {
+              NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            }
+            return detached
+          },
+          onDragEnded: { controller.finishInstanceDrag() },
+          minimumDragDistance: 24,
+          onPull: { delta in
+            if delta == .zero {
+              withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) { detachPull = .zero }
+            } else {
+              // The grip stretches slightly against its latch, then snaps free.
+              detachPull = CGSize(
+                width: min(6, max(-6, delta.width * 0.22)),
+                height: min(6, max(-6, -delta.height * 0.22)))
+            }
+          }))
       .overlayFastHint(
         detached ? String(localized: "Open conversation") : String(localized: "Drag to detach"),
         palette: palette)
@@ -1952,8 +1980,8 @@ private struct OverlayIntercomCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .simultaneousGesture(moveGesture, including: expanded ? .subviews : .all)
-        // The road to the pane, then what I hear, then what I say, from the
-        // right edge: the microphone is the last to go, the focus the first.
+        // Focus precedes the shared audio pair: live input on the left,
+        // reply playback on the right. Narrow rows retain one shared slot.
         Group {
           if row.slots >= 3 {
             OverlayIntercomFocusButton(

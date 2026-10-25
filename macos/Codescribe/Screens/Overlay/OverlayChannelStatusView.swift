@@ -622,34 +622,6 @@ struct OverlayAgentAudioControls: View {
     // 2pt and pins each glyph to the shared edge, so the 30pt hit squares
     // stay put while the icons are no longer a glyph-width apart.
     HStack(spacing: chrome ? 6 : 2) {
-      if showsSpeaker {
-        Button(action: onPlayback) {
-          Image(
-            systemName: muted == nil
-              ? "speaker.badge.exclamationmark"
-              : muted == true
-                ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
-          )
-          .font(.system(size: glyphSize, weight: .semibold))
-          .modifier(
-            OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
-          )
-          .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
-          .frame(
-            width: glyphBox, height: glyphBox,
-            alignment: chrome ? .center : .trailing)
-        }
-        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
-        .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-        .csFocusOutline()
-        .disabled(!playbackEnabled || muted == nil)
-        .overlayFastHint(speakerHint, palette: palette)
-        .accessibilityLabel(Text(verbatim: playbackLabel))
-        .accessibilityValue(Text(verbatim: playbackValue))
-        .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
-        .accessibilityIdentifier("overlay-agent-speaker")
-      }
-
       if showsMicrophone {
         Button(action: onMicrophone) {
           Image(systemName: microphoneSymbol)
@@ -663,7 +635,7 @@ struct OverlayAgentAudioControls: View {
             )
             .frame(
               width: glyphBox, height: glyphBox,
-              alignment: chrome ? .center : .leading)
+              alignment: chrome ? .center : .trailing)
         }
         .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
         .tint(Self.litGlass(open ? recordingAccent : nil))
@@ -685,6 +657,34 @@ struct OverlayAgentAudioControls: View {
                 comment: "Disabled agent microphone control"))
         )
         .accessibilityIdentifier("overlay-agent-microphone")
+      }
+
+      if showsSpeaker {
+        Button(action: onPlayback) {
+          Image(
+            systemName: muted == nil
+              ? "speaker.badge.exclamationmark"
+              : muted == true
+                ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
+          )
+          .font(.system(size: glyphSize, weight: .semibold))
+          .modifier(
+            OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
+          )
+          .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+          .frame(
+            width: glyphBox, height: glyphBox,
+            alignment: chrome ? .center : .leading)
+        }
+        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
+        .csFocusOutline()
+        .disabled(!playbackEnabled || muted == nil)
+        .overlayFastHint(speakerHint, palette: palette)
+        .accessibilityLabel(Text(verbatim: playbackLabel))
+        .accessibilityValue(Text(verbatim: playbackValue))
+        .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
+        .accessibilityIdentifier("overlay-agent-speaker")
       }
     }
     .modifier(
@@ -2018,7 +2018,7 @@ struct OverlayChannelStatusView: View {
       return palette.mutedText.color
     }
     switch focusState.phase {
-    case .requesting: return palette.processingStatus.color
+    case .requesting, .activating: return palette.processingStatus.color
     case .succeeded: return palette.successStatus.color
     case .failed: return palette.mutedText.color
     }
