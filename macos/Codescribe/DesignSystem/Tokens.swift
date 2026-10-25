@@ -232,6 +232,7 @@ enum CSColor {
   // Status — olive / green
   static let olive = Color(nsColor: CSPalette.olive)  // healthy base
   static let oliveLight = Color(nsColor: CSPalette.oliveLight)  // idle / granted / success dot
+  static let oliveStatus = Color(nsColor: CSPalette.oliveStatus)  // healthy status words and fills
   static let eyebrowOlive = Color(nsColor: CSPalette.eyebrowOlive)  // section eyebrows
 
   // Reasoning — amber
