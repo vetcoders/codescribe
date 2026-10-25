@@ -7,6 +7,47 @@ import XCTest
 final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
+  @MainActor
+  func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
+    XCTAssertNotNil(
+      NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
+    let keyBefore = NSApp.keyWindow
+    let suite = "CodescribeTests.header.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let generation = state.captureGeneration
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      for width in [
+        IntercomHeaderMetrics(agentCount: 0, scale: 1).minimumWidth(paging: false), 400,
+      ] {
+        let host = NSHostingView(
+          rootView: controller.offscreenHeader(width: width)
+            .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light)
+            .environment(\.csTextScale, 1)
+            .frame(width: width, height: Layout.controlHeight(scale: 1))
+            .background(palette.desktopBackground.color))
+        host.frame.size = NSSize(width: width, height: Layout.controlHeight(scale: 1))
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let attachment = XCTAttachment(
+          image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
+        attachment.name = "four-dot-header-\(palette.appearance)-\(Int(width))"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+    }
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(NSApp.keyWindow === keyBefore)
+  }
+
   func testExpandedConversationIsAlwaysAboveItsSiblingRows() throws {
     let cards = try ["2", "5", "8"].map { channel in
       let owner = try XCTUnwrap(

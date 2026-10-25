@@ -43,8 +43,8 @@ struct IntercomHeaderMetrics: Equatable {
     func textWidth(_ text: String, font: NSFont) -> CGFloat {
       ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
-    groupWidth = textWidth(String(localized: "Intercom"), font: font) + 12 * scale + Self.spacing
     controlHeight = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    groupWidth = controlHeight
     // OverlayAgentAudioControls: two flat diameter-sized buttons, 6pt apart.
     audioWidth = 2 * controlHeight + 6
     countWidth = textWidth(agentCount.formatted(), font: mono)
@@ -56,7 +56,7 @@ struct IntercomHeaderMetrics: Equatable {
 
   func width(showsLabels: Bool, showsCount: Bool, paging: Bool) -> CGFloat {
     let content = IntercomHeaderContent(showsLabels: showsLabels, showsCount: showsCount)
-    // Wordmark, shared mailbox menu, Dock, audio; optional spacer/count and two pagers.
+    // Four-dot toggle, shared mailbox menu, Dock, audio; optional count and two pagers.
     let children = 4 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
     return ceil(
       groupWidth + (showsLabels ? mailboxWidth : controlHeight)

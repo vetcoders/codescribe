@@ -82,6 +82,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   #if DEBUG
+    /// Exercise the same header without presenting any desktop windows.
+    func offscreenHeader(width: CGFloat) -> some View {
+      groupWidth = width
+      return OverlayIntercomHeader(state: state, controller: self)
+    }
+
     /// Renders the production card with explicit geometry, without creating or
     /// presenting its desktop windows. Capture and draft state remain shared.
     func offscreenCard(
@@ -1114,10 +1120,8 @@ private struct OverlayIntercomHeader: View {
       Button {
         controller.toggleGroup()
       } label: {
-        HStack(spacing: IntercomHeaderMetrics.spacing) {
-          OverlayAgentStatusDot(kind: .broadcast, palette: palette)
-          Text("Intercom").csFont(11, .semibold).lineLimit(1).fixedSize()
-        }
+        Image(systemName: "circle.grid.2x2.fill")
+          .csFont(14, .semibold)
         .contentShape(Capsule())
         .frame(
           width: metrics.groupWidth, height: metrics.controlHeight)
@@ -1138,7 +1142,7 @@ private struct OverlayIntercomHeader: View {
       .contextMenu {
         // The explicit road back to a saved closed fiszka, independent of
         // the roster. Reopening is a window operation: no microphone, no
-        // send. It lives on the wordmark: the rest of the bar is the move
+        // send. It lives on the four-dot control: the rest of the bar is the move
         // surface, which SwiftUI's menu never reaches.
         let closed = controller.closedInstances
         if closed.isEmpty {
