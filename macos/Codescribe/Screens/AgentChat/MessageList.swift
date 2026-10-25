@@ -537,7 +537,7 @@ struct ShowEarlierButton: View {
           icon: .chevronRight, size: 8, weight: .semibold,
           color: CSColor.textTertiary)
         Text("Show earlier · \(hiddenCount) turns")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(10.5, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
       .padding(.horizontal, 11)
@@ -570,7 +570,7 @@ struct JumpToCurrentButton: View {
           icon: .chevronDown, size: 9, weight: .semibold,
           color: CSColor.chromeAccent)
         Text("Current")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.ui(10.5, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.secondaryInk)
       }
       .padding(.horizontal, 11)
