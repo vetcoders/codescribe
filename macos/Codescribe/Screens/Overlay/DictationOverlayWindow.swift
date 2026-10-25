@@ -39,10 +39,18 @@ struct OverlayCursorState {
     zone: OverlayPointerZone, cursor: ObjectIdentifier?, region: ObjectIdentifier? = nil
   ) -> Bool {
     let changed = self.zone != zone || self.cursor != cursor || self.region != region
+    let releasesResize: Bool
+    if case .resize = self.zone, self.cursor != nil, cursor == nil,
+      zone == .interior || zone == .menu
+    {
+      releasesResize = true
+    } else {
+      releasesResize = false
+    }
     self.zone = zone
     self.cursor = cursor
     self.region = region
-    return cursor != nil && changed
+    return (cursor != nil && changed) || releasesResize
   }
 }
 
@@ -570,8 +578,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     }
     if event.type == .mouseMoved || event.type == .cursorUpdate {
       // Resolve once. Owned zones consume motion before overlapping text
-      // tracking can set an I-beam. Interior motion has no panel hit test or
-      // cursor write, including after super.sendEvent.
+      // tracking can set an I-beam. Leaving resize restores the arrow before
+      // native dispatch; ordinary interior motion never writes a cursor.
       let decision = pointerDecision(at: event.locationInWindow)
       applyCursor(decision)
       if decision.cursor != nil { return }
@@ -831,8 +839,8 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let shouldSet = cursorState.update(
       zone: decision.zone, cursor: decision.cursor.map(ObjectIdentifier.init),
       region: decision.region)
-    guard shouldSet, let cursor = decision.cursor else { return false }
-    cursor.set()
+    guard shouldSet else { return false }
+    (decision.cursor ?? .arrow).set()
     return true
   }
 

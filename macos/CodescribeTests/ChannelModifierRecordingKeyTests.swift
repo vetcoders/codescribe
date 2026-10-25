@@ -60,8 +60,8 @@ final class ChannelModifierRecordingKeyTests: XCTestCase {
     XCTAssertNotNil(model.channelModifierRecordingNote)
   }
 
-  /// Both keys record: neither is offered, nothing is selected, and the
-  /// sentence points at the agents list.
+  /// Both keys record: the disabled Off segment represents the effective
+  /// value, and the sentence points at the agents list.
   func testBothKeysRecordingLeaveNoChannelShortcut() {
     let model = model(channelModifier: "off", fnRecords: true, ctrlRecords: true)
     XCTAssertEqual(model.channelModifier, "off")
@@ -80,5 +80,14 @@ final class ChannelModifierRecordingKeyTests: XCTestCase {
     XCTAssertTrue(model.channelModifierFnAvailable)
     XCTAssertTrue(model.channelModifierCtrlAvailable)
     XCTAssertNil(model.channelModifierRecordingNote)
+  }
+
+  func testPickerRepresentsTheEffectiveOffValueWithoutOfferingItAsAChoice() throws {
+    let path = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/ShortcutsPanel.swift")
+    let source = try String(contentsOf: path, encoding: .utf8)
+    XCTAssertTrue(source.contains("if model.channelModifier == \"off\""))
+    XCTAssertTrue(source.contains("Text(\"Off\").tag(\"off\")\n                .disabled(true)"))
   }
 }
