@@ -88,13 +88,19 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     let conversations = state.conversations.map(\.id)
     let initialDesktop = store.load()
     let visibleBeforeFold = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
+    let groupRowCount = state.channelMapLayoutModel.agents.count
+    XCTAssertEqual(
+      visibleBeforeFold.count, 1 + groupRowCount + initialDesktop.instances.filter { !$0.closed }.count,
+      "Every current agent retains a row alongside its detached window")
     controller.toggleGroup()
     for _ in 0..<50 {
-      if ownedWindows.filter(\.isVisible).count == visibleBeforeFold.count - 1 { break }
+      if ownedWindows.filter(\.isVisible).count == visibleBeforeFold.count - groupRowCount { break }
       try await Task.sleep(for: .milliseconds(20))
     }
     let foldedVisible = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
-    XCTAssertEqual(foldedVisible.count, visibleBeforeFold.count - 1, "Only the grouped row folds")
+    XCTAssertEqual(
+      foldedVisible.count, visibleBeforeFold.count - groupRowCount,
+      "Every roster row folds; detached windows stay visible")
     XCTAssertGreaterThan(foldedVisible.count, 1, "Detached windows remain visible")
     XCTAssertEqual(store.load(), initialDesktop, "Folding the group never docks detached windows")
     let reconciliations = controller.reconciliationRequests

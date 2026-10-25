@@ -29,7 +29,7 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertTrue(human.ownerID.isEmpty)
     XCTAssertEqual(human.displayDigit, "")
     XCTAssertEqual(human.displayTitle, String(localized: "Your Inbox"))
-    XCTAssertTrue(restored.groupRows(of: [identity]).isEmpty)
+    XCTAssertEqual(restored.groupRows(of: [identity]), [identity])
     var closed = human
     closed.closed = true
     desktop = restored
@@ -82,10 +82,9 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertNil(desktop.openInstance(for: lena), "closing frees the row for a fresh detach")
   }
 
-  /// Maciej, 17:48Z on the greyed ghost row: "likwidować, chować… jak ty
-  /// myślisz". An agent standing in its own window, open or mini, leaves the
-  /// group's rows; closing that window hands the row back in its place.
-  func testAnAgentInItsOwnWindowLeavesTheGroupUntilTheWindowCloses() throws {
+  /// Founder decision, 2026-10-25: detaching opens the conversation without
+  /// removing the agent from the roster, including after desktop restoration.
+  func testDetachedAgentRemainsInRosterAcrossWindowStatesAndRestoration() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
     let olga = try identity("olga", channel: "3", lease: "c")
     let astra = try identity("astra", channel: "4", lease: "d")
@@ -96,15 +95,20 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     var torn = OverlayIntercomInstance(
       identity: olga, frame: CGRect(x: 600, y: 400, width: 380, height: 360), minimized: true)
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "a mini stands outside the stack")
+    XCTAssertEqual(desktop.groupRows(of: roster), roster, "a minimized window keeps its row")
 
     torn.minimized = false
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), [lena, astra], "so does the open window")
+    XCTAssertEqual(desktop.groupRows(of: roster), roster, "an open window keeps its row")
+    let restored = try JSONDecoder().decode(
+      OverlayIntercomDesktopState.self, from: JSONEncoder().encode(desktop))
+    XCTAssertEqual(restored.groupRows(of: roster), roster)
+    XCTAssertEqual(restored.openInstance(for: olga)?.id, torn.id)
+    XCTAssertEqual(desktop.openInstance(for: olga)?.id, torn.id)
 
     torn.closed = true
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), roster, "closing returns the row in order")
+    XCTAssertEqual(desktop.groupRows(of: roster), roster, "closing preserves roster order")
 
     let usurper = try identity("olga", channel: "3", lease: "e")
     desktop.upsert(

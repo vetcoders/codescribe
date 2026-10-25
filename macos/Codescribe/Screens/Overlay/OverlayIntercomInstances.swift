@@ -89,13 +89,11 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
     }
   }
 
-  /// The group's rows: every agent except one standing in its own window.
-  /// Such an agent leaves the stack instead of greying in it; its window is
-  /// its one place, and closing the window hands the row back (Maciej,
-  /// 2026-10-23 17:48Z, on the collapsed ghost: "likwidować, chować… jak ty
-  /// myślisz"; leaving the stack is my answer, 17:49Z).
+  /// Detaching changes the conversation's window, not roster membership.
+  /// Keep every current agent in order, including an open or minimized fiszka
+  /// (Founder decision, 2026-10-25).
   func groupRows(of identities: [OverlayIntercomCardIdentity]) -> [OverlayIntercomCardIdentity] {
-    identities.filter { openInstance(for: $0) == nil }
+    identities
   }
 
   mutating func upsert(_ instance: OverlayIntercomInstance) {

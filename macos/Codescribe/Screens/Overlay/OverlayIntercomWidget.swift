@@ -231,8 +231,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     for identity in presentation.expanded where !identities.contains(identity) {
       detachIntoInstance(identity)
     }
-    // A row whose agent now stands in a window (a reopened saved fiszka)
-    // leaves the stack like a gone agent's row.
+    // Only agents absent from the current roster leave the stack. A detached
+    // conversation keeps its agent's row as the way back to that window.
     let retained = Set(groupIdentities)
     for identity in Set(cards.keys).subtracting(retained) {
       let panel = cards.removeValue(forKey: identity)
@@ -279,7 +279,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       visibleFrame: screenFrame, scale: scale, cardHeight: groupCardHeight)
     if header.frame != fitted { header.setFrame(fitted, display: true) }
     positioning = false
-    // An agent standing in its own window has no row to build.
+    // A detached conversation still keeps a compact row in the group.
     for (index, identity) in groupIdentities.enumerated() where cards[identity] == nil {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
@@ -788,8 +788,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). One agent keeps
   /// one open window (Maciej, 2026-10-23): while it stands somewhere, the
-  /// gesture shows it instead of minting a copy, and the agent's row leaves
-  /// the stack until that window closes.
+  /// gesture shows it instead of minting a copy. The agent's row remains in
+  /// the stack, whether that window is open, minimized or closed.
   /// Returns whether this card's panel became that window, so the grip knows
   /// whether there is anything to drag.
   @discardableResult
