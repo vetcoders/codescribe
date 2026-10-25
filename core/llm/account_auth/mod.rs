@@ -1306,7 +1306,7 @@ mod tests {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
         let _tokens = EnvGuard::remove(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
         let mut server = mockito::Server::new_async().await;
-        let _issuer = EnvGuard::set(OPENAI_ISSUER_ENV, &server.url());
+        let _issuer = EnvGuard::set(OPENAI_ISSUER_ENV, server.url());
         let provider = ProviderKind::OpenAiResponses;
         let expired = AccountTokens::new(
             provider,
