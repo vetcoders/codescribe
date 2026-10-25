@@ -2100,6 +2100,17 @@
         }
       }
     },
+    "API key or key-free endpoint" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "klucz API lub adres bez klucza"
+          }
+        }
+      }
+    },
     "API keys" : {
       "comment" : "Privacy details subsection: key storage and the gateway",
       "localizations" : {
@@ -2127,6 +2138,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "O codescribe"
+          }
+        }
+      }
+    },
+    "Access denied. Check account permissions and model access." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odmowa dostępu. Sprawdź uprawnienia konta i dostęp do modelu."
           }
         }
       }
@@ -2162,6 +2184,17 @@
         }
       }
     },
+    "Account access failed. Sign in again, then repeat the test." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się uzyskać dostępu do konta. Zaloguj się ponownie i powtórz test."
+          }
+        }
+      }
+    },
     "Account access unavailable" : {
       "comment" : "Setup Agent account row status when account credentials cannot be read",
       "localizations" : {
@@ -2169,6 +2202,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Brak dostępu do konta"
+          }
+        }
+      }
+    },
+    "Account saved" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Konto zapisane"
+          }
+        }
+      }
+    },
+    "Account saved. Use Test in Formatting to check the selected provider and model." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Konto zostało zapisane. Użyj przycisku Test w Formatowaniu, aby sprawdzić wybranego dostawcę i model."
           }
         }
       }
@@ -3565,6 +3620,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uwierzytelnianie"
+          }
+        }
+      }
+    },
+    "Authentication rejected. Sign in again or replace the API key." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Uwierzytelnienie odrzucone. Zaloguj się ponownie lub zmień klucz API."
           }
         }
       }
@@ -5704,6 +5770,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Ustawiono jako"
+          }
+        }
+      }
+    },
+    "Configured cloud route: %@ · %@ · %@" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Skonfigurowane połączenie chmurowe: %1$@ · %2$@ · %3$@"
           }
         }
       }
@@ -8523,6 +8600,17 @@
         }
       }
     },
+    "Formatting failed" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Formatowanie nie powiodło się"
+          }
+        }
+      }
+    },
     "Formatting failed. The transcript is unchanged." : {
       "comment" : "The formatting provider failed for a transcript reopened from history",
       "localizations" : {
@@ -10317,6 +10405,17 @@
         }
       }
     },
+    "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Lokalna transkrypcja wymaga tego modelu. Zainstaluj go, aby dokończyć konfigurację, albo wybierz silnik chmurowy w Ustawieniach."
+          }
+        }
+      }
+    },
     "Loctree MCP" : {
       "comment" : "Diagnostics row label",
       "localizations" : {
@@ -11816,6 +11915,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przekazano poziomu rozumowania. Model używa własnego ustawienia domyślnego."
+          }
+        }
+      }
+    },
+    "No formatting provider is available. Configure an account or API key." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Brak dostępnego dostawcy formatowania. Skonfiguruj konto lub klucz API."
           }
         }
       }
@@ -14066,6 +14176,17 @@
         }
       }
     },
+    "Provider request failed (HTTP %lld). Check the model and provider settings." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Żądanie do dostawcy nie powiodło się (HTTP %lld). Sprawdź model i ustawienia dostawcy."
+          }
+        }
+      }
+    },
     "Provider: %@" : {
       "comment" : "Diagnostics key fact; placeholder is a provider display name",
       "localizations" : {
@@ -15379,6 +15500,17 @@
         }
       }
     },
+    "Request rejected; key not verified" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Żądanie odrzucone; klucz niezweryfikowany"
+          }
+        }
+      }
+    },
     "Requesting playback" : {
       "localizations" : {
         "en" : {
@@ -15999,6 +16131,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zapisz prompt"
+          }
+        }
+      }
+    },
+    "Saved" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisano"
+          }
+        }
+      }
+    },
+    "Saved account: %@" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Zapisane konto: %@"
           }
         }
       }
@@ -18741,6 +18895,17 @@
         }
       }
     },
+    "Tested: %@" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sprawdzono: %@"
+          }
+        }
+      }
+    },
     "Testing…" : {
       "comment" : "MCP server test state",
       "localizations" : {
@@ -19159,6 +19324,28 @@
         }
       }
     },
+    "The provider could not be reached. Check the connection and provider address." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie można połączyć się z dostawcą. Sprawdź połączenie i adres dostawcy."
+          }
+        }
+      }
+    },
+    "The provider rejected the request. Check the model and provider settings." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dostawca odrzucił żądanie. Sprawdź model i ustawienia dostawcy."
+          }
+        }
+      }
+    },
     "The provider returned no models. Enter a model ID below." : {
       "localizations" : {
         "pl" : {
@@ -19169,12 +19356,34 @@
         }
       }
     },
+    "The provider returned no usable formatting result. Check the model and repeat the test." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dostawca nie zwrócił poprawnego wyniku formatowania. Sprawdź model i powtórz test."
+          }
+        }
+      }
+    },
     "The recording ended. Files are in this conversation's draft; send them when ready." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagranie się zakończyło. Pliki są w szkicu tej rozmowy; wyślij je, kiedy zechcesz."
+          }
+        }
+      }
+    },
+    "The request exceeded the formatting deadline. Check the connection or choose a faster model." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Żądanie przekroczyło limit czasu formatowania. Sprawdź połączenie lub wybierz szybszy model."
           }
         }
       }
@@ -20286,6 +20495,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aktualizowanie dostępu…"
+          }
+        }
+      }
+    },
+    "Usage limit (check billing and rate limits)" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Limit użycia (sprawdź rozliczenia i limity zapytań)"
+          }
+        }
+      }
+    },
+    "Usage limit reached. Check billing and rate limits." : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Osiągnięto limit użycia. Sprawdź rozliczenia i limity zapytań."
           }
         }
       }
@@ -24088,6 +24319,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "w toku"
+          }
+        }
+      }
+    },
+    "saved account" : {
+      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "zapisane konto"
           }
         }
       }

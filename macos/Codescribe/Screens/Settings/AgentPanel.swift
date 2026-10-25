@@ -361,10 +361,10 @@ private struct LLMLaneEditor: View {
     switch probe.status {
     case "applied":
       verdict = String(localized: "Formatted", comment: "Formatting test verdict")
-      color = .green
+      color = CSColor.oliveLight
     case "unchanged":
       verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
-      color = .green
+      color = CSColor.oliveLight
     case "skipped":
       verdict = String(
         localized: "Not sent: formatting is off or runs on the Agent",
@@ -372,10 +372,10 @@ private struct LLMLaneEditor: View {
       color = .secondary
     case "timed_out":
       verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
-      color = .orange
+      color = CSColor.amberLight
     default:
-      verdict = String(localized: "Failed; see the log", comment: "Formatting test verdict")
-      color = .red
+      verdict = String(localized: "Formatting failed", comment: "Formatting test verdict")
+      color = CSColor.terracottaText
     }
     let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
     return VStack(alignment: .leading, spacing: CSSpace.xs) {
@@ -388,7 +388,25 @@ private struct LLMLaneEditor: View {
         .foregroundStyle(CSColor.secondaryInk)
       }
       .font(SettingsScale.helper)
-      if !probe.output.isEmpty, probe.status != "skipped" {
+      if let message = Self.formattingFailureMessage(probe) {
+        Text(message)
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.terracottaText)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      let checked = Date(timeIntervalSince1970: Double(probe.checkedAtUnixMs) / 1000)
+      Text("Tested: \(checked.formatted(date: .abbreviated, time: .standard))")
+        .font(SettingsScale.helper)
+        .foregroundStyle(CSColor.secondaryInk)
+      if let host = probe.endpointHost {
+        let credential = probe.credentialSource == "account"
+          ? String(localized: "saved account") : String(localized: "API key or key-free endpoint")
+        Text("Configured cloud route: \(probe.provider) · \(host) · \(credential)")
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .textSelection(.enabled)
+      }
+      if !probe.output.isEmpty, probe.status == "applied" || probe.status == "unchanged" {
         Text(probe.output)
           .font(SettingsScale.helper)
           .textSelection(.enabled)
@@ -397,6 +415,38 @@ private struct LLMLaneEditor: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("formatting-test-result")
+  }
+
+  /// Only fixed diagnostic buckets cross the bridge. Never render a raw
+  /// provider error: it can contain a bearer, prompt or transcript.
+  static func formattingFailureMessage(_ probe: CsFormattingProbe) -> String? {
+    guard probe.status == "failed" || probe.status == "timed_out" else { return nil }
+    switch probe.failureCode {
+    case "unavailable":
+      return String(localized: "No formatting provider is available. Configure an account or API key.")
+    case "account_authentication":
+      return String(localized: "Account access failed. Sign in again, then repeat the test.")
+    case "timeout":
+      return String(localized: "The request exceeded the formatting deadline. Check the connection or choose a faster model.")
+    case "transport":
+      return String(localized: "The provider could not be reached. Check the connection and provider address.")
+    case "http":
+      switch probe.httpStatus {
+      case 401:
+        return String(localized: "Authentication rejected. Sign in again or replace the API key.")
+      case 403:
+        return String(localized: "Access denied. Check account permissions and model access.")
+      case 402, 429:
+        return String(localized: "Usage limit reached. Check billing and rate limits.")
+      default:
+        if let status = probe.httpStatus {
+          return String(localized: "Provider request failed (HTTP \(Int(status))). Check the model and provider settings.")
+        }
+        return String(localized: "The provider rejected the request. Check the model and provider settings.")
+      }
+    default:
+      return String(localized: "The provider returned no usable formatting result. Check the model and repeat the test.")
+    }
   }
 
   /// The model-list state for this lane: where the list came from, a refresh,

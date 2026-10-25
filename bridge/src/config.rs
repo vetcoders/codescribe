@@ -463,14 +463,12 @@ impl From<CsPasteMode> for PasteMode {
 /// UI-safe API-key liveness bucket. No variant carries secret material.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsApiKeyProbeStatus {
-    /// The key authenticated. Also covers a processed-but-rejected request
-    /// (most 4xx other than auth/quota): the server got far enough to prove the
-    /// credential is live, even when this particular probe body was refused.
+    /// The provider accepted this probe. This does not verify another model,
+    /// OAuth account or a later request.
     Ok,
     /// The provider rejected the credential itself (401 / 403).
     Invalid,
-    /// The key authenticates but the account cannot pay for the call
-    /// (429 / 402, or an explicit quota/billing marker in the body).
+    /// A usage, quota or billing limit (429 / 402 or an explicit marker).
     NoQuota,
     /// No verdict was reachable — transport failure or a provider 5xx.
     Network,
@@ -479,6 +477,8 @@ pub enum CsApiKeyProbeStatus {
     /// This account has no cheap liveness probe or belongs
     /// to no registered provider.
     Unsupported,
+    /// The request was rejected without establishing credential acceptance.
+    Rejected,
 }
 
 /// Result of one Settings "Test" action for a Keychain account.
@@ -504,6 +504,13 @@ pub struct CsFormattingProbe {
     pub model: String,
     /// The reasoning effort sent; `None` when the request carried no field.
     pub reasoning: Option<String>,
+    /// Fixed diagnostic code, never a raw provider error or response body.
+    pub failure_code: Option<String>,
+    pub http_status: Option<u16>,
+    /// Configured cloud route; excludes path, query and user information.
+    pub endpoint_host: Option<String>,
+    pub credential_source: String,
+    pub checked_at_unix_ms: u64,
 }
 
 impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormattingProbe {
@@ -525,6 +532,11 @@ impl From<codescribe_core::llm::ai_formatting::FormattingProbe> for CsFormatting
             provider: probe.provider,
             model: probe.model,
             reasoning: probe.reasoning.map(str::to_string),
+            failure_code: probe.failure.map(|failure| failure.code().to_string()),
+            http_status: probe.failure.and_then(|failure| failure.http_status()),
+            endpoint_host: probe.endpoint_host,
+            credential_source: probe.credential_source.to_string(),
+            checked_at_unix_ms: probe.checked_at_unix_ms,
         }
     }
 }
@@ -2899,6 +2911,7 @@ impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
             ApiKeyLivenessStatus::Network => Self::Network,
             ApiKeyLivenessStatus::Missing => Self::Missing,
             ApiKeyLivenessStatus::Unsupported => Self::Unsupported,
+            ApiKeyLivenessStatus::Rejected => Self::Rejected,
         }
     }
 }

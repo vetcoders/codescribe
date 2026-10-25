@@ -284,13 +284,9 @@ struct KeyRow: View {
 
   private var isUpdating: Bool { mutationPending || operationPending }
 
-  /// Presence tints the row green; an absent key stays neutral whether or not
-  /// it is marked optional. A key that is simply missing blocks nothing on its
-  /// own — an account can cover the same provider — so red is reserved for a
-  /// real failure, which `KeyProbeChip` and the operation error report.
-  private var accent: Color {
-    isSet ? CSColor.olive : CSColor.secondaryInk
-  }
+  /// Stored credentials are presence, not service acceptance. Only the explicit
+  /// probe chip carries a successful request's green verdict.
+  private var accent: Color { CSColor.secondaryInk }
 
   init(
     account: String, label: String, isSet: Bool, optional: Bool = false,
@@ -397,9 +393,9 @@ struct KeyRow: View {
   }
 
   private var presenceState: some View {
-    Text(isSet ? "Set" : (optional ? "Optional" : "Not set"))
+    Text(isSet ? "Saved" : (optional ? "Optional" : "Not set"))
       .font(SettingsScale.statusBadge)
-      .foregroundStyle(isSet ? CSColor.oliveLight : accent)
+      .foregroundStyle(accent)
   }
 
   private var editButton: some View {
@@ -543,7 +539,8 @@ struct KeyProbeChip: View {
     switch result.status {
     case .ok: verdict = String(localized: "Key OK")
     case .invalid: verdict = String(localized: "Invalid key")
-    case .noQuota: verdict = String(localized: "No credits (check billing)")
+    case .noQuota: verdict = String(localized: "Usage limit (check billing and rate limits)")
+    case .rejected: verdict = String(localized: "Request rejected; key not verified")
     case .network: verdict = String(localized: "Network error")
     case .missing: verdict = String(localized: "Not set")
     // "Unsupported" read as "bad key" — it only means this provider ships no
@@ -561,7 +558,7 @@ struct KeyProbeChip: View {
     switch result.status {
     case .ok: return CSColor.oliveLight
     case .invalid, .noQuota: return CSColor.terracottaText
-    case .network: return CSColor.amberLight
+    case .network, .rejected: return CSColor.amberLight
     case .missing, .unsupported: return CSColor.secondaryInk
     }
   }
@@ -601,7 +598,7 @@ struct AccountLoginRow: View {
   let onSignOut: () -> Void
 
   private var signedIn: Bool { provider.accountSignedIn }
-  private var accent: Color { signedIn ? CSColor.olive : CSColor.secondaryInk }
+  private var accent: Color { CSColor.secondaryInk }
   private var accountBrand: String { Self.brand(for: provider) }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
@@ -614,16 +611,16 @@ struct AccountLoginRow: View {
     }
   }
 
-  /// `Connected as <email>` when the id token names the account, `Connected`
-  /// when it does not, `Not connected` otherwise.
+  /// A saved account is identity storage, not proof that the selected service
+  /// currently accepts requests. Capability is measured by the lane's Test.
   static func status(for provider: CsProviderOption) -> String {
     guard provider.accountSignedIn else { return String(localized: "Not connected") }
     if let identity = provider.accountIdentity, !identity.isEmpty {
       return String(
-        localized: "Connected as \(identity)",
+        localized: "Saved account: \(identity)",
         comment: "Provider account row; the placeholder is the signed-in email")
     }
-    return String(localized: "Connected")
+    return String(localized: "Account saved")
   }
 
   var body: some View {
@@ -634,10 +631,13 @@ struct AccountLoginRow: View {
         .foregroundStyle(Color.primary)
       Text(Self.status(for: provider))
         .font(SettingsScale.statusBadge)
-        .foregroundStyle(signedIn ? CSColor.oliveLight : CSColor.secondaryInk)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
         .truncationMode(.middle)
-        .help(provider.accountStatusMessage)
+        .help(
+          signedIn
+            ? String(localized: "Account saved. Use Test in Formatting to check the selected provider and model.")
+            : provider.accountStatusMessage)
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
           .font(SettingsScale.statusBadge)

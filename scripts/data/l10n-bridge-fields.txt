@@ -99,6 +99,9 @@ data  CsFormattingProbe.output
 data  CsFormattingProbe.provider
 data  CsFormattingProbe.model
 data  CsFormattingProbe.reasoning
+data  CsFormattingProbe.failureCode
+data  CsFormattingProbe.endpointHost
+data  CsFormattingProbe.credentialSource
 data  CsHistoryEntry.path
 data  CsHistoryEntry.preview
 prose CsHotkeyConflict.gestureLabel

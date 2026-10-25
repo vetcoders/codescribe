@@ -1146,6 +1146,7 @@ pub async fn format_text_with_status_channels(
         None,
     )
     .await
+    .0
 }
 
 /// Format through the normalized policy sealed in the selected generation.
@@ -1167,6 +1168,7 @@ pub async fn format_text_with_status_for_policy(
         consultation,
     )
     .await
+    .0
 }
 
 /// Settings › Formatting › Test sample: a raw transcript as the engines hand
@@ -1189,6 +1191,73 @@ pub enum FormattingProbeStatus {
     TimedOut,
 }
 
+/// Bounded diagnostics from the existing formatter request. Never carries a
+/// bearer, provider response body, URL query, prompt or transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormattingFailure {
+    Unavailable,
+    AccountAuthentication,
+    Http(u16),
+    Timeout,
+    Transport,
+    ProviderResponse,
+}
+
+impl FormattingFailure {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::AccountAuthentication => "account_authentication",
+            Self::Http(_) => "http",
+            Self::Timeout => "timeout",
+            Self::Transport => "transport",
+            Self::ProviderResponse => "provider_response",
+        }
+    }
+
+    pub fn http_status(self) -> Option<u16> {
+        match self {
+            Self::Http(status) => Some(status),
+            _ => None,
+        }
+    }
+
+    fn from_error(error: &anyhow::Error) -> Self {
+        for cause in error.chain() {
+            if let Some(transport) = cause.downcast_ref::<reqwest::Error>() {
+                if transport.is_timeout() {
+                    return Self::Timeout;
+                }
+                if let Some(status) = transport.status() {
+                    return Self::Http(status.as_u16());
+                }
+                return Self::Transport;
+            }
+            let message = cause.to_string();
+            // Only the request owner's fixed HTTP prefix is inspected. The
+            // provider body may echo secrets or source text: never retain it.
+            if let Some(status) = message
+                .strip_prefix("HTTP ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|code| code.parse::<u16>().ok())
+                .filter(|code| (100..=599).contains(code))
+            {
+                return Self::Http(status);
+            }
+            if message.contains("account authentication failed:") {
+                return Self::AccountAuthentication;
+            }
+            if message.starts_with("SSE initial response timeout")
+                || message.starts_with("SSE inter-chunk timeout")
+                || message.starts_with("SSE stream deadline")
+            {
+                return Self::Timeout;
+            }
+        }
+        Self::ProviderResponse
+    }
+}
+
 /// One formatting request sent from Settings, measured.
 #[derive(Debug, Clone)]
 pub struct FormattingProbe {
@@ -1201,6 +1270,11 @@ pub struct FormattingProbe {
     pub provider: String,
     pub model: String,
     pub reasoning: Option<&'static str>,
+    pub failure: Option<FormattingFailure>,
+    /// Configured cloud route, not a claim that an on-device success used it.
+    pub endpoint_host: Option<String>,
+    pub credential_source: &'static str,
+    pub checked_at_unix_ms: u64,
 }
 
 /// Format `sample` (or [`FORMATTING_PROBE_SAMPLE`]) once, exactly as a live
@@ -1223,7 +1297,20 @@ pub async fn probe_formatting(
         .request_timing()
         .attempt_timeout();
     let ladder = reasoning_ladder(lane);
-    let measured = |status, output: String, elapsed| FormattingProbe {
+    let checked_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let account = lane.credential().account_auth();
+    let endpoint = account
+        .then(|| lane.vendor().and_then(account_auth::account_responses_route))
+        .flatten()
+        .map(|route| route.endpoint)
+        .unwrap_or_else(|| lane.endpoint().to_string());
+    let endpoint_host = reqwest::Url::parse(&endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string));
+    let measured = |status, output: String, elapsed, failure| FormattingProbe {
         status,
         input: input.clone(),
         output,
@@ -1232,6 +1319,14 @@ pub async fn probe_formatting(
         provider: lane.provider_display_name().to_string(),
         model: lane.model().to_string(),
         reasoning: ladder[reasoning_rung(lane).min(ladder.len() - 1)],
+        failure,
+        endpoint_host: endpoint_host.clone(),
+        credential_source: if account {
+            "account"
+        } else {
+            "api_key_or_key_optional"
+        },
+        checked_at_unix_ms,
     };
     // Off sends nothing and Max runs on the Agent lane: neither is this lane.
     if matches!(
@@ -1242,18 +1337,31 @@ pub async fn probe_formatting(
             FormattingProbeStatus::Skipped,
             input.clone(),
             Duration::ZERO,
+            None,
         );
     }
     let started = std::time::Instant::now();
     let reply = tokio::time::timeout(
         deadline,
-        format_text_with_status_for_policy(&input, language, runtime_settings, None),
+        format_text_with_status_channels_for_policy(
+            &input,
+            language,
+            false,
+            runtime_settings,
+            None,
+            None,
+            None,
+        ),
     )
     .await;
     let elapsed = started.elapsed();
-    let (status, output) = match reply {
-        Err(_) => (FormattingProbeStatus::TimedOut, String::new()),
-        Ok(result) => (
+    let (status, output, failure) = match reply {
+        Err(_) => (
+            FormattingProbeStatus::TimedOut,
+            String::new(),
+            Some(FormattingFailure::Timeout),
+        ),
+        Ok((result, failure)) => (
             match result.status {
                 AiFormatStatus::Applied => FormattingProbeStatus::Applied,
                 AiFormatStatus::AiNoop => FormattingProbeStatus::Unchanged,
@@ -1261,9 +1369,10 @@ pub async fn probe_formatting(
                 AiFormatStatus::Failed => FormattingProbeStatus::Failed,
             },
             result.text,
+            failure,
         ),
     };
-    measured(status, output, elapsed)
+    measured(status, output, elapsed, failure)
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1287,7 +1396,7 @@ async fn format_text_with_status_channels_for_policy(
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
     consultation: Option<FormattingConsultation<'_>>,
-) -> AiFormatResult {
+) -> (AiFormatResult, Option<FormattingFailure>) {
     let policy = runtime_settings.formatting_policy();
     if !assistive && policy == FormattingPolicy::Max {
         // Commands and corrections must not pass through the text-only floor,
@@ -1302,37 +1411,37 @@ async fn format_text_with_status_channels_for_policy(
             None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
         };
         return match result {
-            Ok(text) => AiFormatResult {
+            Ok(text) => (AiFormatResult {
                 text,
                 reasoning_text: None,
                 status: AiFormatStatus::Applied,
-            },
+            }, None),
             Err(error) => {
                 warn!(%error, "Max consultation did not produce an admitted answer");
-                AiFormatResult {
+                (AiFormatResult {
                     text: text.to_string(),
                     reasoning_text: None,
                     status: AiFormatStatus::Failed,
-                }
+                }, Some(FormattingFailure::ProviderResponse))
             }
         };
     }
     if !assistive && policy == FormattingPolicy::Off {
-        return AiFormatResult {
+        return (AiFormatResult {
             text: text.to_string(),
             reasoning_text: None,
             status: AiFormatStatus::Skipped,
-        };
+        }, None);
     }
 
     // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
     // so formatting anything shorter would create an unguarded rewrite zone.
     if should_skip_ai_formatting(text, assistive) {
-        return AiFormatResult {
+        return (AiFormatResult {
             text: text.to_string(),
             reasoning_text: None,
             status: AiFormatStatus::Skipped,
-        };
+        }, None);
     }
 
     // Give the model the actual source. Whether speech repetition is an
@@ -1376,6 +1485,7 @@ async fn format_text_with_status_channels_for_policy(
     // attempt unchained instead of consuming the selected retry budget; a
     // poisoned chain would otherwise burn attempts without changing inputs.
     let mut stale_chain_retry_used = false;
+    let mut last_failure = FormattingFailure::ProviderResponse;
     let mut attempt = 0;
     while attempt <= max_retries {
         info!(
@@ -1517,6 +1627,7 @@ async fn format_text_with_status_channels_for_policy(
             // No engine produced text and no cloud lane can: every further
             // attempt would fail the same way. The caller keeps the text.
             warn!(%reason, "no formatting engine available; preserving the source text");
+            last_failure = FormattingFailure::Unavailable;
             break;
         }
         let used_on_device = on_device_output.is_some();
@@ -1536,6 +1647,7 @@ async fn format_text_with_status_channels_for_policy(
             {
                 Ok(output) => Some(output),
                 Err(e) => {
+                    last_failure = FormattingFailure::from_error(&e);
                     retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
@@ -1573,6 +1685,7 @@ async fn format_text_with_status_channels_for_policy(
             {
                 Ok(Ok(output)) => Some(output),
                 Ok(Err(e)) => {
+                    last_failure = FormattingFailure::from_error(&e);
                     retryable_error = should_retry_provider_error(&e);
                     warn!(
                         "LLM {} attempt {}/{} failed: {}",
@@ -1592,6 +1705,7 @@ async fn format_text_with_status_channels_for_policy(
                     None
                 }
                 Err(_) => {
+                    last_failure = FormattingFailure::Timeout;
                     warn!(
                         "LLM {} attempt {}/{} timed out after {:?}",
                         route,
@@ -1619,11 +1733,11 @@ async fn format_text_with_status_channels_for_policy(
 
             if assistive && is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
-                return AiFormatResult {
+                return (AiFormatResult {
                     text: cleaned,
                     reasoning_text: None,
                     status: AiFormatStatus::Failed,
-                };
+                }, Some(FormattingFailure::ProviderResponse));
             }
 
             // Analyze result quality
@@ -1644,11 +1758,11 @@ async fn format_text_with_status_channels_for_policy(
                 // echo has no returned change to publish.
                 if formatted == cleaned {
                     warn!("Formatting mode returned AI No-op (raw echo)");
-                    return AiFormatResult {
+                    return (AiFormatResult {
                         text: cleaned,
                         reasoning_text,
                         status: AiFormatStatus::AiNoop,
-                    };
+                    }, None);
                 }
             }
 
@@ -1664,11 +1778,11 @@ async fn format_text_with_status_channels_for_policy(
                     } else {
                         AiFormatStatus::Applied
                     };
-                    return AiFormatResult {
+                    return (AiFormatResult {
                         text: formatted,
                         reasoning_text,
                         status,
-                    };
+                    }, (status == AiFormatStatus::Failed).then_some(FormattingFailure::ProviderResponse));
                 }
             }
 
@@ -1689,11 +1803,11 @@ async fn format_text_with_status_channels_for_policy(
                 content_match,
                 raw_like
             );
-            return AiFormatResult {
+            return (AiFormatResult {
                 text: formatted,
                 reasoning_text,
                 status: AiFormatStatus::Applied,
-            };
+            }, None);
         } else if !retryable_error {
             warn!("Provider returned deterministic empty-content error; skipping retries");
             break;
@@ -1703,11 +1817,11 @@ async fn format_text_with_status_channels_for_policy(
 
     // All providers failed
     warn!("All AI providers/retries failed, returning cleaned text");
-    AiFormatResult {
+    (AiFormatResult {
         text: cleaned,
         reasoning_text: None,
         status: AiFormatStatus::Failed,
-    }
+    }, Some(last_failure))
 }
 
 /// Perform exactly one provider attempt over the selected wire format.

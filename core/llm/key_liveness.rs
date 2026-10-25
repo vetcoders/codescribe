@@ -21,15 +21,8 @@ use crate::llm::vendors;
 /// Wall-clock budget for connect and request; probes must stay cheap for Settings.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// UI-safe outcome of one liveness probe.
-///
-/// Deliberately coarse: Settings needs to tell the user what to *do*, so
-/// "provider processed the request" collapses to [`Ok`] even for a 4xx that
-/// only means the probe body was wrong — the key itself authenticated. Only
-/// transport failures and 5xx stay unverifiable ([`Network`]).
-///
-/// [`Ok`]: ApiKeyLivenessStatus::Ok
-/// [`Network`]: ApiKeyLivenessStatus::Network
+/// UI-safe outcome of one liveness probe. A rejected probe is not proof that
+/// a credential works: only a successful provider response earns `Ok`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiKeyLivenessStatus {
     Ok,
@@ -38,6 +31,7 @@ pub enum ApiKeyLivenessStatus {
     Network,
     Missing,
     Unsupported,
+    Rejected,
 }
 
 /// One probe verdict for one Keychain account.
@@ -371,13 +365,10 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
         return ApiKeyLivenessStatus::Invalid;
     }
 
-    // Any other client error (4xx, e.g. 400 model_not_found, 404) means the
-    // server processed the request and the key passed authentication — the key
-    // is live even if this particular probe request was malformed. Only real
-    // transport failures (handled at the request boundary) and server-side
-    // errors (5xx) remain unverifiable.
+    // A malformed request, missing model or unknown endpoint does not prove
+    // that this provider authenticated the credential. Preserve uncertainty.
     if status.is_client_error() {
-        return ApiKeyLivenessStatus::Ok;
+        return ApiKeyLivenessStatus::Rejected;
     }
 
     ApiKeyLivenessStatus::Network
@@ -516,10 +507,11 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     match status {
         ApiKeyLivenessStatus::Ok => "key accepted and quota available",
         ApiKeyLivenessStatus::Invalid => "provider rejected this key",
-        ApiKeyLivenessStatus::NoQuota => "key is valid, but the account has no quota or credits",
+        ApiKeyLivenessStatus::NoQuota => "provider reported a usage, quota or billing limit",
         ApiKeyLivenessStatus::Network => "could not verify this key",
         ApiKeyLivenessStatus::Missing => "key is not configured",
         ApiKeyLivenessStatus::Unsupported => "probe is not supported for this key",
+        ApiKeyLivenessStatus::Rejected => "provider rejected the probe; credential not verified",
     }
 }
 

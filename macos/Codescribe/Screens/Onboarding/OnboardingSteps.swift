@@ -530,9 +530,9 @@ struct LocalModelStepView: View {
         Text(
           String(
             localized: LocalizedStringResource(
-              "Local power is selected, so setup finishes once this model is installed.",
+              "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
               locale: model.interfaceLocale,
-              comment: "Local power is the engine name; setup waits for its Whisper model"))
+              comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
         )
         .font(.callout)
         .foregroundStyle(CSColor.secondaryInk)
@@ -964,9 +964,9 @@ struct DoneStepView: View {
           Text(
             String(
               localized: LocalizedStringResource(
-                "Local power is selected, so setup finishes once this model is installed.",
+                "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
                 locale: model.interfaceLocale,
-                comment: "Local power is the engine name; setup waits for its Whisper model"))
+                comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
           )
           .font(.callout)
           .foregroundStyle(CSColor.secondaryInk)
