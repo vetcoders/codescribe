@@ -2294,15 +2294,25 @@ private struct OverlayDetachedRosterValue: ViewModifier {
 /// Cards and passive hovers preview the latest committed message through the
 /// shared rich-body renderer without mounting an editable conversation.
 private struct OverlayIntercomMessagePreview: View {
+  @Environment(\.csTextScale) private var textScale
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
 
   var body: some View {
     ScrollView {
       if let message = conversation.messages.last {
-        OverlayConversationMessageContent(message: message, palette: palette)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(12)
+        VStack(alignment: .leading, spacing: 5) {
+          let route = OverlayChannelStatusView.messageRoute(of: message)
+          if !route.label.isEmpty {
+            Text(verbatim: route.label)
+              .font(.system(size: 10 * textScale, weight: .bold))
+              .foregroundStyle(palette.mutedText.color)
+              .accessibilityIdentifier("overlay-intercom-message-route")
+          }
+          OverlayConversationMessageContent(message: message, palette: palette)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
