@@ -552,7 +552,7 @@ Without a key, the Agent and Formatting cards read **The model list needs an API
 key. You can enter a model ID by hand.** — the same line with or without a
 connected account, because it is about the list, not about requests. A rejected
 key next to a signed-in account reads **The API key was rejected, so there is no
-model list. The account still works.**
+model list. The account remains saved.**
 
 Fresh and cached catalogs offer selectable models. A provider returning no
 models or a discovery failure gives one plain sentence and the next action:

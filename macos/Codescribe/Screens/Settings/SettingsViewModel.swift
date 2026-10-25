@@ -979,20 +979,20 @@ struct LLMLaneModel {
     case "no_key":
       // Discovery authenticates with the stored API key only, never with an
       // account token (`core/llm/model_discovery.rs`, `bridge/src/config.rs`),
-      // so one sentence holds with or without a connected account. It names
-      // the list, not requests: an account still serves those.
+      // so the list's access says nothing about whether requests using a
+      // separately stored account will be accepted.
       return String(
         localized: "The model list needs an API key. You can enter a model ID by hand.")
     case "loading": return String(localized: "discovering models…", comment: "In-progress status")
     case "key_rejected":
       // The core classified the refusal (401/403, or a 400 naming the key);
       // any other failure stays generic so a bad key is never guessed. With a
-      // signed-in account the sentence says the account still works: the model
-      // list and the account are independent states (Founder brief, round 8).
+      // stored account this describes presence only. A model-list failure
+      // neither proves nor disproves account-authenticated request acceptance.
       if runtime.accountAuth {
         return String(
           localized:
-            "The API key was rejected, so there is no model list. The account still works.",
+            "The API key was rejected, so there is no model list. The account remains saved.",
           comment: "Model discovery failed while the provider account stays signed in"
         )
       }

@@ -18972,13 +18972,13 @@
         }
       }
     },
-    "The API key was rejected, so there is no model list. The account still works." : {
-      "comment" : "Model discovery failed while the provider account stays signed in",
+    "The API key was rejected, so there is no model list. The account remains saved." : {
+      "comment" : "Model discovery key rejection does not verify a separately stored account.",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Klucz API został odrzucony, więc nie ma listy modeli. Konto nadal działa."
+            "state" : "needs_review",
+            "value" : "Klucz API został odrzucony, więc lista modeli jest niedostępna. Konto pozostaje zapisane."
           }
         }
       }
