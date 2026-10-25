@@ -144,7 +144,7 @@ final class OverlayIntercomInteractionTests: XCTestCase {
     let f = try Fixture(desktop: desktop)
     defer { f.cleanup() }
     let presentation = f.controller.presentation
-    f.controller.toggleDockAll()
+    f.controller.dockAll()
     var docked = desktop
     for index in docked.instances.indices { docked.instances[index].closed = true }
     XCTAssertEqual(f.store.load(), docked)
@@ -152,7 +152,7 @@ final class OverlayIntercomInteractionTests: XCTestCase {
     let newCard = try identity("new-owner", channel: "4")
     XCTAssertTrue(f.controller.detach(newCard))
     let newWindow = try XCTUnwrap(f.store.load().openInstance(for: newCard))
-    f.controller.toggleDockAll()
+    f.controller.restoreDockedLayout()
     var restored = desktop
     restored.upsert(newWindow)
     XCTAssertEqual(f.store.load(), restored)
@@ -207,7 +207,7 @@ final class OverlayIntercomInteractionTests: XCTestCase {
     defer { f.cleanup() }
     f.controller.invalidate()
     let before = f.store.load()
-    f.controller.toggleDockAll()
+    f.controller.dockAll()
     XCTAssertEqual(f.store.load(), before)
     XCTAssertFalse(f.controller.canRestoreDockedLayout)
     let event = try XCTUnwrap(try completions(f, count: 1).first)

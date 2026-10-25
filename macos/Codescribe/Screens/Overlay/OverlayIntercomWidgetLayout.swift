@@ -57,7 +57,8 @@ struct IntercomHeaderMetrics: Equatable {
   }
 
   func minimumWidth(paging: Bool) -> CGFloat {
-    width(showsCount: false, paging: paging)
+    // The header keeps its agent count alongside the menu and audio controls.
+    width(showsCount: true, paging: paging)
   }
 
   func content(width: CGFloat, paging: Bool) -> IntercomHeaderContent {

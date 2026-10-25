@@ -787,6 +787,9 @@ struct OverlayConversationView: View {
           Text(Self.receiptStatusText(for: recipient))
             .font(.system(size: 10 * textScale))
             .foregroundStyle(palette.mutedText.color)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(Text(verbatim: Self.receiptStatusText(for: recipient)))
         }
       }
     }

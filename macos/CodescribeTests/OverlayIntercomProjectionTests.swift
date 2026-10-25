@@ -105,13 +105,15 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     XCTAssertEqual(store.load(), initialDesktop, "Folding the group never docks detached windows")
     let reconciliations = controller.reconciliationRequests
     XCTAssertFalse(controller.canRestoreDockedLayout)
-    controller.toggleDockAll()
+    controller.dockAll()
 
     let saved = store.load()
     var expected = initialDesktop
     for index in expected.instances.indices { expected.instances[index].closed = true }
     XCTAssertEqual(saved, expected, "Only open presentation records become closed")
-    XCTAssertEqual(ownedWindows.filter(\.isVisible).count, 1, "Only the Intercom bar remains")
+    XCTAssertEqual(
+      ownedWindows.filter(\.isVisible).count, 1 + groupRowCount,
+      "Docking collects conversations into the visible roster")
     XCTAssertTrue(controller.canRestoreDockedLayout)
     let bar = try XCTUnwrap(ownedWindows.first(where: \.isVisible)?.contentView)
     bar.layoutSubtreeIfNeeded()
@@ -135,7 +137,7 @@ final class OverlayIntercomProjectionTests: XCTestCase {
 
     controller.toggleGroup()
     try await settle()
-    controller.toggleDockAll()
+    controller.restoreDockedLayout()
     for _ in 0..<50 {
       let visible = Set(
         NSApp.windows.filter {
@@ -155,17 +157,17 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     XCTAssertEqual(state.conversationDrafts, drafts)
     XCTAssertEqual(state.captureGeneration, generation)
 
-    controller.toggleDockAll()
+    controller.dockAll()
     XCTAssertTrue(controller.canRestoreDockedLayout)
     XCTAssertEqual(store.load(), saved)
     XCTAssertEqual(
       NSApp.windows.filter {
         !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
-      }.count, 1)
+      }.count, 1 + groupRowCount)
 
     controller.openMailbox("0")
     let newWindow = try XCTUnwrap(store.load().instances.first { $0.conversationID == "0" })
-    controller.toggleDockAll()
+    controller.restoreDockedLayout()
     let restoredWithNewWindow = store.load()
     XCTAssertEqual(restoredWithNewWindow.instances.first { $0.id == newWindow.id }, newWindow)
     XCTAssertEqual(

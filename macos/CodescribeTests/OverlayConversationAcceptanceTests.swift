@@ -208,6 +208,40 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testSingleRecipientReceiptNeverWrapsIntoAVerticalColumn() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(reply(String(repeating: "e", count: 24)))
+    let conversation = try lenaConversation(bus)
+    let owner = try XCTUnwrap(conversation.owner)
+    let recipient = OverlayConversationRecipient(
+      owner: owner, deliveryID: "receipt-layout", queued: true, accepted: true, acknowledged: false)
+    for text in ["Krótka wiadomość", String(repeating: "Pełna czytelna treść wiadomości. ", count: 20)] {
+      let message = OverlayConversationMessage(
+        id: "user:receipt-layout", kind: .user, text: text, order: 1, emittedAt: "",
+        owner: nil, recipients: [recipient], deliveryID: "receipt-layout", replyTo: nil,
+        unsolicited: false, playback: nil, busPath: "")
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 0, bottomInset: 0,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in XCTFail("Must not play") },
+        draft: .constant("Retained draft"), sending: false, sendError: nil,
+        onSend: { XCTFail("Must not send") })
+      for scale in [CGFloat(1), 1.5, 2] {
+        for width in [CGFloat(80), 120, 180, 262] {
+          let host = NSHostingView(
+            rootView: view.messageFooter(message)
+              .environment(\.csTextScale, scale).frame(width: width))
+          host.frame = CGRect(x: 0, y: 0, width: width, height: 100)
+          host.layoutSubtreeIfNeeded()
+          XCTAssertGreaterThan(host.fittingSize.height, 0)
+          XCTAssertLessThanOrEqual(
+            host.fittingSize.height, max(24, 18 * scale) + 2,
+            "Receipt must stay one line beside Copy: width=\(width) scale=\(scale)")
+        }
+      }
+    }
+  }
+
+  @MainActor
   func testActivityCueTracksReceivingUserTurnAcrossRepliesAndTerminal() throws {
     var bus = OverlayChannelDelivery.Bus()
     let firstSession = "agent-channel-2-active-cue-a"

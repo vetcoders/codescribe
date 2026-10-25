@@ -81,10 +81,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
       XCTAssertGreaterThan(later.height, 3 * row)
       XCTAssertLessThan(later.height, 8 * row)
-      XCTAssertTrue(later.showsComposer)
-      XCTAssertFalse(
-        try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 5 * row)).showsComposer
-      )
+      let shorter = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 5 * row))
+      XCTAssertLessThan(shorter.height, later.height)
+      XCTAssertGreaterThan(shorter.height, 0)
     }
   }
 
@@ -284,8 +283,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         pendingViews.append(contentsOf: view.subviews)
       }
       if !expanded {
-        let shouldHaveInput = !hover && height >= 220
-        XCTAssertEqual(editors.count, shouldHaveInput ? 1 : 0)
+        XCTAssertTrue(editors.isEmpty, "A compact or hover preview never mounts a second composer")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
@@ -332,43 +330,34 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testHeaderPreservesBothAudioHitRegionsBeforeOptionalLabelsAndCount() {
-    for scale in [CGFloat(0.8), 1, 1.6, 2] {
-      for paging in [false, true] {
-        let metrics = IntercomHeaderMetrics(
-          agentCount: 12, scale: scale)
-        let minimum = metrics.minimumWidth(paging: paging)
-        let compact = metrics.content(width: minimum, paging: paging)
-        XCTAssertFalse(compact.showsLabels)
-        XCTAssertFalse(compact.showsCount)
-        XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
-        XCTAssertGreaterThan(
-          minimum, metrics.groupWidth + metrics.audioWidth + 2 * metrics.controlHeight)
-        let withCount = metrics.width(showsLabels: false, showsCount: true, paging: paging)
-        XCTAssertTrue(metrics.content(width: withCount, paging: paging).showsCount)
-        XCTAssertFalse(metrics.content(width: withCount - 0.1, paging: paging).showsCount)
-        let full = metrics.width(showsLabels: true, showsCount: true, paging: paging)
-        XCTAssertTrue(metrics.content(width: full, paging: paging).showsLabels)
-        XCTAssertFalse(metrics.content(width: full - 0.1, paging: paging).showsLabels)
-        XCTAssertGreaterThan(full, withCount)
+  func testHeaderPreservesMenuAudioAndCountAtItsMinimumWidth() {
+    for scale in [CGFloat(0.8), 1, 1.5, 2] {
+      for count in [0, 9] {
+        for paging in [false, true] {
+          let metrics = IntercomHeaderMetrics(agentCount: count, scale: scale)
+          let minimum = metrics.minimumWidth(paging: paging)
+          XCTAssertTrue(metrics.content(width: minimum, paging: paging).showsCount)
+          XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
+          let controls = metrics.groupWidth + metrics.audioWidth + metrics.countWidth
+            + 2 * IntercomHeaderContent(showsCount: true).horizontalInset
+            + IntercomHeaderMetrics.spacerMinimum
+            + CGFloat(paging ? 5 : 3) * IntercomHeaderMetrics.spacing
+            + (paging ? 2 * metrics.pagingControlWidth : 0)
+          XCTAssertGreaterThanOrEqual(minimum, controls)
+        }
       }
     }
   }
 
   func testHeaderBudgetRespondsToCountAndActualPagerPresence() {
     for scale in [CGFloat(0.8), 1, 1.6] {
-      let empty = IntercomHeaderMetrics(
-        agentCount: 1, scale: scale)
-      let busy = IntercomHeaderMetrics(
-        agentCount: 25, scale: scale)
+      let empty = IntercomHeaderMetrics(agentCount: 1, scale: scale)
+      let busy = IntercomHeaderMetrics(agentCount: 25, scale: scale)
       XCTAssertGreaterThan(busy.countWidth, empty.countWidth)
-      XCTAssertEqual(busy.mailboxWidth, empty.mailboxWidth)
-      XCTAssertEqual(
-        empty.minimumWidth(paging: false), busy.minimumWidth(paging: false),
-        "metadata cannot take room from the mandatory commands")
+      XCTAssertGreaterThan(busy.width(showsCount: true, paging: false),
+        empty.width(showsCount: true, paging: false))
       XCTAssertGreaterThan(busy.minimumWidth(paging: true), busy.minimumWidth(paging: false))
-      let fullWithoutBadges = empty.width(showsLabels: true, showsCount: true, paging: false)
-      XCTAssertFalse(busy.content(width: fullWithoutBadges, paging: false).showsLabels)
+      XCTAssertTrue(busy.content(width: 2000, paging: false).showsCount)
     }
   }
 
@@ -545,27 +534,22 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let maximum = (2000 - Layout.controlHeight(scale: scale)) / 3 - Layout.gap
       XCTAssertEqual(metrics.fittedCardHeight(5000, count: 3, available: 2000), maximum)
       XCTAssertEqual(
-        metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 2 * icon), .actions,
-        "two rows' height moves the controls under the name")
+        metrics.tier(width: metrics.actionsWidth - 1, cardHeight: 2 * icon), .name,
+        "height never moves controls below the name")
       XCTAssertEqual(
-        metrics.tier(width: metrics.stackedActionsWidth, cardHeight: 1.6 * icon), .name)
+        metrics.tier(width: metrics.actionsWidth - 1, cardHeight: 1.6 * icon), .name)
     }
   }
 
-  func testTallNarrowCardsMoveTheSameControlsBelowTheName() {
+  func testTallNarrowCardsKeepOneActionRowAndYieldControlsByWidth() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["A"], digits: ["1"], scale: scale)
-      let width = metrics.stackedActionsWidth
-      XCTAssertLessThan(width, metrics.actionsWidth)
-      XCTAssertGreaterThanOrEqual(width, 3 * Layout.controlHeight(scale: scale) + 9)
-      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide - 0.1), .name)
-      XCTAssertEqual(metrics.tier(width: width, cardHeight: 2 * metrics.iconSide), .actions)
-      XCTAssertEqual(
-        metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon,
-        "height alone cannot reveal a name or controls that do not fit")
-      if metrics.nameWidth < width {
-        XCTAssertEqual(metrics.tier(width: metrics.nameWidth, cardHeight: 500), .name)
+      let width = metrics.actionsWidth - 1
+      for height in [metrics.iconSide, 2 * metrics.iconSide, 500] {
+        XCTAssertEqual(metrics.tier(width: width, cardHeight: height), .name)
       }
+      XCTAssertEqual(metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
+      XCTAssertEqual(metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon)
     }
   }
 
