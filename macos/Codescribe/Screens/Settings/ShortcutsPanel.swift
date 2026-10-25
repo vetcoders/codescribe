@@ -346,6 +346,10 @@ struct ShortcutsPanel: View {
           // One key, one role: a key that records dictation is greyed out
           // here, and the core already resolved the modifier in effect.
           Picker("Agent channel modifier", selection: channelModifierBinding) {
+            if model.channelModifier == "off" {
+              Text("Off").tag("off")
+                .disabled(true)
+            }
             Text(verbatim: "Ctrl").tag("ctrl")
               .disabled(!model.channelModifierCtrlAvailable)
             Text(verbatim: "Fn").tag("fn")

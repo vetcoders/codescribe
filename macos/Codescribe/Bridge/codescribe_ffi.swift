@@ -2923,8 +2923,9 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     /**
      * Atomically reject busy capture or close future admission for this process.
      * This never constructs a new controller and never stops an active take.
+     * Synchronous so the UI can check composing and reserve without yielding.
      */
-    func reserveIdleRestart() async throws  -> Bool
+    func reserveIdleRestart()  -> Bool
 
     /**
      * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
@@ -3776,22 +3777,14 @@ open func rearmAfterPermissionGrant() -> Bool  {
     /**
      * Atomically reject busy capture or close future admission for this process.
      * This never constructs a new controller and never stops an active take.
+     * Synchronous so the UI can check composing and reserve without yielding.
      */
-open func reserveIdleRestart()async throws  -> Bool  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribehotkeys_reserve_idle_restart(
-                    self.uniffiCloneHandle()
-
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
-            liftFunc: FfiConverterBool.lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
+open func reserveIdleRestart() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_reserve_idle_restart(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
     /**
@@ -21970,7 +21963,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_rearm_after_permission_grant() != 37275) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 50874) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 22857) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {

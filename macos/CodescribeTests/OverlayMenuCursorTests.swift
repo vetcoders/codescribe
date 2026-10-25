@@ -116,6 +116,7 @@ final class OverlayMenuCursorTests: XCTestCase {
       panel.close()
       saved.set()
     }
+
     content.hits = 0
     for _ in 0..<1_000 {
       XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 100, y: 200)))
@@ -137,6 +138,42 @@ final class OverlayMenuCursorTests: XCTestCase {
     content.hits = 0
     XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
     XCTAssertEqual(content.hits, 0, "Removed menu immediately returns the interior budget")
+  }
+
+  func testLeavingResizeResetsArrowOnceAndThenYieldsToNativeText() {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let content = CursorHitCountingView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+    panel.contentView = content
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+    let edge = NSPoint(x: 1, y: 250)
+    let interior = NSPoint(x: 200, y: 250)
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    XCTAssertEqual(NSCursor.current, OverlayResizeHit.cursor(for: .left))
+    XCTAssertTrue(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .arrow)
+    NSCursor.iBeam.set()
+    XCTAssertFalse(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .iBeam)
+    XCTAssertEqual(content.hits, 0)
+
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    NSCursor.pointingHand.set()
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: -1, y: 250)))
+    XCTAssertEqual(NSCursor.current, .pointingHand, "Outside belongs to the destination window")
+  }
+
+  func testLeavingResizeForAnEditableMenuReleasesCursorOwnership() {
+    let resize = NSObject()
+    var state = OverlayCursorState()
+    XCTAssertTrue(state.update(zone: .resize(.left), cursor: ObjectIdentifier(resize)))
+    XCTAssertTrue(state.update(zone: .menu, cursor: nil))
+    XCTAssertFalse(state.update(zone: .menu, cursor: nil))
   }
 
   func testSidebarDividerCursorWinsInsideDrawerAndYieldsWhenRemoved() {
