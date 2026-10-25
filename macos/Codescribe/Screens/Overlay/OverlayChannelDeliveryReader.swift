@@ -696,6 +696,28 @@ actor OverlayChannelDeliveryReader {
     return url.deletingLastPathComponent().lastPathComponent == "leases"
   }
 
+  /// A lease is a recovery document; the UI consumes only identity and receipt coordinates.
+  /// Keep its projection in this reader's existing stamp cache, without retaining text or
+  /// acoustic evidence already owned by the transcript bus. No on-disk field is changed.
+  private static func compactLeaseProjection(_ lease: [String: Any]) -> [String: Any] {
+    let identityFields: Set<String> = [
+      "schema", "provider", "provider_session_id", "lease_id", "bus",
+    ]
+    let receiptFields: Set<String> = [
+      "delivery_id", "provider", "provider_session_id", "lease_id", "bus", "kind",
+      "session_id", "producer_schema", "message_id", "reducer_revision",
+      "occurrence_session_id", "capture_epoch", "sample_start", "sample_end",
+      "utterance_id", "sequence",
+    ]
+    var projection = lease.filter { identityFields.contains($0.key) }
+    if let pending = lease["pending"] as? [[String: Any]] {
+      projection["pending"] = pending.map { envelope in
+        envelope.filter { receiptFields.contains($0.key) }
+      }
+    }
+    return projection
+  }
+
   private func object(at url: URL, maxBytes: Int = 16 << 20) throws -> [String: Any] {
     let pinned = pinsMetadata(url)
     do {
@@ -706,13 +728,15 @@ actor OverlayChannelDeliveryReader {
       let pathStamp = MetadataObjectStamp(metadata)
       metadataAccess &+= 1
       if pinned {
-        if var cached = pinnedObjects[url], cached.stamp == pathStamp, cached.bytes <= maxBytes {
+        if var cached = pinnedObjects[url], cached.stamp == pathStamp,
+          cached.stamp.size <= off_t(maxBytes)
+        {
           cached.access = metadataAccess
           pinnedObjects[url] = cached
           return cached.value
         }
       } else if var cached = metadataObjects[url], cached.stamp == pathStamp,
-        cached.bytes <= maxBytes
+        cached.stamp.size <= off_t(maxBytes)
       {
         cached.access = metadataAccess
         metadataObjects[url] = cached
@@ -733,14 +757,23 @@ actor OverlayChannelDeliveryReader {
       let data = try handle.read(upToCount: maxBytes + 1) ?? Data()
       consumedMetadataBytes &+= UInt64(data.count)
       guard data.count <= maxBytes,
-        let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
       else { throw CocoaError(.fileReadCorruptFile) }
+      let value: [String: Any]
+      let retainedBytes: Int
+      if parsed["schema"] as? String == "codescribe.agent-bridge.lease.v1" {
+        value = Self.compactLeaseProjection(parsed)
+        retainedBytes = try JSONSerialization.data(withJSONObject: value).count
+      } else {
+        value = parsed
+        retainedBytes = data.count
+      }
       // The open descriptor observes atomic replacement and follows symlinks.
       // In-place writes also invalidate through nanosecond mtime/ctime. Never
       // retain a parse whose file changed during that read.
       if fstat(handle.fileDescriptor, &metadata) == 0, MetadataObjectStamp(metadata) == stamp {
-        if pinned, data.count <= Self.pinnedCacheBudget {
-          while pinnedCacheBytes + data.count > Self.pinnedCacheBudget
+        if pinned, retainedBytes <= Self.pinnedCacheBudget {
+          while pinnedCacheBytes + retainedBytes > Self.pinnedCacheBudget
             || pinnedObjects.count >= Self.pinnedCacheEntries
           {
             guard let oldest = pinnedObjects.min(by: { $0.value.access < $1.value.access })?.key,
@@ -749,10 +782,10 @@ actor OverlayChannelDeliveryReader {
             pinnedCacheBytes -= removed.bytes
           }
           pinnedObjects[url] = MetadataObject(
-            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
-          pinnedCacheBytes += data.count
-        } else if !pinned, data.count <= Self.metadataCacheBudget {
-          while metadataCacheBytes + data.count > Self.metadataCacheBudget
+            stamp: stamp, value: value, bytes: retainedBytes, access: metadataAccess)
+          pinnedCacheBytes += retainedBytes
+        } else if !pinned, retainedBytes <= Self.metadataCacheBudget {
+          while metadataCacheBytes + retainedBytes > Self.metadataCacheBudget
             || metadataObjects.count >= Self.metadataCacheEntries
           {
             guard let oldest = metadataObjects.min(by: { $0.value.access < $1.value.access })?.key,
@@ -761,8 +794,8 @@ actor OverlayChannelDeliveryReader {
             metadataCacheBytes -= removed.bytes
           }
           metadataObjects[url] = MetadataObject(
-            stamp: stamp, value: value, bytes: data.count, access: metadataAccess)
-          metadataCacheBytes += data.count
+            stamp: stamp, value: value, bytes: retainedBytes, access: metadataAccess)
+          metadataCacheBytes += retainedBytes
         }
       }
       return value

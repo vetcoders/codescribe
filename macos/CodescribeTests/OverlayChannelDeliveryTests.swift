@@ -2225,7 +2225,26 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertTrue(rebound.isEmpty, "A cached previous owner cannot satisfy a new binding")
   }
 
-  func testMetadataLargerThanCacheBudgetRemainsReadableWithoutBeingRetained() async throws {
+  func testBridgeRootNamedLeasesKeepsBindingDocumentSemantics() async throws {
+    let container = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: container) }
+    let root = container.appendingPathComponent("leases", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("leases", isDirectory: true),
+      withIntermediateDirectories: true)
+    let binding: [String: Any] = [
+      "schema": "vc.agent-audience-binding.v1", "bindings": [String: String](),
+    ]
+    try JSONSerialization.data(withJSONObject: binding).write(
+      to: root.appendingPathComponent("vc.agent-audience-binding.v1.json"))
+    let reader = OverlayChannelDeliveryReader(
+      root: root, cacheRoot: container.appendingPathComponent("cache", isDirectory: true))
+    let initial = try await reader.readSnapshot()
+    let repeated = try await reader.readSnapshot()
+    XCTAssertEqual(repeated, initial)
+  }
+
+  func testLargeLeasePayloadDoesNotForceUnchangedMetadataToBeReparsed() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
     let leaseURL = fixture.root.appendingPathComponent("leases/\(Fixture.leaseID).json")
@@ -2239,8 +2258,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let repeated = try await reader.readSnapshot()
     let after = await reader.consumedMetadataBytes
     XCTAssertEqual(repeated, initial)
-    XCTAssertGreaterThan(
-      after - before, 9 << 20, "Large metadata is not retained in the bounded cache")
+    XCTAssertEqual(after, before, "Unconsumed payload must not evict the compact lease projection")
   }
 
   func testMultipleLargeLeasesCannotGrowTheMetadataCacheWithoutBound() async throws {
@@ -2262,8 +2280,40 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let repeated = try await reader.readSnapshot()
     let after = await reader.consumedMetadataBytes
     XCTAssertEqual(repeated, initial)
-    XCTAssertGreaterThan(
-      after - before, 3 << 20, "Twelve MiB of metadata must not fit in the eight MiB cache")
+    XCTAssertEqual(
+      after, before, "The cache must retain bounded projections without retaining twelve MiB of payload")
+  }
+
+  func testLargePendingEvidencePreservesQueueChangesAndCanonicalMessageText() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.open())
+    try fixture.append(fixture.seal(1))
+    var envelope = fixture.envelope(Fixture.firstID)
+    envelope["text"] = String(repeating: "private acoustic evidence", count: 400_000)
+    envelope["occurrences"] = [["evidence": "not a conversation document"]]
+    try fixture.lease(pending: [envelope])
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
+    let initial = try await reader.readSnapshot()
+    XCTAssertEqual(initial.deliveries.first?.stage, .queued)
+    XCTAssertEqual(initial.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    let coldBytes = await reader.consumedMetadataBytes
+    let coldOpens = await reader.metadataFileOpens
+    for _ in 0..<3 {
+      let repeated = try await reader.readSnapshot()
+      XCTAssertEqual(repeated, initial)
+    }
+    let steadyBytes = await reader.consumedMetadataBytes
+    let steadyOpens = await reader.metadataFileOpens
+    XCTAssertEqual(steadyBytes, coldBytes)
+    XCTAssertEqual(steadyOpens, coldOpens)
+    try fixture.lease(pending: [])
+    let changed = try await reader.readSnapshot()
+    XCTAssertEqual(changed.conversations.first(where: { $0.owner?.leaseID == Fixture.leaseID })?.messages.map(\.text), ["Iwo"])
+    let changedOpens = await reader.metadataFileOpens
+    XCTAssertGreaterThan(changedOpens, steadyOpens)
+    let original = try Data(contentsOf: fixture.bus)
+    XCTAssertTrue(String(decoding: original, as: UTF8.self).contains("Iwo"))
   }
 
   func testReplySpeechCapabilitySurvivesMirrorsAndRebuildsOlderCachedProjection() async throws {
