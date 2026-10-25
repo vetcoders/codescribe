@@ -179,6 +179,35 @@ final class IdleRestartCoordinatorTests: XCTestCase {
     XCTAssertTrue(terminated)
   }
 
+  func testReservationAndTerminationDoNotYieldToComposingActivity() async throws {
+    let root = try fixture()
+    let composing = CaptureState()
+    let queue = FinalizationQueue()
+    var pendingComposition: Task<Void, Never>?
+    var terminated = false
+    let coordinator = try IdleRestartCoordinator(
+      root: root, pid: 123, nonce: "generation",
+      acquireLease: { try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null")) },
+      reserveCapture: {
+        pendingComposition = Task { @MainActor in composing.busy = true }
+        return true
+      },
+      founderComposing: { composing.busy },
+      scheduleFinalization: { queue.actions.append($0) },
+      terminate: {
+        XCTAssertFalse(composing.busy, "reservation must not suspend before termination")
+        terminated = true
+      })
+    let url = try request(root)
+    await coordinator.handle(url)
+    XCTAssertFalse(terminated)
+    queue.runNext()
+    XCTAssertTrue(terminated)
+    XCTAssertEqual(try receipt(root, url)["status"] as? String, "accepted")
+    await pendingComposition?.value
+    XCTAssertTrue(composing.busy)
+  }
+
   func testWrongGenerationAndExpiredRequestCannotReserveCapture() async throws {
     let root = try fixture()
     var reservations = 0

@@ -155,14 +155,21 @@ final class DesignSystemAdaptiveTests: XCTestCase {
   /// that clears 4.5:1 on `ink` alone missed most of these.
   private func realSurfaces(_ name: NSAppearance.Name) -> [(String, RGB)] {
     let dark = isDark(name)
-    let sheet = RGB(hex: dark ? SheetShade.todayDark.hex : SheetShade.todayLight.hex)
     let label = resolvedRGBA(.labelColor, name)
-    let card = label.over(sheet, alpha: label.alpha * 0.05)
-    let chip = label.over(card, alpha: label.alpha * 0.06)
+    let shades = SheetShade.allCases.filter { $0.isDark == dark }
+    let sheets = shades.flatMap { shade -> [(String, RGB)] in
+      let sheet = RGB(hex: shade.hex)
+      let card = label.over(sheet, alpha: label.alpha * 0.05)
+      let chip = label.over(card, alpha: label.alpha * 0.06)
+      return [
+        ("\(shade.rawValue) sheet", sheet), ("\(shade.rawValue) card", card),
+        ("\(shade.rawValue) chip", chip),
+      ]
+    }
     let glass = RGB(hex: dark ? 0x18181C : 0xDFDDD9)
     let high = resolvedRGBA(CSPalette.textHigh, name)
-    return [
-      ("sheet", sheet), ("card", card), ("chip", chip), ("glass", glass),
+    return sheets + [
+      ("glass", glass),
       ("glass bubble", high.over(glass, alpha: 0.06)),
     ]
   }
@@ -199,14 +206,15 @@ final class DesignSystemAdaptiveTests: XCTestCase {
       ("modeProcessingLight", CSPalette.modeProcessingLight),
       ("lexicon", CSPalette.lexicon),
     ]
-    for name in [NSAppearance.Name.aqua, .darkAqua] {
+    for name in Self.auditAppearances {
       let surfaces = realSurfaces(name)
       for (role, color) in roles {
         let ink = resolvedRGBA(color, name)
         var backgrounds = surfaces
         // A status word on its own 12 % tint: pills, probe chips, the tray row.
         // The muted grey is never a pill; its tint check is the 8 % search field.
-        for (surface, background) in surfaces where surface == "card" || surface == "glass" {
+        for (surface, background) in surfaces where surface.hasSuffix("card") || surface == "glass"
+        {
           guard role != "textMuted" else {
             backgrounds.append(("8 % muted field on \(surface)", ink.over(background, alpha: 0.08)))
             continue

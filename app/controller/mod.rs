@@ -5233,36 +5233,37 @@ impl RecordingController {
     /// - **Hold + assistive=true**: force Assistive mode (Shift pressed = AI augmentation)
     /// - **Toggle + force_ai=true**: force AI formatting (normal hands-off)
     /// - **Toggle + assistive=true**: force Assistive hands-off
-    fn is_stop_gesture(&self, event: &HotkeyInput) -> Result<bool> {
-        Ok({
+    fn hotkey_stop_decision(&self, event: &HotkeyInput) -> Result<(State, bool)> {
+        let state = {
             let Ok(state) = self.state.try_read() else {
                 return Err(anyhow::anyhow!("hotkey admission unavailable"));
             };
-            matches!(
-                (event.key_type, event.action, *state),
-                (
-                    HotkeyType::Hold,
-                    HotkeyAction::Up,
-                    State::RecHold | State::Busy
-                ) | (
-                    HotkeyType::Toggle,
-                    HotkeyAction::Press,
-                    State::RecToggle | State::Busy
-                )
-            ) || (event.key_type == HotkeyType::Toggle
-                && event.action == HotkeyAction::Press
-                && event.force_raw
-                && *state == State::RecHold)
-        })
+            *state
+        };
+        let stop = matches!(
+            (event.key_type, event.action, state),
+            (
+                HotkeyType::Hold,
+                HotkeyAction::Up,
+                State::RecHold | State::Busy
+            ) | (
+                HotkeyType::Toggle,
+                HotkeyAction::Press,
+                State::RecToggle | State::Busy
+            )
+        ) || (event.key_type == HotkeyType::Toggle
+            && event.action == HotkeyAction::Press
+            && event.force_raw
+            && state == State::RecHold);
+        Ok((state, stop))
     }
 
     /// Admit each native gesture in FIFO order. Stop returns only after its
     /// PCM feed is closed and capture locks are released; terminal work remains
     /// owned by the same settlement task. Explicit stop APIs await completion.
     pub async fn admit_hotkey_event(self: &Arc<Self>, event: HotkeyInput) -> Result<()> {
-        let stop = self.is_stop_gesture(&event)?;
-        let state = self.state.try_read().ok().map(|state| *state);
-        info!("{}", event.decision_line(state, stop));
+        let (state, stop) = self.hotkey_stop_decision(&event)?;
+        info!("{}", event.decision_line(Some(state), stop));
         if !stop {
             return self.handle_hotkey_event(event).await;
         }
@@ -5320,7 +5321,7 @@ impl RecordingController {
             .then(|| self.hold_start_generation.load(Ordering::SeqCst));
         // Stop gestures enter before mode updates: a RAW toggle during hold
         // must not rewrite the take's destination while asking to end it.
-        let stop_gesture = self.is_stop_gesture(&event)?;
+        let (_, stop_gesture) = self.hotkey_stop_decision(&event)?;
         if stop_gesture {
             return self.stop_recording_from_external_surface().await;
         }
@@ -11075,6 +11076,37 @@ mod owned_capture_settlement_tests {
             Some(TranscriptSessionEndReason::TranscriptionFailed)
         );
         assert_eq!(controller.current_state().await, State::Idle);
+    }
+
+    #[tokio::test]
+    async fn hotkey_stop_decision_retains_the_state_used_for_routing() {
+        let controller = RecordingController::new_without_keychain();
+        let event = HotkeyInput {
+            key_type: HotkeyType::Toggle,
+            action: HotkeyAction::Press,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: true,
+            force_ai: false,
+        };
+        for (initial, expected_stop) in [
+            (State::Idle, false),
+            (State::RecHold, true),
+            (State::RecToggle, true),
+            (State::Busy, true),
+        ] {
+            controller.set_state(initial).await;
+            let (state, stop) = controller.hotkey_stop_decision(&event).unwrap();
+            controller.set_state(State::Idle).await;
+            assert_eq!(state, initial);
+            assert_eq!(stop, expected_stop);
+            assert_eq!(
+                event.decision_line(Some(state), stop),
+                event.decision_line(Some(initial), expected_stop)
+            );
+        }
+        let _held = controller.state.write().await;
+        assert!(controller.hotkey_stop_decision(&event).is_err());
     }
 
     #[tokio::test]

@@ -255,6 +255,7 @@ final class OverlayMenuCursorTests: XCTestCase {
       panel.close()
       saved.set()
     }
+
     content.hits = 0
     for _ in 0..<1_000 {
       XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 100, y: 200)))
@@ -276,6 +277,96 @@ final class OverlayMenuCursorTests: XCTestCase {
     content.hits = 0
     XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: 400, y: 200)))
     XCTAssertEqual(content.hits, 0, "Removed menu immediately returns the interior budget")
+  }
+
+  func testLeavingResizeResetsArrowOnceAndThenYieldsToNativeText() {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
+    let content = CursorHitCountingView(frame: NSRect(x: 0, y: 0, width: 600, height: 500))
+    panel.contentView = content
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+    let edge = NSPoint(x: 1, y: 250)
+    let interior = NSPoint(x: 200, y: 250)
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    XCTAssertEqual(NSCursor.current, OverlayResizeHit.cursor(for: .left))
+    XCTAssertTrue(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .arrow)
+    NSCursor.iBeam.set()
+    XCTAssertFalse(panel.refreshCursor(at: interior))
+    XCTAssertEqual(NSCursor.current, .iBeam)
+    XCTAssertEqual(content.hits, 0)
+
+    XCTAssertTrue(panel.refreshCursor(at: edge))
+    NSCursor.pointingHand.set()
+    XCTAssertFalse(panel.refreshCursor(at: NSPoint(x: -1, y: 250)))
+    XCTAssertEqual(NSCursor.current, .pointingHand, "Outside belongs to the destination window")
+  }
+
+  func testLeavingResizeForAnEditableMenuReleasesCursorOwnership() {
+    let resize = NSObject()
+    var state = OverlayCursorState()
+    XCTAssertTrue(state.update(zone: .resize(.left), cursor: ObjectIdentifier(resize)))
+    XCTAssertTrue(state.update(zone: .menu, cursor: nil))
+    XCTAssertFalse(state.update(zone: .menu, cursor: nil))
+  }
+
+  private struct DividerIdentityWitness: View {
+    var tick: Int
+
+    var body: some View {
+      HStack(spacing: 0) {
+        Text(String(tick)).frame(width: 700, height: 400)
+        Rectangle().frame(width: 10, height: 400)
+          .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+        Color.clear.frame(width: 290, height: 400)
+      }
+      .frame(width: 1000, height: 500)
+    }
+  }
+
+  func testHostedSidebarDividerUpdatesKeepCursorAndRegionIdentity() throws {
+    let panel = FloatingOverlayPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 500),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    let host = NSHostingView(rootView: DividerIdentityWitness(tick: 0))
+    panel.contentView = host
+    host.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(
+      panel.menuCursorRegions.allObjects.first as? OverlayMenuCursorRegionView)
+    let originalFrame = panel.frame
+    let regionFrame = region.frame
+    let saved = NSCursor.current
+    defer {
+      panel.close()
+      saved.set()
+    }
+    let point = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
+    XCTAssertTrue(panel.refreshCursor(at: point))
+    var retainedCursors: [NSCursor] = [region.cursor]
+    var writes = 0
+    for tick in 1...100 {
+      host.rootView = DividerIdentityWitness(tick: tick)
+      host.layoutSubtreeIfNeeded()
+      let mounted = try XCTUnwrap(
+        panel.menuCursorRegions.allObjects.first as? OverlayMenuCursorRegionView)
+      retainedCursors.append(mounted.cursor)
+      XCTAssertTrue(mounted === region, "an ordinary root update must preserve the divider")
+      XCTAssertEqual(mounted.frame, regionFrame)
+      XCTAssertEqual(panel.frame, originalFrame)
+      if panel.refreshCursor(at: point) { writes += 1 }
+    }
+    let cursorIDs = Set(retainedCursors.map(ObjectIdentifier.init))
+    print(
+      "divider-identity-witness updates=100 retained=\(retainedCursors.count) cursorIDs=\(cursorIDs.count) regionIDs=1 writesAfterInitial=\(writes) presented=\(panel.isVisible)"
+    )
+    XCTAssertEqual(cursorIDs.count, 1)
+    XCTAssertEqual(writes, 0)
+    XCTAssertFalse(panel.isVisible, "the fixture never presents a window on the shared desktop")
   }
 
   func testSidebarDividerCursorWinsInsideDrawerAndYieldsWhenRemoved() {

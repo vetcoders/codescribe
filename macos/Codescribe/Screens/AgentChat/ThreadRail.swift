@@ -327,7 +327,7 @@ private struct ThreadRow: View {
         if thread.isMaxConsultation {
           Image(systemName: "sparkles")
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(CSColor.secondaryInk)
+            .foregroundStyle(.secondary)
             .accessibilityLabel("Max consultation")
         }
         if isEditing {
@@ -358,7 +358,7 @@ private struct ThreadRow: View {
         Text(ThreadRailMeta.timeOnly(from: thread.meta))
           .lineLimit(1)
           .font(.caption)
-          .foregroundStyle(CSColor.secondaryInk)
+          .foregroundStyle(.secondary)
 
         if let tag = ModelTag.display(for: thread.model) {
           Text(verbatim: "·")
@@ -368,7 +368,7 @@ private struct ThreadRow: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .font(.caption)
-            .foregroundStyle(CSColor.secondaryInk)
+            .foregroundStyle(.secondary)
         }
       }
     }
@@ -385,7 +385,7 @@ private struct ThreadRow: View {
   private var favoriteLabel: some View {
     Image(systemName: thread.isFavorite ? "star.fill" : "star")
       .font(.system(size: 11, weight: .medium))
-      .foregroundStyle(CSColor.secondaryInk)
+      .foregroundStyle(.secondary)
       .frame(width: 16, height: 16)
       .contentShape(Rectangle())
   }
