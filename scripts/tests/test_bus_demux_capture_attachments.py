@@ -18,6 +18,17 @@ SPEC.loader.exec_module(DEMUX)
 
 
 class CaptureAttachmentTests(unittest.TestCase):
+    def test_publisher_refusal_preserves_the_append_owners_reason(self):
+        import subprocess
+        refused = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="",
+            stderr="codescribe: capture attachment target unavailable\n")
+        with patch.object(DEMUX, "reply_publisher_command", return_value="/fixture/publisher"), \
+                patch("subprocess.run", return_value=refused):
+            with self.assertRaisesRegex(OSError, "capture attachment target unavailable") as caught:
+                DEMUX.publish_reply_event(self.bus, self.stage)
+        self.assertNotIn("speech did not start", str(caught.exception))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

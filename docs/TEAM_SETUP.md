@@ -4,7 +4,7 @@
 
 ### 1. Prerequisites
 
-- macOS 14+ (Apple Silicon ARM64 only)
+- macOS 26+ (Apple Silicon ARM64 only)
 - Rust 1.94+ (the workspace MSRV)
 
 ### 2. Build & Run (Native App)

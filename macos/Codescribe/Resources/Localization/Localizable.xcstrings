@@ -1,111 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "Auto-fold: Never" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Auto-fold: Never"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Automatyczne zwijanie: nigdy"
-          }
-        }
-      }
-    },
-    "Auto-fold: %lld s of inactivity" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Auto-fold: %lld s of inactivity"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zwijaj po %lld s bezczynności"
-          }
-        }
-      }
-    },
-    "Conversations" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozmowy"
-          }
-        }
-      }
-    },
-    "Shared conversation" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozmowa wspólna"
-          }
-        }
-      }
-    },
-    "Dock all agents" : {
-      "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zadokuj wszystkich"
-          }
-        }
-      }
-    },
-    "Restore window layout" : {
-      "comment" : "Global Intercom action: restore the window presentation from before docking all fiszki.",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Przywróć układ okien"
-          }
-        }
-      }
-    },
-    "Your Inbox" : {
-      "comment" : "The human mailbox beside agent conversations; no channel number is displayed",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Twoja skrzynka"
-          }
-        }
-      }
-    },
-    "The ledger did not close this take.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ledger nie domknął tego nagrania."
-          }
-        }
-      }
-    },
-    "The ledger anchored %@ of the speech and did not close this take.": {
-      "localizations": {
-        "pl": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ledger zakotwiczył %@ mowy i nie domknął tego nagrania."
-          }
-        }
-      }
-    },
     "" : {
       "shouldTranslate" : false
     },
@@ -518,6 +413,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ — urządzenie niedostępne"
+          }
+        }
+      }
+    },
+    "%@%@" : {
+      "shouldTranslate" : false,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@"
+          }
+        }
+      }
+    },
+    "%@%@%@" : {
+      "shouldTranslate" : false,
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@%3$@"
           }
         }
       }
@@ -3683,16 +3600,6 @@
         }
       }
     },
-    "Auto fold after… %@" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zwijaj po… %@"
-          }
-        }
-      }
-    },
     "Auto-detect" : {
       "comment" : "Dictation language choice: let the engine detect the language",
       "localizations" : {
@@ -3700,6 +3607,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Automatyczne wykrywanie języka"
+          }
+        }
+      }
+    },
+    "Auto-fold: %lld s of inactivity" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-fold: %lld s of inactivity"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwijaj po %lld s bezczynności"
+          }
+        }
+      }
+    },
+    "Auto-fold: Never" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-fold: Never"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne zwijanie: nigdy"
           }
         }
       }
@@ -6035,6 +5974,16 @@
         }
       }
     },
+    "Conversations" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowy"
+          }
+        }
+      }
+    },
     "Copied" : {
       "comment" : "Tray banner: the transcript was copied",
       "localizations" : {
@@ -7511,6 +7460,17 @@
         }
       }
     },
+    "Dock all agents" : {
+      "comment" : "Intercom action: dock all detached conversation windows and fold the group to its header, preserving drafts and sessions.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadokuj wszystkich"
+          }
+        }
+      }
+    },
     "Documentation" : {
       "comment" : "User panel: docs link",
       "localizations" : {
@@ -8013,16 +7973,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozwiń interkom"
-          }
-        }
-      }
-    },
-    "Expand to compact widget" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozwiń do MIDI"
           }
         }
       }
@@ -10078,16 +10028,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bieżący poziom dźwięku"
-          }
-        }
-      }
-    },
-    "Live preview" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Podgląd na żywo"
           }
         }
       }
@@ -15732,6 +15672,17 @@
         }
       }
     },
+    "Restore window layout" : {
+      "comment" : "Global Intercom action: restore the window presentation from before docking all fiszki.",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Przywróć układ okien"
+          }
+        }
+      }
+    },
     "Restored draft" : {
       "comment" : "Title of a rebuilt thread shell",
       "localizations" : {
@@ -16751,6 +16702,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Postęp konfiguracji"
+          }
+        }
+      }
+    },
+    "Shared conversation" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmowa wspólna"
           }
         }
       }
@@ -20992,6 +20953,16 @@
         }
       }
     },
+    "Widget size" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmiar widżetu"
+          }
+        }
+      }
+    },
     "Wire" : {
       "localizations" : {
         "pl" : {
@@ -21310,6 +21281,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mówisz, a Codescribe zamienia Twoją wypowiedź w tekst."
+          }
+        }
+      }
+    },
+    "Your Inbox" : {
+      "comment" : "The human mailbox beside agent conversations; no channel number is displayed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Twoja skrzynka"
           }
         }
       }

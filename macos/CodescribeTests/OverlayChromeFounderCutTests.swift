@@ -190,7 +190,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .midi, "the header never returns to mini")
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .expanded)
-    // The rotating preview control keeps its unchanged full cycle.
+    // The preview control explicitly folds back to mini.
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
   }
@@ -334,10 +334,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.toggleCollapsed()
     XCTAssertTrue(state.isCollapsed)
     state.toggleCollapsed()
-    XCTAssertEqual(state.presentationMode, .midi)
-    state.toggleCollapsed()
     XCTAssertFalse(state.isCollapsed)
-    XCTAssertEqual(collapses, [true, true, false])
+    XCTAssertEqual(collapses, [true, false])
     XCTAssertTrue(state.expandedByDefault)
     XCTAssertTrue(engine.expanded)
     XCTAssertTrue(engine.expansionWrites.isEmpty)
@@ -1387,7 +1385,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.setPresentationMode(.mini)
     let text = state.activeText
     for (mode, symbol, label) in [
-      (OverlayPresentationMode.mini, "chevron.left", "Expand to compact widget"),
+      (OverlayPresentationMode.mini, "chevron.down", "Expand transcript"),
       (.midi, "chevron.down", "Expand transcript"),
       (.expanded, "arrow.up.right", "Collapse widget"),
     ] {
@@ -1399,7 +1397,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(controls.previewAccessibilityLabel, label)
       controls.togglePreview()
       XCTAssertEqual(
-        state.presentationMode, mode == .mini ? .midi : mode == .midi ? .expanded : .mini)
+        state.presentationMode, mode == .expanded ? .mini : .expanded)
       XCTAssertEqual(state.activeText, text)
     }
     XCTAssertEqual(state.presentationMode, .mini)

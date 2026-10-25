@@ -109,16 +109,14 @@ struct OverlayRecordingControls: View {
   }
   var previewAccessibilityLabel: String {
     switch presentationMode {
-    case .mini: String(localized: "Expand to compact widget")
-    case .midi: String(localized: "Expand transcript")
+    case .mini, .midi: String(localized: "Expand transcript")
     case .expanded: String(localized: "Collapse widget")
     }
   }
   /// Expanding the widget is always an explicit click.
   var previewSymbol: String {
     switch presentationMode {
-    case .mini: OverlayControlSymbols.miniToMidi
-    case .midi: OverlayControlSymbols.midiToTranscript
+    case .mini, .midi: OverlayControlSymbols.midiToTranscript
     case .expanded: OverlayControlSymbols.returnToMini
     }
   }
@@ -222,12 +220,12 @@ struct OverlayRecordingControls: View {
     .contextMenu {
       if let onPresentationSelect {
         Picker(
-          "Live preview",
+          "Widget size",
           selection: Binding(get: { presentationMode }, set: { onPresentationSelect($0) })
         ) {
           Text("Collapse widget").tag(OverlayPresentationMode.mini)
           Text("Compact").tag(OverlayPresentationMode.midi)
-          Text("Transcription").tag(OverlayPresentationMode.expanded)
+          Text("Expanded").tag(OverlayPresentationMode.expanded)
         }
         .pickerStyle(.inline)
         .accessibilityIdentifier("overlay-presentation-picker")

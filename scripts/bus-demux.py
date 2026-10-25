@@ -7322,9 +7322,13 @@ def publish_reply_event(bus: Path, event: dict[str, Any], *, bridge_root: Path |
             text=True, timeout=30, check=False,
         )
     except subprocess.TimeoutExpired as error:
-        raise OSError("canonical bus publication timed out; speech did not start") from error
+        raise OSError("canonical bus publication timed out") from error
     if result.returncode != 0:
-        raise OSError("canonical bus publication refused; speech did not start")
+        # Keep the append owner's reason. This path publishes attachments as
+        # well as replies; a speech-specific message hid the actual refusal.
+        details = result.stderr.strip().splitlines()
+        reason = details[-1][-2048:] if details else f"publisher exit {result.returncode}"
+        raise OSError(f"canonical bus publication refused: {reason}")
     try:
         receipt = json.loads(result.stdout)
     except json.JSONDecodeError as error:

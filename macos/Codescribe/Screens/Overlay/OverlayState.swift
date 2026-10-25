@@ -787,18 +787,18 @@ final class OverlayState {
   /// form it folds to, the drawer it closed and when the window lands.
   @ObservationIgnored private var automaticFoldInFlight:
     (mode: OverlayPresentationMode, agentMonitor: Bool, landsAt: TimeInterval)?
-  /// Presentation changes come from explicit controls; pointer motion never morphs the window.
+  /// The preview control opens dictation directly from either compact layout.
+  /// Folding leaves capture, transcript and conversation drafts untouched.
   func toggleCollapsed() {
     switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
+    case .mini, .midi: showTranscription()
     case .expanded: setPresentationMode(.mini)
     }
   }
 
   /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
   /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the rotating preview control keeps that exit.
+  /// never folds back to mini; the preview control keeps that exit.
   func advancePresentationFromHeader() {
     switch presentationMode {
     case .mini: setPresentationMode(.midi)

@@ -1239,9 +1239,10 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
-            + Text(verbatim: " " + detailRun).foregroundStyle(
-              isQuiet ? CSColor.textTertiary : ChatPalette.toolBody))
+          let verb = Text(verbatim: line.verbLabel).foregroundStyle(rowColor)
+          let detail = Text(verbatim: " " + detailRun).foregroundStyle(
+            isQuiet ? CSColor.textTertiary : ChatPalette.toolBody)
+          Text("\(verb)\(detail)")
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
             .textSelection(.enabled)

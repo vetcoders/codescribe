@@ -14,6 +14,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let desktopStore: OverlayIntercomDesktopStore
   @ObservationIgnored private let diagnosticLog: DiagnosticLog?
   @ObservationIgnored private var header: OverlayIntercomPanel?
+  @ObservationIgnored private var appWindowYield: OverlayAppWindowYield?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
   @ObservationIgnored private var instancePanels: [UUID: OverlayIntercomPanel] = [:]
   @ObservationIgnored private var identities: [OverlayIntercomCardIdentity] = []
@@ -177,6 +178,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       }
       panel.setFrame(CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
       header = panel
+      let observer = OverlayAppWindowYield(panel: panel, state: state) { [weak self] window in
+        guard let self else { return }
+        let panels =
+          [self.header].compactMap { $0 }
+          + Array(self.cards.values) + Array(self.instancePanels.values)
+        for panel in panels { panel.yieldToAppWindow(window) }
+      }
+      appWindowYield = observer
+      observer.start()
     }
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
     materializeInstances()
@@ -186,6 +196,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   func invalidate() {
     guard !invalidated else { return }
     setVisible(false, relativeTo: nil)
+    appWindowYield?.invalidate()
+    appWindowYield = nil
     invalidated = true
     for panel in cards.values {
       panel.delegate = nil
@@ -355,7 +367,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       // A detached window stands above the group it came from. On one shared
       // level every group reconcile re-ordered the rows over it (Maciej,
       // 2026-10-23: the detached Klaudiusz played hide-and-seek under row 1).
-      panel.level = OverlayIntercomPanel.detachedLevel
+      panel.floatingLevel = OverlayIntercomPanel.detachedLevel
+      panel.yieldToAppWindow(NSApp.isActive ? NSApp.keyWindow : nil)
       positioning = true
       let fitted = instanceFrame(instance, for: panel)
       if panel.frame != fitted { panel.setFrame(fitted, display: true) }
@@ -1026,11 +1039,36 @@ final class OverlayIntercomPanel: NSPanel {
   static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
 
   var acceptsConversationFocus = false
+  var floatingLevel: NSWindow.Level = .floating
   var onScroll: (CGFloat) -> Void = { _ in }
   private var presented = false
   private var visibilityRevision: UInt64 = 0
 
   var isPresented: Bool { presented && isVisible }
+
+  /// Our regular windows take precedence; other apps keep the floating cards.
+  /// Recheck on every presentation so a new message cannot jump over Settings.
+  override func orderFrontRegardless() {
+    let window = NSApp.isActive ? NSApp.keyWindow : nil
+    if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
+      level = .normal
+      order(.below, relativeTo: window.windowNumber)
+    } else {
+      yieldToAppWindow(nil)
+      super.orderFrontRegardless()
+    }
+  }
+
+  func yieldToAppWindow(_ window: NSWindow?) {
+    if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
+      level = .normal
+      if isVisible && window.isVisible {
+        order(.below, relativeTo: window.windowNumber)
+      }
+    } else {
+      level = floatingLevel
+    }
+  }
 
   func setPresented(_ value: Bool, animated: Bool) {
     guard presented != value else { return }
@@ -1121,10 +1159,10 @@ private struct OverlayIntercomHeader: View {
         controller.toggleGroup()
       } label: {
         Image(systemName: "circle.grid.2x2.fill")
-          .csFont(14, .semibold)
-        .contentShape(Capsule())
-        .frame(
-          width: metrics.groupWidth, height: metrics.controlHeight)
+          .csFont(10, .semibold)
+          .contentShape(Capsule())
+          .frame(
+            width: metrics.groupWidth, height: metrics.controlHeight)
       }
       .buttonStyle(.plain)
       .conversationActionHover(
@@ -1169,7 +1207,8 @@ private struct OverlayIntercomHeader: View {
           identifier: "overlay-intercom-inbox")
       } label: {
         HStack(spacing: IntercomHeaderMetrics.mailboxSpacing) {
-          Image(systemName: "tray").csFont(11, .semibold).frame(width: 12 * scale)
+          Image(systemName: "bubble.left.and.bubble.right")
+            .csFont(11, .semibold).frame(width: 18 * scale)
           if content.showsLabels { Text("Conversations").csFont(11, .semibold).lineLimit(1) }
           Image(systemName: "chevron.down").csFont(6, .semibold).frame(width: 6 * scale)
         }
@@ -1195,7 +1234,7 @@ private struct OverlayIntercomHeader: View {
       Button {
         controller.toggleDockAll()
       } label: {
-        Image(systemName: "sidebar.right").csFont(12, .medium)
+        Image(systemName: "rectangle.stack").csFont(12, .medium)
           .frame(
             width: metrics.controlHeight, height: metrics.controlHeight
           )

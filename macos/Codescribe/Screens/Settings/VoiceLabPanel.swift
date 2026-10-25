@@ -183,25 +183,26 @@ func minorAdjustmentsSummary(_ minor: [CsDiffSpan]) -> String {
 private func diffSpanText(_ span: CsDiffSpan) -> Text {
   var result = Text(verbatim: "")
   if !span.contextBefore.isEmpty {
-    result = result + Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   if !span.raw.isEmpty {
-    result =
-      result
-      + Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
-      + Text(verbatim: " ")
+    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
+    let space = Text(verbatim: " ")
+    result = Text("\(result)\(removed)\(space)")
   }
   if !span.edited.isEmpty {
     if !span.raw.isEmpty {
-      result = result + Text(verbatim: "→ ").foregroundStyle(CSColor.chromeAccent)
+      let arrow = Text(verbatim: "→ ").foregroundStyle(CSColor.chromeAccent)
+      result = Text("\(result)\(arrow)")
     }
-    result =
-      result
-      + Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
-      + Text(verbatim: " ")
+    let edited = Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
+    let space = Text(verbatim: " ")
+    result = Text("\(result)\(edited)\(space)")
   }
   if !span.contextAfter.isEmpty {
-    result = result + Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   return result
 }
@@ -212,16 +213,17 @@ private func diffSpanText(_ span: CsDiffSpan) -> Text {
 private func diffSpanBeforeText(_ span: CsDiffSpan) -> Text {
   var result = Text(verbatim: "")
   if !span.contextBefore.isEmpty {
-    result = result + Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   if !span.raw.isEmpty {
-    result =
-      result
-      + Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
-      + Text(verbatim: " ")
+    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
+    let space = Text(verbatim: " ")
+    result = Text("\(result)\(removed)\(space)")
   }
   if !span.contextAfter.isEmpty {
-    result = result + Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   return result
 }
@@ -231,16 +233,17 @@ private func diffSpanBeforeText(_ span: CsDiffSpan) -> Text {
 private func diffSpanAfterText(_ span: CsDiffSpan) -> Text {
   var result = Text(verbatim: "")
   if !span.contextBefore.isEmpty {
-    result = result + Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextBefore + " ").foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   if !span.edited.isEmpty {
-    result =
-      result
-      + Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
-      + Text(verbatim: " ")
+    let edited = Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
+    let space = Text(verbatim: " ")
+    result = Text("\(result)\(edited)\(space)")
   }
   if !span.contextAfter.isEmpty {
-    result = result + Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    let context = Text(span.contextAfter).foregroundStyle(CSColor.secondaryInk)
+    result = Text("\(result)\(context)")
   }
   return result
 }

@@ -83,7 +83,7 @@ Codescribe lives in your menu bar. The icon color indicates status:
 
 ## System Requirements
 
-- **macOS**: 13.0 (Ventura) or later
+- **macOS**: 26.0 (Tahoe) or later
 - **Chip**: Apple Silicon (M1/M2/M3/M4/M5)
 - **RAM**: 8GB minimum, 16GB recommended
 - **Disk**: allow room for the app plus a local Whisper model cache (2GB recommended)

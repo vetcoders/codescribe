@@ -7,6 +7,36 @@ import XCTest
 /// Transcription keeps its own action column and measures the text beside it.
 @MainActor
 final class OverlayTranscriptSurfaceTests: XCTestCase {
+  func testPreviewOpensDictationFromAnAgentWithoutChangingCaptureOrDraft() {
+    for mode in [OverlayPresentationMode.mini, .midi] {
+      let state = OverlayState.previewListening()
+      let agent = OverlayConversation(
+        id: "preview-agent", channel: "3", name: "agent", owner: nil, messages: [])
+      state.applyConversationSnapshot(.init(deliveries: [], conversations: [agent]))
+      state.chooseConversation(agent.id)
+      state.conversationDrafts[agent.id] = "Unsent agent draft"
+      state.setPresentationMode(mode)
+      let text = state.activeText
+      let generation = state.captureGeneration
+      let recording = state.recording
+      let controls = OverlayRecordingControls(
+        canFinish: recording, presentationMode: mode, compact: true, palette: .dark,
+        onIntent: { _ in XCTFail("Preview must not send a recording command") },
+        onPreviewToggle: state.toggleCollapsed)
+      controls.togglePreview()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      XCTAssertNil(state.selectedConversationID)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertEqual(state.recording, recording)
+      XCTAssertEqual(state.conversationDrafts[agent.id], "Unsent agent draft")
+      state.toggleCollapsed()
+      XCTAssertEqual(state.presentationMode, .mini)
+      XCTAssertEqual(state.captureGeneration, generation)
+    }
+  }
+
   func testColumnWidthIsOneControlItsInsetsAndTheResizeBandAtEveryScale() {
     // The control chrome is unscaled, so the column is the same width at
     // every supported text scale: 28 control + 4 + 4 insets + 16 resize band.

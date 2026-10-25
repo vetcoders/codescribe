@@ -785,12 +785,11 @@ extension RealAgentBridgeInstaller {
         throw NSError(
           domain: "Codescribe.BusAttachment", code: Int(process.terminationStatus),
           userInfo: [
-            NSLocalizedDescriptionKey: refusal.isEmpty
-              ? String(
-                localized:
-                  "Files could not be attached to this live capture. Keep them in your draft and try again."
-              )
-              : refusal
+            NSLocalizedDescriptionKey: String(
+              localized:
+                "Files could not be attached to this live capture. Keep them in your draft and try again."
+            ),
+            NSDebugDescriptionErrorKey: refusal,
           ])
       }
     }.value

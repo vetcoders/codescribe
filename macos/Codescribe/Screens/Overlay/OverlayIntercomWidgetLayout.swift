@@ -50,7 +50,7 @@ struct IntercomHeaderMetrics: Equatable {
     countWidth = textWidth(agentCount.formatted(), font: mono)
     mailboxWidth =
       textWidth(String(localized: "Conversations"), font: font)
-      + 18 * scale + 2 * Self.mailboxSpacing + 2 * Self.mailboxInset
+      + 24 * scale + 2 * Self.mailboxSpacing + 2 * Self.mailboxInset
     pagingControlWidth = 16 * max(1, scale)
   }
 

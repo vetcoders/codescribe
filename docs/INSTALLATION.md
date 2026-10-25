@@ -460,7 +460,7 @@ the selection stays a windowed act: the CLI never installs an empty selection.
 | CFBundleIdentifier                  | com.vetcoders.codescribe | Unique app identifier                |
 | CFBundleIconFile                    | AppIcon                  | Points to AppIcon.icns               |
 | CFBundleExecutable                  | Codescribe               | Main binary name                     |
-| LSMinimumSystemVersion              | 14.0                     | Requires macOS Sonoma+               |
+| LSMinimumSystemVersion              | 26.0                     | Requires macOS Tahoe+                |
 | NSMicrophoneUsageDescription        | ...                      | Microphone permission prompt         |
 | NSSpeechRecognitionUsageDescription | ...                      | Speech Recognition permission prompt |
 

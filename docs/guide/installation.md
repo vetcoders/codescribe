@@ -4,8 +4,8 @@
 
 | Requirement | Minimum                           | Recommended              |
 | ----------- | --------------------------------- | ------------------------ |
-| macOS       | 13.0 (Ventura)                    | 14.0+ (Sonoma)           |
-| Chip        | Apple Silicon or Intel with Metal | Apple Silicon (M1/M2/M3) |
+| macOS       | 26.0 (Tahoe)                      | 26.0+ (Tahoe)           |
+| Chip        | Apple Silicon (M1 or later)       | Apple Silicon (M1 or later) |
 | RAM         | 8 GB                              | 16 GB                    |
 | Disk        | 1 GB                              | 2 GB                     |
 

@@ -13,6 +13,40 @@ import XCTest
 
 @MainActor
 final class OverlayAppWindowYieldTests: XCTestCase {
+  func testIntercomYieldsEveryCardAndRestoresFloatingLevelsWithoutPresentingWindows() {
+    let state = makeState()
+    let header = OverlayIntercomPanel()
+    let card = OverlayIntercomPanel()
+    let detached = OverlayIntercomPanel()
+    detached.floatingLevel = OverlayIntercomPanel.detachedLevel
+    let panels = [header, card, detached]
+    let settings = titledWindow("Settings")
+    defer {
+      for panel in panels { panel.close() }
+      settings.close()
+    }
+    let observer = OverlayAppWindowYield(panel: header, state: state) { window in
+      for panel in panels { panel.yieldToAppWindow(window) }
+    }
+    observer.start()
+    defer { observer.invalidate() }
+    let generation = state.captureGeneration
+    deliver(NSWindow.didBecomeKeyNotification, settings)
+    XCTAssertTrue(panels.allSatisfy { $0.level == .normal })
+    // A subsequent click must still lower the cards even after the normal
+    // overlay has already yielded once to this same window.
+    card.level = .floating
+    deliver(NSWindow.didBecomeKeyNotification, settings)
+    XCTAssertEqual(card.level, .normal)
+    deliver(NSWindow.willCloseNotification, settings)
+    XCTAssertEqual(header.level, .floating)
+    XCTAssertEqual(card.level, .floating)
+    XCTAssertEqual(detached.level, OverlayIntercomPanel.detachedLevel)
+    XCTAssertTrue(panels.allSatisfy { !$0.isVisible && !$0.isKeyWindow })
+    XCTAssertFalse(settings.isVisible)
+    XCTAssertEqual(state.captureGeneration, generation)
+  }
+
   private struct Rig {
     let state: OverlayState
     let panel: FloatingOverlayPanel
