@@ -16,9 +16,9 @@ private struct ConversationActionHover: ViewModifier {
       .foregroundStyle(hovered && isEnabled ? hoverColor : restingColor)
       .opacity(isEnabled ? 1 : 0.35)
       .csFocusOutline()
-      .onHover { hovered = $0 }
-      // The nonactivating overlay routes pointer motion through this region;
-      // ordinary windows use SwiftUI's onHover. Neither path intercepts clicks.
+      // One mounted region owns hover in both ordinary windows and the
+      // nonactivating overlay. A second SwiftUI tracker can deliver an exit
+      // after the native region has already entered its replacement geometry.
       .background { OverlayMenuCursorRegion { hovered = $0 } }
   }
 }
