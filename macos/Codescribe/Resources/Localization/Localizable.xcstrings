@@ -1,6 +1,38 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Auto-fold: Never" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-fold: Never"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatyczne zwijanie: nigdy"
+          }
+        }
+      }
+    },
+    "Auto-fold: %lld s of inactivity" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-fold: %lld s of inactivity"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zwijaj po %lld s bezczynności"
+          }
+        }
+      }
+    },
     "Conversations" : {
       "localizations" : {
         "pl" : {

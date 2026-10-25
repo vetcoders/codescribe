@@ -1284,7 +1284,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       let titles = resolved.items.map(\.title)
       for title in [
         "Agents", "Transcription", "Pin", "Free motion", "Show transcript by default",
-        "Auto fold after… 10 s",
+        "Auto-fold: 10 s of inactivity",
       ] {
         XCTAssertTrue(titles.contains(title), "\(title) missing from \(titles)")
       }
@@ -1320,10 +1320,15 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         let resolved = try XCTUnwrap(menu)
         resolved.delegate?.menuNeedsUpdate?(resolved)
         let fold = try XCTUnwrap(
-          resolved.items.first { $0.title.hasPrefix("Auto fold after") })
-        let label = seconds == 0 ? "Never" : "\(seconds) s"
-        XCTAssertEqual(fold.title, "Auto fold after… \(label)")
-        XCTAssertNotNil(fold.submenu)
+          resolved.items.first { $0.title.hasPrefix("Auto-fold:") })
+        XCTAssertEqual(
+          fold.title,
+          seconds == 0 ? "Auto-fold: Never" : "Auto-fold: \(seconds) s of inactivity")
+        let submenu = try XCTUnwrap(fold.submenu)
+        submenu.delegate?.menuNeedsUpdate?(submenu)
+        let selected = submenu.items.filter { $0.state == .on }
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected.first?.title, seconds == 0 ? "Never" : "\(seconds) s")
       }
     }
   }

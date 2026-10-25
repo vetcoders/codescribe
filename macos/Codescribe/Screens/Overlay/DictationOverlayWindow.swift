@@ -59,6 +59,9 @@ struct OverlayCursorState {
 /// and clicking its chrome do not open this gate.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
+  /// Input arriving at this panel extends the existing presentation deadline.
+  /// Paints, native meter updates and pointer motion are not user input.
+  var onUserActivity: (() -> Void)?
   var onUserDragEnded: ((NSPoint) -> Void)?
   var onPresentationClick: (() -> Void)?
   var onUserResize: (() -> Void)?
@@ -521,6 +524,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if event.type == .keyDown { onUserActivity?() }
     if performCopyChord(event) { return true }
     return super.performKeyEquivalent(with: event)
   }
@@ -530,6 +534,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// Native transcript and SwiftUI controls keep ordinary AppKit dispatch.
   /// The existing resize band is tracked here without a nested event loop.
   override func sendEvent(_ event: NSEvent) {
+    switch event.type {
+    case .keyDown, .flagsChanged, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+      .leftMouseUp, .rightMouseUp, .otherMouseUp, .leftMouseDragged, .rightMouseDragged,
+      .otherMouseDragged, .scrollWheel:
+      onUserActivity?()
+    default:
+      break
+    }
     // ⌘C on a selected bubble did nothing in the installed app, while the key
     // equivalent path passed in a test host that is the active app (Maciej,
     // 2026-10-19). With another app active the chord can arrive as a plain
@@ -1385,6 +1397,7 @@ enum DictationOverlayWindow {
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
     }
+    panel.onUserActivity = { [weak state] in state?.noteOverlayInputActivity() }
     panel.onUserDragEnded = { [weak state] origin in
       state?.recordUserDrag(at: origin)
     }

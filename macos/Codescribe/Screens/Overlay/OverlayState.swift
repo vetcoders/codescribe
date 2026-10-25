@@ -884,6 +884,13 @@ final class OverlayState {
     restartAutoHideCountdown()
   }
 
+  /// Native input belongs to the existing idle clock. A key received while an
+  /// automatic fold is still moving restores the same expanded surface first.
+  func noteOverlayInputActivity() {
+    undoAutomaticFoldInFlight()
+    noteAutoCollapseActivity()
+  }
+
   /// Fresh transcript, presentation activity or the end of an interaction.
   /// While an interaction holds the panel, the deadline is dropped instead;
   /// the end of that interaction calls here again for a full interval.
