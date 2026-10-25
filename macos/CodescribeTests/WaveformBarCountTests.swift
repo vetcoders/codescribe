@@ -60,8 +60,16 @@ final class WaveformBarCountTests: XCTestCase {
 /// UI-88: the moving waveform runs on Core Animation, not a per-frame SwiftUI timeline.
 @MainActor
 final class WaveformMotionTests: XCTestCase {
+  /// No test window is presented over a live Founder take. The native view
+  /// still sees a deterministically visible host, as in WaveformVisibilityTests.
+  private final class VisibleHostWindow: NSWindow {
+    override var isVisible: Bool { true }
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+  }
+
   private func configuration(
-    bars count: Int = 12, transcribing: Bool = false, meter: AudioLevelMeter?
+    bars count: Int = 12, transcribing: Bool = false, meter: AudioLevelMeter?,
+    isVisible: Bool = true
   ) -> WaveformMotionStrip.Configuration {
     WaveformMotionStrip.Configuration(
       bars: (0..<count).map {
@@ -70,7 +78,7 @@ final class WaveformMotionTests: XCTestCase {
           silhouette: 0.3 + CGFloat($0) / 40, color: .red)
       },
       barWidth: 1.5, gap: 2, maxBarHeight: 18, minScale: 0.35, transcribing: transcribing,
-      inactiveColor: .gray, meter: meter)
+      inactiveColor: .gray, meter: meter, isVisible: isVisible)
   }
 
   private func strip(
@@ -133,6 +141,69 @@ final class WaveformMotionTests: XCTestCase {
     XCTAssertEqual(movers[3].transform.m22, 0.3 + 3.0 / 40, accuracy: 1e-6)
     XCTAssertNil(movers[3].animation(forKey: "sweep"))
     XCTAssertEqual(view.cores.sublayers?.count ?? 0, 0)
+  }
+
+  func testDismissingCachedOverlayStopsGainPollingAndShowingItRestartsPolling() throws {
+    let meter = AudioLevelMeter()
+    meter.push(rms: 0.05)
+    let view = strip(meter: meter)
+    let window = VisibleHostWindow(
+      contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.contentView = view
+    defer {
+      view.stopGainPolling()
+      window.contentView = nil
+    }
+    let timer = try XCTUnwrap(view.gainTimer)
+    XCTAssertTrue(timer.isValid)
+    view.apply(configuration(meter: meter))
+    XCTAssertTrue(view.gainTimer === timer, "An unchanged configuration keeps one timer")
+    let scale = view.movers.sublayerTransform.m22
+    let sweeps = view.sweepsAdded
+
+    window.orderOut(nil)
+    view.apply(configuration(meter: meter, isVisible: false))
+    XCTAssertTrue(view.window === window, "The cached overlay keeps its content attached")
+    XCTAssertFalse(timer.isValid)
+    XCTAssertNil(view.gainTimer)
+    meter.push(rms: 0.3)
+    view.refreshGain()
+    XCTAssertEqual(view.movers.sublayerTransform.m22, scale)
+
+    view.apply(configuration(meter: meter))
+    XCTAssertTrue(try XCTUnwrap(view.gainTimer).isValid)
+    XCTAssertFalse(view.gainTimer === timer)
+    view.refreshGain()
+    XCTAssertEqual(
+      view.movers.sublayerTransform.m22, 0.35 + CGFloat(try XCTUnwrap(meter.gain)) * 0.65,
+      accuracy: 1e-6)
+    XCTAssertEqual(view.sweepsAdded, sweeps, "Visibility changes keep the running sweeps")
+  }
+
+  func testGainPollingRequiresVisibilityWindowMeterAndCapturePhase() throws {
+    let meter = AudioLevelMeter()
+    let view = WaveformMotionView(frame: NSRect(x: 0, y: 0, width: 60, height: 22))
+    view.apply(configuration(meter: meter, isVisible: false))
+    XCTAssertNil(view.gainTimer)
+    let window = VisibleHostWindow(
+      contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.contentView = view
+    defer {
+      view.stopGainPolling()
+      window.contentView = nil
+    }
+    XCTAssertNil(view.gainTimer, "Attaching a hidden overlay must not start polling")
+    view.apply(configuration(transcribing: true, meter: meter))
+    XCTAssertNil(view.gainTimer)
+    view.apply(configuration(meter: nil))
+    XCTAssertNil(view.gainTimer)
+    view.apply(configuration(meter: meter))
+    let timer = try XCTUnwrap(view.gainTimer)
+    view.removeFromSuperview()
+    XCTAssertFalse(timer.isValid)
+    XCTAssertNil(view.gainTimer)
+    view.apply(configuration(meter: meter))
+    XCTAssertNil(view.gainTimer, "A detached waveform must not restart polling")
   }
 
   func testAWideningStripKeepsItsBarsAndTheirRunningSweeps() throws {
