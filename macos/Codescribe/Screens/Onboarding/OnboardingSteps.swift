@@ -105,10 +105,10 @@ private struct OnboardingCard<Content: View>: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 20)
       .padding(.vertical, 14)
-      .background(Color.accentColor.opacity(0.035), in: .rect(cornerRadius: CSRadius.chip))
+      .background(CSColor.chromeAccent.opacity(0.035), in: .rect(cornerRadius: CSRadius.chip))
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
-          .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 1 / max(displayScale, 1))
+          .strokeBorder(CSColor.chromeAccent.opacity(0.22), lineWidth: 1 / max(displayScale, 1))
       }
   }
 }
@@ -223,7 +223,9 @@ struct HotkeyModeStepView: View {
             localized: LocalizedStringResource(
               "Your custom shortcuts stay as they are unless you pick a preset.",
               locale: model.interfaceLocale,
-              comment: "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized")))
+              comment:
+                "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized"
+            )))
       }
 
       OnboardingStepNote(
@@ -361,13 +363,15 @@ struct AgenticReadinessStepView: View {
         localized: LocalizedStringResource(
           "Codescribe skill installed", locale: model.interfaceLocale,
           comment:
-            "Detail under a coding-agent card: the Codescribe skill is in this client's skills folder"))
+            "Detail under a coding-agent card: the Codescribe skill is in this client's skills folder"
+        ))
     }
     return String(
       localized: LocalizedStringResource(
         "Install the Codescribe skill", locale: model.interfaceLocale,
         comment:
-          "Detail under a coding-agent card: Continue installs the Codescribe skill for this client"))
+          "Detail under a coding-agent card: Continue installs the Codescribe skill for this client"
+      ))
   }
 }
 

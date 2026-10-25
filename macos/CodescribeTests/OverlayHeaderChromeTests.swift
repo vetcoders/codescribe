@@ -94,7 +94,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
       XCTAssertNotEqual(hover, palette.agentAccent.color)
-      XCTAssertEqual(hover, Color(nsColor: .controlAccentColor))
+      XCTAssertEqual(hover, CSColor.chromeAccent)
     }
   }
 
@@ -127,7 +127,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
   /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"
   /// that ignored hover. A chosen control sits on a pastel of its mode's
   /// colour (Agents lavender, Transcription the listening terracotta, Pin the
-  /// system accent): noticeable, never the full colour, and hover still moves it.
+  /// product accent): noticeable, never the full colour, and hover still moves it.
   func testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover() throws {
     let pinned = OverlayState()
     pinned.engine = OverlayChromePolicyEngine()
@@ -150,7 +150,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         ),
         ("agents", palette.agentAccent, AnyView(agentsSelected), AnyView(agentsResting)),
         (
-          "pin", headerSystemAccent(palette),
+          "pin", headerProductAccent(palette),
           AnyView(OverlayPinButton(state: pinned, palette: palette)),
           AnyView(OverlayPinButton(state: loose, palette: palette))
         ),
@@ -423,10 +423,10 @@ final class OverlayHeaderChromeTests: XCTestCase {
         "\(name) rests on a role color")
     }
     XCTAssertGreaterThan(
-      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.04,
+      headerShift(frames.rest, frames.hover, toward: headerProductAccent(palette)), 0.04,
       "\(name) hover did not move toward the shared accent")
     XCTAssertGreaterThan(
-      headerAccentPixelCount(frames.rest, frames.hover, accent: headerSystemAccent(palette)), 5,
+      headerAccentPixelCount(frames.rest, frames.hover, accent: headerProductAccent(palette)), 5,
       "\(name) hover must blend the shared accent into its antialiased hairline")
     XCTAssertLessThan(
       headerDelta(frames.rest, frames.leave), 0.08, "\(name) hover did not clear")
@@ -447,7 +447,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
       headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
       "\(name) microphone lost its recording color on hover")
     XCTAssertGreaterThan(
-      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.03,
+      headerShift(frames.rest, frames.hover, toward: headerProductAccent(palette)), 0.03,
       "\(name) microphone hover ring did not appear")
     XCTAssertLessThan(
       headerDelta(frames.rest, frames.leave), 0.08, "\(name) microphone hover stuck")
@@ -462,7 +462,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         isFinalizing: true, recordingLight: .processing),
       palette: palette)
     XCTAssertLessThan(
-      headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.02,
+      headerShift(frames.rest, frames.hover, toward: headerProductAccent(palette)), 0.02,
       "\(name) disabled microphone took the hover accent")
     XCTAssertLessThan(headerDelta(frames.rest, frames.hover), 0.08)
   }
@@ -641,11 +641,11 @@ final class OverlayHeaderChromeTests: XCTestCase {
     return status.monitorBody(maximumHeight: 260)
   }
 
-  private func headerSystemAccent(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
-    var color = NSColor.controlAccentColor
+  private func headerProductAccent(_ palette: OverlayAppearancePalette) -> OverlayColorToken {
+    var color = CSPalette.chromeAccent
     NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)?
       .performAsCurrentDrawingAppearance {
-        color = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .controlAccentColor
+        color = CSPalette.chromeAccent.usingColorSpace(.sRGB) ?? CSPalette.chromeAccent
       }
     let hex =
       UInt32((color.redComponent * 255).rounded()) << 16

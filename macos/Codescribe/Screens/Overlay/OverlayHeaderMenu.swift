@@ -173,7 +173,7 @@ struct OverlayPinButton: View {
     } label: {
       OverlayMicrophoneGlyph(
         symbol: pinned ? OverlayControlSymbols.pinned : OverlayControlSymbols.pin,
-        tint: pinned ? Color(nsColor: .controlAccentColor) : palette.mutedText.color,
+        tint: pinned ? CSColor.chromeAccent : palette.mutedText.color,
         plateOpacity: 0
       )
       .contentShape(Circle())

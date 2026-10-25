@@ -271,13 +271,13 @@ private struct CSActionButtonStyle: ButtonStyle {
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
       .background(
-        Color.accentColor.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
+        CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
         in: .rect(cornerRadius: CSRadius.chip)
       )
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
           .strokeBorder(
-            Color.accentColor.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
+            CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
             lineWidth: 1 / max(displayScale, 1))
       }
       .contentShape(.rect(cornerRadius: CSRadius.chip))

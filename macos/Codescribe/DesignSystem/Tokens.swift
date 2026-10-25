@@ -6,13 +6,13 @@ import SwiftUI
 // appearance (light/dark) through dynamic NSColor providers, so every consumer
 // of CSColor adapts without a call-site change. Brand and semantic hues
 // (terracotta, assistive violet, olive, amber) are appearance-fixed — they
-// carry app-owned mode, state, and brand meaning, not chrome meaning.
-// Decorative controls use the operator's macOS accent instead.
+// carry app-owned mode, state, and brand meaning. Interactive chrome shares
+// the product terracotta, with its existing legible light/dark text rungs.
 // Window chrome (canvas, code wells, control fills) is the system semantic
 // NSColor directly — one owner, no per-surface appearance wrappers.
 // Assistive violet = voice routed to the agent. Olive/green = healthy status.
 // Amber = reasoning/format meta.
-// Never hardcode a replacement for the system accent: the operator owns it.
+// Product accents come from these roles; individual screens never invent hues.
 
 extension Color {
   init(hex: UInt32, alpha: Double = 1.0) {
@@ -151,15 +151,16 @@ enum CSPalette {
   static let panelEdge = adaptive(
     light: NSColor(hex: 0x5F5A52, alpha: 0.20), dark: NSColor(hex: 0xF3F0EA, alpha: 0.16))
 
-  /// Primary-action wash: the operator's accent on paper; on ink the same
-  /// accent lifted halfway to white. A translucent accent wash alone paints
-  /// the same mid-tone on both appearances, which reads as a highlight on
-  /// paper but sinks into dark glass. The lift is the dark-mode raise, the way
-  /// `surfaceRaised` lifts with a white veil. Callers own the wash alpha.
+  /// Product accent shared by selection, focus and interactive chrome. Reuse the
+  /// contrast-audited terracotta text rung rather than inheriting macOS accent.
+  static let chromeAccent = terracottaText
+
+  /// Primary-action wash follows the same product accent; dark surfaces lift
+  /// it halfway toward white. Callers own the wash alpha.
   static let accentWash = NSColor(name: nil) { appearance in
-    var accent = NSColor.controlAccentColor
+    var accent = chromeAccent
     appearance.performAsCurrentDrawingAppearance {
-      accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? accent
+      accent = chromeAccent.usingColorSpace(.sRGB) ?? accent
     }
     guard appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua else { return accent }
     return accent.blended(withFraction: 0.5, of: .white) ?? accent
@@ -227,8 +228,8 @@ enum CSColor {
   static let indicatorRecording = Color(nsColor: CSPalette.indicatorRecording)
   static let indicatorAgentQuiet = Color(nsColor: CSPalette.indicatorAgentQuiet)
 
-  // UI chrome — selection, focus, and interactive controls follow macOS.
-  static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }
+  // UI chrome — selection, focus and controls share the product accent.
+  static let chromeAccent = Color(nsColor: CSPalette.chromeAccent)
   /// The one primary action's fill tint (apply the wash alpha at the call site).
   static let accentWash = Color(nsColor: CSPalette.accentWash)
 
