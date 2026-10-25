@@ -374,7 +374,7 @@ struct StatusPill: View {
       }
       .frame(width: 9, height: 9)
       Text(text)
-        .csMono(11, .medium)
+        .csFont(11, .medium)
         .foregroundStyle(color)
         // A squeezed chrome HStack was wrapping this one word into a vertical
         // capsule (S-t-r-e-a-m-i-n-g, operator crop 2026-09-22). Capsules stay
@@ -430,7 +430,7 @@ struct StaticStatusPill: View {
       Circle().fill(color).frame(width: 6, height: 6).opacity(0.7)
         .frame(width: 9, height: 9)
       Text(text)
-        .csMono(11, .medium)
+        .csFont(11, .medium)
         .foregroundStyle(color)
         .lineLimit(1)
         .fixedSize()
