@@ -1093,13 +1093,25 @@ pub struct Decoder {
     length: usize,
     pending: Vec<u8>,
     header: Value,
+    discard_initial_fragment: bool,
 }
 impl Decoder {
+    /// A bounded tail may start inside an older storage document. Consume
+    /// that one contiguous fragment without admitting any of its content.
+    /// Every document beginning inside the window retains strict decoding.
+    pub fn from_tail_boundary() -> Self {
+        Self {
+            discard_initial_fragment: true,
+            ..Self::default()
+        }
+    }
+
     pub fn incomplete(&self) -> bool {
         self.parts != 0
     }
     pub fn push(&mut self, value: Value) -> io::Result<Vec<Value>> {
         if value["schema"] != CHUNK_SCHEMA {
+            self.discard_initial_fragment = false;
             if self.incomplete() {
                 return Err(invalid());
             }
@@ -1111,6 +1123,19 @@ impl Decoder {
         let length = value["length"].as_u64().ok_or_else(invalid)? as usize;
         if length > DECODE_LIMIT || parts == 0 || parts != length.div_ceil(CHUNK_BYTES) as u64 {
             return Err(invalid());
+        }
+        if self.discard_initial_fragment && self.parts == 0 {
+            if part == 0 {
+                self.discard_initial_fragment = false;
+            } else if part < parts {
+                self.id = id.into();
+                self.parts = parts;
+                self.next = part;
+                self.length = length;
+                self.header = value["event"].clone();
+            } else {
+                return Err(invalid());
+            }
         }
         if part == 0 {
             if self.incomplete() {
@@ -1136,6 +1161,17 @@ impl Decoder {
             .map_err(|_| invalid())?;
         if payload.len() > CHUNK_BYTES || self.pending.len() + payload.len() > length {
             return Err(invalid());
+        }
+        if self.discard_initial_fragment {
+            let expected = (length - part as usize * CHUNK_BYTES).min(CHUNK_BYTES);
+            if payload.len() != expected {
+                return Err(invalid());
+            }
+            self.next += 1;
+            if self.next == parts {
+                *self = Self::default();
+            }
+            return Ok(Vec::new());
         }
         self.pending.extend_from_slice(&payload);
         self.next += 1;
@@ -2080,6 +2116,69 @@ mod integrator_generation_acceptance {
         cursor.read_to_end(&mut actual).unwrap();
         assert_eq!(actual, [old[31..].to_vec(), b"later\n".to_vec()].concat());
         assert_eq!(fs::read(&manifest.segments[0].path).unwrap(), old);
+    }
+
+    #[test]
+    fn tail_decoder_discards_one_leading_fragment_but_preserves_integrity_checks() {
+        let value = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"chunks",
+            "rendered_text":"x".repeat(600_000)
+        });
+        let wire = encode(&value).expect("tail decoder regression fixture must be valid");
+        let rows: Vec<Value> = wire
+            .split(|b| *b == b'\n')
+            .filter(|r| !r.is_empty())
+            .map(|r| {
+                serde_json::from_slice(r).expect("tail decoder regression fixture must be valid")
+            })
+            .collect();
+        assert!(Decoder::default().push(rows[2].clone()).is_err());
+        let mut tail = Decoder::from_tail_boundary();
+        for row in &rows[2..] {
+            assert!(
+                tail.push(row.clone())
+                    .expect("tail decoder regression fixture must be valid")
+                    .is_empty()
+            );
+        }
+        assert!(!tail.incomplete());
+        let complete = serde_json::json!({"schema":"synthetic.complete.v1", "value":1});
+        assert_eq!(
+            tail.push(complete.clone())
+                .expect("tail decoder regression fixture must be valid"),
+            vec![complete]
+        );
+        // A missing part in the discarded prefix still refuses the stream.
+        let mut gap = Decoder::from_tail_boundary();
+        gap.push(rows[2].clone())
+            .expect("tail decoder regression fixture must be valid");
+        assert!(gap.push(rows[4].clone()).is_err());
+        // Starting at part zero never discards or bypasses the document hash.
+        let mut full = Decoder::from_tail_boundary();
+        let mut output = Vec::new();
+        for row in &rows {
+            output.extend(
+                full.push(row.clone())
+                    .expect("tail decoder regression fixture must be valid"),
+            );
+        }
+        assert_eq!(output, vec![value]);
+        let mut corrupt = Decoder::from_tail_boundary();
+        for row in &rows[..rows.len() - 1] {
+            corrupt
+                .push(row.clone())
+                .expect("tail decoder regression fixture must be valid");
+        }
+        let mut last = rows
+            .last()
+            .expect("tail decoder regression fixture must be valid")
+            .clone();
+        last["payload"] = base64::engine::general_purpose::STANDARD
+            .encode(b"corrupt")
+            .into();
+        assert!(corrupt.push(last).is_err());
+        // A later continuation cannot start a second discarded fragment.
+        assert!(tail.push(rows[2].clone()).is_err());
     }
 
     #[test]

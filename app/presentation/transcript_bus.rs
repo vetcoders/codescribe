@@ -1070,7 +1070,11 @@ fn capture_attachment_source(
         let mut discarded = String::new();
         reader.read_line(&mut discarded)?;
     }
-    let mut decoder = generation::Decoder::default();
+    let mut decoder = if start == 0 {
+        generation::Decoder::default()
+    } else {
+        generation::Decoder::from_tail_boundary()
+    };
     let mut latest = None;
     let mut selected = None;
     let mut open = false;
@@ -3092,6 +3096,47 @@ mod tests {
             "source_sequence":0, "emitted_at":"2026-10-20T22:00:00Z", "attachments":[{"name":"image.png", "path":file,
             "media_type":"image/png", "bytes":13, "sha256":"a".repeat(64)}]});
         (temp, buses, request)
+    }
+
+    #[test]
+    fn capture_attachment_bounded_tail_can_start_inside_an_older_chunked_document() {
+        use super::super::transcript_bus_maintenance::generation;
+        use std::io::Write;
+        let (_temp, buses, request) = capture_attachment_fixture();
+        let current =
+            std::fs::read(&buses[0]).expect("bounded-tail attachment fixture must be valid");
+        // The real 64 MiB bound cuts through this older encoded document;
+        // the complete open + selected source still lie inside the window.
+        let older = serde_json::json!({
+            "schema":"codescribe.transcript-evidence.v1", "session_id":"older-capture",
+            "rendered_text":"x".repeat(50 * 1024 * 1024)
+        });
+        let prefix =
+            generation::encode(&older).expect("bounded-tail attachment fixture must be valid");
+        assert!(prefix.len() > 64 << 20);
+        let mut file = std::fs::File::create(&buses[0])
+            .expect("bounded-tail attachment fixture must be valid");
+        file.write_all(&prefix)
+            .expect("bounded-tail attachment fixture must be valid");
+        file.write_all(&current)
+            .expect("bounded-tail attachment fixture must be valid");
+        file.sync_all()
+            .expect("bounded-tail attachment fixture must be valid");
+        let receipt = super::append_agent_event(&buses[0], &request)
+            .expect("bounded-tail attachment fixture must be valid");
+        assert_eq!(
+            receipt["buses"]
+                .as_array()
+                .expect("bounded-tail attachment fixture must be valid")
+                .len(),
+            2
+        );
+        for bus in &buses {
+            let (_, staged) =
+                super::capture_attachment_source(bus, "agent-channel-0-fixture", &request)
+                    .expect("bounded-tail attachment fixture must be valid");
+            assert!(staged);
+        }
     }
 
     #[test]
