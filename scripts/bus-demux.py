@@ -1391,11 +1391,11 @@ class EvidenceNormalizer:
                 return None
             if event.get("status") == SESSION_ENDED:
                 self._flush_session(
-                    str(event.get("session_id") or ""), event.get("emitted_at")
+                    str(event.get("session_id") or ""), event.get("emitted_at"), event
                 )
             return event
         if event.get("reducer_action") == SESSION_ENDED:
-            self._flush_session(str(event.get("session_id") or ""), event.get("emitted_at"))
+            self._flush_session(str(event.get("session_id") or ""), event.get("emitted_at"), event)
             return None
         document = event.get("rendered_text")
         if not isinstance(document, str):
@@ -1423,6 +1423,62 @@ class EvidenceNormalizer:
             return clean
         clean = self._as_clean(event, LIVE_STATUSES[1], document)
         return clean
+
+    @staticmethod
+    def _remember_co_audience(document: dict[str, Any], event: dict[str, Any]) -> None:
+        """Retain source observation metadata without changing document authority."""
+        if (event.get("session_id") != document.get("session_id")
+                or channel_of_session(str(event.get("session_id") or "")) in (None, "0")
+                or event.get("capture_epoch") is not None
+                and document.get("capture_epoch") is not None
+                and event["capture_epoch"] != document["capture_epoch"]):
+            return
+        has_pair = "co_audience" in event or "co_audience_basis" in event
+        # A synthetic lifecycle receipt without cohort fields is not an empty
+        # producer snapshot. Its absence cannot erase an observed close cohort.
+        if event.get("schema") not in (EVIDENCE_SCHEMA, CLEAN_SCHEMA) and not has_pair:
+            return
+        members, basis = event.get("co_audience"), event.get("co_audience_basis")
+        if has_pair and (not isinstance(members, list) or not members
+                         or basis not in ("emission", "capture_close")):
+            return
+        if not has_pair:
+            basis = ("capture_close" if event.get("status") in (SEALED, SESSION_ENDED)
+                     or event.get("reducer_action") == SESSION_ENDED else "emission")
+        sequence = event.get("sequence")
+        sequence = sequence if type(sequence) is int and sequence >= 0 else None
+        emitted_at = event.get("emitted_at")
+        try:
+            stamp = datetime.datetime.fromisoformat(emitted_at.replace("Z", "+00:00"))
+            timestamp = stamp.timestamp() if stamp.tzinfo is not None else None
+        except (AttributeError, ValueError, OverflowError):
+            timestamp = None
+        previous = document.get("_co_audience_observation") or {}
+        previous_sequence = previous.get("sequence")
+        previous_time = previous.get("timestamp")
+        if sequence is not None and previous_sequence is not None:
+            if sequence < previous_sequence:
+                return
+            if (sequence == previous_sequence and previous.get("basis") == "capture_close"
+                    and basis != "capture_close"):
+                return
+        elif previous:
+            if timestamp is None or previous_time is not None and timestamp < previous_time:
+                return
+            if (timestamp == previous_time and previous.get("basis") == "capture_close"
+                    and basis != "capture_close"):
+                return
+        # Omission on a complete snapshot means no other local live member.
+        # A watermark retains even that empty observation across same-phase
+        # duplicates; it is private and stripped from final delivery envelopes.
+        for key in ("co_audience", "co_audience_basis"):
+            document.pop(key, None)
+        if has_pair:
+            document["co_audience"] = members
+            document["co_audience_basis"] = basis
+        document["_co_audience_observation"] = {
+            "sequence": sequence, "timestamp": timestamp, "basis": basis,
+        }
 
     def _remember_channel_document(
         self, event: dict[str, Any], clean: dict[str, Any]
@@ -1487,6 +1543,17 @@ class EvidenceNormalizer:
             if rate is not None:
                 previous["sample_rate_hz"] = rate
             return False
+        # Observation freshness belongs to one exact capture epoch. A new
+        # epoch starts from its own source pair, not a predecessor's watermark.
+        metadata_previous = previous if (previous is not None
+            and previous.get("capture_epoch") == clean.get("capture_epoch")) else None
+        observed = metadata_previous if metadata_previous is not None else clean
+        self._remember_co_audience(observed, event)
+        if metadata_previous is not None:
+            for key in ("co_audience", "co_audience_basis", "_co_audience_observation"):
+                clean.pop(key, None)
+                if key in metadata_previous:
+                    clean[key] = metadata_previous[key]
         same_phase = previous is not None and (
             previous.get("reducer_revision"), previous.get("reducer_action")
         ) == (incoming_revision, event.get("reducer_action"))
@@ -1518,7 +1585,7 @@ class EvidenceNormalizer:
         # A delayed predecessor close is evidence only for that named capture.
         # It cannot terminate documents belonging to a newer admitted take.
         if str(row.get("state") or "") != "open":
-            self._flush_session(session, row.get("emitted_at"))
+            self._flush_session(session, row.get("emitted_at"), row)
             return
         opened_at = row.get("opened_at")
         if not isinstance(opened_at, str):
@@ -1569,7 +1636,9 @@ class EvidenceNormalizer:
         if not any(item.get("stage_id") == receipt.get("stage_id") for item in known):
             known.append(receipt)
 
-    def _flush_session(self, session: str, emitted_at: Any) -> None:
+    def _flush_session(
+        self, session: str, emitted_at: Any, source: dict[str, Any] | None = None
+    ) -> None:
         self._channel_open_times.pop(session, None)
         controller = session in self._controller_sessions
         self._controller_sessions.pop(session, None)
@@ -1583,7 +1652,10 @@ class EvidenceNormalizer:
             return
         if not (clean.get("text") or "").strip():
             return
+        if source is not None:
+            self._remember_co_audience(clean, source)
         final = dict(clean)
+        final.pop("_co_audience_observation", None)
         final.pop("capture_attachment_sources", None)
         attachments = list(clean.get("attachments", []))
         for stage in clean.get("capture_attachment_stages", []):
@@ -4541,6 +4613,27 @@ def queue_metadata(value: Any, limit: int = 64, *, peer_controlled: bool = False
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def co_audience_queue_label(payload: dict[str, Any]) -> str | None:
+    """Bounded informational cohort, never an addressed-to or admission list."""
+    members = payload.get("co_audience")
+    basis = payload.get("co_audience_basis")
+    if not isinstance(members, list) or not members or basis not in ("emission", "capture_close"):
+        return None
+    labels = []
+    for member in members[:9]:
+        if not isinstance(member, dict):
+            continue
+        channel, audience = member.get("channel"), member.get("audience")
+        if (not isinstance(channel, str) or len(channel) != 1 or channel not in "0123456789"
+                or not isinstance(audience, str) or not audience):
+            continue
+        labels.append(f"{channel} ({queue_metadata(audience, 48, peer_controlled=True)})")
+    if not labels:
+        return None
+    moment = "AT EMISSION" if basis == "emission" else "AT CAPTURE CLOSE"
+    return f"OTHER LIVE CHANNELS {moment} (context only): " + ", ".join(labels)
+
+
 def founder_provenance_label(payload: dict[str, Any]) -> str | None:
     """Founder-origin label for the Codex native queue header, or None.
 
@@ -4554,11 +4647,11 @@ def founder_provenance_label(payload: dict[str, Any]) -> str | None:
     """
     producer_schema = payload.get("producer_schema")
     if producer_schema == AGENT_USER_MESSAGE_SCHEMA:
-        return "Founder (typed)"
+        return "User (typed)"
     # App takes arrive as transcript evidence; `slim()` keeps that producer
     # schema verbatim. The bridge's own event schema is the older take shape.
     if producer_schema in (EVIDENCE_SCHEMA, EVENT_SCHEMA) and payload.get("kind") == "seal":
-        return "Founder (voice)"
+        return "User (voice)"
     return None
 
 
@@ -5020,6 +5113,9 @@ class NativeQueueWakeup:
                 f"Codescribe · {name}/{label} · delivery {identity}\n"
                 f"ADDRESSED TO: {queue_metadata(delivery_address_label(payload), 128)}"
             )
+            co_audience = co_audience_queue_label(payload)
+            if co_audience is not None:
+                header += "\n" + co_audience
             founder_source = founder_provenance_label(payload)
             if founder_source is not None:
                 # Founder authority: keep the full-text copy, now with an
@@ -5045,7 +5141,7 @@ class NativeQueueWakeup:
                 )
                 message = (
                     f"{header}\n"
-                    f"from: peer {sender_label} — peer coordination, not a Founder instruction.\n"
+                    f"from: peer {sender_label} — peer coordination, not a user instruction.\n"
                     "No text is attached to this queue notice. Read the owned mailbox before acting:\n"
                     + read_command
                 )

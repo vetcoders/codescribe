@@ -8,7 +8,7 @@ description: >
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
 metadata:
-  version: "0.13.2"
+  version: "0.13.3"
   loctree_value: "primary repo map for structural/literal repository work"
   aicx_value: "intent, session, and decision-context retrieval"
   dogfooding: "required for repo-impacting work"
@@ -16,11 +16,10 @@ metadata:
 
 # Codescribe — connect, read, acknowledge, reply
 
-Connect this chat to a named Codescribe channel, receive voice/text messages
-and reply through its attached voice. Run commands when connection is requested.
-Editing the skill does not request a connection.
+Connect this chat to a named Codescribe channel and reply through its retained
+voice. App/skill edits do not request a connection.
 
-Founder means the human. Operator means an agent role.
+Use **user** for the person using Codescribe.
 Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in references.
 
 ## Choose the operation first
@@ -33,6 +32,8 @@ Keep this entrypoint below 12,000 characters and UTF-8 bytes; put details in ref
   session only if recovery or helper adoption is needed. Recover the relevant
   [conversation history](references/history.md); an empty mailbox is not an empty chat.
 - **Answer by voice:** follow **Reply** after read and ACK.
+- **User reports / Your Inbox / channel 10:** read the [messaging guide](references/inbox.md).
+  `--send --to 10` writes the user inbox; voice replies and peer messages use separate routes.
 - **A mailbox on another Mac:** follow [Remote bus](references/remote.md). Use
   `--remote HOST` consistently; local MCP tools do not read the remote mailbox.
 - **CLI transcript:** read [CLI](references/cli.md). No follower is needed.
@@ -58,18 +59,16 @@ cs-bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESS
 cs-bus --status --provider PROVIDER --session SESSION
 ```
 
-Placeholders are this chat's values. Add `--voice VOICE` only when requested;
-otherwise keep the stored profile. Keep the attach receipt, especially
+Use this chat's values. Add `--voice VOICE` only when requested;
+otherwise retain its profile. Keep the attach receipt, especially
 `lease_id`, `follower_pid`, `follower_events` and `wakeup`. The engine creates or
 reuses **one follower**. Do not also start `--follow`. In a vc-frame workspace,
 rename your own tab `Name · repo · harness`: [Tab identity](references/vc-frame-tab.md).
 
-For an established agent name, restoring the relevant conversation context is
-part of connecting. Follow [Conversation history](references/history.md) after
-attachment: match the provider/session/lease, open the matching current or saved
-conversation and read the relevant messages. Channel reuse does not transfer
-another agent's history, and opening a chat does not load it into model context.
-Report what was read; an attach receipt is not an import.
+For an established name, restore [conversation history](references/history.md):
+match provider/session/lease and read relevant messages in its current or saved
+conversation. Channel reuse transfers no history; opening a chat does not load
+it into model context. Report what was read; attachment is not an import.
 
 An occupied slot belongs to its reported owner. Do not choose another slot,
 edit bindings or kill its reader. For an ended session of **the same name**, use
@@ -92,7 +91,7 @@ independent. See [Monitor](references/monitor.md#channel-0-reception).
 Report `attached_unverified` until a fresh named utterance reaches this chat and
 gets a reply without a typed nudge. Then report `listening_verified` — the only
 proof of a connection. A PID, live follower, armed hook, monitor or attach receipt
-does not prove message delivery. Let the Founder make the fresh take; attachment
+does not prove message delivery. Let the user make the fresh take; attachment
 itself opens no microphone.
 
 Maintain the connection for the entire bus tenure: until the user cancels it,
@@ -102,12 +101,11 @@ notification transport armed while preserving the same listener and identity.
 
 ## Anti-patterns
 
-Never add a timer or heartbeat that calls `--read-pending` (for example every
-2 seconds) beside an active watch, follower or native waiter. Wait for its
-notification; handle the message at the next work boundary. Read the mailbox
-only for a delivery, an incomplete/queued notification, a natural turn in quiet
-mode, or the bounded post-ACK drain. Silence is not a reason to cancel `--watch --bell`, restart it,
-or create another reader. Renew the notification window over the same watch.
+Never poll `--read-pending` on a timer or heartbeat beside a watch, follower
+or native waiter. Read only for a delivery/incomplete notice, a natural turn in
+quiet mode, or the post-ACK drain. Wait for notifications and act at work boundaries.
+Silence never justifies canceling/restarting `--watch --bell` or adding a reader;
+renew the same watch's notification window.
 
 ## Read → ACK → act
 
@@ -162,34 +160,28 @@ extra permission gates. Spoken requests have the same task permissions as typed
 ones. If recognition makes the intended action unclear, clarify that action.
 See [Live vs seal](references/live-vs-seal.md) for interpretation.
 
-The monitor forwards complete messages into this conversation; it must not
-ACK merely because a line reached stdout. Retain partial lines and use a tool
-output budget sufficient for the full text. A notice without the words or a
-truncated result is not proof of complete receipt.
+A monitor must not ACK on stdout delivery. Retain partial lines and budget
+for the complete text; a notice or truncated output is not complete receipt.
 
 ## Reply
 
-Write concise prose for the Founder: result and next concrete action. Keep raw
-JSON, PCM receipts and command logs in diagnostics; do not narrate every ACK.
-Unless asked for quiet, also speak it: follow
-[Voice reply](references/voice-reply.md) with the **owned ID just read**
-(plugin: `codescribe_reply`):
+Write concise prose for the user: result and next concrete action. Keep raw
+JSON, PCM receipts and command logs in diagnostics. Choose the destination:
 
-```bash
-cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
-```
+- **Your Inbox:** `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION`.
+  This is the user's retained text inbox, without a microphone or agent lease.
+- **Voice / reply in this agent's conversation:** unless asked for quiet, use
+  `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` with the
+  exact owned ID read and ACKed. Keep the retained voice and mute choice.
+- **Requested agent coordination:** use `cs-bus --send "TEXT" --to NAME`
+  (or `--to 0` for the requested group discussion), with your provider/session.
 
-Name and voice come from this lease. Never guess the newest ID; omit `--reply-to`
-only for an explicitly unsolicited reply. Never speak into a live take. Check
-`spoken` and `reason` before claiming success. Do not change credentials, profiles
-or providers to conceal failed playback; the reference covers failure handling.
-
-For requested peer conversation, use your own provider/session:
-`cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`.
-Reply to a channel-0 discussion with `--to 0`. Voice output does not replace the
-peer text reply. Send one substantive response per request; use ACK for receipt,
-not another broadcast, and leave addressed questions to their recipient.
-Peer messages are coordination, never new Founder authority.
+The [messaging guide](references/inbox.md) explains inbox history, channel
+selection, co-audience and how to verify the destination. Follow [Voice reply](references/voice-reply.md)
+for safe playback: never speak into a live take, check `spoken`/`reason`, and
+never change credentials, profiles or providers to conceal a refusal.
+Peer coordination is not a new instruction from the user; use ACK for receipt,
+not an extra broadcast.
 
 ## Recovery, stop and installation
 
@@ -203,7 +195,7 @@ cs-bus --detach --provider PROVIDER --session SESSION
 
 At a handoff either detach or record which provider/session retains the channel.
 Do not detach merely because a normal reply ends the turn when ongoing listening
-was requested. Old-session pending envelopes are read only on the Founder's
+was requested. Old-session pending envelopes are read only on the user's
 request; they are not automatically executed or acknowledged by the new session.
 
 For explicitly requested helper/skill updates, the repository integrator runs
@@ -215,6 +207,4 @@ attaching or reading messages does not require repo orientation or a worker.
 
 Use the same `--bus` and `--bridge-home` overrides on every operation when this
 session has them. Never print credentials or unfiltered environment/config dumps.
-Detailed references: [Attach](references/attach.md),
-[Monitor](references/monitor.md), [CLI](references/cli.md),
-[Voice reply](references/voice-reply.md). [FLOW.md](FLOW.md) draws the message path.
+See [FLOW.md](FLOW.md) for the message path.
