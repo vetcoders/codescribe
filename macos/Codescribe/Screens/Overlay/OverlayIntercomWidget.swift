@@ -1068,10 +1068,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 /// Internal so the text-size shortcuts can name the Intercom's windows.
 @MainActor
 final class OverlayIntercomPanel: NSPanel {
-  /// Passive fiszki stay below the main conversation at `.floating`; open
-  /// conversations stay above them regardless of reconciliation order.
-  static let passiveLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
-  static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+  /// Intercom cards stay above the ordinary main overlay at `.floating`;
+  /// explicitly opened conversations stay above their compact chrome.
+  /// Regular app windows retain the separate yield policy below.
+  static let passiveLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+  static let detachedLevel = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
 
   var acceptsConversationFocus = false {
     didSet {
@@ -1292,7 +1293,8 @@ private struct OverlayIntercomHeader: View {
     .background {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
-        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
+        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
+        profile: .intercom
       )
       .clipShape(
         RoundedRectangle(
@@ -1586,7 +1588,8 @@ private struct OverlayIntercomCard: View {
     )
     .background(
       OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner,
+        profile: .intercom)
     )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
@@ -2285,7 +2288,8 @@ private struct OverlayIntercomInstanceCard: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner,
+        profile: .intercom)
     )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {

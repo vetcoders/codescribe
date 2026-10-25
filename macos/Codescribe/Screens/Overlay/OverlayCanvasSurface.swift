@@ -35,27 +35,39 @@ struct OverlayCanvasSurface<Content: View>: View {
 
 }
 
+/// Material roles share one native backdrop owner. The transcript canvas
+/// retains its deliberate dark veil; floating Intercom cards reveal the glass.
+enum OverlayBackdropProfile: Equatable, Sendable {
+  case canvas
+  case intercom
+}
+
 struct OverlayCanvasBackdrop: View {
+  @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
   let reduceTransparency: Bool
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
+  var profile: OverlayBackdropProfile = .canvas
 
   var body: some View {
     ZStack {
-      if reduceTransparency || increasedContrast {
+      if reduceTransparency || increasedContrast
+        || (profile == .intercom && (contrastOverride ?? contrast) == .increased)
+      {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
         OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
         Rectangle()
-          .fill(Color(nsColor: Self.glassVeil(palette)))
+          .fill(Color(nsColor: Self.glassVeil(palette, profile: profile)))
           .allowsHitTesting(false)
           .accessibilityHidden(true)
       }
     }
   }
 
-  /// The palette's own sheet colour over the shared glass: near-black on ink,
+  /// The canvas profile's own sheet colour over the shared glass: near-black on ink,
   /// paper on paper, with the desktop left as a faint blurred hint (Maciej,
   /// 2026-10-15: "bardziej czarno", "dark almost black"). The 22 % veil of
   /// 2026-10-14 still took the page's brightness; the macOS Liquid Glass slider
@@ -67,8 +79,18 @@ struct OverlayCanvasBackdrop: View {
   /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
   /// sheet constant in both states; only the 16 % of desktop hint still follows
   /// the window.
-  static func glassVeil(_ palette: OverlayAppearancePalette) -> NSColor {
-    let alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+  static func glassVeil(
+    _ palette: OverlayAppearancePalette, profile: OverlayBackdropProfile = .canvas
+  ) -> NSColor {
+    let alpha: CGFloat
+    switch profile {
+    case .canvas:
+      alpha = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+    case .intercom:
+      // A light palette wash leaves the existing system material visible.
+      // Accessibility uses the opaque branch above rather than more effects.
+      alpha = palette.appearance == .dark ? 0.18 : 0.12
+    }
     return palette.desktopBackground.nsColor.withAlphaComponent(alpha)
   }
 }
