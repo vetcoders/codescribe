@@ -1,0 +1,60 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { page } from '../lib/asset';
+import nightly from '../data/nightly.json';
+---
+
+<Layout title="Codescribe Nightly — latest macOS build" description="Try the latest signed and notarized Codescribe Nightly for Apple Silicon. Download the DMG and check its version, source commit and SHA-256." path="nightly">
+  <main id="main" class="container nightly">
+    <a class="back" href={page('')}>← Codescribe</a>
+    <p class="eyebrow">NIGHTLY · APPLE SILICON</p>
+    <h1>Try the latest Codescribe.</h1>
+    <p class="intro">The latest changes, ahead of the next stable release.</p>
+    <div class="download">
+      <a class="btn btn--primary" href={nightly.url}>Download Nightly.dmg</a>
+      <p>v{nightly.version} · build {nightly.build} · {Math.ceil(nightly.bytes / 1_000_000)} MB<br />macOS {nightly.minimumMacOS} or later · signed and notarized</p>
+    </div>
+    <section aria-labelledby="changes-title">
+      <h2 id="changes-title">In this build</h2>
+      <ul>
+        <li>Intercom previews use the conversation view, with an optional compact composer.</li>
+        <li>Shared conversation and your Inbox are together in one header menu.</li>
+        <li>App controls share the product accent; opened cards support copying selected message text.</li>
+      </ul>
+    </section>
+    <section aria-labelledby="install-title">
+      <h2 id="install-title">Install</h2>
+      <p>Open the DMG and drag Codescribe into Applications. Close the running app before opening the new copy.</p>
+      <p>Speech recognition setup and agent connections are explained in the <a href={page('guide')}>user guide</a>. Prefer the stable version? <a href={page('') + '#install'}>Download the stable release</a>.</p>
+    </section>
+    <section class="provenance" aria-labelledby="build-title">
+      <h2 id="build-title">Build details</h2>
+      <dl>
+        <dt>Published</dt><dd><time datetime={nightly.publishedAt}>{nightly.publishedAt}</time></dd>
+        <dt>Source</dt><dd><code>{nightly.sourceCommit}</code></dd>
+        <dt>SHA-256</dt><dd><code>{nightly.sha256}</code></dd>
+      </dl>
+      <a href={nightly.url + '.sha256'}>Download checksum</a>
+    </section>
+  </main>
+</Layout>
+
+<style>
+  .nightly { max-width: 780px; padding: 72px 24px 100px; }
+  .back { display: inline-block; color: var(--muted); margin-bottom: 64px; }
+  h1 { color: var(--ink); font-size: clamp(38px, 7vw, 62px); line-height: 1.05; letter-spacing: -0.04em; margin: 18px 0; }
+  .intro { font-size: 21px; color: var(--muted); }
+  .download { margin: 34px 0 52px; }
+  .download p { margin-top: 16px; color: var(--muted); font: 400 13px/1.7 var(--font-mono); }
+  section { margin-top: 36px; padding-top: 28px; border-top: 1px solid var(--stroke); }
+  h2 { font-size: 22px; color: var(--ink); margin: 0 0 16px; }
+  p, li { font-size: 16px; line-height: 1.7; }
+  ul { padding-left: 22px; }
+  li { margin: 8px 0; }
+  .provenance { font-size: 14px; }
+  dl { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 14px; line-height: 1.6; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  code { font: 12px/1.7 var(--font-mono); overflow-wrap: anywhere; }
+  @media (max-width: 480px) { .nightly { padding-top: 32px; } .back { margin-bottom: 40px; } dl { grid-template-columns: 1fr; gap: 6px; } dd { margin-bottom: 12px; } }
+</style>
