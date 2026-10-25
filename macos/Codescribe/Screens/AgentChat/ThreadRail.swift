@@ -244,6 +244,26 @@ enum ThreadRowTitle {
   }
 }
 
+/// Ink of a history row's time and model line and its glyphs. A resting row
+/// in the front window takes the readable secondary ink; a selected row keeps
+/// the list's own secondary style, which inverts on the accent selection, and
+/// so does a row in a background window, which dims with its title.
+enum ThreadRowSecondaryInk: Equatable {
+  case readable
+  case system
+
+  static func resolve(prominence: BackgroundProminence, activeState: ControlActiveState) -> Self {
+    prominence != .increased && activeState == .key ? .readable : .system
+  }
+
+  var style: AnyShapeStyle {
+    switch self {
+    case .readable: AnyShapeStyle(CSColor.secondaryInk)
+    case .system: AnyShapeStyle(.secondary)
+    }
+  }
+}
+
 /// One history row presented in the native sidebar List.
 ///
 /// System selection, hover and focus are owned by the enclosing List, and so
@@ -271,13 +291,9 @@ private struct ThreadRow: View {
 
   private var title: String { ThreadRowTitle.displayTitle(for: thread) }
 
-  /// Ink of the time and model line and the row glyphs. A resting row in the
-  /// front window takes the readable secondary ink; a selected row keeps the
-  /// list's own secondary style, which inverts on the accent, and so does a
-  /// row in a background window, which dims with its title.
   private var secondaryStyle: AnyShapeStyle {
-    backgroundProminence != .increased && controlActiveState == .key
-      ? AnyShapeStyle(CSColor.secondaryInk) : AnyShapeStyle(.secondary)
+    ThreadRowSecondaryInk.resolve(prominence: backgroundProminence, activeState: controlActiveState)
+      .style
   }
 
   var body: some View {
