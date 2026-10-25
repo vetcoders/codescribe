@@ -52,19 +52,17 @@ const MODE_BINDINGS_MASK: u16 = 0x0FFF;
 const CHANNEL_MODIFIER_MASK: u16 = 0x3000;
 const FN_TAP_MASK: u16 = 0x4000;
 
+/// A compare-exchange loop: `fetch_update` is deprecated on current stable and
+/// its `try_update` replacement is still unstable at the 1.94 MSRV.
 fn update_gesture_bits(mask: u16, value: u16) {
     let mut current = HOTKEY_GESTURES.load(AtomicOrdering::SeqCst);
-    loop {
-        let next = (current & !mask) | value;
-        match HOTKEY_GESTURES.compare_exchange(
-            current,
-            next,
-            AtomicOrdering::SeqCst,
-            AtomicOrdering::SeqCst,
-        ) {
-            Ok(_) => break,
-            Err(observed) => current = observed,
-        }
+    while let Err(actual) = HOTKEY_GESTURES.compare_exchange_weak(
+        current,
+        (current & !mask) | value,
+        AtomicOrdering::SeqCst,
+        AtomicOrdering::SeqCst,
+    ) {
+        current = actual;
     }
 }
 
