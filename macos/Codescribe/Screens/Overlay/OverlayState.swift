@@ -2631,7 +2631,7 @@ final class OverlayState {
   /// prove that the Founder is still writing in that window. Recent typing
   /// and every unsent draft remain protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
-    OverlayConversationComposer.hasFocusedEditor
+    OverlayConversationComposer.hasFocusedEditor()
       || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)
       || conversationDrafts.values.contains {
         !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
