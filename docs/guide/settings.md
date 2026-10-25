@@ -389,9 +389,9 @@ this Mac (experimental)**, in which case Apple runs first without any cloud
 credential and the lane below is used only when Apple fails; the lane's access
 line then reads **Used when Apple fails.** followed by its real state. The
 `CODESCRIBE_FORMAT_ON_DEVICE` value in `.env` overrides this row. Each card shows the provider, the model
-field and one line about the lane's access: **Connected account**, **Stored API
+field and one line about the lane's access: **Account saved**, **Stored API
 key** or **No key required**. These describe what is stored, not whether it
-works: a stored key can still be rejected, and a connected account does not open
+works: a stored key can still be rejected, and a saved account does not open
 model discovery. The model field holds your override; when it is empty, the
 placeholder is the provider default that actually resolved, and the caption
 says **Provider default model** or **Set manually**. **Reset model** clears only

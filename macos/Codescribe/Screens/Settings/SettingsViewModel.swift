@@ -920,7 +920,7 @@ struct LLMLaneModel {
     // Presence, not validity: a stored key may still be rejected, and a
     // signed-in account does not open model discovery (`discoveryDescription`).
     if runtime.accountAuth {
-      return String(localized: "Connected account", comment: "Lane auth: signed-in account")
+      return String(localized: "Account saved", comment: "Lane auth: stored account identity")
     }
     if runtime.keyPresent {
       return String(localized: "Stored API key", comment: "Lane auth: an API key is stored")
@@ -953,7 +953,7 @@ struct LLMLaneModel {
     guard credentialAccessResolved, credentialAccessError == nil else {
       return CSColor.secondaryInk
     }
-    return runtime.available ? CSColor.oliveLight : CSColor.terracottaText
+    return runtime.available ? CSColor.secondaryInk : CSColor.terracottaText
   }
 
   var discoveryDescription: String {
@@ -3656,13 +3656,13 @@ final class SettingsViewModel: ObservableObject {
   /// Non-provider Keychain accounts (GitHub). STT keys ride on `sttLanes`.
   var serviceKeyAccounts: [String] { engine?.serviceKeyAccounts() ?? [] }
 
-  /// Lane-picker dot: credential present or key-optional host → green; else red.
+  /// Lane-picker dot describes stored configuration, never service acceptance.
   static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive) -> Color
   {
     provider.apiKeySet
       || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
-      ? CSColor.oliveLight : CSColor.terracottaText
+      ? CSColor.secondaryInk : CSColor.terracottaText
   }
 
   /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).
