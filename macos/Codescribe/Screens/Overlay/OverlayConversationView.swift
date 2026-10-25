@@ -90,13 +90,10 @@ struct OverlayConversationView: View {
   /// carries its microphone and speaker — the identity pill evacuates instead
   /// of repeating it (Maciej, 2026-10-17).
   var hidesNavigation = false
-  /// Intercom cards use the same message rows without another nested surface.
-  /// The standard presentation remains the main and detached window default.
+  /// Intercom only tightens the container and composer insets. Messages keep
+  /// the same formatted bubbles in attached, main and detached conversations.
   var presentation: OverlayConversationPresentation = .standard
   var showsComposer = true
-  /// A bounded text preview in a stretched group card; opening the full
-  /// conversation restores the complete body without changing its document.
-  var messagePreviewLineLimit: Int? = nil
   /// Group previews bound eager row construction; full presentations retain
   /// the ordinary history window. This slices the projection, never the source.
   var messageWindowLimit: Int? = nil
@@ -171,9 +168,7 @@ struct OverlayConversationView: View {
     GeometryReader { geometry in
       ScrollViewReader { proxy in
         trackedMessages(
-          maxBubbleWidth: presentation == .intercom
-            ? max(0, geometry.size.width - 2 * contentInset)
-            : Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
+          maxBubbleWidth: Self.bubbleCap(contentWidth: geometry.size.width, textScale: textScale)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -551,7 +546,7 @@ struct OverlayConversationView: View {
   private func messageList(maxBubbleWidth: CGFloat) -> some View {
     let start = windowStart
     let list = ScrollView {
-      VStack(alignment: .leading, spacing: presentation == .intercom ? 6 : 12) {
+      VStack(alignment: .leading, spacing: 12) {
         if !conversation.historyLoaded {
           ProgressView()
             .controlSize(.small)
@@ -764,12 +759,12 @@ struct OverlayConversationView: View {
     -> some View
   {
     HStack(alignment: .top, spacing: 0) {
-      if presentation == .standard && message.kind == .user { Spacer(minLength: 0) }
+      if message.kind == .user { Spacer(minLength: 0) }
       messageBubble(message)
         .frame(
           maxWidth: maxBubbleWidth,
-          alignment: presentation == .standard && message.kind == .user ? .trailing : .leading)
-      if presentation == .standard && message.kind == .reply { Spacer(minLength: 0) }
+          alignment: message.kind == .user ? .trailing : .leading)
+      if message.kind == .reply { Spacer(minLength: 0) }
     }
     .frame(maxWidth: .infinity)
     .id(message.id)
@@ -813,13 +808,7 @@ struct OverlayConversationView: View {
           .lineLimit(2)
       }
       Group {
-        if let messagePreviewLineLimit {
-          Text(verbatim: message.bodyText)
-            .font(.system(size: 13 * textScale))
-            .foregroundStyle(palette.primaryText.color)
-            .lineLimit(messagePreviewLineLimit)
-            .textSelection(.enabled)
-        } else if OversizedBubblePolicy.isOversized(message.bodyText) {
+        if OversizedBubblePolicy.isOversized(message.bodyText) {
           OversizedMessageBody(fullText: message.bodyText) { head in
             MarkdownText(
               raw: head, size: 13, bodyColor: palette.primaryText.color,
@@ -880,18 +869,15 @@ struct OverlayConversationView: View {
       }
       .background { OverlayMenuCursorRegion() }
     }
-    .padding(presentation == .intercom ? 0 : 12)
-    .padding(.vertical, presentation == .intercom ? 6 : 0)
+    .padding(12)
     .background(
-      palette.primaryText.color.opacity(presentation == .intercom ? 0 : 0.06),
+      palette.primaryText.color.opacity(0.06),
       in: RoundedRectangle(cornerRadius: 16, style: .continuous)
     )
     .overlay {
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .strokeBorder(
-          presentation == .intercom
-            ? Color.clear
-            : message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
+          message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)
         )
         .allowsHitTesting(false)

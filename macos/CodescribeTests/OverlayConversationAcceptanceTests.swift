@@ -7,6 +7,81 @@ import XCTest
 @testable import Codescribe
 
 final class OverlayConversationAcceptanceTests: XCTestCase {
+  /// Intercom's attached conversation must keep the established message renderer.
+  /// These hosts are never ordered onto the desktop and open no microphone.
+  @MainActor
+  func testAttachedIntercomKeepsFormattedMessageBubbles() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    var row = reply(String(repeating: "f", count: 24), delivery: "intercom-render")
+    row["text"] = """
+      ## Czytelna rozmowa
+      **Ważne:** zachowaj formatowanie i `inline code`.
+
+      - Pierwszy punkt
+      - Drugi punkt z [odnośnikiem](https://example.com)
+
+      ```swift
+      let message = "Pełna treść"
+      print(message)
+      ```
+
+      Osobny akapit po bloku kodu.
+      """
+    bus.consume(row)
+    let conversation = try lenaConversation(bus)
+    let replyMessage = try XCTUnwrap(conversation.messages.first { $0.kind == .reply })
+    let userMessage = OverlayConversationMessage(
+      id: "user:intercom-render", kind: .user, text: replyMessage.text, order: replyMessage.order,
+      emittedAt: replyMessage.emittedAt, owner: nil, recipients: [], deliveryID: nil,
+      replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+
+    for dark in [false, true] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      for width in [CGFloat(262), 459] {
+        for message in [userMessage, replyMessage] {
+          func render(_ presentation: OverlayConversationPresentation) throws
+            -> (NSSize, Data, NSImage)
+          {
+            let view = OverlayConversationView(
+              conversation: conversation, palette: palette, topInset: 0, bottomInset: 8,
+              pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+              draft: .constant(""), sending: false, sendError: nil, onSend: {},
+              hidesNavigation: true, presentation: presentation)
+            let host = NSHostingView(
+              rootView: view.messageBubble(message).frame(width: width)
+                .padding(8).background(palette.desktopBackground.color)
+                .environment(\.colorScheme, dark ? .dark : .light))
+            let size = host.fittingSize
+            let window = NSWindow(
+              contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+              styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.contentView = nil }
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let image = NSImage(size: size)
+            image.addRepresentation(bitmap)
+            return (size, try XCTUnwrap(bitmap.representation(using: .png, properties: [:])), image)
+          }
+          let standard = try render(.standard)
+          let attached = try render(.intercom)
+          let scenario = "\(dark ? "dark" : "light")-\(Int(width))-\(message.kind)"
+          for (name, rendered) in [("standard", standard), ("attached", attached)] {
+            let attachment = XCTAttachment(image: rendered.2)
+            attachment.name = "Intercom-\(scenario)-\(name)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+          }
+          XCTAssertGreaterThan(standard.0.height, 150, "Rich multiline content must paint")
+          XCTAssertEqual(attached.0, standard.0, scenario)
+          XCTAssertEqual(attached.1, standard.1, "Shared formatted bubble differs: \(scenario)")
+        }
+      }
+    }
+  }
+
   @MainActor
   func testWholeReplyBubbleKeepsPlaybackCopyAndBottomInsetCompact() throws {
     for state in ["spoken", "playing", "waiting", "stopped"] {
@@ -487,64 +562,73 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     let conversation = try lenaConversation(restored)
     XCTAssertEqual(
       conversation.messages.first?.text, raw, "rendering must preserve the exact receipt")
-    let key = "OverlayMarkdownZoom.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removeObject(forKey: key) }
-    let scale = TextScaleController(key: key)
-    let view = OverlayConversationView(
-      conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
-      pendingControls: [], controlErrors: [:], onControl: { _, _ in },
-      draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {})
-    let host = NSHostingView(
-      rootView: TextScaleRoot(controller: scale) { view }
-        .background(OverlayAppearancePalette.light.desktopBackground.color)
-        .preferredColorScheme(.light))
-    host.sizingOptions = []
-    host.frame = NSRect(x: 0, y: 0, width: 532, height: 500)
-    let window = NSWindow(
-      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.contentView = host
-    defer { window.close() }
-    func settle() {
-      host.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-      host.layoutSubtreeIfNeeded()
-    }
-    func scrollViews(_ root: NSView) -> [NSScrollView] {
-      (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
-    }
-    func editor(_ root: NSView) -> NSTextView? {
-      if let text = root as? NSTextView, text.isEditable { return text }
-      return root.subviews.lazy.compactMap { editor($0) }.first
-    }
-    settle()
-    let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
-    let document = try XCTUnwrap(scroll.documentView)
-    let originalEditor = try XCTUnwrap(editor(host))
-    originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
-    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-    host.cacheDisplay(in: host.bounds, to: bitmap)
-    var codeWellPixels = 0
-    for y in stride(from: 100, to: bitmap.pixelsHigh - 100, by: 4) {
-      for x in stride(from: 30, to: bitmap.pixelsWide / 2, by: 4) {
-        guard let color = bitmap.colorAt(x: x, y: y) else { continue }
-        if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.97 {
-          codeWellPixels += 1
+    for presentation in [OverlayConversationPresentation.standard, .intercom] {
+      let key = "OverlayMarkdownZoom.\(UUID().uuidString)"
+      defer { UserDefaults.standard.removeObject(forKey: key) }
+      let scale = TextScaleController(key: key)
+      let view = OverlayConversationView(
+        conversation: conversation, palette: .light, topInset: 50, bottomInset: 20,
+        pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+        draft: .constant("Zachowaj szkic"), sending: false, sendError: nil, onSend: {},
+        hidesNavigation: presentation == .intercom, presentation: presentation)
+      let host = NSHostingView(
+        rootView: TextScaleRoot(controller: scale) { view }
+          .background(OverlayAppearancePalette.light.desktopBackground.color)
+          .preferredColorScheme(.light))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 532, height: 500)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      func settle() {
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+        host.layoutSubtreeIfNeeded()
+      }
+      func scrollViews(_ root: NSView) -> [NSScrollView] {
+        (root as? NSScrollView).map { [$0] } ?? root.subviews.flatMap(scrollViews)
+      }
+      func editor(_ root: NSView) -> NSTextView? {
+        if let text = root as? NSTextView, text.isEditable { return text }
+        return root.subviews.lazy.compactMap { editor($0) }.first
+      }
+      settle()
+      let scroll = try XCTUnwrap(scrollViews(host).first { $0.bounds.height > 150 })
+      let document = try XCTUnwrap(scroll.documentView)
+      let originalEditor = try XCTUnwrap(editor(host))
+      originalEditor.setSelectedRange(NSRange(location: 2, length: 5))
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "Expanded conversation — \(presentation)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      var codeWellPixels = 0
+      for y in stride(from: 100, to: bitmap.pixelsHigh - 100, by: 4) {
+        for x in stride(from: 30, to: bitmap.pixelsWide / 2, by: 4) {
+          guard let color = bitmap.colorAt(x: x, y: y) else { continue }
+          if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.97 {
+            codeWellPixels += 1
+          }
         }
       }
+      XCTAssertGreaterThan(
+        codeWellPixels, 100, "a fenced block must render the shared native code well")
+      for _ in 0..<6 { scale.increase() }
+      settle()
+      let viewport = scroll.convert(scroll.bounds, to: host)
+      XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
+      XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
+      XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
+      XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
+      XCTAssertEqual(originalEditor.string, "Zachowaj szkic")
+      XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
+      XCTAssertEqual(try XCTUnwrap(originalEditor.font).pointSize, 22.4, accuracy: 0.05)
     }
-    XCTAssertGreaterThan(
-      codeWellPixels, 100, "a fenced block must render the shared native code well")
-    for _ in 0..<6 { scale.increase() }
-    settle()
-    let viewport = scroll.convert(scroll.bounds, to: host)
-    XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
-    XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
-    XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
-    XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
-    XCTAssertEqual(originalEditor.string, "Zachowaj szkic")
-    XCTAssertEqual(originalEditor.selectedRange(), NSRange(location: 2, length: 5))
-    XCTAssertEqual(try XCTUnwrap(originalEditor.font).pointSize, 22.4, accuracy: 0.05)
   }
 
   @MainActor
