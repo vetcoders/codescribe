@@ -242,6 +242,51 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
   }
 
   @MainActor
+  func testWholeBubbleKeepsAcceptedReceiptCompactBesideCopyAndReply() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    bus.consume(reply(String(repeating: "d", count: 24)))
+    let conversation = try lenaConversation(bus)
+    let owner = try XCTUnwrap(conversation.owner)
+    let view = OverlayConversationView(
+      conversation: conversation, palette: .dark, topInset: 0, bottomInset: 0,
+      pendingControls: [], controlErrors: [:], onControl: { _, _ in XCTFail("Must not play") },
+      draft: .constant(""), sending: false, sendError: nil, onSend: { XCTFail("Must not send") },
+      onReply: { _ in XCTFail("Measurement must not invoke Reply") })
+    for text in ["Krótki tekst", String(repeating: "Długi tekst pozostaje czytelny. ", count: 12)] {
+      for scale in [CGFloat(1), 1.5, 2] {
+        for width in [CGFloat(220), 262, 400] {
+          func measure(acknowledged: Bool) throws -> CGFloat {
+            let recipient = OverlayConversationRecipient(
+              owner: owner, deliveryID: "full-receipt", queued: true, accepted: true,
+              acknowledged: acknowledged)
+            let message = OverlayConversationMessage(
+              id: "user:full-receipt", kind: .user, text: text, order: 1, emittedAt: "",
+              owner: nil, recipients: [recipient], deliveryID: "full-receipt", replyTo: nil,
+              unsolicited: false, playback: nil, busPath: "")
+            let host = NSHostingView(
+              rootView: view.messageBubble(message).environment(\.csTextScale, scale)
+                .frame(width: width))
+            let window = NSWindow(
+              contentRect: CGRect(x: -10000, y: -10000, width: width, height: 600),
+              styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.contentView = nil; window.close() }
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+          }
+          let read = try measure(acknowledged: true)
+          let accepted = try measure(acknowledged: false)
+          XCTAssertGreaterThan(read, 0)
+          XCTAssertEqual(
+            accepted, read, accuracy: 1,
+            "Receipt and Copy/Reply must stay one row: width=\(width) scale=\(scale)")
+        }
+      }
+    }
+  }
+
+  @MainActor
   func testActivityCueTracksReceivingUserTurnAcrossRepliesAndTerminal() throws {
     var bus = OverlayChannelDelivery.Bus()
     let firstSession = "agent-channel-2-active-cue-a"
