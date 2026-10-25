@@ -57,6 +57,22 @@ Nightly download page/link with version, build, full source SHA and SHA-256.
 Keep the stable homepage download snapshot and `/appcast.xml` unchanged.
 Website redeploys must continue preserving `/rc/` and `/appcast.xml`.
 
+The mutable Nightly page must revalidate before reuse. In the canonical
+`codescribe.vetcoders.io` Caddy vhost, retain this rule alongside the existing
+security headers:
+
+```caddyfile
+@nightly_page path /nightly /nightly/ /nightly/index.html
+header @nightly_page Cache-Control "no-cache, must-revalidate"
+```
+
+Validate the candidate Caddy configuration before reloading it. Verify the
+public response header and follow the page's actual download link, including
+after a conditional request using the previous page's ETag. Immutable DMG
+URLs keep their original bytes. An already-open page can still show its old
+link until navigation or reload; a correct origin checksum alone does not
+prove that the user's displayed page refreshed.
+
 Publication needs a public HTTPS download check, a fresh download matching
 the producer checksum, signature/staple/Gatekeeper and channel verification
 of those downloaded bytes, and an install/run smoke receipt. Record exact
