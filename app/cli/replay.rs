@@ -72,6 +72,7 @@ fn on_off(value: &str) -> Result<bool, String> {
 struct ReplayerBuild {
     core_version: &'static str,
     commit: &'static str,
+    profile: &'static str,
 }
 
 #[derive(Serialize)]
@@ -132,6 +133,11 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     let replayer_build = ReplayerBuild {
         core_version: env!("CARGO_PKG_VERSION"),
         commit: env!("CODESCRIBE_BUILD_COMMIT"),
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
     };
     let same_build = recorded_build
         .as_ref()
