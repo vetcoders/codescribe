@@ -14,6 +14,8 @@ enum IntercomCardContent: Equatable, Sendable {
 /// Room for the shared rich message renderer after agent identity/context.
 struct IntercomCompactPreviewLayout: Equatable {
   let height: CGFloat
+  let showsComposer: Bool
+  let composerEditorHeightLimit: CGFloat
 }
 
 struct IntercomHeaderContent: Equatable {
@@ -170,6 +172,8 @@ struct IntercomContentMetrics: Equatable {
 
   /// Identity and execution context come first. Only a later, larger card
   /// has room for a route label and at least three lines of rich message body.
+  /// The shared composer appears only when its bounded editor and controls
+  /// also fit, leaving that reading area above the pinned input.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
@@ -185,11 +189,17 @@ struct IntercomContentMetrics: Equatable {
       - contextHeight
     let minimum = 3 * lineHeight + metadataLine + 12
     guard available >= minimum else { return nil }
-    return IntercomCompactPreviewLayout(height: available)
+    let editorHeightLimit = 28 * scale
+    let composerHeight =
+      max(editorHeightLimit, ComposerControlMetrics.hitTargetSize)
+      + 2 * ComposerControlMetrics.verticalPadding + 14
+    return IntercomCompactPreviewLayout(
+      height: available, showsComposer: available >= minimum + composerHeight,
+      composerEditorHeightLimit: editorHeightLimit)
   }
 
   /// A card stretches with the gesture, from one row up to the space below the
-  /// header, revealing context and a read-only message preview (Maciej,
+  /// header, revealing context, the shared conversation and then its composer (Maciej,
   /// 2026-10-23: the stretched tiles of Codex's tiers "to było w sumie fajne",
   /// while the one-or-two-row snap that replaced them "nie robi nic"). The
   /// controls remain beside the name and yield slots as the width shrinks.

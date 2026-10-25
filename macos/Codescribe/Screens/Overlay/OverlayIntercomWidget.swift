@@ -1714,7 +1714,11 @@ private struct OverlayIntercomCard: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       } else if let preview, let conversation {
-        OverlayIntercomMessagePreview(conversation: conversation, palette: palette)
+        OverlayIntercomConversationBody(
+          state: state, conversation: conversation, palette: palette, focusRevision: 0,
+          presentation: .intercom, showsComposer: preview.showsComposer,
+          messageWindowLimit: 8, composerEditorHeightLimit: preview.composerEditorHeightLimit
+        )
         .frame(height: preview.height)
       }
     }
@@ -2272,9 +2276,8 @@ private struct OverlayDetachedRosterValue: ViewModifier {
   }
 }
 
-/// A compact card previews the latest committed message through the shared
-/// rich-body renderer. It does not mount a second conversation/composer or
-/// squeeze delivery, reply and copy toolbars into the remaining width.
+/// A passive hover previews the latest committed message through the shared
+/// rich-body renderer without mounting an editable conversation.
 private struct OverlayIntercomMessagePreview: View {
   let conversation: OverlayConversation
   let palette: OverlayAppearancePalette
