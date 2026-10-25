@@ -993,6 +993,8 @@ struct AttachmentPreviewSheet: View {
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
+            .lineLimit(2)
+            .truncationMode(.middle)
           Text(attachment.type)
             .font(CSFont.mono(10.5, .medium))
             .foregroundStyle(CSColor.textTertiary)
@@ -1000,7 +1002,10 @@ struct AttachmentPreviewSheet: View {
         Spacer(minLength: 8)
         Button("Close") { dismiss() }
           .keyboardShortcut(.cancelAction)
+          .accessibilityIdentifier("attachment-preview-close")
       }
+      .fixedSize(horizontal: false, vertical: true)
+      .layoutPriority(1)
 
       Group {
         if let image {
@@ -1018,7 +1023,10 @@ struct AttachmentPreviewSheet: View {
               // pinned (Founder, 2026-10-18).
               .csAutohidingScrollers(.includesHorizontal)
           }
-          .frame(minHeight: 280, maxHeight: 480)
+          // The image yields before the title, Close and file actions. A
+          // 280 pt minimum pushed those controls outside small overlay sheets.
+          .frame(minHeight: 120, idealHeight: 280, maxHeight: 480)
+          .layoutPriority(-1)
           .background(Color.primary.opacity(0.04))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
@@ -1101,12 +1109,15 @@ struct AttachmentPreviewSheet: View {
         }
         .disabled(!fileExists)
         .keyboardShortcut(.defaultAction)
+        .accessibilityIdentifier("attachment-preview-open")
 
         Spacer(minLength: 0)
       }
+      .fixedSize(horizontal: false, vertical: true)
+      .layoutPriority(1)
     }
     .padding(18)
-    .frame(minWidth: 520, idealWidth: 640, minHeight: 420)
+    .frame(minWidth: 520, idealWidth: 640, minHeight: 420, idealHeight: 640)
     .onAppear {
       if image == nil, let url = attachment.url, fileExists {
         image = NSImage(contentsOf: url)
