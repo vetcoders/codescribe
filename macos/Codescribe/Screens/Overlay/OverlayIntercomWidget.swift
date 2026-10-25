@@ -452,8 +452,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let current = intercomConversation(state: state, digit: instance.digit)
       .map { instance.matches($0) } == true
     let point = point ?? NSEvent.mouseLocation
-    let targets = ([header].compactMap { $0 } + Array(cards.values))
-      .filter(\.isPresented)
+    // The header uses native ordering, not the cards' setPresented lifecycle.
+    // It remains a drop target when the group is folded or its last row left.
+    let targets = [header].compactMap { $0 }.filter(\.isVisible)
+      + cards.values.filter(\.isPresented)
     if current && targets.contains(where: { $0.frame.contains(point) }) {
       closeInstance(drag.id)
     } else {
