@@ -7,33 +7,21 @@ import XCTest
 
 @MainActor
 final class OverlayIntercomConversationAdmissionTests: XCTestCase {
-  func testComposerAppearsAfterReadablePreviewAtSupportedTextScales() throws {
-    for scale in [CGFloat(0.8), 1, 1.6] {
-      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: scale)
-      let width = max(metrics.actionsWidth, 600 * scale)
-      let layouts = stride(from: CGFloat(1), through: 800 * scale, by: 1).compactMap {
-        metrics.compactPreviewLayout(width: width, cardHeight: $0)
-      }
-      let first = try XCTUnwrap(layouts.first)
-      XCTAssertFalse(first.showsComposer, "Reading space comes before an editor")
-      let withComposer = try XCTUnwrap(layouts.first(where: \.showsComposer))
-      XCTAssertGreaterThan(withComposer.height, first.height)
-      XCTAssertEqual(withComposer.composerEditorHeightLimit, 28 * scale)
-      XCTAssertTrue(layouts.suffix(20).allSatisfy(\.showsComposer))
-    }
-  }
-
-  func testLargeCompactCardRendersConversationAndSharedDraftWithoutSending() throws {
+  func testClosedCardRendersOnlyLatestMessageWithoutMountingDraftEditor() throws {
     for scale in [CGFloat(0.8), 1, 1.6] { try renderCard(scale: scale) }
   }
 
-  private func renderCard(scale: CGFloat) throws {
+  func testOpenedCardKeepsFullConversationAndSharedDraft() throws {
+    try renderCard(scale: 1, expanded: true)
+  }
+
+  private func renderCard(scale: CGFloat, expanded: Bool = false) throws {
     let identity = AgentPlaybackIdentity(provider: "codex", session: "compact-admission", bus: "/fixture/bus")
     let owner = try XCTUnwrap(OverlayConversationOwner(row: [
       "provider": "codex", "provider_session_id": identity.session,
       "lease_id": identity.leaseID, "channel": "3", "name": "Agent",
     ]))
-    let messages = ["Earlier amber sentence", "Latest olive sentence"].enumerated().map { index, text in
+    let messages = ["Earlier amber sentence", "**Latest olive sentence**"].enumerated().map { index, text in
       OverlayConversationMessage(
         id: "reply-\(index)", kind: .reply, text: text, order: UInt64(index),
         emittedAt: "2026-10-25T18:00:00Z", owner: owner, recipients: [], deliveryID: nil,
@@ -61,7 +49,7 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     let width = 600 * scale
     let height = 500 * scale
     let host = NSHostingView(rootView: controller.offscreenCard(
-      .init(digit: "3", conversation: conversation), width: width, height: height, scale: scale)
+      .init(digit: "3", conversation: conversation), width: width, height: height, scale: scale, expanded: expanded)
       .environment(\.csTextScale, scale).environment(\.colorScheme, .dark)
       .symbolEffectsRemoved().transaction { $0.disablesAnimations = true }
       .background(OverlayAppearancePalette.dark.desktopBackground.color))
@@ -77,17 +65,17 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
     host.layoutSubtreeIfNeeded()
     let editors = descendants(host).compactMap { $0 as? NSTextView }.filter(\.isEditable)
-    XCTAssertTrue(editors.contains { $0.string == "Preserve shared draft" }, "Use the shared native editor")
-    for editor in editors {
-      let rect = editor.convert(editor.bounds, to: host)
-      XCTAssertGreaterThan(rect.height, 0)
-      XCTAssertLessThanOrEqual(rect.maxY, host.bounds.maxY + 1)
+    if expanded {
+      XCTAssertEqual(editors.count, 1)
+      XCTAssertEqual(editors.first?.string, "Preserve shared draft")
+    } else {
+      XCTAssertTrue(editors.isEmpty, "A closed card is a passive preview, even when tall")
     }
     let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
     host.cacheDisplay(in: host.bounds, to: bitmap)
     let cgImage = try XCTUnwrap(bitmap.cgImage)
     let attachment = XCTAttachment(image: NSImage(cgImage: cgImage, size: host.bounds.size))
-    attachment.name = "Compact-conversation-scale-\(scale)"
+    attachment.name = "Closed-rich-preview-scale-\(scale)"
     attachment.lifetime = .keepAlways
     add(attachment)
     let request = VNRecognizeTextRequest()
@@ -95,8 +83,10 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: cgImage).perform([request])
     let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-    XCTAssertTrue(text.localizedCaseInsensitiveContains("Earlier amber sentence"), text)
+    XCTAssertEqual(text.localizedCaseInsensitiveContains("Earlier amber sentence"), expanded, text)
+    XCTAssertFalse(text.contains("**"), "Markdown must render, not expose its source")
     XCTAssertTrue(text.localizedCaseInsensitiveContains("Latest olive sentence"), text)
+    XCTAssertTrue(text.contains(String(localized: "You")), "The route must identify the recipient: \(text)")
     XCTAssertEqual(state.conversationDrafts[conversation.id], "Preserve shared draft")
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertTrue(state.pendingTextMessages.isEmpty)

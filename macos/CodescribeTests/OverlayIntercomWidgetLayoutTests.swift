@@ -283,11 +283,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         pendingViews.append(contentsOf: view.subviews)
       }
       if !expanded {
-        if hover || height < 220 {
-          XCTAssertTrue(editors.isEmpty, "Hover and short cards reserve their space for reading")
-        } else {
-          XCTAssertEqual(editors.count, 1, "A tall card mounts one shared draft composer")
-        }
+        XCTAssertTrue(editors.isEmpty, "Closed cards and hover previews never mount a composer")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
