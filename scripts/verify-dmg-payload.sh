@@ -64,6 +64,7 @@ readonly MARKER_SILERO='silero'
 DMG=""
 VARIANT=""
 VERSION=""
+EXPECTED_CHANNEL="stable"
 SKIP_NOTARY=0
 EXPECT_EMBEDDER=0
 MOUNT_POINT=""
@@ -79,6 +80,7 @@ Fail-closed payload gate for Codescribe release DMGs.
   <dmg>               Path to Codescribe_*.dmg
   --variant slim|full slim = Silero embedded; full = +Whisper embedded
   --version X.Y.Z     Expected CFBundleShortVersionString
+  --channel stable|nightly  Expected build channel (default: stable)
   --skip-notary       Skip stapler + spctl (pre-notarization smoke)
   --expect-embedder   Require the MiniLM app resource (builds using --bundle-embedder)
 
@@ -135,6 +137,10 @@ while [[ $# -gt 0 ]]; do
       VERSION="${2:-}"
       shift 2
       ;;
+    --channel)
+      EXPECTED_CHANNEL="${2:-}"
+      shift 2
+      ;;
     --skip-notary)
       SKIP_NOTARY=1
       shift
@@ -173,6 +179,11 @@ case "$VARIANT" in
     echo "ERROR: --variant must be slim or full (got: $VARIANT)" >&2
     exit 2
     ;;
+esac
+
+case "$EXPECTED_CHANNEL" in
+  stable|nightly) ;;
+  *) echo "ERROR: --channel must be stable or nightly" >&2; exit 2;;
 esac
 
 if [[ ! -f "$DMG" ]]; then
@@ -346,10 +357,10 @@ if [[ -n "${APP_PATH:-}" ]]; then
     BUILD_CHANNEL="${BUILD_CHANNEL#"${BUILD_CHANNEL%%[![:space:]]*}"}"
     BUILD_CHANNEL="${BUILD_CHANNEL%"${BUILD_CHANNEL##*[![:space:]]}"}"
     BUILD_CHANNEL=$(printf '%s' "$BUILD_CHANNEL" | tr '[:upper:]' '[:lower:]')
-    if [[ "$BUILD_CHANNEL" == "nightly" ]]; then
-      fail "CSBuildChannel is nightly — the production DMG must be stable"
+    if [[ "$BUILD_CHANNEL" == "$EXPECTED_CHANNEL" ]]; then
+      ok "CSBuildChannel matches expected $EXPECTED_CHANNEL"
     else
-      ok "CSBuildChannel is not nightly"
+      fail "CSBuildChannel $BUILD_CHANNEL does not match expected $EXPECTED_CHANNEL"
     fi
   fi
 

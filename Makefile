@@ -11,7 +11,7 @@
         test-engine test-engine-apple test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
-        dmg dmg-signed release-standard release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
+        dmg dmg-signed release-standard release-nightly release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks site-dev
 
 SHELL := /bin/bash
@@ -1487,7 +1487,12 @@ release-standard: dist-preflight-signed
 	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
 	 ./scripts/build-dmg.sh --sign --notarize --receipt "$$receipt_dir/artifact" --receipt-run "$$run_id"; \
-	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" slim
+	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" slim "$${CODESCRIBE_BUILD_CHANNEL:-stable}"
+
+# The same signed/notarized slim producer, with an explicit Nightly identity.
+# Publication is a website operation; this target creates no tag or GH release.
+release-nightly: export CODESCRIBE_BUILD_CHANNEL=nightly
+release-nightly: release-standard
 
 # Install the already-built Release .app without re-signing. Re-signing with
 # Apple Development (install-app) drops the notarization ticket and gives the
@@ -1503,19 +1508,26 @@ install-app-release:
 		echo "ERROR: Release app is not strictly signed. Refusing to install it."; \
 		exit 1; \
 	fi; \
-	echo "Stopping running $(CODESCRIBE_APP_NAME) (if any) ..."; \
-	pkill -x "$(CODESCRIBE_APP_NAME)" 2>/dev/null || true; \
-	sleep 1; \
+	if ! xcrun stapler validate "$$APP_SRC" >/dev/null 2>&1; then \
+		echo "ERROR: Release app is not stapled. Refusing to install it."; \
+		exit 1; \
+	fi; \
 	echo "Installing stapled Release app to $$DEST (no re-sign) ..."; \
 	mkdir -p /Applications; \
 	rsync -a --delete "$$APP_SRC/" "$$DEST/"; \
+	codeSignExit=0; codesign --verify --deep --strict "$$DEST" || codeSignExit=$$?; \
+	if [ "$$codeSignExit" != "0" ]; then exit "$$codeSignExit"; fi; \
 	echo "Installed: $$DEST"; \
 	defaults read "$$DEST/Contents/Info" CFBundleShortVersionString; \
 	defaults read "$$DEST/Contents/Info" CSBuildCommit; \
-	if stapler validate "$$DEST" >/dev/null 2>&1; then \
+	if xcrun stapler validate "$$DEST" >/dev/null 2>&1; then \
 		echo "staple: valid"; \
 	else \
-		echo "WARNING: staple not valid yet — run make release-standard (it notarizes) before treating this as everyday-stable."; \
+		echo "ERROR: Installed notarization staple is invalid."; \
+		exit 1; \
+	fi
+	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \
+		$(RESTART_IF_IDLE) || echo "Restart not armed; run 'make restart-if-idle' at an idle moment."; \
 	fi
 
 # Everyday stable cut: the slim public DMG and the same stapled .app in
@@ -1536,7 +1548,7 @@ release-full: dist-preflight-signed ensure-models
 	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
 	 ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full --receipt "$$receipt_dir/artifact" --receipt-run "$$run_id"; \
-	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" full
+	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" full "$${CODESCRIBE_BUILD_CHANNEL:-stable}"
 
 # Both public variants: slim first, then fat _full.
 release-dmgs: release-standard release-full
@@ -1548,7 +1560,7 @@ verify-dmg:
 		echo "Usage: make verify-dmg DMG=path VARIANT=slim|full VERSION=X.Y.Z [SKIP_NOTARY=1]"; \
 		exit 2; \
 	fi
-	@./scripts/verify-dmg-payload.sh "$(DMG)" --variant "$(VARIANT)" --version "$(VERSION)" $(if $(filter 1,$(SKIP_NOTARY)),--skip-notary,)
+	@./scripts/verify-dmg-payload.sh "$(DMG)" --variant "$(VARIANT)" --version "$(VERSION)" --channel "$(if $(EXPECTED_CHANNEL),$(EXPECTED_CHANNEL),stable)" $(if $(filter 1,$(SKIP_NOTARY)),--skip-notary,)
 
 notarize:
 	@if ls Codescribe_*.dmg 1> /dev/null 2>&1; then \

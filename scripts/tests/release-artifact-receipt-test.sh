@@ -23,7 +23,7 @@ fixture() {
   # Extract the actual recipes, not a second test-only consumer. Exclude the
   # main Makefile's parse-time signing-key discovery and unrelated prerequisites.
   printf 'SHELL := /bin/bash\ndist-preflight-signed ensure-models:\n\t@:\n' > "$FIXTURE/Makefile"
-  awk '/^release-standard:|^release-full:/ {copy=1} copy && /^$/ {copy=0} copy {print}' \
+  awk '/^release-standard:|^release-full:|^release-nightly:/ {copy=1} copy && /^$/ {copy=0} copy {print}' \
     "$ROOT/Makefile" >> "$FIXTURE/Makefile"
   cat > "$FIXTURE/bin/git" <<'SH'
 #!/bin/bash
@@ -122,6 +122,7 @@ invoke() {
   set +e
   env -i PATH="$FIXTURE/bin:/usr/bin:/bin" FIXTURE="$FIXTURE" \
     TMPDIR="$FIXTURE/tmp" SCENARIO="${SCENARIO:-}" VERIFIER_RC="${VERIFIER_RC:-0}" \
+    CODESCRIBE_BUILD_CHANNEL="${TEST_BUILD_CHANNEL:-stable}" \
     "$REAL_MAKE" --no-print-directory -C "$FIXTURE" "$target" \
     CODESCRIBE_DIST_CODESIGN_IDENTITY=fixture-identity \
     CODESCRIBE_DIST_LICENSE_KEY=fixture-key CODESCRIBE_DIST_SPARKLE_KEY=fixture-key \
@@ -131,7 +132,7 @@ invoke() {
 }
 
 success() {
-  local target=$1 variant=$2
+  local target=$1 variant=$2 channel=${3:-stable}
   SCENARIO="" VERIFIER_RC=0
   invoke "$target"
   [[ "$RESULT" -eq 0 ]] || { cat "$FIXTURE/output"; fail "$target exit $RESULT"; }
@@ -139,7 +140,7 @@ success() {
   artifact=$(cat "$FIXTURE/produced-path")
   [[ "$artifact" == *'Codescribe_1.2.3-'*'-aaaaaaaaa'*'.dmg' ]] || fail 'producer did not freeze identity'
   [[ $(cat "$FIXTURE/head") == bbbbbbbbb ]] || fail 'HEAD race not exercised'
-  printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 > "$FIXTURE/expected"
+  printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 --channel "$channel" > "$FIXTURE/expected"
   cmp "$FIXTURE/expected" "$FIXTURE/verifier-args" || fail 'verifier argument contract'
   [[ ! -e $(cat "$FIXTURE/receipt-path") ]] || fail 'private receipt not cleaned'
 }
@@ -152,7 +153,20 @@ for variant in slim full; do
   echo "PASS: $variant exact artifact/version despite HEAD drift; spaces; post-notary hash"
 done
 
-negative_count=0
+fixture "nightly"
+success release-nightly slim nightly
+[[ $(cat "$FIXTURE/produced-path") == *_nightly.dmg ]] || fail 'nightly artifact name is not distinct'
+echo "PASS: Nightly uses the same notarized producer and verifies its explicit channel"
+
+fixture "invalid-channel"
+TEST_BUILD_CHANNEL=unsupported
+SCENARIO="" VERIFIER_RC=0
+invoke release-standard
+[[ "$RESULT" -ne 0 && ! -e "$FIXTURE/produced-path" && ! -e "$FIXTURE/verifier-args" ]] || fail 'unsupported channel reached artifact production'
+unset TEST_BUILD_CHANNEL
+echo "PASS: unsupported channel refused before build and payload acceptance"
+
+negative_count=1
 for SCENARIO in build-failure dmg-failure sign-failure notary-failure missing malformed wrong-run wrong-variant wrong-version extra unterminated nul shell-data stale changed-artifact; do
   scenario=$SCENARIO
   fixture "$scenario"
@@ -190,4 +204,4 @@ set -e
 [[ "$helper_rc" -eq 47 ]] || fail "verifier exit became $helper_rc"
 negative_count=$((negative_count + 1))
 echo 'PASS: actual target fails and helper preserves verifier exit 47'
-echo "SCENARIO_CENSUS positive=2 negative=$negative_count"
+echo "SCENARIO_CENSUS positive=3 negative=$negative_count"
