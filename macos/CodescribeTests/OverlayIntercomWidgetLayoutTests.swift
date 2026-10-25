@@ -96,7 +96,17 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   }
 
   @MainActor
-  func testProductionCardPhaseReviewSheetsPreserveIdentityAndConversationState() throws {
+  func testProductionCardPhaseReviewSheetInLightAppearance() throws {
+    try reviewProductionCardPhases(dark: false)
+  }
+
+  @MainActor
+  func testProductionCardPhaseReviewSheetInDarkAppearance() throws {
+    try reviewProductionCardPhases(dark: true)
+  }
+
+  @MainActor
+  private func reviewProductionCardPhases(dark: Bool) throws {
     func render(
       channel: String, text: String?, height: CGFloat, dark: Bool,
       expanded: Bool = false, hover: Bool = false
@@ -239,7 +249,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       print(agent)
       ```
       """
-    for dark in [false, true] {
+    do {
       // Native control hover and backdrop compositing can change between hosts.
       // Preserve both review images rather than treating a pixel count as proof
       // of absent content. The phase policy above pins the metadata-only range.
