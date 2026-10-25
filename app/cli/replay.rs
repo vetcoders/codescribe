@@ -18,6 +18,7 @@ use codescribe_core::audio::streaming_recorder::{ReplayInputReceipt, ReplayScena
 use codescribe_core::config::Config;
 use codescribe_core::pipeline::replay_card::{self, ReplayBuild};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::controller::production_replay::{RecordedTakeRun, replay_recorded_take};
 
@@ -76,6 +77,8 @@ struct ReplayerBuild {
 #[derive(Serialize)]
 struct ReplayReceipt {
     schema: &'static str,
+    audio_sha256: String,
+    completed_at_unix_ms: u128,
     recorded_session: Option<String>,
     card: bool,
     recorded_build: Option<ReplayBuild>,
@@ -137,6 +140,13 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         .map(|recorded| same_commit(recorded, replayer_build.commit));
     let receipt = ReplayReceipt {
         schema: REPLAY_RECEIPT_SCHEMA,
+        audio_sha256: Sha256::digest(std::fs::read(&audio)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        completed_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
         card: card.is_some(),
         recorded_session: session,
         recorded_build,
@@ -152,8 +162,15 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         runs_agree: runs.windows(2).all(|pair| pair[0].text == pair[1].text),
         runs,
     };
+    // Publish only complete receipts; the Lab discovers these without rerunning STT.
+    let encoded = serde_json::to_vec_pretty(&receipt)?;
+    for run in &receipt.runs {
+        let pending = run.evidence_dir.join("replay-receipt.json.pending");
+        std::fs::write(&pending, &encoded)?;
+        std::fs::rename(pending, run.evidence_dir.join("replay-receipt.json"))?;
+    }
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&receipt)?);
+        println!("{}", String::from_utf8(encoded)?);
         return Ok(());
     }
     eprintln!(

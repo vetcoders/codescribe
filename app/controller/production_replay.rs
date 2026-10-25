@@ -303,7 +303,7 @@ pub struct RecordedTakeRun {
     pub elapsed_seconds: f64,
     /// Engine warning codes, without their messages.
     pub warning_codes: BTreeSet<String>,
-    /// `replays/<session>/` in the data dir: the run's private bus and the
+    /// `replays/<session>/<measurement>/` in the data dir: the run's private bus and the
     /// sidecars its session wrote (trail, slots, replay card), comparable
     /// with the recorded take's own.
     pub evidence_dir: PathBuf,
@@ -567,11 +567,10 @@ impl ReplayEvidence {
             .write(true)
             .open(replays.join(format!("{session_id}.lock")))?;
         lock.lock()?;
-        let dir = replays.join(session_id);
-        match std::fs::remove_dir_all(&dir) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+        // Repeating a measurement must preserve earlier builds and scenarios.
+        let dir = replays
+            .join(session_id)
+            .join(uuid::Uuid::new_v4().to_string());
         for leftover in session_sidecars(root, session_id)? {
             std::fs::remove_file(leftover)?;
         }
@@ -636,6 +635,10 @@ mod tests {
             "a run starts from nothing"
         );
         assert!(!sessions.join(format!("{session}.trail.jsonl")).exists());
+        assert_eq!(
+            std::fs::read_to_string(stale.join("transcript-events.jsonl")).unwrap(),
+            "old run\n"
+        );
 
         for name in [
             format!("{session}.trail.jsonl"),
@@ -670,6 +673,21 @@ mod tests {
             sessions
                 .join("replay-agent-channel-3-0123456789-r10.trail.jsonl")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn repeating_a_replay_preserves_previous_measurements() {
+        let root = tempfile::tempdir().unwrap();
+        let first = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        let previous = first.dir.clone();
+        std::fs::write(previous.join("replay-receipt.json"), "first build").unwrap();
+        drop(first);
+        let second = ReplayEvidence::open(root.path(), "replay-take-r1").unwrap();
+        assert_ne!(previous, second.dir);
+        assert_eq!(
+            std::fs::read_to_string(previous.join("replay-receipt.json")).unwrap(),
+            "first build"
         );
     }
 
