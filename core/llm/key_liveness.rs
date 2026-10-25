@@ -746,7 +746,7 @@ mod tests {
         );
     }
 
-    /// 429 alone is treated as exhausted quota even without a body string.
+    /// A 429 is a usage limit; it does not distinguish billing from rate limits.
     #[test]
     fn classifies_429_without_body_as_no_quota() {
         assert_eq!(
@@ -767,7 +767,7 @@ mod tests {
         );
     }
 
-    /// 402 and billing_error body both mean valid key without spendable credit.
+    /// A billing limit does not establish that other requests will authenticate.
     #[test]
     fn classifies_402_billing_error_as_no_quota() {
         assert_eq!(
@@ -779,31 +779,18 @@ mod tests {
         );
     }
 
-    /// Request-level 400 (model missing) still proves the key authenticated.
+    /// A rejected model or endpoint is not evidence of credential acceptance.
     #[test]
-    fn classifies_400_model_not_found_as_ok() {
-        // A 400 with a request-level error (not quota/auth) means the server
-        // accepted the key and processed the request: the key is live.
-        assert_eq!(
-            classify_probe_response(
-                StatusCode::BAD_REQUEST,
-                r#"{"error":{"code":"model_not_found","message":"The model does not exist"}}"#
-            ),
-            ApiKeyLivenessStatus::Ok
-        );
-    }
-
-    /// Other 4xx after auth are Ok — probe shape may be wrong, key is live.
-    #[test]
-    fn classifies_other_client_errors_as_ok() {
-        assert_eq!(
-            classify_probe_response(StatusCode::BAD_REQUEST, "bad request"),
-            ApiKeyLivenessStatus::Ok
-        );
-        assert_eq!(
-            classify_probe_response(StatusCode::NOT_FOUND, "no such endpoint"),
-            ApiKeyLivenessStatus::Ok
-        );
+    fn rejected_requests_never_report_a_verified_key() {
+        for status in [400, 404, 405, 409, 422] {
+            for body in ["", "bad request", r#"{"error":{"code":"model_not_found"}}"#] {
+                assert_eq!(
+                    classify_probe_response(StatusCode::from_u16(status).unwrap(), body),
+                    ApiKeyLivenessStatus::Rejected,
+                    "HTTP {status}: {body}"
+                );
+            }
+        }
     }
 
     /// 5xx stays Network/unknown — key validity cannot be asserted.

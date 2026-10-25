@@ -119,4 +119,100 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
       }
     }
   }
+  func testIntercomMaterialKeepsCanvasDefaultAndHonorsOpaqueAccessibility() throws {
+    for palette in [OverlayAppearancePalette.light, .dark] {
+      let originalAlpha: CGFloat = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+      XCTAssertEqual(OverlayCanvasBackdrop.glassVeil(palette).alphaComponent, originalAlpha, accuracy: 0.001)
+      XCTAssertLessThan(OverlayCanvasBackdrop.glassVeil(palette, profile: .intercom).alphaComponent, 0.25)
+      for opaque in [false, true] {
+        let host = NSHostingView(rootView: OverlayCanvasBackdrop(
+          palette: palette, reduceTransparency: opaque, profile: .intercom)
+          .frame(width: 300, height: 100))
+        host.frame.size = NSSize(width: 300, height: 100)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        func hasMaterial(_ view: NSView) -> Bool {
+          if view is NSVisualEffectView { return true }
+          if #available(macOS 26.0, *), view is NSGlassEffectView { return true }
+          return view.subviews.contains { hasMaterial($0) }
+        }
+        XCTAssertEqual(hasMaterial(host), !opaque, "Opaque accessibility must bypass the native material")
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "intercom-material-\(palette.appearance)-opaque-\(opaque)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+      let highContrast = NSHostingView(rootView: OverlayCanvasBackdrop(
+        palette: palette, reduceTransparency: false, profile: .intercom)
+        .environment(\.csContrastOverride, .increased).frame(width: 300, height: 100))
+      highContrast.frame.size = NSSize(width: 300, height: 100)
+      highContrast.layoutSubtreeIfNeeded()
+      func nativeGlassCount(_ view: NSView) -> Int {
+        let native: Int
+        if #available(macOS 26.0, *) { native = view is NSGlassEffectView ? 1 : 0 }
+        else { native = view is NSVisualEffectView ? 1 : 0 }
+        return native + view.subviews.map { nativeGlassCount($0) }.reduce(0, +)
+      }
+      XCTAssertEqual(nativeGlassCount(highContrast), 0)
+    }
+  }
+
+  func testNativeHeaderClickFoldsOnceWhileDraggingDoesNotFold() throws {
+    let suite = "CodescribeTests.widget-header-gesture.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let generation = state.captureGeneration
+    state.publishConversationText = { _, _, _ in XCTFail("Header gestures must not send") }
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    let host = NSHostingView(rootView: controller.offscreenHeader(width: 400)
+      .frame(width: 400, height: 30))
+    let panel = IntercomGestureWitnessPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 30),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    panel.contentView = host
+    defer { panel.contentView = nil; panel.close() }
+    host.frame.size = NSSize(width: 400, height: 30)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    func descendants(_ view: NSView) -> [NSView] {
+      [view] + view.subviews.flatMap { descendants($0) }
+    }
+    let drag = try XCTUnwrap(descendants(host).first {
+      String(describing: type(of: $0)).contains("OverlayIntercomDragView")
+    })
+    func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
+      try XCTUnwrap(NSEvent.mouseEvent(
+        with: type, location: NSPoint(x: x, y: 15), modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+    let initial = controller.presentation.folded
+    drag.mouseDown(with: try event(.leftMouseDown, x: 150))
+    drag.mouseUp(with: try event(.leftMouseUp, x: 150))
+    XCTAssertEqual(controller.presentation.folded, !initial)
+    drag.mouseDown(with: try event(.leftMouseDown, x: 150))
+    drag.mouseUp(with: try event(.leftMouseUp, x: 150))
+    XCTAssertEqual(controller.presentation.folded, initial)
+    drag.mouseDown(with: try event(.leftMouseDown, x: 150))
+    drag.mouseDragged(with: try event(.leftMouseDragged, x: 180))
+    drag.mouseUp(with: try event(.leftMouseUp, x: 180))
+    XCTAssertEqual(panel.dragCalls, 1, "One native drag per gesture")
+    XCTAssertEqual(controller.presentation.folded, initial, "Dragging must not also collapse")
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+  }
+
+}
+
+@MainActor
+private final class IntercomGestureWitnessPanel: NSPanel {
+  var dragCalls = 0
+  override func performDrag(with event: NSEvent) { dragCalls += 1 }
 }

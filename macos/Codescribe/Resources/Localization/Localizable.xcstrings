@@ -2207,7 +2207,7 @@
       }
     },
     "Account saved" : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "comment" : "Lane auth: stored account identity\nSetup Agent account row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -5869,39 +5869,6 @@
         }
       }
     },
-    "Connected" : {
-      "comment" : "Setup Agent account row status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połączono"
-          }
-        }
-      }
-    },
-    "Connected account" : {
-      "comment" : "Lane auth: signed-in account",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połączone konto"
-          }
-        }
-      }
-    },
-    "Connected as %@" : {
-      "comment" : "Provider account row; the placeholder is the signed-in email",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Połączono jako %@"
-          }
-        }
-      }
-    },
     "Connection not tested" : {
       "localizations" : {
         "pl" : {
@@ -6058,16 +6025,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szerokość rozmowy"
-          }
-        }
-      }
-    },
-    "Conversations" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Rozmowy"
           }
         }
       }
@@ -7198,6 +7155,16 @@
         }
       }
     },
+    "Detached" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odłączone"
+          }
+        }
+      }
+    },
     "Detailed settings" : {
       "localizations" : {
         "pl" : {
@@ -8182,17 +8149,6 @@
         }
       }
     },
-    "Failed; see the log" : {
-      "comment" : "Formatting test verdict",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Test nie powiódł się. Szczegóły w logu"
-          }
-        }
-      }
-    },
     "Favorite conversation" : {
       "localizations" : {
         "pl" : {
@@ -8601,7 +8557,7 @@
       }
     },
     "Formatting failed" : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "comment" : "Formatting test verdict",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -10384,17 +10340,6 @@
         }
       }
     },
-    "Local power is selected, so setup finishes once this model is installed." : {
-      "comment" : "Local power is the engine name; setup waits for its Whisper model",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wybrano tryb lokalny, więc konfiguracja zakończy się po zainstalowaniu tego modelu."
-          }
-        }
-      }
-    },
     "Local process" : {
       "localizations" : {
         "pl" : {
@@ -10417,7 +10362,7 @@
       }
     },
     "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings." : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "comment" : "Explain the current local-model requirement without attributing an engine choice to the user",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -11895,16 +11840,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dla tego nagrania nie zapisano pomiaru pokrycia mowy."
-          }
-        }
-      }
-    },
-    "No credits (check billing)" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Brak środków na koncie (sprawdź płatności)"
           }
         }
       }
@@ -16136,7 +16071,7 @@
       }
     },
     "Saved" : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "comment" : "Setup API key row status",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16147,7 +16082,7 @@
       }
     },
     "Saved account: %@" : {
-      "comment" : "Provider readiness and onboarding requirement; source checkpoint 2026-10-25.",
+      "comment" : "Provider account row; the placeholder is the signed-in email",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16794,17 +16729,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Klucze usług"
-          }
-        }
-      }
-    },
-    "Set" : {
-      "comment" : "Setup API key row status",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ustawiono"
           }
         }
       }
@@ -18973,7 +18897,7 @@
       }
     },
     "The API key was rejected, so there is no model list. The account remains saved." : {
-      "comment" : "Model discovery key rejection does not verify a separately stored account.",
+      "comment" : "Model discovery failed while the provider account stays signed in",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -21233,17 +21157,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozmiar widżetu"
-          }
-        }
-      }
-    },
-    "Window layout" : {
-      "comment" : "Intercom menu: docking and visibility actions.",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Układ okien"
           }
         }
       }

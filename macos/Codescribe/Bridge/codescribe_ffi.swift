@@ -10765,6 +10765,17 @@ public struct CsFormattingProbe: Equatable, Hashable {
      * The reasoning effort sent; `None` when the request carried no field.
      */
     public var reasoning: String?
+    /**
+     * Fixed diagnostic code, never a raw provider error or response body.
+     */
+    public var failureCode: String?
+    public var httpStatus: UInt16?
+    /**
+     * Configured cloud route; excludes path, query and user information.
+     */
+    public var endpointHost: String?
+    public var credentialSource: String
+    public var checkedAtUnixMs: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -10774,7 +10785,13 @@ public struct CsFormattingProbe: Equatable, Hashable {
          */deadlineMs: UInt64, provider: String, model: String,
         /**
          * The reasoning effort sent; `None` when the request carried no field.
-         */reasoning: String?) {
+         */reasoning: String?,
+        /**
+         * Fixed diagnostic code, never a raw provider error or response body.
+         */failureCode: String?, httpStatus: UInt16?,
+        /**
+         * Configured cloud route; excludes path, query and user information.
+         */endpointHost: String?, credentialSource: String, checkedAtUnixMs: UInt64) {
         self.status = status
         self.input = input
         self.output = output
@@ -10783,6 +10800,11 @@ public struct CsFormattingProbe: Equatable, Hashable {
         self.provider = provider
         self.model = model
         self.reasoning = reasoning
+        self.failureCode = failureCode
+        self.httpStatus = httpStatus
+        self.endpointHost = endpointHost
+        self.credentialSource = credentialSource
+        self.checkedAtUnixMs = checkedAtUnixMs
     }
 
 
@@ -10806,7 +10828,12 @@ public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
                 deadlineMs: FfiConverterUInt64.read(from: &buf),
                 provider: FfiConverterString.read(from: &buf),
                 model: FfiConverterString.read(from: &buf),
-                reasoning: FfiConverterOptionString.read(from: &buf)
+                reasoning: FfiConverterOptionString.read(from: &buf),
+                failureCode: FfiConverterOptionString.read(from: &buf),
+                httpStatus: FfiConverterOptionUInt16.read(from: &buf),
+                endpointHost: FfiConverterOptionString.read(from: &buf),
+                credentialSource: FfiConverterString.read(from: &buf),
+                checkedAtUnixMs: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -10819,6 +10846,11 @@ public struct FfiConverterTypeCsFormattingProbe: FfiConverterRustBuffer {
         FfiConverterString.write(value.provider, into: &buf)
         FfiConverterString.write(value.model, into: &buf)
         FfiConverterOptionString.write(value.reasoning, into: &buf)
+        FfiConverterOptionString.write(value.failureCode, into: &buf)
+        FfiConverterOptionUInt16.write(value.httpStatus, into: &buf)
+        FfiConverterOptionString.write(value.endpointHost, into: &buf)
+        FfiConverterString.write(value.credentialSource, into: &buf)
+        FfiConverterUInt64.write(value.checkedAtUnixMs, into: &buf)
     }
 }
 
@@ -16621,9 +16653,8 @@ public func FfiConverterTypeCsAgentGestureInput_lower(_ value: CsAgentGestureInp
 public enum CsApiKeyProbeStatus: Equatable, Hashable {
 
     /**
-     * The key authenticated. Also covers a processed-but-rejected request
-     * (most 4xx other than auth/quota): the server got far enough to prove the
-     * credential is live, even when this particular probe body was refused.
+     * The provider accepted this probe. This does not verify another model,
+     * OAuth account or a later request.
      */
     case ok
     /**
@@ -16631,8 +16662,7 @@ public enum CsApiKeyProbeStatus: Equatable, Hashable {
      */
     case invalid
     /**
-     * The key authenticates but the account cannot pay for the call
-     * (429 / 402, or an explicit quota/billing marker in the body).
+     * A usage, quota or billing limit (429 / 402 or an explicit marker).
      */
     case noQuota
     /**
@@ -16648,6 +16678,10 @@ public enum CsApiKeyProbeStatus: Equatable, Hashable {
      * to no registered provider.
      */
     case unsupported
+    /**
+     * The request was rejected without establishing credential acceptance.
+     */
+    case rejected
 
 
 
@@ -16679,6 +16713,8 @@ public struct FfiConverterTypeCsApiKeyProbeStatus: FfiConverterRustBuffer {
 
         case 6: return .unsupported
 
+        case 7: return .rejected
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -16709,6 +16745,10 @@ public struct FfiConverterTypeCsApiKeyProbeStatus: FfiConverterRustBuffer {
 
         case .unsupported:
             writeInt(&buf, Int32(6))
+
+
+        case .rejected:
+            writeInt(&buf, Int32(7))
 
         }
     }

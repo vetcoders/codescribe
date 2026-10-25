@@ -58,7 +58,7 @@ final class OverlayAppWindowYieldTests: XCTestCase {
     }
     chat.acceptsConversationFocus = true
     let mainChatLevel = OverlayPresencePolicy.rest.windowLevel
-    XCTAssertLessThan(row.level.rawValue, mainChatLevel.rawValue)
+    XCTAssertGreaterThan(row.level.rawValue, mainChatLevel.rawValue)
     XCTAssertGreaterThan(chat.level.rawValue, row.level.rawValue)
     for _ in 0..<100 {
       row.yieldToAppWindow(nil)

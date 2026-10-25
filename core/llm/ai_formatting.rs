@@ -1305,7 +1305,10 @@ pub async fn probe_formatting(
         .unwrap_or(0);
     let account = lane.credential().account_auth();
     let endpoint = account
-        .then(|| lane.vendor().and_then(account_auth::account_responses_route))
+        .then(|| {
+            lane.vendor()
+                .and_then(account_auth::account_responses_route)
+        })
         .flatten()
         .map(|route| route.endpoint)
         .unwrap_or_else(|| lane.endpoint().to_string());
@@ -1413,37 +1416,49 @@ async fn format_text_with_status_channels_for_policy(
             None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
         };
         return match result {
-            Ok(text) => (AiFormatResult {
-                text,
-                reasoning_text: None,
-                status: AiFormatStatus::Applied,
-            }, None),
+            Ok(text) => (
+                AiFormatResult {
+                    text,
+                    reasoning_text: None,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            ),
             Err(error) => {
                 warn!(%error, "Max consultation did not produce an admitted answer");
-                (AiFormatResult {
-                    text: text.to_string(),
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                }, Some(FormattingFailure::ProviderResponse))
+                (
+                    AiFormatResult {
+                        text: text.to_string(),
+                        reasoning_text: None,
+                        status: AiFormatStatus::Failed,
+                    },
+                    Some(FormattingFailure::ProviderResponse),
+                )
             }
         };
     }
     if !assistive && policy == FormattingPolicy::Off {
-        return (AiFormatResult {
-            text: text.to_string(),
-            reasoning_text: None,
-            status: AiFormatStatus::Skipped,
-        }, None);
+        return (
+            AiFormatResult {
+                text: text.to_string(),
+                reasoning_text: None,
+                status: AiFormatStatus::Skipped,
+            },
+            None,
+        );
     }
 
     // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
     // so formatting anything shorter would create an unguarded rewrite zone.
     if should_skip_ai_formatting(text, assistive) {
-        return (AiFormatResult {
-            text: text.to_string(),
-            reasoning_text: None,
-            status: AiFormatStatus::Skipped,
-        }, None);
+        return (
+            AiFormatResult {
+                text: text.to_string(),
+                reasoning_text: None,
+                status: AiFormatStatus::Skipped,
+            },
+            None,
+        );
     }
 
     // Give the model the actual source. Whether speech repetition is an
@@ -1735,11 +1750,14 @@ async fn format_text_with_status_channels_for_policy(
 
             if assistive && is_refusal {
                 warn!("AI returned refusal response, returning raw input instead");
-                return (AiFormatResult {
-                    text: cleaned,
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                }, Some(FormattingFailure::ProviderResponse));
+                return (
+                    AiFormatResult {
+                        text: cleaned,
+                        reasoning_text: None,
+                        status: AiFormatStatus::Failed,
+                    },
+                    Some(FormattingFailure::ProviderResponse),
+                );
             }
 
             // Analyze result quality
@@ -1760,11 +1778,14 @@ async fn format_text_with_status_channels_for_policy(
                 // echo has no returned change to publish.
                 if formatted == cleaned {
                     warn!("Formatting mode returned AI No-op (raw echo)");
-                    return (AiFormatResult {
-                        text: cleaned,
-                        reasoning_text,
-                        status: AiFormatStatus::AiNoop,
-                    }, None);
+                    return (
+                        AiFormatResult {
+                            text: cleaned,
+                            reasoning_text,
+                            status: AiFormatStatus::AiNoop,
+                        },
+                        None,
+                    );
                 }
             }
 
@@ -1780,11 +1801,15 @@ async fn format_text_with_status_channels_for_policy(
                     } else {
                         AiFormatStatus::Applied
                     };
-                    return (AiFormatResult {
-                        text: formatted,
-                        reasoning_text,
-                        status,
-                    }, (status == AiFormatStatus::Failed).then_some(FormattingFailure::ProviderResponse));
+                    return (
+                        AiFormatResult {
+                            text: formatted,
+                            reasoning_text,
+                            status,
+                        },
+                        (status == AiFormatStatus::Failed)
+                            .then_some(FormattingFailure::ProviderResponse),
+                    );
                 }
             }
 
@@ -1805,11 +1830,14 @@ async fn format_text_with_status_channels_for_policy(
                 content_match,
                 raw_like
             );
-            return (AiFormatResult {
-                text: formatted,
-                reasoning_text,
-                status: AiFormatStatus::Applied,
-            }, None);
+            return (
+                AiFormatResult {
+                    text: formatted,
+                    reasoning_text,
+                    status: AiFormatStatus::Applied,
+                },
+                None,
+            );
         } else if !retryable_error {
             warn!("Provider returned deterministic empty-content error; skipping retries");
             break;
@@ -1819,11 +1847,14 @@ async fn format_text_with_status_channels_for_policy(
 
     // All providers failed
     warn!("All AI providers/retries failed, returning cleaned text");
-    (AiFormatResult {
-        text: cleaned,
-        reasoning_text: None,
-        status: AiFormatStatus::Failed,
-    }, Some(last_failure))
+    (
+        AiFormatResult {
+            text: cleaned,
+            reasoning_text: None,
+            status: AiFormatStatus::Failed,
+        },
+        Some(last_failure),
+    )
 }
 
 /// Perform exactly one provider attempt over the selected wire format.
@@ -3722,6 +3753,7 @@ mod tests {
         assert!(probe.elapsed < probe.deadline);
         assert_eq!(probe.reasoning, Some("none"));
         assert_eq!(probe.model, "mtplx-9b");
+        assert_eq!(probe.failure, None);
 
         let mut silent = mockito::Server::new_async().await;
         let _thinks = silent
@@ -3750,6 +3782,150 @@ mod tests {
         assert_eq!(probe.status, FormattingProbeStatus::TimedOut, "{probe:?}");
         assert_eq!(probe.input, "własny tekst do sformatowania przez model");
         assert!(probe.elapsed >= Duration::from_millis(1500));
+        assert_eq!(probe.failure, Some(FormattingFailure::Timeout));
+    }
+
+    /// Diagnostics expose a fixed classification even when an upstream error
+    /// includes credential or transcript material in its response body.
+    #[test]
+    fn formatting_failure_receipts_never_retain_provider_payloads() {
+        for status in [400, 401, 403, 404, 402, 429, 500, 503] {
+            for prefix in ["HTTP", "Anthropic HTTP"] {
+                let error = anyhow::anyhow!(
+                    "{prefix} {status} fixture bearer-secret transcript-secret?token=secret"
+                )
+                .context("selected formatting request failed");
+                let failure = FormattingFailure::from_error(&error);
+                assert_eq!(failure, FormattingFailure::Http(status));
+                assert_eq!(failure.http_status(), Some(status));
+                assert_eq!(failure.code(), "http");
+                assert!(!format!("{failure:?}").contains("secret"));
+            }
+        }
+        for (message, expected) in [
+            (
+                "account authentication failed: bearer-secret",
+                FormattingFailure::AccountAuthentication,
+            ),
+            (
+                "SSE initial response timeout: transcript-secret",
+                FormattingFailure::Timeout,
+            ),
+            ("SSE inter-chunk timeout", FormattingFailure::Timeout),
+            (
+                "SSE stream inter-chunk timeout after 30s (no data received)",
+                FormattingFailure::Timeout,
+            ),
+            ("SSE stream deadline exceeded", FormattingFailure::Timeout),
+            (
+                "unknown provider text bearer-secret",
+                FormattingFailure::ProviderResponse,
+            ),
+        ] {
+            let failure = FormattingFailure::from_error(&anyhow::anyhow!(message));
+            assert_eq!(failure, expected);
+            assert_eq!(failure.http_status(), None);
+            assert!(!format!("{failure:?}").contains("secret"));
+        }
+    }
+
+    /// Exercise the actual Settings request through the normal formatter,
+    /// rather than constructing a diagnostic result in the test.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_probe_keeps_http_failure_then_clears_it_on_success() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let _deadline = EnvGuard::set("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "3000");
+        let _retries = EnvGuard::set("CODESCRIBE_AI_MAX_RETRIES", "0");
+        let _selectors: Vec<_> = LANE_SELECTOR_ENV_KEYS
+            .iter()
+            .map(|key| EnvGuard::remove(key))
+            .collect();
+        let mut server = mockito::Server::new_async().await;
+        let rejected = server
+            .mock("POST", "/v1/responses")
+            .with_status(403)
+            .with_body(r#"{"error":{"message":"fixture bearer-secret transcript-secret"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "receipt-fixture",
+            None,
+        );
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let failed = probe_formatting(None, Some("pl"), &settings).await;
+        assert_eq!(failed.status, FormattingProbeStatus::Failed, "{failed:?}");
+        assert_eq!(failed.failure, Some(FormattingFailure::Http(403)));
+        assert_eq!(failed.endpoint_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(failed.credential_source, "api_key_or_key_optional");
+        assert!(failed.checked_at_unix_ms > 0);
+        assert!(!format!("{failed:?}").contains("bearer-secret"));
+        assert!(!format!("{failed:?}").contains("transcript-secret"));
+        rejected.assert_async().await;
+        rejected.remove_async().await;
+        let answered = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse_answer(
+                "Tak, jeśli nie stosuje się zaleceń dokumentacji.",
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+        crate::state::conversation::reset_conversation_for_mode(
+            crate::state::conversation::AiMode::Formatting,
+        );
+        let success = probe_formatting(None, Some("pl"), &settings).await;
+        assert_eq!(
+            success.status,
+            FormattingProbeStatus::Applied,
+            "{success:?}"
+        );
+        assert_eq!(success.failure, None);
+        assert!(success.checked_at_unix_ms >= failed.checked_at_unix_ms);
+        answered.assert_async().await;
+    }
+
+    /// Skipping a request must never manufacture cloud acceptance or a failure.
+    #[tokio::test]
+    #[serial]
+    async fn formatting_probe_skipped_paths_send_nothing_and_have_no_failure() {
+        let temp = tempfile::tempdir().expect("temp data dir");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", temp.path());
+        let _selectors: Vec<_> = LANE_SELECTOR_ENV_KEYS
+            .iter()
+            .map(|key| EnvGuard::remove(key))
+            .collect();
+        let mut server = mockito::Server::new_async().await;
+        let no_request = server
+            .mock("POST", "/v1/responses")
+            .expect(0)
+            .create_async()
+            .await;
+        let settings = custom_lanes_with(
+            &format!("{}/v1/responses", server.url()),
+            "skip-receipt-fixture",
+            None,
+        );
+        for policy in [FormattingPolicy::Off, FormattingPolicy::Max] {
+            let snapshot = settings.with_formatting_level(policy);
+            let probe = probe_formatting(None, None, &snapshot).await;
+            assert_eq!(probe.status, FormattingProbeStatus::Skipped);
+            assert_eq!(probe.failure, None);
+            assert_eq!(probe.elapsed, Duration::ZERO);
+            assert_eq!(probe.output, probe.input);
+        }
+        let short = probe_formatting(Some("test"), None, &settings).await;
+        assert_eq!(short.status, FormattingProbeStatus::Skipped);
+        assert_eq!(short.failure, None);
+        assert_eq!(short.output, "test");
+        no_request.assert_async().await;
     }
 
     fn sse_answer_with_id(id: &str, text: &str) -> String {

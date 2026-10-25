@@ -622,7 +622,12 @@ struct MockSettingsEngine: SettingsEngine {
       deadlineMs: 30_000,
       provider: "mtplx-local",
       model: settings.llmFormattingModel ?? "",
-      reasoning: settings.llmFormattingReasoning
+      reasoning: settings.llmFormattingReasoning,
+      failureCode: nil,
+      httpStatus: nil,
+      endpointHost: "127.0.0.1",
+      credentialSource: "api_key_or_key_optional",
+      checkedAtUnixMs: 1_700_000_000_000
     )
   }
 

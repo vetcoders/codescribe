@@ -274,14 +274,14 @@ final class ProvidersPanelTests: XCTestCase {
 
   /// The account row shows one action: `Sign out` while connected, `Sign in`
   /// otherwise — and names the connected account when the id token does.
-  func testAccountRowStatusNamesTheConnectedAccount() {
+  func testAccountRowDescribesStorageWithoutClaimingServiceAcceptance() {
     var provider = CsProviderOption.sampleProviders[1]
     XCTAssertEqual(provider.id, "openai-responses")
     XCTAssertEqual(AccountLoginRow.status(for: provider), "Not connected")
     provider.accountSignedIn = true
-    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected")
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Account saved")
     provider.accountIdentity = "user@example.com"
-    XCTAssertEqual(AccountLoginRow.status(for: provider), "Connected as user@example.com")
+    XCTAssertEqual(AccountLoginRow.status(for: provider), "Saved account: user@example.com")
     XCTAssertEqual(AccountLoginRow.brand(for: provider), "ChatGPT")
   }
 
