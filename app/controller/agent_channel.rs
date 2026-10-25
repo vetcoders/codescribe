@@ -4194,6 +4194,7 @@ mod tests {
                 .is_empty()
         );
     }
+    include!("agent_channel_co_audience_tests.rs");
 }
 
 #[cfg(test)]
@@ -4520,7 +4521,6 @@ os.execv(sys.executable, [sys.executable, source, *sys.argv[1:]])
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert!(load_binding(&fixture.binding).unwrap().bindings.is_empty());
     }
-    include!("agent_channel_co_audience_tests.rs");
 }
 
 #[cfg(test)]
