@@ -520,28 +520,6 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     makeFirstResponder(nil)
   }
 
-  /// ⌘C for whatever holds the focus in this panel.
-  func performCopyChord(_ event: NSEvent) -> Bool {
-    guard isKeyWindow, event.type == .keyDown,
-      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
-      event.charactersIgnoringModifiers?.lowercased() == "c"
-    else { return false }
-    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
-      // The focused responder owns its copy: the transcript canvas routes
-      // through the tagged clipboard bridge in its own `copy(_:)`, and any
-      // other text view keeps the behaviour it overrides.
-      if let textView = responder as? NSTextView {
-        textView.copy(nil)
-        return true
-      }
-      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
-    }
-    // This panel is non-activating, so the app's Edit menu does not receive
-    // key equivalents while another app is active; the action has to be sent
-    // explicitly down the responder chain.
-    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
-  }
-
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     if performCopyChord(event) { return true }
     return super.performKeyEquivalent(with: event)
@@ -1841,5 +1819,30 @@ enum OverlayResizeHit: Sendable {
     case .top, .bottom: return .resizeUpDown
     default: return .crosshair
     }
+  }
+}
+
+extension NSPanel {
+  /// ⌘C for whatever holds the focus in this panel. Shared by every
+  /// non-activating Codescribe panel: the overlay and the Intercom cards.
+  func performCopyChord(_ event: NSEvent) -> Bool {
+    guard isKeyWindow, event.type == .keyDown,
+      event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command,
+      event.charactersIgnoringModifiers?.lowercased() == "c"
+    else { return false }
+    if let responder = firstResponder, responder.responds(to: #selector(NSText.copy(_:))) {
+      // The focused responder owns its copy: the transcript canvas routes
+      // through the tagged clipboard bridge in its own `copy(_:)`, and any
+      // other text view keeps the behaviour it overrides.
+      if let textView = responder as? NSTextView {
+        textView.copy(nil)
+        return true
+      }
+      return responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+    }
+    // This panel is non-activating, so the app's Edit menu does not receive
+    // key equivalents while another app is active; the action has to be sent
+    // explicitly down the responder chain.
+    return NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
   }
 }
