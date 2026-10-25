@@ -105,15 +105,15 @@ struct OverlayIntercomDesktopState: Codable, Equatable, Sendable {
   func openInstance(for identity: OverlayIntercomCardIdentity) -> OverlayIntercomInstance? {
     instances.first {
       !$0.closed && $0.conversationID == identity.conversationID
-        && $0.ownerID == (identity.ownerID ?? "")
+        && $0.ownerID == (identity.ownerID ?? "") && $0.digit == identity.digit
     }
   }
 
-  /// Detaching changes the conversation's window, not roster membership.
-  /// Keep every current agent in order, including an open or minimized fiszka
-  /// (Founder decision, 2026-10-25).
+  /// An open fiszka owns this conversation's visible placement. Detaching
+  /// removes its group row; docking restores it in the existing roster order
+  /// (Founder decision, 2026-10-25). Mini still counts as detached.
   func groupRows(of identities: [OverlayIntercomCardIdentity]) -> [OverlayIntercomCardIdentity] {
-    identities
+    identities.filter { openInstance(for: $0) == nil }
   }
 
   mutating func upsert(_ instance: OverlayIntercomInstance) {

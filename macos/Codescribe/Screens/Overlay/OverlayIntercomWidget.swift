@@ -38,6 +38,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
   /// A row drag's pointer and header origin at its start, in screen points.
   @ObservationIgnored private var groupDrag: (pointer: CGPoint, origin: CGPoint)?
+  /// Keep the native drag surface and geometry alive until the button is released.
+  /// Only a newly detached row needs its conversation content mounted afterward.
+  private struct InstanceDrag {
+    let id: UUID
+    let panel: OverlayIntercomPanel
+    let ownerID: String
+    let conversationID: String
+    let digit: String
+    let expandedSize: CGSize?
+
+    init(instance: OverlayIntercomInstance, panel: OverlayIntercomPanel, expandedSize: CGSize?) {
+      id = instance.id
+      self.panel = panel
+      ownerID = instance.ownerID
+      conversationID = instance.conversationID
+      digit = instance.digit
+      self.expandedSize = expandedSize
+    }
+
+    func matches(_ instance: OverlayIntercomInstance) -> Bool {
+      id == instance.id && ownerID == instance.ownerID
+        && conversationID == instance.conversationID && digit == instance.digit
+    }
+  }
+  @ObservationIgnored private var instanceDrag: InstanceDrag?
   /// The frame each group card was last sent toward. A window animation
   /// does not move the frame until its first tick, so a fast crossing that
   /// retargets within that tick sees `panel.frame` still at the old frame;
@@ -241,8 +266,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     if retiredInstances {
       materializeInstances()
     }
-    // Only agents absent from the current roster leave the stack. A detached
-    // conversation keeps its agent's row as the way back to that window.
+    // Each conversation has one visible placement: in the group or detached.
     let retained = Set(groupIdentities)
     for identity in Set(cards.keys).subtracting(retained) {
       let panel = cards.removeValue(forKey: identity)
@@ -289,7 +313,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       visibleFrame: screenFrame, scale: scale, cardHeight: groupCardHeight)
     if header.frame != fitted { header.setFrame(fitted, display: true) }
     positioning = false
-    // A detached conversation still keeps a compact row in the group.
+    // Detached conversations are absent; the remaining rows use compact indices.
     for (index, identity) in groupIdentities.enumerated() where cards[identity] == nil {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
@@ -359,18 +383,16 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         instancePanels[instance.id]?.setPresented(false, animated: false)
         continue
       }
+      // Replacing the view or resizing its panel before AppKit finishes a drag
+      // can interrupt the native surface that started the gesture.
+      if instanceDrag?.id == instance.id { continue }
       let panel: OverlayIntercomPanel
       if let existing = instancePanels[instance.id] {
         panel = existing
       } else {
         panel = OverlayIntercomPanel()
         panel.delegate = self
-        panel.contentView = NSHostingView(
-          rootView: TextScaleRoot(controller: textScale) {
-            OverlayIntercomInstanceCard(
-              state: state, instanceID: instance.id, controller: self,
-              onRevealConversation: revealConversation)
-          }.csFocusPolicy())
+        installInstanceContent(on: panel, id: instance.id)
         instancePanels[instance.id] = panel
       }
       panel.acceptsConversationFocus = !instance.minimized
@@ -381,6 +403,62 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       positioning = false
       panel.setPresented(
         visible, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+  }
+
+  private func installInstanceContent(on panel: OverlayIntercomPanel, id: UUID) {
+    panel.contentView = NSHostingView(
+      rootView: TextScaleRoot(controller: textScale) {
+        OverlayIntercomInstanceCard(
+          state: state, instanceID: id, controller: self,
+          onRevealConversation: revealConversation)
+      }.csFocusPolicy())
+  }
+
+  func beginInstanceDrag(_ id: UUID) -> Bool {
+    guard instanceDrag == nil, visible, let instance = instance(for: id), !instance.closed,
+      let panel = instancePanels[id], panel.isPresented
+    else { return false }
+    instanceDrag = InstanceDrag(instance: instance, panel: panel, expandedSize: nil)
+    return true
+  }
+
+  func finishInstanceDrag(at point: CGPoint? = nil) {
+    guard let drag = instanceDrag else { return }
+    instanceDrag = nil
+    guard let panel = instancePanels[drag.id], panel === drag.panel,
+      let index = desktop.instances.firstIndex(where: { drag.matches($0) })
+    else { return }
+    if let expandedSize = drag.expandedSize {
+      // The original hosting view stays in the panel throughout native tracking.
+      // Mount the conversation only now, including for a concurrently retired
+      // window, so a later explicit history reopen has the right content.
+      installInstanceContent(on: panel, id: drag.id)
+      if !desktop.instances[index].closed {
+        desktop.instances[index].frame = CGRect(
+          x: panel.frame.minX, y: panel.frame.maxY - expandedSize.height,
+          width: expandedSize.width, height: expandedSize.height)
+      }
+    }
+    guard visible, !invalidated, !desktop.instances[index].closed else {
+      saveDesktop()
+      materializeInstances()
+      return
+    }
+    let instance = desktop.instances[index]
+    // Geometry is only a drop target. The canonical conversation projection
+    // must still identify this exact current owner; saved history never docks
+    // under a replacement agent who happens to use the same channel.
+    let current = intercomConversation(state: state, digit: instance.digit)
+      .map { instance.matches($0) } == true
+    let point = point ?? NSEvent.mouseLocation
+    let targets = ([header].compactMap { $0 } + Array(cards.values))
+      .filter(\.isPresented)
+    if current && targets.contains(where: { $0.frame.contains(point) }) {
+      closeInstance(drag.id)
+    } else {
+      saveDesktop()
+      materializeInstances()
     }
   }
 
@@ -825,8 +903,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   /// Detaching makes the fiszka durable (Maciej, 2026-10-22). One agent keeps
   /// one open window (Maciej, 2026-10-23): while it stands somewhere, the
-  /// gesture shows it instead of minting a copy. The agent's row remains in
-  /// the stack, whether that window is open, minimized or closed.
+  /// gesture shows it instead of minting a copy. Its grouped row returns only
+  /// when the detached window is docked or closed.
   /// Returns whether this card's panel became that window, so the grip knows
   /// whether there is anything to drag.
   @discardableResult
@@ -862,6 +940,29 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     return detached
   }
 
+  func detachForDrag(_ identity: OverlayIntercomCardIdentity) -> Bool {
+    guard instanceDrag == nil, visible, identity.canExpand,
+      desktop.openInstance(for: identity) == nil, let panel = cards[identity],
+      intercomConversation(state: state, digit: identity.digit).map({ identity.matches($0) }) == true
+    else { return false }
+    let size = presentation.expanded.contains(identity)
+      ? panel.frame.size : OverlayIntercomWidgetLayout.conversationSize(scale: effectiveScale)
+    let frame = CGRect(
+      x: panel.frame.minX, y: panel.frame.maxY - size.height,
+      width: size.width, height: size.height)
+    let interaction = beginInteraction(action: "intercom.instance.detach")
+    let detached = detachIntoInstance(identity, frame: frame, preservingDragSurface: true) != nil
+    // Remove the old row immediately and compact the remaining cards without
+    // trailing the pointer with a window animation.
+    resizingGroup = true
+    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    resizingGroup = false
+    interaction.finish(
+      detached ? .unverified : .refused, effect: detached ? .stateChanged : .noChange,
+      cleanup: detached ? .pending : .notRequired, reason: detached ? .none : .ownerMismatch)
+    return detached
+  }
+
   /// Dragging a collapsed row moves the whole group under the pointer, as
   /// the header does. Only the dedicated grip detaches a card; its name and
   /// background keep moving the group even while collapsed. Screen coordinates,
@@ -888,7 +989,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   @discardableResult
   private func detachIntoInstance(
-    _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil
+    _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil,
+    preservingDragSurface: Bool = false
   ) -> UUID? {
     // Broadcast and the human inbox have stable conversations without an
     // agent owner; no other ownerless identity may detach.
@@ -927,12 +1029,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     // under the cursor instead of dying with a hidden group card.
     if let panel = cards.removeValue(forKey: identity) {
       panel.resignKey()
-      panel.contentView = NSHostingView(
-        rootView: TextScaleRoot(controller: textScale) {
-          OverlayIntercomInstanceCard(
-            state: state, instanceID: id, controller: self,
-            onRevealConversation: revealConversation)
-        }.csFocusPolicy())
+      if preservingDragSurface,
+        let index = desktop.instances.firstIndex(where: { $0.id == id })
+      {
+        instanceDrag = InstanceDrag(
+          instance: desktop.instances[index], panel: panel, expandedSize: current.size)
+        desktop.instances[index].frame = panel.frame
+      } else {
+        installInstanceContent(on: panel, id: id)
+      }
       sizes.removeValue(forKey: identity)
       cardTargets.removeValue(forKey: identity)
       focusRevisions.removeValue(forKey: identity)
@@ -1044,7 +1149,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     } else if let id = instancePanels.first(where: { $0.value === panel })?.key,
       let index = desktop.instances.firstIndex(where: { $0.id == id })
     {
-      let fitted = OverlayIntercomWidgetLayout.movedFrame(
+      // Window Server owns geometry during a native drag. Clamping happens
+      // afterward, once the pointer has been released on its chosen display.
+      let fitted = instanceDrag?.id == id ? panel.frame : OverlayIntercomWidgetLayout.movedFrame(
         panel.frame, visibleFrame: visibleFrame(for: panel),
         headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale))
       if panel.frame != fitted {
@@ -1054,10 +1161,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       }
       // A mini window moves the stored expanded frame by its top-right corner,
       // so restore opens where the person last left the fiszka.
-      var stored = desktop.instances[index].frame
-      stored.origin.x = fitted.maxX - stored.width
-      stored.origin.y = fitted.maxY - stored.height
-      desktop.instances[index].frame = stored
+      if instanceDrag?.id == id, instanceDrag?.expandedSize != nil {
+        desktop.instances[index].frame = fitted
+      } else {
+        var stored = desktop.instances[index].frame
+        stored.origin.x = fitted.maxX - stored.width
+        stored.origin.y = fitted.maxY - stored.height
+        desktop.instances[index].frame = stored
+      }
       saveDesktop()
     }
   }
@@ -1293,8 +1404,7 @@ private struct OverlayIntercomHeader: View {
     .background {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
-        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale),
-        profile: .intercom
+        cornerRadius: OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
       )
       .clipShape(
         RoundedRectangle(
@@ -1460,6 +1570,7 @@ private struct OverlayIntercomDragHandle: NSViewRepresentable {
   /// sets this, so a detached window's header and a detach grip stay still.
   var onClick: () -> Void = {}
   var onDrag: () -> Bool = { true }
+  var onDragEnded: () -> Void = {}
   /// A visible grip shows the open hand; a whole-header surface under the
   /// buttons keeps their arrow.
   var cursorHint = true
@@ -1467,6 +1578,7 @@ private struct OverlayIntercomDragHandle: NSViewRepresentable {
   func updateNSView(_ nsView: OverlayIntercomDragView, context: Context) {
     nsView.onClick = onClick
     nsView.onDrag = onDrag
+    nsView.onDragEnded = onDragEnded
     nsView.cursorHint = cursorHint
   }
 }
@@ -1474,43 +1586,68 @@ private struct OverlayIntercomDragHandle: NSViewRepresentable {
 private final class OverlayIntercomDragView: NSView {
   var onClick: () -> Void = {}
   var onDrag: () -> Bool = { true }
+  var onDragEnded: () -> Void = {}
   var cursorHint = true
   private var moving = false
-  private var dragStart: NSPoint?
+  private var dragged = false
+  private var mouseDownEvent: NSEvent?
+  private var dragCompletion: (id: UUID, finish: () -> Void)?
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
+    if let completion = dragCompletion { finishDrag(completion.id) }
     moving = false
-    dragStart = event.locationInWindow
+    dragged = false
+    mouseDownEvent = event
     super.mouseDown(with: event)
   }
   // A real drag moves the window (and detaches, where the grip detaches).
   // A click that never moves is not a detach and not a move. The window
-  // reference is taken BEFORE onDrag: a detach swaps the panel's content
-  // view, which removes this view from the window and nils self.window
-  // (Astra, D2 trace on 05c013749). One performDrag per gesture: the window
-  // server owns the move from there, and every further mouseDragged would
-  // log "Window move completed without beginning" (Klaudiusz-div0, HID
-  // probe on macOS 27).
+  // reference is taken before onDrag. One performDrag per gesture hands the
+  // original mouse-down event to Window Server, as required by AppKit. That
+  // call returns immediately and AppKit may consume mouse-up, so release is
+  // also observed through pressedMouseButtons for this gesture only.
   override func mouseDragged(with event: NSEvent) {
-    guard !moving, let dragStart, let window else { return }
+    guard !moving, let mouseDownEvent, let window else { return }
+    let dragStart = mouseDownEvent.locationInWindow
     let delta = CGSize(
       width: event.locationInWindow.x - dragStart.x,
       height: event.locationInWindow.y - dragStart.y)
     // Match the row's move threshold: pointer jitter on a grip is still a click.
     guard delta.width * delta.width + delta.height * delta.height >= 16 else { return }
-    guard onDrag() else { return }
     moving = true
-    window.performDrag(with: event)
+    guard onDrag() else {
+      moving = false
+      return
+    }
+    dragged = true
+    let id = UUID()
+    dragCompletion = (id, onDragEnded)
+    window.performDrag(with: mouseDownEvent)
+    // Retain this drag surface until release even if the window is hidden or
+    // retired in the meantime. The controller revalidates its canonical state.
+    Task { @MainActor [self] in
+      while dragCompletion?.id == id && NSEvent.pressedMouseButtons & 1 != 0 {
+        try? await Task.sleep(for: .milliseconds(16))
+      }
+      finishDrag(id)
+    }
   }
   override func mouseUp(with event: NSEvent) {
-    let clicked = !moving
-    moving = false
-    dragStart = nil
+    let clicked = !dragged
+    if let completion = dragCompletion { finishDrag(completion.id) }
+    mouseDownEvent = nil
     // A drag already called performDrag. Only a click that stayed under the
     // threshold reaches onClick, and only the top bar uses that to fold.
     if clicked { onClick() }
     super.mouseUp(with: event)
+  }
+  private func finishDrag(_ id: UUID) {
+    guard let completion = dragCompletion, completion.id == id else { return }
+    dragCompletion = nil
+    moving = false
+    mouseDownEvent = nil
+    completion.finish()
   }
   override func resetCursorRects() {
     if cursorHint { addCursorRect(bounds, cursor: .openHand) }
@@ -1588,8 +1725,7 @@ private struct OverlayIntercomCard: View {
     )
     .background(
       OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner,
-        profile: .intercom)
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
     )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
@@ -1640,18 +1776,18 @@ private struct OverlayIntercomCard: View {
   @ViewBuilder
   private func cardHeader(palette: OverlayAppearancePalette, expanded: Bool) -> some View {
     let conversation = conversation
-    let speaking = conversation?.replySpeaking == true
-    let open = conversation.map { state.conversationMicrophoneOpen($0) } ?? false
     let current =
       intercomConversation(state: state, digit: identity.digit).map { identity.matches($0) } == true
+    let speaking = current && conversation?.replySpeaking == true
+    let open = current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
     let roster = OverlayChannelStatusView.intercomRoster(
       state: state, palette: palette, animates: !reduceMotion,
       onRevealConversation: onRevealConversation,
       onOpenConversation: { id in
         if id == identity.conversationID { controller.expand(identity) }
       })
-    let channelRow = intercomChannelRow(state: state, digit: identity.digit)
-    let inactive = channelRow.map { roster.isInactive($0) } ?? false
+    let channelRow = current ? intercomChannelRow(state: state, digit: identity.digit) : nil
+    let inactive = !current || (channelRow.map { roster.isInactive($0) } ?? false)
     let tier = controller.groupTier
     let row = expanded ? IntercomRowControls.all : controller.rowControls
     let hasInlinePreview =
@@ -1677,7 +1813,10 @@ private struct OverlayIntercomCard: View {
         width: 24 * max(1, scale),
         height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       )
-      .overlay(OverlayIntercomDragHandle { controller.detach(identity) })
+      .overlay(
+        OverlayIntercomDragHandle(
+          onDrag: { controller.detachForDrag(identity) },
+          onDragEnded: { controller.finishInstanceDrag() }))
       .overlayFastHint(
         detached ? String(localized: "Open conversation") : String(localized: "Drag to detach"),
         palette: palette)
@@ -1703,7 +1842,7 @@ private struct OverlayIntercomCard: View {
                 .foregroundStyle(detached ? palette.mutedText.color : palette.primaryText.color)
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
-                kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+                kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
                 palette: palette, hints: false)
             }
           }
@@ -1754,7 +1893,7 @@ private struct OverlayIntercomCard: View {
           } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
-              kind: intercomStatusDot(roster, state: state, digit: identity.digit),
+              kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
               palette: palette)
           }
           Button {
@@ -1775,7 +1914,7 @@ private struct OverlayIntercomCard: View {
             hoverColor: inactive ? palette.mutedText.color : palette.primaryText.color
           )
           .disabled(
-            conversation == nil
+            !current || conversation == nil
               || (identity.digit != "0" && !identity.isHumanInbox && conversation?.owner == nil)
           )
           .modifier(OverlayDetachedRosterValue(detached: detached))
@@ -1802,7 +1941,7 @@ private struct OverlayIntercomCard: View {
           }
           if row.slots >= 1 {
             audioSlot(
-              conversation, palette: palette, speaking: speaking, open: open,
+              current ? conversation : nil, palette: palette, speaking: speaking, open: open,
               shared: row.slots == 1)
           }
         }
@@ -2288,8 +2427,7 @@ private struct OverlayIntercomInstanceCard: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(
       OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner,
-        profile: .intercom)
+        palette: palette, reduceTransparency: reduceTransparency, cornerRadius: corner)
     )
     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     .overlay {
@@ -2446,7 +2584,10 @@ private struct OverlayIntercomInstanceCard: View {
     // nonactivating panel (Klaudiusz-div0's HID probe, macOS 27;
     // OverlayWindowDragRegion). The grip's own performDrag view, under the
     // whole header, is the one road that already moves these panels.
-    .background(OverlayIntercomDragHandle(cursorHint: false))
+    .background(
+      OverlayIntercomDragHandle(
+        onDrag: { controller.beginInstanceDrag(instanceID) },
+        onDragEnded: { controller.finishInstanceDrag() }, cursorHint: false))
     // The title bar carries the control glass of the composer and the name
     // pill, not a glass of its own (Maciej, 2026-10-23). The drag surface
     // sits inside the glass: outside it, the glass takes the hit and no
