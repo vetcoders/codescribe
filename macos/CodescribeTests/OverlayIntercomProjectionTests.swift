@@ -88,10 +88,15 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     let conversations = state.conversations.map(\.id)
     let initialDesktop = store.load()
     let visibleBeforeFold = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
-    let groupRowCount = state.channelMapLayoutModel.agents.count
+    let allRosterRowCount = state.channelMapLayoutModel.agents.count
+    let groupRowCount = initialDesktop.groupRows(of: [
+      agent,
+      .init(digit: "4", conversation: groupedConversation),
+    ]).count
     XCTAssertEqual(
-      visibleBeforeFold.count, 1 + groupRowCount + initialDesktop.instances.filter { !$0.closed }.count,
-      "Every current agent retains a row alongside its detached window")
+      visibleBeforeFold.count,
+      1 + groupRowCount + initialDesktop.instances.filter { !$0.closed }.count,
+      "Detached conversations leave the group")
     controller.toggleGroup()
     for _ in 0..<50 {
       if ownedWindows.filter(\.isVisible).count == visibleBeforeFold.count - groupRowCount { break }
@@ -112,7 +117,9 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     for index in expected.instances.indices { expected.instances[index].closed = true }
     XCTAssertEqual(saved, expected, "Only open presentation records become closed")
     XCTAssertEqual(
-      ownedWindows.filter(\.isVisible).count, 1 + groupRowCount,
+      NSApp.windows.filter {
+        !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
+      }.count, 1 + allRosterRowCount,
       "Docking collects conversations into the visible roster")
     XCTAssertTrue(controller.canRestoreDockedLayout)
     let bar = try XCTUnwrap(ownedWindows.first(where: \.isVisible)?.contentView)
@@ -163,7 +170,7 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     XCTAssertEqual(
       NSApp.windows.filter {
         !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
-      }.count, 1 + groupRowCount)
+      }.count, 1 + allRosterRowCount)
 
     controller.openMailbox("0")
     let newWindow = try XCTUnwrap(store.load().instances.first { $0.conversationID == "0" })

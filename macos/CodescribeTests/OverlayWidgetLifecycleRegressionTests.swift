@@ -10,11 +10,12 @@ import XCTest
 final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
   private func owner() throws -> OverlayConversationOwner {
     let session = "widget-lifecycle-fixture"
-    return try XCTUnwrap(OverlayConversationOwner(row: [
-      "provider": "codex", "provider_session_id": session,
-      "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
-      "channel": "2", "name": "Fixture agent",
-    ]))
+    return try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": session,
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+        "channel": "2", "name": "Fixture agent",
+      ]))
   }
 
   func testCanonicalArchiveRetiresDetachedWindowAndPreservesSavedConversation() async throws {
@@ -27,7 +28,8 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
       id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.applyChannelRoster([
-      .init(channel: owner.channel, audience: owner.name, provider: owner.provider,
+      .init(
+        channel: owner.channel, audience: owner.name, provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: false, unreadSinceUnixMs: nil)
     ])
@@ -77,7 +79,8 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
       id: owner.id, channel: owner.channel, name: owner.name, owner: owner, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.applyChannelRoster([
-      .init(channel: owner.channel, audience: owner.name, provider: owner.provider,
+      .init(
+        channel: owner.channel, audience: owner.name, provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: false, unreadSinceUnixMs: nil)
     ])
@@ -96,8 +99,10 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
   }
 
   func testCompactHintUsesFreeSideWithoutCoveringItsAnchor() {
-    for screen in [CGRect(x: 0, y: 0, width: 1440, height: 900),
-      CGRect(x: -1920, y: 100, width: 1920, height: 1080)] {
+    for screen in [
+      CGRect(x: 0, y: 0, width: 1440, height: 900),
+      CGRect(x: -1920, y: 100, width: 1920, height: 1080),
+    ] {
       for y in [screen.minY + 10, screen.midY, screen.maxY - 40] {
         let anchor = CGRect(x: screen.minX + 10, y: y, width: 150, height: 30)
         let frame = OverlayHintPanel.frame(
@@ -121,12 +126,15 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
   }
   func testIntercomMaterialKeepsCanvasDefaultAndHonorsOpaqueAccessibility() throws {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let originalAlpha: CGFloat = palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
-      XCTAssertEqual(OverlayCanvasBackdrop.glassVeil(palette).alphaComponent, originalAlpha, accuracy: 0.001)
-      XCTAssertLessThan(OverlayCanvasBackdrop.glassVeil(palette, profile: .intercom).alphaComponent, 0.25)
+      let originalAlpha: CGFloat =
+        palette.appearance == .dark && BuildChannel.isNightly() ? 0.92 : 0.84
+      XCTAssertEqual(
+        OverlayCanvasBackdrop.glassVeil(palette).alphaComponent, originalAlpha, accuracy: 0.001)
       for opaque in [false, true] {
-        let host = NSHostingView(rootView: OverlayCanvasBackdrop(
-          palette: palette, reduceTransparency: opaque, profile: .intercom)
+        let host = NSHostingView(
+          rootView: OverlayCanvasBackdrop(
+            palette: palette, reduceTransparency: opaque
+          )
           .frame(width: 300, height: 100))
         host.frame.size = NSSize(width: 300, height: 100)
         host.layoutSubtreeIfNeeded()
@@ -136,7 +144,8 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
           if #available(macOS 26.0, *), view is NSGlassEffectView { return true }
           return view.subviews.contains { hasMaterial($0) }
         }
-        XCTAssertEqual(hasMaterial(host), !opaque, "Opaque accessibility must bypass the native material")
+        XCTAssertEqual(
+          hasMaterial(host), !opaque, "Opaque accessibility must bypass the native material")
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)
         let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
@@ -145,15 +154,20 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
       }
-      let highContrast = NSHostingView(rootView: OverlayCanvasBackdrop(
-        palette: palette, reduceTransparency: false, profile: .intercom)
+      let highContrast = NSHostingView(
+        rootView: OverlayCanvasBackdrop(
+          palette: palette, reduceTransparency: false
+        )
         .environment(\.csContrastOverride, .increased).frame(width: 300, height: 100))
       highContrast.frame.size = NSSize(width: 300, height: 100)
       highContrast.layoutSubtreeIfNeeded()
       func nativeGlassCount(_ view: NSView) -> Int {
         let native: Int
-        if #available(macOS 26.0, *) { native = view is NSGlassEffectView ? 1 : 0 }
-        else { native = view is NSVisualEffectView ? 1 : 0 }
+        if #available(macOS 26.0, *) {
+          native = view is NSGlassEffectView ? 1 : 0
+        } else {
+          native = view is NSVisualEffectView ? 1 : 0
+        }
         return native + view.subviews.map { nativeGlassCount($0) }.reduce(0, +)
       }
       XCTAssertEqual(nativeGlassCount(highContrast), 0)
@@ -171,26 +185,33 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
       state: state, textScale: TextScaleController(key: suite),
       desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
     defer { controller.invalidate() }
-    let host = NSHostingView(rootView: controller.offscreenHeader(width: 400)
-      .frame(width: 400, height: 30))
+    let host = NSHostingView(
+      rootView: controller.offscreenHeader(width: 400)
+        .frame(width: 400, height: 30))
     let panel = IntercomGestureWitnessPanel(
       contentRect: NSRect(x: 0, y: 0, width: 400, height: 30),
       styleMask: [.borderless], backing: .buffered, defer: false)
     panel.contentView = host
-    defer { panel.contentView = nil; panel.close() }
+    defer {
+      panel.contentView = nil
+      panel.close()
+    }
     host.frame.size = NSSize(width: 400, height: 30)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     func descendants(_ view: NSView) -> [NSView] {
       [view] + view.subviews.flatMap { descendants($0) }
     }
-    let drag = try XCTUnwrap(descendants(host).first {
-      String(describing: type(of: $0)).contains("OverlayIntercomDragView")
-    })
+    let drag = try XCTUnwrap(
+      descendants(host).first {
+        String(describing: type(of: $0)).contains("OverlayIntercomDragView")
+      })
     func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
-      try XCTUnwrap(NSEvent.mouseEvent(
-        with: type, location: NSPoint(x: x, y: 15), modifierFlags: [], timestamp: 0,
-        windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+      try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: type, location: NSPoint(x: x, y: 15), modifierFlags: [], timestamp: 0,
+          windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ))
     }
     let initial = controller.presentation.folded
     drag.mouseDown(with: try event(.leftMouseDown, x: 150))
@@ -199,10 +220,12 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     drag.mouseDown(with: try event(.leftMouseDown, x: 150))
     drag.mouseUp(with: try event(.leftMouseUp, x: 150))
     XCTAssertEqual(controller.presentation.folded, initial)
-    drag.mouseDown(with: try event(.leftMouseDown, x: 150))
+    let originalDown = try event(.leftMouseDown, x: 150)
+    drag.mouseDown(with: originalDown)
     drag.mouseDragged(with: try event(.leftMouseDragged, x: 180))
     drag.mouseUp(with: try event(.leftMouseUp, x: 180))
     XCTAssertEqual(panel.dragCalls, 1, "One native drag per gesture")
+    XCTAssertTrue(panel.dragEvent === originalDown, "AppKit receives the original mouse-down")
     XCTAssertEqual(controller.presentation.folded, initial, "Dragging must not also collapse")
     XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
     XCTAssertEqual(state.captureGeneration, generation)
@@ -214,5 +237,9 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
 @MainActor
 private final class IntercomGestureWitnessPanel: NSPanel {
   var dragCalls = 0
-  override func performDrag(with event: NSEvent) { dragCalls += 1 }
+  var dragEvent: NSEvent?
+  override func performDrag(with event: NSEvent) {
+    dragCalls += 1
+    dragEvent = event
+  }
 }

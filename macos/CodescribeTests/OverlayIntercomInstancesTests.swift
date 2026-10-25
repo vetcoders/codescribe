@@ -29,7 +29,7 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertTrue(human.ownerID.isEmpty)
     XCTAssertEqual(human.displayDigit, "")
     XCTAssertEqual(human.displayTitle, String(localized: "Your Inbox"))
-    XCTAssertEqual(restored.groupRows(of: [identity]), [identity])
+    XCTAssertEqual(restored.groupRows(of: [identity]), [])
     var closed = human
     closed.closed = true
     desktop = restored
@@ -82,9 +82,8 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     XCTAssertNil(desktop.openInstance(for: lena), "closing frees the row for a fresh detach")
   }
 
-  /// Founder decision, 2026-10-25: detaching opens the conversation without
-  /// removing the agent from the roster, including after desktop restoration.
-  func testDetachedAgentRemainsInRosterAcrossWindowStatesAndRestoration() throws {
+  /// A conversation has one visible placement; docking restores its roster position.
+  func testDetachedAgentLeavesGroupUntilDockedAcrossWindowStatesAndRestoration() throws {
     let lena = try identity("lena", channel: "2", lease: "a")
     let olga = try identity("olga", channel: "3", lease: "c")
     let astra = try identity("astra", channel: "4", lease: "d")
@@ -95,14 +94,17 @@ final class OverlayIntercomInstancesTests: XCTestCase {
     var torn = OverlayIntercomInstance(
       identity: olga, frame: CGRect(x: 600, y: 400, width: 380, height: 360), minimized: true)
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), roster, "a minimized window keeps its row")
+    XCTAssertEqual(
+      desktop.groupRows(of: roster), [lena, astra], "a minimized detached window owns its placement"
+    )
 
     torn.minimized = false
     desktop.upsert(torn)
-    XCTAssertEqual(desktop.groupRows(of: roster), roster, "an open window keeps its row")
+    XCTAssertEqual(
+      desktop.groupRows(of: roster), [lena, astra], "an open detached window owns its placement")
     let restored = try JSONDecoder().decode(
       OverlayIntercomDesktopState.self, from: JSONEncoder().encode(desktop))
-    XCTAssertEqual(restored.groupRows(of: roster), roster)
+    XCTAssertEqual(restored.groupRows(of: roster), [lena, astra])
     XCTAssertEqual(restored.openInstance(for: olga)?.id, torn.id)
     XCTAssertEqual(desktop.openInstance(for: olga)?.id, torn.id)
 
