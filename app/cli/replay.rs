@@ -123,9 +123,21 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         if !args.json {
             eprintln!("replay run {run}/{} at live pace", args.runs);
         }
-        let replay =
-            replay_recorded_take(session.clone(), card.clone(), &audio, run, scenario.clone())
-                .await?;
+        let replay = match replay_recorded_take(
+            session.clone(),
+            card.clone(),
+            &audio,
+            run,
+            scenario.clone(),
+        )
+        .await
+        {
+            Ok(replay) => replay,
+            Err(error) => {
+                persist_replay_failure(&root, session.as_deref(), &audio, run, &switches, &error)?;
+                return Err(error);
+            }
+        };
         inputs = replay.inputs;
         recorded_build = replay.recorded_build;
         runs.push(replay.run);
@@ -223,6 +235,42 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
+/// Failed execution is evidence too, but never a successful empty document.
+fn persist_replay_failure(
+    root: &Path,
+    session: Option<&str>,
+    audio: &Path,
+    run: u32,
+    scenario: &[String],
+    error: &anyhow::Error,
+) -> Result<()> {
+    let dir = root
+        .join("replays")
+        .join(format!("failed-{}", uuid::Uuid::new_v4()));
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir)?;
+    let receipt = serde_json::json!({
+        "schema": "codescribe.replay-failure.v1",
+        "recorded_session": session,
+        "audio_sha256": Sha256::digest(std::fs::read(audio)?).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "completed_at_unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis(),
+        "replayer_build": {"commit": env!("CODESCRIBE_BUILD_COMMIT"), "profile": if cfg!(debug_assertions) {"debug"} else {"release"}},
+        "scenario": scenario,
+        "run": run,
+        "error": format!("{error:#}"),
+    });
+    let pending = dir.join("replay-receipt.json.pending");
+    std::fs::write(&pending, serde_json::to_vec_pretty(&receipt)?)?;
+    std::fs::rename(pending, dir.join("replay-receipt.json"))?;
+    Ok(())
+}
+
 /// Production replay runs the take through the live Apple STT bridge, which
 /// the CLI spawns disclaimed (`bin/codescribe.rs`): Speech Recognition is the
 /// bridge's own grant, not the terminal's. So the preflight asks the bridge,
@@ -265,6 +313,36 @@ fn same_commit(recorded: &str, replayer: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_replay_is_persisted_without_a_successful_document() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("take.wav");
+        std::fs::write(&audio, b"retained input").unwrap();
+        for _ in 0..2 {
+            persist_replay_failure(
+                root.path(),
+                Some("take"),
+                &audio,
+                1,
+                &[],
+                &anyhow!("worker failed"),
+            )
+            .unwrap();
+        }
+        let attempts: Vec<_> = std::fs::read_dir(root.path().join("replays"))
+            .unwrap()
+            .collect();
+        assert_eq!(attempts.len(), 2);
+        for attempt in attempts {
+            let path = attempt.unwrap().path().join("replay-receipt.json");
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(receipt["schema"], "codescribe.replay-failure.v1");
+            assert_eq!(receipt["error"], "worker failed");
+            assert!(receipt.get("runs").is_none());
+        }
+    }
 
     #[test]
     fn only_an_exact_replay_command_locks_the_keychain() {
