@@ -107,9 +107,9 @@ private struct LLMLaneEditor: View {
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
     case "fresh": return CSColor.olive
-    case "cached": return CSColor.amber
-    case "no_key", "loading": return Color.secondary
-    default: return CSColor.terracotta
+    case "cached": return CSColor.amberLight
+    case "no_key", "loading": return CSColor.secondaryInk
+    default: return CSColor.terracottaText
     }
   }
 
@@ -121,7 +121,7 @@ private struct LLMLaneEditor: View {
           .foregroundStyle(Color.primary)
         Text(lane.subtitle)
           .font(SettingsScale.helper)
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Text(model.laneUsageDescription(lane))
           .font(SettingsScale.helper)
           .foregroundStyle(laneModel.availabilityTint)
@@ -243,7 +243,7 @@ private struct LLMLaneEditor: View {
               model.setLLMModel("", for: lane)
             }
             .font(SettingsScale.controlLabel)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .csFocusRing()
             .disabled(!hasOverride)
             .help("Clear this model override")
@@ -385,7 +385,7 @@ private struct LLMLaneEditor: View {
         Text(
           "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"
         )
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       }
       .font(SettingsScale.helper)
       if !probe.output.isEmpty, probe.status != "skipped" {
@@ -407,7 +407,7 @@ private struct LLMLaneEditor: View {
         if failureShownOnAgent {
           Text("Same provider as the Agent; the model list error is shown above.")
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         } else {
           Circle()
@@ -415,7 +415,7 @@ private struct LLMLaneEditor: View {
             .frame(width: 7, height: 7)
           Text(laneModel.discoveryDescription)
             .font(SettingsScale.helper)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: 0)
@@ -429,13 +429,13 @@ private struct LLMLaneEditor: View {
         DisclosureGroup("Error details") {
           Text(details)
             .font(CSFont.mono(10.5))
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 4)
         }
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("lane-discovery-error-details")
       }
     }

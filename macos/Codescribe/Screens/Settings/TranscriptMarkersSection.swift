@@ -46,7 +46,7 @@ struct TranscriptMarkersSection: View {
           comment: "Dictation panel: disclosure with the marker template editor"
         )
         .font(SettingsScale.helper)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
       }
       .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("dictation-template-disclosure")
@@ -99,7 +99,7 @@ struct TranscriptMarkersSection: View {
       if let warning = model.transcriptTagTemplateWarning {
         Text(warning)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.danger)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.top, CSSpace.sm)
           .accessibilityLabel("Transcript tag template warning")
@@ -116,7 +116,7 @@ struct TranscriptMarkersSection: View {
           } label: {
             Text(placeholder)
               .font(CSFont.mono(10, .semibold))
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .padding(.horizontal, 7)
               .padding(.vertical, 4)
               .background(

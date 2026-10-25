@@ -25,7 +25,7 @@ struct DictationPreviewTimingTab: View {
 
       Text(selectedPreset.summary)
         .font(SettingsScale.helper)
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
 
       // Collapsed by default: the preset above is the everyday answer. Opened
@@ -37,7 +37,7 @@ struct DictationPreviewTimingTab: View {
           if !previewEnabled {
             Text("These values take effect again once the preview is back on.")
               .font(SettingsScale.helper)
-              .foregroundStyle(Color.secondary)
+              .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)
           }
           slidersGroup(values: values, enabled: previewEnabled)

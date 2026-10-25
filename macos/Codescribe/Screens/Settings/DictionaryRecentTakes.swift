@@ -141,7 +141,9 @@ enum RecentTakesReader {
 /// forensics of those takes (pins, PCM slots, Silero ranges) stay in Lab.
 struct DictionaryRecentTakes: View {
   let configDir: String
-  /// Jumps to the Lab desk, whose word pins default to the latest take.
+  /// Jumps to the Lab desk, whose word pins default to the latest take. Nil
+  /// hides the button; build it with `openLabAction` so it exists only while
+  /// the Lab section can be selected.
   var openLab: (() -> Void)? = nil
 
   @State private var takes: [RecentTake] = []
@@ -152,9 +154,8 @@ struct DictionaryRecentTakes: View {
     VStack(alignment: .leading, spacing: 0) {
       SettingsSectionHeaderRow(String(localized: "Recent takes")) {
         Button(String(localized: "Refresh")) { refresh += 1 }
-          .buttonStyle(.plain)
-          .font(CSFont.ui(11, .semibold))
-          .foregroundStyle(CSColor.chromeAccent)
+          .buttonStyle(.bordered)
+          .controlSize(.small)
           .accessibilityIdentifier("dictionary-recent-takes-refresh")
       }
       freshness
@@ -181,17 +182,17 @@ struct DictionaryRecentTakes: View {
     if let latest = takes.first {
       Text("Last take on this Mac: \(Self.dateLabel(latest.recordedAt))")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else if loaded {
       Text("No take has been recorded on this Mac yet.")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-take")
     } else {
       Text("Reading takes…")
         .font(CSFont.ui(11.5, .medium))
-        .foregroundStyle(Color.secondary)
+        .foregroundStyle(CSColor.secondaryInk)
     }
   }
 
@@ -202,33 +203,31 @@ struct DictionaryRecentTakes: View {
           .font(CSFont.ui(12.5, .semibold))
         Text(take.destination)
           .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Text(Self.durationLabel(take.durationSeconds))
           .font(CSFont.mono(11))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Text("\(take.wordCount) words")
           .font(CSFont.ui(11.5))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
         Spacer()
         Button(String(localized: "Copy text")) {
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(take.text, forType: .string)
         }
-        .buttonStyle(.plain)
-        .font(CSFont.ui(11, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .disabled(take.text.isEmpty)
         if let openLab {
           Button(String(localized: "Open in Lab"), action: openLab)
-            .buttonStyle(.plain)
-            .font(CSFont.ui(11, .semibold))
-            .foregroundStyle(CSColor.chromeAccent)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
       }
       if take.text.isEmpty {
         Text("No words were admitted for this take.")
           .font(CSFont.ui(12))
-          .foregroundStyle(Color.secondary)
+          .foregroundStyle(CSColor.secondaryInk)
       } else {
         Text(take.text)
           .font(CSFont.ui(12.5))
@@ -238,15 +237,23 @@ struct DictionaryRecentTakes: View {
       if take.ledgerOpen {
         Group {
           if let anchored = take.anchoredSpeechPercent {
-            Text(
-              "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
-            )
-          } else {
+            if openLab != nil {
+              Text(
+                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take. Open Lab to see where."
+              )
+            } else {
+              Text(
+                "The ledger anchored \(Self.shareLabel(anchored)) of the speech and did not close this take."
+              )
+            }
+          } else if openLab != nil {
             Text("The ledger did not close this take. Open Lab to see where.")
+          } else {
+            Text("The ledger did not close this take.")
           }
         }
         .font(CSFont.ui(11))
-        .foregroundStyle(Color.orange)
+        .foregroundStyle(CSColor.amberLight)
       }
     }
     .padding(CSSpace.md)
@@ -255,6 +262,17 @@ struct DictionaryRecentTakes: View {
       RoundedRectangle(cornerRadius: 8, style: .continuous)
         .fill(Color.primary.opacity(0.04))
     )
+  }
+
+  /// The Lab jump for a recent-take card, or nil when Lab cannot be opened.
+  /// The Lab section's availability is the one source of truth: outside a
+  /// developer build it is hidden, `select(.lab)` returns early, and a button
+  /// wired to it would do nothing.
+  static func openLabAction(
+    availability: SettingsSectionAvailability = SettingsSection.lab.availability,
+    _ open: @escaping () -> Void
+  ) -> (() -> Void)? {
+    availability == .available ? open : nil
   }
 
   static func dateLabel(_ date: Date) -> String {

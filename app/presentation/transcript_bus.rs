@@ -816,9 +816,10 @@ pub enum TranscriptSessionEndReason {
     StartFailed,
     /// A CLI file decoder or output sink failed after opening its session.
     TranscriptionFailed,
-    /// An admitted hold on the agent-channel modifier was the prefix of a
-    /// channel digit chord. Its capture was discarded and nothing was
-    /// delivered, archived or offered for delivery.
+    /// Written only before 2026-10-24: an admitted hold on the agent-channel
+    /// modifier turned out to prefix a channel digit chord. A key that records
+    /// is no longer the channel modifier, so no session ends this way now; the
+    /// value stays so older append-only lines still decode.
     ChordPrefix,
 }
 
@@ -2679,7 +2680,9 @@ impl TranscriptBus {
             TranscriptSessionEndReason::Completed if has_text => {
                 TranscriptProjectionPhase::Formatted
             }
-            TranscriptSessionEndReason::Completed => TranscriptProjectionPhase::NoSpeech,
+            TranscriptSessionEndReason::Completed | TranscriptSessionEndReason::ChordPrefix => {
+                TranscriptProjectionPhase::NoSpeech
+            }
             TranscriptSessionEndReason::CoverageRefused if has_text => {
                 TranscriptProjectionPhase::CoverageRefused
             }
@@ -2689,15 +2692,8 @@ impl TranscriptBus {
             | TranscriptSessionEndReason::StartSuperseded
             | TranscriptSessionEndReason::StartFailed
             | TranscriptSessionEndReason::TranscriptionFailed => TranscriptProjectionPhase::Error,
-            TranscriptSessionEndReason::ChordPrefix => TranscriptProjectionPhase::NoSpeech,
         };
-        // A chord prefix was never dictation: nothing it heard is offered for
-        // paste, insert, copy, retranscription or an agent.
-        let availability = if reason == TranscriptSessionEndReason::ChordPrefix {
-            self.projection_availability(false, false, false)
-        } else {
-            self.projection_availability(has_text, false, session_wav_exists)
-        };
+        let availability = self.projection_availability(has_text, false, session_wav_exists);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -5122,42 +5118,33 @@ mod tests {
         }
     }
 
-    /// Founder, 2026-10-23: a hold that turned out to prefix a channel chord
-    /// ends with `chord_prefix`; nothing it heard is offered for delivery.
+    /// Lines written before 2026-10-24 may end with `chord_prefix`
+    /// (docs/TRANSCRIPT_BUS.md); a typed reader still decodes them.
     #[test]
-    fn a_chord_prefix_end_offers_nothing_even_with_committed_words() {
+    fn a_historical_chord_prefix_terminal_line_still_decodes() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("chord-prefix.jsonl");
-        let bus = TranscriptBus::open_at(session("chord-prefix"), path.clone(), None).unwrap();
+        let path = temp.path().join("historical-chord-prefix.jsonl");
+        let bus =
+            TranscriptBus::open_at(session("historical-chord-prefix"), path.clone(), None).unwrap();
         bus.publish_started();
-        let (ledger, _, base) = committed_fixture("chord-prefix");
-        assert!(!bus.publish_revision(&base, &ledger).is_empty());
-
-        let terminal = bus
-            .publish_ended(
-                TranscriptSessionEndReason::ChordPrefix,
-                true,
-                TranscriptDelivery::Unattempted,
-            )
-            .expect("a started session ends once");
-        assert_eq!(terminal.phase, TranscriptProjectionPhase::NoSpeech);
-        assert!(terminal.terminal);
-        assert!(!terminal.can_paste);
-        assert!(!terminal.can_insert);
-        assert!(!terminal.can_copy);
-        assert!(!terminal.can_retranscribe);
-        assert!(!terminal.can_send_to_agent);
+        bus.publish_ended(
+            TranscriptSessionEndReason::Completed,
+            false,
+            TranscriptDelivery::Unattempted,
+        )
+        .expect("a started session ends once");
 
         let written = std::fs::read_to_string(&path).unwrap();
-        let last_line = written.lines().last().unwrap();
-        let last: CleanTranscriptEvent = serde_json::from_str(last_line).unwrap();
-        assert_eq!(last.status, "session_ended");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(written.lines().last().unwrap()).unwrap();
+        raw["end_reason"] = serde_json::Value::from("chord_prefix");
+        let historical: CleanTranscriptEvent =
+            serde_json::from_str(&raw.to_string()).expect("a pre-2026-10-24 line decodes");
+        assert_eq!(historical.status, "session_ended");
         assert_eq!(
-            last.end_reason,
+            historical.end_reason,
             Some(TranscriptSessionEndReason::ChordPrefix)
         );
-        let raw: serde_json::Value = serde_json::from_str(last_line).unwrap();
-        assert_eq!(raw["end_reason"], "chord_prefix");
     }
 
     /// `session_ended` is the text-free terminal lifecycle line: written once,

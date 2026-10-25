@@ -13849,10 +13849,27 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var deferredInsertShortcut: String
     /**
-     * Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
-     * Command is not a value.
+     * Agent-channel modifier in effect (`ChannelModifier::as_str()`): `"ctrl"`
+     * or `"fn"`, or `"off"` when both keys record dictation. A key that
+     * records is never the channel modifier (one key, one role), so this can
+     * differ from the stored choice. Command is not a value.
      */
     public var channelModifier: String
+    /**
+     * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
+     * no Fn channel modifier.
+     */
+    public var fnRecordsDictation: Bool
+    /**
+     * A binding (Hold Fn/Globe) records with Fn, so freeing Fn takes a
+     * rebinding and not only turning the Fn tap off.
+     */
+    public var fnBindingRecordsDictation: Bool
+    /**
+     * A Ctrl gesture records dictation, so Settings offers no Ctrl channel
+     * modifier.
+     */
+    public var ctrlRecordsDictation: Bool
     /**
      * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
      */
@@ -14014,9 +14031,23 @@ public struct CsSettings: Equatable, Hashable {
          * product default when no persisted choice exists.
          */deferredInsertShortcut: String,
         /**
-         * Agent-channel modifier (`ChannelModifier::as_str()`). `"ctrl"` or `"fn"`.
-         * Command is not a value.
+         * Agent-channel modifier in effect (`ChannelModifier::as_str()`): `"ctrl"`
+         * or `"fn"`, or `"off"` when both keys record dictation. A key that
+         * records is never the channel modifier (one key, one role), so this can
+         * differ from the stored choice. Command is not a value.
          */channelModifier: String,
+        /**
+         * Fn records dictation (Hold Fn/Globe or the Fn tap), so Settings offers
+         * no Fn channel modifier.
+         */fnRecordsDictation: Bool,
+        /**
+         * A binding (Hold Fn/Globe) records with Fn, so freeing Fn takes a
+         * rebinding and not only turning the Fn tap off.
+         */fnBindingRecordsDictation: Bool,
+        /**
+         * A Ctrl gesture records dictation, so Settings offers no Ctrl channel
+         * modifier.
+         */ctrlRecordsDictation: Bool,
         /**
          * The widget chord (`WidgetShortcut::wire_id()`), e.g. `"ctrl+shift+b"`.
          */widgetShortcut: String,
@@ -14103,6 +14134,9 @@ public struct CsSettings: Equatable, Hashable {
         self.ledgerSensitivity = ledgerSensitivity
         self.deferredInsertShortcut = deferredInsertShortcut
         self.channelModifier = channelModifier
+        self.fnRecordsDictation = fnRecordsDictation
+        self.fnBindingRecordsDictation = fnBindingRecordsDictation
+        self.ctrlRecordsDictation = ctrlRecordsDictation
         self.widgetShortcut = widgetShortcut
         self.widgetShortcutLabel = widgetShortcutLabel
         self.fnTapTogglesDictation = fnTapTogglesDictation
@@ -14194,6 +14228,9 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 ledgerSensitivity: FfiConverterInt32.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 channelModifier: FfiConverterString.read(from: &buf),
+                fnRecordsDictation: FfiConverterBool.read(from: &buf),
+                fnBindingRecordsDictation: FfiConverterBool.read(from: &buf),
+                ctrlRecordsDictation: FfiConverterBool.read(from: &buf),
                 widgetShortcut: FfiConverterString.read(from: &buf),
                 widgetShortcutLabel: FfiConverterString.read(from: &buf),
                 fnTapTogglesDictation: FfiConverterBool.read(from: &buf),
@@ -14273,6 +14310,9 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterInt32.write(value.ledgerSensitivity, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterString.write(value.channelModifier, into: &buf)
+        FfiConverterBool.write(value.fnRecordsDictation, into: &buf)
+        FfiConverterBool.write(value.fnBindingRecordsDictation, into: &buf)
+        FfiConverterBool.write(value.ctrlRecordsDictation, into: &buf)
         FfiConverterString.write(value.widgetShortcut, into: &buf)
         FfiConverterString.write(value.widgetShortcutLabel, into: &buf)
         FfiConverterBool.write(value.fnTapTogglesDictation, into: &buf)
