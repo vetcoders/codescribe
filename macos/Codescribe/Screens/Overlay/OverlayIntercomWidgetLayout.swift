@@ -162,17 +162,18 @@ struct IntercomContentMetrics: Equatable {
     let scale = nameFontSize / 11
     if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
-    // The context now shares the name's header block instead of consuming
-    // another row below it. A small height increase reveals that second line.
-    if cardHeight > OverlayIntercomWidgetLayout.controlHeight(scale: scale) + 2 * scale {
+    // Metadata gets a full-width line of its own, outside the name's hit area.
+    if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    {
       return .context
     }
     return .header
   }
 
-  /// Header metadata consumes no separate body row. A short scrollable preview
-  /// appears first; the compact shared input follows as soon as its actual
-  /// controls and a line of conversation fit. There is no arbitrary card-size gate.
+  /// A short preview precedes the input. Mounting the complete conversation
+  /// also needs its route, footer, bubble/list insets and readable message text;
+  /// a bare line left above the editor cannot accommodate that renderer.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
@@ -183,6 +184,7 @@ struct IntercomContentMetrics: Equatable {
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
     let available = cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+      - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
     let minimum = lineHeight + metadataLine
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
@@ -198,9 +200,16 @@ struct IntercomContentMetrics: Equatable {
     let composerWidth = inputWidth + 3 * ComposerControlMetrics.hitTargetSize
       + 3 * ComposerControlMetrics.intercomSpacing
       + 2 * ComposerControlMetrics.intercomHorizontalPadding + 24
+    // OverlayConversationView.messageBubble: route + two prose lines + footer,
+    // 5pt between its three sections and 12pt padding on either edge. The list
+    // adds 8pt top/bottom and its 1pt bottom anchor. Optional taller content
+    // still scrolls; these are the normal renderer's minimum reading costs.
+    let minimumConversationHeight = 2 * lineHeight + 2 * metadataLine + 2 * 5 + 2 * 12
+      + 2 * 8 + 1
     return IntercomCompactPreviewLayout(
       height: available,
-      showsComposer: width >= composerWidth && available >= lineHeight + composerHeight,
+      showsComposer: width >= composerWidth
+        && available >= minimumConversationHeight + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
   }
 
@@ -255,6 +264,10 @@ enum OverlayIntercomWidgetLayout {
   static let gap: CGFloat = 4
 
   static func controlHeight(scale: CGFloat) -> CGFloat { rowHeight * max(1, scale) }
+
+  static func contextStripHeight(scale: CGFloat) -> CGFloat {
+    ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
+  }
 
   /// One corner for the header, every row and a mini fiszka. A radius of half
   /// the row turned a two-line card into a stadium (Maciej, 2026-10-23:

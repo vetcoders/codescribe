@@ -1921,6 +1921,17 @@ private struct OverlayIntercomCard: View {
     VStack(spacing: 0) {
       cardHeader(palette: palette, expanded: expanded)
         .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+      if expanded || content != .header, let conversation {
+        // One physical metadata line uses the card width, not the narrow name
+        // button between status marks and audio controls. Its contrast does
+        // not inherit a disconnected or detached row's dimming.
+        OverlayIntercomConversationContext(
+          descriptor: state.conversationAgentDescriptor(conversation)
+            ?? conversation.owner?.provider,
+          palette: palette
+        )
+        .frame(height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale), alignment: .top)
+      }
       if expanded {
         if let conversation {
           conversationBody(conversation, palette: palette)
@@ -2181,20 +2192,9 @@ private struct OverlayIntercomCard: View {
           Button {
             controller.expand(identity)
           } label: {
-            VStack(alignment: .leading, spacing: 1) {
-              Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
-              if expanded || controller.contentMetrics.cardContent(
-                width: controller.groupWidth, cardHeight: controller.groupCardHeight) != .header,
-                let conversation
-              {
-                OverlayIntercomConversationContext(
-                  descriptor: state.conversationAgentDescriptor(conversation)
-                    ?? conversation.owner?.provider,
-                  palette: palette, leadingInset: 0, trailingInset: 0, bottomInset: 0)
-              }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            Text(verbatim: name).csFont(11, .semibold).lineLimit(1)
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
           // Names rest lightly smoked; the agent talking brightens instead of
