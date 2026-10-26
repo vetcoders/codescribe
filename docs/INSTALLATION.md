@@ -70,13 +70,20 @@ to be notarized.
 The signing identity comes from the default keychain search list (login),
 named by its SHA-1 hash so the choice is unambiguous even when a certificate
 is installed twice; `CODESCRIBE_CODESIGN_IDENTITY` overrides it and `-` keeps
-ad-hoc signing. There is no separate build keychain. A build driven over SSH
-(`make app PROFILE=local-release` on the build host) signs from the same
-login keychain, which works only after a one-time setup in that Mac's
-graphical session: `security set-keychain-settings ~/Library/Keychains/login.keychain-db` (no auto-lock) and `security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db` (asks for the login password, stores
-nothing). Without it `codesign` over SSH fails with `errSecInternalComponent`;
-`scripts/build-app.sh` recognises that, prints the recipe and stops rather
-than signing ad-hoc behind the caller. The build log says `signing from keychain: <default keychain>` before the first real-identity signature.
+ad-hoc signing. There is no separate build keychain. The unlocked state of the
+login keychain belongs to the security session that unlocked it: the graphical
+session of the build host has it open, while a shell reached over SSH on the
+same Mac sees it locked, and neither a keychain timeout nor `security set-key-partition-list` changes that. `scripts/build-app.sh` therefore probes
+the default keychain before its first build stage when `SSH_CONNECTION` or
+`SSH_TTY` is set and the identity is not ad-hoc, and stops at once instead of
+failing in `codesign` with `errSecInternalComponent` after minutes of
+xcodebuild. The way out is to run the same lane inside the graphical session,
+for example `open -a Terminal <lane>.command` from the SSH shell (a locked
+screen is fine); notarization and stapling work over SSH as before. A one-time
+`security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db` in the graphical session only removes
+the "Always Allow" prompt for that session's signatures. The build log says
+`signing from keychain: <default keychain>` before the first real-identity
+signature, and the script never falls back to ad-hoc signing behind the caller.
 
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;

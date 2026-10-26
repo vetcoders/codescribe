@@ -322,6 +322,28 @@ fi
 STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 
+# Signing preflight for a headless build. The unlocked state of the login
+# keychain belongs to the security session that unlocked it: the graphical
+# session has it open while an SSH session to the same Mac sees it locked, and
+# no keychain setting or partition list changes that. A real-identity build
+# over SSH would therefore run xcodebuild for minutes and then die in codesign
+# with errSecInternalComponent, so probe the default keychain now and stop with
+# the way out: run the same lane inside the graphical session.
+DEFAULT_KEYCHAIN="$(security default-keychain 2>/dev/null | sed -n 's/^ *"\(.*\)" *$/\1/p' | head -1)"
+headless_signing_recipe() {
+  echo "error: the signing key in ${DEFAULT_KEYCHAIN:-the login keychain} is not usable from this SSH session$1." >&2
+  echo "       The login keychain is unlocked only inside the graphical session of this Mac; a keychain timeout or" >&2
+  echo "       \`security set-key-partition-list\` does not change that. Run the same lane in that session instead, e.g." >&2
+  echo "         open -a Terminal <lane>.command" >&2
+  echo "       (a locked screen is fine). This build does not fall back to ad-hoc signing." >&2
+}
+if [ "${SKIP_XCODEBUILD:-0}" != "1" ] && [ "${CODESCRIBE_CODESIGN_IDENTITY:-}" != "-" ] \
+  && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] \
+  && ! security show-keychain-info "${DEFAULT_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}" >/dev/null 2>&1; then
+  headless_signing_recipe " (the keychain is locked here)"
+  exit 1
+fi
+
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 # Verify emitted artifact receipts before any consumer can touch stale files.
 # A configured build.target puts artifacts in a triple subdirectory. This app
@@ -555,15 +577,10 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # otherwise prefer a real identity whenever the caller did not specify one.
 # The identity comes from the default keychain search list (login), named by
 # its SHA-1 hash so the choice is unambiguous even when a certificate is
-# installed twice. There is no separate build keychain. A build driven over
-# SSH signs from the same login keychain, which works only after a one-time
-# setup in the graphical session of the build host: the keychain must not
-# auto-lock (`security set-keychain-settings` without a timeout) and the
-# codesign partition must be allowed to use the key without a SecurityAgent
-# prompt (`security set-key-partition-list`). Without that, codesign over SSH
-# dies with errSecInternalComponent; the sign helper below recognises that
-# and stops with the recipe instead of signing ad-hoc behind the caller.
-SIGN_KEYCHAIN="$(security default-keychain 2>/dev/null | sed -n 's/^ *"\(.*\)" *$/\1/p' | head -1)"
+# installed twice. There is no separate build keychain. The headless preflight
+# above already refused an SSH build whose login keychain is locked; the sign
+# helper keeps a second line of defence for a keychain that locked meanwhile.
+SIGN_KEYCHAIN="$DEFAULT_KEYCHAIN"
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
@@ -576,11 +593,7 @@ sign() {
   out="$(codesign "$@" 2>&1)" || rc=$?
   [ -n "$out" ] && printf '%s\n' "$out" >&2
   if [ "$rc" -ne 0 ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && printf '%s' "$out" | grep -q "errSecInternalComponent"; then
-    echo "error: codesign could not use the signing key from ${SIGN_KEYCHAIN:-the login keychain} in this SSH session (errSecInternalComponent)." >&2
-    echo "       One-time setup, in the graphical session of this Mac (asks for the login password, stores nothing):" >&2
-    echo "         security set-keychain-settings ~/Library/Keychains/login.keychain-db" >&2
-    echo "         security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db" >&2
-    echo "       Then run this build again. It does not fall back to ad-hoc signing." >&2
+    headless_signing_recipe " (errSecInternalComponent)"
     exit 1
   fi
   return "$rc"
