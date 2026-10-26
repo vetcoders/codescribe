@@ -76,8 +76,8 @@ fn init(owner: LogOwner, default_filter: &str) {
         // The high-churn move runs before the file sink opens: the sink's
         // folder is one of the moved entries. Only the app moves its data;
         // test harnesses get no file sink and move nothing.
-        let churn_moves = (owner == LogOwner::App && !test_process)
-            .then(churn::migrate_churn_data_at_startup);
+        let churn_moves =
+            (owner == LogOwner::App && !test_process).then(churn::migrate_churn_data_at_startup);
         init_tracing(owner, default_filter, test_process);
         report_churn_moves(churn_moves.as_deref().unwrap_or_default());
         install_panic_hook();
