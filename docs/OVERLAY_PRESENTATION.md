@@ -205,7 +205,9 @@ does not need changes to these owners.
   writes one `overlay-presentation` line per choice:
   `conversation.auto_selected` (reply ids, owner, source, the channel before
   and after) or `conversation.auto_skipped` (reply id, owner, source, reason,
-  the channel that stays), with ids and channels only, never the text.
+  the channel that stays), with ids and channels only, never the text. A
+  message to the Founder whose owner is not unique is skipped and traced
+  the same way (`ambiguous_owner` or `no_owner`).
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.

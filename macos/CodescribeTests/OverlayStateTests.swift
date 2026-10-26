@@ -1164,16 +1164,30 @@ final class OverlayStateTests: XCTestCase {
       messages: peerCopy.messages + toFounder.messages)
     state.applyConversationSnapshot(
       .init(deliveries: [], conversations: [broadcast, peer, astraView]))
+    let left = replyFocusConversation(lena, id: "reply:left", text: secret)
+    let right = replyFocusConversation(astra, id: "reply:right", text: secret)
+    let lenaBoth = OverlayConversation(
+      id: lena.id, channel: lena.channel, name: lena.name, owner: lena.owner,
+      messages: peer.messages + left.messages)
+    let astraBoth = OverlayConversation(
+      id: astra.id, channel: astra.channel, name: astra.name, owner: astra.owner,
+      messages: astraView.messages + right.messages)
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [broadcast, lenaBoth, astraBoth]))
+    XCTAssertEqual(state.selectedConversationID, astra.id)
     let lines = trace.entries(after: before)
       .filter { [.conversationAutoSelected, .conversationAutoSkipped].contains($0.kind) }
       .map(OverlayPresentationTrace.line)
     XCTAssertEqual(
       lines,
       [
-        "conversation.auto_skipped reply=reply:peer owner=codex:lena-session:aaaaaaaa"
+        "conversation.auto_skipped reply=reply:peer owner=codex:lena-ses:aaaaaaaa"
           + " source=3 reason=agent-to-agent stays=0",
         "conversation.auto_selected reply=reply:to-founder owner=codex:astra:bbbbbbbb"
           + " source=- from=0 to=3",
+        "conversation.auto_skipped reply=reply:left,reply:right"
+          + " owner=codex:astra:bbbbbbbb,codex:lena-ses:aaaaaaaa"
+          + " source=- reason=ambiguous_owner stays=3",
       ])
     XCTAssertFalse(lines.contains { $0.contains(secret) })
   }

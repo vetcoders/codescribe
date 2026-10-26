@@ -2698,9 +2698,11 @@ final class OverlayState {
       !composerRetainsAutomaticReplyFocus
     else { return }
     let addressed = repliesAddressedToFounder(among: fresh)
-    guard !addressed.isEmpty,
-      let conversation = ownedConversation(forNewReplies: addressed)
-    else { return }
+    guard !addressed.isEmpty else { return }
+    guard let conversation = ownedConversation(forNewReplies: addressed) else {
+      traceUnownedAdmission(addressed)
+      return
+    }
     let note = [
       "reply=\(addressed.sorted().joined(separator: ","))",
       "owner=\(Self.traceOwner(conversation.owner))",
@@ -2751,6 +2753,22 @@ final class OverlayState {
     return addressed
   }
 
+  /// Replies to the Founder without one owning conversation stay where the
+  /// user is: two authors are ambiguous, and an author without its own
+  /// conversation has no owner here.
+  private func traceUnownedAdmission(_ ids: Set<String>) {
+    let authors = Set(ids.compactMap { freshReply($0)?.owner?.id })
+    let reason = authors.count > 1 ? "ambiguous_owner" : "no_owner"
+    let owners = Set(ids.map { Self.traceOwner(freshReply($0)?.owner) }).sorted()
+    let note = [
+      "reply=\(ids.sorted().joined(separator: ","))",
+      "owner=\(owners.joined(separator: ","))",
+      "source=\(traceSources(of: ids))",
+      "reason=\(reason) stays=\(traceSelectedChannel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+  }
+
   private func freshReply(_ id: String) -> OverlayConversationMessage? {
     for conversation in conversations {
       if let message = conversation.messages.first(where: { $0.kind == .reply && $0.id == id }) {
@@ -2760,10 +2778,11 @@ final class OverlayState {
     return nil
   }
 
-  /// Owner ids join their parts with NUL; the trace line needs printable text.
+  /// Owner ids join their parts with NUL; the trace line needs printable
+  /// text, and eight characters of the session and the lease suffice.
   private static func traceOwner(_ owner: OverlayConversationOwner?) -> String {
     guard let owner else { return "-" }
-    return "\(owner.provider):\(owner.providerSessionID):\(owner.leaseID.prefix(8))"
+    return "\(owner.provider):\(owner.providerSessionID.prefix(8)):\(owner.leaseID.prefix(8))"
   }
 
   private func traceSources(of ids: Set<String>) -> String {

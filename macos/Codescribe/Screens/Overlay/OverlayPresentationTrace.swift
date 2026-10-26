@@ -49,7 +49,8 @@ final class OverlayPresentationTrace {
     /// A fresh message to the Founder selected its owner's conversation.
     /// The note names ids and channels, never the message text.
     case conversationAutoSelected = "conversation.auto_selected"
-    /// A fresh agent-to-agent or channel-0 message left the selection alone.
+    /// A fresh agent-to-agent or channel-0 message, or a message to the
+    /// Founder without one owner, left the selection alone.
     case conversationAutoSkipped = "conversation.auto_skipped"
   }
 
