@@ -1773,7 +1773,8 @@ cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
 takes no `--provider/--session` (it works on the whole bridge home, not on
 one mailbox), combines with no other command, and prints one JSON line
 `{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped",
-"playback", "sent"}, "existing", "unmapped", "failed", "dry_run"}`, exit 0,
+"playback", "sent"}, "existing", "unmapped", "mapped_by_bus", "failed",
+"dry_run"}`, exit 0,
 or exit 3 when `failed > 0` (a receipt that could not be written, for
 example under an unwritable `runtime/receipts/`; a refused run never looks
 like "nothing to do"). It is the
@@ -1786,7 +1787,7 @@ moved or removed; nothing is written outside `runtime/receipts/`:
 | a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox) | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at` |
 | a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file |
 | `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field) | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none |
-| `broadcast-skipped/<lease_id>/<delivery_id>.json` | `<delivery_id>.skipped.json` (`policy: off`) |
+| `broadcast-skipped/<lease_id>/<delivery_id>.json` (`message_id` on the marker; a marker older than that field is tied to its copy through the bus it names, below) | `<delivery_id>.skipped.json` (`policy: off`) |
 | `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`) | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
 | the frozen `target.recipients` stamp on a journal row or an ACK envelope | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed |
 
@@ -1809,12 +1810,24 @@ channel come from `leases/<lease_id>.json`
 and the copy's frozen `recipients` entry, as `receipt_recipient` resolves
 them at runtime; the names are the agents' raw names.
 
+A skip marker written before markers carried `message_id` names only its
+`delivery_id`, its lease and the `bus` its reader refused to read from.
+The backfill reads that bus once per lease with the reader's own chain
+(the normalizer, admission by the frozen `recipients`, `consider` under the
+lease's name) and computes each copy's delivery id with
+`delivery_identity`, the one function `SessionLease.enrich` stamps it
+with. A marker whose delivery id is exactly one copy's takes that copy's
+`message_id` and gets the same `skipped` file a marker with the field
+gets; `mapped_by_bus` counts these. Text and time are never compared.
+
 Nothing is guessed. A source that cannot be tied to a `message_id` (the
 oldest ACK shape without an envelope, an envelope without `message_id`, a
 dictation seal behind an ACK marker, a temporary `.tmp` file, an unreadable
 JSON or lease file, a `pending` entry or `message` row without a usable
 `message_id`, `delivery_id` or `emitted_at`, an incomplete last journal
-row, a playback file of another schema) is counted as
+row, a playback file of another schema, a skip marker without `message_id`
+whose bus is gone, over 256 MiB, or holds no copy, or more than one
+message, under that delivery id) is counted as
 `unmapped` and left alone; `unmapped` is information, not an error, and
 the exit code stays 0. Idempotence is the write-once rule itself, not a
 register of what was done: a second run finds every file, writes nothing,

@@ -1256,6 +1256,61 @@ def channel_message_phase_identity(event: dict[str, Any]) -> str:
                       event.get("reducer_revision"), event.get("reducer_action")))
 
 
+def delivery_phase_identity(payload: dict[str, Any]) -> Any:
+    """The source-event phase one delivery is keyed by.
+
+    Terminal evidence projects once per document entry and a channel take is
+    one message across its revisions, so after a restart a later row is the
+    same delivery phase, not another command: both are keyed by the reducer
+    phase the normalizer uses. Everything else is keyed by its own
+    `source_event_id`, kept intact for provenance.
+    """
+    session = str(payload.get("session_id") or "")
+    if (payload.get("message_id") == channel_message_identity(session)
+            and channel_of_session(session) is not None):
+        return channel_message_phase_identity(payload)
+    if (
+        payload.get("producer_schema") == EVIDENCE_SCHEMA
+        and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
+        and payload.get("status") == SEALED
+    ):
+        return terminal_seal_identity(payload)
+    return payload.get("source_event_id")
+
+
+def delivery_identity(lease_id: str, payload: dict[str, Any]) -> str:
+    """One delivery: one lease owner, one source-event phase, one copy.
+
+    The runtime stamps it in `SessionLease.enrich`; the receipts backfill
+    recomputes it from a reader's own bus to tie a skip marker written
+    before `message_id` to the copy it refused. Both call this and nothing
+    else computes it. The rail name namespaces native bridge output away
+    from a manual rail while the lease lock refuses a second native owner.
+    """
+    return _identity(("native_bus_demux", lease_id, delivery_phase_identity(payload),
+                      payload.get("kind"), payload.get("audience")))
+
+
+def channel_event_admitted(event: dict[str, Any], *, provider: str, provider_session_id: str,
+                           lease_id: str, bus: str) -> bool:
+    """Whether a bus row is this lease owner's own copy.
+
+    A row with frozen `recipients` names its owners; a channel session's row
+    names one owner at the top level; a row with neither is unaddressed and
+    admitted to every reader of that bus. `SessionLease.admits_channel_event`
+    and the receipts backfill ask the same question of the same fields.
+    """
+    frozen = event.get("recipients")
+    expected = {"provider": provider, "provider_session_id": provider_session_id,
+                "lease_id": lease_id, "bus": bus}
+    if isinstance(frozen, list):
+        return any(isinstance(owner, dict) and all(owner.get(key) == value
+                   for key, value in expected.items()) for owner in frozen)
+    if channel_of_session(str(event.get("session_id") or "")) is not None:
+        return all(event.get(key) == value for key, value in expected.items())
+    return frozen is None
+
+
 def capture_sample_rate(event: dict[str, Any]) -> int | None:
     """Read the ledger's capture clock; VAD and TTS rates are different clocks."""
     coverage = event.get("seal_coverage")
@@ -4197,15 +4252,9 @@ class SessionLease:
         self.persist(active=True)
 
     def admits_channel_event(self, event: dict[str, Any]) -> bool:
-        frozen = event.get("recipients")
-        expected = {"provider": self.provider, "provider_session_id": self.provider_session_id,
-                    "lease_id": self.lease_id, "bus": self.bus}
-        if isinstance(frozen, list):
-            return any(isinstance(owner, dict) and all(owner.get(key) == value
-                       for key, value in expected.items()) for owner in frozen)
-        if channel_of_session(str(event.get("session_id") or "")) is not None:
-            return all(event.get(key) == value for key, value in expected.items())
-        return frozen is None
+        return channel_event_admitted(
+            event, provider=self.provider, provider_session_id=self.provider_session_id,
+            lease_id=self.lease_id, bus=self.bus)
 
     def enrich(self, payload: dict[str, Any]) -> None:
         payload["lease_id"] = self.lease_id
@@ -4221,29 +4270,9 @@ class SessionLease:
             "provider": self.provider,
             "provider_session_id": self.provider_session_id,
         }
-        # Terminal evidence projects once per document entry. After restart,
-        # a later row is the same delivery phase, not another command. Keep
-        # source_event_id intact for provenance while keying that delivery by
-        # the same reducer phase used by EvidenceNormalizer.
-        phase_id = payload.get("source_event_id")
-        if (payload.get("message_id") == channel_message_identity(str(payload.get("session_id") or ""))
-                and channel_of_session(str(payload.get("session_id") or "")) is not None):
-            phase_id = channel_message_phase_identity(payload)
-        elif (
-            payload.get("producer_schema") == EVIDENCE_SCHEMA
-            and payload.get("reducer_action") in TERMINAL_PUBLICATIONS
-            and payload.get("status") == SEALED
-        ):
-            phase_id = terminal_seal_identity(payload)
-        payload["delivery_id"] = _identity(
-            (
-                "native_bus_demux",
-                self.lease_id,
-                phase_id,
-                payload.get("kind"),
-                payload.get("audience"),
-            )
-        )
+        # One owner computes the delivery identity (`delivery_identity`): the
+        # backfill recomputes it from the bus with the same function.
+        payload["delivery_id"] = delivery_identity(self.lease_id, payload)
 
     def attach_receipt(self) -> dict[str, Any]:
         names = sorted(
@@ -8191,9 +8220,13 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     mtime when the marker has none); a skip marker becomes `skipped`; a
     terminal playback ticket becomes `playback`; a frozen `target.recipients`
     stamp becomes `sent.json` (its publisher's lane is not reconstructed:
-    `bus: null`). Nothing is guessed: a source that cannot be
+    `bus: null`). A skip marker older than `message_id` is tied to its copy
+    through the bus it names, by the delivery id the runtime stamps
+    (`reader_copies_in_bus`); `mapped_by_bus` counts those. Nothing is
+    guessed: a source that cannot be
     tied to a `message_id` (an envelope without one, a dictation seal, a
-    temporary or unreadable file) is counted as `unmapped` and left alone.
+    temporary or unreadable file, a skip marker whose delivery matches no
+    copy or more than one message) is counted as `unmapped` and left alone.
     Running again finds the files and writes nothing; `existing` counts
     them. A file that could not be written (an unwritable receipts
     directory) is counted as `failed`, so a refused run never reads as
@@ -8207,7 +8240,7 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     is never printed and `at` is never invented.
     """
     counts = dict.fromkeys(RECEIPT_BACKFILL_KINDS, 0)
-    existing = unmapped = failed = 0
+    existing = unmapped = failed = mapped_by_bus = 0
     plans: dict[Path, tuple[str, Any]] = {}
     names: dict[str, str | None] = {}
 
@@ -8341,21 +8374,49 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
             plan_sent(payload, message_id)
 
     # Skip markers: channel zero was off, the copy was skipped instead of delivered.
+    def plan_skipped(row: dict[str, Any], modified: str | None, lease_id: str,
+                     delivery_id: str, message_id: str) -> None:
+        payload = {**row, "message_id": message_id, "delivery_id": delivery_id, "lease_id": lease_id}
+        plan(receipts_directory(root, message_id) / f"{delivery_id}.skipped.json", "skipped",
+             lambda payload=payload, lease_id=lease_id, at=stamp(row.get("emitted_at")) or modified:
+             record_message_receipt(root, payload, "skipped", name=lease_name(lease_id),
+                                    policy=stamp(row.get("policy")) or "off", at=at))
+
+    # A marker older than `message_id` names only its delivery and the bus
+    # it refused to read from. The copy is found again in that bus by the
+    # delivery id the runtime stamps (`delivery_identity`), one bus pass per
+    # lease, never by text or time; a delivery that matches no copy or more
+    # than one message stays unmapped.
+    legacy: dict[tuple[str, str], list[tuple[dict[str, Any], str | None, str]]] = {}
     for directory in lease_directories(root / "broadcast-skipped"):
         lease_id = directory.name
         for path in entries(directory):
             row, modified = marker(path)
             delivery_id = path.name[:-5] if path.name.endswith(".json") else ""
-            message_id = receipt_message_id(row) if row else None
-            if (row is None or message_id is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
+            if (row is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
                     or row.get("delivery_id") != delivery_id or row.get("lease_id") != lease_id):
                 unmapped += 1
                 continue
-            payload = {**row, "delivery_id": delivery_id, "lease_id": lease_id}
-            plan(receipts_directory(root, message_id) / f"{delivery_id}.skipped.json", "skipped",
-                 lambda payload=payload, lease_id=lease_id, at=stamp(row.get("emitted_at")) or modified:
-                 record_message_receipt(root, payload, "skipped", name=lease_name(lease_id),
-                                        policy=stamp(row.get("policy")) or "off", at=at))
+            message_id = receipt_message_id(row)
+            if message_id is not None:
+                plan_skipped(row, modified, lease_id, delivery_id, message_id)
+            elif isinstance(row.get("bus"), str) and row["bus"]:
+                legacy.setdefault((row["bus"], lease_id), []).append((row, modified, delivery_id))
+            else:
+                unmapped += 1
+    for (bus, lease_id), markers in sorted(legacy.items()):
+        first = markers[0][0]
+        copies = reader_copies_in_bus(
+            Path(bus), provider=str(first.get("provider") or ""),
+            provider_session_id=str(first.get("provider_session_id") or ""), lease_id=lease_id,
+            name=lease_name(lease_id), wanted={delivery_id for _, _, delivery_id in markers})
+        for row, modified, delivery_id in markers:
+            found = copies.get(delivery_id) or set()
+            if len(found) != 1:
+                unmapped += 1
+                continue
+            mapped_by_bus += 1
+            plan_skipped(row, modified, lease_id, delivery_id, next(iter(found)))
 
     # Playback tickets: only a terminal state is a fact about hearing.
     for path in entries(root / "runtime" / "reply-playback"):
@@ -8387,7 +8448,54 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
         else:
             failed += 1
     return {"kind": "receipts_backfill", "written": counts, "existing": existing,
-            "unmapped": unmapped, "failed": failed, "dry_run": dry_run}
+            "unmapped": unmapped, "mapped_by_bus": mapped_by_bus, "failed": failed, "dry_run": dry_run}
+
+
+BACKFILL_BUS_CAP = 256 << 20
+
+
+def reader_copies_in_bus(bus: Path, *, provider: str, provider_session_id: str, lease_id: str,
+                         name: str | None, wanted: set[str]) -> dict[str, set[str]]:
+    """The `message_id` of every copy in `bus` that this reader would have
+    queued under one of the `wanted` delivery ids.
+
+    One linear pass through the reader's own bus with the reader's own chain:
+    the normalizer that turns rows into events, the admission by frozen
+    recipients, `consider` under the lease's bound name (drafts included, so
+    a revision's delivery is found as well as the seal's) and
+    `delivery_identity`. Nothing is derived from text or time, so a marker
+    maps only when its delivery id is exactly a copy's. A bus that cannot be
+    read whole (missing, over the cap, a row refused by the normalizer)
+    yields what was found before that point and nothing after it.
+    """
+    found: dict[str, set[str]] = {}
+    try:
+        if not S_ISREG(bus.lstat().st_mode) or bus.lstat().st_size > BACKFILL_BUS_CAP:
+            return found
+    except OSError:
+        return found
+    normalizer = EvidenceNormalizer()
+    coordinates = {"provider": provider.casefold(), "provider_session_id": provider_session_id,
+                   "lease_id": lease_id, "bus": str(bus)}
+    try:
+        for raw in replay(bus):
+            for event in normalized_revision_events(raw, normalizer, None):
+                if event.get("schema") == DELIVERY_CONTROL_SCHEMA:
+                    continue
+                if not channel_event_admitted(event, **coordinates):
+                    continue
+                payload = consider(event, name=name, hear_all=False, drafts=True, debug=False)
+                if payload is None:
+                    continue
+                message_id = receipt_message_id(payload)
+                if message_id is None:
+                    continue
+                delivery_id = delivery_identity(lease_id, payload)
+                if delivery_id in wanted:
+                    found.setdefault(delivery_id, set()).add(message_id)
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return found
 
 
 def backfill_receipts_command(args: argparse.Namespace) -> int:
