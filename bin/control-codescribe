@@ -520,40 +520,32 @@ def cmd_health(args: argparse.Namespace) -> int:
 
     if handshakes:
         active = handshakes[0]
-        live_sha = active.get("commit") or installed_sha
-        inodes_ok = active.get("inodesMatchInstalled") is not False
+        live_sha = active.get("commit")
+        inodes_ok = active.get("inodesMatchInstalled") is True
         ok = sha_matches(live_sha, expected) and inodes_ok
-        source = "running_process_handshake"
+        status = "running" if ok else "mismatch"
         summary = (
             f"Running Codescribe pid={active.get('pid')} commit={live_sha} matches --sha {expected} "
-            f"(inodesMatchInstalled={active.get('inodesMatchInstalled')})"
+            f"(inodesMatchInstalled={active.get('inodesMatchInstalled')}, installedCommit={installed_sha})"
             if ok
             else f"Running Codescribe pid={active.get('pid')} commit={live_sha} does not match --sha {expected} "
-            f"(installed={installed_sha}, inodesMatchInstalled={active.get('inodesMatchInstalled')})"
-        )
-    elif installed_sha:
-        # No live process with a restart-if-idle handshake; check installed /Applications bundle only
-        # when no stale untracked process is running.
-        no_untracked_pids = len(runtime["runningPids"]) == 0
-        ok = sha_matches(installed_sha, expected) and no_untracked_pids
-        source = "installed_bundle"
-        summary = (
-            f"Installed /Applications/Codescribe.app CSBuildCommit={installed_sha} matches --sha {expected} (app not currently running)"
-            if ok
-            else f"Installed /Applications/Codescribe.app CSBuildCommit={installed_sha} does not match --sha {expected} "
-            f"(runningPids={runtime['runningPids']})"
+            f"(installedCommit={installed_sha}, inodesMatchInstalled={active.get('inodesMatchInstalled')})"
         )
     else:
         ok = False
-        source = "missing_application"
-        summary = f"Cannot verify --sha {expected}: /Applications/Codescribe.app is not installed or lacks CSBuildCommit"
+        status = "not-running"
+        summary = (
+            f"Codescribe is not running (status=not-running; installed /Applications CSBuildCommit={installed_sha or 'none'}, "
+            f"runningPids={runtime['runningPids']})"
+        )
 
     return emit(
         {
             "command": "health",
             "ok": ok,
-            "source": source,
+            "status": status,
             "expectedSha": expected,
+            "installedCommit": installed_sha,
             "runtime": runtime,
             "summary": summary,
         },

@@ -116,4 +116,46 @@ jobs:
                       file=sys.stderr,
                   )
                   sys.exit(1)
+
+          # Check only added lines (+, excluding +++ headers) in PR diff for banned vocabulary:
+          diff_out = subprocess.check_output(
+              [
+                  "git",
+                  "diff",
+                  "-U0",
+                  f"{base}...{head}",
+                  "--",
+                  ".",
+                  ":!.github/workflows/pr-risk-gate.yml",
+                  ":!AGENTS.md",
+                  ":!.github/copilot-instructions.md",
+              ],
+              text=True,
+          )
+          banned_words = [
+              "sh" + "im",
+              "com" + "pat",
+              "leg" + "acy",
+              "adapter-" + "for-old",
+              "fallback-" + "to-previous",
+              "bridge-" + "until",
+          ]
+          word_re = re.compile(
+              r"\b(" + "|".join(re.escape(w) for w in banned_words) + r")\b|" + re.escape("TODO " + "remove"),
+              re.IGNORECASE,
+          )
+          violations = []
+          cur_file = None
+          for line in diff_out.splitlines():
+              if line.startswith("+++ b/"):
+                  cur_file = line[6:]
+              elif line.startswith("+") and not line.startswith("+++"):
+                  hit = word_re.search(line[1:])
+                  if hit:
+                      violations.append(f"{cur_file}: {hit.group(0)!r} in added line: {line[1:].strip()[:120]}")
+          if violations:
+              print("ERROR: Banned vocabulary from AGENTS.md found in added PR lines:", file=sys.stderr)
+              for v in violations:
+                  print(f"  - {v}", file=sys.stderr)
+              sys.exit(1)
           PY
