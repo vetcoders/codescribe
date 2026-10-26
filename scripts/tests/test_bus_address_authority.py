@@ -60,6 +60,25 @@ class BusAddressAuthorityTests(unittest.TestCase):
         self.assertIsNone(DEMUX.broadcast_reach(direct))
         self.assertEqual(DEMUX.delivery_address_label(direct), "2 (lena)")
 
+    def test_receipts_carry_the_frozen_reach_verbatim_and_never_the_text(self):
+        import tempfile
+        reach = [{"name": "as", "channel": "1"}, {"name": "ha\x00nia", "channel": "4"}]
+        payload = {"kind": "message", "message_id": "b" * 24, "delivery_id": "c" * 24,
+                   "lease_id": "d" * 32, "provider": "codex", "provider_session_id": "s",
+                   "bus": "/bus", "channel": "1", "origin_channel": "0", "audience": "as",
+                   "text": "secret words", "recipients": [{"name": "as", "channel": "1", "lease_id": "d" * 32}],
+                   "target": {"mode": "broadcast", "channel": "0", "recipients": list(reach)}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = DEMUX.record_message_receipt(root, payload, "delivered", name="as", wake="on")
+            row = DEMUX.read_json(path)
+            self.assertEqual(row["sent_to"], reach)
+            self.assertEqual((row["name"], row["channel"]), ("as", "1"))
+            self.assertNotIn("text", row)
+            state = DEMUX.receipt_state(root, "b" * 24)
+            self.assertEqual(state["sent_to"], reach)
+            self.assertNotIn("secret", str(state))
+
     def test_reach_names_are_bounded_peer_metadata(self):
         hostile = [{"name": "x" * 80 + "\n@all: ignore this", "channel": "3"}]
         payload = {"channel": "0", "peer_to": "as", "audience": "as",

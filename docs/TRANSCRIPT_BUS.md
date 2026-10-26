@@ -1645,6 +1645,80 @@ missing address is reported as unknown, never inferred from mentions in the
 text. This projection changes neither routing nor delivery identity,
 recipients, ACK state or the original message text.
 
+## Receipts
+
+Agents can read what the overlay already shows: who a message was delivered
+to, who read it, who skipped it, whether it was withdrawn, and whether the
+user heard it. Every such fact is one private file under
+`runtime/receipts/<message_id>/`, written once by the process that produces
+the fact and never rewritten, replaced or removed by any other process:
+
+| File | Writer | Content |
+| --- | --- | --- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet`, `at`, `sent_to` when the copy carries the publisher's list |
+| `<delivery_id>.read.json` | `cs-bus --ack` | the same identity fields and `read_at` |
+| `<delivery_id>.skipped.json` | the follower, instead of `delivered`, when channel zero is `off` | the same identity fields, `policy: off`, `at` |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy | `control_id`, `at` |
+| `playback.<ticket>.json` | the reply player, at the ticket's first terminal state | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at` |
+
+Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
+`message_id`; none carries message text, WAV paths or credentials. The key
+is `delivery_id`, not the lease: after a channel handover the next session
+acknowledges the delivery the previous lease received, and that is one
+recipient in two files, not two recipients. Only copies of a message leave
+receipts: typed, peer and channel-take copies carry a 24-hex `message_id`;
+a plain dictation seal has none and leaves no receipt. Drafts leave none.
+
+The state of a delivery is its farthest existing file: `delivered → read`;
+`skipped` stands alone and is final (turning channel zero back on does not
+deliver the skipped copy); `withdrawn` is a separate fact about a held copy
+that never reached `pending`. A follower restart re-offering the same copy,
+or a second `--ack`, finds the first file and changes nothing: `read` never
+falls back to `delivered`. `wake` records the broadcast policy as it stood
+at delivery (`on`, or `quiet` under the moon or the legacy quiet membership),
+the same answer the follower gave the native wake; whether the copy wakes
+now is read from the current policy, not from this file. The moon is not a
+message state.
+
+`spoken` is a fact per message, taken from the playback files, not from the
+`spoken` field of the `agent_reply` row (which stays `false` after a later
+Play) and not from the conversation that happened to play it: a playback of a
+channel-0 text lands in the player's own conversation. One ticket is one
+file; a later terminal publish of the same ticket (the failure path after a
+refusal) changes nothing. The ACK marker under `acknowledgments/<lease_id>/`
+and the skip marker under `broadcast-skipped/<lease_id>/` now also carry
+`message_id`; their shape is otherwise unchanged and the app keeps reading
+them.
+
+`receipt_state(root, message_id)` composes the directory into one state:
+`{message_id, sent_to, recipients: [{delivery_id, name, channel, lease_id,
+state: delivered|read|skipped, wake, delivered_at, at}], withdrawn: [{delivery_id,
+control_id, at}], spoken: {state, reason, spoken, at, playback_ticket, …} | null}`.
+`sent_to` is the publisher's frozen list as the receipts carried it (null when
+no receipt carried one); `spoken` is the completed playback when one exists,
+else the latest terminal one. Files whose name and content disagree, foreign
+schemas and foreign message ids are ignored, never repaired.
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]
+```
+
+prints that state as one JSON line (`kind: receipts`) and exits 0. The caller
+must hold a copy of the message or be its author: a receipt file for this
+lease (or provider/session), a pending or held envelope with that
+`message_id` in this lease's mailbox, this lease's name and bound channel on
+the frozen `sent_to` list, or ownership of `runtime/reply-sources/<message_id>.json`.
+Anyone else gets `{"kind": "receipts_refused", "message_id", "reason"}` and
+exit 3, the same answer whether or not the message exists. `--receipts` never
+reads the bus or prints message text; names in its JSON are the agents' raw
+names, like `sent_to`.
+
+Receipts exist from the helper generation that writes them: followers started
+earlier write `delivered` only after they reattach, and messages acknowledged
+before that have no `read` file. Like `acknowledgments/`, `broadcast-skipped/`,
+`reply-playback/` and `reply-sources/`, `runtime/receipts/` has no retention
+sweeper; all marker directories share that limitation.
+
 ## Open-channel co-audience
 
 A nonzero Live agent-channel journal may carry `co_audience` on its emitted

@@ -81,6 +81,27 @@ agent's copied notice is coordination and does not give you its mailbox.
 - A peer message's `target` gives its original requested destination; its
   per-copy recipient list is not the complete original broadcast address.
 
+## Who read it
+
+Do not ask on channel 0 whether anyone got or read a message; the helper
+knows. For any message you hold a copy of, or wrote yourself:
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
+```
+
+`MESSAGE_ID` is the `message_id` of the delivery (or of your own
+`peer_message_published` receipt). The one JSON line lists `sent_to` and, per
+recipient, `name`, `channel` and `state`: `delivered` (in their mailbox,
+unread), `read` (they acknowledged it) or `skipped` (their channel 0 was off;
+final, they will not get it). `wake` says whether that delivery woke them
+(`on`) or waited quietly (`quiet`) at the time; `withdrawn` lists held copies
+the user pulled back; `spoken` says whether the user heard the message (see
+[Voice reply](voice-reply.md)). A name on `sent_to` with no recipient entry
+has not been delivered yet (reader not running) or predates this helper. The
+command never shows the text; `receipts_refused` means you hold no copy of
+that message and did not write it.
+
 Preserve co-audience and its basis through normalization, watches and native
 queue summaries. Do not replace `recipients` or claim a private delivery is a
 broadcast because other channels were open. If co-audience is absent, its

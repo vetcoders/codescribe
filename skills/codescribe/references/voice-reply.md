@@ -69,6 +69,19 @@ live take (`take_live`), stays silent when muted (`muted`) and reports
 `reason` (`spoken` is the only completed state) before claiming the user heard
 it; a refusal leaves the text in the agents' mailboxes and needs no resend.
 
+Later, or from another session of yours, the same question is answered per
+message, together with who read the text:
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
+```
+
+Its `spoken` object is the completed playback of that message when there was
+one (`state: spoken`, `spoken: true`), otherwise the latest terminal attempt
+with its `reason` (`take_live`, `muted`, `playback_busy`, `stopped`, …), and
+`null` when nobody played it. Do not read the `spoken` field of the
+`agent_reply` row for this: it stays `false` after a Play.
+
 `cs-say --reply-to ID` stays the voice answer in this agent's own conversation
 with the user (channel 1–9): there the words are for the user alone and no
 peer mailbox is involved.

@@ -3940,8 +3940,13 @@ class SessionLease:
         retained = self.held.get(delivery_id)
         if retained is not None:
             payload.update(retained)
-        if delivery_broadcast_policy(self.root, payload) == "off":
+        policy = delivery_broadcast_policy(self.root, payload)
+        if policy == "off":
             record_broadcast_skipped(self.root, payload)
+            if payload.get("kind") in TERMINAL_KINDS:
+                # Skipped instead of delivered, and final: switching channel
+                # zero back on later does not deliver this copy.
+                record_message_receipt(self.root, payload, "skipped", name=self.name, policy="off")
             if self.held.pop(delivery_id, None) is not None:
                 self.persist(active=True)
             return False
@@ -3989,6 +3994,11 @@ class SessionLease:
         self.pending[delivery_id] = payload
         self.persist(active=True)
         if payload.get("kind") in TERMINAL_KINDS:
+            # `wake` is the policy as it stood at delivery (the same answer
+            # deliver() uses for the native wake); whether the copy wakes now
+            # is read from the current policy, not from this file.
+            record_message_receipt(self.root, payload, "delivered", name=self.name,
+                                   wake="quiet" if policy == "quiet" else "on")
             lifecycle_message_received(self.root, self.lease_id)
         return True
 
@@ -4055,6 +4065,7 @@ class SessionLease:
             del self.held[payload["delivery_id"]]
             self.persist(active=True)
             self._record_hold_withdrawal(receipt)
+            record_withdrawn_receipt(self.root, payload, control_id, receipt["emitted_at"])
             return []
         payload["hold_released"] = True
         payload.setdefault("hold_controls", []).append(control_id)
@@ -4560,15 +4571,20 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
                 "nothing acknowledged"
             )
     for delivery_id in unread:
+        payload = next(payload for payload in pending if payload.get("delivery_id") == delivery_id)
+        message_id = receipt_message_id(payload)
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id,
              "provider": args.provider.casefold(), "provider_session_id": args.session,
              "read_at": utc_now(),
              "bus": state["bus"],
-             "envelope": receipt_envelope(next(payload for payload in pending
-                                if payload.get("delivery_id") == delivery_id), state["bus"])},
+             # The message this delivery is a copy of, so the marker and the
+             # receipts directory name the same fact.
+             **({"message_id": message_id} if message_id else {}),
+             "envelope": receipt_envelope(payload, state["bus"])},
         )
+        record_message_receipt(args.bridge_home, payload, "read", name=state.get("name"))
     for delivery_id in delivery_ids:
         withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
@@ -7761,6 +7777,325 @@ def delivery_broadcast_policy(root: Path, payload: dict[str, Any]) -> str:
         root, payload["provider"], payload["provider_session_id"], Path(payload["bus"]))
 
 
+MESSAGE_RECEIPT_SCHEMA = "codescribe.message-receipt.v1"
+#: Per-delivery receipt facts, from nearest to farthest; `skipped` stands alone.
+MESSAGE_RECEIPT_STATES = ("delivered", "read", "skipped")
+PLAYBACK_TERMINAL_STATES = ("spoken", "failed", "refused", "stopped")
+
+
+def receipts_directory(root: Path, message_id: str) -> Path:
+    return root / "runtime" / "receipts" / message_id
+
+
+def receipt_message_id(payload: dict[str, Any]) -> str | None:
+    """The message a delivery is a copy of, when the envelope names one.
+
+    Typed, peer and channel-take copies carry a 24-hex `message_id`; a plain
+    dictation seal has none and leaves no receipt.
+    """
+    identity = payload.get("message_id")
+    if isinstance(identity, str) and re.fullmatch(r"[0-9a-f]{24}", identity):
+        return identity
+    return None
+
+
+def write_receipt_once(path: Path, payload: dict[str, Any]) -> bool:
+    """One file is one fact: the first writer wins and nobody rewrites it.
+
+    The content is staged in a private temporary file and linked under its
+    final name, so a reader never sees a half-written receipt and two writers
+    racing on the same fact (a follower restart, a handover) leave exactly
+    the first content. An existing file is left as it is: nothing here ever
+    unlinks or replaces a receipt.
+    """
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def bound_channel_of_lease(root: Path, lease_id: str) -> str | None:
+    """The digit currently bound to this lease, read without taking the lock."""
+    state = read_json(root / AUDIENCE_BINDING_FILENAME) or {}
+    bindings = state.get("bindings") if state.get("schema") == AUDIENCE_BINDING_SCHEMA else None
+    if not isinstance(bindings, dict):
+        return None
+    for channel, binding in bindings.items():
+        owner, refusal = binding_identity(str(channel), binding)
+        if refusal is None and owner["lease_id"] == lease_id:
+            return owner["channel"]
+    return None
+
+
+def receipt_recipient(root: Path, payload: dict[str, Any], name: str | None) -> dict[str, Any]:
+    """Who this copy's mailbox belongs to: the lease's name and its channel.
+
+    The channel comes from the copy's frozen recipient entry for this lease
+    when the publisher wrote one, otherwise from the lease's current binding.
+    Names are the agents' own, bounded only when rendered as prose.
+    """
+    lease_id = payload.get("lease_id")
+    channel = None
+    for row in payload.get("recipients") or []:
+        if (isinstance(row, dict) and row.get("lease_id") == lease_id
+                and isinstance(row.get("channel"), str) and row["channel"]):
+            channel = row["channel"]
+            name = name or row.get("name") or row.get("audience")
+            break
+    if channel is None and isinstance(lease_id, str):
+        channel = bound_channel_of_lease(root, lease_id)
+    if not name:
+        audience = payload.get("audience")
+        name = audience if isinstance(audience, str) and audience not in ("", "*") else None
+    return {"name": name, "channel": channel, "lease_id": lease_id,
+            "provider": payload.get("provider"), "provider_session_id": payload.get("provider_session_id"),
+            "bus": payload.get("bus")}
+
+
+def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
+                           name: str | None, wake: str | None = None,
+                           policy: str | None = None) -> Path | None:
+    """Write the one file that says this copy was delivered, read or skipped.
+
+    `delivered` is written by the follower when the copy enters `pending`,
+    with `wake` as the policy stood at that moment; `read` by `--ack`;
+    `skipped` by the follower instead of `delivered` when channel zero is
+    off. Each is written once under `runtime/receipts/<message_id>/`; a
+    later writer of the same fact changes nothing. Deliveries without a
+    `message_id` (plain dictation seals) leave no receipt.
+    """
+    if state not in MESSAGE_RECEIPT_STATES:
+        raise ValueError(f"unknown receipt state {state!r}")
+    message_id = receipt_message_id(payload)
+    delivery_id = payload.get("delivery_id")
+    if message_id is None or not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        return None
+    stamp = utc_now()
+    row: dict[str, Any] = {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": state,
+                           "message_id": message_id, "delivery_id": delivery_id,
+                           **receipt_recipient(root, payload, name),
+                           ("read_at" if state == "read" else "at"): stamp}
+    if state == "delivered":
+        row["wake"] = "quiet" if wake == "quiet" else "on"
+    if state == "skipped":
+        row["policy"] = policy or "off"
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        row["sent_to"] = reach
+    path = receipts_directory(root, message_id) / f"{delivery_id}.{state}.json"
+    try:
+        write_receipt_once(path, row)
+    except OSError as error:
+        # The delivery itself is already persisted or acknowledged; a receipt
+        # that could not be written is reported, never allowed to undo that.
+        sys.stderr.write(f"bus-demux: {state} receipt not written: {error}\n")
+        return None
+    return path
+
+
+def record_withdrawn_receipt(root: Path, payload: dict[str, Any], control_id: str,
+                             at: str) -> Path | None:
+    message_id = receipt_message_id(payload)
+    delivery_id = payload.get("delivery_id")
+    if message_id is None or not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        return None
+    path = receipts_directory(root, message_id) / f"withdrawn.{delivery_id}.json"
+    try:
+        write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "withdrawn",
+                                  "message_id": message_id, "delivery_id": delivery_id,
+                                  "lease_id": payload.get("lease_id"), "control_id": control_id, "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: withdrawn receipt not written: {error}\n")
+        return None
+    return path
+
+
+def record_playback_receipt(root: Path, reply: dict[str, Any], ticket: str, state: str,
+                            *, reason: str | None, at: str) -> Path | None:
+    """One ticket, one file, written at the first terminal state of that playback.
+
+    The reply's own `spoken` field on the bus stays `false` after playback
+    and the playback event lands in whichever conversation played it, so the
+    per-message answer to "did the user hear it" lives here, keyed by the
+    reply id (the `message_id` of a peer text).
+    """
+    if state not in PLAYBACK_TERMINAL_STATES:
+        return None
+    identity = reply.get("reply_id")
+    if (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity)
+            or not re.fullmatch(r"[0-9a-f]{24}", ticket)):
+        return None
+    path = receipts_directory(root, identity) / f"playback.{ticket}.json"
+    try:
+        write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "playback",
+                                  "message_id": identity, "playback_ticket": ticket,
+                                  "state": state, "reason": reason, "spoken": state == "spoken",
+                                  "provider": reply.get("provider"),
+                                  "provider_session_id": reply.get("provider_session_id"),
+                                  "lease_id": reply.get("lease_id"), "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: playback receipt not written: {error}\n")
+        return None
+    return path
+
+
+def read_receipt(path: Path) -> dict[str, Any] | None:
+    try:
+        metadata = path.lstat()
+        if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+            return None
+        row = read_reply_json(path, 1 << 20)
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return row if row.get("schema") == MESSAGE_RECEIPT_SCHEMA else None
+
+
+def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
+    """Compose the receipt files of one message into its current state.
+
+    Per delivery the state is the farthest existing file (`read` over
+    `delivered`; `skipped` on its own), keyed by `delivery_id`, so one agent
+    whose channel changed hands between delivery and reading is one
+    recipient. `sent_to` is the publisher's frozen list as the receipts
+    carried it, when any did. `spoken` is the playback that completed, else
+    the latest terminal playback, else None. Message text is never read.
+    """
+    directory = receipts_directory(root, message_id)
+    deliveries: dict[str, dict[str, dict[str, Any]]] = {}
+    withdrawn: list[dict[str, Any]] = []
+    playbacks: list[dict[str, Any]] = []
+    sent_to: list[dict[str, str]] | None = None
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        entries = []
+    for path in entries:
+        if path.name.startswith(".") or not path.name.endswith(".json"):
+            continue
+        row = read_receipt(path)
+        if row is None or row.get("message_id") != message_id:
+            continue
+        kind, stem = row.get("kind"), path.name[:-5]
+        if kind in MESSAGE_RECEIPT_STATES and stem == f"{row.get('delivery_id')}.{kind}":
+            deliveries.setdefault(row["delivery_id"], {})[kind] = row
+            if sent_to is None and isinstance(row.get("sent_to"), list):
+                sent_to = [{"name": item["name"], "channel": item["channel"]}
+                           for item in row["sent_to"] if isinstance(item, dict)
+                           and isinstance(item.get("name"), str) and isinstance(item.get("channel"), str)]
+        elif kind == "withdrawn" and stem == f"withdrawn.{row.get('delivery_id')}":
+            withdrawn.append({"delivery_id": row["delivery_id"], "control_id": row.get("control_id"),
+                              "at": row.get("at")})
+        elif kind == "playback" and stem == f"playback.{row.get('playback_ticket')}":
+            playbacks.append({"state": row.get("state"), "reason": row.get("reason"),
+                              "spoken": row.get("spoken") is True, "at": row.get("at"),
+                              "playback_ticket": row["playback_ticket"],
+                              "provider": row.get("provider"),
+                              "provider_session_id": row.get("provider_session_id")})
+    recipients = []
+    for delivery_id, rows in deliveries.items():
+        if "read" in rows:
+            state, row = "read", rows["read"]
+        elif "delivered" in rows:
+            state, row = "delivered", rows["delivered"]
+        else:
+            state, row = "skipped", rows["skipped"]
+        delivered = rows.get("delivered")
+        recipients.append({
+            "delivery_id": delivery_id, "name": row.get("name"), "channel": row.get("channel"),
+            "lease_id": row.get("lease_id"), "state": state,
+            "wake": delivered.get("wake") if delivered else None,
+            "delivered_at": delivered.get("at") if delivered else None,
+            "at": row.get("read_at") if state == "read" else row.get("at"),
+        })
+    recipients.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
+    withdrawn.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
+    playbacks.sort(key=lambda item: (str(item["at"] or ""), item["playback_ticket"]))
+    spoken = next((item for item in playbacks if item["spoken"]), playbacks[-1] if playbacks else None)
+    return {"message_id": message_id, "sent_to": sent_to, "recipients": recipients,
+            "withdrawn": withdrawn, "spoken": spoken}
+
+
+def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -> bool:
+    """Only an agent holding a copy, or the message's author, reads its receipts.
+
+    A copy is proven by a receipt file for this lease, a pending or held
+    envelope with this `message_id` in this lease's mailbox, or this lease's
+    name and channel on the frozen `sent_to` list. Authorship is proven by
+    the private `runtime/reply-sources/<message_id>.json` owner.
+    """
+    provider, session = args.provider.casefold(), args.session
+    lease_id = lease_identifier(provider, session)
+    source = read_json(root / "runtime" / "reply-sources" / f"{message_id}.json") or {}
+    if (source.get("schema") == REPLY_SOURCE_SCHEMA and source.get("reply_id") == message_id
+            and source.get("lease_id") == lease_id and source.get("provider") == provider
+            and source.get("provider_session_id") == session):
+        return True
+    state = read_json(root / "leases" / f"{lease_id}.json") or {}
+    if (state.get("schema") == LEASE_SCHEMA and state.get("lease_id") == lease_id
+            and state.get("provider") == provider and state.get("provider_session_id") == session):
+        rows = [*(state.get("pending") or []), *((state.get("held") or {}).values()
+                                                  if isinstance(state.get("held"), dict) else [])]
+        if any(isinstance(row, dict) and row.get("message_id") == message_id
+               and row.get("lease_id") == lease_id for row in rows):
+            return True
+        name = state.get("name")
+    else:
+        name = None
+    channel = bound_channel_of_lease(root, lease_id)
+    directory = receipts_directory(root, message_id)
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return False
+    for path in entries:
+        row = read_receipt(path) if path.name.endswith(".json") and not path.name.startswith(".") else None
+        if row is None or row.get("message_id") != message_id or row.get("kind") not in MESSAGE_RECEIPT_STATES:
+            continue
+        if row.get("lease_id") == lease_id or (
+                row.get("provider") == provider and row.get("provider_session_id") == session):
+            return True
+        if name and channel and any(isinstance(item, dict) and item.get("name") == name
+                                    and item.get("channel") == channel
+                                    for item in row.get("sent_to") or []):
+            return True
+    return False
+
+
+def receipts_command(args: argparse.Namespace) -> int:
+    """`cs-bus --receipts MESSAGE_ID`: one JSON line of state, never the text."""
+    message_id = args.receipts
+    if not receipts_authorized(args.bridge_home, args, message_id):
+        emit({"kind": "receipts_refused", "message_id": message_id,
+              "reason": "this provider session holds no copy of the message and is not its author"})
+        return 3
+    emit({"kind": "receipts", **receipt_state(args.bridge_home, message_id)})
+    return 0
+
+
 def broadcast_skip_path(root: Path, lease_id: str, delivery_id: str) -> Path:
     return root / "broadcast-skipped" / lease_id / f"{delivery_id}.json"
 
@@ -7791,8 +8126,10 @@ def record_broadcast_skipped(root: Path, payload: dict[str, Any]) -> None:
                 recorded = row
                 break
         if recorded is None:
+            message_id = receipt_message_id(payload)
             recorded = {"schema": BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped",
                         **{key: payload[key] for key in ("delivery_id", "lease_id", "provider", "provider_session_id", "bus")},
+                        **({"message_id": message_id} if message_id else {}),
                         "origin_channel": "0", "policy": "off", "emitted_at": utc_now()}
             stream.write(json.dumps(recorded, ensure_ascii=False, sort_keys=True) + "\n")
             stream.flush()
@@ -8007,6 +8344,11 @@ class ReplyPlaybackControl:
             # replace the original stopped/refused reason with join status.
             ticket["synthesis_join"] = self.synthesis_join
         atomic_json(self.path, ticket)
+        # The first terminal state of this ticket is the per-message answer
+        # to "was it heard"; a later terminal publish of the same ticket (the
+        # failure path after a refusal) changes nothing there.
+        record_playback_receipt(self.root, self.reply, self.ticket, state,
+                                reason=reason, at=event["emitted_at"])
         emit(event)
 
     def close(self) -> None:
@@ -10518,6 +10860,9 @@ def main() -> int:
     playback = parser.add_mutually_exclusive_group()
     playback.add_argument("--play-reply", metavar="REPLY_ID", help="explicitly play one durable reply")
     playback.add_argument("--stop-reply", metavar="REPLY_ID", help="request stop from that reply's real player")
+    parser.add_argument("--receipts", metavar="MESSAGE_ID",
+                        help="print who a message was delivered to, who read or skipped it and whether "
+                        "it was spoken; requires --provider/--session holding a copy or authoring it")
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
@@ -10775,6 +11120,22 @@ def main() -> int:
         )
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.receipts:
+        if not args.provider or not re.fullmatch(r"[0-9a-f]{24}", args.receipts):
+            parser.error("--receipts requires --provider/--session and a message id")
+        if any((args.say is not None, args.ack, args.attach, args.detach, args.channel is not None,
+                args.status, args.watch, args.follow, args.once, args.from_start, args.from_file,
+                args.read_pending, args.read_delivery, args.retry_wakeup, args.all, args.become,
+                args.active_names, args.lease, args.send_text, args.send is not None,
+                args.to is not None, args.reply_to, args.play_reply, args.stop_reply,
+                args.playback_ticket, args.until_event, args.max_wait is not None,
+                args.archive_agent is not None, args.mute_agent, args.unmute_agent)):
+            parser.error("--receipts combines with no other command")
+        try:
+            return receipts_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: receipts refused: {error}\n")
+            return 3
     if args.until_event or args.max_wait is not None:
         if (not args.watch or not args.until_event or not args.provider
                 or any((args.once, args.from_start, args.from_file, args.human, args.full,
