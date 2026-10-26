@@ -191,9 +191,12 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(steps.contains("mark: .verified)"), "ready to go")
     XCTAssertTrue(steps.contains("mark: keySaved ? .saved : .none"), "saved key")
     XCTAssertTrue(
-      steps.contains("icon: done && !presenceOnly ? .checkCircleFill : .circleEmpty"),
-      "step 9 draws stored identity with the empty circle of step 6")
+      steps.contains("mark: done ? (presenceOnly ? .saved : .verified) : .none)"),
+      "step 9 draws stored identity with the empty circle of step 6, in the capsule")
+    XCTAssertTrue(
+      steps.contains("CSStatusBadge(text: state.status, mark: .verified)"),
+      "a calibrated microphone is a verified state")
     XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
-    XCTAssertEqual(steps.components(separatedBy: "CSStatusBadge(").count, 5, "four wizard statuses")
+    XCTAssertEqual(steps.components(separatedBy: "CSStatusBadge(").count, 7, "six wizard statuses")
   }
 }

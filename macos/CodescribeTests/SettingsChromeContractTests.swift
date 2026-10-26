@@ -1788,14 +1788,17 @@ final class SettingsChromeContractTests: XCTestCase {
     try settingsSources().values.joined(separator: "\n")
   }
 
-  /// True when `token` occurs and the next character is not a letter, so
-  /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
   /// Founder decision of 2026-10-26: in Settings the brand terracotta marks
-  /// progress, a ready state is the olive capsule with a check, and the one
-  /// eyebrow reads in the muted grey; focus, switches, sliders, buttons and
-  /// links keep the macOS accent.
+  /// progress, a ready or granted state is the olive capsule with a check, and
+  /// the one eyebrow reads in the muted grey; focus, switches, sliders, buttons
+  /// and links keep the macOS accent.
   func testSettingsProgressWearsTheBrandAccentAndReadyTheOliveCapsule() throws {
     let sources = try settingsSources()
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("CSStatusBadge(text: state.label, mark: .verified)"),
+      "a granted scope in Settings › Creator")
+    XCTAssertFalse(creator.contains("Circle().fill((granted"), "no round olive badge")
     let whisper = try XCTUnwrap(sources["WhisperDownloadView.swift"])
     let modelTab = try XCTUnwrap(sources["DictationWhisperModelTab.swift"])
     let audio = try XCTUnwrap(sources["AudioPanel.swift"])
@@ -1830,6 +1833,8 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
   }
 
+  /// True when `token` occurs and the next character is not a letter, so
+  /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
   private func containsToken(_ source: String, _ token: String) -> Bool {
     var rest = Substring(source)
     while let range = rest.range(of: token) {

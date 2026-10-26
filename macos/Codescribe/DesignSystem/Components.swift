@@ -505,8 +505,9 @@ struct CSProgressBar: View {
       }
     }
     .frame(height: height)
-    .accessibilityElement(children: .ignore)
-    .accessibilityValue(Text(verbatim: "\(Int((fraction * 100).rounded())) %"))
+    // The drawing is the brand's; the semantics stay the system's, so VoiceOver
+    // announces a localized progress indicator, not a bare number.
+    .accessibilityRepresentation { ProgressView(value: fraction) }
   }
 }
 

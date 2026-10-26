@@ -160,9 +160,11 @@ enum CSPalette {
   /// bar, the mark of a selected choice and the icon of a wizard step (Founder,
   /// 2026-10-26). Actions keep their neutral bordered shape (2026-10-24) and
   /// the chrome accent keeps focus, switches and sliders. Each rung clears 3:1
-  /// as a mark on every sheet shade of its appearance; the paper rung is the
-  /// brand hue with its lightness lowered in OKLCH, the ink rung the brand
-  /// terracotta itself.
+  /// as a mark on every bare sheet shade of its appearance (travertine holds
+  /// the paper rung at 3.02); on its own selection wash the paper rung reads
+  /// 2.65–3.46 and stays the Founder's hex, the selection also carried by the
+  /// wash, the edge and the filled glyph. The paper rung is the brand hue
+  /// with its lightness lowered in OKLCH, the ink rung the brand terracotta.
   static let brandAccent = adaptive(light: NSColor(hex: 0xBA5C3C), dark: NSColor(hex: 0xD97757))
 
   /// Primary-action wash: the chrome accent on paper; on ink the same accent

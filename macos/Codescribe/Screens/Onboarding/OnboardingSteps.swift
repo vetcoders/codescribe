@@ -979,13 +979,6 @@ struct DoneStepView: View {
     let state = recordingState(blocker)
     return VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 10) {
-        CSIconView(
-          icon: state.done ? .checkCircleFill : .circleEmpty,
-          size: 12,
-          weight: .semibold,
-          color: state.done ? CSColor.oliveLight : CSColor.secondaryInk
-        )
-        .padding(.top, 3)
         VStack(alignment: .leading, spacing: 3) {
           Text(
             String(
@@ -1002,10 +995,14 @@ struct DoneStepView: View {
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        Text(state.status)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(state.tint)
-          .multilineTextAlignment(.trailing)
+        if state.done {
+          CSStatusBadge(text: state.status, mark: .verified)
+        } else {
+          Text(state.status)
+            .font(CSFont.ui(11, .medium))
+            .foregroundStyle(state.tint)
+            .multilineTextAlignment(.trailing)
+        }
       }
       if model.calibrationPending, let startedAt = model.calibrationStartedAt {
         calibrationProgress(startedAt: startedAt)
@@ -1031,8 +1028,7 @@ struct DoneStepView: View {
     let detail: String?
 
     var tint: Color {
-      if done { return CSColor.oliveLight }
-      return blocked ? CSColor.terracottaLight : CSColor.secondaryInk
+      blocked ? CSColor.terracottaLight : CSColor.secondaryInk
     }
   }
 
@@ -1215,36 +1211,30 @@ struct DoneStepView: View {
       .foregroundStyle(CSColor.secondaryInk)
   }
 
-  /// A checklist line of the Done step. A verified state is the filled check;
-  /// stored identity (`presenceOnly`) is the empty olive circle, the same sign
-  /// the provider step's "saved" badge shows, so one state keeps one glyph
-  /// across steps 6 and 9.
+  /// A checklist line of the Done step, in the language of the required rows
+  /// above it: the status word carries the state. A verified state is the
+  /// olive capsule with the filled check; stored identity (`presenceOnly`) is
+  /// the same capsule with the empty circle the provider step's "saved" badge
+  /// shows, so one state keeps one sign across steps 6 and 9; a skipped scope
+  /// is a plain secondary word.
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
     missingLabel: String? = nil, statusLabel: String? = nil, presenceOnly: Bool = false
   ) -> some View {
     HStack(spacing: 10) {
-      CSIconView(
-        icon: done && !presenceOnly ? .checkCircleFill : .circleEmpty,
-        size: 12,
-        weight: .semibold,
-        color: done ? CSColor.oliveLight : CSColor.secondaryInk
-      )
       Text(label)
         .font(CSFont.ui(13))
         .foregroundStyle(CSColor.textBody)
       Spacer(minLength: 0)
-      Text(
-        statusLabel
+      CSStatusBadge(
+        text: statusLabel
           ?? (done
             ? doneLabel
             : (missingLabel
               ?? String(
                 localized: LocalizedStringResource(
-                  "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
-      )
-      .font(CSFont.ui(11, .medium))
-      .foregroundStyle(done ? CSColor.oliveLight : CSColor.secondaryInk)
+                  "Optional", locale: model.interfaceLocale, comment: "Status chip")))),
+        mark: done ? (presenceOnly ? .saved : .verified) : .none)
     }
   }
 }
