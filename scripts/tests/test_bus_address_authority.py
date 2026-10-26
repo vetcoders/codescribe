@@ -68,10 +68,24 @@ class BusAddressAuthorityTests(unittest.TestCase):
         self.assertTrue(label.startswith("0 (sent to: "))
         self.assertNotIn("\n", label)
         self.assertLess(len(label), 80)
-        malformed = {"channel": "0", "peer_to": "as", "audience": "as",
-                     "target": {"mode": "broadcast", "channel": "0", "recipients": [{"name": ""}, "lena", None]}}
-        self.assertIsNone(DEMUX.broadcast_reach(malformed))
-        self.assertEqual(DEMUX.delivery_address_label(malformed), "0 (all audience)")
+        unstamped = {"channel": "0", "peer_to": "as", "audience": "as",
+                     "target": {"mode": "broadcast", "channel": "0", "recipients": "oops"}}
+        self.assertIsNone(DEMUX.broadcast_reach(unstamped))
+        self.assertEqual(DEMUX.delivery_address_label(unstamped), "0 (all audience)")
+
+    def test_a_stamped_empty_list_is_not_an_unknown_reach(self):
+        # Every bound agent had channel 0 off: the admitted list is empty, the
+        # copy still landed in an off mailbox for its skip record. That copy
+        # must not read as "all audience", nor as missing the stamp.
+        for stamp in ([], [{"name": ""}, "lena", None]):
+            payload = {"channel": "2", "origin_channel": "0", "audience": "nina",
+                       "recipients": [{"name": "nina", "channel": "2"}],
+                       "target": {"mode": "broadcast", "channel": "0", "recipients": stamp}}
+            self.assertEqual(DEMUX.broadcast_reach(payload), [])
+            self.assertEqual(DEMUX.delivery_address_label(payload), "0 (sent to: nobody)")
+            view = DEMUX.conversation_envelope(payload)
+            self.assertEqual(view["addressed_to"], "0 (sent to: nobody)")
+            self.assertEqual(view["sent_to"], [])
 
     def test_mcp_describes_projected_address_without_reinterpreting_raw_fields(self):
         payload = {

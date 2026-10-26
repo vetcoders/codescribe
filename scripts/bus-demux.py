@@ -4582,10 +4582,14 @@ def broadcast_reach(payload: dict[str, Any]) -> list[dict[str, str]] | None:
     Three publishers stamp that list at sending: a channel take writes the
     admitted owners into every copy (`audience: "*"` beside `recipients`),
     and both text lanes write `target.recipients`. A copy without either stamp
-    has an unknown reach; the reader never derives one from bindings or from
-    other agents' broadcast policies. An owner on the list can still skip the
-    copy at delivery when channel zero is off, so the list says "sent to",
-    not "read by".
+    has an unknown reach (None); the reader never derives one from bindings or
+    from other agents' broadcast policies. A stamped empty list is a fact of
+    its own: every bound agent had channel zero off, so the text was admitted
+    to nobody (the copy still reached this mailbox for its own skip record).
+    An owner on the list can still skip the copy at delivery when channel zero
+    is off, so the list says "sent to", not "read by". Entries are the
+    publisher's raw names, like `recipients`; prose built from them goes
+    through `queue_metadata` (see `delivery_address_label`).
     """
     target = payload.get("target")
     rows: Any = None
@@ -4595,11 +4599,10 @@ def broadcast_reach(payload: dict[str, Any]) -> list[dict[str, str]] | None:
         rows = payload.get("recipients")
     if not isinstance(rows, list):
         return None
-    reach = [{"name": row["name"], "channel": row["channel"]}
-             for row in rows if isinstance(row, dict)
-             and isinstance(row.get("name"), str) and row["name"]
-             and isinstance(row.get("channel"), str) and row["channel"]]
-    return reach or None
+    return [{"name": row["name"], "channel": row["channel"]}
+            for row in rows if isinstance(row, dict)
+            and isinstance(row.get("name"), str) and row["name"]
+            and isinstance(row.get("channel"), str) and row["channel"]]
 
 
 def delivery_address_label(payload: dict[str, Any]) -> str:
@@ -4615,6 +4618,8 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
         reach = broadcast_reach(payload)
         if reach is None:
             return "0 (all audience)"
+        if not reach:
+            return "0 (sent to: nobody)"
         names = ", ".join(queue_metadata(row["name"], 48, peer_controlled=True) for row in reach[:9])
         return f"0 (sent to: {names})"
     if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):

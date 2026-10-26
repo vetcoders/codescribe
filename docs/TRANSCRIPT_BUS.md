@@ -1630,10 +1630,15 @@ publisher writes that list into every copy: a channel take as `recipients` besid
 zero `off` are not on it; an owner on it can still skip the copy when its policy
 changed before delivery), so it says who the message was sent to, not who read
 it. The copy's own `recipients` and `peer_to` stay its delivery key, never the
-address. A channel-zero copy without the stamp reads `0 (all audience)` and has
-no `sent_to`: its reach is unknown, and no reader derives one from bindings or
-other agents' policies. Codex's native queue includes the same explicit
-`ADDRESSED TO:` line. The queue header's channel identifies the receiving
+address. A stamped empty list reads `0 (sent to: nobody)` with `sent_to: []`:
+every bound agent had channel zero off, and the copy reached this mailbox only
+for its own skip record. A channel-zero copy without the stamp reads
+`0 (all audience)` and has no `sent_to`: its reach is unknown, and no reader
+derives one from bindings or other agents' policies. `sent_to` carries the
+publisher's names verbatim, like `recipients` and `target`; only the prose
+label is sanitized and bounded (nine names, each cut to the queue-metadata
+alphabet). Codex's native queue includes the same explicit `ADDRESSED TO:`
+line. The queue header's channel identifies the receiving
 mailbox, not the original address. A private message keeps its target
 channel/name. A named utterance without a channel keeps its named audience; a
 missing address is reported as unknown, never inferred from mentions in the

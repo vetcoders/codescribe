@@ -92,6 +92,27 @@ class UserTextTests(unittest.TestCase):
                 self.assertEqual(publish.call_args_list[0].args[1]["target"]["recipients"], [{"name": "nina", "channel": "2"}])
                 self.assertEqual([(s["channel"], s["reason"]) for s in emitted.call_args.args[0]["skipped"]],
                                  [("7", "not_listening")])
+            # A direct send to one channel is no broadcast: no stamp at all.
+            direct = argparse.Namespace(bridge_home=root, channel="2", bus=root / "bus-2.jsonl",
+                                        lease=DEMUX.lease_identifier("codex", "nina"), provider="codex", session="nina")
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(direct), 0)
+                self.assertEqual(len(publish.call_args_list), 1)
+                self.assertNotIn("target", publish.call_args_list[0].args[1])
+                self.assertNotIn("origin_channel", publish.call_args_list[0].args[1])
+            # Every bound agent has channel 0 off: the copies still land (each
+            # reader records its own skip) and carry an empty admitted list.
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "agent_broadcast_policy", return_value="off"), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+                self.assertEqual(len(publish.call_args_list), 2)
+                for call in publish.call_args_list:
+                    self.assertEqual(call.args[1]["target"]["recipients"], [])
+                    self.assertEqual(DEMUX.delivery_address_label(call.args[1]), "0 (sent to: nobody)")
             with patch.object(DEMUX, "live_follower_pid", return_value=123), \
                  patch.object(DEMUX, "publish_reply_event", side_effect=[receipt, OSError("disk")]) as publish, \
                  patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):

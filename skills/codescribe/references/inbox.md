@@ -59,8 +59,10 @@ agent's copied notice is coordination and does not give you its mailbox.
 - `delivery_owner` identifies this reader's provider/session/lease.
 - `addressed_to` preserves the source address. A channel-0 copy with the
   publisher's frozen list reads `0 (sent to: as, hania)` and carries that list
-  as `sent_to`; without the stamp it reads `0 (all audience)` and the reach is
-  unknown. Never infer "everyone" or "only me" from a missing `sent_to`.
+  as `sent_to`; `0 (sent to: nobody)` with `sent_to: []` means every bound
+  agent had channel 0 off when it was sent; without the stamp it reads
+  `0 (all audience)` and the reach is unknown. Never infer "everyone" or
+  "only me" from a missing `sent_to`.
 - `sent_to` is who the message was sent to (the admitted list at sending; a
   recipient with channel 0 off may still skip its copy), not who answers. Who
   answers follows the content: a question to a named agent stays theirs; a
