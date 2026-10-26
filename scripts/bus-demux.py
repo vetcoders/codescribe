@@ -8464,15 +8464,19 @@ def reader_copies_in_bus(bus: Path, *, provider: str, provider_session_id: str, 
     recipients, `consider` under the lease's bound name (drafts included, so
     a revision's delivery is found as well as the seal's) and
     `delivery_identity`. Nothing is derived from text or time, so a marker
-    maps only when its delivery id is exactly a copy's. A bus that cannot be
-    read whole (missing, over the cap, a row refused by the normalizer)
-    yields what was found before that point and nothing after it.
+    maps only when its delivery id is exactly a copy's. The chain is the
+    reader's default one: a lease that ran with `--hear-all` or received a
+    copy through fuzzy name routing is not replayed that way, so such a
+    marker stays unmapped (lower recall, never a wrong file). A bus that
+    cannot be read whole (missing, its generation chain over the cap, a row
+    refused by the normalizer) yields what was found before that point and
+    nothing after it.
     """
     found: dict[str, set[str]] = {}
     try:
-        if not S_ISREG(bus.lstat().st_mode) or bus.lstat().st_size > BACKFILL_BUS_CAP:
+        if not S_ISREG(bus.lstat().st_mode) or generation_metadata(bus).st_size > BACKFILL_BUS_CAP:
             return found
-    except OSError:
+    except (OSError, ValueError):
         return found
     normalizer = EvidenceNormalizer()
     coordinates = {"provider": provider.casefold(), "provider_session_id": provider_session_id,

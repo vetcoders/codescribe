@@ -1812,9 +1812,11 @@ them at runtime; the names are the agents' raw names.
 
 A skip marker written before markers carried `message_id` names only its
 `delivery_id`, its lease and the `bus` its reader refused to read from.
-The backfill reads that bus once per lease with the reader's own chain
-(the normalizer, admission by the frozen `recipients`, `consider` under the
-lease's name) and computes each copy's delivery id with
+The backfill reads that bus (its whole generation chain) once per lease
+with the reader's default chain (the normalizer, admission by the frozen
+`recipients`, `consider` under the lease's name, without `--hear-all` or
+fuzzy name routing, so a copy that reached a reader only through those
+leaves its marker unmapped) and computes each copy's delivery id with
 `delivery_identity`, the one function `SessionLease.enrich` stamps it
 with. A marker whose delivery id is exactly one copy's takes that copy's
 `message_id` and gets the same `skipped` file a marker with the field
@@ -1826,8 +1828,8 @@ dictation seal behind an ACK marker, a temporary `.tmp` file, an unreadable
 JSON or lease file, a `pending` entry or `message` row without a usable
 `message_id`, `delivery_id` or `emitted_at`, an incomplete last journal
 row, a playback file of another schema, a skip marker without `message_id`
-whose bus is gone, over 256 MiB, or holds no copy, or more than one
-message, under that delivery id) is counted as
+whose bus is gone, whose generation chain is over 256 MiB, or which
+holds no copy, or more than one message, under that delivery id) is counted as
 `unmapped` and left alone; `unmapped` is information, not an error, and
 the exit code stays 0. Idempotence is the write-once rule itself, not a
 register of what was done: a second run finds every file, writes nothing,

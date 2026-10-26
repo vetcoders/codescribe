@@ -550,10 +550,6 @@ class ReceiptsCommandTests(ReceiptFixture):
             self.assertEqual(raised.exception.code, 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BackfillTests(ReceiptFixture):
     """`--backfill-receipts`: yesterday's markers get today's files, once."""
 
@@ -947,3 +943,7 @@ class LegacySkipMarkerTests(ReceiptFixture):
             self.bus, provider=self.provider, provider_session_id=self.session, lease_id=self.lease_id,
             name="lena", wanted={DEMUX.delivery_identity(self.lease_id, {**igor, "kind": "message"})})
         self.assertEqual(copies, {})
+
+
+if __name__ == "__main__":
+    unittest.main()
