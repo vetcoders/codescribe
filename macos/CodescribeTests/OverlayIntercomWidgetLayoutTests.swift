@@ -67,16 +67,16 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testTwoAndThreeRowCardsReserveAgentInformationBeforePreview() throws {
+  func testMetadataSharesTheHeaderAndPreviewUsesTheNextAvailableRows() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let width = max(metrics.actionsWidth, 400 * scale)
       let row = Layout.controlHeight(scale: scale)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: row), .header)
-      for height in [2 * row, 3 * row] {
-        XCTAssertEqual(metrics.cardContent(width: width, cardHeight: height), .context)
-        XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: height))
-      }
+      let metadataHeight = row + 3 * scale
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: metadataHeight), .context)
+      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: metadataHeight))
+      XCTAssertNotNil(metrics.compactPreviewLayout(width: width, cardHeight: 3 * row))
       let later = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 8 * row))
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
       XCTAssertGreaterThan(later.height, 3 * row)
@@ -90,13 +90,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   func testComposerAppearsAtReadableSizeAndSurvivesFurtherGrowth() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
-      let size = Layout.compactComposerBaseSize
       let factor = max(1, scale)
-      let width = size.width * factor
-      let height = size.height * factor
-      XCTAssertFalse(
-        try XCTUnwrap(metrics.compactPreviewLayout(width: width - 1, cardHeight: height * 2))
-          .showsComposer, "A tall but narrow card retains the preview")
+      // A narrow, low card must expose input well before the former 320x220 gate.
+      let width: CGFloat = 220 * factor
+      let height: CGFloat = 160 * factor
       for growth in [CGFloat(1), 1.5, 2, 4] {
         XCTAssertTrue(
           try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
