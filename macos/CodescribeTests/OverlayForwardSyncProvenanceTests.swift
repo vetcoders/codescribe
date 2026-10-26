@@ -100,11 +100,6 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
     state.activateDraftSync(for: agents[1].id)
     XCTAssertFalse(state.hasSynchronizedDraft(agents[1].id))
     XCTAssertTrue(state.hasSynchronizedDraft(agents[2].id))
-    state.pendingTextMessages.insert(agents[0].id)
-    XCTAssertFalse(state.canActivateDraftSync(for: agents[0].id))
-    XCTAssertFalse(state.canActivateDraftSync(for: agents[2].id))
-    state.activateDraftSync(for: agents[0].id)
-    XCTAssertTrue(state.hasSynchronizedDraft(agents[0].id), "A busy group cannot change membership")
     XCTAssertEqual(drafts(state, agents), ["A", "B", "C"])
   }
 
@@ -212,16 +207,37 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
     XCTAssertEqual(state.conversationDraft(for: agents[0].id), "A shared")
   }
 
-  func testArmedCancelRemainsAvailableWhenPendingAttachmentsBlockPairing() throws {
-    let (state, agents) = try fixture(["", ""], link: false)
+  func testPrimaryAvailabilityReflectsAnInFlightGroupDelivery() async throws {
+    let (state, agents) = try fixture(["A", "B"])
+    var publications = 0
+    state.publishConversationText = { _, _, _, _ in
+      publications += 1
+      XCTAssertFalse(state.canActivateDraftSync(for: agents[0].id))
+      XCTAssertFalse(state.canActivateDraftSync(for: agents[1].id))
+      state.activateDraftSync(for: agents[0].id)
+      XCTAssertTrue(
+        state.hasSynchronizedDraft(agents[0].id), "A busy group cannot change membership")
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(publications, 2)
+    XCTAssertTrue(state.canActivateDraftSync(for: agents[0].id))
+  }
+
+  func testArmedCancelRemainsAvailableDuringItsDelivery() async throws {
+    let (state, agents) = try fixture(["A", "B"], link: false)
     state.activateDraftSync(for: agents[0].id)
-    state.pendingCaptureAttachmentSends.insert(agents[0].id)
-    XCTAssertTrue(
-      state.canActivateDraftSync(for: agents[0].id), "Cancel never needs a new sharing admission")
-    XCTAssertFalse(state.canActivateDraftSync(for: agents[1].id))
-    state.activateDraftSync(for: agents[0].id)
-    XCTAssertNil(state.armedDraftSyncConversationID)
-    XCTAssertFalse(state.canActivateDraftSync(for: agents[0].id))
+    var publications = 0
+    state.publishConversationText = { _, _, _, _ in
+      publications += 1
+      XCTAssertTrue(
+        state.canActivateDraftSync(for: agents[0].id), "Cancel never needs a new sharing admission")
+      XCTAssertFalse(state.canActivateDraftSync(for: agents[1].id))
+      state.activateDraftSync(for: agents[0].id)
+      XCTAssertNil(state.armedDraftSyncConversationID)
+      XCTAssertFalse(state.canActivateDraftSync(for: agents[0].id))
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(publications, 1)
   }
 
   private func drafts(_ state: OverlayState, _ agents: [OverlayConversation]) -> [String] {
