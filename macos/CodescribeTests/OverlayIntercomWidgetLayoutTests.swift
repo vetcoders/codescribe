@@ -301,9 +301,11 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         pendingViews.append(contentsOf: view.subviews)
       }
       if !expanded {
+        let measured = IntercomContentMetrics(names: ["Agent"], digits: [channel], scale: 1)
+          .compactPreviewLayout(width: 360, cardHeight: height)
         XCTAssertEqual(
-          editors.count, hover || height < 220 ? 0 : 1,
-          "Low cards retain readable preview; a 360pt card exposes input when message chrome fits")
+          editors.count, !hover && measured?.showsComposer == true ? 1 : 0,
+          "The mounted native editor must match admission of the entire composer")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
@@ -341,6 +343,16 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
       }
       _ = try render(channel: "3", text: richMessage, height: 220, dark: dark, longDraft: true)
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: 1)
+      let firstInputHeight = try XCTUnwrap(
+        (100...700).first {
+          metrics.compactPreviewLayout(width: 360, cardHeight: CGFloat($0))?.showsComposer == true
+        })
+      for height in [firstInputHeight - 1, firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark)
+      }
       _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
       _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
       let three = try render(channel: "3", text: nil, height: 30, dark: dark)
