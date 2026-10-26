@@ -4576,6 +4576,32 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     return 0
 
 
+def broadcast_reach(payload: dict[str, Any]) -> list[dict[str, str]] | None:
+    """Who a channel-zero publication was sent to, frozen by its publisher.
+
+    Three publishers stamp that list at sending: a channel take writes the
+    admitted owners into every copy (`audience: "*"` beside `recipients`),
+    and both text lanes write `target.recipients`. A copy without either stamp
+    has an unknown reach; the reader never derives one from bindings or from
+    other agents' broadcast policies. An owner on the list can still skip the
+    copy at delivery when channel zero is off, so the list says "sent to",
+    not "read by".
+    """
+    target = payload.get("target")
+    rows: Any = None
+    if isinstance(target, dict) and target.get("mode") == "broadcast":
+        rows = target.get("recipients")
+    elif payload.get("audience") == "*":
+        rows = payload.get("recipients")
+    if not isinstance(rows, list):
+        return None
+    reach = [{"name": row["name"], "channel": row["channel"]}
+             for row in rows if isinstance(row, dict)
+             and isinstance(row.get("name"), str) and row["name"]
+             and isinstance(row.get("channel"), str) and row["channel"]]
+    return reach or None
+
+
 def delivery_address_label(payload: dict[str, Any]) -> str:
     """Expose the source address, never the mailbox that received its copy."""
     channel = payload.get("origin_channel", payload.get("channel"))
@@ -4583,8 +4609,14 @@ def delivery_address_label(payload: dict[str, Any]) -> str:
     peer_to = payload.get("peer_to")
     if channel == "0":
         # A peer broadcast names each copy's recipient in `peer_to` for routing;
-        # its address is still channel 0 (is_broadcast_delivery agrees).
-        return "0 (all audience)"
+        # its address is still channel 0 (is_broadcast_delivery agrees). The
+        # publisher's frozen list, when the copy carries one, says who it was
+        # sent to; names come from peers' own attach, so they are bounded.
+        reach = broadcast_reach(payload)
+        if reach is None:
+            return "0 (all audience)"
+        names = ", ".join(queue_metadata(row["name"], 48, peer_controlled=True) for row in reach[:9])
+        return f"0 (sent to: {names})"
     if isinstance(peer_to, str) and peer_to and peer_to not in ("0", "*"):
         return f"{channel} ({peer_to})" if channel is not None else f"{peer_to} (named audience)"
     if isinstance(channel, str) and len(channel) == 1 and channel in "123456789":
@@ -4671,8 +4703,12 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
         "co_audience", "co_audience_basis",
     )
-    return {**{key: payload[key] for key in fields if key in payload},
+    view = {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        view["sent_to"] = reach
+    return view
 
 
 class MailboxReadError(ValueError):
@@ -8407,6 +8443,16 @@ def send_text_command(args: argparse.Namespace) -> int:
                 if hold_seconds else {})
         receipts = []
         recipient_receipts = []
+        policies = {owner["lease_id"]: agent_broadcast_policy(
+            root, owner["provider"], owner["provider_session_id"], Path(owner["bus"])) for owner in owners}
+        # Channel zero: every copy carries the list of owners it was sent to,
+        # the same stamp a peer broadcast writes, so a reader tells "sent to
+        # as and hania" from "sent to everyone" without consulting bindings.
+        # Owners with channel zero off still get their copy (their reader
+        # records the skip) but are not on the list.
+        sent_to = ([{"name": owner["audience"], "channel": owner["channel"]}
+                    for owner in owners if policies[owner["lease_id"]] != "off"]
+                   if broadcast else None)
         for owner in owners:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,
@@ -8418,6 +8464,7 @@ def send_text_command(args: argparse.Namespace) -> int:
                 event["attachments"] = attachments
             if broadcast:
                 event["origin_channel"] = "0"
+                event["target"] = {"mode": "broadcast", "channel": "0", "recipients": list(sent_to)}
             try:
                 receipt = publish_reply_event(Path(owner["bus"]), event, bridge_root=root)
                 if (any(type(receipt.get(key)) is not int or receipt[key] < 0
@@ -8429,7 +8476,7 @@ def send_text_command(args: argparse.Namespace) -> int:
                 raise UserTextPublicationUncertain("Some recipients may already have received this message; check receipts before resending.") from error
             receipts.append(receipt)
             recipient_receipts.append({**owner, **hold, "source": receipt,
-                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], Path(owner["bus"]))})
+                "broadcast": policies[owner["lease_id"]]})
     emit({"kind": "message_published", **hold, "message_id": identity, "source": receipts[0], "sources": receipts,
           "recipients": recipient_receipts, "skipped": skipped})
     return 0
@@ -9968,6 +10015,9 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
                 "co_audience", "co_audience_basis"):
         if key in payload:
             line[key] = payload[key]
+    reach = broadcast_reach(payload)
+    if reach is not None:
+        line["sent_to"] = reach
     return line
 
 

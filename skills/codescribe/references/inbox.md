@@ -10,7 +10,7 @@ name, a microphone channel or another listener to attach.
 | --- | --- | --- |
 | User inbox, channel 10 | A retained report intended for the person using this installation | `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION` |
 | Named agent or channel 1–9 | Requested peer coordination | `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION` |
-| Shared group, channel 0 | Requested discussion with the other bound agents | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION` |
+| Shared group, channel 0 | Requested discussion with the agents it was `sent_to`, listed per copy | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION` |
 | Voice / this agent's conversation | Answer the exact owned user delivery | `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` |
 
 Use your real attached provider/session; reuse its lease and profile. Channel 10
@@ -57,8 +57,18 @@ agent's copied notice is coordination and does not give you its mailbox.
 ## Address and co-audience are different facts
 
 - `delivery_owner` identifies this reader's provider/session/lease.
-- `addressed_to` preserves the source address; channel 0 stays **all audience**
-  even if this private copy has only one entry in `recipients`.
+- `addressed_to` preserves the source address. A channel-0 copy with the
+  publisher's frozen list reads `0 (sent to: as, hania)` and carries that list
+  as `sent_to`; without the stamp it reads `0 (all audience)` and the reach is
+  unknown. Never infer "everyone" or "only me" from a missing `sent_to`.
+- `sent_to` is who the message was sent to (the admitted list at sending; a
+  recipient with channel 0 off may still skip its copy), not who answers. Who
+  answers follows the content: a question to a named agent stays theirs; a
+  request to the group, or with no addressee, concerns everyone on the list.
+  Each agent the request concerns answers once; do not wait for another agent
+  to answer for you, and do not add a second reply because someone else did.
+- `peer_to` on a channel-0 copy is that copy's delivery key, not its address;
+  a private-looking copy of a broadcast is still a broadcast.
 - `recipients` are frozen delivery/ACK coordinates, not a list to enlarge from
   names mentioned in speech.
 - `co_audience` describes other Live capture channels in the same local

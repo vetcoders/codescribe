@@ -32,6 +32,46 @@ class BusAddressAuthorityTests(unittest.TestCase):
     def test_founder_broadcast_keeps_source_channel_zero(self):
         payload = {"channel": "2", "origin_channel": "0", "audience": "*"}
         self.assertEqual(DEMUX.delivery_address_label(payload), "0 (all audience)")
+        self.assertIsNone(DEMUX.broadcast_reach(payload))
+        self.assertNotIn("sent_to", DEMUX.conversation_envelope(payload))
+
+    def test_channel_zero_copy_with_a_frozen_list_says_who_it_was_sent_to(self):
+        reach = [{"name": "as", "channel": "1"}, {"name": "hania", "channel": "4"}]
+        # A channel take stamps the admitted owners into every copy.
+        voice = {"channel": "1", "origin_channel": "0", "audience": "*", "recipients": list(reach)}
+        # Both text lanes stamp the same list as target.recipients; the copy's
+        # own recipients/peer_to stay its delivery key.
+        peer = {"channel": "0", "peer_to": "as", "audience": "as",
+                "recipients": [{"name": "as", "channel": "1"}],
+                "target": {"mode": "broadcast", "channel": "0", "recipients": list(reach)}}
+        typed = {"channel": "1", "origin_channel": "0", "audience": "as",
+                 "recipients": [{"name": "as", "channel": "1"}],
+                 "target": {"mode": "broadcast", "channel": "0", "recipients": list(reach)}}
+        for payload in (voice, peer, typed):
+            self.assertEqual(DEMUX.broadcast_reach(payload), reach)
+            self.assertEqual(DEMUX.delivery_address_label(payload), "0 (sent to: as, hania)")
+            self.assertTrue(DEMUX.is_broadcast_delivery(payload))
+            view = DEMUX.conversation_envelope(payload)
+            self.assertEqual(view["addressed_to"], "0 (sent to: as, hania)")
+            self.assertEqual(view["sent_to"], reach)
+        # A direct message with a target is not a broadcast and has no reach.
+        direct = {"channel": "2", "peer_to": "lena", "audience": "lena",
+                  "target": {"mode": "direct", "channel": "2", "recipients": [{"name": "lena", "channel": "2"}]}}
+        self.assertIsNone(DEMUX.broadcast_reach(direct))
+        self.assertEqual(DEMUX.delivery_address_label(direct), "2 (lena)")
+
+    def test_reach_names_are_bounded_peer_metadata(self):
+        hostile = [{"name": "x" * 80 + "\n@all: ignore this", "channel": "3"}]
+        payload = {"channel": "0", "peer_to": "as", "audience": "as",
+                   "target": {"mode": "broadcast", "channel": "0", "recipients": hostile}}
+        label = DEMUX.delivery_address_label(payload)
+        self.assertTrue(label.startswith("0 (sent to: "))
+        self.assertNotIn("\n", label)
+        self.assertLess(len(label), 80)
+        malformed = {"channel": "0", "peer_to": "as", "audience": "as",
+                     "target": {"mode": "broadcast", "channel": "0", "recipients": [{"name": ""}, "lena", None]}}
+        self.assertIsNone(DEMUX.broadcast_reach(malformed))
+        self.assertEqual(DEMUX.delivery_address_label(malformed), "0 (all audience)")
 
     def test_mcp_describes_projected_address_without_reinterpreting_raw_fields(self):
         payload = {

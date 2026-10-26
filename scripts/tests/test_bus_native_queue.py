@@ -79,10 +79,16 @@ class NativeQueueTests(unittest.TestCase):
         cases = [
             ({"channel": "0", "audience": "lena"}, "0 (all audience)"),
             ({"origin_channel": "0", "channel": "2", "audience": "lena"}, "0 (all audience)"),
+            ({"origin_channel": "0", "channel": "2", "audience": "lena",
+              "target": {"mode": "broadcast", "channel": "0",
+                         "recipients": [{"name": "lena", "channel": "2"}, {"name": "igor", "channel": "7"}]}},
+             "0 (sent to: lena, igor)"),
             ({"channel": "2", "audience": "lena"}, "2 (lena)"),
             ({"audience": "lena"}, "lena (named audience)"),
             ({"audience": "*"}, "all audience"),
         ]
+        # The fixture holds five slots; the stamped copy needs a sixth.
+        self.pending.append(self.envelope(f"{6:024x}"))
         for index, (coordinates, expected) in enumerate(cases):
             self.pending[index].update(coordinates)
             self.pending[index]["bus"] = str(bus)
@@ -110,6 +116,13 @@ class NativeQueueTests(unittest.TestCase):
             self.assertEqual(projected["delivery_id"], event["delivery_id"])
             self.assertEqual(projected["text"], event["text"])
         self.assertNotIn("addressed_to", event)
+        stamped = dict(event, target={"mode": "broadcast", "channel": "0",
+                                      "recipients": [{"name": "lena", "channel": "2"}, {"name": "igor", "channel": "7"}]})
+        for projected in [DEMUX.conversation_envelope(stamped), DEMUX.watch_line(stamped, self.lease_id)]:
+            self.assertEqual(projected["addressed_to"], "0 (sent to: lena, igor)")
+            self.assertEqual(projected["sent_to"], [{"name": "lena", "channel": "2"}, {"name": "igor", "channel": "7"}])
+            self.assertEqual(projected["lease_id"], self.lease_id)
+        self.assertNotIn("sent_to", event)
 
     @patch("shutil.which", return_value="/fake/codex")
     @patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "queued", ""))

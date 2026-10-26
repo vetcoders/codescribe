@@ -1621,15 +1621,24 @@ not atomic: a write failure can leave earlier recipients delivered, so errors
 must not trigger automatic retry. No audio capture or agent identity is invented.
 
 Conversational deliveries expose `addressed_to` from the original source address.
-For channel zero it reads `0 (all audience)`, even when a private copy carries
-one agent's name in `audience` and one recipient in `recipients`. Codex's native
-queue includes the same explicit `ADDRESSED TO: 0 (all audience)` line; mailbox
-reads, MCP reads and watch notifications retain the label. The queue header's
-channel identifies the receiving mailbox, not the original address. A private
-message keeps its target channel/name. A named utterance without a channel keeps
-its named audience; a missing address is reported as unknown, never inferred
-from mentions in the text. This projection changes neither routing nor delivery
-identity, recipients, ACK state or the original message text.
+For channel zero it names the publisher's frozen list when the copy carries one:
+`0 (sent to: as, hania)`, with the same list under `sent_to` as `{name, channel}`
+entries in mailbox reads, MCP reads and watch notifications. Every channel-zero
+publisher writes that list into every copy: a channel take as `recipients` beside
+`audience: "*"`, a peer `--send --to 0` and a typed `--send-text --channel 0` as
+`target.recipients`. The list is the admitted set at sending (owners with channel
+zero `off` are not on it; an owner on it can still skip the copy when its policy
+changed before delivery), so it says who the message was sent to, not who read
+it. The copy's own `recipients` and `peer_to` stay its delivery key, never the
+address. A channel-zero copy without the stamp reads `0 (all audience)` and has
+no `sent_to`: its reach is unknown, and no reader derives one from bindings or
+other agents' policies. Codex's native queue includes the same explicit
+`ADDRESSED TO:` line. The queue header's channel identifies the receiving
+mailbox, not the original address. A private message keeps its target
+channel/name. A named utterance without a channel keeps its named audience; a
+missing address is reported as unknown, never inferred from mentions in the
+text. This projection changes neither routing nor delivery identity,
+recipients, ACK state or the original message text.
 
 ## Open-channel co-audience
 
