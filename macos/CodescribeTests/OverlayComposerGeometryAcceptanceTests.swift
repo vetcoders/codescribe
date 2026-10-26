@@ -71,6 +71,6 @@ final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
 
   private func editableText(in view: NSView) -> NSTextView? {
     if let text = view as? NSTextView, text.isEditable { return text }
-    return view.subviews.lazy.compactMap { editableText(in: $0) }.first
+    return view.subviews.lazy.compactMap { self.editableText(in: $0) }.first
   }
 }
