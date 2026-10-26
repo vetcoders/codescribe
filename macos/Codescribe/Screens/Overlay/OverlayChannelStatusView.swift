@@ -1704,22 +1704,25 @@ struct OverlayChannelStatusView: View {
     conversations: [OverlayConversation], archivedOwners: Set<OverlayConversationOwner>,
     hudStates: [String: OverlayChannelHudProjection]
   ) -> [OverlayConversation] {
-    conversations.filter { conversation in
-      if conversation.channel == "0" || conversation.isHumanInbox { return true }
-      if let owner = conversation.owner,
-        archivedOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel })
-      {
-        return false
-      }
+    // Count matching sessions once, including archived leases: archiving one
+    // of two leases must never make the other look like the unique live owner.
+    var matchingCounts: [String: Int] = [:]
+    for conversation in conversations {
       guard let owner = conversation.owner, let hud = hudStates[conversation.channel],
         hud.provider == owner.provider, hud.providerSessionID == owner.providerSessionID
+      else { continue }
+      matchingCounts[conversation.channel, default: 0] += 1
+    }
+    var archivedIDs: [String: Set<String>] = [:]
+    for owner in archivedOwners { archivedIDs[owner.channel, default: []].insert(owner.id) }
+    return conversations.filter { conversation in
+      if conversation.channel == "0" || conversation.isHumanInbox { return true }
+      guard let owner = conversation.owner,
+        archivedIDs[owner.channel]?.contains(owner.id) != true,
+        let hud = hudStates[conversation.channel],
+        hud.provider == owner.provider, hud.providerSessionID == owner.providerSessionID
       else { return false }
-      // A roster without a lease cannot distinguish two leases of the same
-      // provider session. Keep both as saved conversations rather than guess.
-      return conversations.filter {
-        $0.channel == conversation.channel && $0.owner?.provider == hud.provider
-          && $0.owner?.providerSessionID == hud.providerSessionID
-      }.count == 1
+      return matchingCounts[conversation.channel] == 1
     }
   }
 

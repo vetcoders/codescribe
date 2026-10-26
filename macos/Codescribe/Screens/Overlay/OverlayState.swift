@@ -1288,7 +1288,9 @@ final class OverlayState {
 
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
-  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:]
+  private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
   var channelMapEnabled: Bool { channelMapPreference.enabled }
@@ -1336,8 +1338,26 @@ final class OverlayState {
   /// opening keeps the list instead of following into the conversation
   /// (Maciej, 2026-10-17: broadcast to two agents is two clicks in a row).
   @ObservationIgnored private var agentListHeldOpens: Set<String> = []
-  private(set) var conversations: [OverlayConversation] = []
-  private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = []
+  private(set) var conversations: [OverlayConversation] = [] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
+  private(set) var archivedAgentOwners: Set<OverlayConversationOwner> = [] {
+    didSet { refreshCurrentMicrophoneOwners() }
+  }
+  // Microphone controls observe membership, not the messages of every agent.
+  // This is derived only from the reader's inventory and controller roster.
+  private var currentMicrophoneOwners: [String: OverlayConversationOwner] = [:]
+
+  private func refreshCurrentMicrophoneOwners() {
+    let current = OverlayChannelStatusView.currentConversations(
+      conversations: conversations, archivedOwners: archivedAgentOwners, hudStates: channelHudStates
+    )
+    var owners: [String: OverlayConversationOwner] = [:]
+    for conversation in current {
+      if let owner = conversation.owner { owners[conversation.id] = owner }
+    }
+    if owners != currentMicrophoneOwners { currentMicrophoneOwners = owners }
+  }
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
   @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
@@ -2003,16 +2023,11 @@ final class OverlayState {
       return !channelStatusUnavailable && channelHudStates["0"] != nil
     }
     guard !channelStatusUnavailable, let owner = conversation.owner,
-      conversations.contains(where: { $0.id == conversation.id && $0.owner?.id == owner.id }),
-      !archivedAgentOwners.contains(where: { $0.id == owner.id && $0.channel == owner.channel }),
       OverlayChannelStatusView.toggleDigit(for: conversation.channel) != nil,
-      let hud = channelHudStates[conversation.channel], hud.provider == owner.provider,
-      hud.providerSessionID == owner.providerSessionID
+      let current = currentMicrophoneOwners[conversation.id]
     else { return false }
-    return conversations.filter {
-      $0.channel == conversation.channel && $0.owner?.provider == owner.provider
-        && $0.owner?.providerSessionID == owner.providerSessionID
-    }.count == 1
+    return current.id == owner.id && current.channel == owner.channel
+      && current.channel == conversation.channel
   }
 
   func conversationMicrophoneOpen(_ conversation: OverlayConversation) -> Bool {

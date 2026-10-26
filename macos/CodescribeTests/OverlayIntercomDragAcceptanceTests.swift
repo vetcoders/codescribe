@@ -20,7 +20,9 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     let card: NSWindow
     let generation: UInt64
 
-    init(secondRow: Bool = false, expanded: Bool = false) throws {
+    init(
+      secondRow: Bool = false, expanded: Bool = false, clock: ManualAutoCollapseScheduler? = nil
+    ) throws {
       defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
       store = OverlayIntercomDesktopStore(defaults: defaults)
       conversation = try Self.conversation(session: "first", channel: "3")
@@ -33,7 +35,9 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       generation = state.captureGeneration
       store.save(.init(groupWidth: 500, groupRowHeight: 80))
       controller = OverlayIntercomWidgetController(
-        state: state, textScale: TextScaleController(key: suite), desktopStore: store)
+        state: state, textScale: TextScaleController(key: suite), desktopStore: store,
+        idleNow: { clock?.now ?? Date.timeIntervalSinceReferenceDate },
+        idleSchedule: clock?.scheduler ?? OverlayAutoCollapse.liveScheduler)
       if expanded {
         _ = controller.offscreenCard(identity, width: 500, height: 80, scale: 1, expanded: true)
       }
@@ -111,6 +115,77 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       XCTAssertFalse(try XCTUnwrap(rig.instance).closed, "Late completion is idempotent")
       rig.verifyTruth()
     }
+  }
+
+  func testNativeDragDoesNotRewriteObservableOrPersistedDesktopAtPointerFrequency() throws {
+    let rig = try Rig(secondRow: true)
+    defer { rig.cleanup() }
+    XCTAssertTrue(rig.controller.detachForDrag(rig.identity))
+    rig.controller.finishInstanceDrag(at: CGPoint(x: -10000, y: -10000))
+    let id = try XCTUnwrap(rig.instance).id
+    XCTAssertTrue(rig.controller.beginInstanceDrag(id))
+    let stored = rig.store.load()
+    let desktop = rig.controller.desktop
+    let root = rig.card.contentView
+    let initial = rig.card.frame
+    for tick in 1...30 {
+      rig.card.setFrameOrigin(
+        CGPoint(x: initial.minX - CGFloat(tick), y: initial.minY - CGFloat(tick)))
+      rig.controller.windowDidMove(
+        Notification(name: NSWindow.didMoveNotification, object: rig.card))
+      XCTAssertEqual(rig.store.load(), stored, "Pointer movement must not serialize desktop JSON")
+      XCTAssertEqual(rig.controller.desktop, desktop, "Pointer movement must not invalidate card bodies")
+      XCTAssertTrue(rig.card.contentView === root, "The mounted editor survives tracking")
+    }
+    rig.controller.finishInstanceDrag(at: CGPoint(x: -10000, y: -10000))
+    XCTAssertEqual(try XCTUnwrap(rig.instance).frame, rig.card.frame)
+    XCTAssertNotEqual(rig.store.load(), stored, "Release commits the final geometry")
+    rig.verifyTruth()
+  }
+
+  func testGroupedReturnUsesChosenIntervalAndDefersWhileVoiceIsOpen() throws {
+    let clock = ManualAutoCollapseScheduler()
+    let rig = try Rig(expanded: true, clock: clock)
+    defer { rig.cleanup() }
+    rig.state.engine = OverlayChromePolicyEngine()
+    rig.state.setAutoFoldSeconds(5)
+    // A menu interaction ends through the controller's real notification owner.
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
+    XCTAssertEqual(clock.outstanding, 1)
+    clock.advance(by: 4)
+    XCTAssertTrue(rig.controller.presentation.expanded.contains(rig.identity))
+    let owner = try XCTUnwrap(rig.conversation.owner)
+    rig.state.applyChannelRoster([
+      .init(
+        channel: "3", audience: owner.name, provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: true, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    clock.advance(by: 1)
+    XCTAssertTrue(rig.controller.presentation.expanded.contains(rig.identity))
+    Rig.apply([rig.conversation], to: rig.state)
+    clock.advance(by: 5)
+    XCTAssertTrue(rig.controller.presentation.expanded.isEmpty)
+    rig.verifyTruth()
+  }
+
+  func testNeverReturnAndDetachedCardsRemainOpen() throws {
+    let clock = ManualAutoCollapseScheduler()
+    let rig = try Rig(expanded: true, clock: clock)
+    defer { rig.cleanup() }
+    rig.state.engine = OverlayChromePolicyEngine()
+    rig.state.setAutoFoldSeconds(0)
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
+    clock.advance(by: 1_000)
+    XCTAssertTrue(rig.controller.presentation.expanded.contains(rig.identity))
+    rig.state.setAutoFoldSeconds(5)
+    NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
+    XCTAssertTrue(rig.controller.detachForDrag(rig.identity))
+    rig.controller.finishInstanceDrag(at: CGPoint(x: -10000, y: -10000))
+    clock.advance(by: 1_000)
+    XCTAssertFalse(try XCTUnwrap(rig.instance).closed)
+    XCTAssertFalse(try XCTUnwrap(rig.instance).minimized)
+    rig.verifyTruth()
   }
 
   func testLastRowDocksOverVisibleHeaderIncludingFoldedGroup() throws {

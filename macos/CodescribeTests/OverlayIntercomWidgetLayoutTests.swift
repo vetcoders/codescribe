@@ -87,6 +87,24 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
+  func testComposerAppearsAtReadableSizeAndSurvivesFurtherGrowth() throws {
+    for scale in [CGFloat(0.8), 1, 1.6, 2] {
+      let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
+      let size = Layout.compactComposerBaseSize
+      let factor = max(1, scale)
+      let width = size.width * factor
+      let height = size.height * factor
+      XCTAssertFalse(
+        try XCTUnwrap(metrics.compactPreviewLayout(width: width - 1, cardHeight: height * 2))
+          .showsComposer, "A tall but narrow card retains the preview")
+      for growth in [CGFloat(1), 1.5, 2, 4] {
+        XCTAssertTrue(
+          try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
+            .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
+      }
+    }
+  }
+
   func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
@@ -283,7 +301,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         pendingViews.append(contentsOf: view.subviews)
       }
       if !expanded {
-        XCTAssertTrue(editors.isEmpty, "Closed cards and hover previews never mount a composer")
+        XCTAssertEqual(
+          editors.count, hover || height < 220 ? 0 : 1,
+          "Hover stays read-only; a 360pt card reveals one shared composer from 220pt height")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
