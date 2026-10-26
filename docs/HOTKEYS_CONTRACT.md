@@ -157,7 +157,8 @@ shortcuts and mouse events still reach the frontmost app. A successfully opened
 live channel plays **Pop**, respecting Start sound and its configured volume.
 A rejected open or a close does not play that cue. A channel session ends on
 the second press (hang-up) or on silence: `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`
-after heard voice, or 30 s after the open when no voice was heard. Silence
+after heard voice, or 30 s after the open when no voice was heard (an agent
+reply playing into the channel does not count). Silence
 delivers the words and releases the microphone like a hang-up; nothing
 reopens the channel, so one press carries one message (Founder decision
 2026-10-26).

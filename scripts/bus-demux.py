@@ -79,8 +79,9 @@ CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 #: lifecycle boundaries can invoke the coverage-refused delivery net.
 PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
-#: a channel closed by a second digit / Fn press is not reopened, so no
-#: later channel-session row would ever release its refused take.
+#: a channel closed by a second digit / Fn press is not reopened (since
+#: 2026-10-26 neither is one closed by silence), so no later
+#: channel-session row would ever release its refused take.
 SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
 DIRECT_TERMINAL = "apply_direct_transcript_terminal"
@@ -626,8 +627,8 @@ def installation_idle(
                                     channel, emitted if isinstance(emitted, str) else None
                                 )
                             else:
-                                # The controller reopens a channel before the
-                                # predecessor's tail publishes its seal (20:23:35
+                                # A new open of the same channel can precede the
+                                # predecessor's tail seal (20:23:35
                                 # open b868b9ec, 20:23:36 sealed 896f2cea). That
                                 # close names only its own session, as in
                                 # _consume_channel_row; ending the successor let
@@ -1360,9 +1361,9 @@ class EvidenceNormalizer:
     controller's closing seal; its drafts alone settle silently.
     """
 
-    #: Unsealed channel sessions retained for the flush net. The quiet
-    #: contract reopens a channel within seconds of every real utterance, so
-    #: anything beyond a handful of sessions is an abandoned bus replay.
+    #: Unsealed channel sessions retained for the flush net. A channel session
+    #: ends with its utterance (silence or a hang-up seals it), so anything
+    #: beyond a handful of unsealed sessions is an abandoned bus replay.
     MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
@@ -1657,7 +1658,7 @@ class EvidenceNormalizer:
         if previous is not None and previous != identity:
             return
         self._channel_open_times[session] = identity
-        # Capture reopen can precede its predecessor's retained decoder tail.
+        # A new capture can open before its predecessor's retained decoder tail.
         # Only that predecessor's named close/session-ended (including an
         # explicit orphan receipt) owns its delivery boundary. A newer open
         # cannot settle or flush another capture's unfinished document.
@@ -7058,7 +7059,7 @@ def channel_quiet_for_playback(
     """An open channel admits a reply after measured quiet.
 
     ``fresh`` is a session whose voice detector has reported no speech since
-    it opened (the reopen after a silence seal); ``unmeasured`` is a broken
+    it opened (e.g. one opened to answer a reply); ``unmeasured`` is a broken
     edge chain and never counts as quiet. ``quiet`` follows speech inside the
     take and admits only the agent that channel addresses: a pause in a
     message to one agent is not room for another (Monika, 2026-10-23 06:58,
@@ -7091,7 +7092,7 @@ def channel_keeps_playback(runtime: Path, playing_into: set[str]) -> Callable[[s
 
     Our own voice cannot open speech in the app (its channel feed is dropped
     while the reply plays), so a channel that was open when the reply started
-    may seal and reopen under it. A channel opened during the reply is a Fn
+    may seal under it. A channel opened during the reply is a Fn
     press, and measured speech on any channel is a person: both stop it.
     """
     def kept(channel: str, session_id: str) -> bool:

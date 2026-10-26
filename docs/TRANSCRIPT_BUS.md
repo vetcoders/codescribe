@@ -1354,7 +1354,8 @@ An open channel session also appends `codescribe.channel-session.v1` (`kind: cha
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
 Silero speech-end edge, or the session measured no speech edge at all for
-30 s after it opened. The words so far are delivered and the session ends as
+30 s after it opened (time while an agent reply plays into it does not
+count). The words so far are delivered and the session ends as
 a hang-up does: its capture is released and nothing reopens it, so the next
 message is the next Fn+digit (one press, one message; Founder decision
 2026-10-26, which replaces the reopen half of voice seal `cc6c8248`). Text

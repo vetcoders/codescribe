@@ -321,6 +321,8 @@ pub(crate) struct ChannelSpeechClock {
     last_edge: Option<SpeechEdgeCursor>,
     phase: ChannelSpeechPhase,
     now_file: Option<SpeechNowFile>,
+    /// Last poll that saw agent playback; the voiceless limit restarts there.
+    voiceless_from: Option<SystemTime>,
 }
 
 impl ChannelSpeechClock {
@@ -471,14 +473,24 @@ impl ChannelSpeechClock {
             .is_some_and(|since| silence_is_due(since, now, secs))
     }
 
-    /// No edge since the session opened and the voiceless limit has passed.
+    /// Agent playback drops the channel feed (`tts_duck`), so no voice can be
+    /// measured while it plays: that time is not voiceless.
+    fn note_agent_playback(&mut self, now: SystemTime) {
+        self.voiceless_from = Some(now);
+    }
+
+    /// No edge since the session opened, and the voiceless limit has passed
+    /// since it opened or since the last agent playback, whichever is later.
     fn voiceless_due(&self, opened_at: SystemTime, now: SystemTime, secs: u64) -> bool {
+        let from = self
+            .voiceless_from
+            .map_or(opened_at, |from| from.max(opened_at));
         secs != 0
             && matches!(
                 (&self.phase, &self.last_edge),
                 (ChannelSpeechPhase::Unmeasured, None)
             )
-            && silence_is_due(opened_at, now, CHANNEL_VOICELESS_CLOSE_SECS)
+            && silence_is_due(from, now, CHANNEL_VOICELESS_CLOSE_SECS)
     }
 
     fn deadline(&self, secs: u64) -> Option<SystemTime> {
@@ -649,6 +661,7 @@ pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
 /// a press without a message never leaves the microphone live (Founder
 /// decision 2026-10-26). It closes through the silence seal; `0` in
 /// [`CHANNEL_AUTOSEAL_SECS_ENV`] turns it off with the utterance threshold.
+/// Agent playback, during which the channel hears nothing, does not count.
 pub const CHANNEL_VOICELESS_CLOSE_SECS: u64 = 30;
 
 pub fn channel_open_label(digit: u8) -> String {
@@ -1866,7 +1879,8 @@ impl RecordingController {
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
         let _serial = self.serial_lock.lock().await;
-        self.seal_channels_silent_for(now, bus, channel_autoseal_secs()).await
+        self.seal_channels_silent_for(now, bus, channel_autoseal_secs())
+            .await
     }
 
     /// Ordinary capture admission holds the controller's serial lock. Release
@@ -1916,22 +1930,27 @@ impl RecordingController {
     /// session through the same close a hang-up uses, so the capture is
     /// released. Nothing reopens it; the next message is the next Fn+digit.
     /// A channel that hears no voice ends the same way
-    /// [`CHANNEL_VOICELESS_CLOSE_SECS`] after it opened.
+    /// [`CHANNEL_VOICELESS_CLOSE_SECS`] after it opened; agent playback into
+    /// it does not count.
     pub(crate) async fn seal_channels_silent_for(
         &self,
         now: SystemTime,
         bus: &Path,
         secs: u64,
     ) -> Vec<u8> {
+        let playback = crate::audio::tts_duck::channel_capture_should_drop();
         let due: Vec<(u8, OpenAgentChannel)> = {
             let mut channels = self.agent_channels.lock().await;
             let digits: Vec<u8> = channels
                 .iter()
                 .filter(|(_, open)| {
-                    let clock = open
+                    let mut clock = open
                         .speech_clock
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
+                    if playback {
+                        clock.note_agent_playback(now);
+                    }
                     clock.silence_due(now, secs) || clock.voiceless_due(open.opened_at, now, secs)
                 })
                 .map(|(digit, _)| *digit)
@@ -3763,6 +3782,38 @@ mod tests {
         assert_eq!(named.len(), 1);
         assert_eq!(named[0]["provider_session_id"], "agent-b");
         assert!(frozen_channel_recipients(3, &binding, &bus).is_empty());
+    }
+
+    /// A press made to answer a long agent reply stays open through the
+    /// reply: the channel hears nothing while it plays, so that time is not
+    /// voiceless, and the limit counts again from the end of the playback.
+    #[tokio::test]
+    #[serial]
+    async fn agent_playback_does_not_count_toward_the_voiceless_limit() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let limit = Duration::from_secs(CHANNEL_VOICELESS_CLOSE_SECS);
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-answer").await;
+
+        crate::audio::tts_duck::arm_for(Duration::from_secs(600));
+        let playing = opened + limit + Duration::from_secs(10);
+        let during = controller
+            .seal_channels_silent_for(playing, &shared_bus, 5)
+            .await;
+        crate::audio::tts_duck::clear();
+        assert!(during.is_empty(), "a reply playing into the channel is not silence");
+        let after = controller
+            .seal_channels_silent_for(playing + limit - Duration::from_secs(1), &shared_bus, 5)
+            .await;
+        assert!(after.is_empty(), "the limit counts again from the end of the playback");
+        let sealed = controller
+            .seal_channels_silent_for(playing + limit, &shared_bus, 5)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        assert_eq!(sealed_rows(&bus_rows(&channel_bus)).len(), 1);
     }
 
     /// One closing throne: a session sealed by silence is never sealed again
