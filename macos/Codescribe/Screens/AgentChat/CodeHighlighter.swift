@@ -56,7 +56,7 @@ enum CodeHighlighter {
 enum CodeTheme {
   // Dark Aqua. The agent window follows the system appearance, so this CSS
   // is selected only when `colorScheme == .dark`.
-  //   base            → textBodyAlt  #DFE2DB
+  //   base            → warm light ink #DFE2DB (the retired textBodyAlt dark value)
   //   keyword/type    → terracotta   #D97757  (the one brand accent)
   //   string/addition → oliveLight   #9DB178
   //   number/meta     → amber        #D6B24E

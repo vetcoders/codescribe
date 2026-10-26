@@ -88,7 +88,6 @@ enum CSPalette {
   // always the fainter one: closer to the page in whichever mode is active.
   static let textHigh = adaptive(light: NSColor(hex: 0x1D1B17), dark: NSColor(hex: 0xF4F2EC))
   static let textBody = adaptive(light: NSColor(hex: 0x2B2924), dark: NSColor(hex: 0xE9E7E0))
-  static let textBodyAlt = adaptive(light: NSColor(hex: 0x363430), dark: NSColor(hex: 0xDFE2DB))
   /// The paper rung clears 4.5:1 on the real light surfaces, not only on
   /// `ink`: the sheet, a card or chip on it, a bubble, and the measured glass
   /// sheet (#DFDDD9, 2026-10-20), including every selectable sheet shade.
@@ -251,7 +250,6 @@ enum CSColor {
   // Text
   static let textHigh = Color(nsColor: CSPalette.textHigh)  // headlines
   static let textBody = Color(nsColor: CSPalette.textBody)
-  static let textBodyAlt = Color(nsColor: CSPalette.textBodyAlt)
   static let textMuted = Color(nsColor: CSPalette.textMuted)
   static let textFaint = Color(nsColor: CSPalette.textFaint)  // decoration only, never text
   static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // decoration only, never text
