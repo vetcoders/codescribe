@@ -768,6 +768,13 @@ enum ComposerControlMetrics {
   static let spacing: CGFloat = 8
   static let horizontalPadding: CGFloat = 12
   static let verticalPadding: CGFloat = 8
+
+  // Inline agent cards share the editor and actions, with less surrounding chrome.
+  static let intercomGlyphSize: CGFloat = 14
+  static let intercomSpacing: CGFloat = 4
+  static let intercomHorizontalPadding: CGFloat = 8
+  static let intercomVerticalPadding: CGFloat = 4
+  static let intercomMinimumHeight = hitTargetSize + 2 * intercomVerticalPadding
 }
 
 enum ComposerActionAccessibility {

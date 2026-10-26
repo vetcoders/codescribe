@@ -7,9 +7,18 @@ import XCTest
 @MainActor
 final class OverlayComposerSyncTests: XCTestCase {
   func testNativeComposerActionsRenderAlignedAndMuted() throws {
+    try assertNativeComposerActions(compact: false, width: 480)
+  }
+
+  func testNarrowInlineComposerKeepsAllThreeActionsAlignedAndMuted() throws {
+    try assertNativeComposerActions(compact: true, width: 220)
+  }
+
+  private func assertNativeComposerActions(compact: Bool, width: CGFloat) throws {
     let palette = OverlayAppearancePalette.dark
     let composer = OverlayConversationComposer(
-      palette: palette, draft: .constant("A shared draft"), sending: false, onSubmit: {},
+      palette: palette, draft: .constant("A shared draft"),
+      maximumEditorHeight: compact ? 28 : nil, sending: false, onSubmit: {},
       onToggleDraftMicrophone: {},
       draftSyncChoices: [.init(id: "peer", title: "Peer", selected: true, enabled: true)],
       draftSyncNames: ["Agent", "Peer"])
@@ -17,9 +26,10 @@ final class OverlayComposerSyncTests: XCTestCase {
       .padding(12).background(palette.desktopBackground.color)
       .environment(\.colorScheme, .dark))
     host.sizingOptions = []
-    host.frame = NSRect(x: 0, y: 0, width: 480, height: 100)
+    let height: CGFloat = compact ? 60 : 100
+    host.frame = NSRect(x: 0, y: 0, width: width, height: height)
     let window = NSWindow(
-      contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 100),
+      contentRect: NSRect(x: -10000, y: -10000, width: width, height: height),
       styleMask: .borderless, backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     window.contentView = host
@@ -32,15 +42,20 @@ final class OverlayComposerSyncTests: XCTestCase {
     host.cacheDisplay(in: host.bounds, to: bitmap)
     let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
     let screenshot = XCTAttachment(image: image)
-    screenshot.name = "Muted-aligned-composer-actions"
+    screenshot.name = compact ? "Compact-narrow-composer-actions" : "Muted-aligned-composer-actions"
     screenshot.lifetime = .keepAlways
     add(screenshot)
     // Measure visible ink, rather than assuming equal layout metrics imply
     // equal native Menu/Button output. AX is unavailable in this background host.
     let pixelScale = CGFloat(bitmap.pixelsWide) / host.bounds.width
     let controlSize = ComposerControlMetrics.hitTargetSize
-    let stride = controlSize + ComposerControlMetrics.spacing
-    let rightInset: CGFloat = 12 + ComposerControlMetrics.horizontalPadding
+    let stride = controlSize + (compact
+      ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing)
+    let rightInset: CGFloat = 12 + (compact
+      ? ComposerControlMetrics.intercomHorizontalPadding : ComposerControlMetrics.horizontalPadding)
+    let textView = try XCTUnwrap(editor(in: host))
+    XCTAssertGreaterThan(textView.enclosingScrollView?.bounds.width ?? 0, 60)
+    XCTAssertEqual(textView.font?.pointSize ?? 0, 14)
     var centers: [CGFloat] = []
     var heights: [CGFloat] = []
     var peaks: [CGFloat] = []
@@ -268,6 +283,7 @@ final class OverlayComposerSyncTests: XCTestCase {
         palette: .dark,
         draft: Binding(get: { state.conversationDraft(for: agent.id) },
           set: { state.setConversationDraft($0, for: agent.id) }),
+        maximumEditorHeight: agent.id == agents[1].id ? 28 : nil,
         sending: false, onSubmit: { XCTFail("Editing must not publish") }, clipboard: board,
         saveFile: { data, _ in
           saves += 1

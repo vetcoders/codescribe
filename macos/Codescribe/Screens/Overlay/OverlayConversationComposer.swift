@@ -52,6 +52,16 @@ struct OverlayConversationComposer: View {
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
 
+  /// Only the inline card supplies a height budget. Full conversation windows
+  /// retain their existing spacing while using the very same editor and draft.
+  private var isCompact: Bool { maximumEditorHeight != nil }
+  private var controlSpacing: CGFloat {
+    isCompact ? ComposerControlMetrics.intercomSpacing : ComposerControlMetrics.spacing
+  }
+  private var controlGlyphSize: CGFloat {
+    isCompact ? ComposerControlMetrics.intercomGlyphSize : ComposerControlMetrics.glyphSize
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       composerContent
@@ -89,7 +99,7 @@ struct OverlayConversationComposer: View {
   }
 
   private var composerContent: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: isCompact ? ComposerControlMetrics.intercomSpacing : 6) {
       if let replySelection {
         HStack(alignment: .top, spacing: 8) {
           Button {
@@ -160,8 +170,14 @@ struct OverlayConversationComposer: View {
       }
       editorRow
     }
-    .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
-    .padding(.vertical, ComposerControlMetrics.verticalPadding)
+    .padding(
+      .horizontal,
+      isCompact
+        ? ComposerControlMetrics.intercomHorizontalPadding : ComposerControlMetrics.horizontalPadding)
+    .padding(
+      .vertical,
+      isCompact
+        ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding)
   }
 
   var draftMicrophoneSymbol: String {
@@ -196,7 +212,7 @@ struct OverlayConversationComposer: View {
     }
     .menuStyle(.button).menuIndicator(.hidden)
     .buttonStyle(.plain)
-    .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+    .font(.system(size: controlGlyphSize, weight: .semibold))
     .frame(
       width: ComposerControlMetrics.hitTargetSize,
       height: ComposerControlMetrics.hitTargetSize)
@@ -226,7 +242,7 @@ struct OverlayConversationComposer: View {
   }
 
   private var editorRow: some View {
-    HStack(alignment: .bottom, spacing: ComposerControlMetrics.spacing) {
+    HStack(alignment: .bottom, spacing: controlSpacing) {
       ConversationMessageField(
         text: prose, height: $editorHeight,
         textColor: palette.primaryText.nsColor,
@@ -266,7 +282,7 @@ struct OverlayConversationComposer: View {
               .pulse, options: .repeating,
               isActive: draftMicrophoneRecording && !reduceMotion)
         }
-        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+        .font(.system(size: controlGlyphSize, weight: .semibold))
         .frame(
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
@@ -283,7 +299,7 @@ struct OverlayConversationComposer: View {
       }
       Button("Send", systemImage: "paperplane.fill", action: onSubmit)
         .labelStyle(.iconOnly)
-        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+        .font(.system(size: controlGlyphSize, weight: .semibold))
         .frame(
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
