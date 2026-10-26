@@ -1,0 +1,1 @@
+{"bus": "/fixture/bus-7.jsonl", "channel": "7", "delivery_id": "222222222222222222222222", "kind": "read", "lease_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "message_id": "0123456789abcdef00000002", "name": "igor", "provider": "codex", "provider_session_id": "igor-session", "read_at": "2026-10-26T01:05:00Z", "schema": "codescribe.message-receipt.v1"}

@@ -4573,6 +4573,10 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
     for delivery_id in unread:
         payload = next(payload for payload in pending if payload.get("delivery_id") == delivery_id)
         message_id = receipt_message_id(payload)
+        # The read receipt first: the marker ends this delivery's pending life
+        # (a repeated --ack is filtered by delivery_acknowledged), so a crash
+        # between the two must leave the retryable half, not the final one.
+        record_message_receipt(args.bridge_home, payload, "read", name=state.get("name"))
         atomic_json(
             args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
             {"lease_id": lease_id, "delivery_id": delivery_id,
@@ -4584,7 +4588,6 @@ def acknowledge_delivery(args: argparse.Namespace) -> int:
              **({"message_id": message_id} if message_id else {}),
              "envelope": receipt_envelope(payload, state["bus"])},
         )
-        record_message_receipt(args.bridge_home, payload, "read", name=state.get("name"))
     for delivery_id in delivery_ids:
         withdrawn = withdraw_acknowledged_queue(args.bridge_home, lease_id, delivery_id, retry=True)
         emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id,
@@ -7825,11 +7828,16 @@ def write_receipt_once(path: Path, payload: dict[str, Any]) -> bool:
             os.link(temporary, path)
         except FileExistsError:
             return False
-        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as error:
+            # The receipt exists; only its directory entry's durability
+            # barrier failed. Say that, not "not written".
+            sys.stderr.write(f"bus-demux: receipt directory not synced: {error}\n")
         return True
     finally:
         try:
@@ -7917,6 +7925,31 @@ def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
     return path
 
 
+def record_sent_receipt(root: Path, message_id: str, sent_to: list[dict[str, str]], *,
+                        bus: str | None, at: str) -> Path | None:
+    """The publisher's own record of who a channel-zero text was sent to.
+
+    Written once at publication, so `receipt_state` knows the admitted list
+    even when no recipient's reader was alive to leave a `delivered` file.
+    Only the two helper publishers write it (typed Founder text and a peer
+    `--send --to 0`); a channel take's list is stamped by the app and is
+    read from the recipients' files instead.
+    """
+    if not re.fullmatch(r"[0-9a-f]{24}", message_id):
+        return None
+    path = receipts_directory(root, message_id) / "sent.json"
+    try:
+        written = write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "sent",
+                                            "message_id": message_id,
+                                            "sent_to": [{"name": row["name"], "channel": row["channel"]}
+                                                        for row in sent_to],
+                                            "bus": bus, "at": at})
+    except OSError as error:
+        sys.stderr.write(f"bus-demux: sent receipt not written: {error}\n")
+        return None
+    return path if written else None
+
+
 def record_withdrawn_receipt(root: Path, payload: dict[str, Any], control_id: str,
                              at: str) -> Path | None:
     message_id = receipt_message_id(payload)
@@ -7980,19 +8013,32 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
     Per delivery the state is the farthest existing file (`read` over
     `delivered`; `skipped` on its own), keyed by `delivery_id`, so one agent
     whose channel changed hands between delivery and reading is one
-    recipient. `sent_to` is the publisher's frozen list as the receipts
-    carried it, when any did. `spoken` is the playback that completed, else
-    the latest terminal playback, else None. Message text is never read.
+    recipient. `sent_to` comes from the publisher's `sent.json`, else from the
+    stamp the recipients' files carried. A member of `sent_to` with no file
+    at all is listed as `no_receipt`. `denominator` is the one count the
+    overlay and agents read: the members of `sent_to` plus every agent that
+    was delivered to or read outside that list; `skipped` is shown, never
+    counted. `spoken` is the playback that completed, else the latest
+    terminal playback, else None. Message text is never read, and the
+    projection names agents by name and channel only: the provider/session
+    pair (a mailbox capability) and the lease hash stay in the files.
     """
     directory = receipts_directory(root, message_id)
     deliveries: dict[str, dict[str, dict[str, Any]]] = {}
     withdrawn: list[dict[str, Any]] = []
     playbacks: list[dict[str, Any]] = []
     sent_to: list[dict[str, str]] | None = None
+    published: list[dict[str, str]] | None = None
     try:
         entries = sorted(directory.iterdir())
     except OSError:
         entries = []
+
+    def reach(value: Any) -> list[dict[str, str]]:
+        return [{"name": item["name"], "channel": item["channel"]}
+                for item in value if isinstance(item, dict)
+                and isinstance(item.get("name"), str) and isinstance(item.get("channel"), str)]
+
     for path in entries:
         if path.name.startswith(".") or not path.name.endswith(".json"):
             continue
@@ -8003,18 +8049,16 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
         if kind in MESSAGE_RECEIPT_STATES and stem == f"{row.get('delivery_id')}.{kind}":
             deliveries.setdefault(row["delivery_id"], {})[kind] = row
             if sent_to is None and isinstance(row.get("sent_to"), list):
-                sent_to = [{"name": item["name"], "channel": item["channel"]}
-                           for item in row["sent_to"] if isinstance(item, dict)
-                           and isinstance(item.get("name"), str) and isinstance(item.get("channel"), str)]
+                sent_to = reach(row["sent_to"])
+        elif kind == "sent" and stem == "sent" and isinstance(row.get("sent_to"), list):
+            published = reach(row["sent_to"])
         elif kind == "withdrawn" and stem == f"withdrawn.{row.get('delivery_id')}":
             withdrawn.append({"delivery_id": row["delivery_id"], "control_id": row.get("control_id"),
                               "at": row.get("at")})
         elif kind == "playback" and stem == f"playback.{row.get('playback_ticket')}":
             playbacks.append({"state": row.get("state"), "reason": row.get("reason"),
                               "spoken": row.get("spoken") is True, "at": row.get("at"),
-                              "playback_ticket": row["playback_ticket"],
-                              "provider": row.get("provider"),
-                              "provider_session_id": row.get("provider_session_id")})
+                              "playback_ticket": row["playback_ticket"]})
     recipients = []
     for delivery_id, rows in deliveries.items():
         if "read" in rows:
@@ -8024,19 +8068,41 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
         else:
             state, row = "skipped", rows["skipped"]
         delivered = rows.get("delivered")
+        # Name and channel from the farthest file, completed from the others:
+        # a reader that acknowledged under a lease bound later may not have
+        # known its digit when it wrote `read`.
+        others = [rows[kind] for kind in MESSAGE_RECEIPT_STATES if kind in rows]
         recipients.append({
-            "delivery_id": delivery_id, "name": row.get("name"), "channel": row.get("channel"),
-            "lease_id": row.get("lease_id"), "state": state,
+            "delivery_id": delivery_id,
+            "name": row.get("name") or next((r["name"] for r in others if r.get("name")), None),
+            "channel": row.get("channel") or next((r["channel"] for r in others if r.get("channel")), None),
+            "state": state,
             "wake": delivered.get("wake") if delivered else None,
             "delivered_at": delivered.get("at") if delivered else None,
             "at": row.get("read_at") if state == "read" else row.get("at"),
         })
     recipients.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
+    if published is not None:
+        sent_to = published
+    # The denominator: everyone on the admitted list, plus anyone delivered to
+    # or read outside it (a list frozen by the app, an older helper). A
+    # recipient is one agent by name and channel, however many deliveries
+    # reached it; skipped is shown but not counted; a member without any
+    # file is counted and listed as no_receipt.
+    listed = [(item["name"], item["channel"]) for item in sent_to or []]
+    reached = {(item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
+               for item in recipients if item["state"] in ("delivered", "read")}
+    for name, channel in listed:
+        if (name, channel) not in reached and not any(
+                item["name"] == name and item["channel"] == channel for item in recipients):
+            recipients.append({"delivery_id": None, "name": name, "channel": channel,
+                               "state": "no_receipt", "wake": None, "delivered_at": None, "at": None})
+    denominator = len(dict.fromkeys(listed)) + len(reached - set(listed))
     withdrawn.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
     playbacks.sort(key=lambda item: (str(item["at"] or ""), item["playback_ticket"]))
     spoken = next((item for item in playbacks if item["spoken"]), playbacks[-1] if playbacks else None)
     return {"message_id": message_id, "sent_to": sent_to, "recipients": recipients,
-            "withdrawn": withdrawn, "spoken": spoken}
+            "denominator": denominator, "withdrawn": withdrawn, "spoken": spoken}
 
 
 def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -> bool:
@@ -8824,6 +8890,10 @@ def send_text_command(args: argparse.Namespace) -> int:
             receipts.append(receipt)
             recipient_receipts.append({**owner, **hold, "source": receipt,
                 "broadcast": policies[owner["lease_id"]]})
+    if broadcast:
+        # The publisher's own record of the admitted list: receipt_state reads
+        # it even when no recipient's reader was alive to leave a file.
+        record_sent_receipt(root, identity, sent_to, bus=None, at=emitted_at)
     emit({"kind": "message_published", **hold, "message_id": identity, "source": receipts[0], "sources": receipts,
           "recipients": recipient_receipts, "skipped": skipped})
     return 0
@@ -9116,6 +9186,8 @@ def send_peer_command(args: argparse.Namespace) -> int:
                                "follower_live": bool(live_follower_pid(root, owner_lease)),
                                "broadcast": agent_broadcast_policy(root, owner["provider"], owner["provider_session_id"], bus),
                                "source": receipt})
+    if target == "0":
+        record_sent_receipt(root, identity, audience_at_send, bus=lease.get("bus"), at=utc_now())
     emit({"kind": "peer_message_published", "message_id": identity,
           "origin_channel": "0" if target == "0" else deliveries[0]["channel"],
           "sender": sender_name, "target": addressed, "recipients": deliveries})

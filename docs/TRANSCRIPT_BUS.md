@@ -1660,10 +1660,13 @@ the fact and never rewritten, replaced or removed by any other process:
 | `<delivery_id>.skipped.json` | the follower, instead of `delivered`, when channel zero is `off` | the same identity fields, `policy: off`, `at` |
 | `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy | `control_id`, `at` |
 | `playback.<ticket>.json` | the reply player, at the ticket's first terminal state | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at` |
+| `sent.json` | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at` |
 
 Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
-`message_id`; none carries message text, WAV paths or credentials. The key
-is `delivery_id`, not the lease: after a channel handover the next session
+`message_id`; none carries message text or WAV paths. The identity fields
+(`provider`, `provider_session_id`, `lease_id`) name the mailbox that
+produced the fact; they stay in the private files and are not part of the
+`--receipts` projection. The key is `delivery_id`, not the lease: after a channel handover the next session
 acknowledges the delivery the previous lease received, and that is one
 recipient in two files, not two recipients. Only copies of a message leave
 receipts: typed, peer and channel-take copies carry a 24-hex `message_id`;
@@ -1674,7 +1677,10 @@ The state of a delivery is its farthest existing file: `delivered → read`;
 deliver the skipped copy); `withdrawn` is a separate fact about a held copy
 that never reached `pending`. A follower restart re-offering the same copy,
 or a second `--ack`, finds the first file and changes nothing: `read` never
-falls back to `delivered`. `wake` records the broadcast policy as it stood
+falls back to `delivered`. `--ack` writes the `read` file before the ACK
+marker: the marker ends the delivery's pending life and a repeated `--ack`
+is filtered by it, so a crash between the two leaves the half that the next
+`--ack` completes, never a marker without its `read`. `wake` records the broadcast policy as it stood
 at delivery (`on`, or `quiet` under the moon or the legacy quiet membership),
 the same answer the follower gave the native wake; whether the copy wakes
 now is read from the current policy, not from this file. The moon is not a
@@ -1691,13 +1697,32 @@ and the skip marker under `broadcast-skipped/<lease_id>/` now also carry
 them.
 
 `receipt_state(root, message_id)` composes the directory into one state:
-`{message_id, sent_to, recipients: [{delivery_id, name, channel, lease_id,
-state: delivered|read|skipped, wake, delivered_at, at}], withdrawn: [{delivery_id,
-control_id, at}], spoken: {state, reason, spoken, at, playback_ticket, …} | null}`.
-`sent_to` is the publisher's frozen list as the receipts carried it (null when
-no receipt carried one); `spoken` is the completed playback when one exists,
-else the latest terminal one. Files whose name and content disagree, foreign
-schemas and foreign message ids are ignored, never repaired.
+`{message_id, sent_to, recipients: [{delivery_id, name, channel,
+state: delivered|read|skipped|no_receipt, wake, delivered_at, at}], denominator,
+withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at,
+playback_ticket} | null}`. Agents appear by name and channel only; no provider,
+session or lease leaves the files through this projection.
+
+The helper is the one owner of the denominator. `sent_to` comes from
+`sent.json` when the publisher wrote one, so it does not depend on any
+reader having been alive; without that file (messages before this helper
+generation, and channel takes, whose list the app stamps into `recipients`
+outside the helper) it is the stamp the recipients' files carried, or null
+when none did. Every member of `sent_to` without any file is listed as
+`{name, channel, state: no_receipt}`: the copy was sent and no reader has
+recorded it yet, or the reader predates this generation. `denominator` is
+the number of agents on `sent_to` plus every agent delivered to or read
+outside that list (one agent by name and channel, however many deliveries
+reached it); `no_receipt` counts, `skipped` is shown but never counted.
+The overlay and agents read `denominator` and the states; neither derives
+the count a second time from the roster or from policies. `spoken` is the
+completed playback when one exists, else the latest terminal one. Files
+whose name and content disagree, foreign schemas and foreign message ids
+are ignored, never repaired.
+
+`scripts/tests/fixtures/receipts/<case>/` holds model directories with their
+exact `expected.json`; the helper's tests and the overlay's tests read the
+same cases, so both sides compute one state.
 
 ```bash
 cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]

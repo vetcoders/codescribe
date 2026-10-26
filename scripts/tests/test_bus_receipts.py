@@ -146,7 +146,10 @@ class FollowerReceiptTests(ReceiptFixture):
         # Pre-receipt policy change does not rewrite history: the state is read, wake quiet.
         state = DEMUX.receipt_state(self.root, MESSAGE_ID)
         self.assertEqual(state["sent_to"], REACH)
-        self.assertEqual(len(state["recipients"]), 1)
+        # igor is on the list and left no file: counted, listed as no_receipt.
+        self.assertEqual([(r["name"], r["state"]) for r in state["recipients"]],
+                         [("lena", "read"), ("igor", "no_receipt")])
+        self.assertEqual(state["denominator"], 2)
         recipient = state["recipients"][0]
         self.assertEqual((recipient["name"], recipient["channel"], recipient["state"], recipient["wake"]),
                          ("lena", "3", "read", "quiet"))
@@ -178,7 +181,10 @@ class FollowerReceiptTests(ReceiptFixture):
         marker = DEMUX.read_json(DEMUX.broadcast_skip_path(self.root, self.lease_id, payload["delivery_id"]))
         self.assertEqual(marker["message_id"], MESSAGE_ID)
         state = DEMUX.receipt_state(self.root, MESSAGE_ID)
-        self.assertEqual([(r["state"], r["wake"]) for r in state["recipients"]], [("skipped", None)])
+        self.assertEqual([(r["name"], r["state"], r["wake"]) for r in state["recipients"]],
+                         [("lena", "skipped", None), ("igor", "no_receipt", None)])
+        # lena is on the frozen list, so she is counted although her copy was skipped.
+        self.assertEqual(state["denominator"], 2)
 
     def test_drafts_leave_no_receipt(self):
         lease = self.lease()
@@ -220,8 +226,47 @@ class FollowerReceiptTests(ReceiptFixture):
         successor = dict(payload, lease_id="f" * 32, provider_session_id="next-session")
         DEMUX.record_message_receipt(self.root, successor, "read", name="lena")
         state = DEMUX.receipt_state(self.root, MESSAGE_ID)
-        self.assertEqual(len(state["recipients"]), 1)
-        self.assertEqual((state["recipients"][0]["state"], state["recipients"][0]["lease_id"]), ("read", "f" * 32))
+        self.assertEqual([(r["name"], r["channel"], r["state"]) for r in state["recipients"]],
+                         [("lena", "3", "read"), ("igor", "7", "no_receipt")])
+        self.assertEqual(state["denominator"], 2)
+        read = json.loads((self.receipts() / f"{payload['delivery_id']}.read.json").read_text())
+        self.assertEqual((read["lease_id"], read["provider_session_id"]), ("f" * 32, "next-session"))
+
+    def test_a_crash_between_read_and_the_ack_marker_is_completed_by_the_next_ack(self):
+        lease = self.lease()
+        self.bind()
+        payload = self.payload(lease)
+        self.assertTrue(lease.queue_delivery(payload))
+        marker = self.root / "acknowledgments" / self.lease_id / f"{payload['delivery_id']}.json"
+        read = self.receipts() / f"{payload['delivery_id']}.read.json"
+        with mock.patch.object(DEMUX, "atomic_json", side_effect=OSError("power lost")), \
+                self.assertRaises(OSError), mock.patch.object(DEMUX, "emit"):
+            DEMUX.acknowledge_delivery(self.args(ack=[payload["delivery_id"]]))
+        self.assertTrue(read.exists(), "the retryable half is written first")
+        self.assertFalse(marker.exists())
+        content = read.read_text()
+        with mock.patch.object(DEMUX, "emit"):
+            self.assertEqual(DEMUX.acknowledge_delivery(self.args(ack=[payload["delivery_id"]])), 0)
+        self.assertTrue(marker.exists())
+        self.assertEqual(read.read_text(), content)
+        self.assertEqual(DEMUX.receipt_state(self.root, MESSAGE_ID)["recipients"][0]["state"], "read")
+
+    def test_the_projection_names_agents_by_name_and_channel_only(self):
+        lease = self.lease()
+        self.bind()
+        payload = self.payload(lease)
+        self.assertTrue(lease.queue_delivery(payload))
+        DEMUX.write_receipt_once(self.receipts() / "playback.aaaaaaaaaaaaaaaaaaaaaaaa.json", {
+            "schema": DEMUX.MESSAGE_RECEIPT_SCHEMA, "kind": "playback", "message_id": MESSAGE_ID,
+            "playback_ticket": "a" * 24, "state": "spoken", "reason": None, "spoken": True,
+            "provider": "claude-code", "provider_session_id": "author-session", "lease_id": "e" * 32, "at": "t"})
+        state = DEMUX.receipt_state(self.root, MESSAGE_ID)
+        self.assertEqual(set(state["recipients"][0]),
+                         {"delivery_id", "name", "channel", "state", "wake", "delivered_at", "at"})
+        self.assertEqual(set(state["spoken"]), {"state", "reason", "spoken", "at", "playback_ticket"})
+        self.assertNotIn(self.session, json.dumps(state))
+        self.assertNotIn("author-session", json.dumps(state))
+        self.assertNotIn(self.lease_id, json.dumps(state))
 
 
 class PlaybackReceiptTests(ReceiptFixture):
@@ -312,8 +357,54 @@ class ReceiptStateTests(ReceiptFixture):
 
     def test_a_message_without_receipts_has_an_empty_state(self):
         self.assertEqual(DEMUX.receipt_state(self.root, MESSAGE_ID),
-                         {"message_id": MESSAGE_ID, "sent_to": None, "recipients": [],
+                         {"message_id": MESSAGE_ID, "sent_to": None, "recipients": [], "denominator": 0,
                           "withdrawn": [], "spoken": None})
+
+    def test_sent_json_owns_sent_to_and_members_without_a_file_are_no_receipt(self):
+        d1, d2, d4 = "1" * 24, "2" * 24, "4" * 24
+        three = [*REACH, {"name": "nina", "channel": "2"}]
+        self.write("sent.json", {"kind": "sent", "sent_to": three, "bus": None, "at": "2026-10-26T00:34:00Z"})
+        # A recipient file carrying an older, shorter stamp does not override the publisher's.
+        self.write(f"{d1}.delivered.json", {"kind": "delivered", "delivery_id": d1, "name": "lena", "channel": "3",
+                                            "wake": "on", "at": "2026-10-26T00:34:01Z", "sent_to": REACH})
+        self.write(f"{d1}.read.json", {"kind": "read", "delivery_id": d1, "name": "lena", "channel": "3",
+                                       "read_at": "2026-10-26T05:04:00Z"})
+        self.write(f"{d2}.delivered.json", {"kind": "delivered", "delivery_id": d2, "name": "igor", "channel": "7",
+                                            "wake": "quiet", "at": "2026-10-26T00:34:02Z"})
+        self.write(f"{d4}.skipped.json", {"kind": "skipped", "delivery_id": d4, "name": "kuba", "channel": "5",
+                                          "policy": "off", "at": "2026-10-26T00:34:03Z"})
+        state = DEMUX.receipt_state(self.root, MESSAGE_ID)
+        self.assertEqual(state["sent_to"], three)
+        self.assertEqual([(r["name"], r["state"]) for r in state["recipients"]],
+                         [("igor", "delivered"), ("kuba", "skipped"), ("lena", "read"), ("nina", "no_receipt")])
+        self.assertEqual(state["recipients"][3], {"delivery_id": None, "name": "nina", "channel": "2",
+                                                  "state": "no_receipt", "wake": None, "delivered_at": None, "at": None})
+        # Three on the list (nina counted although unreached); kuba skipped is shown, not counted.
+        self.assertEqual(state["denominator"], 3)
+
+    def test_without_sent_json_the_denominator_comes_from_the_recipients_files(self):
+        d1, d2, d3 = "1" * 24, "2" * 24, "3" * 24
+        self.write(f"{d1}.delivered.json", {"kind": "delivered", "delivery_id": d1, "name": "lena", "channel": "3",
+                                            "wake": "on", "at": "t1", "sent_to": REACH})
+        self.write(f"{d2}.read.json", {"kind": "read", "delivery_id": d2, "name": "igor", "channel": "7", "read_at": "t2"})
+        # An agent delivered to outside the stamped list (an app-stamped take) still counts.
+        self.write(f"{d3}.delivered.json", {"kind": "delivered", "delivery_id": d3, "name": "kuba", "channel": "5",
+                                            "wake": "on", "at": "t3"})
+        state = DEMUX.receipt_state(self.root, MESSAGE_ID)
+        self.assertEqual(state["sent_to"], REACH)
+        self.assertEqual(state["denominator"], 3)
+        self.assertNotIn("no_receipt", {r["state"] for r in state["recipients"]})
+
+    def test_the_fixture_directories_pin_the_exact_state(self):
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "receipts"
+        cases = sorted(p for p in fixtures.iterdir() if p.is_dir())
+        self.assertGreaterEqual(len(cases), 5)
+        for case in cases:
+            with self.subTest(case=case.name):
+                expected = json.loads((case / "expected.json").read_text())
+                self.assertEqual(DEMUX.receipt_state(case, expected["message_id"]), expected)
+                for path in case.rglob("*.json"):
+                    self.assertNotIn("text", json.loads(path.read_text()), path.name)
 
 
 class ReceiptsCommandTests(ReceiptFixture):
@@ -336,9 +427,19 @@ class ReceiptsCommandTests(ReceiptFixture):
         row = json.loads(lines[0])
         self.assertEqual(row["kind"], "receipts")
         self.assertEqual(row["sent_to"], REACH)
-        self.assertEqual([(r["name"], r["state"], r["wake"]) for r in row["recipients"]], [("lena", "delivered", "on")])
+        self.assertEqual([(r["name"], r["state"], r["wake"]) for r in row["recipients"]],
+                         [("lena", "delivered", "on"), ("igor", "no_receipt", None)])
+        self.assertEqual(row["denominator"], 2)
         self.assertNotIn("Iwo", output)
         self.assertNotIn("text", row)
+
+        def keys(value):
+            if isinstance(value, dict):
+                return set(value) | {k for v in value.values() for k in keys(v)}
+            if isinstance(value, list):
+                return {k for v in value for k in keys(v)}
+            return set()
+        self.assertFalse(keys(row) & {"provider", "provider_session_id", "lease_id", "bus"})
 
     def test_a_stranger_is_refused_without_learning_whether_the_message_exists(self):
         self.lease_file()
@@ -386,6 +487,43 @@ class ReceiptsCommandTests(ReceiptFixture):
         code, output, _ = self.cli("--receipts", other, "--provider", self.provider, "--session", self.session)
         self.assertEqual((code, json.loads(output)["kind"]), (0, "receipts"))
         self.assertEqual(json.loads(output)["recipients"], [])
+
+    def test_both_channel_zero_publishers_write_sent_json_once(self):
+        for channel, name in (("2", "nina"), ("7", "igor")):
+            bus = self.home / f"bus-{channel}.jsonl"
+            lid = DEMUX.lease_identifier("codex", name)
+            DEMUX.write_channel_binding(self.root, channel, name, "codex", name, str(bus))
+            DEMUX.atomic_json(self.root / "leases" / f"{lid}.json", {
+                "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                "lease_id": lid, "name": name, "bus": str(bus)})
+        receipt = {"stream_id": "fixture", "stream_dev": 1, "stream_inode": 2, "offset": 0, "length": 12}
+        with mock.patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                mock.patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                mock.patch.object(DEMUX, "emit"), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+            self.assertEqual(DEMUX.send_text_command(argparse.Namespace(bridge_home=self.root, channel="0")), 0)
+        typed = publish.call_args_list[0].args[1]["message_id"]
+        path = DEMUX.receipts_directory(self.root, typed) / "sent.json"
+        row = json.loads(path.read_text())
+        self.assertEqual((row["kind"], row["message_id"], row["bus"]), ("sent", typed, None))
+        self.assertEqual(row["sent_to"], [{"name": "nina", "channel": "2"}, {"name": "igor", "channel": "7"}])
+        self.assertEqual(set(row), {"schema", "kind", "message_id", "sent_to", "bus", "at"})
+        self.assertFalse(DEMUX.record_sent_receipt(self.root, typed, [], bus=None, at="later"))
+        self.assertEqual(json.loads(path.read_text()), row)
+        self.assertEqual(DEMUX.receipt_state(self.root, typed)["denominator"], 2)
+        # A peer broadcast from nina (channel 2) reaches igor only, and says so.
+        with mock.patch.object(DEMUX, "live_follower_pid", return_value=None), \
+                mock.patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                mock.patch.object(DEMUX, "remember_published_reply"), mock.patch.object(DEMUX, "emit"):
+            self.assertEqual(DEMUX.send_peer_command(argparse.Namespace(
+                bridge_home=self.root, provider="codex", session="nina", send="fala", to="0")), 0)
+        peer = publish.call_args_list[0].args[1]["message_id"]
+        row = json.loads((DEMUX.receipts_directory(self.root, peer) / "sent.json").read_text())
+        self.assertEqual(row["sent_to"], [{"name": "igor", "channel": "7"}])
+        self.assertEqual(row["bus"], str(self.home / "bus-2.jsonl"))
+        state = DEMUX.receipt_state(self.root, peer)
+        self.assertEqual(([(r["name"], r["state"]) for r in state["recipients"]], state["denominator"]),
+                         ([("igor", "no_receipt")], 1))
 
     def test_receipts_needs_an_owner_and_travels_alone(self):
         for arguments in (("--receipts", MESSAGE_ID),
