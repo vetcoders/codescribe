@@ -165,7 +165,13 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     XCTAssertTrue(rig.controller.presentation.expanded.contains(rig.identity))
     Rig.apply([rig.conversation], to: rig.state)
     clock.advance(by: 5)
-    XCTAssertTrue(rig.controller.presentation.expanded.isEmpty)
+    XCTAssertTrue(
+      rig.controller.presentation.expanded.isEmpty,
+      "Return held: recording=\(rig.state.recording), warming=\(rig.state.warmingUp), "
+        + "transcribing=\(rig.state.transcribing), voice=\(rig.state.channelAudioCaptureActive), "
+        + "pending=\(rig.state.pendingTextMessages.count), modal=\(NSApp.modalWindow != nil), "
+        + "mouse=\(NSEvent.pressedMouseButtons), scheduled=\(clock.outstanding), "
+        + "menu=\(String(describing: Mirror(reflecting: rig.controller).descendant("menuTracking")))")
     rig.verifyTruth()
   }
 
