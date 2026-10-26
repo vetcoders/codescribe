@@ -35,7 +35,9 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let content: AnyView = header
         ? AnyView(controller.offscreenHeader(width: 500))
         : AnyView(controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
-      let host = NSHostingView(rootView: content.environment(\.csTextScale, 1))
+      let host = NSHostingView(
+        rootView: content.environment(\.csTextScale, 1).symbolEffectsRemoved()
+          .transaction { $0.animation = nil; $0.disablesAnimations = true })
       host.sizingOptions = []
       host.frame = NSRect(x: 0, y: 0, width: 500, height: height)
       let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
@@ -44,6 +46,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       defer { window.close() }
       host.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
+      host.layoutSubtreeIfNeeded()
       let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
       let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
       func resizeViews(_ view: NSView) -> [NSView] {
