@@ -18,16 +18,17 @@ adding parallel state. For deep narrative detail, see `docs/ARCHITECTURE.md`.
 
 ## Runtime Primitives
 
-| Primitive                 | Canonical Path                                                 | Contract                                                                                               |
-| ------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `AcousticLedger`          | `core/pipeline/acoustic_ledger.rs`                             | Physical occurrence identity and sealing; emits `LedgerMutation` and `LedgerSeal` receipts.            |
-| `RecordingController`     | `app/controller/mod.rs`                                        | Single microphone owner across dictation, agent, and assistive modes.                                  |
-| `TranscriptReducer`       | `app/presentation/emitter.rs`                                  | Reduces committed ledger receipts into an immutable transcript projection.                             |
-| `TranscriptBus`           | `app/presentation/transcript_bus.rs`, `scripts/bus-demux.py`   | Append-only JSONL event bus and per-channel agent delivery/ACK/reply demux (`docs/TRANSCRIPT_BUS.md`). |
-| `DeliveryRoute`           | `app/controller/delivery_route.rs`                             | Routes sealed transcripts to the operator's explicit target (`docs/DELIVERY_ROUTE.md`).                |
-| `RuntimeSettingsSnapshot` | `core/config/loader.rs`                                        | Immutable runtime configuration snapshot loaded from `settings.json` and `docs/ENV_REGISTRY.toml`.     |
-| `OverlayState`            | `macos/Codescribe/Screens/Overlay/OverlayState.swift`          | Swift UI projection consumer (`applyTranscriptProjection`); holds no independent document state.       |
-| `OverlayIntercomWidget`   | `macos/Codescribe/Screens/Overlay/OverlayIntercomWidget.swift` | Multi-agent channel roster, broadcast/directed composer, and voice-reply playback chrome.              |
+| Primitive                 | Canonical Path                                                    | Contract                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `AcousticLedger`          | `core/pipeline/acoustic_ledger.rs`                                | Physical occurrence identity and sealing; emits `LedgerMutation` and `LedgerSeal` receipts.                                |
+| `RecordingController`     | `app/controller/mod.rs`                                           | Single microphone owner across dictation, agent, and assistive modes.                                                      |
+| `TranscriptReducer`       | `app/presentation/emitter.rs`                                     | Reduces committed ledger receipts into an immutable transcript projection.                                                 |
+| `TranscriptBus`           | `app/presentation/transcript_bus.rs`, `scripts/bus-demux.py`      | Append-only JSONL event bus and per-channel agent delivery/ACK/reply demux (`docs/TRANSCRIPT_BUS.md`).                     |
+| `DeliveryRoute`           | `app/controller/delivery_route.rs`                                | Routes sealed transcripts to the operator's explicit target (`docs/DELIVERY_ROUTE.md`).                                    |
+| `RuntimeSettingsSnapshot` | `core/config/loader.rs`                                           | Immutable runtime configuration snapshot loaded from `settings.json` and `docs/ENV_REGISTRY.toml`.                         |
+| `OverlayState`            | `macos/Codescribe/Screens/Overlay/OverlayState.swift`             | Swift UI projection consumer (`applyTranscriptProjection`); holds no independent document state.                           |
+| `OverlayIntercomWidget`   | `macos/Codescribe/Screens/Overlay/OverlayIntercomWidget.swift`    | Multi-agent channel roster, broadcast/directed composer, and voice-reply playback chrome.                                  |
+| `ReleaseRollback`         | `docs/RELEASE_ROLLBACK_RUNBOOK.md`, `scripts/generate-appcast.sh` | Sparkle `appcast.xml` withdrawal, GitHub Release draft/pre-release demotion, and forward `CFBundleVersion` patch recovery. |
 
 ## Verification Primitives
 

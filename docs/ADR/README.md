@@ -52,14 +52,18 @@ rules that keep agents from re-proposing rejected designs. Every record states
 - **Revisit if:** UniFFI or Xcode String Catalogs are replaced as the bridge or
   localization toolchain.
 
-### NO-5: High-risk ("Always Human") surfaces never auto-merge
+### NO-5: Merge and high-risk ("Always Human") surfaces stay on the operator's button
 
-- **Decision:** Changes touching **Release, signing & appcast** (`release.yml`,
-  `scripts/release*.sh`, `scripts/generate-appcast.sh`, Sparkle/CSK1 keys,
-  entitlements) or **Core ledger, bus & FFI contracts**
-  (`core/pipeline/acoustic_ledger.rs`, `app/presentation/emitter.rs`,
-  `app/presentation/transcript_bus.rs`, `bridge/src/codescribe.udl`) classify as
-  `high` risk and require human review before merge.
+- **Decision:** Merging to trunk (`main`/`develop`), enabling auto-merge,
+  modifying repository rulesets/labels/settings, and changes touching **Release,
+  signing & appcast** (`release.yml`, `scripts/release*.sh`,
+  `scripts/build-app.sh`, `scripts/build-dmg.sh`, `scripts/entitlements.plist`,
+  `scripts/generate-appcast.sh`, `macos/project.yml`, Sparkle/CSK1 keys) or
+  **Core ledger, bus & FFI contracts** (`core/pipeline/acoustic_ledger.rs`,
+  `app/presentation/emitter.rs`, `app/presentation/transcript_bus.rs`,
+  `bridge/`) require explicit human approval (`autoMergeFor: []`). Agents never
+  run `git push --force`, `git commit --no-verify`, or copy secrets across
+  machines.
 - **Why:** These surfaces are one-way doors affecting notarized distribution
   trust, cross-agent bus schemas, and physical occurrence invariants.
 - **Revisit if:** Automated formal equivalence proofs and hardware-isolated

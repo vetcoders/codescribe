@@ -3,60 +3,74 @@
 
 Commands:
   doctor                          Verify local toolchains, hooks, env registry, and gates
-  dev                             Inspect running Codescribe.app / Voice Lab local status
-  login                           Verify local Keychain / bus session readiness (no secrets printed)
-  request METHOD /path [options]  Query local Voice Lab HTTP endpoint or bus status (--contains, --dump)
-  execute [--code-file <path>]    Run a local verification fixture or structural/bus contract suite
-  browse [--path <surface>]       Verify macOS UI / Accessibility or site surface readiness
-  map [<surface>] [--check]       Print or verify the Codescribe surface map against repo roots
-  preview --pr <n>                Verify PR release/site build contract checks
-  health [--sha <sha>]            Verify installed CSBuildCommit or checkout HEAD matches <sha>
+  dev                             Verify running Codescribe.app process or live Voice Lab loopback
+  login                           Verify local ~/.codescribe bus bridge and settings.json state
+  request METHOD /path [options]  Send real loopback HTTP request to Voice Lab (--contains, --dump)
+  execute [--code-file <path>]    Run a local verification fixture or hermetic contract suite
+  browse [--path <surface>]       Verify surface source + run its static/l10n check
+  map [<surface>] [--check]       Verify Codescribe surface map files, symbols, and test targets
+  preview --pr <n>                Verify PR release/site appcast contract checks
+  health [--sha <sha>]            Verify running Codescribe process or installed bundle CSBuildCommit
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import plistlib
 import shutil
 import subprocess
 import sys
-import http.client
-from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_APP = Path("/Applications/Codescribe.app")
+DEFAULT_RESTART_ROOT = Path.home() / ".codescribe/agent-bridge/runtime/restart-if-idle"
 
 SURFACES: dict[str, dict[str, str]] = {
     "core-ledger": {
         "path": "core/pipeline/acoustic_ledger.rs",
+        "symbol": "AcousticLedger",
+        "test_path": "tests/e2e_overlay_delivery_parity.rs",
         "seed": "cargo test -p codescribe-core --lib acoustic_ledger",
         "reach": "AcousticLedger::admit and AcousticLedger::seal via make test-engine",
     },
     "transcript-reducer": {
         "path": "app/presentation/emitter.rs",
+        "symbol": "TranscriptReducer",
+        "test_path": "tests/e2e_overlay_delivery_parity.rs",
         "seed": "cargo test --test e2e_overlay_delivery_parity",
         "reach": "TranscriptReducer projection emitted through PresentationEmitter",
     },
     "transcript-bus": {
         "path": "scripts/bus-demux.py",
+        "symbol": "codescribe.transcript.v1",
+        "test_path": "scripts/tests/test_bus_read_ack.py",
         "seed": "python3 -m unittest scripts/tests/test_bus_read_ack.py",
         "reach": "cs-bus / codescribe_status / codescribe_read / codescribe_ack",
     },
     "macos-overlay": {
         "path": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+        "symbol": "applyTranscriptProjection",
+        "test_path": "macos/CodescribeTests/OverlayStateTests.swift",
         "seed": "make verify-l10n-catalog && make verify-l10n-bridge",
         "reach": "make test-swift (OverlayStateTests, OverlayConversationAcceptanceTests)",
     },
     "settings-providers": {
         "path": "macos/Codescribe/Screens/Settings/ProvidersPanel.swift",
+        "symbol": "ProvidersPanel",
+        "test_path": "macos/CodescribeTests/CredentialPresentationTests.swift",
         "seed": "make verify-l10n-catalog",
         "reach": "make test-swift -only-testing:CodescribeTests/CredentialPresentationTests",
     },
     "release-site": {
         "path": "site/src/lib/release.ts",
+        "symbol": "release",
+        "test_path": "site/src/lib/github-release.test.ts",
         "seed": "python3 scripts/tests/test_appcast_version.py",
         "reach": "site npm run test:release && bash tests/release_appcast_contract.sh",
     },
@@ -67,7 +81,7 @@ def emit(payload: dict[str, Any], as_json: bool) -> int:
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
-        status = "OK" if payload.get("ok", True) else "FAIL"
+        status = "OK" if payload.get("ok", False) else "FAIL"
         print(f"[{status}] {payload.get('command', 'control-codescribe')}: {payload.get('summary', '')}")
         for item in payload.get("checks", []):
             mark = "PASS" if item.get("ok") else "FAIL"
@@ -75,7 +89,7 @@ def emit(payload: dict[str, Any], as_json: bool) -> int:
             if not item.get("ok") and item.get("fix"):
                 line += f" (fix: {item['fix']})"
             print(line)
-    return 0 if payload.get("ok", True) else 1
+    return 0 if payload.get("ok", False) else 1
 
 
 def run_cmd(argv: list[str], cwd: Path = REPO_ROOT) -> tuple[int, str]:
@@ -88,6 +102,105 @@ def run_cmd(argv: list[str], cwd: Path = REPO_ROOT) -> tuple[int, str]:
         check=False,
     )
     return proc.returncode, proc.stdout.strip()
+
+
+def running_codescribe_pids() -> set[int]:
+    rc, out = run_cmd(["/usr/bin/pgrep", "-x", "Codescribe"])
+    if rc not in (0, 1):
+        return set()
+    return {int(val) for val in out.split() if val.isdecimal()}
+
+
+def loaded_inodes_match(pid: int, app: Path) -> bool | None:
+    required = [
+        app / "Contents/MacOS/Codescribe",
+        app / "Contents/Frameworks/libcodescribe_ffi.dylib",
+    ]
+    rc, out = run_cmd(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Ffin"])
+    if rc != 0:
+        return None
+    loaded: dict[str, int] = {}
+    inode: int | None = None
+    for line in out.splitlines():
+        if line.startswith("f"):
+            inode = None
+        elif line.startswith("i") and line[1:].isdecimal():
+            inode = int(line[1:])
+        elif line.startswith("n") and inode is not None:
+            loaded[line[1:]] = inode
+    return all(p.is_file() and loaded.get(str(p)) == p.stat().st_ino for p in required)
+
+
+def resolve_restart_root() -> Path:
+    helper = Path.home() / ".local/bin/cs-bus"
+    if helper.is_file():
+        rc, out = run_cmd([str(helper), "--print-agent-turn-lease-path"])
+        if rc == 0 and out:
+            lease_path = Path(out.strip())
+            if lease_path.is_absolute():
+                return lease_path.with_name("restart-if-idle")
+    return DEFAULT_RESTART_ROOT
+
+
+def inspect_running_and_installed(
+    app: Path = DEFAULT_APP, restart_root: Path | None = None
+) -> dict[str, Any]:
+    if restart_root is None:
+        restart_root = resolve_restart_root()
+    app_plist = app / "Contents/Info.plist"
+    installed_sha: str | None = None
+    installed_version: str | None = None
+    installed_build: str | None = None
+    if app_plist.is_file():
+        with app_plist.open("rb") as fh:
+            plist = plistlib.load(fh)
+            installed_sha = plist.get("CSBuildCommit")
+            installed_version = plist.get("CFBundleShortVersionString")
+            installed_build = plist.get("CFBundleVersion")
+
+    pids = sorted(running_codescribe_pids())
+    ready_handshakes: list[dict[str, Any]] = []
+    for pid in pids:
+        ready_path = restart_root / f"{pid}.ready.json"
+        if not ready_path.is_file() or ready_path.is_symlink():
+            continue
+        try:
+            data = json.loads(ready_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(data, dict)
+            and data.get("schema") == "codescribe.restart-if-idle.ready.v1"
+            and data.get("pid") == pid
+        ):
+            data["inodesMatchInstalled"] = loaded_inodes_match(pid, app)
+            ready_handshakes.append(data)
+
+    return {
+        "appBundle": str(app),
+        "installedExists": app_plist.is_file(),
+        "installedCommit": installed_sha,
+        "installedVersion": installed_version,
+        "installedBuild": installed_build,
+        "runningPids": pids,
+        "readyHandshakes": ready_handshakes,
+    }
+
+
+def probe_loopback(origin: str, method: str = "GET", path: str = "/lab") -> tuple[bool, int | None, str]:
+    parsed = urlparse(origin)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
+        return False, None, f"Refused non-loopback origin: {origin}"
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 8765, timeout=3)
+    try:
+        conn.request(method.upper(), path)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return (200 <= resp.status < 400), resp.status, body
+    except OSError as exc:
+        return False, None, str(exc)
+    finally:
+        conn.close()
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -148,34 +261,73 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_dev(args: argparse.Namespace) -> int:
-    app_plist = Path("/Applications/Codescribe.app/Contents/Info.plist")
-    installed_sha = None
-    if app_plist.is_file():
-        with app_plist.open("rb") as fh:
-            plist = plistlib.load(fh)
-            installed_sha = plist.get("CSBuildCommit")
-    voice_lab_url = os.environ.get("CODESCRIBE_VOICE_LAB_ORIGIN", "http://127.0.0.1:8765/lab")
+    runtime = inspect_running_and_installed()
+    voice_lab_origin = os.environ.get("CODESCRIBE_VOICE_LAB_ORIGIN", "http://127.0.0.1:8765")
+    lab_ok, lab_status, _ = probe_loopback(voice_lab_origin, "GET", "/lab")
+    app_running = len(runtime["runningPids"]) > 0
+    ok = bool(runtime["installedExists"] and (app_running or lab_ok))
     return emit(
         {
             "command": "dev",
-            "ok": True,
-            "origin": voice_lab_url,
-            "installedApp": str(app_plist.parent.parent) if app_plist.is_file() else None,
-            "installedCommit": installed_sha,
-            "summary": f"Local dev surface ready (installed CSBuildCommit={installed_sha or 'none'}, origin={voice_lab_url})",
+            "ok": ok,
+            "origin": f"{voice_lab_origin}/lab",
+            "voiceLabReachable": lab_ok,
+            "voiceLabStatus": lab_status,
+            "runtime": runtime,
+            "summary": (
+                f"installed={runtime['installedExists']} (CSBuildCommit={runtime['installedCommit'] or 'none'}), "
+                f"runningPids={runtime['runningPids']}, voiceLabReachable={lab_ok}"
+            ),
         },
         args.json,
     )
 
 
 def cmd_login(args: argparse.Namespace) -> int:
-    bus_dir = Path.home() / ".codescribe" / "agent-bridge"
+    codescribe_home = Path.home() / ".codescribe"
+    bus_binding = codescribe_home / "agent-bridge/vc.agent-audience-binding.v1.json"
+    cs_bus = Path.home() / ".local/bin/cs-bus"
+    checks: list[dict[str, Any]] = []
+
+    binding_ok = False
+    if bus_binding.is_file():
+        try:
+            json.loads(bus_binding.read_text(encoding="utf-8"))
+            binding_ok = True
+        except (OSError, ValueError):
+            binding_ok = False
+    checks.append(
+        {
+            "name": "agent-bridge-binding",
+            "ok": binding_ok,
+            "detail": str(bus_binding) if binding_ok else "missing or invalid JSON",
+            "fix": "Start Codescribe or run cs-bus --status to initialize agent-bridge",
+        }
+    )
+
+    lease_ok = False
+    lease_detail = "cs-bus helper missing"
+    if cs_bus.is_file():
+        rc, out = run_cmd([str(cs_bus), "--print-agent-turn-lease-path"])
+        if rc == 0 and out.strip():
+            lease_ok = Path(out.strip()).parent.is_dir()
+            lease_detail = out.strip()
+    checks.append(
+        {
+            "name": "cs-bus-runtime-lease-dir",
+            "ok": lease_ok,
+            "detail": lease_detail,
+            "fix": "Run make install-bus to install ~/.local/bin/cs-bus and initialize runtime dir",
+        }
+    )
+
+    ok = all(c["ok"] for c in checks)
     return emit(
         {
             "command": "login",
-            "ok": True,
-            "busBridgeExists": bus_dir.is_dir(),
-            "summary": "Local session uses hermetic test credentials (CODESCRIBE_DISABLE_KEYCHAIN=1 in verify gates)",
+            "ok": ok,
+            "checks": checks,
+            "summary": f"{sum(1 for c in checks if c['ok'])}/{len(checks)} local session artifacts verified",
         },
         args.json,
     )
@@ -184,52 +336,31 @@ def cmd_login(args: argparse.Namespace) -> int:
 def cmd_request(args: argparse.Namespace) -> int:
     origin = args.origin.rstrip("/")
     path = args.path if args.path.startswith("/") else f"/{args.path}"
-    if path == "/health":
-        _, head_sha = run_cmd(["git", "rev-parse", "--short", "HEAD"])
-        body = json.dumps({"status": "ok", "repo": "codescribe", "commit": head_sha})
-        status = 200
-    else:
-        parsed = urlparse(origin)
-        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
-            return emit(
-                {
-                    "command": "request",
-                    "ok": False,
-                    "summary": f"Refused non-loopback origin: {origin}",
-                },
-                args.json,
-            )
-        conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 8765, timeout=5)
-        try:
-            conn.request(args.method.upper(), path)
-            resp = conn.getresponse()
-            status = resp.status
-            body = resp.read().decode("utf-8", errors="replace")
-        except OSError as exc:
-            return emit(
-                {
-                    "command": "request",
-                    "ok": False,
-                    "summary": f"{args.method.upper()} {origin}{path} failed: {exc}",
-                },
-                args.json,
-            )
-        finally:
-            conn.close()
+    req_ok, status, body = probe_loopback(origin, args.method, path)
+    if status is None:
+        return emit(
+            {
+                "command": "request",
+                "ok": False,
+                "status": None,
+                "summary": f"{args.method.upper()} {origin}{path} failed (no listener): {body}",
+            },
+            args.json,
+        )
 
     if args.dump:
         Path(args.dump).write_text(body, encoding="utf-8")
     contains_ok = True
     if args.contains is not None:
         contains_ok = args.contains in body
-    ok = (200 <= status < 400) and contains_ok
+    ok = req_ok and contains_ok
     return emit(
         {
             "command": "request",
             "ok": ok,
             "status": status,
             "contains": args.contains,
-            "summary": f"{args.method.upper()} {path} -> HTTP {status} (contains={contains_ok})",
+            "summary": f"{args.method.upper()} {origin}{path} -> HTTP {status} (contains={contains_ok})",
             "bodyPreview": body[:240],
         },
         args.json,
@@ -274,15 +405,33 @@ def cmd_execute(args: argparse.Namespace) -> int:
 
 def cmd_browse(args: argparse.Namespace) -> int:
     surface = args.path.lstrip("/") or "macos-overlay"
-    info = SURFACES.get(surface, {"path": args.path, "seed": "make verify-l10n-catalog", "reach": "make test-swift"})
+    if surface not in SURFACES:
+        return emit(
+            {
+                "command": "browse",
+                "ok": False,
+                "surface": surface,
+                "summary": f"Unknown surface '{surface}'. Known: {', '.join(sorted(SURFACES))}",
+            },
+            args.json,
+        )
+    info = SURFACES[surface]
+    src_exists = (REPO_ROOT / info["path"]).is_file()
+    rc, out = run_cmd(["python3", "scripts/l10n-lint.py"])
+    ok = src_exists and rc == 0
     return emit(
         {
             "command": "browse",
-            "ok": True,
+            "ok": ok,
             "surface": surface,
             "record": bool(args.record),
             "info": info,
-            "summary": f"Surface '{surface}' mapped to {info['path']} (verify via: {info['reach']})",
+            "l10nLintExitCode": rc,
+            "summary": (
+                f"Surface '{surface}' ({info['path']}) verified and l10n-lint passed"
+                if ok
+                else f"Surface '{surface}' check failed (exists={src_exists}, l10n-lint={rc}: {out})"
+            ),
         },
         args.json,
     )
@@ -290,7 +439,6 @@ def cmd_browse(args: argparse.Namespace) -> int:
 
 def cmd_map(args: argparse.Namespace) -> int:
     checks: list[dict[str, Any]] = []
-    selected = {args.feature: SURFACES[args.feature]} if args.feature and args.feature in SURFACES else SURFACES
     if args.feature and args.feature not in SURFACES:
         return emit(
             {
@@ -300,14 +448,29 @@ def cmd_map(args: argparse.Namespace) -> int:
             },
             args.json,
         )
+    selected = {args.feature: SURFACES[args.feature]} if args.feature else SURFACES
     for name, meta in selected.items():
-        exists = (REPO_ROOT / meta["path"]).exists()
+        src_path = REPO_ROOT / meta["path"]
+        test_path = REPO_ROOT / meta["test_path"]
+        src_ok = src_path.is_file()
+        symbol_ok = False
+        if src_ok:
+            symbol_ok = meta["symbol"] in src_path.read_text(encoding="utf-8", errors="replace")
+        test_ok = test_path.is_file()
+        item_ok = src_ok and symbol_ok and test_ok
         checks.append(
             {
                 "name": name,
-                "ok": exists,
-                "detail": f"{meta['path']} | seed: {meta['seed']} | reach: {meta['reach']}",
-                "fix": None if exists else f"Update SURFACES[{name!r}] in bin/control-codescribe",
+                "ok": item_ok,
+                "detail": (
+                    f"{meta['path']} (symbol={meta['symbol']}:{symbol_ok}) | "
+                    f"test={meta['test_path']}:{test_ok} | reach: {meta['reach']}"
+                ),
+                "fix": (
+                    None
+                    if item_ok
+                    else f"Restore missing file/symbol for surface {name!r} in bin/control-codescribe"
+                ),
             }
         )
     ok = all(c["ok"] for c in checks)
@@ -315,7 +478,7 @@ def cmd_map(args: argparse.Namespace) -> int:
         {
             "command": "map",
             "ok": ok,
-            "summary": f"Verified {len(checks)}/{len(checks)} Codescribe surfaces against repository files",
+            "summary": f"Verified {sum(1 for c in checks if c['ok'])}/{len(checks)} Codescribe surfaces (source, symbol, and test file)",
             "checks": checks,
         },
         args.json,
@@ -336,32 +499,63 @@ def cmd_preview(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_health(args: argparse.Namespace) -> int:
-    _, head_full = run_cmd(["git", "rev-parse", "HEAD"])
-    _, head_short = run_cmd(["git", "rev-parse", "--short", "HEAD"])
-    app_plist = Path("/Applications/Codescribe.app/Contents/Info.plist")
-    installed_sha = None
-    if app_plist.is_file():
-        with app_plist.open("rb") as fh:
-            plist = plistlib.load(fh)
-            installed_sha = plist.get("CSBuildCommit")
+def sha_matches(actual: str | None, expected: str) -> bool:
+    if not actual or not expected:
+        return False
+    a = actual.strip().lower()
+    e = expected.strip().lower()
+    return a.startswith(e) or e.startswith(a)
 
+
+def cmd_health(args: argparse.Namespace) -> int:
+    """Verify that the running Codescribe process (or installed app bundle) matches --sha.
+
+    Never compares against the git checkout HEAD: health proves the built/running
+    application binary, not the source tree.
+    """
     expected = args.sha.strip()
-    matches_head = head_full.startswith(expected) or expected.startswith(head_short)
-    matches_app = bool(installed_sha and (installed_sha.startswith(expected) or expected.startswith(installed_sha)))
-    ok = matches_head or matches_app
+    runtime = inspect_running_and_installed()
+    handshakes = runtime["readyHandshakes"]
+    installed_sha = runtime["installedCommit"]
+
+    if handshakes:
+        active = handshakes[0]
+        live_sha = active.get("commit") or installed_sha
+        inodes_ok = active.get("inodesMatchInstalled") is not False
+        ok = sha_matches(live_sha, expected) and inodes_ok
+        source = "running_process_handshake"
+        summary = (
+            f"Running Codescribe pid={active.get('pid')} commit={live_sha} matches --sha {expected} "
+            f"(inodesMatchInstalled={active.get('inodesMatchInstalled')})"
+            if ok
+            else f"Running Codescribe pid={active.get('pid')} commit={live_sha} does not match --sha {expected} "
+            f"(installed={installed_sha}, inodesMatchInstalled={active.get('inodesMatchInstalled')})"
+        )
+    elif installed_sha:
+        # No live process with a restart-if-idle handshake; check installed /Applications bundle only
+        # when no stale untracked process is running.
+        no_untracked_pids = len(runtime["runningPids"]) == 0
+        ok = sha_matches(installed_sha, expected) and no_untracked_pids
+        source = "installed_bundle"
+        summary = (
+            f"Installed /Applications/Codescribe.app CSBuildCommit={installed_sha} matches --sha {expected} (app not currently running)"
+            if ok
+            else f"Installed /Applications/Codescribe.app CSBuildCommit={installed_sha} does not match --sha {expected} "
+            f"(runningPids={runtime['runningPids']})"
+        )
+    else:
+        ok = False
+        source = "missing_application"
+        summary = f"Cannot verify --sha {expected}: /Applications/Codescribe.app is not installed or lacks CSBuildCommit"
+
     return emit(
         {
             "command": "health",
             "ok": ok,
+            "source": source,
             "expectedSha": expected,
-            "headSha": head_short,
-            "installedAppSha": installed_sha,
-            "summary": (
-                f"SHA {expected} verified (head={head_short}, installedApp={installed_sha or 'none'})"
-                if ok
-                else f"SHA mismatch: expected {expected}, found head={head_short}, installedApp={installed_sha or 'none'}"
-            ),
+            "runtime": runtime,
+            "summary": summary,
         },
         args.json,
     )
@@ -375,17 +569,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--json", action="store_true")
     p_doc.set_defaults(func=cmd_doctor)
 
-    p_dev = sub.add_parser("dev", help="Check local Codescribe.app and Voice Lab status")
+    p_dev = sub.add_parser("dev", help="Verify running Codescribe.app or live Voice Lab status")
     p_dev.add_argument("--json", action="store_true")
     p_dev.set_defaults(func=cmd_dev)
 
-    p_login = sub.add_parser("login", help="Verify hermetic test session readiness")
+    p_login = sub.add_parser("login", help="Verify local ~/.codescribe bridge and settings state")
     p_login.add_argument("--json", action="store_true")
     p_login.set_defaults(func=cmd_login)
 
-    p_req = sub.add_parser("request", help="Query local health or Voice Lab endpoint")
+    p_req = sub.add_parser("request", help="Send real loopback HTTP request to Voice Lab")
     p_req.add_argument("method", help="HTTP method (GET, POST, ...)")
-    p_req.add_argument("path", help="Request path (e.g. /health or /lab)")
+    p_req.add_argument("path", help="Request path (e.g. /lab)")
     p_req.add_argument("--origin", default="http://127.0.0.1:8765")
     p_req.add_argument("--contains", default=None)
     p_req.add_argument("--dump", default=None)
@@ -398,7 +592,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_exec.add_argument("--json", action="store_true")
     p_exec.set_defaults(func=cmd_execute)
 
-    p_browse = sub.add_parser("browse", help="Inspect a UI or site surface")
+    p_browse = sub.add_parser("browse", help="Verify a UI or site surface and run l10n-lint")
     p_browse.add_argument("--origin", default=None)
     p_browse.add_argument("--path", default="macos-overlay")
     p_browse.add_argument("--record", action="store_true")
@@ -418,7 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prev.add_argument("--json", action="store_true")
     p_prev.set_defaults(func=cmd_preview)
 
-    p_health = sub.add_parser("health", help="Verify running or checked-out commit SHA")
+    p_health = sub.add_parser("health", help="Verify running process or installed bundle CSBuildCommit")
     p_health.add_argument("--origin", default=None)
     p_health.add_argument("--sha", required=True)
     p_health.add_argument("--json", action="store_true")

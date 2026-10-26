@@ -9,7 +9,8 @@ description:
 # Control Codescribe (`bin/control-codescribe`)
 
 Use `bin/control-codescribe` for every check of the running app and local
-verification before merge. Every subcommand supports `--json`.
+verification before merge. Every subcommand supports `--json` and exits non-zero
+when the underlying check or service is unavailable.
 
 ## Commands
 
@@ -17,24 +18,25 @@ verification before merge. Every subcommand supports `--json`.
 # 1. Verify local toolchains, env registry, gate ledger, and l10n catalog
 bin/control-codescribe doctor --json
 
-# 2. Check local dev surface and installed /Applications/Codescribe.app stamp
+# 2. Verify running Codescribe.app process or live Voice Lab loopback (127.0.0.1:8765)
 bin/control-codescribe dev --json
 
-# 3. Verify surface map integrity (core, reducer, bus, overlay, settings, site)
+# 3. Verify surface map integrity (source file, canonical symbol, and test file)
 bin/control-codescribe map --check --json
 
-# 4. Probe local health or Voice Lab endpoint
-bin/control-codescribe request GET /health --contains '"status": "ok"' --json
+# 4. Probe live Voice Lab loopback endpoint (fails when Voice Lab is not listening)
+bin/control-codescribe request GET /lab --contains "Voice Lab" --json
 
-# 5. Execute structural + env contract suite or a specific test fixture
+# 5. Execute hermetic contract suite or a specific test fixture
 bin/control-codescribe execute --json
 bin/control-codescribe execute --code-file scripts/tests/transcript-bus-path-test.sh --json
 
-# 6. Inspect UI/surface verification recipe
+# 6. Verify UI surface source and run l10n catalog lint
 bin/control-codescribe browse --path macos-overlay --record --json
 
-# 7. Verify checkout or installed app build commit matches expected SHA
-bin/control-codescribe health --sha "$(git rev-parse --short HEAD)" --json
+# 7. Verify running Codescribe process (~/.codescribe/runtime/restart/<pid>.ready.json + lsof inodes)
+#    or installed /Applications/Codescribe.app CSBuildCommit matches <sha> (never git HEAD)
+bin/control-codescribe health --sha <expected-build-sha> --json
 ```
 
 ## Seed & Hermetic Environment
@@ -57,13 +59,14 @@ bin/control-codescribe health --sha "$(git rev-parse --short HEAD)" --json
 
 ## Proof in the Ship Loop
 
-Before merging any PR (and required for `medium`-risk PRs):
+Before merging any PR:
 
 1. Run `bin/control-codescribe doctor --json` and `bin/control-codescribe map --check --json`.
-2. Run `bin/control-codescribe execute --json` (or `--code-file <test-script>`)
-   and `bin/control-codescribe request GET /health --contains '"status": "ok"'`.
-3. Cite the exact commands and their results under `## Testing` in the PR body.
-4. After merge or local install, confirm the SHA with
-   `bin/control-codescribe health --sha <merge-sha> --json`.
+2. Run `bin/control-codescribe execute --json` (or `--code-file <test-script>`).
+3. When testing a locally installed build (`make install-if-idle`), confirm the
+   running process SHA with `bin/control-codescribe health --sha <build-sha> --json`.
+4. Cite the exact commands and their results under `## Testing` in the PR body,
+   and state explicitly what could not be verified (for example when Voice Lab
+   is not running or `/Applications/Codescribe.app` was not reinstalled).
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

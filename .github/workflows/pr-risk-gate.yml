@@ -19,10 +19,12 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - name: Verify control-codescribe surface map and env registry
+
+      - name: Verify control-codescribe surface map, env registry, and gate ledger
         run: |
           python3 bin/control-codescribe map --check --json
-          python3 scripts/validate_env_registry.py docs/ENV_REGISTRY.toml >/dev/null
+          bash scripts/validate-envs.sh
+          bash scripts/validate-gates.sh
           python3 -m unittest scripts/tests/test_env_registry.py
 
       - name: Classify risk tier and check test-expectation changes on PRs
@@ -50,7 +52,11 @@ jobs:
           high_patterns = (
               r"^\.github/workflows/release\.yml$",
               r"^scripts/release",
+              r"^scripts/build-app\.sh$",
+              r"^scripts/build-dmg\.sh$",
+              r"^scripts/entitlements\.plist$",
               r"^scripts/generate-appcast\.sh$",
+              r"^macos/project\.yml$",
               r"^core/pipeline/acoustic_ledger\.rs$",
               r"^app/presentation/emitter\.rs$",
               r"^app/presentation/transcript_bus\.rs$",
@@ -59,20 +65,36 @@ jobs:
           high_files = [
               f for f in changed if any(re.search(p, f) for p in high_patterns)
           ]
-          prod_files = [
-              f for f in changed
-              if f.startswith(("core/", "app/", "bridge/", "macos/Codescribe/"))
-          ]
           test_files = [
               f for f in changed
               if f.startswith(("tests/", "macos/CodescribeTests/", "scripts/tests/"))
-              or f.endswith(("_test.rs", "Tests.swift"))
+              or f.endswith(("_test.rs", "Tests.swift", ".test.ts", "-test.sh"))
+          ]
+          test_set = set(test_files)
+          prod_files = [
+              f for f in changed
+              if f not in test_set
+              and f.startswith(
+                  (
+                      "core/",
+                      "app/",
+                      "bridge/",
+                      "macos/Codescribe/",
+                      "scripts/",
+                      "bin/",
+                      "site/src/",
+                  )
+              )
           ]
 
-          declared_risk = "low"
           m = re.search(r"Risk:\s*(low|medium|high)", body, re.IGNORECASE)
-          if m:
-              declared_risk = m.group(1).lower()
+          if not m:
+              print(
+                  "ERROR: PR body must explicitly declare 'Risk: low | medium | high' under ## System recap.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          declared_risk = m.group(1).lower()
 
           print(f"Changed files ({len(changed)}): {changed}")
           print(f"Declared risk: {declared_risk}")

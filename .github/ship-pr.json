@@ -5,10 +5,9 @@
     "medium": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"],
     "high": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"]
   },
-  // High-risk changes (Release/signing/appcast, Core ledger/bus/FFI contracts) always require human approval.
-  "humanApprovalFor": ["high"],
-  // Tiers the agent may merge automatically once CI and tier checks are green.
-  "autoMergeFor": ["low", "medium"],
+  // Agents clear blockers and verify locally; the maintainer owns merge and auto-merge enablement.
+  "humanApprovalFor": ["low", "medium", "high"],
+  "autoMergeFor": [],
   "mergeMethod": "squash",
   "deployCheck": ["python3", "scripts/tests/test_appcast_version.py"]
 }

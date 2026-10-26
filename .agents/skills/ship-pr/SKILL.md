@@ -1,22 +1,24 @@
 ---
 name: ship-pr
-description:
-  Shepherd a pull request to merged or parked with npx kcd-skills@latest
-  autopilot ship-pr. Use when a PR is ready to finish.
+description: Shepherd a pull request to ready-for-merge or parked with npx
+  kcd-skills@latest autopilot ship-pr. Use when a PR is ready to finish.
 ---
 
 # Ship PR
 
 1. Fill `.github/PULL_REQUEST_TEMPLATE.md`, including `## Intent`, `Door`,
-   `Cleanup`, `## Why`, `## Testing`, and `## System recap` (`Risk: low | medium | high`).
+   `Cleanup`, `## Why`, `## Testing`, and an explicit `Risk: low | medium | high`
+   under `## System recap`.
    - **High risk (Always Human):** any change touching **Release, signing &
-     appcast** (`release.yml`, `scripts/release*`, `scripts/generate-appcast.sh`,
-     Sparkle/CSK1 keys, entitlements) or **Core ledger, bus & FFI contracts**
-     (`core/pipeline/acoustic_ledger.rs`, `app/presentation/emitter.rs`,
-     `app/presentation/transcript_bus.rs`, `bridge/`).
+     appcast** (`release.yml`, `scripts/release*`, `scripts/build-app.sh`,
+     `scripts/build-dmg.sh`, `scripts/entitlements.plist`,
+     `scripts/generate-appcast.sh`, `macos/project.yml`, Sparkle/CSK1 keys) or
+     **Core ledger, bus & FFI contracts** (`core/pipeline/acoustic_ledger.rs`,
+     `app/presentation/emitter.rs`, `app/presentation/transcript_bus.rs`,
+     `bridge/`).
    - **Medium risk:** extends an existing primitive or modifies test
      expectations alongside production code (requires AI review + rung 4
-     `bin/control-codescribe` proof).
+     `bin/control-codescribe` proof + explicit `## Why` and `## Testing`).
    - **Low risk:** composes existing primitives, docs, or isolated tests with
      green CI.
 2. Run the deterministic ship-PR step:
@@ -25,19 +27,20 @@ description:
    ```
    (or pass gathered state via `--input state.json`; see `--schema`).
 3. Execute the single action returned: fix CI failures, address review threads
-   (fix the code or reply with concrete evidence), resolve conflicts without
-   taking `--ours`/`--theirs` wholesale, mark ready, merge, or wait.
-4. Before merge, prove the PR locally with `bin/control-codescribe`:
+   (fix the code or reply with concrete evidence), resolve conflicts by reading
+   both sides' intent, or wait for checks.
+4. Prove the PR locally with `bin/control-codescribe`:
    ```sh
    bin/control-codescribe doctor --json
    bin/control-codescribe map --check --json
    bin/control-codescribe execute --json
    ```
    Cite those commands and their output under `## Testing`.
-5. Repeat step 2 until it returns `merge`, `parked`, or `done`. Merge with
-   `--merge` only for `low` and `medium` tiers when `.github/ship-pr.json`
-   policy and CI allow it; `high` risk parks for human approval.
-6. After merge, verify the running or checked-out SHA:
+5. Repeat step 2 until all checks and review threads are green and the loop
+   parks for the maintainer (`autoMergeFor: []` — the human maintainer owns
+   merge and auto-merge enablement).
+6. After merge and local installation (`make install-if-idle`), confirm the
+   running process SHA:
    ```sh
    bin/control-codescribe health --sha <merge-sha> --json
    ```
