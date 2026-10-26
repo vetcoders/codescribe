@@ -13,6 +13,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let revealConversation: () -> Void
   @ObservationIgnored private let desktopStore: OverlayIntercomDesktopStore
   @ObservationIgnored private let diagnosticLog: DiagnosticLog?
+  @ObservationIgnored private let idleNow: () -> TimeInterval
+  @ObservationIgnored private let idleSchedule: OverlayAutoCollapse.Scheduler
   @ObservationIgnored private var header: OverlayIntercomPanel?
   @ObservationIgnored private var appWindowYield: OverlayAppWindowYield?
   @ObservationIgnored private var cards: [OverlayIntercomCardIdentity: OverlayIntercomPanel] = [:]
@@ -33,11 +35,25 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private var groupResizeGesture:
     (gesture: UUID, frame: CGRect, count: Int, index: Int?)?
   @ObservationIgnored private var resizingGroup = false
-  /// A card's resize that converted it into an instance hands the rest of
-  /// that same gesture to the instance.
-  @ObservationIgnored private var resizeHandoff: (gesture: UUID, id: UUID)?
   /// A row drag's pointer and header origin at its start, in screen points.
-  @ObservationIgnored private var groupDrag: (pointer: CGPoint, origin: CGPoint)?
+  private struct GroupDrag {
+    let pointer: CGPoint
+    let origin: CGPoint
+    let screen: CGRect
+    let frames: [(panel: OverlayIntercomPanel, frame: CGRect)]
+  }
+  @ObservationIgnored private var groupDrag: GroupDrag?
+  private enum ResizeTarget {
+    case group(CGRect, count: Int, headerHeight: CGFloat)
+    case instance(UUID, CGRect)
+    case expanded(OverlayIntercomCardIdentity, CGRect)
+  }
+  @ObservationIgnored private var resizeTarget: ResizeTarget?
+  @ObservationIgnored private var resizePreview: OverlayIntercomResizePreview?
+  @ObservationIgnored private var reconcileAfterResize = false
+  @ObservationIgnored private var groupedIdleClock: OverlayAutoCollapse?
+  @ObservationIgnored private var menuTracking = 0
+  @ObservationIgnored private var menuObservers: [NSObjectProtocol] = []
   /// Keep the native drag surface and geometry alive until the button is released.
   /// Only a newly detached row needs its conversation content mounted afterward.
   private struct InstanceDrag {
@@ -99,15 +115,31 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     state: OverlayState, textScale: TextScaleController,
     revealConversation: @escaping () -> Void = {},
     desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
-    diagnosticLog: DiagnosticLog? = nil
+    diagnosticLog: DiagnosticLog? = nil,
+    idleNow: @escaping () -> TimeInterval = { Date.timeIntervalSinceReferenceDate },
+    idleSchedule: @escaping OverlayAutoCollapse.Scheduler = OverlayAutoCollapse.liveScheduler
   ) {
     self.state = state
     self.textScale = textScale
     self.revealConversation = revealConversation
     self.desktopStore = desktopStore
     self.diagnosticLog = diagnosticLog
+    self.idleNow = idleNow
+    self.idleSchedule = idleSchedule
     desktop = desktopStore.load()
     super.init()
+    for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
+      let entering = name == NSMenu.didBeginTrackingNotification
+      menuObservers.append(NotificationCenter.default.addObserver(
+        forName: name, object: nil, queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated {
+          guard let self else { return }
+          self.menuTracking = max(0, self.menuTracking + (entering ? 1 : -1))
+          if entering { self.groupedIdleClock?.suspend() } else { self.noteGroupedActivity() }
+        }
+      })
+    }
   }
 
   #if DEBUG
@@ -178,6 +210,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard !invalidated else { return }
     self.visible = visible
     guard visible else {
+      finishInteractiveResize(cancelled: true)
+      groupedIdleClock?.forget()
       // Reuse the same windows when the layout returns. Durable drafts never
       // belong to these views, and hiding never changes the capture route.
       header?.orderOut(nil)
@@ -203,7 +237,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       }
       panel.setFrame(CGRect(origin: origin, size: CGSize(width: 160, height: 30)), display: false)
       header = panel
-      let observer = OverlayAppWindowYield(panel: panel, state: state) { [weak self] window in
+      let observer = OverlayAppWindowYield(panel: panel, state: state, foldsOverlay: false) { [weak self] window in
         guard let self else { return }
         let panels =
           [self.header].compactMap { $0 }
@@ -223,6 +257,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     setVisible(false, relativeTo: nil)
     appWindowYield?.invalidate()
     appWindowYield = nil
+    for observer in menuObservers { NotificationCenter.default.removeObserver(observer) }
+    menuObservers = []
     invalidated = true
     for panel in cards.values {
       panel.delegate = nil
@@ -249,6 +285,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       reconciliationRequests += 1
     #endif
     guard !invalidated, visible, let header else { return }
+    guard resizePreview == nil else {
+      reconcileAfterResize = true
+      return
+    }
     if availableHeight != screenFrame.height { availableHeight = screenFrame.height }
     identities = intercomIdentities(state: state, chips: chips)
     let clearedHistoryOpening = desktop.clearHistoryOpenings(for: identities)
@@ -346,8 +386,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
 
   func presentsConversation(_ conversationID: String?) -> Bool {
     guard visible, let conversationID else { return false }
-    if presentation.expanded.contains(where: { identity in
-      identity.conversationID == conversationID && cards[identity]?.isPresented == true
+    if groupCardsShowComposer || !presentation.expanded.isEmpty,
+      cards.contains(where: { identity, panel in
+      identity.conversationID == conversationID && panel.isPresented
+        && (groupCardsShowComposer || presentation.expanded.contains(identity))
         && state.conversations.contains(where: { identity.matches($0) })
     }) {
       return true
@@ -370,6 +412,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// closed instance stays closed until the fiszka is detached again.
   private func materializeInstances() {
     guard !invalidated else { return }
+    guard resizePreview == nil else {
+      reconcileAfterResize = true
+      return
+    }
     for (id, panel) in instancePanels
     where !desktop.instances.contains(where: { $0.id == id }) {
       panel.delegate = nil
@@ -429,6 +475,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let panel = instancePanels[drag.id], panel === drag.panel,
       let index = desktop.instances.firstIndex(where: { drag.matches($0) })
     else { return }
+    if drag.expandedSize == nil {
+      var stored = desktop.instances[index].frame
+      stored.origin.x = panel.frame.maxX - stored.width
+      stored.origin.y = panel.frame.maxY - stored.height
+      desktop.instances[index].frame = stored
+    }
     if let expandedSize = drag.expandedSize {
       // The original hosting view stays in the panel throughout native tracking.
       // Mount the conversation only now, including for a concurrently retired
@@ -546,11 +598,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       frame, delta: delta, edge: edge,
       minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
       visibleFrame: visibleFrame(for: panel))
-    desktop.instances[index].frame = fitted
-    saveDesktop()
-    positioning = true
-    panel.setFrame(fitted, display: true)
-    positioning = false
+    resizeTarget = .instance(id, fitted)
+    showResizePreview(frame: fitted, panels: [panel], group: false)
   }
 
   fileprivate func focusInstance(_ id: UUID) {
@@ -637,10 +686,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     defer { positioning = false }
     let range = visibleRows
     let group = groupIdentities
+    let inlineComposer = groupCardsShowComposer
     var siblingAppeared = false
     for (identity, panel) in cards {
       let expanded = presentation.expanded.contains(identity)
-      panel.acceptsConversationFocus = expanded
+      panel.acceptsConversationFocus = expanded || inlineComposer
       guard !presentation.folded, let index = group.firstIndex(of: identity), range.contains(index)
       else {
         panel.setPresented(
@@ -708,6 +758,55 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     positionCards()
     // Only this explicit click grants keyability. Hover never activates the app.
     cards[identity]?.makeKeyAndOrderFront(nil)
+    noteGroupedActivity()
+  }
+
+  private var groupCardsShowComposer: Bool {
+    contentMetrics.compactPreviewLayout(width: groupWidth, cardHeight: groupCardHeight)?
+      .showsComposer == true
+  }
+
+  /// Reuse the widget's chosen idle interval and clock implementation. Only
+  /// click-open group cards owe a return; detached instances never enter it.
+  fileprivate func noteGroupedActivity() {
+    guard !presentation.expanded.isEmpty, visible else {
+      groupedIdleClock?.forget()
+      return
+    }
+    if groupedIdleClock == nil {
+      let clock = OverlayAutoCollapse(
+        now: idleNow, schedule: idleSchedule)
+      clock.onDeadline = { [weak self] in self?.groupedDeadlineReached() }
+      groupedIdleClock = clock
+    }
+    guard let clock = groupedIdleClock else { return }
+    clock.baseIdleSeconds = TimeInterval(state.autoFoldSeconds)
+    clock.noteExpansion(from: .midi)
+    // The wake rechecks capture and modal holds. A capture already active at
+    // expansion must not leave the return permanently suspended after it ends.
+    clock.restartDeadline(after: TimeInterval(state.autoFoldSeconds))
+  }
+
+  private var groupedInteractionHeld: Bool {
+    resizePreview != nil || groupDrag != nil || instanceDrag != nil
+      || state.recording || state.warmingUp || state.transcribing || state.channelAudioCaptureActive
+      || !state.pendingTextMessages.isEmpty || menuTracking > 0 || NSApp.modalWindow != nil
+      || NSEvent.pressedMouseButtons != 0
+  }
+
+  private func groupedDeadlineReached() {
+    guard visible, !presentation.expanded.isEmpty else {
+      groupedIdleClock?.forget()
+      return
+    }
+    if groupedInteractionHeld {
+      groupedIdleClock?.restartDeadline(after: TimeInterval(state.autoFoldSeconds))
+      return
+    }
+    for identity in presentation.expanded { cards[identity]?.resignKey() }
+    presentation.expanded.removeAll()
+    groupedIdleClock?.forget()
+    positionCards()
   }
 
   /// Mailbox buttons select the exact ownerless conversation and present its
@@ -740,6 +839,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate func close(_ identity: OverlayIntercomCardIdentity) {
     cards[identity]?.resignKey()
     presentation.close(identity)
+    if presentation.expanded.isEmpty { groupedIdleClock?.forget() }
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
   }
 
@@ -810,6 +910,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// back. Drafts, sessions and recording remain owned by OverlayState.
   func hideAll(foldGroup: Bool = true) {
     guard !invalidated else { return }
+    finishInteractiveResize(cancelled: true)
+    groupedIdleClock?.forget()
     for index in desktop.instances.indices where !desktop.instances[index].closed {
       desktop.instances[index].closed = true
     }
@@ -817,7 +919,6 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     presentation.folded = foldGroup
     rowOffset = 0
     groupResizeGesture = nil
-    resizeHandoff = nil
     groupDrag = nil
     for panel in instancePanels.values { panel.resignKey() }
     for panel in cards.values {
@@ -971,22 +1072,58 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// because the row's own window moves with the group.
   fileprivate func moveGroup(ended: Bool = false) {
     guard let header else { return }
+    if ended { finishGroupDrag(); return }
+    if groupDrag == nil { _ = beginGroupDrag() }
+    guard let drag = groupDrag else { return }
     let pointer = NSEvent.mouseLocation
-    let drag = groupDrag ?? (pointer: pointer, origin: header.frame.origin)
-    groupDrag = ended ? nil : drag
-    // The rows follow at once, as under a resize; their slide would trail
-    // the pointer by its 0.18 s.
-    resizingGroup = true
-    defer { resizingGroup = false }
     positioning = true
     header.setFrameOrigin(
       CGPoint(
         x: drag.origin.x + pointer.x - drag.pointer.x,
         y: drag.origin.y + pointer.y - drag.pointer.y))
     positioning = false
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    translateGroupCards()
+  }
+
+  fileprivate func beginGroupDrag() -> Bool {
+    guard let header, visible, resizePreview == nil else { return false }
+    groupDrag = GroupDrag(
+      pointer: NSEvent.mouseLocation, origin: header.frame.origin, screen: screenFrame,
+      frames: cards.values.filter(\.isPresented).map { ($0, $0.frame) })
+    groupedIdleClock?.suspend()
+    return true
+  }
+
+  private func translateGroupCards() {
+    guard let header, let drag = groupDrag else { return }
+    let dx = header.frame.minX - drag.origin.x
+    let dy = header.frame.minY - drag.origin.y
+    positioning = true
+    for entry in drag.frames where entry.panel.isPresented {
+      let origin = CGPoint(x: entry.frame.minX + dx, y: entry.frame.minY + dy)
+      entry.panel.setFrameOrigin(origin)
+    }
+    positioning = false
+  }
+
+  fileprivate func finishGroupDrag() {
+    guard let header, let drag = groupDrag else { return }
+    translateGroupCards()
+    groupDrag = nil
+    // A display crossing may change the available roster budget. Re-measure
+    // once after release; an ordinary move never invalidates view content.
+    if screenFrame != drag.screen {
+      reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    } else {
+      for entry in drag.frames {
+        if let identity = cards.first(where: { $0.value === entry.panel })?.key {
+          cardTargets[identity] = entry.panel.frame
+        }
+      }
+    }
     UserDefaults.standard.set(
       [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
+    noteGroupedActivity()
   }
 
   @discardableResult
@@ -1051,21 +1188,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     return id
   }
 
-  /// Resizing an expanded group card is an explicit independent placement:
-  /// it becomes a durable instance with its own geometry (brief: a single
-  /// conversation's resize never replaces the proportional group resize).
-  /// The gesture then continues on the new instance until mouse-up — the
-  /// resize view replays events against its mouse-down frame, which hands
-  /// the rest of the drag over (Astra on 05c013749).
+  /// Keep the gesture's native window intact. Its final placement is committed
+  /// only on release; resizing never recreates an editor at pointer frequency.
   fileprivate func resize(
     _ identity: OverlayIntercomCardIdentity, from frame: CGRect, delta: CGSize,
     edge: OverlayIntercomWidgetLayout.ResizeEdge, gesture: UUID
   ) {
-    if resizeHandoff?.gesture != gesture { resizeHandoff = nil }
-    if let handoff = resizeHandoff {
-      resizeInstance(handoff.id, from: frame, delta: delta, edge: edge)
-      return
-    }
     guard let panel = cards[identity], presentation.expanded.contains(identity) else { return }
     if let open = desktop.openInstance(for: identity) {
       close(identity)
@@ -1076,10 +1204,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       frame, delta: delta, edge: edge,
       minimum: OverlayIntercomWidgetLayout.minimumConversationSize(scale: textScale.scale),
       visibleFrame: visibleFrame(for: panel))
-    if let id = detachIntoInstance(identity, frame: fitted) {
-      resizeHandoff = (gesture: gesture, id: id)
-    }
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    resizeTarget = .expanded(identity, fitted)
+    showResizePreview(frame: fitted, panels: [panel], group: false)
   }
 
   /// Width reveals content; height stretches the tiles and, from two rows,
@@ -1091,13 +1217,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     row: OverlayIntercomCardIdentity? = nil, gesture: UUID
   ) {
     guard let header else { return }
-    resizingGroup = true
-    defer { resizingGroup = false }
-    let initialCount = presentation.folded ? 0 : visibleRows.count
-    let index = row.flatMap { groupIdentities.firstIndex(of: $0) }.map {
-      $0 - visibleRows.lowerBound
-    }
     if groupResizeGesture?.gesture != gesture {
+      let initialCount = presentation.folded ? 0 : visibleRows.count
+      let index = row.flatMap { groupIdentities.firstIndex(of: $0) }.map {
+        $0 - visibleRows.lowerBound
+      }
       let height =
         header.frame.height
         + CGFloat(initialCount) * (groupCardHeight + OverlayIntercomWidgetLayout.gap)
@@ -1117,40 +1241,89 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let fitted = contentMetrics.resizedGroupFrame(
       drag.frame, delta: delta, edge: edge, count: count, visibleFrame: visibleFrame(for: header),
       minimumWidth: minimumHeaderWidth)
-    desktop.groupWidth = Double(fitted.width)
-    if count > 0 && edge.resizesHeight {
-      desktop.groupRowHeight = Double(
-        (fitted.height - header.frame.height) / CGFloat(count)
-          - OverlayIntercomWidgetLayout.gap)
+    resizeTarget = .group(fitted, count: count, headerHeight: header.frame.height)
+    showResizePreview(
+      frame: fitted, panels: [header] + groupIdentities[visibleRows].compactMap { cards[$0] },
+      group: true)
+  }
+
+  private func showResizePreview(
+    frame: CGRect, panels: @autoclosure () -> [OverlayIntercomPanel], group: Bool
+  ) {
+    if resizePreview == nil {
+      groupedIdleClock?.suspend()
+      resizePreview = OverlayIntercomResizePreview(
+        panels: panels(), group: group,
+        headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale),
+        palette: OverlayAppearancePalette.resolve(
+          NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light))
     }
-    positioning = true
-    header.setFrame(
-      CGRect(
-        x: fitted.minX, y: fitted.maxY - header.frame.height,
-        width: fitted.width, height: header.frame.height), display: true)
-    positioning = false
-    saveDesktop()
-    reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
-    UserDefaults.standard.set(
-      [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
+    resizePreview?.update(frame: frame)
+  }
+
+  fileprivate func finishInteractiveResize(cancelled: Bool = false) {
+    guard let preview = resizePreview else { return }
+    let target = resizeTarget
+    resizePreview = nil
+    resizeTarget = nil
+    groupResizeGesture = nil
+    let refresh = reconcileAfterResize
+    reconcileAfterResize = false
+    if !cancelled, visible, !invalidated, let target {
+      switch target {
+      case .group(let frame, let count, let headerHeight):
+        desktop.groupWidth = Double(frame.width)
+        if count > 0 {
+          desktop.groupRowHeight = Double(
+            (frame.height - headerHeight) / CGFloat(count) - OverlayIntercomWidgetLayout.gap)
+        }
+        if let header {
+          positioning = true
+          header.setFrame(
+            CGRect(x: frame.minX, y: frame.maxY - headerHeight,
+                   width: frame.width, height: headerHeight), display: true)
+          positioning = false
+          UserDefaults.standard.set(
+            [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
+        }
+        reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
+        saveDesktop()
+      case .instance(let id, let frame):
+        if let index = desktop.instances.firstIndex(where: { $0.id == id && !$0.closed && !$0.minimized }) {
+          desktop.instances[index].frame = frame
+          materializeInstances()
+          saveDesktop()
+        }
+      case .expanded(let identity, let frame):
+        if cards[identity] != nil, presentation.expanded.contains(identity) {
+          _ = detachIntoInstance(identity, frame: frame)
+          reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+        }
+      }
+    } else if refresh, visible, !invalidated {
+      reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+      materializeInstances()
+    }
+    preview.finish(animated: !cancelled && visible)
+    noteGroupedActivity()
   }
 
   func windowDidMove(_ notification: Notification) {
     guard !positioning, let panel = notification.object as? NSWindow else { return }
     if panel === header, let header {
-      // A native grip drag is the same direct movement as a row drag.
-      // Interpolating every row while AppKit delivers move notifications
-      // leaves the cards chasing successive header positions.
-      resizingGroup = true
-      defer { resizingGroup = false }
-      // A destination display may fit fewer rows or only one control row.
-      // Re-measure before placing, rather than clamping an oversized stack.
-      reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+      if groupDrag != nil {
+        translateGroupCards()
+        return
+      }
+      positionCards()
       UserDefaults.standard.set(
         [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
     } else if let id = instancePanels.first(where: { $0.value === panel })?.key,
       let index = desktop.instances.firstIndex(where: { $0.id == id })
     {
+      // Native Window Server movement must not rewrite an observable desktop
+      // or persist JSON at pointer frequency. Finish commits its final frame.
+      if instanceDrag?.id == id { return }
       // Window Server owns geometry during a native drag. Clamping happens
       // afterward, once the pointer has been released on its chosen display.
       let fitted = instanceDrag?.id == id ? panel.frame : OverlayIntercomWidgetLayout.movedFrame(
@@ -1203,11 +1376,11 @@ final class OverlayIntercomPanel: NSPanel {
 
   var isPresented: Bool { presented && isVisible }
 
-  /// Our regular windows take precedence; other apps keep the floating cards.
-  /// Recheck on every presentation so a new message cannot jump over Settings.
+  /// Ordinary focus never lowers a pinned card under unrelated windows.
+  /// A real application modal remains above the cards until it is dismissed.
   override func orderFrontRegardless() {
-    let window = NSApp.isActive ? NSApp.keyWindow : nil
-    if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
+    let window = NSApp.modalWindow
+    if let window {
       yieldToAppWindow(window)
       order(.below, relativeTo: window.windowNumber)
     } else {
@@ -1217,9 +1390,9 @@ final class OverlayIntercomPanel: NSPanel {
   }
 
   func yieldToAppWindow(_ window: NSWindow?) {
-    if let window, OverlayAppWindowPolicy.shouldYield(to: window) {
+    if let window, window === NSApp.modalWindow {
       yieldedWindow = window
-      // Keep chat above compact chrome even while both yield to Settings.
+      // Keep the real modal in charge; normal app windows do not own this level.
       let target = NSWindow.Level(
         rawValue: NSWindow.Level.normal.rawValue - (acceptsConversationFocus ? 0 : 1))
       if level != target { level = target }
@@ -1402,7 +1575,10 @@ private struct OverlayIntercomHeader: View {
     // A click that never becomes a drag toggles the existing group fold.
     // Instance headers and detach grips do not.
     .background(
-      OverlayIntercomDragHandle(onClick: { controller.toggleGroup() }, cursorHint: false))
+      OverlayIntercomDragHandle(
+        onClick: { controller.toggleGroup() },
+        onDrag: { controller.beginGroupDrag() },
+        onDragEnded: { controller.finishGroupDrag() }, cursorHint: false))
     .background {
       OverlayCanvasBackdrop(
         palette: palette, reduceTransparency: reduceTransparency,
@@ -1431,9 +1607,11 @@ private struct OverlayIntercomHeader: View {
       )
     )
     .overlay {
-      // The group's left edge selects content for every attached fiszka.
-      // The header's corners keep their buttons; pills carry the corners.
-      OverlayIntercomResizeHandles(corners: false, right: true) { frame, delta, edge, gesture in
+      // The same three marked corners resize the group. The top-left menu
+      // and all control centers stay outside the resize targets.
+      OverlayIntercomResizeHandles(
+        onEnded: { controller.finishInteractiveResize() }
+      ) { frame, delta, edge, gesture in
         controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
       }
     }
@@ -1722,6 +1900,20 @@ private struct OverlayIntercomCard: View {
           Text("Conversation unavailable").csFont(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+      } else if let preview, preview.showsComposer, let conversation {
+        OverlayIntercomConversationContext(
+          descriptor: state.conversationAgentDescriptor(conversation) ?? conversation.owner?.provider,
+          palette: palette,
+          leadingInset: controller.contentMetrics.nameLeadingInset(
+            width: controller.groupWidth, digit: identity.displayDigit))
+        OverlayIntercomConversationBody(
+          state: state, conversation: conversation, palette: palette, focusRevision: 0,
+          presentation: .intercom, showsComposer: true, messageWindowLimit: 8,
+          composerEditorHeightLimit: preview.composerEditorHeightLimit,
+          onActivity: { controller.noteGroupedActivity() },
+          onEditingChanged: { _ in controller.noteGroupedActivity() }
+        )
+        .frame(height: preview.height)
       } else {
         Button {
           controller.expand(identity)
@@ -1778,16 +1970,16 @@ private struct OverlayIntercomCard: View {
     )
     .overlay {
       if expanded {
-        OverlayIntercomResizeHandles { frame, delta, edge, gesture in
+        OverlayIntercomResizeHandles(
+          onEnded: { controller.finishInteractiveResize() }
+        ) { frame, delta, edge, gesture in
           controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
         }
       } else {
-        // Every edge and both bottom corners resize the group. Audio keeps
-        // its hit target when present; compact cards have no trailing audio.
+        // Detach owns the top-left corner. Only the other three visible grips
+        // resize; the remaining perimeter does not intercept content controls.
         OverlayIntercomResizeHandles(
-          sides: true,
-          trailingInset: controller.groupTier == .actions
-            ? OverlayIntercomWidgetLayout.controlHeight(scale: scale) : 0
+          onEnded: { controller.finishInteractiveResize() }
         ) { frame, delta, edge, gesture in
           controller.resizeGroup(
             from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)
@@ -1795,6 +1987,8 @@ private struct OverlayIntercomCard: View {
       }
     }
     .opacity(entered ? 1 : 0)
+    .onHover { if $0 { controller.noteGroupedActivity() } }
+    .onChange(of: state.autoFoldSeconds) { _, _ in controller.noteGroupedActivity() }
     .offset(y: entered || reduceMotion ? 0 : -6)
     .onAppear {
       withAnimation(
@@ -1841,7 +2035,7 @@ private struct OverlayIntercomCard: View {
     // The grip stays separate from the open button at every content tier.
     // Its full-height native hit area never overlaps audio or the agent name.
     let detached = controller.desktop.openInstance(for: identity) != nil
-    let detachGrip = Image(systemName: detached ? "macwindow" : "macwindow.badge.plus")
+    let detachGrip = Image(systemName: "circle.grid.2x2.fill")
       .font(.system(size: 10 * scale))
       .offset(x: detachPull.width, y: detachPull.height)
       .frame(
@@ -2033,7 +2227,9 @@ private struct OverlayIntercomCard: View {
     OverlayIntercomConversationBody(
       state: state, conversation: conversation, palette: palette,
       focusRevision: controller.focusRevisions[identity] ?? 0,
-      presentation: .intercom)
+      presentation: .intercom,
+      onActivity: { controller.noteGroupedActivity() },
+      onEditingChanged: { _ in controller.noteGroupedActivity() })
   }
 }
 
@@ -2211,6 +2407,8 @@ private struct OverlayIntercomConversationBody: View {
   var showsComposer = true
   var messageWindowLimit: Int? = nil
   var composerEditorHeightLimit: CGFloat? = nil
+  var onActivity: () -> Void = {}
+  var onEditingChanged: (Bool) -> Void = { _ in }
 
   private var current: Bool {
     conversation.isHumanInbox
@@ -2246,8 +2444,14 @@ private struct OverlayIntercomConversationBody: View {
       allowsLiveActions: current,
       messageWindowLimit: messageWindowLimit,
       composerEditorHeightLimit: composerEditorHeightLimit,
-      onComposerEditorActive: { state.noteComposerEditorActive($0) },
-      onComposerTypingActivity: { state.noteComposerTypingActivity() },
+      onComposerEditorActive: {
+        state.noteComposerEditorActive($0)
+        onEditingChanged($0)
+      },
+      onComposerTypingActivity: {
+        state.noteComposerTypingActivity()
+        onActivity()
+      },
       replySelection: state.conversationReplies[conversation.id],
       onClearReply: { state.conversationReplies.removeValue(forKey: conversation.id) },
       draftMicrophoneRecording: state.draftCapture.conversationID == conversation.id,
@@ -2378,57 +2582,36 @@ private typealias OverlayIntercomResizeAction = (
 ) -> Void
 
 private struct OverlayIntercomResizeHandles: View {
-  /// The header keeps its corners for buttons; its side edges still resize
-  /// the group. Cards expose the left edge and both bottom corners.
-  var corners = true
-  /// The right edge as well as the left.
-  var right = false
-  /// A group row's every edge: right, top and bottom beside the left.
-  var sides = false
-  /// A pill's audio slot owns the true bottom-right corner, so its resize
-  /// zone steps left by this much instead of covering the microphone.
-  var trailingInset: CGFloat = 0
+  @Environment(\.colorScheme) private var colorScheme
+  var onEnded: () -> Void = {}
   let resize: OverlayIntercomResizeAction
 
   var body: some View {
-    // Wider bands than the 5/14 pt they started with, and each one lights
-    // its edge under the pointer: a resize that works but shows nothing
-    // reads as impossible (Maciej, 2026-10-23).
-    ZStack(alignment: .bottomLeading) {
-      HStack {
-        OverlayIntercomResizeHandle(edge: .left, resize: resize).frame(width: Self.edgeBand)
+    VStack(spacing: 0) {
+      HStack(spacing: 0) {
         Spacer(minLength: 0)
-        if right || sides {
-          OverlayIntercomResizeHandle(edge: .right, resize: resize).frame(width: Self.sideBand)
-        }
+        handle(.topRight)
       }
-      // Thin top and bottom bands keep clear of the controls, which sit in
-      // the middle of the row with a margin above and below.
-      if sides {
-        VStack {
-          OverlayIntercomResizeHandle(edge: .top, resize: resize).frame(height: Self.sideBand)
-          Spacer(minLength: 0)
-          OverlayIntercomResizeHandle(edge: .bottom, resize: resize).frame(height: Self.sideBand)
-        }
-        .padding(.horizontal, Self.edgeBand)
-      }
-      if corners {
-        HStack {
-          OverlayIntercomResizeHandle(edge: .bottomLeft, resize: resize)
-            .frame(width: Self.cornerBand, height: Self.cornerBand)
-          Spacer(minLength: 0)
-          OverlayIntercomResizeHandle(edge: .bottomRight, resize: resize)
-            .frame(width: Self.cornerBand, height: Self.cornerBand)
-            .padding(.trailing, trailingInset)
-        }
-        .frame(height: Self.cornerBand)
+      Spacer(minLength: 0)
+      HStack(spacing: 0) {
+        handle(.bottomLeft)
+        Spacer(minLength: 0)
+        handle(.bottomRight)
       }
     }
   }
 
-  static let edgeBand: CGFloat = 8
-  static let sideBand: CGFloat = 5
-  static let cornerBand: CGFloat = 18
+  private func handle(_ edge: OverlayIntercomWidgetLayout.ResizeEdge) -> some View {
+    OverlayIntercomResizeHandle(
+      edge: edge, accent: OverlayAppearancePalette.resolve(colorScheme).agentAccent.nsColor,
+      onEnded: onEnded, resize: resize
+    )
+    .frame(width: Self.cornerBand, height: Self.cornerBand)
+  }
+
+  /// Visible corner targets only. Top-left remains exclusively the detach grip;
+  /// there are no invisible side bands covering buttons, selection or scrolling.
+  static let cornerBand: CGFloat = 12
 }
 
 /// A durable fiszka: its own window over the shared conversation state. Mini
@@ -2492,7 +2675,9 @@ private struct OverlayIntercomInstanceCard: View {
     }
     .overlay {
       if !mini {
-        OverlayIntercomResizeHandles { frame, delta, edge, _ in
+        OverlayIntercomResizeHandles(
+          onEnded: { controller.finishInteractiveResize() }
+        ) { frame, delta, edge, _ in
           controller.resizeInstance(instanceID, from: frame, delta: delta, edge: edge)
         }
       }
@@ -2696,29 +2881,32 @@ private struct OverlayIntercomInstanceCard: View {
 
 private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   let edge: OverlayIntercomWidgetLayout.ResizeEdge
+  let accent: NSColor
+  let onEnded: () -> Void
   let resize: OverlayIntercomResizeAction
 
   func makeNSView(context: Context) -> OverlayIntercomResizeView { OverlayIntercomResizeView() }
   func updateNSView(_ nsView: OverlayIntercomResizeView, context: Context) {
     nsView.edge = edge
+    nsView.accent = accent
     nsView.resize = resize
+    nsView.onEnded = onEnded
+    nsView.needsDisplay = true
   }
 }
 
 private final class OverlayIntercomResizeView: NSView {
-  var edge = OverlayIntercomWidgetLayout.ResizeEdge.left
+  var edge = OverlayIntercomWidgetLayout.ResizeEdge.bottomRight
+  var accent = OverlayAppearancePalette.dark.agentAccent.nsColor
   var resize: OverlayIntercomResizeAction = { _, _, _, _ in }
+  var onEnded: () -> Void = {}
   private var origin: CGPoint?
   private var originalFrame: CGRect?
-  /// One mouse-down is one gesture. A bare frame cannot identify it: the
-  /// next gesture can start from the same place and size (Astra on
-  /// fca13c1c9), and only this identity keys the controller's handoffs.
   private var gesture = UUID()
   private var moved = false
+  private var hovering = false
+  private var hoverArea: NSTrackingArea?
 
-  /// The band paints nothing: the cursor is the whole affordance. Maciej,
-  /// 2026-10-23: the accent line this band used to light along the edge was
-  /// "coś, o co nikt nie prosił" — the panel's frame already shows the size.
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
@@ -2735,21 +2923,153 @@ private final class OverlayIntercomResizeView: NSView {
       originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge, gesture)
   }
   override func mouseUp(with event: NSEvent) {
-    // A motionless click on a corner is not a resize: replaying it with a
-    // zero delta would convert the card into an instance for nothing.
-    if moved { mouseDragged(with: event) }
+    if moved {
+      mouseDragged(with: event)
+      onEnded()
+    }
     origin = nil
     originalFrame = nil
     moved = false
   }
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    guard hoverArea == nil else { return }
+    let area = NSTrackingArea(
+      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: self, userInfo: nil)
+    hoverArea = area
+    addTrackingArea(area)
+  }
+  override func mouseEntered(with event: NSEvent) { hovering = true; needsDisplay = true }
+  override func mouseExited(with event: NSEvent) { hovering = false; needsDisplay = true }
+  override func draw(_ dirtyRect: NSRect) {
+    accent.withAlphaComponent(hovering || moved ? 0.65 : 0.2).setStroke()
+    let path = NSBezierPath()
+    let left = edge == .bottomLeft
+    let top = edge == .topRight
+    let x = left ? bounds.minX + 2 : bounds.maxX - 2
+    let y = top ? bounds.maxY - 2 : bounds.minY + 2
+    path.move(to: NSPoint(x: x, y: y + (top ? -7 : 7)))
+    path.line(to: NSPoint(x: x, y: y))
+    path.line(to: NSPoint(x: x + (left ? 7 : -7), y: y))
+    path.lineWidth = 1.5
+    path.lineCapStyle = .round
+    path.stroke()
+  }
   override func resetCursorRects() {
-    let cursor: NSCursor =
-      switch edge {
-      case .left, .right: .resizeLeftRight
-      case .top, .bottom: .resizeUpDown
-      case .bottomLeft, .bottomRight: .crosshair
+    discardCursorRects()
+    addCursorRect(bounds, cursor: .crosshair)
+  }
+}
+
+/// Transient native feedback owned by the existing window controller. It has
+/// no document, draft or delivery state and performs no SwiftUI layout work.
+@MainActor
+private final class OverlayIntercomResizePreview {
+  private let panel: NSPanel
+  private let drawing: OverlayIntercomResizePreviewView
+  private let sources: [(panel: OverlayIntercomPanel, alpha: CGFloat)]
+
+  init(panels: [OverlayIntercomPanel], group: Bool, headerHeight: CGFloat,
+       palette: OverlayAppearancePalette) {
+    sources = panels.map { ($0, $0.alphaValue) }
+    let headers: [NSImage?] = panels.map { panel in
+      guard let view = panel.contentView else { return nil }
+      let height = min(headerHeight, view.bounds.height)
+      let rect = NSRect(
+        x: view.bounds.minX,
+        y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
+        width: view.bounds.width, height: height)
+      guard !rect.isEmpty,
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: rect)
+      else { return nil }
+      view.cacheDisplay(in: rect, to: bitmap)
+      guard let image = bitmap.cgImage else { return nil }
+      return NSImage(cgImage: image, size: rect.size)
+    }
+    drawing = OverlayIntercomResizePreviewView(
+      headers: headers, group: group, headerHeight: headerHeight, palette: palette)
+    panel = NSPanel(
+      contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.hasShadow = false
+    panel.ignoresMouseEvents = true
+    panel.hidesOnDeactivate = false
+    panel.level = panels.map(\.level).max(by: { $0.rawValue < $1.rawValue })
+      ?? OverlayIntercomPanel.passiveLevel
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    panel.contentView = drawing
+    for source in sources { source.panel.alphaValue = 0.12 }
+  }
+
+  func update(frame: CGRect) {
+    panel.setFrame(frame, display: true)
+    drawing.needsDisplay = true
+    if !panel.isVisible { panel.orderFrontRegardless() }
+  }
+
+  func finish(animated: Bool) {
+    let animate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    for source in sources { source.panel.contentView?.layoutSubtreeIfNeeded() }
+    guard animate else {
+      for source in sources { source.panel.alphaValue = source.alpha }
+      panel.close()
+      return
+    }
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.12
+      for source in sources { source.panel.animator().alphaValue = source.alpha }
+      panel.animator().alphaValue = 0
+    } completionHandler: { [panel] in
+      Task { @MainActor in panel.close() }
+    }
+  }
+}
+
+private final class OverlayIntercomResizePreviewView: NSView {
+  let headers: [NSImage?]
+  let group: Bool
+  let headerHeight: CGFloat
+  let palette: OverlayAppearancePalette
+
+  init(headers: [NSImage?], group: Bool, headerHeight: CGFloat,
+       palette: OverlayAppearancePalette) {
+    self.headers = headers
+    self.group = group
+    self.headerHeight = headerHeight
+    self.palette = palette
+    super.init(frame: .zero)
+  }
+  required init?(coder: NSCoder) { return nil }
+  override var isOpaque: Bool { false }
+  override func draw(_ dirtyRect: NSRect) {
+    let count = max(0, headers.count - 1)
+    let rowHeight = group && count > 0
+      ? (bounds.height - headerHeight) / CGFloat(count) - OverlayIntercomWidgetLayout.gap
+      : bounds.height
+    var top = bounds.maxY
+    for (index, image) in headers.enumerated() {
+      let height = group && index == 0 ? headerHeight : rowHeight
+      let rect = NSRect(x: bounds.minX, y: top - height, width: bounds.width, height: height)
+      guard height > 0 else { continue }
+      let path = NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 10, yRadius: 10)
+      palette.desktopBackground.nsColor.withAlphaComponent(0.92).setFill()
+      path.fill()
+      palette.agentAccent.nsColor.withAlphaComponent(0.45).setStroke()
+      path.lineWidth = 1
+      path.stroke()
+      if let image {
+        NSGraphicsContext.saveGraphicsState()
+        path.addClip()
+        image.draw(in: NSRect(x: rect.minX, y: rect.maxY - min(headerHeight, height),
+                             width: image.size.width, height: min(headerHeight, height)))
+        NSGraphicsContext.restoreGraphicsState()
       }
-    addCursorRect(bounds, cursor: cursor)
+      top = rect.minY - OverlayIntercomWidgetLayout.gap
+    }
   }
 }
 

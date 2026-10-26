@@ -25,17 +25,19 @@ final class OverlayAppWindowYield {
   private weak var panel: NSPanel?
   private weak var state: OverlayState?
   private let onWindowFocus: (NSWindow?) -> Void
+  private let foldsOverlay: Bool
   private var observers: [NSObjectProtocol] = []
   /// `windowNumber`s of the windows already yielded to in their current appearance.
   private var yieldedWindows: Set<Int> = []
 
   init(
-    panel: NSPanel, state: OverlayState,
+    panel: NSPanel, state: OverlayState, foldsOverlay: Bool = true,
     onWindowFocus: @escaping (NSWindow?) -> Void = { _ in }
   ) {
     self.panel = panel
     self.state = state
     self.onWindowFocus = onWindowFocus
+    self.foldsOverlay = foldsOverlay
   }
 
   /// Listen for every window in this process becoming key. Delivery stays on
@@ -94,6 +96,7 @@ final class OverlayAppWindowYield {
   /// later does not fold on the next click into that window.
   private func noteBecameKey(_ window: NSWindow) {
     onWindowFocus(window)
+    guard foldsOverlay else { return }
     guard let panel, window !== (panel as NSWindow) else { return }
     guard OverlayAppWindowPolicy.shouldYield(to: window) else { return }
     guard yieldedWindows.insert(window.windowNumber).inserted else { return }

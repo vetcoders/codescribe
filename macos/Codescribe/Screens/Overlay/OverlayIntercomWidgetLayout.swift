@@ -194,7 +194,10 @@ struct IntercomContentMetrics: Equatable {
       max(editorHeightLimit, ComposerControlMetrics.hitTargetSize)
       + 2 * ComposerControlMetrics.verticalPadding + 14
     return IntercomCompactPreviewLayout(
-      height: available, showsComposer: available >= minimum + composerHeight,
+      height: available,
+      showsComposer: width >= OverlayIntercomWidgetLayout.compactComposerBaseSize.width * max(1, scale)
+        && cardHeight >= OverlayIntercomWidgetLayout.compactComposerBaseSize.height * max(1, scale)
+        && available >= minimum + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
   }
 
@@ -241,6 +244,9 @@ struct IntercomContentMetrics: Equatable {
 
 /// Geometry only. Each card owns a native window; desktop gaps never intercept clicks.
 enum OverlayIntercomWidgetLayout {
+  /// Minimum complete card footprint, in points at the standard text scale.
+  /// More room never withdraws the editor; the display bounds cap window size.
+  static let compactComposerBaseSize = CGSize(width: 320, height: 220)
   static let headerHeight: CGFloat = 30
   static let rowHeight: CGFloat = 30
   /// Tight enough that the stack reads as one list, not a column of buttons.
@@ -364,10 +370,10 @@ enum OverlayIntercomWidgetLayout {
   }
 
   enum ResizeEdge: Equatable {
-    case left, right, top, bottom, bottomLeft, bottomRight
+    case left, right, top, bottom, bottomLeft, bottomRight, topRight
 
     /// The left edge stays put while this edge moves.
-    var anchorsLeft: Bool { self == .right || self == .bottomRight }
+    var anchorsLeft: Bool { self == .right || self == .bottomRight || self == .topRight }
     /// The edge changes the height, not only the width.
     var resizesHeight: Bool { self != .left && self != .right }
   }
@@ -389,7 +395,7 @@ enum OverlayIntercomWidgetLayout {
     case .left, .bottomLeft:
       result.origin.x = min(max(frame.minX + delta.width, visibleFrame.minX), frame.maxX - minWidth)
       result.size.width = frame.maxX - result.minX
-    case .right, .bottomRight:
+    case .right, .bottomRight, .topRight:
       result.size.width = min(
         max(frame.width + delta.width, minWidth), visibleFrame.maxX - frame.minX)
     case .top, .bottom:
@@ -400,7 +406,7 @@ enum OverlayIntercomWidgetLayout {
       result.origin.y = min(
         max(frame.minY + delta.height, visibleFrame.minY), frame.maxY - minHeight)
       result.size.height = frame.maxY - result.minY
-    case .top:
+    case .top, .topRight:
       result.size.height = min(
         max(frame.height + delta.height, minHeight), visibleFrame.maxY - frame.minY)
     case .left, .right:
@@ -418,7 +424,7 @@ enum OverlayIntercomWidgetLayout {
     guard let index, count > 0, (0..<count).contains(index) else { return 1 }
     switch edge {
     case .bottom, .bottomLeft, .bottomRight: return CGFloat(count) / CGFloat(index + 1)
-    case .top: return CGFloat(count) / CGFloat(count - index)
+    case .top, .topRight: return CGFloat(count) / CGFloat(count - index)
     case .left, .right: return 1
     }
   }

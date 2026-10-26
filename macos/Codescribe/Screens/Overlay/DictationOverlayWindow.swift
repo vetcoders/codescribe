@@ -1606,7 +1606,9 @@ enum OverlayPresencePolicy: Equatable {
 
   var windowLevel: NSWindow.Level {
     switch self {
-    case .rest: .floating
+    // Pinned transcription stays above the Intercom's floating cards, without
+    // repeatedly ordering either surface to the front on content updates.
+    case .rest: NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
     case .unpinned, .yield: .normal
     case .capture: .statusBar
     }
