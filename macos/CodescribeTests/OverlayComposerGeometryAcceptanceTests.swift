@@ -27,6 +27,12 @@ final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
           .background(palette.desktopBackground.color))
         host.sizingOptions = []
         host.frame = NSRect(x: 0, y: 0, width: 360, height: 120)
+        let window = NSWindow(
+          contentRect: NSRect(x: -10000, y: -10000, width: 360, height: 120),
+          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.04))
         host.layoutSubtreeIfNeeded()
