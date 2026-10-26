@@ -2315,23 +2315,6 @@ private struct OverlayIntercomAudioControls: View {
         shared: shared
       )
       .fixedSize()
-      .background(alignment: .leading) {
-        // The canonical open flag keeps recording visible between pulses,
-        // including reduced motion. The shared audio controls still own input.
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(palette.agentAccent.color.opacity(palette.appearance == .light ? 0.14 : 0.22))
-          .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-              .strokeBorder(palette.agentAccent.color.opacity(0.6), lineWidth: 1)
-          }
-          .frame(
-            width: OverlayIntercomWidgetLayout.controlHeight(scale: scale) - 4,
-            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale) - 6)
-          .padding(.leading, 2)
-          .opacity(open ? 1 : 0)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
       .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
     }
   }

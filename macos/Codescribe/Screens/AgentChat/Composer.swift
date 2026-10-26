@@ -791,12 +791,20 @@ enum ComposerControlMetrics {
   static let intercomVerticalPadding: CGFloat = 4
   static let intercomMinimumHeight = intercomComposerHeight(editorHeight: hitTargetSize, scale: 1)
 
-  /// Full body only: external conversation insets, reply and attachment strips
-  /// are additional. A requested editor cap cannot cut through its first line.
+  /// Reserve a bounded supplementary region even before reply/attachment content
+  /// arrives. Pasting must not raise admission and unmount the active editor.
+  static func intercomSupplementaryHeight(scale: CGFloat) -> CGFloat {
+    let line = ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 11 * scale)))
+    return 3 * line + 4 + 30 + intercomSpacing
+  }
+
+  /// Full compact body and its bounded supplementary region; external
+  /// conversation insets are additional. The editor cap retains a full line.
   static func intercomComposerHeight(editorHeight: CGFloat, scale: CGFloat) -> CGFloat {
     let minimumEditorHeight = ComposerTextLayout.minimumHeight(fontSize: textSize * scale)
     return max(minimumEditorHeight, editorHeight) + hitTargetSize
       + intercomSpacing + 2 * intercomVerticalPadding
+      + intercomSupplementaryHeight(scale: scale) + intercomSpacing
   }
 
   /// The editor and toolbar occupy separate rows. Budget all three controls,

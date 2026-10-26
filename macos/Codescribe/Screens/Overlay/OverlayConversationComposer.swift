@@ -115,6 +115,31 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: isCompact ? ComposerControlMetrics.intercomSpacing : 6) {
+      if replySelection != nil || !pendingCaptureAttachments.isEmpty || !attachments.isEmpty {
+        if isCompact {
+          ScrollView(.vertical, showsIndicators: false) {
+            accessoryContent
+          }
+          .frame(height: ComposerControlMetrics.intercomSupplementaryHeight(scale: textScale))
+          .csAutohidingScrollers()
+        } else {
+          accessoryContent
+        }
+      }
+      editorRow
+    }
+    .padding(
+      .horizontal,
+      isCompact
+        ? ComposerControlMetrics.intercomHorizontalPadding : ComposerControlMetrics.horizontalPadding)
+    .padding(
+      .vertical,
+      isCompact
+        ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding)
+  }
+
+  private var accessoryContent: some View {
+    VStack(alignment: .leading, spacing: isCompact ? ComposerControlMetrics.intercomSpacing : 6) {
       if let replySelection {
         HStack(alignment: .top, spacing: 8) {
           Button {
@@ -183,16 +208,7 @@ struct OverlayConversationComposer: View {
         // menu ownership.
         .background { OverlayMenuCursorRegion() }
       }
-      editorRow
     }
-    .padding(
-      .horizontal,
-      isCompact
-        ? ComposerControlMetrics.intercomHorizontalPadding : ComposerControlMetrics.horizontalPadding)
-    .padding(
-      .vertical,
-      isCompact
-        ? ComposerControlMetrics.intercomVerticalPadding : ComposerControlMetrics.verticalPadding)
   }
 
   var draftMicrophoneSymbol: String {
@@ -324,13 +340,6 @@ struct OverlayConversationComposer: View {
             width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
           )
           .contentShape(Circle()).buttonStyle(.plain)
-          .background {
-            Circle()
-              .fill(draftMicrophoneRecording || liveSpeechActive
-                ? palette.agentAccent.color.opacity(0.14) : .clear)
-              .allowsHitTesting(false)
-              .accessibilityHidden(true)
-          }
           .conversationActionHover(
             restingColor: draftMicrophoneRecording || liveSpeechActive
               ? palette.agentAccent.color : restingActionColor,

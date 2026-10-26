@@ -142,7 +142,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       // A narrow card exposes input once readable message content also fits;
       // the former fixed 320pt width must not hide the same editor.
       let width: CGFloat = 220 * factor
-      let height: CGFloat = 220 * factor
+      XCTAssertFalse(
+        try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 220 * factor))
+          .showsComposer, "The former admission height is too early for the complete input")
+      let height = CGFloat(try XCTUnwrap((100...2000).first {
+        metrics.compactPreviewLayout(width: width, cardHeight: CGFloat($0))?.showsComposer == true
+      }))
       for growth in [CGFloat(1), 1.5, 2, 4] {
         XCTAssertTrue(
           try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
@@ -280,12 +285,15 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       var retainedDraft =
         longDraft
         ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
-      let attachmentURL = bridgeRoot.deletingLastPathComponent()
-        .appendingPathComponent("review-attachment-\(UUID().uuidString).txt")
+      let attachmentStore = ConversationAttachmentPointer.configDirectory
+        .appendingPathComponent("attachments", isDirectory: true)
+      let attachmentURL = attachmentStore.appendingPathComponent("review-attachment-\(UUID().uuidString).txt")
       if supplementaryDraft {
+        try FileManager.default.createDirectory(at: attachmentStore, withIntermediateDirectories: true)
         try Data("Local review attachment".utf8).write(to: attachmentURL)
         retainedDraft = ConversationDraft.compose(
           text: "Review draft", attachments: [attachmentURL.path])
+        XCTAssertEqual(ConversationDraft.split(retainedDraft).attachments.count, 1)
         state.conversationReplies[conversation.id] = OverlayUserReplyReference(
           row: ["message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply"])
       }
