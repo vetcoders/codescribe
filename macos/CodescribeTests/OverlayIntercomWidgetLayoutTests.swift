@@ -75,6 +75,22 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       for x in [CGFloat(7), 493] {
         XCTAssertEqual(resizeAt(x, bottom), !header, "Only the card retains bottom resize targets")
       }
+      if !header {
+        let event = try XCTUnwrap(
+          NSEvent.mouseEvent(
+            with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1,
+            clickCount: 0, pressure: 0))
+        for handle in nativeHandles { handle.mouseEntered(with: event) }
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Rounded-card-native-corner-ink"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
     }
     XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
   }
