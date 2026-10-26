@@ -6,6 +6,75 @@ import XCTest
 
 @MainActor
 final class OverlayComposerSyncTests: XCTestCase {
+  func testNativeComposerActionsRenderAlignedAndMuted() throws {
+    let palette = OverlayAppearancePalette.dark
+    let composer = OverlayConversationComposer(
+      palette: palette, draft: .constant("A shared draft"), sending: false, onSubmit: {},
+      onToggleDraftMicrophone: {},
+      draftSyncChoices: [.init(id: "peer", title: "Peer", selected: true, enabled: true)],
+      draftSyncNames: ["Agent", "Peer"])
+    let host = NSHostingView(rootView: composer
+      .padding(12).background(palette.desktopBackground.color)
+      .environment(\.colorScheme, .dark))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 480, height: 100)
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 100),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    BackgroundTestWindow.present(window)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
+    let screenshot = XCTAttachment(image: image)
+    screenshot.name = "Muted-aligned-composer-actions"
+    screenshot.lifetime = .keepAlways
+    add(screenshot)
+    // Measure visible ink, rather than assuming equal layout metrics imply
+    // equal native Menu/Button output. AX is unavailable in this background host.
+    let pixelScale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+    let controlSize = ComposerControlMetrics.hitTargetSize
+    let stride = controlSize + ComposerControlMetrics.spacing
+    let rightInset: CGFloat = 12 + ComposerControlMetrics.horizontalPadding
+    var centers: [CGFloat] = []
+    var heights: [CGFloat] = []
+    var peaks: [CGFloat] = []
+    for slot in 0..<3 {
+      let right = host.bounds.width - rightInset - CGFloat(slot) * stride
+      let left = right - controlSize
+      var minY = bitmap.pixelsHigh
+      var maxY = -1
+      var inkCount = 0
+      var peak = CGFloat.zero
+      for y in 0..<bitmap.pixelsHigh {
+        for x in Int(left * pixelScale)..<Int(right * pixelScale) {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+          let brightness = max(color.redComponent, color.greenComponent, color.blueComponent)
+          guard brightness > 0.35 else { continue }
+          inkCount += 1
+          minY = min(minY, y)
+          maxY = max(maxY, y)
+          peak = max(peak, brightness)
+        }
+      }
+      XCTAssertGreaterThan(inkCount, 20, "Each action must actually render its glyph")
+      XCTAssertLessThan(peak, 0.8, "Idle action must not render bright white/accent ink")
+      centers.append(CGFloat(minY + maxY) / (2 * pixelScale))
+      heights.append(CGFloat(maxY - minY + 1) / pixelScale)
+      peaks.append(peak)
+    }
+    for index in 1..<3 {
+      XCTAssertEqual(centers[index], centers[0], accuracy: 1.5, "Visible glyph centers must align")
+      XCTAssertEqual(heights[index], heights[0], accuracy: 2, "Glyphs must have the same optical size")
+      XCTAssertEqual(peaks[index], peaks[0], accuracy: 0.05, "Idle glyphs must use the same ink")
+    }
+  }
+
   func testTypedPublisherCarriesOnlyExplicitOwnerCoordinatesAsSyncContext() throws {
     let (_, agents) = try fixture(count: 2)
     let owner = try XCTUnwrap(agents[0].owner)

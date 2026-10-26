@@ -193,13 +193,15 @@ struct OverlayConversationComposer: View {
     } label: {
       Label("Sync draft", systemImage: "link")
         .labelStyle(.iconOnly)
-        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
-        .frame(
-          width: ComposerControlMetrics.hitTargetSize,
-          height: ComposerControlMetrics.hitTargetSize)
     }
-    .menuStyle(.borderlessButton).menuIndicator(.hidden)
-    .fixedSize().disabled(sending)
+    .menuStyle(.button).menuIndicator(.hidden)
+    .buttonStyle(.plain)
+    .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+    .frame(
+      width: ComposerControlMetrics.hitTargetSize,
+      height: ComposerControlMetrics.hitTargetSize)
+    .contentShape(Circle())
+    .disabled(sending)
     .conversationActionHover(
       restingColor: palette.mutedText.color,
       hoverColor: palette.primaryText.color
@@ -269,11 +271,11 @@ struct OverlayConversationComposer: View {
           width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
         )
         .contentShape(Circle()).buttonStyle(.plain)
-        // A pastel at rest (Maciej, 2026-10-23: "daj bardziej pastelowy");
-        // hover and recording bring the whole violet back.
         .conversationActionHover(
-          restingColor: palette.agentAccent.color.opacity(draftMicrophoneRecording ? 1 : 0.5),
-          hoverColor: palette.agentAccent.color
+          restingColor: draftMicrophoneRecording
+            ? palette.agentAccent.color : palette.mutedText.color,
+          hoverColor: draftMicrophoneRecording
+            ? palette.agentAccent.color : palette.primaryText.color
         )
         .disabled(draftMicrophoneBusy)
         .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
@@ -288,8 +290,8 @@ struct OverlayConversationComposer: View {
         .contentShape(Circle())
         .buttonStyle(.plain)
         .conversationActionHover(
-          restingColor: palette.listeningStatus.color.opacity(0.8),
-          hoverColor: palette.listeningStatus.color
+          restingColor: palette.mutedText.color,
+          hoverColor: palette.primaryText.color
         )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
