@@ -5133,6 +5133,34 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.sentAssistiveTexts, ["kept for review"])
   }
 
+  /// W2-09: an Agent take that 30 s without voice ended is archived on
+  /// purpose. The opted-in auto-send stays off for it; an explicit send works.
+  func testAnAgentTakeEndedWithoutVoiceNeverAutoSends() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now }, autoSendEnabled: { true })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText(
+      "words heard in the room", to: state, terminal: true, delivery: .endedWithoutVoice)
+    state.finishControllerRecording()
+
+    clock.now = 5
+    state.fireAutoHideNowForTests(armedDeadline: 5)
+    await Task.yield()
+    clock.now = 60
+    state.fireAutoHideNowForTests(armedDeadline: 60)
+    await Task.yield()
+    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+    XCTAssertNil(state.agentSendCountdownSeconds)
+
+    let delivery = state.sendToAgent()
+    await delivery?.value
+    XCTAssertEqual(engine.sentAssistiveTexts, ["words heard in the room"])
+  }
+
   func testUntouchedAgentFinalAutoSendsAtDeadline() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()

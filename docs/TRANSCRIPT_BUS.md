@@ -433,7 +433,10 @@ contains:
 - additive `lifecycle_terminal` and typed `delivery` on evidence projections.
   Revision rows use `false` and `unattempted`. The in-process `session_ended`
   projection uses `true` and the controller's disposition (`unattempted`,
-  `composer_pending`, `sink_accepted`, or `retained`). Its text-free persisted
+  `composer_pending`, `sink_accepted`, `retained`, `copied_to_clipboard`,
+  `deferred_insert_armed`, or `ended_without_voice`: an assistive take that
+  ended after 30 s without voice, sent nowhere, which the overlay never
+  auto-sends). Its text-free persisted
   lifecycle row remains `codescribe.transcript.v1` and does not carry these two
   fields. Reading that row is not proof of composer admission.
 

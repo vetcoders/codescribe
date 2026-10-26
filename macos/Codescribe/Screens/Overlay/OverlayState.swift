@@ -1831,7 +1831,8 @@ final class OverlayState {
           guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          let bindingMatches = self.canFocusAgentPanel(state.owner)
+          let bindingMatches =
+            self.canFocusAgentPanel(state.owner)
             && self.channelPlaybackAgents[channel]?.frame == binding?.frame
             && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
           let succeeded = activated && bindingMatches
@@ -2937,7 +2938,9 @@ final class OverlayState {
           conversationDrafts[group.id] == draft
         {
           conversationDraftGroups[current].sent.insert(id)
-          if conversationReplies[id] == recipient.reply { conversationReplies.removeValue(forKey: id) }
+          if conversationReplies[id] == recipient.reply {
+            conversationReplies.removeValue(forKey: id)
+          }
         }
       } catch {
         textMessageErrors[id] = error.userFacingMessage
@@ -3063,7 +3066,8 @@ final class OverlayState {
       let draft = ConversationDraft.split(conversationDraft(for: id))
       let added = staged.paths.filter { !draft.attachments.contains($0) }
       setConversationDraft(
-        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id)
+        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
+      )
       captureAttachmentDrafts.removeValue(forKey: id)
       captureAttachmentErrors.removeValue(forKey: id)
       textMessageErrors[id] = String(
@@ -5658,6 +5662,11 @@ final class OverlayState {
           !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if projection.delivery == .copiedToClipboard {
           showFooterNotice(String(localized: "copied"))
+        }
+        // An Agent take that ended without voice is archived on purpose:
+        // the opted-in auto-send never sends it. An explicit send still can.
+        if projection.delivery == .endedWithoutVoice {
+          agentAutoSendCancelled = true
         }
       }
       if signalsFirstSuccessfulTerminal {

@@ -19174,6 +19174,11 @@ public enum CsTranscriptDelivery: Equatable, Hashable {
      */
     case retained
     /**
+     * The assistive take ended without voice; no destination was chosen and
+     * nothing may send the text on its own.
+     */
+    case endedWithoutVoice
+    /**
      * The text was copied to the clipboard without posting a paste.
      */
     case copiedToClipboard
@@ -19208,9 +19213,11 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
 
         case 4: return .retained
 
-        case 5: return .copiedToClipboard
+        case 5: return .endedWithoutVoice
 
-        case 6: return .deferredInsertArmed
+        case 6: return .copiedToClipboard
+
+        case 7: return .deferredInsertArmed
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19236,12 +19243,16 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
             writeInt(&buf, Int32(4))
 
 
-        case .copiedToClipboard:
+        case .endedWithoutVoice:
             writeInt(&buf, Int32(5))
 
 
-        case .deferredInsertArmed:
+        case .copiedToClipboard:
             writeInt(&buf, Int32(6))
+
+
+        case .deferredInsertArmed:
+            writeInt(&buf, Int32(7))
 
         }
     }

@@ -791,6 +791,10 @@ pub enum TranscriptDelivery {
     /// The stop path finished without any sink taking the text. It stays
     /// recoverable in the overlay and the session archive.
     Retained,
+    /// The assistive take ended after 30 s without voice, so the stop path
+    /// chose no destination. The text stays in the take archive; nothing may
+    /// send it on its own, and an explicit send still can.
+    EndedWithoutVoice,
     /// The text was copied to the clipboard without posting a paste.
     CopiedToClipboard,
     /// The text is armed for a later explicit insert, not pasted yet.

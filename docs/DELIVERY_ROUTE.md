@@ -93,6 +93,12 @@ Finish and hold release):
   committed document, nothing else moves.
 - `AgentVoice` resolves to `AgentComposer` with
   `reason=assistive_first_class`; the stop path never pastes it.
+- A hands-free assistive take that ended after 30 s without voice
+  (W2-09, `app/controller/assistive_silence.rs`) never reaches
+  `resolve_delivery_route`. The stop path records `EndedWithoutVoice` and
+  returns: no paste, no clipboard, no Agent. The overlay reads that
+  disposition and keeps its opt-in Agent auto-send off for the take; an
+  explicit **To Agent** still sends it.
 - `live_stream_session` and `commit_required` have no producer on the stop
   path today; both are false by construction until one returns.
 - Transport is `execute_clipboard_paste`, shared with overlay Insert:

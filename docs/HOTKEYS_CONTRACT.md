@@ -451,6 +451,18 @@ picker, where Formatting and the Agent start.
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
 fresh epoch. Recording does not stop. This is not a wav-only chunker knob and not `CODESCRIBE_VAD_*`.
+**Assistive take: 30 s without voice end it (founder decision 2026-10-26, W2-09).** A hands-free
+assistive take that hears no voice for 30 s ends on its own: 30 s after the start when it never
+heard voice, else 30 s after the last measured speech end. Voice is the PCM energy and Silero VAD
+edges of the take's capture epoch (`SpeechClock`, `app/controller/speech_clock.rs`, the clock agent
+channels use, with the same `VOICELESS_CLOSE_SECS`), never recognizer output. Agent playback is not
+silence: it restarts the 30 s. The end is the controller's named stop (`stop_capture_if_owned`,
+`app/controller/assistive_silence.rs`), the path a Stop click takes. It releases only the take's
+capture, so an open agent channel keeps the microphone. It sends nothing: the stop path returns
+before `resolve_delivery_route`, the disposition is `ended_without_voice`, the overlay's opt-in
+Agent auto-send stays off for that take, and the text stays in the take archive, where an explicit
+send still works. A Stop before the 30 s delivers as before. Dictation and Formatting toggles run
+until stopped, and `TOGGLE_SILENCE_SEC` still only closes utterance epochs.
 
 | Mode binding           | Keys                          | Mode                                                                               |
 | ---------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
@@ -646,11 +658,11 @@ flowchart LR
     style C_VAD stroke:#36c,stroke-width:2px
 ```
 
-| Mode             | VAD Segmentation | Reason                                                             |
-| ---------------- | ---------------- | ------------------------------------------------------------------ |
-| **Hold**         | ✅ YES           | VAD segments utterances; user controls start/stop via key release. |
-| **Toggle**       | ✅ YES           | Hands-free mode uses utterance boundaries (no stop).               |
-| **Conversation** | Internal         | Moshi handles turn-taking internally.                              |
+| Mode             | VAD Segmentation | Reason                                                                                                |
+| ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
+| **Hold**         | ✅ YES           | VAD segments utterances; user controls start/stop via key release.                                    |
+| **Toggle**       | ✅ YES           | Hands-free mode uses utterance boundaries (no stop). An assistive take ends after 30 s without voice. |
+| **Conversation** | Internal         | Moshi handles turn-taking internally.                                                                 |
 
 ---
 
@@ -750,6 +762,9 @@ sequenceDiagram
     else Silence > TOGGLE_SILENCE_SEC
         Apple->>Apple: Seal open span, rest SFSpeech (Layer 1 can patch)
         Note over Controller: State stays REC_TOGGLE — mic + Silero keep watching
+    else Assistive take, no voice for 30 s
+        Controller->>Controller: Named stop, archive only (no delivery route)
+        Note over Controller: State: REC_TOGGLE → BUSY → IDLE, nothing sent
     end
 ```
 

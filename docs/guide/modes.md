@@ -67,6 +67,8 @@ Notes:
 3. Speak your request
 4. Choose **Stop transcription in Agent mode** to stop and send it to the Agent
 
+If you say nothing for 30 seconds, the take ends on its own and sends nothing. Its text stays in the take archive, and you can still send it with **To Agent**.
+
 ### Behavior
 
 - Auto‑paste: **OFF** (agent answers in the overlay)
