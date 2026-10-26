@@ -171,7 +171,9 @@ does not need changes to these owners.
   still mark a copy's row as accepted, queued or read; they are hints ahead
   of the files, not receipts: they never count and never end the listing,
   which stops only when the composed files show every copy and every listed
-  agent as `read` or `skipped`. The poll costs at most 128 directory
+  agent as `read`, `skipped` or withdrawn. A reply additionally leaves the
+  poll once its playback is known from either source, the bus's playback
+  rows or the receipt file. The poll costs at most 128 directory
   `fstatat` calls plus 128 wakeup `fstatat` calls per tick and bus. A reply's
   "Spoken" label is decided by one ticket arbiter (`applyPlayback`) for the
   bus's playback rows and the receipt files alike; the composed `spoken` is

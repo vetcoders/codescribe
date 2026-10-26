@@ -300,10 +300,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       owner: OverlayConversationOwner, delivery: String, accepted: Bool
     )
 
-    /// Unsettled recipients whose provider acceptance (`wakeups/`) is still
-    /// worth a poll: neither read nor skipped by the receipt files. `accepted`
-    /// says acceptance was already observed, so the reader skips that file.
-    /// A rotating window of 128 per poll.
+    /// Recipients whose provider acceptance (`wakeups/`) is still worth a
+    /// poll: their row is neither acknowledged nor skipped (flags painted by
+    /// the files, the ack row or the lease). `accepted` says acceptance was
+    /// already observed, so the reader skips that file. A rotating window of
+    /// 128 per poll.
     mutating func receiptCoordinates() -> [ReceiptCoordinate] {
       var result: [ReceiptCoordinate] = []
       var seen: Set<String> = []
@@ -367,27 +368,34 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
 
     /// Whether the receipt files leave nothing to wait for: the directory
-    /// was composed, every copy's delivery is `read` or `skipped` there, and
-    /// so is every agent on the list (the admitted list, else the copies).
-    /// Only the files settle a message: the `agent-ack` bus row and the
-    /// provider's acceptance paint a copy's row but never stop the listing,
-    /// so a `read` file written just before that row is still composed. A
-    /// message never composed is never settled; a message without copies on
-    /// this bus is settled by its list alone.
+    /// was composed, every copy's delivery is `read`, `skipped` or withdrawn
+    /// there, and so is every agent on the list (the admitted list, else the
+    /// copies). Only the files settle a message: the `agent-ack` bus row and
+    /// the provider's acceptance paint a copy's row but never stop the
+    /// listing, so a `read` file written just before that row is still
+    /// composed. A message never composed is never settled; a message
+    /// without copies on this bus is settled by its list alone.
     private static func settled(_ message: OverlayConversationMessage) -> Bool {
       guard let receipt = message.receipt else { return false }
       var states: [String: OverlayReceiptState.State] = [:]
       for delivery in receipt.deliveries {
         if let id = delivery.deliveryID, states[id] == nil { states[id] = delivery.state }
       }
-      func done(_ state: OverlayReceiptState.State?) -> Bool {
-        state == .read || state == .skipped
+      let withdrawn = Set(receipt.withdrawn.map(\.deliveryID))
+      func done(_ id: String?, _ state: OverlayReceiptState.State?) -> Bool {
+        if state == .read || state == .skipped { return true }
+        guard let id else { return false }
+        return withdrawn.contains(id)
       }
-      guard message.recipients.allSatisfy({ done($0.deliveryID.flatMap { states[$0] }) }) else {
-        return false
+      for recipient in message.recipients {
+        let id = recipient.deliveryID
+        if !done(id, id.flatMap { states[$0] }) { return false }
       }
-      return receipt.summary(listed: message.sentTo ?? message.recipients.map(\.reach))
-        .recipients.allSatisfy { done($0.state) }
+      let listed = message.sentTo ?? message.recipients.map(\.reach)
+      for recipient in receipt.summary(listed: listed).recipients {
+        if !done(recipient.deliveryID, recipient.state) { return false }
+      }
+      return true
     }
 
     /// The `runtime/receipts/<message_id>/` directory of a message: its

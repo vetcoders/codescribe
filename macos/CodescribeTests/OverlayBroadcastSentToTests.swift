@@ -196,10 +196,10 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       at: Self.modelDirectories, includingPropertiesForKeys: [.isDirectoryKey]
     ).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
       .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    XCTAssertGreaterThanOrEqual(cases.count, 7)
+    XCTAssertGreaterThanOrEqual(cases.count, 8)
     XCTAssertTrue(
       Set(cases.map(\.lastPathComponent)).isSuperset(of: [
-        "skipped-on-sent-to", "legacy-delivered-unread",
+        "skipped-on-sent-to", "legacy-delivered-unread", "withdrawn-after-delivered",
       ]))
     for directory in cases {
       let expected = try XCTUnwrap(
@@ -492,6 +492,42 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     for _ in 0..<3 { _ = try await reader.readSnapshot() }
     let idleProbes = await reader.receiptProbes
     XCTAssertEqual(idleProbes, settledProbes, "read, skipped and heard: nothing left to list")
+  }
+
+  /// A copy withdrawn after delivery (`withdrawn.<delivery_id>.json`) is
+  /// final for that delivery: it keeps its row and its count, and the
+  /// directory leaves the poll like a read or skipped one.
+  func testAWithdrawnCopySettlesTheDirectory() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.typedCopy(Self.typedID, to: "lena", sentTo: ["lena"]))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
+    let initial = try await reader.readSnapshot()
+    let copies = try deliveries(of: try conversationMessage("typed:" + Self.typedID, in: initial))
+    let delivery = try XCTUnwrap(copies["lena"])
+    try fixture.receipt("delivered", messageID: Self.typedID, delivery: delivery, owner: "lena")
+    var snapshot = initial
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    let delivered = await reader.receiptProbes
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    let polling = await reader.receiptProbes - delivered
+    XCTAssertEqual(polling, 2 * 2, "a delivered copy keeps its wakeup and directory probes")
+    try Fixture.write(
+      [
+        "schema": Self.schema, "kind": "withdrawn", "message_id": Self.typedID,
+        "delivery_id": delivery, "lease_id": fixture.owners["lena"]?["lease_id"] ?? "",
+        "control_id": String(repeating: "c", count: 24), "at": "2026-10-26T06:05:00Z",
+      ], to: fixture.directory(Self.typedID).appendingPathComponent("withdrawn.\(delivery).json"))
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    let message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
+    XCTAssertEqual(message.receipt?.withdrawn.map(\.deliveryID), [delivery])
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 1, unreceipted: []))
+    XCTAssertEqual(message.recipients.first?.queued, true, "the row keeps its delivered state")
+    let settled = await reader.receiptProbes
+    for _ in 0..<2 { _ = try await reader.readSnapshot() }
+    let idle = await reader.receiptProbes - settled
+    XCTAssertEqual(idle, 2 * 1, "only the wakeup probe of the unacknowledged copy remains")
   }
 
   func testACopyWithoutAStampKeepsTheCopiesAsTheDenominatorUntilSentJSON() async throws {
