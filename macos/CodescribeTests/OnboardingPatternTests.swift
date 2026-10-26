@@ -136,6 +136,10 @@ final class OnboardingPatternTests: XCTestCase {
     }
     XCTAssertFalse(steps.contains("\"Ready to go ✓\""), "the check mark left the sentence")
     XCTAssertTrue(steps.contains("\"Ready to go\""))
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    XCTAssertTrue(
+      frame.contains("EyebrowLabel(text: current.label, font: CSFont.ui(11, .semibold))"),
+      "the step's category label uses the system face")
     XCTAssertTrue(whisper.contains(".truncationMode(.middle)"), "the model path keeps both ends")
 
     let polish = try polishCatalog()

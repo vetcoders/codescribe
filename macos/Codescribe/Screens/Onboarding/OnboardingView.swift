@@ -251,7 +251,9 @@ struct OnboardingView: View {
           .accessibilityAddTraits(.isHeader)
           .accessibilityIdentifier("onboarding-step-heading")
       }
-      EyebrowLabel(text: current.label)
+      // The wizard speaks in one family: the section marker keeps its
+      // uppercase, tracking and olive, in the system face.
+      EyebrowLabel(text: current.label, font: CSFont.ui(11, .semibold))
     }
   }
 
