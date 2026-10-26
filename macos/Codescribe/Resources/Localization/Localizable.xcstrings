@@ -5004,42 +5004,12 @@
         }
       }
     },
-    "Click Sync in another composer to share future input. Click again to cancel." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Kliknij synchronizację w innym polu, aby współdzielić nową treść. Kliknij ponownie, aby anulować."
-          }
-        }
-      }
-    },
-    "Click here, then click Sync in another composer to share future input. Right-click to choose a target." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Kliknij tutaj, a następnie synchronizację w innym polu, aby współdzielić nową treść. Kliknij prawym przyciskiem, aby wybrać pole."
-          }
-        }
-      }
-    },
     "Click to edit. Edits stay local until committed to the transcript ledger." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kliknij, aby edytować. Zmiany pozostaną lokalne, dopóki nie zatwierdzisz ich w rejestrze transkrypcji."
-          }
-        }
-      }
-    },
-    "Click to leave Sync. Right-click to choose linked composers." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Kliknij, aby wyłączyć synchronizację tego pola. Kliknij prawym przyciskiem, aby wybrać połączone pola."
           }
         }
       }
@@ -9573,6 +9543,16 @@
     "JetBrains Mono — meta 11" : {
       "shouldTranslate" : false
     },
+    "Join channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dołącz do kanału 0"
+          }
+        }
+      }
+    },
     "Jump to current" : {
       "localizations" : {
         "pl" : {
@@ -9913,6 +9893,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uczyć słownik z poprawek?"
+          }
+        }
+      }
+    },
+    "Leave channel 0" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Opuść kanał 0"
           }
         }
       }
@@ -13479,22 +13469,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wklejaj po dyktowaniu"
-          }
-        }
-      }
-    },
-    "Paste files, images, or long text to attach a local copy." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Paste files, images, or long text to attach a local copy."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wklej plik, obraz lub dłuższy tekst, aby załączyć lokalną kopię."
           }
         }
       }
@@ -20236,6 +20210,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dostosuj skróty"
+          }
+        }
+      }
+    },
+    "Turn off do not disturb" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wyłącz „Nie przeszkadzać”"
           }
         }
       }
