@@ -3937,8 +3937,9 @@ pub struct PresentationEmitter {
     transcription_controls: TranscriptionControls,
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
-    /// Refused overlap pins in this take; see [`Self::overlap_refusal_repeats`].
-    overlap_pins_refused: std::sync::atomic::AtomicU64,
+    /// Refused overlap pins in this take by ledger reason; see
+    /// [`Self::overlap_refusal_repeats`].
+    overlap_refusals: std::sync::Mutex<BTreeMap<String, u64>>,
     formatter_pending: std::sync::atomic::AtomicBool,
     derived_projection_notify: tokio::sync::Notify,
     sentence_pause_sec: f32,
@@ -3950,25 +3951,37 @@ pub struct PresentationEmitter {
 impl PresentationEmitter {
     /// One take can refuse an overlap pin thousands of times (24 646 lines
     /// in four days, 85% of engine warnings, on 2026-10-26). The first stays
-    /// a warning, later ones go to debug, and finalisation reports the count.
-    fn overlap_refusal_repeats(&self, code: &str) -> bool {
+    /// a warning, later ones go to debug, and finalisation reports the count
+    /// for each ledger reason.
+    fn overlap_refusal_repeats(&self, code: &str, message: &str) -> bool {
         if code != codescribe_core::pipeline::contracts::OVERLAP_PIN_REFUSED {
             return false;
         }
-        let earlier = self
-            .overlap_pins_refused
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        earlier > 0
+        let reason = codescribe_core::pipeline::contracts::overlap_pin_refusal_reason(message);
+        let mut refusals = self
+            .overlap_refusals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let earlier = !refusals.is_empty();
+        *refusals.entry(reason.to_owned()).or_default() += 1;
+        earlier
     }
 
-    /// Report this take's refused overlap pins once, at finalisation.
+    /// Report this take's refused overlap pins once, at finalisation, with
+    /// the count for each ledger reason.
     fn report_overlap_refusals(&self) {
-        let refused = self
-            .overlap_pins_refused
-            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        let refusals = {
+            let mut refusals = self
+                .overlap_refusals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *refusals)
+        };
+        let refused: u64 = refusals.values().sum();
         if refused > 1 {
             tracing::info!(
                 refused,
+                reasons = ?refusals,
                 "overlap_pin_refused repeated in this take; repeats are at debug level"
             );
         }
@@ -4241,7 +4254,7 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
-            overlap_pins_refused: std::sync::atomic::AtomicU64::new(0),
+            overlap_refusals: std::sync::Mutex::default(),
             transcription_controls: TranscriptionControls::default(),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             formatter_pending: std::sync::atomic::AtomicBool::new(false),
@@ -5922,7 +5935,7 @@ impl EventSink for PresentationEmitter {
                 // owner that truly retires the presentation.
             }
             EngineEvent::Warning { code, message } => {
-                if self.overlap_refusal_repeats(code) {
+                if self.overlap_refusal_repeats(code, message) {
                     tracing::debug!("Engine warning [{}]: {}", code, message);
                 } else {
                     tracing::warn!("Engine warning [{}]: {}", code, message);
@@ -7496,6 +7509,35 @@ mod tests {
             delivery.lock().await.as_str(),
             "One two three four five six settled tail"
         );
+    }
+
+    /// W2-08: a take's refused overlap pins are counted by ledger reason.
+    /// Only the take's first refusal stays a warning, and finalisation
+    /// drains the counts for the next take.
+    #[tokio::test]
+    async fn overlap_refusals_are_counted_by_ledger_reason() {
+        use codescribe_core::pipeline::contracts;
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = emitter_on_ledger(&ledger);
+        let code = contracts::OVERLAP_PIN_REFUSED;
+        let refusal = |reason| contracts::overlap_pin_refused_message((0, 16), "0..16", reason);
+        let replay = refusal("replayed_range_identity");
+        let silent = refusal("no_voiced_hop_in_pin");
+
+        assert!(!emitter.overlap_refusal_repeats(code, &replay));
+        assert!(emitter.overlap_refusal_repeats(code, &replay));
+        assert!(emitter.overlap_refusal_repeats(code, &silent));
+        let other = emitter.overlap_refusal_repeats("tail_patch_refused", &replay);
+        assert!(!other, "only overlap refusals are counted");
+        let counts = emitter.overlap_refusals.lock().unwrap().clone();
+        assert_eq!(counts.get("replayed_range_identity"), Some(&2));
+        assert_eq!(counts.get("no_voiced_hop_in_pin"), Some(&1));
+        assert_eq!(counts.len(), 2);
+
+        emitter.report_overlap_refusals();
+        assert!(emitter.overlap_refusals.lock().unwrap().is_empty());
+        assert!(!emitter.overlap_refusal_repeats(code, &silent));
+        emitter.finish().await;
     }
 
     #[tokio::test]

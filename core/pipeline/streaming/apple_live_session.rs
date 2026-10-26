@@ -4342,9 +4342,10 @@ impl AppleSealState {
             };
             let _ = ev_tx.send(EngineEvent::Warning {
                 code: crate::pipeline::contracts::OVERLAP_PIN_REFUSED.into(),
-                message: format!(
-                    "segment {}..{} occurrence [{occurrence_ranges}] ledger={ledger_reason}",
-                    pin.sample_start, pin.sample_end
+                message: crate::pipeline::contracts::overlap_pin_refused_message(
+                    (pin.sample_start, pin.sample_end),
+                    &occurrence_ranges,
+                    ledger_reason,
                 ),
             });
             let observation = LedgerObservationIdentity::new(
