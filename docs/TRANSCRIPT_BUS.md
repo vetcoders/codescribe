@@ -1730,7 +1730,8 @@ foreign message ids are ignored, never repaired.
 **One contract, two implementations.** This is a deliberate exception to
 the one-owner rule: the overlay cannot call the helper, so the same
 formula is computed twice, once by `receipt_state` in the helper and once
-by the overlay's projection. Both are pinned to the same model
+by the overlay's composer (`OverlayReceiptState.compose`, the one state
+machine its projection keeps). Both are pinned to the same model
 directories under `scripts/tests/fixtures/receipts/<case>/`, each with its
 exact `expected.json`, and both test suites read those cases. Every new
 state or rule goes to the model directories first, then to both

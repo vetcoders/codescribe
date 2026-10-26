@@ -154,14 +154,21 @@ does not need changes to these owners.
   time, a hover animation or an unread badge must not manufacture a receipt.
 - Delivery states come from `runtime/receipts/<message_id>/` only (the
   contract is the Receipts section of `docs/TRANSCRIPT_BUS.md`): the reader
-  probes `<delivery_id>.delivered.json`, `.read.json` and `.skipped.json` by
-  path for every unsettled copy, the publisher's `sent.json` once per
-  channel-0 text, and lists a reply's directory for `playback.<ticket>.json`
-  only when that directory changed. The ACK and skip markers under
+  lists the directory of every unsettled message when its stamp changed (a
+  copy neither read nor skipped, a channel-0 text without a known list, one
+  of the newest replies not yet heard) and hands all its files to the
+  composer, `OverlayReceiptState.compose`. The projection keeps the composed
+  state (`OverlayConversationMessage.receipt`) and derives from it the
+  recipient rows (`delivered`, `read`, `skipped`), the admitted list
+  (`sent.json`, else the files' stamp) and a reply's playback
+  (`playback.<ticket>.json`). The ACK and skip markers under
   `acknowledgments/` and `broadcast-skipped/` are not read by the overlay:
   one owner per state, no fallback to the previous files. A write in
-  progress (`.*.tmp`) is never read. A delivery without a `message_id` (a
-  plain dictation seal) has no directory and stays "Addressed".
+  progress (`.*.tmp`) is never read; a file whose name and content disagree
+  marks nothing. A delivery without a `message_id` (a plain dictation seal)
+  has no directory and stays "Addressed". Provider acceptance (`wakeups/`)
+  and a lease's `pending` still mark a copy's row as accepted or queued; they
+  are not receipts and never count.
 - "Read X/Y" counts the agents the message was sent to, not its copies.
   Y is the contract's denominator (`OverlayConversationMessage.readReceipt`):
   the admitted list (`target.recipients` on the copy, outranked by
@@ -173,9 +180,11 @@ does not need changes to these owners.
   the list, today's denominator; a channel take's admitted owners are its
   `recipients`. **One contract, two implementations:** the overlay cannot
   call the helper, so it computes the same formula a second time, from the
-  same files; both implementations are pinned to the model directories
-  under `scripts/tests/fixtures/receipts/<case>/` with their `expected.json`,
-  every new state goes to those directories first and then to both, and the
+  same files, in one place: the composer the reader feeds. There is no
+  second state machine next to it; the count is read off the composed state.
+  Both implementations are pinned to the model directories under
+  `scripts/tests/fixtures/receipts/<case>/` with their `expected.json`, every
+  new state goes to those directories first and then to both, and the
   overlay computes only the formula: no roster, no policies, no reach of its
   own. `delivered` with `wake: null` is history the helper backfilled.
 - Scale text through the existing text-scale projection, preserve Reduce

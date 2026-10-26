@@ -146,23 +146,24 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     }
     let owner = try XCTUnwrap(conversation().owner)
     let coordinate = try XCTUnwrap(bus.receiptCoordinates().first)
-    XCTAssertTrue(coordinate.broadcast, "a channel-0 seal is the kind a follower may skip")
-    let messageID = try XCTUnwrap(coordinate.messageID)
+    let messageID = try XCTUnwrap(bus.receiptDirectories().first)
     func skip(_ row: [String: Any], delivery: String) -> [String: Any] {
       row.merging([
         "schema": "codescribe.message-receipt.v1", "kind": "skipped", "message_id": messageID,
         "delivery_id": delivery, "policy": "off", "at": "2026-10-17T11:00:00Z",
       ]) { _, new in new }
     }
-    bus.observeMessageReceipt(
-      skip(ownerRow(), delivery: String(repeating: "b", count: 24)), owner: owner,
-      delivery: coordinate.delivery)
+    let file = coordinate.delivery + ".skipped.json"
+    bus.observeReceipts(
+      [(name: file, row: skip(ownerRow(), delivery: String(repeating: "b", count: 24)))],
+      messageID: messageID)
     XCTAssertEqual(
       try receipt(conversation()), "Addressed", "a skip naming another delivery marks nothing")
-    bus.observeMessageReceipt(
-      skip(ownerRow(), delivery: coordinate.delivery), owner: owner, delivery: coordinate.delivery)
+    bus.observeReceipts(
+      [(name: file, row: skip(ownerRow(), delivery: coordinate.delivery))], messageID: messageID)
     XCTAssertEqual(try receipt(conversation()), "Skipped: off channel 0")
     XCTAssertTrue(bus.receiptCoordinates().isEmpty, "a recorded skip is never polled again")
+    XCTAssertTrue(bus.receiptDirectories().isEmpty, "a settled directory is never listed again")
   }
 
   func testTodaysPolicyNeverChangesAFrozenDeliverysReceipt() throws {

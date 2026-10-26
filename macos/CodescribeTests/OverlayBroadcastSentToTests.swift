@@ -5,8 +5,11 @@ import XCTest
 
 /// "Read X/Y" from `runtime/receipts/`: the overlay is the second
 /// implementation of the receipts contract (`docs/TRANSCRIPT_BUS.md`, "One
-/// contract, two implementations") and is pinned to the same model
-/// directories as the helper, `scripts/tests/fixtures/receipts/<case>/`.
+/// contract, two implementations"). Its one state machine is
+/// `OverlayReceiptState.compose`, which the reader feeds with each message
+/// directory and the projection keeps, so pinning the composer to the model
+/// directories `scripts/tests/fixtures/receipts/<case>/` pins the live path;
+/// the reader tests below drive that path end to end.
 @MainActor
 final class OverlayBroadcastSentToTests: XCTestCase {
   static let repoRoot = URL(fileURLWithPath: #filePath)
@@ -135,7 +138,9 @@ final class OverlayBroadcastSentToTests: XCTestCase {
         row["policy"] = "off"
         row["at"] = "2026-10-26T02:06:02Z"
       }
-      try Self.write(row, to: directory(messageID).appendingPathComponent(fileName ?? "\(delivery).\(kind).json"))
+      try Self.write(
+        row, to: directory(messageID).appendingPathComponent(fileName ?? "\(delivery).\(kind).json")
+      )
     }
 
     func sent(_ messageID: String, to names: [String]) throws {
@@ -163,7 +168,8 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       row["reason"] = NSNull()
       row["spoken"] = state == "spoken"
       row["at"] = "2026-10-26T04:14:30Z"
-      try Self.write(row, to: directory(messageID).appendingPathComponent("playback.\(ticket).json"))
+      try Self.write(
+        row, to: directory(messageID).appendingPathComponent("playback.\(ticket).json"))
     }
   }
 
@@ -205,12 +211,13 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       let files = try FileManager.default.contentsOfDirectory(atPath: receipts.path).map { name in
         (
           name: name,
-          row: (try? JSONSerialization.jsonObject(
-            with: Data(contentsOf: receipts.appendingPathComponent(name))) as? [String: Any])
+          row:
+            (try? JSONSerialization.jsonObject(
+              with: Data(contentsOf: receipts.appendingPathComponent(name))) as? [String: Any])
             ?? [:]
         )
       }
-      let composed = OverlayReceiptState.compose(files: files, messageID: messageID)
+      let composed = OverlayReceiptState.compose(files: files, messageID: messageID).jsonObject()
       XCTAssertTrue(
         NSDictionary(dictionary: composed).isEqual(to: expected),
         "\(directory.lastPathComponent): \(composed) != \(expected)")
@@ -232,13 +239,17 @@ final class OverlayBroadcastSentToTests: XCTestCase {
         (name: ".\(delivery).delivered.json.tmp", row: read),
         (name: "\(delivery).delivered.json", row: ["schema": "other", "kind": "delivered"]),
         (name: "\(delivery).read.json", row: read),
-        (name: "sent.json", row: ["schema": Self.schema, "kind": "sent", "message_id": String(repeating: "f", count: 24)]),
+        (
+          name: "sent.json",
+          row: [
+            "schema": Self.schema, "kind": "sent", "message_id": String(repeating: "f", count: 24),
+          ]
+        ),
       ], messageID: messageID)
-    let recipients = composed["recipients"] as? [[String: Any]]
-    XCTAssertEqual(recipients?.count, 1)
-    XCTAssertEqual(recipients?.first?["state"] as? String, "read")
-    XCTAssertTrue(composed["sent_to"] is NSNull, "a sent file of another message is ignored")
-    XCTAssertEqual(composed["denominator"] as? Int, 1)
+    XCTAssertEqual(composed.deliveries.map(\.state), [.read])
+    XCTAssertNil(composed.sentTo, "a sent file of another message is ignored")
+    XCTAssertEqual(composed.jsonObject()["denominator"] as? Int, 1)
+    XCTAssertEqual(composed.summary(listed: []).read, 1)
   }
 
   // MARK: Projection through the reader
@@ -255,38 +266,59 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     for id in ["typed:" + Self.typedID, "reply:" + Self.agentTextID] {
-      let message = try message(id, in: initial)
+      let message = try conversationMessage(id, in: initial)
       XCTAssertEqual(
-        message.sentTo, [OverlayConversationReach(name: "lena", channel: "3"), OverlayConversationReach(name: "igor", channel: "7")],
+        message.sentTo,
+        [
+          OverlayConversationReach(name: "lena", channel: "3"),
+          OverlayConversationReach(name: "igor", channel: "7"),
+        ],
         "the publisher's stamp is the admitted list")
-      XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
+      XCTAssertEqual(
+        message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
     }
     // Two delivered, one read, two skipped: the files the followers wrote.
     let typed = try deliveries(of: try conversationMessage("typed:" + Self.typedID, in: initial))
     XCTAssertEqual(typed.count, 4, "four copies, four recipients")
-    try fixture.receipt("delivered", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena")
+    try fixture.receipt(
+      "delivered", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena")
     try fixture.receipt("read", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena")
-    try fixture.receipt("delivered", messageID: Self.typedID, delivery: typed["igor"]!, owner: "igor")
+    try fixture.receipt(
+      "delivered", messageID: Self.typedID, delivery: typed["igor"]!, owner: "igor")
     try fixture.receipt("skipped", messageID: Self.typedID, delivery: typed["kuba"]!, owner: "kuba")
     try fixture.receipt("skipped", messageID: Self.typedID, delivery: typed["nina"]!, owner: "nina")
-    let agent = try deliveries(of: try conversationMessage("reply:" + Self.agentTextID, in: initial))
+    let agent = try deliveries(
+      of: try conversationMessage("reply:" + Self.agentTextID, in: initial))
     XCTAssertEqual(Set(agent.keys), ["lena", "kuba", "nina"], "the author is not a recipient")
-    try fixture.receipt("read", messageID: Self.agentTextID, delivery: agent["lena"]!, owner: "lena")
-    try fixture.receipt("skipped", messageID: Self.agentTextID, delivery: agent["kuba"]!, owner: "kuba")
-    try fixture.receipt("skipped", messageID: Self.agentTextID, delivery: agent["nina"]!, owner: "nina")
-    try fixture.playback(Self.agentTextID, ticket: String(repeating: "f", count: 24), state: "spoken", by: "igor")
+    try fixture.receipt(
+      "read", messageID: Self.agentTextID, delivery: agent["lena"]!, owner: "lena")
+    try fixture.receipt(
+      "skipped", messageID: Self.agentTextID, delivery: agent["kuba"]!, owner: "kuba")
+    try fixture.receipt(
+      "skipped", messageID: Self.agentTextID, delivery: agent["nina"]!, owner: "nina")
+    try fixture.playback(
+      Self.agentTextID, ticket: String(repeating: "f", count: 24), state: "spoken", by: "igor")
     var snapshot = initial
     for _ in 0..<3 { snapshot = try await reader.readSnapshot() }
 
     let message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []))
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []))
+    let composed = try XCTUnwrap(message.receipt, "the projection keeps the composed directory")
+    XCTAssertEqual(composed.sentTo, message.sentTo)
+    XCTAssertEqual(
+      Dictionary(uniqueKeysWithValues: composed.deliveries.map { ($0.name ?? "", $0.state) }),
+      ["lena": .read, "igor": .delivered, "kuba": .skipped, "nina": .skipped])
     let states = Dictionary(
       uniqueKeysWithValues: message.recipients.map {
         ($0.owner.name, OverlayConversationView.receiptStatusText(for: $0))
       })
     XCTAssertEqual(
       states,
-      ["lena": "Read", "igor": "Queued", "kuba": "Skipped: off channel 0", "nina": "Skipped: off channel 0"])
+      [
+        "lena": "Read", "igor": "Queued", "kuba": "Skipped: off channel 0",
+        "nina": "Skipped: off channel 0",
+      ])
     let text = try conversationMessage("reply:" + Self.agentTextID, in: snapshot)
     XCTAssertEqual(
       text.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []),
@@ -312,13 +344,16 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
     let copies = try deliveries(of: try conversationMessage("typed:" + Self.listedID, in: initial))
-    try fixture.receipt("delivered", messageID: Self.listedID, delivery: copies["lena"]!, owner: "lena")
+    try fixture.receipt(
+      "delivered", messageID: Self.listedID, delivery: copies["lena"]!, owner: "lena")
     try fixture.receipt("read", messageID: Self.listedID, delivery: copies["lena"]!, owner: "lena")
-    try fixture.receipt("delivered", messageID: Self.listedID, delivery: copies["igor"]!, owner: "igor")
+    try fixture.receipt(
+      "delivered", messageID: Self.listedID, delivery: copies["igor"]!, owner: "igor")
     var snapshot = initial
     for _ in 0..<3 { snapshot = try await reader.readSnapshot() }
     let message = try conversationMessage("typed:" + Self.listedID, in: snapshot)
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 1, denominator: 3, unreceipted: [hania]))
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 3, unreceipted: [hania]))
     XCTAssertEqual(message.recipients.count, 2, "no copy is invented for hania")
     XCTAssertEqual(OverlayConversationView.noReceiptText, "No receipt")
   }
@@ -351,7 +386,8 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     var snapshot = initial
     for _ in 0..<3 { snapshot = try await reader.readSnapshot() }
     var message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
     XCTAssertFalse(message.recipients.contains(where: \.acknowledged))
     // The successor lease of the same name and channel acknowledges the
     // delivery its predecessor received: one file keyed by delivery, one
@@ -365,7 +401,8 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     XCTAssertEqual(
       message.recipients.first { $0.owner.name == "lena" }?.acknowledged, true,
       "read.json settles the delivery whichever lease of the agent wrote it")
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []))
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []))
   }
 
   func testACopyWithoutAStampKeepsTheCopiesAsTheDenominatorUntilSentJSON() async throws {
@@ -378,9 +415,11 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     let initial = try await reader.readSnapshot()
     var message = try conversationMessage("typed:" + Self.unstampedID, in: initial)
     XCTAssertNil(message.sentTo, "an older row without the stamp has an unknown reach")
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 0, denominator: 3, unreceipted: []))
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 3, unreceipted: []))
     let copies = try deliveries(of: message)
-    try fixture.receipt("skipped", messageID: Self.unstampedID, delivery: copies["kuba"]!, owner: "kuba")
+    try fixture.receipt(
+      "skipped", messageID: Self.unstampedID, delivery: copies["kuba"]!, owner: "kuba")
     var snapshot = initial
     for _ in 0..<3 { snapshot = try await reader.readSnapshot() }
     message = try conversationMessage("typed:" + Self.unstampedID, in: snapshot)
@@ -392,7 +431,12 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     for _ in 0..<3 { snapshot = try await reader.readSnapshot() }
     message = try conversationMessage("typed:" + Self.unstampedID, in: snapshot)
     XCTAssertEqual(
-      message.sentTo, [OverlayConversationReach(name: "lena", channel: "3"), OverlayConversationReach(name: "igor", channel: "7")])
-    XCTAssertEqual(message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
+      message.sentTo,
+      [
+        OverlayConversationReach(name: "lena", channel: "3"),
+        OverlayConversationReach(name: "igor", channel: "7"),
+      ])
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
   }
 }

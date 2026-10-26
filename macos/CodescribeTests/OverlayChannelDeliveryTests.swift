@@ -1114,15 +1114,19 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(
       projection.receiptCoordinates().map { "\($0.0.leaseID) \($0.1)" },
       ["\(Fixture.leaseID) \(delivery)"])
-    projection.observeMessageReceipt(
+    projection.observeReceipts(
       [
-        "schema": "codescribe.message-receipt.v1", "kind": "read",
-        "message_id": "f5b17a3ac49b375c6fe6a182", "delivery_id": delivery,
-        "lease_id": Fixture.leaseID, "provider": "codex", "provider_session_id": "agent-session",
-        "bus": fixture.bus.path, "name": "james", "channel": "1",
-        "read_at": "2026-10-26T08:00:00Z",
-      ],
-      owner: try XCTUnwrap(james.owner), delivery: delivery)
+        (
+          name: delivery + ".read.json",
+          row: [
+            "schema": "codescribe.message-receipt.v1", "kind": "read",
+            "message_id": "f5b17a3ac49b375c6fe6a182", "delivery_id": delivery,
+            "lease_id": Fixture.leaseID, "provider": "codex",
+            "provider_session_id": "agent-session", "bus": fixture.bus.path, "name": "james",
+            "channel": "1", "read_at": "2026-10-26T08:00:00Z",
+          ]
+        )
+      ], messageID: "f5b17a3ac49b375c6fe6a182")
     // Replaying the published row keeps the settled recipient.
     row["reply_id"] = "f5b17a3ac49b375c6fe6a182"
     row["message_id"] = row["reply_id"]
@@ -1758,9 +1762,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
   }
 
   /// Sample 2026-10-18 on div0: a channel-0 take is projected on every
-  /// recipient's bus, while each ACK names its owner's bus. More of those
-  /// foreign receipts than the 256-entry parse cache were reopened and
-  /// reparsed on every 500 ms poll.
+  /// recipient's bus, and more receipt files than the 256-entry parse cache
+  /// were reopened and reparsed on every 500 ms poll. A directory whose
+  /// stamp did not change is not listed again, and a file that settles
+  /// nothing is parsed once.
   func testForeignAcknowledgmentsAreNotReparsedUntilTheyChange() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -1782,10 +1787,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var projection = OverlayChannelDelivery.Bus()
     for row in rows { projection.consume(row) }
     var coordinates: [String: OverlayConversationOwner] = [:]
-    for _ in 0..<4 {
-      for coordinate in projection.receiptCoordinates() {
-        let directory = try XCTUnwrap(coordinate.messageID)
-        coordinates[directory + "/" + coordinate.delivery] = coordinate.owner
+    for message in projection.conversations(busPath: fixture.bus.path).flatMap(\.messages) {
+      for recipient in message.recipients {
+        let delivery = try XCTUnwrap(recipient.deliveryID)
+        coordinates[Fixture.receiptsDirectory(of: message) + "/" + delivery] = recipient.owner
       }
     }
     XCTAssertEqual(coordinates.count, 400)
@@ -1796,7 +1801,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       try fixture.receipt(
         "read", messageID: parts[0], delivery: parts[1],
         owner: owner.leaseID == Fixture.leaseID ? fixture.recipient() : peer,
-        delivery: String(repeating: "0", count: 24))
+        named: String(repeating: "0", count: 24))
     }
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     // 128 coordinates per tick: four polls read every receipt once.
@@ -1821,8 +1826,9 @@ final class OverlayChannelDeliveryTests: XCTestCase {
 
   /// Sample 2026-10-19 on div0: after the stamp memo, foreign channel-0
   /// coordinates still cost one `fstatat` each per tick plus the enumeration,
-  /// about 40 % of the reader. A receipt naming another bus this reader polls
-  /// settles there, so this bus stops asking for it.
+  /// about 40 % of the reader. A read file settles the delivery on every bus
+  /// that carries a copy, whichever lease wrote it, and a settled directory
+  /// leaves the poll.
   func testCoordinatesAcknowledgedOnAnotherPolledBusLeaveThePoll() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
@@ -1850,10 +1856,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     var projection = OverlayChannelDelivery.Bus()
     for row in rows { projection.consume(row) }
     var coordinates: [String: OverlayConversationOwner] = [:]
-    for _ in 0..<4 {
-      for coordinate in projection.receiptCoordinates() {
-        let directory = try XCTUnwrap(coordinate.messageID)
-        coordinates[directory + "/" + coordinate.delivery] = coordinate.owner
+    for message in projection.conversations(busPath: fixture.bus.path).flatMap(\.messages) {
+      for recipient in message.recipients {
+        let delivery = try XCTUnwrap(recipient.deliveryID)
+        coordinates[Fixture.receiptsDirectory(of: message) + "/" + delivery] = recipient.owner
       }
     }
     XCTAssertEqual(coordinates.count, 210)
@@ -1867,8 +1873,8 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let coldProbes = await reader.receiptProbes
     for _ in 0..<4 { _ = try await reader.readSnapshot() }
     let steadyProbes = await reader.receiptProbes - coldProbes
-    // Ten own coordinates, each a wakeup, a delivered and a read probe.
-    XCTAssertEqual(steadyProbes, 4 * 10 * 3, "Only coordinates that can settle here are polled")
+    // Ten own coordinates, each a wakeup probe and one directory probe.
+    XCTAssertEqual(steadyProbes, 4 * 10 * 2, "Only unsettled messages are polled")
     // Positive control: this bus still settles its own owner's receipt.
     let (file, owner) = try XCTUnwrap(
       coordinates.first { $0.value.leaseID == Fixture.leaseID })
@@ -2025,10 +2031,11 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     // A skip file at this delivery's path that names another delivery.
     try fixture.receipt(
       "skipped", messageID: messageID, delivery: delivery, owner: fixture.recipient(),
-      delivery: String(repeating: "f", count: 24))
+      named: String(repeating: "f", count: 24))
     let skip = fixture.root.appendingPathComponent(
       "runtime/receipts/\(messageID)/\(delivery).skipped.json")
-    try fixture.receipt("read", messageID: messageID, delivery: delivery, owner: fixture.recipient())
+    try fixture.receipt(
+      "read", messageID: messageID, delivery: delivery, owner: fixture.recipient())
     let withForeignSkip = try await reader.readSnapshot()
     let observed = try XCTUnwrap(
       withForeignSkip.conversations.first { $0.id == "0" }?.messages.first?.recipients.first)
@@ -2047,20 +2054,22 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let fixture = try Fixture()
     defer { fixture.remove() }
     var projection = OverlayChannelDelivery.Bus()
-    projection.consume(fixture.seal(1))
+    for row in fixture.take(1) { projection.consume(row) }
     let coordinate = try XCTUnwrap(projection.receiptCoordinates().first)
     let owner = coordinate.0
     let delivery = coordinate.1
     XCTAssertEqual(coordinate.2, false, "No acceptance receipt observed yet")
+    let messageID = try XCTUnwrap(projection.receiptDirectories().first)
     var receipt = fixture.recipient()
     receipt.merge([
-      "schema": "codescribe.message-receipt.v1", "kind": "read",
-      "message_id": String(repeating: "a", count: 24), "delivery_id": String(repeating: "0", count: 24),
-      "read_at": "2026-10-26T08:00:00Z",
+      "schema": "codescribe.message-receipt.v1", "kind": "read", "message_id": messageID,
+      "delivery_id": String(repeating: "0", count: 24), "read_at": "2026-10-26T08:00:00Z",
     ]) { _, new in new }
-    projection.observeMessageReceipt(receipt, owner: owner, delivery: delivery)
+    projection.observeReceipts(
+      [(name: delivery + ".read.json", row: receipt)], messageID: messageID)
     XCTAssertEqual(
-      projection.receiptCoordinates().count, 1, "A receipt of another delivery cannot settle polling")
+      projection.receiptCoordinates().count, 1,
+      "A receipt of another delivery cannot settle polling")
     projection.observeAcceptance([
       "schema": "codescribe.native-queue.receipt.v1", "disposition": "provider_accepted",
       "delivery_id": delivery, "lease_id": owner.leaseID,
@@ -2073,9 +2082,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "An accepted recipient tells the reader to poll only the acknowledgment")
     // Recreate monitor-only delivery: there is no provider-acceptance file.
     projection = OverlayChannelDelivery.Bus()
-    projection.consume(fixture.seal(1))
+    for row in fixture.take(1) { projection.consume(row) }
     receipt["delivery_id"] = delivery
-    projection.observeMessageReceipt(receipt, owner: owner, delivery: delivery)
+    projection.observeReceipts(
+      [(name: delivery + ".read.json", row: receipt)], messageID: messageID)
     let question = try XCTUnwrap(
       projection.conversations(busPath: fixture.bus.path).flatMap(\.messages).first {
         $0.recipients.contains { $0.owner.id == owner.id && $0.deliveryID == delivery }
@@ -2083,10 +2093,12 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertEqual(question.recipients.first?.acknowledged, true)
     XCTAssertEqual(question.recipients.first?.accepted, false)
     XCTAssertTrue(projection.receiptCoordinates().isEmpty)
+    XCTAssertTrue(projection.receiptDirectories().isEmpty, "A settled directory leaves the poll")
     let restored = try JSONDecoder().decode(
       OverlayChannelDelivery.Bus.self, from: JSONEncoder().encode(projection))
     var resumed = restored
     XCTAssertTrue(resumed.receiptCoordinates().isEmpty, "Restart must retain settled receipt")
+    XCTAssertTrue(resumed.receiptDirectories().isEmpty)
   }
 
   func testMetadataReplacementWithSameSizeAndTimestampChangesTheDisplayedOwner() async throws {
@@ -4723,7 +4735,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     /// One receipt file as `record_message_receipt` writes it.
     func receipt(
       _ kind: String, messageID: String, delivery: String, owner: [String: Any],
-      bus: String? = nil, delivery named: String? = nil
+      bus: String? = nil, named: String? = nil
     ) throws {
       let directory = root.appendingPathComponent("runtime/receipts/\(messageID)")
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -4736,8 +4748,12 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
       switch kind {
       case "read": row["read_at"] = "2026-10-26T08:00:00Z"
-      case "delivered": row["wake"] = "on"; row["at"] = "2026-10-26T07:59:00Z"
-      default: row["policy"] = "off"; row["at"] = "2026-10-26T07:59:00Z"
+      case "delivered":
+        row["wake"] = "on"
+        row["at"] = "2026-10-26T07:59:00Z"
+      default:
+        row["policy"] = "off"
+        row["at"] = "2026-10-26T07:59:00Z"
       }
       try write(row, to: directory.appendingPathComponent("\(delivery).\(kind).json"))
     }
