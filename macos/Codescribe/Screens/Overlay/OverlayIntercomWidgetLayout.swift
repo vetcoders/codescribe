@@ -200,16 +200,11 @@ struct IntercomContentMetrics: Equatable {
     let composerWidth = inputWidth + 3 * ComposerControlMetrics.hitTargetSize
       + 3 * ComposerControlMetrics.intercomSpacing
       + 2 * ComposerControlMetrics.intercomHorizontalPadding + 24
-    // OverlayConversationView.messageBubble: route + two prose lines + footer,
-    // 5pt between its three sections and 12pt padding on either edge. The list
-    // adds 8pt top/bottom and its 1pt bottom anchor. Optional taller content
-    // still scrolls; these are the normal renderer's minimum reading costs.
-    let minimumConversationHeight = 2 * lineHeight + 2 * metadataLine + 2 * 5 + 2 * 12
-      + 2 * 8 + 1
     return IntercomCompactPreviewLayout(
       height: available,
       showsComposer: width >= composerWidth
-        && available >= minimumConversationHeight + composerHeight,
+        && available >= OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
+          + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
   }
 
@@ -267,6 +262,17 @@ enum OverlayIntercomWidgetLayout {
 
   static func contextStripHeight(scale: CGFloat) -> CGFloat {
     ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale))) + 6
+  }
+
+  /// OverlayConversationView.messageBubble: route + two prose lines + footer,
+  /// 5pt between its three sections and 12pt padding on either edge. The list
+  /// adds 8pt top/bottom and its 1pt bottom anchor. Optional taller content
+  /// still scrolls; this is the same reading budget used by the input gate.
+  static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
+    let layout = NSLayoutManager()
+    let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
+    let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+    return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 1
   }
 
   /// One corner for the header, every row and a mini fiszka. A radius of half
