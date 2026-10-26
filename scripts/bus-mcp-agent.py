@@ -436,7 +436,8 @@ class AgentMailbox:
                 result = self.mailbox.run(flags, timeout=90 if speech else 30)
                 if speech:
                     receipt.update(self.voice_receipt(result))
-                elif result.get("kind") == "peer_message_published" and result.get("sender") == self.scope.name:
+                elif (result.get("kind") == "peer_message_published" and isinstance(result.get("sender"), str)
+                        and result["sender"].casefold() == self.scope.name_key):
                     receipt.update(state="published", message_id=result["message_id"],
                         recipients=[{k: v for k, v in row.items() if k in ("peer", "channel", "follower_live")}
                                     for row in result["recipients"]])
