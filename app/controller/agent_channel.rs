@@ -3311,7 +3311,10 @@ mod tests {
         let heard = controller
             .seal_channels_silent_for(opened + limit + Duration::from_secs(2), &shared_bus, 5)
             .await;
-        assert!(heard.is_empty(), "heard voice runs on the utterance silence");
+        assert!(
+            heard.is_empty(),
+            "heard voice runs on the utterance silence"
+        );
         assert!(controller.agent_channel_snapshot(3).await.is_some());
         let rows = sealed_rows(&bus_rows(&channel_bus));
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -3804,11 +3807,17 @@ mod tests {
             .seal_channels_silent_for(playing, &shared_bus, 5)
             .await;
         crate::audio::tts_duck::clear();
-        assert!(during.is_empty(), "a reply playing into the channel is not silence");
+        assert!(
+            during.is_empty(),
+            "a reply playing into the channel is not silence"
+        );
         let after = controller
             .seal_channels_silent_for(playing + limit - Duration::from_secs(1), &shared_bus, 5)
             .await;
-        assert!(after.is_empty(), "the limit counts again from the end of the playback");
+        assert!(
+            after.is_empty(),
+            "the limit counts again from the end of the playback"
+        );
         let sealed = controller
             .seal_channels_silent_for(playing + limit, &shared_bus, 5)
             .await;
