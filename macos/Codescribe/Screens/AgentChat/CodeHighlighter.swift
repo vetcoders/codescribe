@@ -76,20 +76,24 @@ enum CodeTheme {
     .hljs-deletion,.hljs-link{color:#D97757}
     """
 
-  // Light Aqua. Selected when the window is not dark. Reuses darker CSColor
-  // tokens so tokens read on a light fill —
-  // olive #5F6B3E, terracottaDeep #C98A6E, textFaintAlt #5D6058, ink #090A0D,
-  // plus the olive mid-tone #7F8C5E for literals and the grey #82857F for
-  // comments — rather than inventing a new palette the design system does not carry.
+  // Light Aqua. Selected when the window is not dark. Code sits on the white
+  // `codeWell`, so every rung below clears 5.7:1 there. Hexes are written
+  // plainly because hljs reads CSS; the token rungs use their light values:
+  //   base, doctag/strong       → near-black ink   #090A0D
+  //   keyword/type/title/link   → terracottaText   #75351E
+  //   number/literal/meta       → amberLight       #644200
+  //   comment/quote             → secondaryInk     #666666 (black 60 % on white)
+  //   string/addition           → olive            #5F6B3E
+  //   attr/operator             → attribute grey   #5D6058
   static let lightCSS = """
     .hljs{color:#090A0D}
-    .hljs-comment,.hljs-quote{color:#82857F}
-    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#C98A6E}
+    .hljs-comment,.hljs-quote{color:#666666}
+    .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#75351E}
     .hljs-string,.hljs-symbol,.hljs-bullet,.hljs-regexp,.hljs-char.escape_,.hljs-addition{color:#5F6B3E}
-    .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:#7F8C5E}
-    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#C98A6E}
+    .hljs-number,.hljs-literal,.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string,.hljs-meta-keyword{color:#644200}
+    .hljs-title,.hljs-title.class_,.hljs-title.function_,.hljs-section,.hljs-selector-id,.hljs-selector-class{color:#75351E}
     .hljs-attr,.hljs-attribute,.hljs-property,.hljs-variable,.hljs-template-variable,.hljs-params,.hljs-operator,.hljs-punctuation,.hljs-subst,.hljs-selector-attr,.hljs-selector-pseudo{color:#5D6058}
     .hljs-doctag,.hljs-strong{color:#090A0D}
-    .hljs-deletion,.hljs-link{color:#C98A6E}
+    .hljs-deletion,.hljs-link{color:#75351E}
     """
 }
