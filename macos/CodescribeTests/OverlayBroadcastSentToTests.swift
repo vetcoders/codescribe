@@ -405,6 +405,95 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []))
   }
 
+  /// `cs-bus --ack` writes `read.json`, then the app appends its own
+  /// `codescribe.agent-ack.v1` row; a poll can consume that row before it
+  /// lists the directory. The row paints the copy's row, but only the file
+  /// counts and only the file ends the listing.
+  func testTheAgentAckRowPaintsTheRowButOnlyTheReadFileCountsAndSettles() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(fixture.typedCopy(Self.typedID, to: "lena", sentTo: ["lena"]))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
+    let initial = try await reader.readSnapshot()
+    let copies = try deliveries(of: try conversationMessage("typed:" + Self.typedID, in: initial))
+    let delivery = try XCTUnwrap(copies["lena"])
+    try fixture.receipt("delivered", messageID: Self.typedID, delivery: delivery, owner: "lena")
+    var snapshot = initial
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    var message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
+    XCTAssertEqual(message.recipients.first?.queued, true)
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 1, unreceipted: []))
+    // The app's row arrives first: the row reads "Read", the count does not.
+    var ack = try XCTUnwrap(fixture.owners["lena"])
+    ack["schema"] = "codescribe.agent-ack.v1"
+    ack["delivery_id"] = delivery
+    try fixture.append(ack)
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
+    XCTAssertEqual(message.recipients.first?.acknowledged, true, "the row is a hint for the row")
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 1, unreceipted: []),
+      "the count waits for the file")
+    // The file is composed on the next listing, so the row never hid it.
+    try fixture.receipt("read", messageID: Self.typedID, delivery: delivery, owner: "lena")
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    message = try conversationMessage("typed:" + Self.typedID, in: snapshot)
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 1, unreceipted: []))
+    XCTAssertEqual(message.receipt?.deliveries.map(\.state), [.read])
+    // Settled by the file: nothing of this message is probed any more.
+    let settledProbes = await reader.receiptProbes
+    for _ in 0..<3 { _ = try await reader.readSnapshot() }
+    let idleProbes = await reader.receiptProbes
+    XCTAssertEqual(idleProbes, settledProbes, "a settled directory leaves the poll")
+  }
+
+  /// An agent text to channel 0 whose copy on this bus froze no recipients:
+  /// the directory is still listed, its files are the states of the admitted
+  /// agents, and the listing ends only when every one of them is read or
+  /// skipped (and the reply was heard).
+  func testAMessageWithoutCopiesOnThisBusStillListsItsDirectoryUntilTheListSettles()
+    async throws
+  {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.append(
+      fixture.agentText(Self.agentTextID, from: "igor", to: [], sentTo: ["lena", "kuba"]))
+    let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
+    let initial = try await reader.readSnapshot()
+    var message = try conversationMessage("reply:" + Self.agentTextID, in: initial)
+    XCTAssertTrue(message.recipients.isEmpty, "no copy on this bus")
+    let lena = OverlayConversationReach(name: "lena", channel: "3")
+    let kuba = OverlayConversationReach(name: "kuba", channel: "5")
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: [lena, kuba]))
+    let lenaDelivery = String(repeating: "1", count: 24)
+    let kubaDelivery = String(repeating: "2", count: 24)
+    try fixture.receipt(
+      "delivered", messageID: Self.agentTextID, delivery: lenaDelivery, owner: "lena")
+    try fixture.receipt("read", messageID: Self.agentTextID, delivery: lenaDelivery, owner: "lena")
+    var snapshot = initial
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    message = try conversationMessage("reply:" + Self.agentTextID, in: snapshot)
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: [kuba]),
+      "the files are the states even without a copy here")
+    try fixture.receipt(
+      "skipped", messageID: Self.agentTextID, delivery: kubaDelivery, owner: "kuba")
+    try fixture.playback(
+      Self.agentTextID, ticket: String(repeating: "f", count: 24), state: "spoken", by: "igor")
+    for _ in 0..<2 { snapshot = try await reader.readSnapshot() }
+    message = try conversationMessage("reply:" + Self.agentTextID, in: snapshot)
+    XCTAssertEqual(
+      message.readReceipt, OverlayReadReceipt(read: 1, denominator: 1, unreceipted: []))
+    XCTAssertEqual(message.playback?.state, "spoken")
+    let settledProbes = await reader.receiptProbes
+    for _ in 0..<3 { _ = try await reader.readSnapshot() }
+    let idleProbes = await reader.receiptProbes
+    XCTAssertEqual(idleProbes, settledProbes, "read, skipped and heard: nothing left to list")
+  }
+
   func testACopyWithoutAStampKeepsTheCopiesAsTheDenominatorUntilSentJSON() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }

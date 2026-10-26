@@ -166,9 +166,16 @@ does not need changes to these owners.
   one owner per state, no fallback to the previous files. A write in
   progress (`.*.tmp`) is never read; a file whose name and content disagree
   marks nothing. A delivery without a `message_id` (a plain dictation seal)
-  has no directory and stays "Addressed". Provider acceptance (`wakeups/`)
-  and a lease's `pending` still mark a copy's row as accepted or queued; they
-  are not receipts and never count.
+  has no directory and stays "Addressed". Provider acceptance (`wakeups/`),
+  a lease's `pending` and the app's own `codescribe.agent-ack.v1` bus row
+  still mark a copy's row as accepted, queued or read; they are hints ahead
+  of the files, not receipts: they never count and never end the listing,
+  which stops only when the composed files show every copy and every listed
+  agent as `read` or `skipped`. The poll costs at most 128 directory
+  `fstatat` calls plus 128 wakeup `fstatat` calls per tick and bus. A reply's
+  "Spoken" label is decided by one ticket arbiter (`applyPlayback`) for the
+  bus's playback rows and the receipt files alike; the composed `spoken` is
+  an input to that arbiter, not a second label.
 - "Read X/Y" counts the agents the message was sent to, not its copies.
   Y is the contract's denominator (`OverlayConversationMessage.readReceipt`):
   the admitted list (`target.recipients` on the copy, outranked by

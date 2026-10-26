@@ -329,11 +329,11 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     }
 
     /// The `runtime/receipts/<message_id>/` directories still worth a
-    /// listing: a message with a copy neither read nor skipped, a channel-0
-    /// text whose admitted list is unknown (its `sent.json` may still be
-    /// written), or one of the newest 32 replies whose playback is unknown or
-    /// running. A rotating window of 128 per poll; a settled directory leaves
-    /// it, whichever bus's copy the files settled.
+    /// listing: a message whose files do not yet settle it (`settled(_:)`),
+    /// a channel-0 text whose admitted list is unknown (its `sent.json` may
+    /// still be written), or one of the newest 32 replies whose playback is
+    /// unknown or running. A rotating window of 128 per poll; a settled
+    /// directory leaves it, whichever bus's copy the files settled.
     mutating func receiptDirectories() -> [String] {
       var unheard: Set<String> = []
       for id in messageOrder.reversed() where unheard.count < 32 {
@@ -348,9 +348,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         guard let message = messages[id], let directory = receiptDirectory(of: message),
           !seen.contains(directory)
         else { continue }
-        let settled = message.recipients.allSatisfy {
-          $0.acknowledged || $0.broadcastSkipped == true
-        }
+        let settled = Self.settled(message)
         let listed =
           message.sentTo != nil || message.sourceChannel != "0"
           || !(id.hasPrefix("typed:") || id.hasPrefix("reply:"))
@@ -366,6 +364,30 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       let count = min(result.count, 128)
       directoryCursor = (start + count) % result.count
       return (0..<count).map { result[(start + $0) % result.count] }
+    }
+
+    /// Whether the receipt files leave nothing to wait for: the directory
+    /// was composed, every copy's delivery is `read` or `skipped` there, and
+    /// so is every agent on the list (the admitted list, else the copies).
+    /// Only the files settle a message: the `agent-ack` bus row and the
+    /// provider's acceptance paint a copy's row but never stop the listing,
+    /// so a `read` file written just before that row is still composed. A
+    /// message never composed is never settled; a message without copies on
+    /// this bus is settled by its list alone.
+    private static func settled(_ message: OverlayConversationMessage) -> Bool {
+      guard let receipt = message.receipt else { return false }
+      var states: [String: OverlayReceiptState.State] = [:]
+      for delivery in receipt.deliveries {
+        if let id = delivery.deliveryID, states[id] == nil { states[id] = delivery.state }
+      }
+      func done(_ state: OverlayReceiptState.State?) -> Bool {
+        state == .read || state == .skipped
+      }
+      guard message.recipients.allSatisfy({ done($0.deliveryID.flatMap { states[$0] }) }) else {
+        return false
+      }
+      return receipt.summary(listed: message.sentTo ?? message.recipients.map(\.reach))
+        .recipients.allSatisfy { done($0.state) }
     }
 
     /// The `runtime/receipts/<message_id>/` directory of a message: its
@@ -795,6 +817,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         for owner in captureRecipients[session] ?? [] { historicalOwners[owner.id] = owner }
         return
       }
+      // The app's own row after an agent's ACK: it paints the copy's row and
+      // the channel glyph as read, a hint ahead of the next directory
+      // listing. It is not a receipt: the count and the end of the listing
+      // come from the `read` file alone (`receiptDirectories`, `settled`).
       if schema == "codescribe.agent-ack.v1",
         let delivery = row["delivery_id"] as? String,
         let owner = OverlayConversationOwner(row: row)
@@ -1719,7 +1745,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     let present = Set(recipients.map(\.reach))
     return OverlayReadReceipt(
       read: summary.read, denominator: summary.denominator,
-      unreceipted: summary.recipients.compactMap { recipient in
+      unreceipted: summary.recipients.compactMap { recipient -> OverlayConversationReach? in
         recipient.state == .noReceipt ? recipient.reach : nil
       }.filter { !present.contains($0) })
   }

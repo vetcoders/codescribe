@@ -589,8 +589,8 @@ actor OverlayChannelDeliveryReader {
     // Every bus composes the same directory; a copy that listed it later in
     // this tick carries the fuller state.
     if let receipt = other.receipt,
-      result.receipt.map({ $0.deliveries.count + $0.playbacks.count })
-        ?? -1 < receipt.deliveries.count + receipt.playbacks.count
+      (result.receipt.map { $0.deliveries.count + $0.playbacks.count } ?? -1)
+        < receipt.deliveries.count + receipt.playbacks.count
     {
       result.receipt = receipt
     }
