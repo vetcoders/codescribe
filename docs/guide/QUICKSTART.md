@@ -58,8 +58,7 @@ Recommended: configure Codescribe in the **Settings** window.
   - Pick a **Formatting level** for Dictation in **Creator** (Off keeps the raw transcript)
 - **Hotkeys**
   - Dictation: hold a modifier (default: `Fn/Globe`)
-  - Formatting: double‑tap `Left Option`
-  - Assistive (Agent): double‑tap `Right Option`
+  - Formatting and Assistive (Agent) have no shortcut: start them from the menu bar (see below)
 - **AI & Prompts**
   - Configure providers for **Formatting** and **Assistive**
   - API keys are stored in macOS Keychain
@@ -72,11 +71,11 @@ Power-user overrides still exist via `~/.codescribe/.env`, but you should not ne
 
 ### Recording Modes
 
-| Mode                  | Shortcut                    | What It Does                                 |
-| --------------------- | --------------------------- | -------------------------------------------- |
-| **Dictation**         | Hold your Dictation binding | Fast dictation, auto‑paste (AI optional)     |
-| **Formatting**        | Double‑tap `Left Option`    | Hands‑free + AI formatting pass (auto‑paste) |
-| **Assistive (Agent)** | Double‑tap `Right Option`   | Agent chat overlay (auto‑paste OFF)          |
+| Mode                  | Shortcut                                        | What It Does                                 |
+| --------------------- | ----------------------------------------------- | -------------------------------------------- |
+| **Dictation**         | Hold your Dictation binding                     | Fast dictation, auto‑paste (AI optional)     |
+| **Formatting**        | Menu bar **Start transcription** or the overlay | Hands‑free + AI formatting pass (auto‑paste) |
+| **Assistive (Agent)** | Menu bar with **Start in Agent mode** on        | Agent chat (auto‑paste OFF)                  |
 
 ### Visual Feedback
 

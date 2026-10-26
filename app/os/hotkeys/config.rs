@@ -35,14 +35,10 @@ const BIND_HOLD_CTRL_SHIFT: u16 = 4;
 const BIND_HOLD_CTRL_CMD: u16 = 5;
 /// Packed slot: double-tap Control.
 const BIND_DOUBLE_CTRL: u16 = 6;
-/// Packed slot: double-tap left Option.
-const BIND_DOUBLE_LEFT_OPTION: u16 = 7;
-/// Packed slot: double-tap right Option.
-const BIND_DOUBLE_RIGHT_OPTION: u16 = 8;
 
-/// Boot packing: Fn hold → dictation, left Option double → formatting, right Option → assistive.
+/// Boot packing: Fn hold → dictation; Formatting and the agent have no gesture.
 const DEFAULT_MODE_BINDINGS_ENCODED: u16 =
-    BIND_HOLD_FN | (BIND_DOUBLE_LEFT_OPTION << 4) | (BIND_DOUBLE_RIGHT_OPTION << 8);
+    BIND_HOLD_FN | (BIND_DISABLED << 4) | (BIND_DISABLED << 8);
 
 // --- Global Mode Binding Contract ---
 // Runtime source of truth: mode -> binding mapping, not legacy hold/toggle fields.
@@ -76,8 +72,6 @@ fn encode_shortcut_binding(binding: ShortcutBinding) -> u16 {
         ShortcutBinding::HoldCtrlShift => BIND_HOLD_CTRL_SHIFT,
         ShortcutBinding::HoldCtrlCmd => BIND_HOLD_CTRL_CMD,
         ShortcutBinding::DoubleCtrl => BIND_DOUBLE_CTRL,
-        ShortcutBinding::DoubleLeftOption => BIND_DOUBLE_LEFT_OPTION,
-        ShortcutBinding::DoubleRightOption => BIND_DOUBLE_RIGHT_OPTION,
     }
 }
 
@@ -92,8 +86,6 @@ fn decode_shortcut_binding(value: u16) -> ShortcutBinding {
         BIND_HOLD_CTRL_SHIFT => ShortcutBinding::HoldCtrlShift,
         BIND_HOLD_CTRL_CMD => ShortcutBinding::HoldCtrlCmd,
         BIND_DOUBLE_CTRL => ShortcutBinding::DoubleCtrl,
-        BIND_DOUBLE_LEFT_OPTION => ShortcutBinding::DoubleLeftOption,
-        BIND_DOUBLE_RIGHT_OPTION => ShortcutBinding::DoubleRightOption,
         _ => ShortcutBinding::Disabled,
     }
 }
@@ -584,7 +576,7 @@ mod tests {
 
         let bindings = ModeHotkeyBindings {
             dictation: ShortcutBinding::HoldCtrlAlt,
-            formatting: ShortcutBinding::DoubleLeftOption,
+            formatting: ShortcutBinding::Disabled,
             assistive: ShortcutBinding::Disabled,
         };
         set_mode_hotkey_bindings(bindings);
@@ -662,8 +654,8 @@ mod tests {
         let runtime = HotkeyRuntimeConfig {
             mode_bindings: ModeHotkeyBindings {
                 dictation: ShortcutBinding::HoldFn,
-                formatting: ShortcutBinding::DoubleLeftOption,
-                assistive: ShortcutBinding::DoubleRightOption,
+                formatting: ShortcutBinding::Disabled,
+                assistive: ShortcutBinding::Disabled,
             },
             hold_exclusive: false,
             hold_arm_modifier: HoldArmModifier::Shift,
@@ -762,8 +754,8 @@ mod tests {
         let runtime = HotkeyRuntimeConfig {
             mode_bindings: ModeHotkeyBindings {
                 dictation: ShortcutBinding::HoldFn,
-                formatting: ShortcutBinding::DoubleLeftOption,
-                assistive: ShortcutBinding::DoubleRightOption,
+                formatting: ShortcutBinding::Disabled,
+                assistive: ShortcutBinding::Disabled,
             },
             hold_exclusive: false,
             hold_arm_modifier: HoldArmModifier::Shift,

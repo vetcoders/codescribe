@@ -58,11 +58,11 @@ That's it. You're transcribing.
 
 ## Recording Modes at a Glance
 
-| Hotkey                                  | Mode                  | What It Does                                |
-| --------------------------------------- | --------------------- | ------------------------------------------- |
-| Hold `Fn/Globe` (default; configurable) | **Dictation**         | Fast dictation (AI optional), auto‑paste ON |
-| Double‑tap `Left Option`                | **Formatting**        | AI formatting pass, auto‑paste ON           |
-| Double‑tap `Right Option`               | **Assistive (Agent)** | Agent chat (uses selection when available)  |
+| Hotkey                                          | Mode                  | What It Does                                |
+| ----------------------------------------------- | --------------------- | ------------------------------------------- |
+| Hold `Fn/Globe` (default; configurable)         | **Dictation**         | Fast dictation (AI optional), auto‑paste ON |
+| Menu bar **Start transcription** or the overlay | **Formatting**        | AI formatting pass, auto‑paste ON           |
+| Menu bar with **Start in Agent mode** on        | **Assistive (Agent)** | Agent chat (uses selection when available)  |
 
 ---
 

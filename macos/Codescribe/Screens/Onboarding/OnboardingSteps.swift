@@ -200,32 +200,30 @@ struct LanguageStepView: View {
   }
 }
 
-// MARK: - Hotkey mode (recording-trigger preset)
+// MARK: - Hotkeys (how recording starts)
 
+/// How recording starts. One description instead of presets: Formatting and
+/// the Agent start from the menu bar, and the step writes no binding.
 struct HotkeyModeStepView: View {
   @ObservedObject var model: OnboardingViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      VStack(spacing: 10) {
-        ForEach(HotkeyModeChoice.allCases, id: \.self) { mode in
-          OnboardingChoiceCard(
-            title: mode.label(locale: model.interfaceLocale),
-            subtitle: mode.summary(locale: model.interfaceLocale),
-            isSelected: model.hotkeyMode == mode
-          ) { model.selectHotkeyMode(mode) }
+      OnboardingCard {
+        VStack(alignment: .leading, spacing: 6) {
+          Text(model.dictationStartLine)
+            .font(.body.weight(.semibold))
+          Text(
+            String(
+              localized: LocalizedStringResource(
+                "Start Formatting and the Agent from the menu bar.",
+                locale: model.interfaceLocale,
+                comment: "Setup step: Formatting and the Agent have no keyboard shortcut"))
+          )
+          .font(.callout)
+          .foregroundStyle(CSColor.secondaryInk)
+          .fixedSize(horizontal: false, vertical: true)
         }
-      }
-
-      if model.hotkeyBindingsAreCustom {
-        OnboardingStepNote(
-          text: String(
-            localized: LocalizedStringResource(
-              "Your custom shortcuts stay as they are unless you pick a preset.",
-              locale: model.interfaceLocale,
-              comment:
-                "Setup step footnote; tells the user rerunning the wizard will not overwrite shortcuts they customized"
-            )))
       }
 
       OnboardingStepNote(
@@ -532,7 +530,9 @@ struct LocalModelStepView: View {
             localized: LocalizedStringResource(
               "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
               locale: model.interfaceLocale,
-              comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
+              comment:
+                "Explain the current local-model requirement without attributing an engine choice to the user"
+            ))
         )
         .font(.callout)
         .foregroundStyle(CSColor.secondaryInk)
@@ -951,7 +951,9 @@ struct DoneStepView: View {
               localized: LocalizedStringResource(
                 "Local transcription needs this model. Install it to finish setup, or choose a cloud engine in Settings.",
                 locale: model.interfaceLocale,
-                comment: "Explain the current local-model requirement without attributing an engine choice to the user"))
+                comment:
+                  "Explain the current local-model requirement without attributing an engine choice to the user"
+              ))
           )
           .font(.callout)
           .foregroundStyle(CSColor.secondaryInk)

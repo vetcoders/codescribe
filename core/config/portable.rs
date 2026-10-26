@@ -125,6 +125,15 @@ pub fn import_portable_dry_run(profile_json: &str, current: &UserSettings) -> Re
     let mut settings_value = profile.settings.clone();
     // Expand `~` for preview so the operator sees machine-local paths.
     expand_portable_paths(&mut settings_value);
+    // A profile from before a gesture was retired still imports: the retired
+    // binding becomes `disabled`, as the settings repair does at launch.
+    let mut retired = super::repair::RepairReceipt::default();
+    super::repair::retire_shortcut_bindings(&mut settings_value, "/mode_bindings", &mut retired);
+    for action in retired.actions {
+        if let super::repair::RepairAction::FieldReset { field, from, to } = action {
+            migrations.push(format!("{field}: {from} → {to}"));
+        }
+    }
 
     let mut conflicts = Vec::new();
     let current_value = serde_json::to_value(current).unwrap_or(Value::Null);
@@ -610,6 +619,25 @@ mod tests {
 
         // File untouched.
         assert_eq!(fs::read_to_string(&settings_path).unwrap(), "{}");
+    }
+
+    /// A profile exported before the agent gesture was retired still imports:
+    /// the retired binding becomes `disabled` and the plan names the change.
+    #[test]
+    fn import_rebinds_a_retired_gesture_to_disabled() {
+        let profile = export_portable(&UserSettings::default()).unwrap();
+        let mut json = serde_json::to_value(&profile).unwrap();
+        json["settings"]["mode_bindings"] = serde_json::json!([
+            { "mode": "assistive", "binding": "double_right_option" }
+        ]);
+        let plan = import_portable_dry_run(&json.to_string(), &UserSettings::default())
+            .expect("a retired gesture must not refuse the profile");
+        assert_eq!(
+            plan.settings_preview["mode_bindings"][0]["binding"],
+            "disabled"
+        );
+        let migrations = plan.migrations.join("; ");
+        assert!(migrations.contains("double_right_option"), "{migrations}");
     }
 
     /// Long alphanumeric tokens collapse to length-only redaction markers.

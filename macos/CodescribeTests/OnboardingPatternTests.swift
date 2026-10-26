@@ -52,7 +52,8 @@ final class OnboardingPatternTests: XCTestCase {
     let frame = try XCTUnwrap(sources["OnboardingView.swift"])
     let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
     XCTAssertTrue(frame.contains("minWidth: 680"))
-    XCTAssertLessThan(OnboardingView.columnMaxWidth, 680 - 2 * 28, "the column fits the minimum window")
+    XCTAssertLessThan(
+      OnboardingView.columnMaxWidth, 680 - 2 * 28, "the column fits the minimum window")
     XCTAssertTrue(frame.contains("columnMaxWidth"))
     XCTAssertFalse(steps.contains("struct OnboardingStepHeader"), "no per-step headline component")
     // The slogans that competed with the step's own question are gone.
@@ -67,15 +68,6 @@ final class OnboardingPatternTests: XCTestCase {
         XCTAssertFalse(source.contains("\"\(retired)\""), "\(name) still says: \(retired)")
       }
     }
-  }
-
-  /// Step 7: the hybrid preset no longer repeats itself under its own name;
-  /// the other two keep their gesture instructions.
-  func testHybridPresetHasNoSummaryAndTheOthersKeepTheirs() {
-    let locale = Locale(identifier: "en")
-    XCTAssertNil(HotkeyModeChoice.both.summary(locale: locale))
-    XCTAssertNotNil(HotkeyModeChoice.hold.summary(locale: locale))
-    XCTAssertNotNil(HotkeyModeChoice.toggle.summary(locale: locale))
   }
 
   /// Steps 2, 3, 8 and 9: captions that match what the code does.

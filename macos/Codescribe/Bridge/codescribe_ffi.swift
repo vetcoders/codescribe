@@ -3021,8 +3021,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route: the overlay and the right-Option
-     * double tap. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route, started from the menu bar or the
+     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -3991,8 +3991,8 @@ open func start()async throws   {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route: the overlay and the right-Option
-     * double tap. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route, started from the menu bar or the
+     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -19057,8 +19057,6 @@ public enum CsShortcutBinding: Equatable, Hashable {
     case holdCtrlShift
     case holdCtrlCmd
     case doubleCtrl
-    case doubleLeftOption
-    case doubleRightOption
 
 
 
@@ -19091,10 +19089,6 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
         case 6: return .holdCtrlCmd
 
         case 7: return .doubleCtrl
-
-        case 8: return .doubleLeftOption
-
-        case 9: return .doubleRightOption
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19130,14 +19124,6 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
 
         case .doubleCtrl:
             writeInt(&buf, Int32(7))
-
-
-        case .doubleLeftOption:
-            writeInt(&buf, Int32(8))
-
-
-        case .doubleRightOption:
-            writeInt(&buf, Int32(9))
 
         }
     }
@@ -22067,7 +22053,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 1112) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 36343) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_composer_turn_recording() != 48894) {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Shortcuts: Formatting and the Agent no longer start from Option. The right Option double-tap started the Agent on its own three times, once into a 55-minute take of room audio, because the detector cannot tell an Option tap from Option with a click, a scroll or a synthetic event; Option now only types characters, and one key keeps one role. Start Formatting from the menu bar's **Start transcription** or the overlay, and the Agent with **Start in Agent mode** on. Settings › Shortcuts shows where each one starts in place of its gesture picker, and the setup wizard's hotkey step explains this instead of offering presets. A `settings.json` or an exported profile that still names `double_left_option` or `double_right_option` is switched to `disabled` at launch or import, with a backup and a repair notice; every other setting is kept.
+
 ### Fixed
 
 - `scripts/build-app.sh` names the signing identity by its SHA-1 hash from the default keychain search list and refuses a headless build it cannot sign. The unlocked state of the login keychain belongs to the security session that unlocked it, so a build over SSH sees it locked even while the graphical session of the same Mac has it open, and no keychain timeout or `security set-key-partition-list` changes that; such a build used to run xcodebuild for minutes and then die in `codesign` with `errSecInternalComponent`. The script now probes the default keychain before the first build stage when `SSH_CONNECTION` or `SSH_TTY` is set and the identity is not ad-hoc, stops at once with the way out (run the same lane inside the graphical session, `open -a Terminal <lane>.command`, a locked screen is fine), keeps the same stop as a second line in the sign helper, never signs ad-hoc behind the caller, and logs `signing from keychain: <default keychain>`. There is no separate build keychain; `CODESCRIBE_CODESIGN_IDENTITY` still overrides the identity and `-` keeps ad-hoc signing unchanged.

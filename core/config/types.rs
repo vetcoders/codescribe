@@ -209,8 +209,6 @@ pub enum ShortcutBinding {
     HoldCtrlShift,
     HoldCtrlCmd,
     DoubleCtrl,
-    DoubleLeftOption,
-    DoubleRightOption,
 }
 
 impl ShortcutBinding {
@@ -225,8 +223,6 @@ impl ShortcutBinding {
             Self::HoldCtrlShift => "Hold Ctrl+Shift",
             Self::HoldCtrlCmd => "Hold Ctrl+Command",
             Self::DoubleCtrl => "Double-tap Ctrl",
-            Self::DoubleLeftOption => "Double-tap Left Option",
-            Self::DoubleRightOption => "Double-tap Right Option",
         }
     }
 
@@ -242,8 +238,6 @@ impl ShortcutBinding {
             Self::HoldCtrlShift => "hold_ctrl_shift",
             Self::HoldCtrlCmd => "hold_ctrl_cmd",
             Self::DoubleCtrl => "double_ctrl",
-            Self::DoubleLeftOption => "double_left_option",
-            Self::DoubleRightOption => "double_right_option",
         }
     }
 }
@@ -262,8 +256,6 @@ impl FromStr for ShortcutBinding {
             "hold_ctrl_shift" => Ok(Self::HoldCtrlShift),
             "hold_ctrl_cmd" => Ok(Self::HoldCtrlCmd),
             "double_ctrl" => Ok(Self::DoubleCtrl),
-            "double_left_option" => Ok(Self::DoubleLeftOption),
-            "double_right_option" => Ok(Self::DoubleRightOption),
             _ => Err(format!("Unknown ShortcutBinding: {}", s)),
         }
     }
@@ -556,8 +548,10 @@ pub struct ModeBinding {
 
 /// Whether the hotkey detector can start `mode` from `binding`.
 ///
-/// Disabled binds nothing. Holds and double-tap Ctrl dictate; the two Option
-/// gestures belong to Formatting and Assistive respectively.
+/// Disabled binds nothing. Holds and double-tap Ctrl dictate. Formatting and
+/// Assistive have no gesture: Option types characters, and one key keeps one
+/// role (founder decision 2026-10-26), so both start from the menu bar or the
+/// overlay.
 pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool {
     match binding {
         ShortcutBinding::Disabled => true,
@@ -567,13 +561,11 @@ pub fn mode_binding_reachable(mode: WorkMode, binding: ShortcutBinding) -> bool 
         | ShortcutBinding::HoldCtrlShift
         | ShortcutBinding::HoldCtrlCmd
         | ShortcutBinding::DoubleCtrl => mode == WorkMode::Dictation,
-        ShortcutBinding::DoubleLeftOption => mode == WorkMode::Formatting,
-        ShortcutBinding::DoubleRightOption => mode == WorkMode::Assistive,
     }
 }
 
-/// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
-/// left Option formats, double-tap right Option talks to the agent.
+/// Factory-default gesture for each work mode: Fn-hold dictates; Formatting
+/// and the agent have no gesture.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
     vec![
         ModeBinding {
@@ -582,11 +574,11 @@ pub fn default_mode_bindings() -> Vec<ModeBinding> {
         },
         ModeBinding {
             mode: WorkMode::Formatting,
-            binding: ShortcutBinding::DoubleLeftOption,
+            binding: ShortcutBinding::Disabled,
         },
         ModeBinding {
             mode: WorkMode::Assistive,
-            binding: ShortcutBinding::DoubleRightOption,
+            binding: ShortcutBinding::Disabled,
         },
     ]
 }
@@ -1495,10 +1487,8 @@ mod tests {
 mod recording_keys_tests {
     use super::*;
 
-    const DEFAULT_REST: [ShortcutBinding; 2] = [
-        ShortcutBinding::DoubleLeftOption,
-        ShortcutBinding::DoubleRightOption,
-    ];
+    const DEFAULT_REST: [ShortcutBinding; 2] =
+        [ShortcutBinding::Disabled, ShortcutBinding::Disabled];
 
     fn keys(dictation: ShortcutBinding, fn_tap: bool) -> RecordingKeys {
         RecordingKeys::from_bindings([dictation, DEFAULT_REST[0], DEFAULT_REST[1]], fn_tap)

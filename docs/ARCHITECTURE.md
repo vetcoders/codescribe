@@ -294,7 +294,7 @@ match (hotkey, flags) {
     (Hold, arm_mod)   => assistive = true,   // configured arm (Shift default / Cmd alt)
     // Act-on-selection is a delivery lane when a selection is present (W10-D),
     // not a separate dead Cmd chord.
-    (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
+    (Toggle, force_ai)=> force_ai = true,    // Formatting start (menu bar / overlay): force AI
     (Toggle, _)       => /* respects FORMATTING_LEVEL */
 }
 ```
