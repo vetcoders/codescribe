@@ -279,7 +279,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   }
 
   fileprivate func reconcile(
-    chips: [OverlayChannelMapChip], scale: CGFloat, persistTier: Bool = true
+    chips: [OverlayChannelMapChip], scale: CGFloat, persistTier: Bool = true,
+    materializeRetiredInstances: Bool = true
   ) {
     #if DEBUG
       reconciliationRequests += 1
@@ -303,7 +304,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     if retiredInstances || clearedHistoryOpening {
       saveDesktop()
     }
-    if retiredInstances {
+    if retiredInstances && materializeRetiredInstances {
       materializeInstances()
     }
     // Each conversation has one visible placement: in the group or detached.
@@ -1129,7 +1130,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @discardableResult
   private func detachIntoInstance(
     _ identity: OverlayIntercomCardIdentity, frame: CGRect? = nil,
-    preservingDragSurface: Bool = false
+    preservingDragSurface: Bool = false, settle: Bool = true
   ) -> UUID? {
     // Broadcast and the human inbox have stable conversations without an
     // agent owner; no other ownerless identity may detach.
@@ -1183,8 +1184,10 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       instancePanels[id] = panel
     }
     presentation.close(identity)
-    saveDesktop()
-    materializeInstances()
+    if settle {
+      saveDesktop()
+      materializeInstances()
+    }
     return id
   }
 
@@ -1256,7 +1259,8 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
         panels: panels(), group: group,
         headerHeight: OverlayIntercomWidgetLayout.controlHeight(scale: effectiveScale),
         palette: OverlayAppearancePalette.resolve(
-          NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light))
+          NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? ColorScheme.dark : ColorScheme.light))
     }
     resizePreview?.update(frame: frame)
   }
@@ -1269,6 +1273,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     groupResizeGesture = nil
     let refresh = reconcileAfterResize
     reconcileAfterResize = false
+    var updateGroup = refresh
+    var updateInstances = refresh
+    var persist = false
     if !cancelled, visible, !invalidated, let target {
       switch target {
       case .group(let frame, let count, let headerHeight):
@@ -1286,23 +1293,33 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
           UserDefaults.standard.set(
             [Double(header.frame.minX), Double(header.frame.minY)], forKey: Self.positionKey)
         }
-        reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale, persistTier: false)
-        saveDesktop()
+        updateGroup = true
+        updateInstances = true
+        persist = true
       case .instance(let id, let frame):
         if let index = desktop.instances.firstIndex(where: { $0.id == id && !$0.closed && !$0.minimized }) {
           desktop.instances[index].frame = frame
-          materializeInstances()
-          saveDesktop()
+          updateInstances = true
+          persist = true
         }
       case .expanded(let identity, let frame):
         if cards[identity] != nil, presentation.expanded.contains(identity) {
-          _ = detachIntoInstance(identity, frame: frame)
-          reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+          _ = detachIntoInstance(identity, frame: frame, settle: false)
+          updateGroup = true
+          updateInstances = true
+          persist = true
         }
       }
-    } else if refresh, visible, !invalidated {
-      reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
-      materializeInstances()
+    }
+    if visible, !invalidated {
+      if updateGroup {
+        reconcile(
+          chips: state.channelMapLayoutModel.agents, scale: effectiveScale,
+          persistTier: false, materializeRetiredInstances: false)
+        updateInstances = true
+      }
+      if updateInstances { materializeInstances() }
+      if persist { saveDesktop() }
     }
     preview.finish(animated: !cancelled && visible)
     noteGroupedActivity()
@@ -3086,9 +3103,16 @@ private func intercomConversation(state: OverlayState, digit: String) -> Overlay
 func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   -> [OverlayIntercomCardIdentity]
 {
-  chips.map {
+  let current = OverlayChannelStatusView.currentConversations(
+    conversations: state.conversations, archivedOwners: state.archivedAgentOwners,
+    hudStates: state.channelHudStates)
+  var byChannel: [String: OverlayConversation] = [:]
+  for conversation in current where byChannel[conversation.channel] == nil {
+    byChannel[conversation.channel] = conversation
+  }
+  return chips.map {
     OverlayIntercomCardIdentity(
-      digit: $0.digit, conversation: intercomConversation(state: state, digit: $0.digit),
+      digit: $0.digit, conversation: byChannel[$0.digit],
       name: $0.name)
   }
 }
