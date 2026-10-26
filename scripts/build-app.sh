@@ -553,98 +553,40 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
 # dies on every rebuild. An explicit "-" selects it for isolated test builds;
 # otherwise prefer a real identity whenever the caller did not specify one.
-# The keychain that holds the identity. Over SSH the login keychain is locked
-# and codesign without --keychain searches only the user search list (login),
-# so a headless build fails with errSecInternalComponent even when the same
-# certificate sits in a build keychain. Prefer the build keychain (pensieve's
-# by default) whenever its file exists, and unlock it in THIS process: an
-# unlock made in another security session does not carry over, and a keychain
-# auto-locks after idle time while xcodebuild runs for minutes, so the unlock
-# is re-asserted right before every real-identity signature. The password
-# comes from an owner-only (0600/0400) file; `security unlock-keychain -p`
-# never prompts, so this is safe over SSH. Name the identity by SHA-1 hash:
-# the same certificate may also live in login, and a name would be ambiguous
-# across keychains.
-BUILD_KEYCHAIN="${PENSIEVE_BUILD_KEYCHAIN:-$HOME/Library/Keychains/pensieve-build.keychain-db}"
-BUILD_KEYCHAIN_PASSWORD_FILE="${PENSIEVE_BUILD_KEYCHAIN_PASSWORD_FILE:-${KEYS_DIR:-$HOME/.keys}/.build-keychain-pw}"
-# 0 unlocked (or no build keychain file), 1 no readable password file, 2 the
-# stored password did not unlock the keychain, 3 the password file is not an
-# owner-only secret.
-unlock_build_keychain() {
-  local metadata owner mode password
-  [ -f "$BUILD_KEYCHAIN" ] || return 0
-  [ -r "$BUILD_KEYCHAIN_PASSWORD_FILE" ] || return 1
-  metadata="$(/usr/bin/stat -L -f '%u %Lp' "$BUILD_KEYCHAIN_PASSWORD_FILE" 2>/dev/null)" || return 3
-  owner="${metadata%% *}"; mode="${metadata##* }"
-  [ -n "$owner" ] && [ -n "$mode" ] || return 3
-  [ "$owner" = "$(/usr/bin/id -u)" ] || return 3
-  [ $(( 8#$mode & 8#077 )) -eq 0 ] || return 3
-  password="$(head -n1 "$BUILD_KEYCHAIN_PASSWORD_FILE")" || return 1
-  [ -n "$password" ] || return 1
-  security unlock-keychain -p "$password" "$BUILD_KEYCHAIN" >/dev/null 2>&1 || return 2
-  return 0
-}
-build_keychain_unlock_reason() {
-  case "$1" in
-    1) echo "no readable password file at $BUILD_KEYCHAIN_PASSWORD_FILE" ;;
-    2) echo "the password in $BUILD_KEYCHAIN_PASSWORD_FILE does not unlock it" ;;
-    3) echo "$BUILD_KEYCHAIN_PASSWORD_FILE must be owned by you with mode 0600 (or 0400)" ;;
-    *) echo "unlock failed with status $1" ;;
-  esac
-}
-SIGN_KEYCHAIN="${CODESCRIBE_CODESIGN_KEYCHAIN:-}"
-# An explicit ad-hoc identity ("-") never signs from a keychain, so it must
-# not stop on one it would never use.
-if [ -z "$SIGN_KEYCHAIN" ] && [ "${CODESCRIBE_CODESIGN_IDENTITY:-}" != "-" ] && [ -f "$BUILD_KEYCHAIN" ]; then
-  unlock_rc=0
-  unlock_build_keychain || unlock_rc=$?
-  if [ "$unlock_rc" -eq 0 ]; then
-    SIGN_KEYCHAIN="$BUILD_KEYCHAIN"
-  elif [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; then
-    # Over SSH the login keychain is locked too, so falling back to it only
-    # moves the failure into codesign minutes from now. Stop here instead.
-    echo "error: build keychain $BUILD_KEYCHAIN exists but cannot be unlocked in this SSH session: $(build_keychain_unlock_reason "$unlock_rc")" >&2
-    echo "       store its password as the first line of $BUILD_KEYCHAIN_PASSWORD_FILE (chmod 600), set PENSIEVE_BUILD_KEYCHAIN_PASSWORD_FILE to such a file, point CODESCRIBE_CODESIGN_KEYCHAIN at an unlocked keychain, or run the build in the graphical session" >&2
-    exit 1
-  else
-    echo "    build keychain $BUILD_KEYCHAIN present but not unlocked ($(build_keychain_unlock_reason "$unlock_rc")); signing from the login keychain of this graphical session"
-  fi
-fi
+# The identity comes from the default keychain search list (login), named by
+# its SHA-1 hash so the choice is unambiguous even when a certificate is
+# installed twice. There is no separate build keychain. A build driven over
+# SSH signs from the same login keychain, which works only after a one-time
+# setup in the graphical session of the build host: the keychain must not
+# auto-lock (`security set-keychain-settings` without a timeout) and the
+# codesign partition must be allowed to use the key without a SecurityAgent
+# prompt (`security set-key-partition-list`). Without that, codesign over SSH
+# dies with errSecInternalComponent; the sign helper below recognises that
+# and stops with the recipe instead of signing ad-hoc behind the caller.
+SIGN_KEYCHAIN="$(security default-keychain 2>/dev/null | sed -n 's/^ *"\(.*\)" *$/\1/p' | head -1)"
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
-if [ -z "$SIGN_ID" ] && [ -n "$SIGN_KEYCHAIN" ]; then
-  SIGN_ID="$(security find-identity -v -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
-  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)"
-  if [ -z "$SIGN_ID" ]; then
-    # A keychain without a usable identity does not select itself; say so.
-    echo "    keychain $SIGN_KEYCHAIN holds no Developer ID or Apple Development identity; resolving the identity from the keychain search list"
-    SIGN_KEYCHAIN=""
-  fi
-fi
 if [ -z "$SIGN_ID" ]; then
-  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
-  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
+  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)"
 fi
-# Every real-identity codesign below goes through here so the keychain choice
-# is made once and the build keychain is unlocked again right before each
-# signature (it may have auto-locked during xcodebuild). Ad-hoc signing never
-# needs a keychain.
+# Every real-identity codesign below goes through here. Ad-hoc signing never
+# needs a keychain and never comes here.
 sign() {
-  if [ -n "$SIGN_KEYCHAIN" ]; then
-    if [ "$SIGN_KEYCHAIN" = "$BUILD_KEYCHAIN" ]; then
-      local rc=0
-      unlock_build_keychain || rc=$?
-      if [ "$rc" -ne 0 ]; then
-        echo "error: build keychain $BUILD_KEYCHAIN locked again before signing: $(build_keychain_unlock_reason "$rc")" >&2
-        exit 1
-      fi
-    fi
-    codesign --keychain "$SIGN_KEYCHAIN" "$@"
-  else
-    codesign "$@"
+  local out rc=0
+  out="$(codesign "$@" 2>&1)" || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" >&2
+  if [ "$rc" -ne 0 ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && printf '%s' "$out" | grep -q "errSecInternalComponent"; then
+    echo "error: codesign could not use the signing key from ${SIGN_KEYCHAIN:-the login keychain} in this SSH session (errSecInternalComponent)." >&2
+    echo "       One-time setup, in the graphical session of this Mac (asks for the login password, stores nothing):" >&2
+    echo "         security set-keychain-settings ~/Library/Keychains/login.keychain-db" >&2
+    echo "         security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db" >&2
+    echo "       Then run this build again. It does not fall back to ad-hoc signing." >&2
+    exit 1
   fi
+  return "$rc"
 }
-if [ -n "$SIGN_KEYCHAIN" ]; then
-  echo "    signing from keychain: $SIGN_KEYCHAIN"
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  echo "    signing from keychain: ${SIGN_KEYCHAIN:-<default>}"
 fi
 # Entitlements for the hardened-runtime signing path below. Same default path
 # as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from

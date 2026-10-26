@@ -67,29 +67,16 @@ manual re-sign. The ad-hoc path (`CODESCRIBE_CODESIGN_IDENTITY=-`) stays
 plain: ad-hoc plus hardened runtime breaks local TCC grants and is not meant
 to be notarized.
 
-On a build host reached over SSH the login keychain is locked, and `codesign`
-without `--keychain` searches only the user search list, so a headless
-`make app PROFILE=local-release` used to fail on the publisher's signature
-with `errSecInternalComponent` even when the same certificate sat in a build
-keychain. `scripts/build-app.sh` therefore signs from the build keychain and
-unlocks it itself: `CODESCRIBE_CODESIGN_KEYCHAIN` names the keychain
-explicitly; otherwise `PENSIEVE_BUILD_KEYCHAIN` or
-`~/Library/Keychains/pensieve-build.keychain-db` is used when the file exists.
-The script unlocks it in its own process with the first line of
-`PENSIEVE_BUILD_KEYCHAIN_PASSWORD_FILE` (default `~/.keys/.build-keychain-pw`,
-which must be owned by you with mode 0600 or 0400), and again right before
-every real-identity `codesign`, because a keychain auto-locks while xcodebuild
-runs and an unlock made in another session does not carry over. The identity
-is then named by its SHA-1 hash from that keychain, because the same
-certificate may also live in login where a name would be ambiguous, every
-real-identity `codesign` call receives `--keychain`, and the build log says
-`signing from keychain: <path>`. When the build keychain exists but cannot be
-unlocked, an SSH build stops at once with the reason and the remedy (store
-the password in that file, point the variables elsewhere, or build in the
-graphical session) rather than failing minutes later in `codesign`; a
-graphical session says so and signs from the login keychain. With
-`CODESCRIBE_CODESIGN_IDENTITY=-`, or without a build keychain file, the
-resolution above is unchanged; ad-hoc signing never involves a keychain.
+The signing identity comes from the default keychain search list (login),
+named by its SHA-1 hash so the choice is unambiguous even when a certificate
+is installed twice; `CODESCRIBE_CODESIGN_IDENTITY` overrides it and `-` keeps
+ad-hoc signing. There is no separate build keychain. A build driven over SSH
+(`make app PROFILE=local-release` on the build host) signs from the same
+login keychain, which works only after a one-time setup in that Mac's
+graphical session: `security set-keychain-settings ~/Library/Keychains/login.keychain-db` (no auto-lock) and `security set-key-partition-list -S apple-tool:,apple:,codesign: -s ~/Library/Keychains/login.keychain-db` (asks for the login password, stores
+nothing). Without it `codesign` over SSH fails with `errSecInternalComponent`;
+`scripts/build-app.sh` recognises that, prints the recipe and stops rather
+than signing ad-hoc behind the caller. The build log says `signing from keychain: <default keychain>` before the first real-identity signature.
 
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
