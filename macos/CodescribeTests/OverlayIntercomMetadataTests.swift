@@ -88,6 +88,8 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       )
       .environment(\.csTextScale, scale)
       .environment(\.colorScheme, .dark)
+      // OCR measures the settled metadata, not the card's spring entrance.
+      .environment(\.accessibilityReduceMotion, true)
       .symbolEffectsRemoved()
       .transaction { $0.disablesAnimations = true }
       .background(OverlayAppearancePalette.dark.desktopBackground.color))
