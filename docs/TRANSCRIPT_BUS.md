@@ -1459,15 +1459,15 @@ automatic playback, on both vendors). The published reply, its receipts and
 the overlay keep the written text; only the synthesis request and the speech
 cache key use the spoken one. The rules are fixed, not a model:
 
-| Written | Spoken |
-| --- | --- |
-| `hania → as:` opening a message | `Hania:` |
-| `0.17.0 → 0.18.0`, `2/4`, `basia/2`, `12:51–12:53` | `0.17.0 na 0.18.0`, `2 z 4`, `basia, kanał 2`, `12:51 do 12:53` |
-| a path or file (`~/x/raport-20261026.md`, `core/llm/speech.rs`, `bus-demux.py:120`) | its last name (`raport`, `speech`, `bus demux`) |
-| `runtime/receipts`, `sent_to`, `--takeover` | `runtime receipts`, `sent to`, `takeover` |
-| a commit or lease hash (7–64 hex with a digit), `+g…` build suffix, URL | nothing |
-| `11:53:17Z` | local time without seconds (`12:53` in winter in Poland) |
-| backticks, `*`, list marks, fence lines, `∪`, `§`, `<name>` | dropped or said as a word |
+| Written                                                                             | Spoken                                                          |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `hania → as:` opening a message                                                     | `Hania:`                                                        |
+| `0.17.0 → 0.18.0`, `2/4`, `basia/2`, `12:51–12:53`                                  | `0.17.0 na 0.18.0`, `2 z 4`, `basia, kanał 2`, `12:51 do 12:53` |
+| a path or file (`~/x/raport-20261026.md`, `core/llm/speech.rs`, `bus-demux.py:120`) | its last name (`raport`, `speech`, `bus demux`)                 |
+| `runtime/receipts`, `sent_to`, `--takeover`                                         | `runtime receipts`, `sent to`, `takeover`                       |
+| a commit or lease hash (7–64 hex with a digit), `+g…` build suffix, URL             | nothing                                                         |
+| `11:53:17Z`                                                                         | local time without seconds (`12:53` in winter in Poland)        |
+| backticks, `*`, list marks, fence lines, `∪`, `§`, `<name>`                         | dropped or said as a word                                       |
 
 A line break becomes a sentence end. A text the rules leave unchanged is sent
 byte for byte, so plain sentences keep their cached recordings; a text with
