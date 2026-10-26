@@ -161,7 +161,20 @@ struct OverlayRecordingControls: View {
   private var recordingButton: some View {
     Button(action: activateRecordingControl) {
       Group {
-        if recordingLight?.pulses == true && animates && !reduceMotion {
+        if recordingLight?.spins == true {
+          if animates && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+              recordingGlyph.overlay {
+                processingArc(
+                  rotation: OverlayRecordingLight.arcRotation(
+                    at: timeline.date.timeIntervalSinceReferenceDate))
+              }
+            }
+          } else {
+            // Still motion: the open arc keeps the shape that tells it from red.
+            recordingGlyph.overlay { processingArc(rotation: 0) }
+          }
+        } else if recordingLight?.pulses == true && animates && !reduceMotion {
           TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             recordingGlyph.opacity(
               OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
@@ -203,6 +216,20 @@ struct OverlayRecordingControls: View {
   private var recordingGlyph: some View {
     OverlayMicrophoneGlyph(symbol: recordingSymbol, tint: recordingTint)
   }
+
+  /// Thin open arc over the light's circle, drawn while the take transcribes.
+  private func processingArc(rotation: Double) -> some View {
+    Circle()
+      .inset(by: Self.processingArcWidth / 2)
+      .trim(from: 0, to: OverlayRecordingLight.arcFraction)
+      .stroke(
+        recordingTint, style: StrokeStyle(lineWidth: Self.processingArcWidth, lineCap: .round))
+      .rotationEffect(.radians(rotation))
+      .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
+      .accessibilityHidden(true)
+  }
+
+  static let processingArcWidth: CGFloat = 1.5
 
   private var previewButton: some View {
     Button(action: togglePreview) {
