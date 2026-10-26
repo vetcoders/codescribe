@@ -461,7 +461,7 @@ default = "auto"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture. Also the language of the app's xAI spoken replies; auto speaks pl there."
 
 [vars.WHISPER_ADAPTIVE_BUFFER]
 default = "false"
@@ -1823,6 +1823,13 @@ type = "string"
 reload = "restart"
 category = "agent"
 description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+
+[vars.CS_SAY_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "agent"
+description = "Language of every xAI reply the helper speaks (cs-say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
 
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""

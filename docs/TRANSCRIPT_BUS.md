@@ -1436,6 +1436,17 @@ owner; it contains no reply text and is not a transcript archive. Stream
 replacement, missing source, incomplete chunks and foreign ownership refuse
 playback. Existing `voices.json` profiles and the synthesis lane stay authoritative.
 
+The helper's xAI speech is sent in a bare language code, never `auto`:
+`CS_SAY_LANGUAGE`, `pl` when unset, cut to its first part (`pl-PL` and
+`pl_PL` are `pl`) and accepted only as `pl` or `en`; any other value speaks
+`pl` with one warning. With `auto`, xAI takes a sentence that opens with a
+short Polish word (W, U, A, I) for English and spells it ("W nocy" read as
+"double-u nocy"), and a long reply goes out one sentence per request; xAI
+also reads `pl-PL` or `polish` like `auto`. The speech cache key includes the
+language, so recordings made with `auto` are never replayed. The helper does
+not read the app's settings; the app sends its configured speech language
+the same way (`docs/STT_CONTRACT.md`, `tts_language`).
+
 A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
 The existing stable `runtime/playback.lock` serializes all speakers, including
 channel 0. The microphone guard always starts from the canonical global

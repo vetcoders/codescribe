@@ -6729,6 +6729,35 @@ class _PCMStreamFeed:
                 self.thread.join()
 
 
+# The language xAI speech is sent in. xAI honours only a bare two-letter code:
+# with `auto` it takes a sentence opening with a short Polish word ("W", "U",
+# "A", "I") for English and spells it ("W nocy" read as "double-u nocy"), and
+# `pl-PL`, `pl_PL` or `polish` are accepted but read like `auto` (measured
+# 2026-10-26: 30 of 168 wrong with `auto`, 0 of 168 with `pl`). The app sends
+# the configured speech language the same way (`core/llm/speech.rs`,
+# `tts_language`); both accept the languages the app knows, `pl` and `en`.
+DEFAULT_TTS_LANGUAGE = "pl"
+TTS_LANGUAGES = ("pl", "en")
+
+
+def tts_language(environ: Any = None) -> str:
+    """The bare code xAI speech is sent in: `CS_SAY_LANGUAGE`, else `pl`.
+
+    The helper does not read the app's settings, so the language is its own
+    variable. A region or variant is cut to the first part (`pl-PL` and
+    `pl_PL` are `pl`), case is ignored, and anything that is not `pl` or
+    `en` afterwards (`auto`, `polish`, `xx`) speaks `pl` with one warning.
+    """
+    raw = str((os.environ if environ is None else environ).get("CS_SAY_LANGUAGE") or "").strip()
+    if not raw:
+        return DEFAULT_TTS_LANGUAGE
+    code = re.split(r"[-_]", raw, maxsplit=1)[0].lower()
+    if code in TTS_LANGUAGES:
+        return code
+    sys.stderr.write(f"bus-demux: CS_SAY_LANGUAGE {raw!r} is not pl or en; speaking {DEFAULT_TTS_LANGUAGE}\n")
+    return DEFAULT_TTS_LANGUAGE
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -6740,6 +6769,8 @@ def _speak_xai(
 ) -> tuple[bool, str | None, str | None]:
     """Same TTS lane as the app (api.x.ai/v1/tts, PCM s16le 24 kHz), played via afplay."""
     import urllib.request
+
+    language = tts_language()
 
     def synthesize(chunk: str = text, on_pcm: Any = None) -> tuple[bytes | None, str | None, str | None]:
         try:
@@ -6756,7 +6787,7 @@ def _speak_xai(
             {
                 "text": chunk,
                 "voice_id": voice,
-                "language": "auto",
+                "language": language,
                 "output_format": {"codec": "pcm", "sample_rate": 24000},
                 "speed": speed,
             }
@@ -6772,7 +6803,9 @@ def _speak_xai(
         )
         return _tts_exchange(request, on_pcm) if on_pcm is not None else _tts_exchange(request)
 
-    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": "auto", "text": text}
+    # The cache key carries the language, so recordings made with `auto` are
+    # never served for a request in `pl`.
+    fields = {"provider": "xai", "voice": voice, "speed": float(speed), "language": language, "text": text}
     if len(text) >= 40:
         stream = SpeechPCMStream(speech_sentence_chunks(text), lambda chunk, emit_pcm: _cached_speech(
             playback_root, {**fields, "text": chunk}, lambda: synthesize(chunk, emit_pcm),

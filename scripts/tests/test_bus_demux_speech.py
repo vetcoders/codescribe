@@ -228,7 +228,7 @@ class SpeechCacheTests(unittest.TestCase):
             self.assertEqual(DEMUX._speak_xai("hello", "leo", 1.0), (True, None, None))
         self.assertEqual(self.opener.open.call_count, 1)
         key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
-                                      "language": "auto", "text": "hello"})
+                                      "language": DEMUX.DEFAULT_TTS_LANGUAGE, "text": "hello"})
         self.assertEqual(self.cached(), [f"{key}.json", f"{key}.wav"])
         directory = DEMUX.bridge_home() / "speech"
         sidecar = json.loads((directory / f"{key}.json").read_text())
@@ -246,7 +246,7 @@ class SpeechCacheTests(unittest.TestCase):
                 text = f"kept after {reason}"
                 self.assertEqual(DEMUX._speak_xai(text, "leo", 1.0), (False, "refused", reason))
                 key = DEMUX.speech_cache_key({"provider": "xai", "voice": "leo", "speed": 1.0,
-                                              "language": "auto", "text": text})
+                                              "language": DEMUX.DEFAULT_TTS_LANGUAGE, "text": text})
                 self.assertIn(f"{key}.wav", self.cached())
                 self.assertIn(f"{key}.json", self.cached())
         calls = self.opener.open.call_count
@@ -2132,6 +2132,98 @@ class StreamingSpeechTests(unittest.TestCase):
         self.assertEqual((code, terminal['state']), (5, 'failed'))
         self.assertFalse(terminal['spoken'])
         self.assertEqual(len(audio), 1)
+
+
+
+class TtsLanguageTests(unittest.TestCase):
+    """xAI speech is sent in a bare language code, never `auto`, and keyed by it."""
+
+    setUp = SpeechTransportTests.setUp
+    cached = SpeechCacheTests.cached
+
+    def environment(self, value=None):
+        changes = {} if value is None else {"CS_SAY_LANGUAGE": value}
+        scoped = patch.dict(os.environ, changes)
+        scoped.start()
+        self.addCleanup(scoped.stop)
+        if value is None:
+            os.environ.pop("CS_SAY_LANGUAGE", None)
+
+    def sent_language(self):
+        request = self.opener.open.call_args.args[0]
+        return json.loads(request.data)["language"]
+
+    def test_the_code_is_cut_to_its_first_part_and_only_pl_or_en_pass(self):
+        for raw, code, warned in (
+            (None, "pl", False), ("", "pl", False), ("pl", "pl", False), ("PL", "pl", False),
+            ("pl-PL", "pl", False), ("pl_PL", "pl", False), ("en", "en", False), ("en-GB", "en", False),
+            ("auto", "pl", True), ("polish", "pl", True), ("xx", "pl", True),
+        ):
+            with self.subTest(raw=raw):
+                environ = {} if raw is None else {"CS_SAY_LANGUAGE": raw}
+                error = io.StringIO()
+                with contextlib.redirect_stderr(error):
+                    self.assertEqual(DEMUX.tts_language(environ), code)
+                self.assertEqual("CS_SAY_LANGUAGE" in error.getvalue(), warned)
+        self.assertEqual(DEMUX.DEFAULT_TTS_LANGUAGE, "pl")
+
+    def test_the_request_carries_the_language_and_never_auto(self):
+        for raw, code in ((None, "pl"), ("pl-PL", "pl"), ("en", "en")):
+            with self.subTest(raw=raw):
+                self.environment(raw)
+                self.opener.open.reset_mock()
+                self.assertEqual(DEMUX._speak_xai(f"W nocy było cicho ({raw}).", "eve", 1.25),
+                                 (True, None, None))
+                self.assertEqual(self.sent_language(), code)
+                key = DEMUX.speech_cache_key({"provider": "xai", "voice": "eve", "speed": 1.25,
+                                              "language": code, "text": f"W nocy było cicho ({raw})."})
+                self.assertIn(f"{key}.wav", self.cached())
+
+    def test_a_recording_made_with_auto_is_not_served_after_the_change(self):
+        self.environment()
+        text = "W nocy było cicho."
+        legacy = {"provider": "xai", "voice": "eve", "speed": 1.25, "language": "auto", "text": text}
+        DEMUX._cached_speech(None, legacy, lambda: (b"\x01\x00", None, None))
+        self.assertIn(f"{DEMUX.speech_cache_key(legacy)}.wav", self.cached())
+        self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, 1, "the auto recording is a different key")
+        self.assertEqual(self.sent_language(), "pl")
+        self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(self.opener.open.call_count, 1, "the pl recording is reused")
+
+    def test_long_text_sends_every_sentence_in_the_language(self):
+        # Bounded on purpose: the streaming path loops on `read1()`, and the
+        # transport mock of `setUp` never returns an empty read, so this test
+        # replaces the exchange with a finite one and drains the stream itself.
+        self.environment()
+        text = ("W nocy było cicho i nikt nie pisał na kanale zero. "
+                "U nas jest cicho, bramka na Sztudio skończyła się dobrze. "
+                "A co dalej, to powie nam Monika po odsłuchu.")
+        self.assertEqual(len(DEMUX.speech_sentence_chunks(text)), 3)
+        languages = []
+
+        def exchange(request, on_pcm=None):
+            if len(languages) >= 10:
+                raise AssertionError("more requests than sentences")
+            languages.append(json.loads(request.data)["language"])
+            return b"\x01\x00", None, None
+
+        def play(stream, **_):
+            stream.start()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                kind, value = stream.queue.get(timeout=5)
+                if kind == "done":
+                    return value
+            stream.cancelled.set()
+            raise AssertionError("the sentence stream did not finish")
+
+        with patch.object(DEMUX, "_tts_exchange", side_effect=exchange), \
+                patch.object(DEMUX, "_play_pcm_24k", side_effect=play):
+            self.assertEqual(DEMUX._speak_xai(text, "eve", 1.25), (True, None, None))
+        self.assertEqual(len(languages), 3, "one request per sentence")
+        self.assertEqual(set(languages), {"pl"})
+        self.opener.open.assert_not_called()
 
 
 if __name__ == "__main__":
