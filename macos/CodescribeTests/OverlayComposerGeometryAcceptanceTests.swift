@@ -6,6 +6,47 @@ import XCTest
 
 @MainActor
 final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
+  func testSharedAudioStateReviewImagesWithoutMotion() throws {
+    for dark in [false, true] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      let host = NSHostingView(
+        rootView: HStack(spacing: 24) {
+          ForEach(0..<3) { state in
+            VStack {
+              Text(verbatim: ["Unavailable", "Off", "On"][state]).font(.system(size: 11))
+                .foregroundStyle(palette.primaryText.color)
+              OverlayAgentAudioControls(
+                open: state == 2, muted: state == 0 ? nil : state == 1,
+                microphoneEnabled: state != 0, playbackEnabled: state != 0,
+                palette: palette,
+                onMicrophone: { XCTFail("Review must not start capture") },
+                onPlayback: { XCTFail("Review must not change playback") },
+                chrome: false, diameter: 30)
+            }.frame(width: 90)
+          }
+        }
+        .padding(12).background(palette.desktopBackground.color)
+        .environment(\.accessibilityReduceMotion, true)
+        .environment(\.colorScheme, dark ? .dark : .light))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 360, height: 100)
+      let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.04))
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let image = NSImage(size: host.bounds.size)
+      image.addRepresentation(bitmap)
+      let attachment = XCTAttachment(image: image)
+      attachment.name = "Shared-audio-\(dark ? "dark" : "light")-without-motion"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+    }
+  }
+
   func testControlStateReviewImagesInBothAppearances() throws {
     for dark in [false, true] {
       for state in ["unavailable", "off", "linked", "recording", "sending"] {
