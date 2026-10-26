@@ -501,7 +501,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       text: nameWidth + digitWidth, scale: textScale.scale)
   }
 
-  fileprivate func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
+  func setInstanceMinimized(_ id: UUID, _ minimized: Bool) {
     guard visible, let index = desktop.instances.firstIndex(where: { $0.id == id }) else { return }
     desktop.instances[index].minimized = minimized
     if minimized { instancePanels[id]?.resignKey() }

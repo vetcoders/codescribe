@@ -144,6 +144,38 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     rig.verifyTruth()
   }
 
+  func testMinimizedTitleReachesNativeDragSurfaceAndClickRestores() throws {
+    let rig = try Rig()
+    defer { rig.cleanup() }
+    XCTAssertTrue(rig.controller.detachForDrag(rig.identity))
+    rig.controller.finishInstanceDrag(at: CGPoint(x: -10000, y: -10000))
+    let id = try XCTUnwrap(rig.instance).id
+    rig.controller.setInstanceMinimized(id, true)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    let root = try XCTUnwrap(rig.card.contentView)
+    root.layoutSubtreeIfNeeded()
+    XCTAssertTrue(try XCTUnwrap(rig.instance).minimized)
+    // The title occupies the free leading part of this 500pt bar. The old
+    // restore Button consumed this point before the native drag view saw it.
+    let point = NSPoint(x: 80, y: root.bounds.midY)
+    let drag = try XCTUnwrap(root.hitTest(point) as? OverlayIntercomDragView)
+    XCTAssertEqual(drag.minimumDragDistance, 4)
+    let location = root.convert(point, to: nil)
+    let topRight = CGPoint(x: rig.card.frame.maxX, y: rig.card.frame.maxY)
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+      let event = try XCTUnwrap(NSEvent.mouseEvent(
+        with: type, location: location, modifierFlags: [], timestamp: 0,
+        windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
+        clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+      if type == .leftMouseDown { drag.mouseDown(with: event) }
+      else { drag.mouseUp(with: event) }
+    }
+    XCTAssertFalse(try XCTUnwrap(rig.instance).minimized)
+    XCTAssertEqual(rig.card.frame.maxX, topRight.x, accuracy: 1)
+    XCTAssertEqual(rig.card.frame.maxY, topRight.y, accuracy: 1)
+    rig.verifyTruth()
+  }
+
   func testHidingOrClosingDuringDragCannotResurrectAWindow() throws {
     for close in [false, true] {
       let rig = try Rig()
