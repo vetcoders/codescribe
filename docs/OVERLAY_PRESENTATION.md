@@ -196,6 +196,16 @@ does not need changes to these owners.
   new state goes to those directories first and then to both, and the
   overlay computes only the formula: no roster, no policies, no reach of its
   own. `delivered` with `wake: null` is history the helper backfilled.
+- A fresh message moves the selected conversation only when it is addressed
+  to the Founder: an agent's reply on its own channel, or a message to her
+  inbox (channel 10). A message between agents (`sourceChannel` 1–9) and any
+  reply that sits in channel 0 never move the selection or show the panel;
+  they stay unread in their conversations (Founder decision 2026-10-26).
+  `OverlayState.followNewlyReceivedReply` is the one owner of that choice. It
+  writes one `overlay-presentation` line per choice:
+  `conversation.auto_selected` (reply ids, owner, source, the channel before
+  and after) or `conversation.auto_skipped` (reply id, owner, source, reason,
+  the channel that stays), with ids and channels only, never the text.
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.

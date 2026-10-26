@@ -4,7 +4,8 @@ import os
 /// Ledger of the overlay's presentation morphs: every mode request, every
 /// window-frame write that belongs to one, every frame the window actually
 /// painted on the way, and the hands that can write the frame around a morph
-/// (placement, content growth, a user resize or drag).
+/// (placement, content growth, a user resize or drag). It also names every
+/// automatic conversation choice a fresh message made or was refused.
 ///
 /// Forensics first (Maciej, 2026-10-14: mini ⇄ midi ⇄ expanded sometimes
 /// jumps). A jump is attributed from this ledger — which writer, which frame,
@@ -45,6 +46,11 @@ final class OverlayPresentationTrace {
     case userResizeEnded = "user.resize.ended"
     /// The panel rebuilt its cursor rectangles after a morph.
     case cursorRectsInvalidated = "cursor.invalidated"
+    /// A fresh message to the Founder selected its owner's conversation.
+    /// The note names ids and channels, never the message text.
+    case conversationAutoSelected = "conversation.auto_selected"
+    /// A fresh agent-to-agent or channel-0 message left the selection alone.
+    case conversationAutoSkipped = "conversation.auto_skipped"
   }
 
   struct Entry: Equatable {
