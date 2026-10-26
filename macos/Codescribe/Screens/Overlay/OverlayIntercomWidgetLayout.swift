@@ -162,18 +162,17 @@ struct IntercomContentMetrics: Equatable {
     let scale = nameFontSize / 11
     if compactPreviewLayout(width: width, cardHeight: cardHeight) != nil { return .preview }
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return .header }
-    let contextFont = NSFont.systemFont(ofSize: 10 * scale)
-    let contextHeight = ceil(NSLayoutManager().defaultLineHeight(for: contextFont)) + 6
-    if cardHeight >= OverlayIntercomWidgetLayout.controlHeight(scale: scale) + contextHeight {
+    // The context now shares the name's header block instead of consuming
+    // another row below it. A small height increase reveals that second line.
+    if cardHeight > OverlayIntercomWidgetLayout.controlHeight(scale: scale) + 2 * scale {
       return .context
     }
     return .header
   }
 
-  /// Identity and execution context come first. Only a later, larger card
-  /// has room for a route label and at least three lines of rich message body.
-  /// The shared composer appears only when its bounded editor and controls
-  /// also fit, leaving that reading area above the pinned input.
+  /// Header metadata consumes no separate body row. A short scrollable preview
+  /// appears first; the compact shared input follows as soon as its actual
+  /// controls and a line of conversation fit. There is no arbitrary card-size gate.
   func compactPreviewLayout(width: CGFloat, cardHeight: CGFloat) -> IntercomCompactPreviewLayout? {
     guard tier(width: width, cardHeight: cardHeight) != .icon else { return nil }
     let scale = nameFontSize / 11
@@ -183,21 +182,25 @@ struct IntercomContentMetrics: Equatable {
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
-    let contextHeight = metadataLine + 6
-    let available =
-      cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-      - contextHeight
-    let minimum = 3 * lineHeight + metadataLine + 12
+    let available = cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    let minimum = lineHeight + metadataLine
+      + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
+      + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
     let editorHeightLimit = 28 * scale
-    let composerHeight =
-      max(editorHeightLimit, ComposerControlMetrics.hitTargetSize)
-      + 2 * ComposerControlMetrics.verticalPadding + 14
+    let composerHeight = max(
+      ComposerControlMetrics.intercomMinimumHeight,
+      editorHeightLimit + 2 * ComposerControlMetrics.intercomVerticalPadding
+    ) + 14 // ConversationView's 6pt top and Intercom's 8pt bottom insets.
+    let inputFont = NSFont.systemFont(ofSize: ComposerControlMetrics.textSize * scale)
+    let inputWidth = ceil(("Message" as NSString).size(withAttributes: [.font: inputFont]).width)
+    // Three real 28pt controls, their gaps, the editor and both layers of padding.
+    let composerWidth = inputWidth + 3 * ComposerControlMetrics.hitTargetSize
+      + 3 * ComposerControlMetrics.intercomSpacing
+      + 2 * ComposerControlMetrics.intercomHorizontalPadding + 24
     return IntercomCompactPreviewLayout(
       height: available,
-      showsComposer: width >= OverlayIntercomWidgetLayout.compactComposerBaseSize.width * max(1, scale)
-        && cardHeight >= OverlayIntercomWidgetLayout.compactComposerBaseSize.height * max(1, scale)
-        && available >= minimum + composerHeight,
+      showsComposer: width >= composerWidth && available >= lineHeight + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
   }
 
@@ -244,9 +247,8 @@ struct IntercomContentMetrics: Equatable {
 
 /// Geometry only. Each card owns a native window; desktop gaps never intercept clicks.
 enum OverlayIntercomWidgetLayout {
-  /// Minimum complete card footprint, in points at the standard text scale.
-  /// More room never withdraws the editor; the display bounds cap window size.
-  static let compactComposerBaseSize = CGSize(width: 320, height: 220)
+  static let compactPreviewVerticalPadding: CGFloat = 4
+  static let compactPreviewSpacing: CGFloat = 5
   static let headerHeight: CGFloat = 30
   static let rowHeight: CGFloat = 30
   /// Tight enough that the stack reads as one list, not a column of buttons.
