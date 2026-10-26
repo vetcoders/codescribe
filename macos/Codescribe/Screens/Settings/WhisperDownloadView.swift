@@ -62,7 +62,7 @@ struct WhisperDownloadView: View {
           ProgressView(value: fraction, total: 1)
             .progressViewStyle(.linear)
             .controlSize(.large)
-            .tint(CSColor.chromeAccent)
+            .tint(CSColor.brandAccent)
             .frame(maxWidth: .infinity)
         } else {
           ProgressView().controlSize(.small)

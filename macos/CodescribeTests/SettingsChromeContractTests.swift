@@ -1790,6 +1790,44 @@ final class SettingsChromeContractTests: XCTestCase {
 
   /// True when `token` occurs and the next character is not a letter, so
   /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
+  /// Founder decision of 2026-10-26: in Settings the brand terracotta marks
+  /// progress, a ready state is the olive capsule with a check, and the one
+  /// eyebrow reads in the muted grey; focus, switches, sliders, buttons and
+  /// links keep the macOS accent.
+  func testSettingsProgressWearsTheBrandAccentAndReadyTheOliveCapsule() throws {
+    let sources = try settingsSources()
+    let whisper = try XCTUnwrap(sources["WhisperDownloadView.swift"])
+    let modelTab = try XCTUnwrap(sources["DictationWhisperModelTab.swift"])
+    let audio = try XCTUnwrap(sources["AudioPanel.swift"])
+    let voiceLab = try XCTUnwrap(sources["VoiceLabPanel.swift"])
+    let joined = try joinedSettingsSources()
+
+    for (name, source) in [("WhisperDownloadView", whisper), ("ModelTab", modelTab)] {
+      XCTAssertTrue(source.contains(".tint(CSColor.brandAccent)"), "\(name): progress in brand")
+    }
+    let linearChrome = ".progressViewStyle(.linear)\n          .tint(CSColor.chromeAccent)"
+    XCTAssertFalse(joined.contains(linearChrome), "a progress bar still follows the macOS accent")
+    let largeChrome =
+      ".controlSize(.large)\n            .tint(CSColor.chromeAccent)"
+    XCTAssertFalse(joined.contains(largeChrome), "the download bar still follows the macOS accent")
+
+    let runtimeBadge = "CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)"
+    XCTAssertTrue(modelTab.contains(runtimeBadge))
+    XCTAssertTrue(audio.contains("CSStatusBadge(text: fact.value, mark: .verified)"))
+    XCTAssertTrue(audio.contains("statusValue(calibration)"))
+    XCTAssertTrue(audio.contains("statusValue(sealLane)"))
+
+    let eyebrowFace = ".font(CSFont.mono(10, .semibold))\n      .foregroundStyle("
+    XCTAssertFalse(voiceLab.contains(eyebrowFace + "CSColor.chromeAccent)"), "eyebrow in accent")
+    XCTAssertTrue(voiceLab.contains(eyebrowFace + "CSColor.textMuted)"), "eyebrow in muted grey")
+
+    // The chrome accent stays on the controls.
+    let slider = "Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)\n          .tint("
+    XCTAssertTrue(joined.contains(slider + "CSColor.chromeAccent)"))
+    let toggle = ".controlSize(.small)\n      .labelsHidden()\n      .tint("
+    XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
+  }
+
   private func containsToken(_ source: String, _ token: String) -> Bool {
     var rest = Substring(source)
     while let range = rest.range(of: token) {

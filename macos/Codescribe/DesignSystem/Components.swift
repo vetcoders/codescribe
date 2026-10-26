@@ -485,6 +485,47 @@ struct StaticStatusPill: View {
   }
 }
 
+/// A status word in the wizard and in Settings. A verified state ("Granted",
+/// "Ready") is a filled check on an olive capsule (Founder, 2026-10-26);
+/// stored identity that nothing has tested ("Saved") is an empty circle on
+/// the same capsule, the deliberate exception of 2026-10-26 to the grey
+/// "saved" of 99758557a. Every other state, "Optional" included, is plain
+/// ink. The dotted `StatusPill` stays the live-activity pill; this badge
+/// never pulses.
+struct CSStatusBadge: View {
+  enum Mark {
+    case none
+    case saved
+    case verified
+  }
+
+  let text: String
+  let mark: Mark
+
+  var body: some View {
+    HStack(spacing: 5) {
+      switch mark {
+      case .none:
+        EmptyView()
+      case .saved:
+        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      case .verified:
+        CSIconView(icon: .checkCircleFill, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      }
+      Text(text).font(CSFont.ui(11, .medium))
+    }
+    .foregroundStyle(mark == .none ? CSColor.secondaryInk : CSColor.oliveLight)
+    .padding(.horizontal, mark == .none ? 0 : 8)
+    .padding(.vertical, mark == .none ? 0 : 3)
+    .background {
+      if mark != .none {
+        Capsule().fill(CSColor.oliveLight.opacity(0.14))
+      }
+    }
+    .fixedSize()
+  }
+}
+
 /// Wordmark lockup: brand dot + lowercase "codescribe", the product name and
 /// never translated copy. The lockup is a label, so the word itself never
 /// answers the pointer; a surface that needs a control there hands in its own

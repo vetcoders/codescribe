@@ -181,8 +181,9 @@ final class OnboardingPatternTests: XCTestCase {
       XCTAssertFalse(source.contains(".tint(CSColor.chromeAccent)"), "no chrome-accent progress")
     }
 
-    XCTAssertTrue(steps.contains("struct OnboardingStatusBadge"))
-    XCTAssertTrue(steps.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
+    XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
+    XCTAssertTrue(components.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
+    XCTAssertFalse(steps.contains("struct OnboardingStatusBadge"), "the wizard owns no badge")
     XCTAssertTrue(steps.contains("mark: state.isGranted ? .verified : .none"), "granted scope")
     XCTAssertTrue(steps.contains("mark: .verified)"), "ready to go")
     XCTAssertTrue(steps.contains("mark: keySaved ? .saved : .none"), "saved key")
@@ -190,5 +191,6 @@ final class OnboardingPatternTests: XCTestCase {
       steps.contains("icon: done && !presenceOnly ? .checkCircleFill : .circleEmpty"),
       "step 9 draws stored identity with the empty circle of step 6")
     XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
+    XCTAssertEqual(steps.components(separatedBy: "CSStatusBadge(").count, 5, "four wizard statuses")
   }
 }

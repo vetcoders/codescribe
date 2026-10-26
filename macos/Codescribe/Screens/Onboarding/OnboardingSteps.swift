@@ -126,43 +126,6 @@ private struct OnboardingStepNote: View {
   }
 }
 
-/// A status word of the wizard. A verified state ("Granted", "Ready to go")
-/// is a filled check on an olive capsule (Founder, 2026-10-26); stored
-/// identity that nothing has tested ("Saved") is an empty circle on the same
-/// capsule, the deliberate exception of 2026-10-26 to the grey "saved" of
-/// 99758557a. Every other state, "Optional" included, is plain ink.
-private struct OnboardingStatusBadge: View {
-  enum Mark {
-    case none
-    case saved
-    case verified
-  }
-
-  let text: String
-  let mark: Mark
-
-  var body: some View {
-    HStack(spacing: 5) {
-      switch mark {
-      case .none:
-        EmptyView()
-      case .saved:
-        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
-      case .verified:
-        CSIconView(icon: .checkCircleFill, size: 9, weight: .semibold, color: CSColor.oliveLight)
-      }
-      Text(text).font(CSFont.ui(11, .medium))
-    }
-    .foregroundStyle(mark == .none ? CSColor.secondaryInk : CSColor.oliveLight)
-    .padding(.horizontal, mark == .none ? 0 : 8)
-    .padding(.vertical, mark == .none ? 0 : 3)
-    .background {
-      if mark != .none {
-        Capsule().fill(CSColor.oliveLight.opacity(0.14))
-      }
-    }
-  }
-}
 
 // MARK: - Mode (Basic vs Agentic operating lane)
 
@@ -339,7 +302,7 @@ struct AgenticReadinessStepView: View {
       }
 
       if model.agentBridgeReadyToGo {
-        OnboardingStatusBadge(
+        CSStatusBadge(
           text: String(
             localized: LocalizedStringResource(
               "Ready to go", locale: model.interfaceLocale,
@@ -502,7 +465,7 @@ private struct OnboardingPermissionRow: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       VStack(alignment: .trailing, spacing: 6) {
-        OnboardingStatusBadge(
+        CSStatusBadge(
           text: state.label(locale: model.interfaceLocale),
           mark: state.isGranted ? .verified : .none)
         if !state.isGranted {
@@ -673,7 +636,7 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        OnboardingStatusBadge(
+        CSStatusBadge(
           text: model.selectedProviderAccountStatus, mark: accountSaved ? .saved : .none)
         Button(accountActionTitle, action: openProviderSettings)
           .csAction()
@@ -701,7 +664,7 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        OnboardingStatusBadge(
+        CSStatusBadge(
           text: model.selectedProviderKeyStatus, mark: keySaved ? .saved : .none)
         Button(keyActionTitle) {
           model.beginApiKeyEditing()
@@ -795,7 +758,7 @@ struct ApiKeyStepView: View {
 
   /// These rows report stored identity only. The existing Settings lane Test
   /// measures service acceptance, so a stored account or key is "saved", never
-  /// verified; see `OnboardingStatusBadge`.
+  /// verified; see `CSStatusBadge`.
   private var accountSaved: Bool {
     model.selectedProviderAccountConnected && !model.providerAccessPending
       && model.providerAccessError == nil && model.selectedProviderAccountError == nil
