@@ -28,7 +28,7 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
       var conversations = [conversation]
       if secondRow { conversations.append(try Self.conversation(session: "second", channel: "4")) }
       Self.apply(conversations, to: state)
-      state.publishConversationText = { _, _, _ in XCTFail("Placement must not publish") }
+      state.publishConversationText = { _, _, _, _ in XCTFail("Placement must not publish") }
       state.conversationDrafts[conversation.id] = "Keep the exact-owner draft"
       generation = state.captureGeneration
       store.save(.init(groupWidth: 500, groupRowHeight: 80))

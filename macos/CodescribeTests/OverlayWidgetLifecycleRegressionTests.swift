@@ -37,7 +37,7 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite), desktopStore: store)
     defer { controller.invalidate() }
-    state.publishConversationText = { _, _, _ in XCTFail("Presentation must not send") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Presentation must not send") }
     var archiveCalls = 0
     state.archiveAgentCommand = { actual, release in
       XCTAssertEqual(actual, owner)
@@ -88,7 +88,7 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite), desktopStore: store)
     defer { controller.invalidate() }
-    state.publishConversationText = { _, _, _ in XCTFail("Docking must not send") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Docking must not send") }
     XCTAssertTrue(controller.detach(.init(digit: owner.channel, conversation: conversation)))
     let instance = try XCTUnwrap(store.load().instances.first)
     controller.closeInstance(instance.id)
@@ -180,7 +180,7 @@ final class OverlayWidgetLifecycleRegressionTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = OverlayState()
     let generation = state.captureGeneration
-    state.publishConversationText = { _, _, _ in XCTFail("Header gestures must not send") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Header gestures must not send") }
     let controller = OverlayIntercomWidgetController(
       state: state, textScale: TextScaleController(key: suite),
       desktopStore: OverlayIntercomDesktopStore(defaults: defaults))

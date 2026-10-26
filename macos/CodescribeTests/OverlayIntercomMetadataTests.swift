@@ -64,7 +64,7 @@ final class OverlayIntercomMetadataTests: XCTestCase {
     }
     let generation = state.captureGeneration
     state.conversationDrafts[conversation.id] = "Preserve draft"
-    state.publishConversationText = { _, _, _ in XCTFail("Rendering must not publish") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Rendering must not publish") }
     let suite = "CodescribeTests.metadata.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
