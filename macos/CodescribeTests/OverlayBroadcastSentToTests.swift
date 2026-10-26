@@ -123,7 +123,7 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       try FileManager.default.createDirectory(
         at: directory(messageID), withIntermediateDirectories: true)
       var row = owners[name] ?? [:]
-      row["schema"] = OverlayBroadcastSentToTests.schema
+      row["schema"] = OverlayReceiptState.schema
       row["kind"] = kind
       row["message_id"] = messageID
       row["delivery_id"] = delivery
@@ -148,7 +148,7 @@ final class OverlayBroadcastSentToTests: XCTestCase {
         at: directory(messageID), withIntermediateDirectories: true)
       try Self.write(
         [
-          "schema": OverlayBroadcastSentToTests.schema, "kind": "sent", "message_id": messageID,
+          "schema": OverlayReceiptState.schema, "kind": "sent", "message_id": messageID,
           "sent_to": reach(names), "bus": NSNull(), "at": "2026-10-26T02:06:00Z",
         ], to: directory(messageID).appendingPathComponent("sent.json"))
     }
@@ -160,7 +160,7 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       row.removeValue(forKey: "name")
       row.removeValue(forKey: "channel")
       row.removeValue(forKey: "bus")
-      row["schema"] = OverlayBroadcastSentToTests.schema
+      row["schema"] = OverlayReceiptState.schema
       row["kind"] = "playback"
       row["message_id"] = messageID
       row["playback_ticket"] = ticket

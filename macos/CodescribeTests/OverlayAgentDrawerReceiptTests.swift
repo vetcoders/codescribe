@@ -144,7 +144,6 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     func conversation() throws -> OverlayConversation {
       try XCTUnwrap(bus.conversations(busPath: "/fixture/bus").first { $0.owner?.leaseID == lease })
     }
-    let owner = try XCTUnwrap(conversation().owner)
     let coordinate = try XCTUnwrap(bus.receiptCoordinates().first)
     let messageID = try XCTUnwrap(bus.receiptDirectories().first)
     func skip(_ row: [String: Any], delivery: String) -> [String: Any] {
