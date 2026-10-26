@@ -172,6 +172,10 @@ struct OverlayConversationView: View {
   var captureAttachmentError: String? = nil
   var onRetryCaptureAttachments: (() -> Void)? = nil
   var onReply: ((OverlayConversationMessage) -> Void)? = nil
+  var draftSyncChoices: [OverlayComposerSyncChoice] = []
+  var draftSyncNames: [String] = []
+  var onToggleDraftSync: ((String) -> Void)? = nil
+  var onStopDraftSync: (() -> Void)? = nil
   @State private var replyNavigationID: String?
 
   @State private var scrollFollow = StreamScrollFollowState()
@@ -407,7 +411,9 @@ struct OverlayConversationView: View {
           onRemoveCaptureAttachment: onRemoveCaptureAttachment,
           captureAttachmentError: captureAttachmentError,
           onRetryCaptureAttachments: onRetryCaptureAttachments,
-          onNavigateReply: { navigateToReply(replySelection?.messageID) })
+          onNavigateReply: { navigateToReply(replySelection?.messageID) },
+          draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
+          onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
         if let sendError { composerError(sendError) }
         if let playbackError {
           composerError(playbackError)

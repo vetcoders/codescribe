@@ -158,6 +158,26 @@ again. Selecting a conversation does not replay old speech.
 It does not mean they completed the work, accepted the transcript's acoustic
 coverage or answered aloud.
 
+## Type or paste to several agents
+
+Open **Sync draft** in a channel conversation's composer and select the other
+agents that should share its input. Their names appear above the editor. Typing,
+editing and pasted attachment chips update the same draft in every linked
+conversation, including its main overlay and detached windows.
+
+**Send** (or Return) delivers that draft to the selected agents. Reply references
+stay specific to each conversation. The draft clears after every recipient has
+accepted publication; if one fails, it remains available and Send retries only
+the missing recipients. Editing while publication is in progress starts a newer
+draft, which the older completion cannot clear.
+
+A composer with a different nonempty draft cannot be linked until that draft is
+resolved. **Stop syncing** leaves a copy of the current draft in that conversation
+and keeps the other linked composers intact. Channel 0, Your Inbox and saved
+owners are not added to a sync group. A replacement agent on the same channel
+does not inherit its predecessor's group. This feature shares manual drafts;
+it does not change a live recording's audience.
+
 ## Channel map in the collapsed overlay
 
 Mini and compact carry a map of the bus, so you can see which agent answers

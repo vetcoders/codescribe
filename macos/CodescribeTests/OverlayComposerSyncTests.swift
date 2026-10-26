@@ -1,0 +1,233 @@
+import AppKit
+import SwiftUI
+import XCTest
+
+@testable import Codescribe
+
+@MainActor
+final class OverlayComposerSyncTests: XCTestCase {
+  func testTypingAndAttachmentsHaveOneSharedDraftAndUnlinkRetainsBoth() throws {
+    let (state, agents) = try fixture()
+    state.setConversationDraft("Shared", for: agents[0].id)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertTrue(state.toggleDraftSync(from: agents[1].id, with: agents[2].id))
+    let path = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/sync-fixture.txt").path
+    let text = ConversationDraft.compose(text: "Edited in the second composer", attachments: [path])
+    state.setConversationDraft(text, for: agents[1].id)
+    XCTAssertEqual(state.conversationDrafts.count, 1, "The group owns one text entry")
+    for agent in agents { XCTAssertEqual(state.conversationDraft(for: agent.id), text) }
+    state.stopDraftSync(for: agents[0].id)
+    state.setConversationDraft("Independent", for: agents[0].id)
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), text)
+    XCTAssertEqual(state.conversationDraft(for: agents[2].id), text)
+    state.stopDraftSync(for: agents[1].id)
+    XCTAssertTrue(state.conversationDraftGroups.isEmpty)
+    XCTAssertEqual(state.conversationDrafts[agents[1].id], text)
+    XCTAssertEqual(state.conversationDrafts[agents[2].id], text)
+  }
+
+  func testJoiningDoesNotOverwriteDifferentDraftOrIncludeBroadcastAndInbox() throws {
+    let (state, agents) = try fixture()
+    state.setConversationDraft("Source", for: agents[0].id)
+    state.setConversationDraft("Retain this private draft", for: agents[1].id)
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), "Retain this private draft")
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: "0"))
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: "10"))
+    let choices = state.draftSyncChoices(for: agents[0])
+    XCTAssertEqual(Set(choices.map(\.id)), Set(agents.dropFirst().map(\.id)))
+    XCTAssertEqual(choices.first(where: { $0.id == agents[1].id })?.enabled, false)
+    state.setConversationDraft("", for: agents[0].id)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertEqual(state.conversationDraft(for: agents[0].id), "Retain this private draft")
+  }
+
+  func testPartialPublicationRetriesOnlyMissingExactOwnersAndKeepsGroupForNextDraft() async throws {
+    let (state, agents) = try fixture()
+    for target in agents.dropFirst() {
+      XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: target.id))
+    }
+    state.setConversationDraft("First", for: agents[0].id)
+    let reply = try XCTUnwrap(OverlayUserReplyReference(row: [
+      "message_id": "parent", "author": "Agent 2", "text": "Question",
+    ]))
+    state.conversationReplies[agents[1].id] = reply
+    var calls: [(String, String, OverlayUserReplyReference?)] = []
+    var refuseSecond = true
+    state.publishConversationText = { owner, text, reference in
+      let owner = try XCTUnwrap(owner)
+      calls.append((owner.id, text, reference))
+      if owner.id == agents[1].id && refuseSecond { throw CocoaError(.fileWriteNoPermission) }
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(calls.map { $0.0 }, agents.map(\.id))
+    XCTAssertNotNil(state.draftSyncSendError(for: agents[0].id))
+    XCTAssertEqual(state.conversationDraft(for: agents[2].id), "First")
+    XCTAssertEqual(calls[1].2, reply)
+    refuseSecond = false
+    await state.sendConversationText(agents[2])
+    XCTAssertEqual(calls.map { $0.0 }, [agents[0].id, agents[1].id, agents[2].id, agents[1].id])
+    XCTAssertEqual(calls.last?.2, reply)
+    XCTAssertNil(state.conversationReplies[agents[1].id])
+    for agent in agents { XCTAssertEqual(state.conversationDraft(for: agent.id), "") }
+    XCTAssertEqual(state.conversationDraftGroups.count, 1, "Sync remains enabled after Send")
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    state.setConversationDraft("Second", for: agents[1].id)
+    await state.sendConversationText(agents[1])
+    XCTAssertEqual(calls.suffix(3).map { $0.1 }, ["Second", "Second", "Second"])
+  }
+
+  func testEditsDuringPublicationAreNotClearedOrSentAsPartOfOlderBatch() async throws {
+    let (state, agents) = try fixture(count: 2)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.setConversationDraft("Frozen outgoing text", for: agents[0].id)
+    var texts: [String] = []
+    state.publishConversationText = { _, text, _ in
+      texts.append(text)
+      if texts.count == 1 {
+        state.setConversationDraft("New draft", for: agents[1].id)
+        await state.sendConversationText(agents[1])
+      }
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(texts, ["Frozen outgoing text", "Frozen outgoing text"])
+    for agent in agents { XCTAssertEqual(state.conversationDraft(for: agent.id), "New draft") }
+    await state.sendConversationText(agents[1])
+    XCTAssertEqual(texts.suffix(2), ["New draft", "New draft"])
+    XCTAssertEqual(state.conversationDraft(for: agents[0].id), "")
+  }
+
+  func testChannelReuseDoesNotJoinSuccessorAndRetiredDraftIsPreserved() throws {
+    let (state, agents) = try fixture()
+    for target in agents.dropFirst() {
+      XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: target.id))
+    }
+    state.setConversationDraft("Old shared text", for: agents[0].id)
+    let successor = try conversation(channel: agents[1].channel, suffix: "replacement")
+    let projected = [agents[0], successor, agents[2]]
+    apply(projected, to: state)
+    XCTAssertFalse(state.hasSynchronizedDraft(agents[1].id))
+    XCTAssertFalse(state.hasSynchronizedDraft(successor.id))
+    state.setConversationDraft("Next text", for: agents[0].id)
+    XCTAssertEqual(state.conversationDraft(for: agents[2].id), "Next text")
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), "Old shared text")
+    XCTAssertEqual(state.conversationDraft(for: successor.id), "")
+  }
+
+  func testLinkedPasteRemainsManualInsteadOfBeingStagedOnLiveCapture() throws {
+    let (state, agents) = try fixture(count: 2)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertFalse(state.stageConversationAttachments(["/fixture/file"], in: agents[0]))
+    XCTAssertTrue(state.captureAttachmentDrafts.isEmpty)
+    XCTAssertTrue(state.pendingCaptureAttachmentSends.isEmpty)
+  }
+
+  func testNativePasteUpdatesThreeEditorsAndStoresLongAttachmentOnce() throws {
+    let (state, agents) = try fixture()
+    for target in agents.dropFirst() {
+      XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: target.id))
+    }
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let file = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/sync-\(UUID().uuidString).txt")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: file) }
+    var saves = 0
+    var hosts: [NSHostingView<OverlayConversationComposer>] = []
+    var windows: [NSWindow] = []
+    let keyBefore = NSApp.keyWindow
+    for agent in agents {
+      let host = NSHostingView(rootView: OverlayConversationComposer(
+        palette: .dark,
+        draft: Binding(get: { state.conversationDraft(for: agent.id) },
+          set: { state.setConversationDraft($0, for: agent.id) }),
+        sending: false, onSubmit: { XCTFail("Editing must not publish") }, clipboard: board,
+        saveFile: { data, _ in
+          saves += 1
+          try data.write(to: file)
+          return file
+        },
+        draftSyncChoices: state.draftSyncChoices(for: agent),
+        draftSyncNames: state.draftSyncNames(for: agent.id)))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 480, height: 180)
+      let window = NSWindow(
+        contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 180),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      hosts.append(host)
+      windows.append(window)
+      host.layoutSubtreeIfNeeded()
+    }
+    defer { for window in windows { window.close() } }
+    let editors = try hosts.map { try XCTUnwrap(editor(in: $0)) }
+    board.setString("Shared native paste", forType: .string)
+    editors[0].paste(nil)
+    settle(hosts)
+    XCTAssertEqual(editors.map(\.string), Array(repeating: "Shared native paste", count: 3))
+    board.clearContents()
+    board.setString(String(repeating: "long text ", count: 600), forType: .string)
+    editors[1].paste(nil)
+    settle(hosts)
+    XCTAssertEqual(saves, 1)
+    for agent in agents {
+      let paths = ConversationDraft.split(state.conversationDraft(for: agent.id)).attachments
+      XCTAssertEqual(paths.count, 1)
+      let attributes = try FileManager.default.attributesOfItem(atPath: XCTUnwrap(paths.first))
+      let saved = try FileManager.default.attributesOfItem(atPath: file.path)
+      XCTAssertEqual(attributes[.systemNumber] as? NSNumber, saved[.systemNumber] as? NSNumber)
+      XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, saved[.systemFileNumber] as? NSNumber)
+    }
+    editors[2].insertText("New shared text", replacementRange: NSRange(location: 0, length: editors[2].string.utf16.count))
+    settle(hosts)
+    XCTAssertEqual(editors.map(\.string), Array(repeating: "New shared text", count: 3))
+    XCTAssertFalse(editors[0].undoManager?.canUndo ?? false, "External replacement invalidates stale local undo")
+    XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    XCTAssertTrue(NSApp.keyWindow === keyBefore)
+    let bitmap = try XCTUnwrap(hosts[0].bitmapImageRepForCachingDisplay(in: hosts[0].bounds))
+    hosts[0].cacheDisplay(in: hosts[0].bounds, to: bitmap)
+    let attachment = XCTAttachment(image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: hosts[0].bounds.size))
+    attachment.name = "Three-linked-composers"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
+  private func editor(in view: NSView) -> NSTextView? {
+    if let text = view as? NSTextView, text.isEditable { return text }
+    return view.subviews.lazy.compactMap { self.editor(in: $0) }.first
+  }
+
+  private func settle(_ hosts: [NSHostingView<OverlayConversationComposer>]) {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+    for host in hosts { host.layoutSubtreeIfNeeded() }
+  }
+
+  private func fixture(count: Int = 3) throws -> (OverlayState, [OverlayConversation]) {
+    let agents = try (1...count).map { try conversation(channel: String($0), suffix: "initial") }
+    let state = OverlayState()
+    apply(agents, to: state)
+    return (state, agents)
+  }
+
+  private func conversation(channel: String, suffix: String) throws -> OverlayConversation {
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: [
+      "provider": "codex", "provider_session_id": "sync-\(channel)-\(suffix)",
+      "lease_id": String(repeating: channel, count: 32), "channel": channel,
+      "name": "Agent \(channel)",
+    ]))
+    return OverlayConversation(id: owner.id, channel: channel, name: owner.name, owner: owner, messages: [])
+  }
+
+  private func apply(_ agents: [OverlayConversation], to state: OverlayState) {
+    state.applyChannelRoster(agents.map { agent in
+      .init(channel: agent.channel, audience: agent.name, provider: "codex",
+        providerSessionId: agent.owner?.providerSessionID ?? "", open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    })
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: agents))
+  }
+}

@@ -2577,6 +2577,7 @@ final class OverlayState {
   }
 
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
+    defer { reconcileDraftSyncOwners() }
     let playbackWasActive = selectedReplyPlaybackActive
     if archivedAgentOwners != snapshot.archivedOwners {
       archivedAgentOwners = snapshot.archivedOwners
@@ -2732,6 +2733,8 @@ final class OverlayState {
   }
 
   var conversationDrafts: [String: String] = [:]
+  /// Linked composers resolve to one entry in conversationDrafts, never mirrored copies.
+  var conversationDraftGroups: [OverlayDraftSyncGroup] = []
   var conversationReplies: [String: OverlayUserReplyReference] = [:]
   var draftCapture = OverlayDraftCapture()
   struct CaptureAttachmentDraft {
@@ -2763,8 +2766,12 @@ final class OverlayState {
       }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
+    if hasSynchronizedDraft(conversation.id) {
+      await sendSynchronizedDraft(from: conversation)
+      return
+    }
+    let draft = conversationDraft(for: conversation.id)
     guard conversation.owner != nil || conversation.channel == "0",
-      let draft = conversationDrafts[conversation.id],
       !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !pendingTextMessages.contains(conversation.id)
     else { return }
@@ -2785,14 +2792,55 @@ final class OverlayState {
     do {
       try await publishConversationText(conversation.owner, outgoing, reply)
       // A newer draft belongs to the Founder, even if publication finishes late.
-      if conversationDrafts[conversation.id] == draft {
-        conversationDrafts[conversation.id] = ""
+      if conversationDraft(for: conversation.id) == draft {
+        setConversationDraft("", for: conversation.id)
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
         }
       }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
+    }
+  }
+
+  /// Freeze exact owners and reply references. Retry only recipients missing a receipt.
+  private func sendSynchronizedDraft(from conversation: OverlayConversation) async {
+    guard let index = draftGroupIndex(for: conversation.id) else { return }
+    let group = conversationDraftGroups[index]
+    let draft = conversationDrafts[group.id] ?? ""
+    guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      pendingTextMessages.isDisjoint(with: group.members)
+    else { return }
+    let recipients = draftSyncConversations.filter { group.members.contains($0.id) }
+    guard Set(recipients.map(\.id)) == group.members else { return }
+    let pending = recipients.filter { !group.sent.contains($0.id) }.map {
+      (conversation: $0, reply: conversationReplies[$0.id])
+    }
+    guard !pending.isEmpty else { return }
+    pendingTextMessages.formUnion(group.members)
+    defer { pendingTextMessages.subtract(group.members) }
+    for recipient in pending { textMessageErrors.removeValue(forKey: recipient.conversation.id) }
+    for recipient in pending {
+      let id = recipient.conversation.id
+      do {
+        try await publishConversationText(recipient.conversation.owner, draft, recipient.reply)
+        if let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }),
+          conversationDraftGroups[current].revision == group.revision,
+          conversationDrafts[group.id] == draft
+        {
+          conversationDraftGroups[current].sent.insert(id)
+          if conversationReplies[id] == recipient.reply { conversationReplies.removeValue(forKey: id) }
+        }
+      } catch {
+        textMessageErrors[id] = error.userFacingMessage
+      }
+    }
+    if let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }),
+      conversationDraftGroups[current].revision == group.revision,
+      conversationDraftGroups[current].members.isSubset(of: conversationDraftGroups[current].sent),
+      conversationDrafts[group.id] == draft
+    {
+      setConversationDraft("", for: conversation.id)
     }
   }
 
@@ -2818,6 +2866,8 @@ final class OverlayState {
   /// paths. Ordinary draft dictation keeps its attachments for manual Send.
   func stageConversationAttachments(_ paths: [String], in conversation: OverlayConversation) -> Bool
   {
+    // Sync is an explicit manual draft destination, including pasted files.
+    guard !hasSynchronizedDraft(conversation.id) else { return false }
     guard !draftCapture.hasRequest else { return false }
     let existing = captureAttachmentDrafts[conversation.id]
     let target =
@@ -2902,10 +2952,10 @@ final class OverlayState {
           $0.captureSessionID == target.captureSessionID && $0.captureState == .finished
         })
       else { continue }
-      let draft = ConversationDraft.split(conversationDrafts[id] ?? "")
+      let draft = ConversationDraft.split(conversationDraft(for: id))
       let added = staged.paths.filter { !draft.attachments.contains($0) }
-      conversationDrafts[id] = ConversationDraft.compose(
-        text: draft.text, attachments: draft.attachments + added)
+      setConversationDraft(
+        ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id)
       captureAttachmentDrafts.removeValue(forKey: id)
       captureAttachmentErrors.removeValue(forKey: id)
       textMessageErrors[id] = String(
@@ -5541,10 +5591,11 @@ final class OverlayState {
     let text = projection.deliveryText ?? projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     if let destination = draftCapture.destination(for: projection.sessionId) {
-      let parts = ConversationDraft.split(conversationDrafts[destination] ?? "")
-      conversationDrafts[destination] = ConversationDraft.compose(
-        text: parts.text.isEmpty ? text : parts.text + "\n" + text,
-        attachments: parts.attachments)
+      let parts = ConversationDraft.split(conversationDraft(for: destination))
+      setConversationDraft(
+        ConversationDraft.compose(
+          text: parts.text.isEmpty ? text : parts.text + "\n" + text,
+          attachments: parts.attachments), for: destination)
       admittedComposerSessions.insert(projection.sessionId)
       retainedComposerDocuments.removeAll { $0.id == projection.sessionId }
       return

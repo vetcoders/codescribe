@@ -44,6 +44,10 @@ struct OverlayConversationComposer: View {
   var captureAttachmentError: String? = nil
   var onRetryCaptureAttachments: (() -> Void)? = nil
   var onNavigateReply: (() -> Void)? = nil
+  var draftSyncChoices: [OverlayComposerSyncChoice] = []
+  var draftSyncNames: [String] = []
+  var onToggleDraftSync: ((String) -> Void)? = nil
+  var onStopDraftSync: (() -> Void)? = nil
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pasteError: String?
   @State private var editorHeight: CGFloat = 28
@@ -86,6 +90,9 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: 6) {
+      if !draftSyncChoices.isEmpty || draftSyncNames.count > 1 {
+        draftSyncHeader
+      }
       if let replySelection {
         HStack(alignment: .top, spacing: 8) {
           Button {
@@ -166,6 +173,49 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
+  private var draftSyncHeader: some View {
+    HStack(spacing: 6) {
+      if draftSyncNames.count > 1 {
+        Text(verbatim: draftSyncNames.joined(separator: " · "))
+          .lineLimit(1).truncationMode(.middle)
+          .accessibilityIdentifier("overlay-conversation-draft-sync-members")
+      }
+      Spacer(minLength: 0)
+      Menu {
+        ForEach(draftSyncChoices) { choice in
+          Toggle(isOn: Binding(
+            get: { choice.selected },
+            set: { _ in onToggleDraftSync?(choice.id) })
+          ) {
+            Text(verbatim: choice.title)
+          }
+          .disabled(!choice.enabled)
+          .help(choice.enabled
+            ? String(localized: "Share typing and pasted attachments with this composer")
+            : String(localized: "This composer has a different draft or a pending delivery."))
+        }
+        if draftSyncNames.count > 1 {
+          Divider()
+          Button("Stop syncing") { onStopDraftSync?() }
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: "link")
+          Text("Sync draft")
+          if draftSyncNames.count > 1 {
+            Text(verbatim: draftSyncNames.count.formatted())
+          }
+        }
+      }
+      .menuStyle(.borderlessButton).menuIndicator(.hidden)
+      .fixedSize().disabled(sending)
+      .help("Choose the composers that share this draft. Send delivers to the linked agents.")
+      .accessibilityIdentifier("overlay-conversation-draft-sync")
+    }
+    .font(.system(size: 10 * textScale))
+    .foregroundStyle(draftSyncNames.count > 1 ? palette.agentAccent.color : palette.mutedText.color)
+  }
+
   var draftMicrophoneAccessibilityLabel: String {
     if liveSpeechActive { return String(localized: "Live speech active") }
     return draftMicrophoneRecording
@@ -239,6 +289,8 @@ struct OverlayConversationComposer: View {
         )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
+        .help(draftSyncNames.count > 1
+          ? String(localized: "Send to all linked agents") : String(localized: "Send"))
     }
   }
 }
@@ -485,6 +537,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.onCancel = onCancel
     if editor.string != text {
       context.coordinator.applyingExternalText = true
+      // Another linked editor replaced the document. Local undo operations
+      // describe its previous contents and must not overwrite that newer edit.
+      context.coordinator.undoHistory.removeAllActions()
       editor.string = text
       editor.setSelectedRange(NSRange(location: text.utf16.count, length: 0))
       editor.revealCaretAfterLayout()

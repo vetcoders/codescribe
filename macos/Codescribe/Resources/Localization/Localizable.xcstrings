@@ -4882,6 +4882,16 @@
         }
       }
     },
+    "Choose the composers that share this draft. Send delivers to the linked agents." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wybierz kompozytory współdzielące szkic. Wysłanie dostarczy wiadomość połączonym agentom."
+          }
+        }
+      }
+    },
     "Choose the horizontal strip or floating vertical agent pills." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16588,6 +16598,16 @@
         }
       }
     },
+    "Send to all linked agents" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Wyślij do wszystkich połączonych agentów"
+          }
+        }
+      }
+    },
     "Send to everyone" : {
       "comment" : "Broadcast channel playback and input controls",
       "localizations" : {
@@ -16813,6 +16833,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Postęp konfiguracji"
+          }
+        }
+      }
+    },
+    "Share typing and pasted attachments with this composer" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Współdziel wpisywany tekst i wklejane załączniki z tym kompozytorem"
           }
         }
       }
@@ -17365,6 +17395,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niektórzy agenci mogli już otrzymać tę wiadomość. Przed ponownym wysłaniem sprawdź potwierdzenia odczytu."
+          }
+        }
+      }
+    },
+    "Some linked agents did not receive this message. Send again to retry them." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie wszyscy połączeni agenci otrzymali wiadomość. Wyślij ponownie, aby dostarczyć ją pozostałym."
           }
         }
       }
@@ -18218,6 +18258,16 @@
         }
       }
     },
+    "Stop syncing" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Odłącz szkic"
+          }
+        }
+      }
+    },
     "Stop the agent's reader, remove from list and move to archive" : {
       "comment" : "Drawer cross on an agent whose reader process is still alive",
       "localizations" : {
@@ -18558,6 +18608,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przełącz na Chmurę"
+          }
+        }
+      }
+    },
+    "Sync draft" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizuj szkic"
           }
         }
       }
@@ -19524,6 +19584,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Wybór modelu z dysku jest pomijany."
+          }
+        }
+      }
+    },
+    "This composer has a different draft or a pending delivery." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ten kompozytor ma inny szkic lub oczekuje na zakończenie wysyłania."
           }
         }
       }

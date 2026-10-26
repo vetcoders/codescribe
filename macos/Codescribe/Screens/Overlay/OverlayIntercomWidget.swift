@@ -2230,10 +2230,10 @@ private struct OverlayIntercomConversationBody: View {
       },
       composerFocusRevision: focusRevision,
       draft: Binding(
-        get: { state.conversationDrafts[conversation.id] ?? "" },
-        set: { state.conversationDrafts[conversation.id] = $0 }),
+        get: { state.conversationDraft(for: conversation.id) },
+        set: { state.setConversationDraft($0, for: conversation.id) }),
       sending: state.pendingTextMessages.contains(conversation.id),
-      sendError: state.textMessageErrors[conversation.id]
+      sendError: state.draftSyncSendError(for: conversation.id)
         ?? (state.draftCapture.errorConversationID == conversation.id
           ? state.draftCapture.error : nil),
       onSend: {
@@ -2264,7 +2264,11 @@ private struct OverlayIntercomConversationBody: View {
       },
       onReply: {
         state.conversationReplies[conversation.id] = OverlayUserReplyReference(message: $0)
-      }
+      },
+      draftSyncChoices: current ? state.draftSyncChoices(for: conversation) : [],
+      draftSyncNames: state.draftSyncNames(for: conversation.id),
+      onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
+      onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
     )
   }
 }

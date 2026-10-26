@@ -512,10 +512,10 @@ struct DictationOverlayView: View {
                 isPresented: !state.isCollapsed,
                 isCovered: canvasHidden,
                 draft: Binding(
-                  get: { state.conversationDrafts[conversation.id] ?? "" },
-                  set: { state.conversationDrafts[conversation.id] = $0 }),
+                  get: { state.conversationDraft(for: conversation.id) },
+                  set: { state.setConversationDraft($0, for: conversation.id) }),
                 sending: state.pendingTextMessages.contains(conversation.id),
-                sendError: state.textMessageErrors[conversation.id]
+                sendError: state.draftSyncSendError(for: conversation.id)
                   ?? (state.draftCapture.errorConversationID == conversation.id
                     ? state.draftCapture.error : nil),
                 onSend: { Task { await state.sendConversationText(conversation) } },
@@ -560,7 +560,11 @@ struct DictationOverlayView: View {
                 onReply: { message in
                   state.conversationReplies[conversation.id] = OverlayUserReplyReference(
                     message: message)
-                }
+                },
+                draftSyncChoices: state.draftSyncChoices(for: conversation),
+                draftSyncNames: state.draftSyncNames(for: conversation.id),
+                onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
