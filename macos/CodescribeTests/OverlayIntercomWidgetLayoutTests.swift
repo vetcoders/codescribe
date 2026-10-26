@@ -171,7 +171,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private func reviewProductionCardPhases(dark: Bool) throws {
     func render(
       channel: String, text: String?, height: CGFloat, dark: Bool,
-      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false
+      expanded: Bool = false, hover: Bool = false, longDraft: Bool = false,
+      supplementaryDraft: Bool = false
     ) throws
       -> Data
     {
@@ -230,9 +231,19 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           workspace: "/fixture/codescribe",
           frame: .init(session: "codescribe", paneID: 11))
       ])
-      let retainedDraft =
+      var retainedDraft =
         longDraft
         ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
+      let attachmentURL = bridgeRoot.deletingLastPathComponent()
+        .appendingPathComponent("review-attachment-\(UUID().uuidString).txt")
+      if supplementaryDraft {
+        try Data("Local review attachment".utf8).write(to: attachmentURL)
+        retainedDraft = ConversationDraft.compose(
+          text: "Review draft", attachments: [attachmentURL.path])
+        state.conversationReplies[conversation.id] = OverlayUserReplyReference(
+          row: ["message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply"])
+      }
+      defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
       state.conversationDrafts[conversation.id] = retainedDraft
       state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
       let keyWindow = NSApp.keyWindow
@@ -277,7 +288,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       image.addRepresentation(bitmap)
       let attachment = XCTAttachment(image: image)
       attachment.name =
-        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(longDraft ? "long-draft" : "idle")"
+        "Compact-\(channel)-\(Int(height))-\(dark ? "dark" : "light")-\(text == nil ? "empty" : "message")-\(expanded ? "open" : hover ? "hover" : "card")-\(supplementaryDraft ? "reply-attachment" : longDraft ? "long-draft" : "idle")"
       attachment.lifetime = .keepAlways
       add(attachment)
       var header = Data()
@@ -307,7 +318,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           editors.count, !hover && measured?.showsComposer == true ? 1 : 0,
           "The mounted native editor must match admission of the entire composer")
         for editor in editors {
-          XCTAssertEqual(editor.string, retainedDraft)
+          XCTAssertEqual(editor.string, ConversationDraft.split(retainedDraft).text)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
         }
       }
@@ -352,6 +363,11 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         _ = try render(
           channel: "3", text: "First readable line.\n\nSecond readable line.",
           height: CGFloat(height), dark: dark)
+      }
+      for height in [firstInputHeight, firstInputHeight + 80] {
+        _ = try render(
+          channel: "3", text: "First readable line.\n\nSecond readable line.",
+          height: CGFloat(height), dark: dark, supplementaryDraft: true)
       }
       _ = try render(channel: "3", text: richMessage, height: 240, dark: dark, hover: true)
       _ = try render(channel: "3", text: richMessage, height: 360, dark: dark, expanded: true)
