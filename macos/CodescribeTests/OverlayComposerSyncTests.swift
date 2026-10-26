@@ -190,8 +190,13 @@ final class OverlayComposerSyncTests: XCTestCase {
     XCTAssertTrue(state.toggleDraftSync(from: agents[1].id, with: agents[2].id))
     XCTAssertEqual(agents.map { state.conversationDraft(for: $0.id) }, privateText)
     append(" shared", to: agents[1].id, state: state)
-    let path = ConversationAttachmentPointer.configDirectory
-      .appendingPathComponent("attachments/sync-fixture.txt").path
+    let attachment = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/sync-\(UUID().uuidString).txt")
+    try FileManager.default.createDirectory(
+      at: attachment.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("Shared attachment".utf8).write(to: attachment)
+    defer { try? FileManager.default.removeItem(at: attachment) }
+    let path = attachment.path
     let parts = ConversationDraft.split(state.conversationDraft(for: agents[1].id))
     state.setConversationDraft(
       ConversationDraft.compose(text: parts.text, attachments: [path]), for: agents[1].id)
@@ -427,6 +432,9 @@ final class OverlayComposerSyncTests: XCTestCase {
     XCTAssertEqual(
       editors.map(\.string), ["aaaa", "Xa", "Ya"],
       "A real private insertion cannot leak through repeated text")
+    // Programmatic insertText calls share AppKit's typing group until an
+    // explicit coalescing boundary, unlike a real intervening cursor click.
+    editors[0].breakUndoCoalescing()
     editors[0].insertText("a", replacementRange: NSRange(location: 4, length: 0))
     settle(hosts)
     XCTAssertEqual(editors.map(\.string), ["aaaaa", "Xaa", "Yaa"])

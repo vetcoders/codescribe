@@ -106,8 +106,11 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
   func testSharedAttachmentRemovalPreservesPeerPrivateBaseline() throws {
     let (state, agents) = try fixture(["A", "B"], link: false)
     let root = ConversationAttachmentPointer.configDirectory.appendingPathComponent("attachments")
-    let own = root.appendingPathComponent("private-a.txt").path
-    let peer = root.appendingPathComponent("private-b.txt").path
+    let own = root.appendingPathComponent("private-a-\(UUID().uuidString).txt").path
+    let peer = root.appendingPathComponent("private-b-\(UUID().uuidString).txt").path
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    for path in [own, peer] { try Data("Admitted file".utf8).write(to: URL(fileURLWithPath: path)) }
+    defer { for path in [own, peer] { try? FileManager.default.removeItem(atPath: path) } }
     state.setConversationDraft(
       ConversationDraft.compose(text: "A", attachments: [own]), for: agents[0].id)
     state.setConversationDraft(
