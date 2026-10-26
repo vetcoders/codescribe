@@ -1675,8 +1675,6 @@ final class SettingsChromeContractTests: XCTestCase {
       "One-time purchase": "Zakup jednorazowy",
       "No active license": "Bez aktywnej licencji",
       "Basic mode": "Tryb podstawowy",
-      "Your custom shortcuts stay as they are unless you pick a preset.":
-        "Twoje własne skróty zostają bez zmian, chyba że wybierzesz jedną z metod.",
       // Kept on purpose: the markers switch's accessibility label (UI-33).
       "Add markers to text": "Dodawaj znaczniki do tekstu",
     ]
@@ -1688,6 +1686,8 @@ final class SettingsChromeContractTests: XCTestCase {
       "Basic mode stays free. A license unlocks Agent mode.",
       "No transcription in this app session",
       "Browse corrections and dictionary rules.",
+      // W2-09: onboarding presets are gone; Settings › Shortcuts is the only editor.
+      "Your custom shortcuts stay as they are unless you pick a preset.",
     ] {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }

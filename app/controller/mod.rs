@@ -30,6 +30,8 @@ pub use agent_channel::{
     AgentArchiveRequest, ChannelHudState, ChannelOpenRefusal, FOUNDER_AUDIENCE, FOUNDER_CHANNEL,
     founder_bus_path_at,
 };
+/// Thirty seconds without voice end a hands-free assistive take.
+mod assistive_silence;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -50,6 +52,8 @@ pub mod production_replay;
 pub mod serving_status;
 #[cfg(test)]
 mod silver_start_refusal_tests;
+/// Measured speech phases shared by agent channels and the assistive take.
+mod speech_clock;
 mod transcript_delivery;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;
@@ -389,6 +393,8 @@ struct RecordingEventSinkOptions {
     /// Per-take track switches from the frozen runtime snapshot.
     seal_ledger_enabled: bool,
     apple_live_enabled: bool,
+    /// Speech edges of this take, for the watch that reads them (assistive).
+    speech_observer: Option<crate::presentation::emitter::SpeechActivityObserver>,
 }
 
 /// Safe filename fragment for a controller session id. Rejects path
@@ -1863,7 +1869,7 @@ pub struct RecordingController {
     ///
     /// This is true for:
     /// - Hold modes: Chat (Shift) / Selection (Cmd)
-    /// - Assistive toggle (right Option double-tap, if enabled)
+    /// - Assistive toggle (started from the menu bar or the overlay)
     assistive_mode: Arc<RwLock<bool>>,
     /// Current hold intent (Raw/Chat/Selection) for the active session.
     hold_mode: Arc<RwLock<HoldMode>>,
@@ -1945,7 +1951,7 @@ pub struct RecordingController {
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
 
-    /// Assistive hands-off loop active (Right Option toggle)
+    /// Assistive hands-off loop active (the Assistive toggle)
     assistive_loop_active: Arc<AtomicBool>,
 
     /// Toggle session: track whether we've already appended user/assistant text
@@ -1971,6 +1977,9 @@ pub struct RecordingController {
     /// exactly once (Founder C02 2026-07-20): a second stop of the same take
     /// archives only.
     delivered_take: Arc<Mutex<Option<String>>>,
+    /// Speech clock of the live hands-free assistive take. Thirty seconds
+    /// without voice end the take and archive it (`assistive_silence`).
+    assistive_silence: std::sync::Mutex<Option<assistive_silence::AssistiveSilenceWatch>>,
 
     /// Sample offset (in the recorder buffer) marking the start of the next
     /// incremental segment. Advances on each `commit_segment` call so segment
@@ -2232,6 +2241,7 @@ impl RecordingController {
             ))),
             pre_overlay_frontmost_app: Arc::new(RwLock::new(None)),
             delivered_take: Arc::new(Mutex::new(None)),
+            assistive_silence: std::sync::Mutex::new(None),
             last_segment_audio_offset: Arc::new(AtomicUsize::new(0)),
             // Conversation mode (lazy init)
             conversation_engine: Arc::new(Mutex::new(None)),
@@ -4152,6 +4162,7 @@ impl RecordingController {
                 TranscriptDelivery::Unattempted => "unattempted",
                 TranscriptDelivery::ComposerPending => "composer_pending",
                 TranscriptDelivery::Retained => "retained",
+                TranscriptDelivery::EndedWithoutVoice => "ended_without_voice",
             },
             stop_final_wait_ms,
             stop_final_timeout,
@@ -4233,6 +4244,18 @@ impl RecordingController {
                     "stop-path handoff already attempted for this take"
                 ));
             }
+        }
+        // An assistive take that heard no voice for 30 s is not a message.
+        // Its text stays in the take archive and no destination is chosen:
+        // no paste, no clipboard, no Agent (Founder decision 2026-10-26).
+        if self.take_ended_by_silence(take_id) {
+            self.record_delivery_disposition(TranscriptDelivery::EndedWithoutVoice)
+                .await;
+            info!(
+                seal_refused,
+                "delivery_route: skipped; the assistive take ended without voice"
+            );
+            return Ok(TranscriptDelivery::EndedWithoutVoice);
         }
         // A one-turn take has exactly one destination: the Agent composer draft
         // of the thread that owned the capture. It must not also post a
@@ -5003,37 +5026,39 @@ impl RecordingController {
         );
         let cursor_token = crate::os::hold_badge::take_token();
         let compact_broadcast = event_broadcast.clone();
-        let presentation = Arc::new(
-            PresentationEmitter::new_with_authority(
-                transcript_buffer,
-                delta_sink,
-                None,
-                transcript_bus,
-                acoustic_ledger,
-                Some(projection_callback),
-            )
-            .with_apple_preview_observer(Arc::new(move |text| {
-                crate::os::hold_badge::update_transcript(cursor_token, text);
-            }))
-            .with_cursor_observer(Arc::new(move |projection| {
-                crate::os::hold_badge::update_voice_state(cursor_token, projection.voice);
-                crate::os::tray_status::set_tray_voice_for_take(cursor_token, projection.voice);
-                // The overlay retains the complete reducer projection; pointer
-                // paint follows raw Apple partials through its separate observer.
-                match serde_json::to_string(projection) {
-                    Ok(json) => {
-                        let _ = compact_broadcast.send(IpcEvent {
-                            timestamp: chrono::Utc::now()
-                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                            payload: IpcEventPayload::CompactProjection { json },
-                        });
-                    }
-                    Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
+        let emitter = PresentationEmitter::new_with_authority(
+            transcript_buffer,
+            delta_sink,
+            None,
+            transcript_bus,
+            acoustic_ledger,
+            Some(projection_callback),
+        )
+        .with_apple_preview_observer(Arc::new(move |text| {
+            crate::os::hold_badge::update_transcript(cursor_token, text);
+        }))
+        .with_cursor_observer(Arc::new(move |projection| {
+            crate::os::hold_badge::update_voice_state(cursor_token, projection.voice);
+            crate::os::tray_status::set_tray_voice_for_take(cursor_token, projection.voice);
+            // The overlay retains the complete reducer projection; pointer
+            // paint follows raw Apple partials through its separate observer.
+            match serde_json::to_string(projection) {
+                Ok(json) => {
+                    let _ = compact_broadcast.send(IpcEvent {
+                        timestamp: chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        payload: IpcEventPayload::CompactProjection { json },
+                    });
                 }
-            }))
-            .with_sentence_pause_sec(options.sentence_pause_sec)
-            .with_transcription_controls(options.seal_ledger_enabled, options.apple_live_enabled),
-        );
+                Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
+            }
+        }))
+        .with_sentence_pause_sec(options.sentence_pause_sec)
+        .with_transcription_controls(options.seal_ledger_enabled, options.apple_live_enabled);
+        let presentation = Arc::new(match options.speech_observer {
+            Some(observer) => emitter.with_speech_activity_observer(observer),
+            None => emitter,
+        });
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let delivery_tag_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -5172,6 +5197,7 @@ impl RecordingController {
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         delivery_tagger: Arc<TranscriptDeliveryTagger>,
+        speech_observer: Option<crate::presentation::emitter::SpeechActivityObserver>,
     ) -> RecordingEventPipeline {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
         let acoustic_ledger = recorder.acoustic_ledger_handle();
@@ -5182,6 +5208,7 @@ impl RecordingController {
                 sentence_pause_sec: recorder.light_plus_sentence_pause_sec(),
                 seal_ledger_enabled: recorder.seal_ledger_enabled(),
                 apple_live_enabled: recorder.apple_live_enabled(),
+                speech_observer,
             },
             event_broadcast,
             transcript_bus,
@@ -5197,7 +5224,7 @@ impl RecordingController {
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
-        _flush_voice_chat_on_vad_end: bool,
+        speech_observer: Option<crate::presentation::emitter::SpeechActivityObserver>,
         event_broadcast: broadcast::Sender<IpcEvent>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         delivery_tagger: Arc<TranscriptDeliveryTagger>,
@@ -5209,14 +5236,15 @@ impl RecordingController {
         // appends into the current chat user bubble, and VAD end commits that bubble to the
         // agent without stopping the recorder. Do not route assistive live preview deltas
         // into the same bubble, or previews and finals will duplicate. This sink does not
-        // perform that routing: callers pass `preview_deltas_enabled`, and the flush flag
-        // is unused here.
+        // perform that routing: callers pass `preview_deltas_enabled`. A hands-free
+        // assistive take also passes the observer its silence watch reads.
         Self::configure_hold_event_sink(
             recorder,
             preview_deltas_enabled,
             event_broadcast,
             transcript_bus,
             delivery_tagger,
+            speech_observer,
         )
     }
 
@@ -5586,8 +5614,12 @@ impl RecordingController {
 
         match current_state {
             State::Idle => {
-                self.start_toggle_recording(event.assistive, CaptureTurnIntent::HandsFree)
+                let admission = self
+                    .start_toggle_recording(event.assistive, CaptureTurnIntent::HandsFree)
                     .await?;
+                if let CaptureAdmission::Admitted(take) = admission {
+                    self.watch_assistive_silence(take);
+                }
             }
             State::RecToggle => {
                 info!("Toggle pressed; entering stop flow (state=REC_TOGGLE)");
@@ -6364,6 +6396,7 @@ impl RecordingController {
                 event_broadcast.clone(),
                 transcript_bus.clone(),
                 Arc::clone(&hold_session.delivery_tagger),
+                None,
             );
             pipeline
                 .presentation
@@ -6389,6 +6422,7 @@ impl RecordingController {
                             event_broadcast.clone(),
                             transcript_bus.clone(),
                             Arc::clone(&hold_session.delivery_tagger),
+                            None,
                         );
                         pipeline
                             .presentation
@@ -6665,11 +6699,17 @@ impl RecordingController {
         })
         .map(Arc::new);
 
+        // A hands-free assistive take ends after 30 s without voice; any other
+        // take clears the previous take's watch.
+        let speech_observer = self.arm_assistive_silence(
+            &new_session_id,
+            is_assistive && matches!(capture_turn, CaptureTurnIntent::HandsFree),
+        );
         // Runtime pipeline is always event-based.
         let pipeline = Self::configure_toggle_event_sink(
             recorder,
             overlay_enabled,
-            is_assistive,
+            speech_observer.clone(),
             self.event_broadcast.clone(),
             transcript_bus.clone(),
             Arc::clone(&self.delivery_tagger),
@@ -6695,7 +6735,7 @@ impl RecordingController {
                 let pipeline = Self::configure_toggle_event_sink(
                     recorder,
                     overlay_enabled,
-                    is_assistive,
+                    speech_observer.clone(),
                     self.event_broadcast.clone(),
                     transcript_bus.clone(),
                     Arc::clone(&self.delivery_tagger),
@@ -8714,6 +8754,7 @@ mod refusal_recovery_tests {
                 sentence_pause_sec: 0.0,
                 seal_ledger_enabled: true,
                 apple_live_enabled: true,
+                speech_observer: None,
             },
             take.controller.event_broadcast.clone(),
             Some(Arc::clone(&take.bus)),
@@ -9645,6 +9686,7 @@ mod refusal_recovery_tests {
                 sentence_pause_sec: 0.7,
                 seal_ledger_enabled: true,
                 apple_live_enabled: true,
+                speech_observer: None,
             },
             events,
             None,
@@ -10465,6 +10507,7 @@ mod refusal_recovery_tests {
                 sentence_pause_sec: 0.7,
                 seal_ledger_enabled: true,
                 apple_live_enabled: true,
+                speech_observer: None,
             },
             sender,
             Some(Arc::clone(&bus)),
@@ -10595,6 +10638,7 @@ mod refusal_recovery_tests {
                 sentence_pause_sec: 0.7,
                 seal_ledger_enabled: true,
                 apple_live_enabled: true,
+                speech_observer: None,
             },
             sender.clone(),
             Some(Arc::clone(&bus)),

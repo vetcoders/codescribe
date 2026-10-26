@@ -272,10 +272,15 @@ soon as you change it.
 (dictation with AI formatting) and **Agent** (passes the recognized text to
 the Agent). None of the three promises a paste: where the
 transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
-nowhere. The gesture pill shows the chord (`2× Left ⌥ (Option)`); VoiceOver
-reads the spelled-out form, so the left and right Option gestures stay
-distinguishable. Rerunning the first-run setup wizard keeps these gestures as
-they are unless you pick a preset on its hotkey step there.
+nowhere. The gesture pill shows the chord (`2× ⌃ (Ctrl)`); VoiceOver reads the
+spelled-out form. Formatting and Agent have no gesture: Option types
+characters, and the right Option double-tap used to start the Agent on its
+own. Their rows show where they start instead of a picker (Formatting: the
+menu bar's **Start transcription**; Agent: **Start in Agent mode**, then
+**Start transcription in Agent mode**). A settings file that still names an
+Option gesture is switched to Disabled at launch, with a backup and a notice in
+the User panel. The first-run setup wizard's hotkey step only explains this
+and never changes these gestures.
 
 **Save shortcuts** / **Restore defaults** sit directly under
 the three rows. The screen reports a blocking conflict that refuses the save,
@@ -283,9 +288,8 @@ otherwise unsaved changes; underneath, and independently of either line, what
 the last save actually persisted. The confirmation is a re-read from disk, not
 an echo of the picker: the bridge can refuse one mode while accepting another
 in the same save, so a refused gesture is named and its picker snaps back to
-the gesture it still holds. That snap-back can itself land in a conflict (a
-refused Agent hold returns to Double Right Option, which Double Ctrl dictation
-disables); the conflict line and the receipt then show together. The receipt
+the gesture it still holds. That snap-back can itself land in a conflict; the
+conflict line and the receipt then show together. The receipt
 says **Saved**, not "in effect": a binding present in `settings.json` is not
 proof that the gesture fires — see **Settings picker vs routed combinations**
 in `docs/HOTKEYS_CONTRACT.md`. Mode names in the receipt are joined in the

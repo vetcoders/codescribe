@@ -150,7 +150,7 @@ fn mode_binding_contract_uses_settings_when_env_path_is_overridden() {
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Formatting),
-        ShortcutBinding::DoubleLeftOption
+        ShortcutBinding::Disabled
     );
 }
 

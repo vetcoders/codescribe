@@ -1175,7 +1175,8 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Start the same toggle recording flow used by the default hotkey.
+    /// Start the Formatting toggle, from the menu bar or the overlay; no key
+    /// starts it.
     pub async fn start_recording(&self) -> Result<(), CsError> {
         application_runtime::run(async move {
             start_recording_with_event(HotkeyEvent::ToggleNormal).await
@@ -1185,8 +1186,8 @@ impl CodescribeHotkeys {
 
     /// Start the same toggle flow in the assistive lane.
     ///
-    /// This is the hands-free assistive route: the overlay and the right-Option
-    /// double tap. It keeps utterance silence epochs. The Agent composer mic is
+    /// This is the hands-free assistive route, started from the menu bar or the
+    /// overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
     /// a separate, UI-initiated capture — see
     /// [`Self::start_composer_turn_recording`].
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
@@ -2298,18 +2299,6 @@ async fn dispatch_recording_hotkey_event(
         HotkeyEvent::AgentChannel { digit } => {
             controller.toggle_agent_channel(digit).await?;
         }
-        HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
-            // Detector is the single owner of the stable
-            // `blocked_double_tap gesture=… reason=…` INFO line (W11-C).
-            // Bridge must not re-emit that token — only optional human prose.
-            let body = format!(
-                "{} was detected, but {}.",
-                gesture.label(),
-                reason.message()
-            );
-            tracing::debug!("Hotkey double-tap blocked: {body}");
-            let _ = reason; // keep reason available for future Diagnostics UI
-        }
     }
 
     Ok(())
@@ -2453,12 +2442,10 @@ mod application_shutdown_tests {
     }
 }
 
-/// Recording-dispatch side effects — notably that a blocked double-tap stays
-/// silent on the tray instead of publishing a conflict the detector already owns.
+/// Recording-dispatch side effects on the tray status.
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
-    use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
 
     #[test]
     #[serial_test::serial]
@@ -2516,26 +2503,6 @@ mod dispatch_tests {
             assert_eq!(tray_status::current_tray_status(), TrayStatus::Error);
         }
         tray_status::update_tray_status(TrayStatus::Idle);
-    }
-
-    /// Detector already owns blocked-double-tap tray truth; bridge stays silent.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn blocked_double_tap_does_not_publish_tray_conflict() {
-        tray_status::update_tray_status(TrayStatus::Idle);
-
-        let controller = fixture_controller();
-        dispatch_recording_hotkey_event(
-            HotkeyEvent::DoubleTapBlocked {
-                gesture: DoubleTapGesture::LeftOption,
-                reason: DoubleTapBlockReason::ModifierComboActive,
-            },
-            controller,
-        )
-        .await
-        .expect("blocked double-tap dispatch should not fail");
-
-        assert_eq!(tray_status::current_tray_status(), TrayStatus::Idle);
     }
 }
 
@@ -2809,8 +2776,6 @@ pub enum CsShortcutBinding {
     HoldCtrlShift,
     HoldCtrlCmd,
     DoubleCtrl,
-    DoubleLeftOption,
-    DoubleRightOption,
 }
 
 impl From<ShortcutBinding> for CsShortcutBinding {
@@ -2824,8 +2789,6 @@ impl From<ShortcutBinding> for CsShortcutBinding {
             ShortcutBinding::HoldCtrlShift => CsShortcutBinding::HoldCtrlShift,
             ShortcutBinding::HoldCtrlCmd => CsShortcutBinding::HoldCtrlCmd,
             ShortcutBinding::DoubleCtrl => CsShortcutBinding::DoubleCtrl,
-            ShortcutBinding::DoubleLeftOption => CsShortcutBinding::DoubleLeftOption,
-            ShortcutBinding::DoubleRightOption => CsShortcutBinding::DoubleRightOption,
         }
     }
 }
@@ -2841,8 +2804,6 @@ impl From<CsShortcutBinding> for ShortcutBinding {
             CsShortcutBinding::HoldCtrlShift => ShortcutBinding::HoldCtrlShift,
             CsShortcutBinding::HoldCtrlCmd => ShortcutBinding::HoldCtrlCmd,
             CsShortcutBinding::DoubleCtrl => ShortcutBinding::DoubleCtrl,
-            CsShortcutBinding::DoubleLeftOption => ShortcutBinding::DoubleLeftOption,
-            CsShortcutBinding::DoubleRightOption => ShortcutBinding::DoubleRightOption,
         }
     }
 }
@@ -2883,7 +2844,7 @@ const ALL_WORK_MODES: [WorkMode; 3] = [
 ];
 
 /// Closed gesture set offered by the Settings picker (`HOTKEYS_CONTRACT`).
-const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
+const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 7] = [
     ShortcutBinding::Disabled,
     ShortcutBinding::HoldFn,
     ShortcutBinding::HoldCtrl,
@@ -2891,8 +2852,6 @@ const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::HoldCtrlShift,
     ShortcutBinding::HoldCtrlCmd,
     ShortcutBinding::DoubleCtrl,
-    ShortcutBinding::DoubleLeftOption,
-    ShortcutBinding::DoubleRightOption,
 ];
 
 /// Pure picker projection of the detector's routing table. No settings or
@@ -3338,8 +3297,8 @@ impl CodescribeHotkeys {
         Ok(())
     }
 
-    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-    /// Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+    /// Formatting and Assistive have no gesture) and reload.
     pub fn reset_bindings_to_defaults(&self) -> Result<(), CsError> {
         let mut settings = UserSettings::load();
         // `None` normalizes to `default_mode_bindings()` on the next read, so this
@@ -3517,13 +3476,13 @@ mod mode_binding_tests {
         ]
     }
 
-    /// Reachability collisions (e.g. DoubleCtrl vs DoubleLeftOption) are blocking.
+    /// Reachability collisions (Formatting on a dictation gesture) are blocking.
     #[test]
     fn validate_flags_internal_reachability_conflict_as_blocking() {
-        // Dictation=DoubleCtrl steals the toggle path from Formatting=DoubleLeftOption.
+        // Double-tap Ctrl only ever starts Dictation.
         let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
             CsShortcutBinding::DoubleCtrl,
-            CsShortcutBinding::DoubleLeftOption,
+            CsShortcutBinding::DoubleCtrl,
             CsShortcutBinding::Disabled,
         ));
         assert!(
@@ -3549,21 +3508,21 @@ mod mode_binding_tests {
     }
 
     /// P2-007 (linked: hotkeys-dead-binding-cells): Dictation and Formatting on
-    /// double-tap left Option is a blocking conflict that names the precedence,
-    /// in the same validation the Settings Save button is gated on.
+    /// the Fn hold is a blocking conflict that names the precedence, in the
+    /// same validation the Settings Save button is gated on.
     #[test]
-    fn validate_blocks_duplicate_left_option_with_formatting_precedence() {
+    fn validate_blocks_duplicate_fn_hold_with_dictation_precedence() {
         let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
-            CsShortcutBinding::DoubleLeftOption,
-            CsShortcutBinding::DoubleLeftOption,
-            CsShortcutBinding::DoubleRightOption,
+            CsShortcutBinding::HoldFn,
+            CsShortcutBinding::HoldFn,
+            CsShortcutBinding::Disabled,
         ));
         assert!(
             conflicts.iter().any(|c| c.blocking
-                && c.gesture_label == "Double-tap Left Option"
+                && c.gesture_label == "Hold Fn/Globe"
                 && c.message
-                    == "This gesture only starts Formatting, so Dictation would never start from it."),
-            "duplicate left Option must block with the Formatting precedence, got {conflicts:?}"
+                    == "This gesture only starts Dictation, so Formatting would never start from it."),
+            "duplicate Fn hold must block with the Dictation precedence, got {conflicts:?}"
         );
     }
 
@@ -3574,8 +3533,8 @@ mod mode_binding_tests {
     fn validate_defaults_never_block_on_the_fn_tap_note() {
         let conflicts = CodescribeHotkeys::new().validate_bindings(candidate(
             CsShortcutBinding::HoldFn,
-            CsShortcutBinding::DoubleLeftOption,
-            CsShortcutBinding::DoubleRightOption,
+            CsShortcutBinding::Disabled,
+            CsShortcutBinding::Disabled,
         ));
         for conflict in conflicts
             .iter()
@@ -3622,9 +3581,8 @@ mod mode_binding_tests {
         assert_eq!(dictation.binding, CsShortcutBinding::HoldCtrlAlt);
 
         // P2-007 (linked: hotkeys-dead-binding-cells): unrouted cells are
-        // refused by the setter and never reach disk. The audited duplicate
-        // keeps Formatting on double-tap left Option; Dictation is refused and
-        // keeps its persisted hold.
+        // refused by the setter and never reach disk. Formatting and the agent
+        // have no gesture, so both refuse every gesture and stay disabled.
         let binding_of = |mode: CsWorkMode| {
             hotkeys
                 .get_mode_bindings()
@@ -3633,19 +3591,15 @@ mod mode_binding_tests {
                 .map(|b| b.binding)
         };
         let refused = hotkeys
-            .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleLeftOption)
-            .expect_err("dictation never starts from double-tap left Option");
+            .set_mode_binding(CsWorkMode::Formatting, CsShortcutBinding::HoldCtrlAlt)
+            .expect_err("Formatting never starts from a gesture");
         assert!(
-            format!("{refused:?}").contains("only starts Formatting"),
+            format!("{refused:?}").contains("only starts Dictation"),
             "{refused:?}"
         );
         assert_eq!(
             binding_of(CsWorkMode::Dictation),
             Some(CsShortcutBinding::HoldCtrlAlt)
-        );
-        assert_eq!(
-            binding_of(CsWorkMode::Formatting),
-            Some(CsShortcutBinding::DoubleLeftOption)
         );
         for (mode, binding) in [
             (CsWorkMode::Formatting, CsShortcutBinding::HoldCtrl),
@@ -3659,11 +3613,11 @@ mod mode_binding_tests {
         }
         assert_eq!(
             binding_of(CsWorkMode::Formatting),
-            Some(CsShortcutBinding::DoubleLeftOption)
+            Some(CsShortcutBinding::Disabled)
         );
         assert_eq!(
             binding_of(CsWorkMode::Assistive),
-            Some(CsShortcutBinding::DoubleRightOption)
+            Some(CsShortcutBinding::Disabled)
         );
         hotkeys
             .set_mode_binding(CsWorkMode::Dictation, CsShortcutBinding::DoubleCtrl)

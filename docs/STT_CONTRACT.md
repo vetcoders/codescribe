@@ -537,11 +537,11 @@ frozen in the recording snapshot; explicit file actions remain separate.
 
 ### 3.1 Hotkeys (start/stop recording)
 
-| Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                       | Backend                                      |
-| ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
-| Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
-| Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
-| Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
+| Front entry                               | Binding (your settings)              | Bridge / OS                                    | Controller                                                       | Backend                                      |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
+| Hold Fn (dictation)                       | `mode_bindings.dictation = hold_fn`  | `CodescribeHotkeys` + CGEventTap               | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
+| Menu bar Start transcription (formatting) | no gesture (`formatting = disabled`) | `CodescribeHotkeys::start_recording`           | toggle + force AI format path                                    | STT same, then `core/llm` formatting         |
+| Start in Agent mode (assistive)           | no gesture (`assistive = disabled`)  | `CodescribeHotkeys::start_assistive_recording` | assistive session                                                | STT same, then agent lane                    |
 
 **Explicit Stop** first retains real PCM for the fixed 1.5-second capture grace,
 then closes that subscriber's feed. Automatic silence, handoff and cleanup do

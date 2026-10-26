@@ -48,12 +48,12 @@ fn test_get_config_defaults() {
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Formatting),
-        ShortcutBinding::DoubleLeftOption,
+        ShortcutBinding::Disabled,
         "Default formatting binding"
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::DoubleRightOption,
+        ShortcutBinding::Disabled,
         "Default assistive binding"
     );
 
@@ -125,7 +125,7 @@ fn test_save_config_multiple_fields() {
 
     set_mode_binding(WorkMode::Dictation, ShortcutBinding::HoldCtrlShift);
     set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
-    set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
+    set_mode_binding(WorkMode::Assistive, ShortcutBinding::Disabled);
 
     let config = Config::load();
     config.save_to_env("WHISPER_LANGUAGE", "en").expect("save");
@@ -144,7 +144,7 @@ fn test_save_config_multiple_fields() {
     );
     assert_eq!(
         reloaded_settings.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::DoubleRightOption
+        ShortcutBinding::Disabled
     );
 
     let reloaded = Config::load();
@@ -259,30 +259,17 @@ fn test_all_dictation_mode_binding_variants() {
 fn test_toggle_mode_binding_variants() {
     let _tmp = setup_test_env();
 
-    for (mode, variants) in [
-        (
-            WorkMode::Formatting,
-            [ShortcutBinding::DoubleLeftOption, ShortcutBinding::Disabled],
-        ),
-        (
-            WorkMode::Assistive,
-            [
-                ShortcutBinding::DoubleRightOption,
-                ShortcutBinding::Disabled,
-            ],
-        ),
-    ] {
-        for binding in variants {
-            set_mode_binding(mode, binding);
-            let reloaded = UserSettings::load();
-            assert_eq!(
-                reloaded.mode_binding_for(mode),
-                binding,
-                "Failed for mode={} binding={}",
-                mode.as_str(),
-                binding.as_str()
-            );
-        }
+    // Double-tap Ctrl is the one toggle gesture left, and it dictates:
+    // Formatting and the agent have no gesture.
+    for binding in [ShortcutBinding::DoubleCtrl, ShortcutBinding::Disabled] {
+        set_mode_binding(WorkMode::Dictation, binding);
+        let reloaded = UserSettings::load();
+        assert_eq!(
+            reloaded.mode_binding_for(WorkMode::Dictation),
+            binding,
+            "Failed for binding={}",
+            binding.as_str()
+        );
     }
 }
 
