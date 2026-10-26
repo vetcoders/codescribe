@@ -313,6 +313,16 @@ struct OverlayDrawerFramePreferenceKey: PreferenceKey {
   }
 }
 
+/// The conversation's laid-out frame, in the canvas coordinate space. It keeps
+/// the split width while the cell around it folds.
+struct OverlayConversationFramePreferenceKey: PreferenceKey {
+  static let defaultValue = CGRect.zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let frame = nextValue()
+    if !frame.isEmpty { value = frame }
+  }
+}
+
 /// The folded list's rail, in the canvas coordinate space.
 struct OverlayAgentRailFramePreferenceKey: PreferenceKey {
   static let defaultValue = CGRect.zero
@@ -514,6 +524,20 @@ struct DictationOverlayView: View {
           geometry.size.width
             - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
             - transcriptActionsWidth)
+        // The conversation keeps its split width while its cell folds or
+        // unfolds: the pane slide animates a clip, never a reflow. Laying the
+        // text out at the folding cell's width wrapped it one character per
+        // line in the edge column, and a stalled frame kept it there
+        // (Founder, 2026-10-26). The width changes only with the window.
+        let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
+          textScale: textScale,
+          preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
+          windowWidth: geometry.size.width)
+        let conversationContentWidth = max(
+          0,
+          geometry.size.width
+            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
+            - transcriptActionsWidth)
         let canvasHidden = canvasWidth < 1 || conversationFolded
         // The conversation toggle has a reserved row, clear of message text.
         let conversationControlsHeight: CGFloat = columnShown ? 30 * textScale : 0
@@ -600,14 +624,25 @@ struct DictationOverlayView: View {
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
               .accessibilityHidden(state.isCollapsed)
+              .frame(width: conversationContentWidth, alignment: .leading)
+              .background {
+                GeometryReader { body in
+                  Color.clear.preference(
+                    key: OverlayConversationFramePreferenceKey.self,
+                    value: body.frame(in: .named("overlay-canvas")))
+                }
+                .allowsHitTesting(false)
+              }
             }
           }
           .opacity(canvasHidden ? 0 : 1)
           .allowsHitTesting(!canvasHidden)
           .accessibilityHidden(canvasHidden)
           // Keep the conversation and its reveal edge in the same cell. Its
-          // control stays usable when the conversation itself is folded.
-          .frame(width: canvasWidth, height: geometry.size.height)
+          // control stays usable when the conversation itself is folded. The
+          // cell clips the split-width conversation while it slides.
+          .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
+          .clipped()
           .overlay(alignment: .topLeading) {
             if columnShown {
               conversationEdgeControls(canvasShown: !canvasHidden)
@@ -828,6 +863,11 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 8)
     .padding(.bottom, 16)
     .frame(width: width)
+    // The list lays out at its new width at once and only the column's frame
+    // slides over it, anchored to the window edge: a row never re-wraps its
+    // title and preview inside a half-way frame (Founder, 2026-10-26).
+    .animation(nil, value: width)
+    .frame(width: width, alignment: .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
     .background { OverlayMenuCursorRegion() }
