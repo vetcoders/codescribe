@@ -31,7 +31,9 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     let owners: [String: [String: Any]]
 
     init() throws {
-      root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      let bus = root.appendingPathComponent("fixture.jsonl")
+      self.root = root
       try FileManager.default.createDirectory(
         at: root.appendingPathComponent("leases"), withIntermediateDirectories: true)
       try Data().write(to: bus)
