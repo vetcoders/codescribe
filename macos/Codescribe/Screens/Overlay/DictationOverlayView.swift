@@ -189,7 +189,8 @@ struct OverlayRecordingControls: View {
     .buttonStyle(.plain)
     .disabled(recordingDisabled)
     .opacity(recordingDisabled ? 0.45 : 1)
-    .animation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover), value: recordingSymbol)
+    .animation(
+      reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.hover), value: recordingSymbol)
     .csFocusOutline()
     .modifier(
       OverlayHeaderControlChrome(
@@ -223,7 +224,8 @@ struct OverlayRecordingControls: View {
       .inset(by: Self.processingArcWidth / 2)
       .trim(from: 0, to: OverlayRecordingLight.arcFraction)
       .stroke(
-        recordingTint, style: StrokeStyle(lineWidth: Self.processingArcWidth, lineCap: .round))
+        recordingTint,
+        style: StrokeStyle(lineWidth: Self.processingArcWidth, lineCap: .round))
       .rotationEffect(.radians(rotation))
       .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
       .accessibilityHidden(true)
@@ -637,13 +639,16 @@ struct DictationOverlayView: View {
         // flips on the first geometry pass and would animate the transcript
         // from its intrinsic width for 240 ms (OverlayChromeV3Tests, 900 wide).
         // A corner button's choice slides the panes the same way.
-        .animation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: columnShown)
-        .animation(reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: railShown)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: columnShown)
+        .animation(
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: railShown)
         .animation(
           reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
           value: transcriptActionsShown)
         .animation(
-          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter), value: state.agentsLayout)
+          reduceMotion ? nil : .easeInOut(duration: CSMotion.Tempo.enter),
+          value: state.agentsLayout)
         .onAppear { state.setAgentDrawerDocked(docked) }
         .onChange(of: docked) { _, docked in
           state.setAgentDrawerDocked(docked)
@@ -1042,7 +1047,8 @@ struct DictationOverlayView: View {
     .onHover {
       closeDotHovered = $0
     }
-    .animation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered)
+    .animation(
+      reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered)
     .focusable(false)
     .modifier(
       OverlayHeaderControlChrome(
