@@ -70,18 +70,26 @@ to be notarized.
 On a build host reached over SSH the login keychain is locked, and `codesign`
 without `--keychain` searches only the user search list, so a headless
 `make app PROFILE=local-release` used to fail on the publisher's signature
-with `errSecInternalComponent` even when the same certificate sat in an
-unlocked build keychain. `scripts/build-app.sh` therefore signs from the build
-keychain when one is available: `CODESCRIBE_CODESIGN_KEYCHAIN` names it
+with `errSecInternalComponent` even when the same certificate sat in a build
+keychain. `scripts/build-app.sh` therefore signs from the build keychain and
+unlocks it itself: `CODESCRIBE_CODESIGN_KEYCHAIN` names the keychain
 explicitly; otherwise `PENSIEVE_BUILD_KEYCHAIN` or
-`~/Library/Keychains/pensieve-build.keychain-db` is used when the file exists
-and is unlocked in the current security session (the caller unlocks it, for
-example with pensieve's `unlock_build_keychain`, in the same session). The
-identity is then named by its SHA-1 hash from that keychain, because the same
-certificate may also live in login where a name would be ambiguous, and every
-real-identity `codesign` call receives `--keychain`. With no unlocked build
-keychain, or with `CODESCRIBE_CODESIGN_IDENTITY` set, the resolution above is
-unchanged; ad-hoc signing never involves a keychain.
+`~/Library/Keychains/pensieve-build.keychain-db` is used when the file exists.
+The script unlocks it in its own process with the first line of
+`PENSIEVE_BUILD_KEYCHAIN_PASSWORD_FILE` (default `~/.keys/.build-keychain-pw`,
+which must be owned by you with mode 0600 or 0400), and again right before
+every real-identity `codesign`, because a keychain auto-locks while xcodebuild
+runs and an unlock made in another session does not carry over. The identity
+is then named by its SHA-1 hash from that keychain, because the same
+certificate may also live in login where a name would be ambiguous, every
+real-identity `codesign` call receives `--keychain`, and the build log says
+`signing from keychain: <path>`. When the build keychain exists but cannot be
+unlocked, an SSH build stops at once with the reason and the remedy (store
+the password in that file, point the variables elsewhere, or build in the
+graphical session) rather than failing minutes later in `codesign`; a
+graphical session says so and signs from the login keychain. With
+`CODESCRIBE_CODESIGN_IDENTITY=-`, or without a build keychain file, the
+resolution above is unchanged; ad-hoc signing never involves a keychain.
 
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
