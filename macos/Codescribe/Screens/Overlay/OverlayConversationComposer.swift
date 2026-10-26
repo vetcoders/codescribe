@@ -68,6 +68,14 @@ struct OverlayConversationComposer: View {
   private var restingActionColor: Color {
     palette.mutedText.color.opacity(ComposerControlMetrics.restingActionOpacity)
   }
+  private var editorViewportHeight: CGFloat {
+    ComposerTextLayout.resolve(
+      contentHeight: editorHeight,
+      lineHeight: ComposerTextLayout.lineHeight(fontSize: ComposerControlMetrics.textSize * textScale),
+      maximumHeight: maximumEditorHeight
+        ?? ComposerControlMetrics.conversationEditorMaximumHeight * textScale
+    ).height
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -250,19 +258,13 @@ struct OverlayConversationComposer: View {
   }
 
   private var draftSyncHelp: String {
-    let explanation: String
     if draftSyncArmed {
-      explanation = String(
-        localized: "Click Sync in another composer to share future input. Click again to cancel.")
+      return String(localized: "Sync armed")
     } else if draftSyncNames.count > 1 {
-      explanation = String(
-        localized: "Click to leave Sync. Right-click to choose linked composers.")
+      return String(localized: "Stop syncing")
     } else {
-      explanation = String(
-        localized: "Click here, then click Sync in another composer to share future input. Right-click to choose a target.")
+      return String(localized: "Sync draft")
     }
-    guard draftSyncNames.count > 1 else { return explanation }
-    return explanation + "\n" + draftSyncNames.joined(separator: " · ")
   }
 
   var draftMicrophoneAccessibilityLabel: String {
@@ -272,11 +274,12 @@ struct OverlayConversationComposer: View {
   }
 
   private var editorRow: some View {
-    HStack(alignment: .bottom, spacing: controlSpacing) {
+    VStack(alignment: .leading, spacing: controlSpacing) {
       ConversationMessageField(
         text: prose, height: $editorHeight,
         textColor: palette.primaryText.nsColor,
         fontSize: ComposerControlMetrics.textSize * textScale,
+        maximumEditorHeight: maximumEditorHeight,
         sending: sending, placeholder: placeholder, onSubmit: onSubmit,
         onEditorActive: onEditorActive,
         onTypingActivity: onTypingActivity,
@@ -287,10 +290,10 @@ struct OverlayConversationComposer: View {
         hasAttachments: { !attachments.isEmpty }, onAttach: attach,
         onProseEdit: onProseEdit
       )
-      .frame(height: min(editorHeight, maximumEditorHeight ?? editorHeight))
+      .frame(maxWidth: .infinity)
+      .frame(height: editorViewportHeight)
       .transaction { $0.animation = nil }
       .accessibilityIdentifier("overlay-conversation-composer")
-      .help("Paste files, images, or long text to attach a local copy.")
       .overlay(alignment: .topLeading) {
         if prose.wrappedValue.isEmpty {
           Text(verbatim: placeholder)
@@ -302,50 +305,61 @@ struct OverlayConversationComposer: View {
             .accessibilityHidden(true)
         }
       }
-      if !draftSyncChoices.isEmpty || draftSyncActive {
-        draftSyncControl
-      }
-      if let onToggleDraftMicrophone {
-        // The same live take addressed to this conversation lights the
-        // header and gives this draft control its live-speech glyph.
-        Button(action: onToggleDraftMicrophone) {
-          Image(systemName: draftMicrophoneSymbol)
-            .symbolEffect(
-              .pulse, options: .repeating,
-              isActive: draftMicrophoneRecording && !reduceMotion)
+      HStack(spacing: controlSpacing) {
+        Spacer(minLength: 0)
+        if !draftSyncChoices.isEmpty || draftSyncActive {
+          draftSyncControl
         }
-        .font(.system(size: controlGlyphSize, weight: .semibold))
-        .frame(
-          width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
-        )
-        .contentShape(Circle()).buttonStyle(.plain)
-        .conversationActionHover(
-          restingColor: draftMicrophoneRecording
-            ? palette.agentAccent.color : restingActionColor,
-          hoverColor: draftMicrophoneRecording
-            ? palette.agentAccent.color : palette.primaryText.color
-        )
-        .disabled(draftMicrophoneBusy)
-        .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
-        .accessibilityIdentifier("overlay-conversation-draft-microphone")
+        if let onToggleDraftMicrophone {
+          // The same live take addressed to this conversation lights the
+          // header and gives this draft control its live-speech glyph.
+          Button(action: onToggleDraftMicrophone) {
+            Image(systemName: draftMicrophoneSymbol)
+              .symbolEffect(
+                .pulse, options: .repeating,
+                isActive: draftMicrophoneRecording && !reduceMotion)
+          }
+          .font(.system(size: controlGlyphSize, weight: .semibold))
+          .frame(
+            width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+          )
+          .contentShape(Circle()).buttonStyle(.plain)
+          .background {
+            Circle()
+              .fill(draftMicrophoneRecording || liveSpeechActive
+                ? palette.agentAccent.color.opacity(0.14) : .clear)
+              .allowsHitTesting(false)
+              .accessibilityHidden(true)
+          }
+          .conversationActionHover(
+            restingColor: draftMicrophoneRecording || liveSpeechActive
+              ? palette.agentAccent.color : restingActionColor,
+            hoverColor: draftMicrophoneRecording || liveSpeechActive
+              ? palette.agentAccent.color : palette.primaryText.color
+          )
+          .disabled(draftMicrophoneBusy)
+          .help(Text(verbatim: draftMicrophoneAccessibilityLabel))
+          .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
+          .accessibilityIdentifier("overlay-conversation-draft-microphone")
+        }
+        Button("Send", systemImage: "paperplane.fill", action: onSubmit)
+          .labelStyle(.iconOnly)
+          .font(.system(size: controlGlyphSize, weight: .semibold))
+          .frame(
+            width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+          )
+          .contentShape(Circle())
+          .buttonStyle(.plain)
+          .conversationActionHover(
+            restingColor: restingActionColor,
+            hoverColor: palette.primaryText.color
+          )
+          .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .accessibilityIdentifier("overlay-conversation-send")
+          .help(
+            draftSyncNames.count > 1
+              ? String(localized: "Send to all linked agents") : String(localized: "Send"))
       }
-      Button("Send", systemImage: "paperplane.fill", action: onSubmit)
-        .labelStyle(.iconOnly)
-        .font(.system(size: controlGlyphSize, weight: .semibold))
-        .frame(
-          width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
-        )
-        .contentShape(Circle())
-        .buttonStyle(.plain)
-        .conversationActionHover(
-          restingColor: restingActionColor,
-          hoverColor: palette.primaryText.color
-        )
-        .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        .accessibilityIdentifier("overlay-conversation-send")
-        .help(
-          draftSyncNames.count > 1
-            ? String(localized: "Send to all linked agents") : String(localized: "Send"))
     }
   }
 }
@@ -485,6 +499,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   @Binding var height: CGFloat
   let textColor: NSColor
   let fontSize: CGFloat
+  var maximumEditorHeight: CGFloat? = nil
   let sending: Bool
   let placeholder: String
   let onSubmit: () -> Void
@@ -522,6 +537,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     // coordinator keeps it pinned across "Show scroll bars" changes.
     context.coordinator.scrollerPin.attach(to: scroll)
     scroll.borderType = .noBorder
+    scroll.maximumEditorHeight = maximumEditorHeight
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize / ComposerControlMetrics.textSize
     let editor = MessageTextView()
     editor.wantsLayer = true
     editor.canDrawConcurrently = false
@@ -565,6 +582,9 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
     context.coordinator.parent = self
+    (scroll as? MessageScrollView)?.maximumEditorHeight =
+      maximumEditorHeight
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize / ComposerControlMetrics.textSize
     (scroll as? MessageScrollView)?.onHeightChange = { context.coordinator.updateHeight($0) }
     guard let editor = scroll.documentView as? MessageTextView else { return }
     let font = NSFont.systemFont(ofSize: fontSize)
@@ -771,6 +791,7 @@ private struct ConversationMessageField: NSViewRepresentable {
 
   private final class MessageScrollView: NSScrollView {
     var onHeightChange: (CGFloat) -> Void = { _ in }
+    var maximumEditorHeight = ComposerControlMetrics.conversationEditorMaximumHeight
     var caretRevealPending = false
     private var previousViewport = NSSize.zero
 
@@ -778,6 +799,7 @@ private struct ConversationMessageField: NSViewRepresentable {
       super.layout()
       guard let editor = documentView as? NSTextView,
         let container = editor.textContainer, let textLayout = editor.layoutManager,
+        let font = editor.font,
         contentSize.width > 0
       else { return }
       let viewport = contentSize
@@ -788,7 +810,9 @@ private struct ConversationMessageField: NSViewRepresentable {
       if editor.frame.width != viewport.width {
         editor.setFrameSize(NSSize(width: viewport.width, height: editor.frame.height))
       }
-      container.containerSize = NSSize(width: viewport.width, height: .greatestFiniteMagnitude)
+      container.containerSize = NSSize(
+        width: max(1, viewport.width - 2 * editor.textContainerInset.width),
+        height: .greatestFiniteMagnitude)
       textLayout.ensureLayout(for: container)
       let textHeight = max(
         textLayout.usedRect(for: container).maxY,
@@ -797,7 +821,11 @@ private struct ConversationMessageField: NSViewRepresentable {
       let documentSize = NSSize(width: viewport.width, height: max(viewport.height, documentHeight))
       editor.minSize = NSSize(width: 0, height: viewport.height)
       if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
-      onHeightChange(min(112, max(28, documentHeight)))
+      let layout = ComposerTextLayout.resolve(
+        contentHeight: documentHeight,
+        lineHeight: ceil(textLayout.defaultLineHeight(for: font)),
+        maximumHeight: maximumEditorHeight)
+      onHeightChange(layout.height)
       if documentHeight <= viewport.height {
         contentView.scroll(to: .zero)
         reflectScrolledClipView(contentView)
