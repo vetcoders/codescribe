@@ -88,10 +88,9 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       )
       .environment(\.csTextScale, scale)
       .environment(\.colorScheme, .dark)
-      // OCR measures the settled metadata, not the card's spring entrance.
-      .environment(\.accessibilityReduceMotion, true)
       .symbolEffectsRemoved()
-      .transaction { $0.disablesAnimations = true }
+      // OCR measures the settled metadata, not the card's spring entrance.
+      .transaction { $0.disablesAnimations = true; $0.animation = nil }
       .background(OverlayAppearancePalette.dark.desktopBackground.color))
     host.sizingOptions = []
     host.frame = CGRect(x: 0, y: 0, width: width, height: height)
