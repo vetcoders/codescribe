@@ -2317,7 +2317,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj klucz API tego dostawcy. Możesz to zrobić także później."
+            "value" : "Dodaj klucz API tego dostawcy.\nMożesz to zrobić także później."
           }
         }
       }
@@ -4877,7 +4877,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
+            "value" : "Wybierz agentów, z którymi chcesz pracować."
           }
         }
       }
@@ -12842,7 +12842,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API. Możesz to zrobić także później."
+            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API.\nMożesz to zrobić także później."
           }
         }
       }
