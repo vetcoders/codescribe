@@ -90,9 +90,6 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if !draftSyncChoices.isEmpty || draftSyncNames.count > 1 {
-        draftSyncHeader
-      }
       if let replySelection {
         HStack(alignment: .top, spacing: 8) {
           Button {
@@ -173,47 +170,51 @@ struct OverlayConversationComposer: View {
       : draftMicrophoneRecording ? "mic.fill" : "mic"
   }
 
-  private var draftSyncHeader: some View {
-    HStack(spacing: 6) {
-      if draftSyncNames.count > 1 {
-        Text(verbatim: draftSyncNames.joined(separator: " · "))
-          .lineLimit(1).truncationMode(.middle)
-          .accessibilityIdentifier("overlay-conversation-draft-sync-members")
-      }
-      Spacer(minLength: 0)
-      Menu {
-        ForEach(draftSyncChoices) { choice in
-          Toggle(isOn: Binding(
+  private var draftSyncControl: some View {
+    Menu {
+      ForEach(draftSyncChoices) { choice in
+        Toggle(
+          isOn: Binding(
             get: { choice.selected },
             set: { _ in onToggleDraftSync?(choice.id) })
-          ) {
-            Text(verbatim: choice.title)
-          }
-          .disabled(!choice.enabled)
-          .help(choice.enabled
+        ) {
+          Text(verbatim: choice.title)
+        }
+        .disabled(!choice.enabled)
+        .help(
+          choice.enabled
             ? String(localized: "Share typing and pasted attachments with this composer")
             : String(localized: "This composer has a different draft or a pending delivery."))
-        }
-        if draftSyncNames.count > 1 {
-          Divider()
-          Button("Stop syncing") { onStopDraftSync?() }
-        }
-      } label: {
-        HStack(spacing: 4) {
-          Image(systemName: "link")
-          Text("Sync draft")
-          if draftSyncNames.count > 1 {
-            Text(verbatim: draftSyncNames.count.formatted())
-          }
-        }
       }
-      .menuStyle(.borderlessButton).menuIndicator(.hidden)
-      .fixedSize().disabled(sending)
-      .help("Choose the composers that share this draft. Send delivers to the linked agents.")
-      .accessibilityIdentifier("overlay-conversation-draft-sync")
+      if draftSyncNames.count > 1 {
+        Divider()
+        Button("Stop syncing") { onStopDraftSync?() }
+      }
+    } label: {
+      Label("Sync draft", systemImage: "link")
+        .labelStyle(.iconOnly)
+        .font(.system(size: ComposerControlMetrics.glyphSize, weight: .semibold))
+        .frame(
+          width: ComposerControlMetrics.hitTargetSize,
+          height: ComposerControlMetrics.hitTargetSize)
     }
-    .font(.system(size: 10 * textScale))
-    .foregroundStyle(draftSyncNames.count > 1 ? palette.agentAccent.color : palette.mutedText.color)
+    .menuStyle(.borderlessButton).menuIndicator(.hidden)
+    .fixedSize().disabled(sending)
+    .conversationActionHover(
+      restingColor: palette.mutedText.color,
+      hoverColor: palette.primaryText.color
+    )
+    .help(Text(verbatim: draftSyncHelp))
+    .accessibilityLabel(Text("Sync draft"))
+    .accessibilityValue(Text(verbatim: draftSyncNames.joined(separator: " · ")))
+    .accessibilityIdentifier("overlay-conversation-draft-sync")
+  }
+
+  private var draftSyncHelp: String {
+    let explanation = String(
+      localized: "Choose the composers that share this draft. Send delivers to the linked agents.")
+    guard draftSyncNames.count > 1 else { return explanation }
+    return explanation + "\n" + draftSyncNames.joined(separator: " · ")
   }
 
   var draftMicrophoneAccessibilityLabel: String {
@@ -250,6 +251,9 @@ struct OverlayConversationComposer: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+      }
+      if !draftSyncChoices.isEmpty || draftSyncNames.count > 1 {
+        draftSyncControl
       }
       if let onToggleDraftMicrophone {
         // The same live take addressed to this conversation lights the
@@ -289,8 +293,9 @@ struct OverlayConversationComposer: View {
         )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityIdentifier("overlay-conversation-send")
-        .help(draftSyncNames.count > 1
-          ? String(localized: "Send to all linked agents") : String(localized: "Send"))
+        .help(
+          draftSyncNames.count > 1
+            ? String(localized: "Send to all linked agents") : String(localized: "Send"))
     }
   }
 }
