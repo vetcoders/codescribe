@@ -521,19 +521,26 @@ def cmd_health(args: argparse.Namespace) -> int:
     if handshakes:
         active = handshakes[0]
         live_sha = active.get("commit")
-        inodes_ok = active.get("inodesMatchInstalled") is True
-        ok = sha_matches(live_sha, expected) and inodes_ok
-        status = "running" if ok else "mismatch"
+        inodes_state = active.get("inodesMatchInstalled")
+        if not live_sha or inodes_state is None:
+            ok = False
+            status = "unknown"
+            source = "unknown"
+        else:
+            ok = sha_matches(live_sha, expected) and (inodes_state is True)
+            status = "running" if ok else "mismatch"
+            source = "running_process_handshake"
         summary = (
             f"Running Codescribe pid={active.get('pid')} commit={live_sha} matches --sha {expected} "
-            f"(inodesMatchInstalled={active.get('inodesMatchInstalled')}, installedCommit={installed_sha})"
+            f"(inodesMatchInstalled={inodes_state}, installedCommit={installed_sha})"
             if ok
-            else f"Running Codescribe pid={active.get('pid')} commit={live_sha} does not match --sha {expected} "
-            f"(installedCommit={installed_sha}, inodesMatchInstalled={active.get('inodesMatchInstalled')})"
+            else f"Running Codescribe pid={active.get('pid')} commit={live_sha} status={status} for --sha {expected} "
+            f"(installedCommit={installed_sha}, inodesMatchInstalled={inodes_state})"
         )
     else:
         ok = False
         status = "not-running"
+        source = "not-running"
         summary = (
             f"Codescribe is not running (status=not-running; installed /Applications CSBuildCommit={installed_sha or 'none'}, "
             f"runningPids={runtime['runningPids']})"
@@ -544,6 +551,7 @@ def cmd_health(args: argparse.Namespace) -> int:
             "command": "health",
             "ok": ok,
             "status": status,
+            "source": source,
             "expectedSha": expected,
             "installedCommit": installed_sha,
             "runtime": runtime,

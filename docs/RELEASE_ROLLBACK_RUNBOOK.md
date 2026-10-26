@@ -22,9 +22,11 @@ To halt automatic updates to a bad `vX.Y.Z` release within minutes:
    ```sh
    gh workflow run pages.yml --repo vetcoders/codescribe --ref main
    ```
-3. Verify the live feed no longer advertises `vX.Y.Z`:
+3. Download the live `appcast.xml` feed to a temporary file and verify that its
+   release identity matches `X.Y.(Z-1)` (and no longer advertises `X.Y.Z`):
    ```sh
-   python3 scripts/verify-appcast-version.py --expected <last-good-version>
+   curl -fsSL https://github.com/vetcoders/codescribe/releases/latest/download/appcast.xml -o /tmp/appcast.xml
+   python3 scripts/verify-appcast-version.py /tmp/appcast.xml --version X.Y.(Z-1)
    ```
 
 ## 2. Withdraw the GitHub Release asset (`gh release`)
@@ -58,11 +60,14 @@ bad version. Clients that already installed `vX.Y.Z` need a release with a
    ```
 3. Regenerate and sign `appcast.xml` with `scripts/generate-appcast.sh`:
    ```sh
-   scripts/generate-appcast.sh . -o appcast.xml \
-     --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/vX.Y.(Z+1)"
+   SPARKLE_ED_PRIVATE_KEY="<base64-ed25519-private-key>" \
+   SPARKLE_ED_PUBLIC_KEY="<base64-ed25519-public-key>" \
+     scripts/generate-appcast.sh . -o appcast.xml \
+       --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/vX.Y.(Z+1)/"
    ```
-4. Publish `vX.Y.(Z+1)` and verify the release receipt and appcast contract:
+4. Verify the signed `appcast.xml` release identity and the release contract:
    ```sh
+   python3 scripts/verify-appcast-version.py appcast.xml --version X.Y.(Z+1)
    bash tests/release_appcast_contract.sh
    python3 scripts/tests/test_appcast_version.py
    ```
@@ -71,7 +76,7 @@ bad version. Clients that already installed `vX.Y.Z` need a release with a
 
 If the defect in `vX.Y.Z` aborts on launch before Sparkle's updater initializes:
 
-1. User data (`~/.codescribe/settings.json`, `~/.codescribe/agent-bridge/`,
+1. User data (`~/.codescribe/config/settings.json`, `~/.codescribe/agent-bridge/`,
    history, and custom lexicon) and macOS Keychain credentials live outside
    `/Applications/Codescribe.app` and remain intact across bundle replacement.
 2. Direct affected users to download `Codescribe_vX.Y.(Z+1).dmg` (or
