@@ -1902,6 +1902,8 @@ private struct OverlayIntercomCard: View {
   var body: some View {
     let palette = OverlayAppearancePalette.resolve(colorScheme)
     let expanded = controller.presentation.expanded.contains(identity)
+    let content = controller.contentMetrics.cardContent(
+      width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let preview = controller.contentMetrics.compactPreviewLayout(
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
     let corner =
@@ -1935,13 +1937,14 @@ private struct OverlayIntercomCard: View {
               .frame(height: preview.height)
           } else {
             Color.clear
+              .contentShape(Rectangle())
+              .onTapGesture {
+                if canOpenConversation { controller.expand(identity) }
+              }
           }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        .onTapGesture {
-          if canOpenConversation { controller.expand(identity) }
-        }
         .contextMenu {
           if let message = conversation?.messages.last {
             CopyMessageButton(text: message.text, palette: palette)
