@@ -214,6 +214,10 @@ struct RollingState {
     file: File,
     /// Bytes in the active generation as this process counts them.
     written: u64,
+    /// The roll moved the open file to `.1` and the log did not reopen:
+    /// lines keep landing in that generation, and no roll moves it again
+    /// until the log reopens.
+    detached: bool,
 }
 
 impl RollingLog {
@@ -239,7 +243,11 @@ impl RollingLog {
         Ok(Self {
             path: path.to_path_buf(),
             roll: Some(policy),
-            state: Mutex::new(RollingState { file, written }),
+            state: Mutex::new(RollingState {
+                file,
+                written,
+                detached: false,
+            }),
         })
     }
 
@@ -253,28 +261,54 @@ impl RollingLog {
         Ok(Self {
             path: path.to_path_buf(),
             roll: None,
-            state: Mutex::new(RollingState { file, written: 0 }),
+            state: Mutex::new(RollingState {
+                file,
+                written: 0,
+                detached: false,
+            }),
         })
     }
 
     /// Append one formatted event, then roll when the generation is full.
     /// A failed roll keeps the current file and tries again a generation
-    /// later. Nothing here may log through `tracing`: this is the
-    /// subscriber's own writer.
+    /// later. A roll that moved the file while the log does not reopen
+    /// leaves the lines in `.1`; no later roll moves that file again, and
+    /// each next line first tries to reopen the log. Nothing here may log
+    /// through `tracing`: this is the subscriber's own writer.
     fn append(&self, line: &[u8]) -> io::Result<()> {
+        self.append_with(line, open_file_log)
+    }
+
+    fn append_with(
+        &self,
+        line: &[u8],
+        reopen: impl Fn(&Path) -> io::Result<File>,
+    ) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.detached
+            && let Ok(file) = reopen(&self.path)
+        {
+            state.file = file;
+            state.written = 0;
+            state.detached = false;
+        }
         state.file.write_all(line)?;
         state.written = state.written.saturating_add(line.len() as u64);
         if let Some(policy) = self.roll
+            && !state.detached
             && state.written >= policy.bytes
         {
-            match roll_generations(&self.path, policy.generations)
-                .and_then(|()| open_file_log(&self.path))
-            {
-                Ok(file) => state.file = file,
+            state.written = 0;
+            match roll_generations(&self.path, policy.generations) {
+                Ok(()) => match reopen(&self.path) {
+                    Ok(file) => state.file = file,
+                    Err(error) => {
+                        state.detached = true;
+                        eprintln!("codescribe: log reopen failed after a roll: {error}");
+                    }
+                },
                 Err(error) => eprintln!("codescribe: log roll failed: {error}"),
             }
-            state.written = 0;
         }
         Ok(())
     }
@@ -506,6 +540,38 @@ mod tests {
         let oldest = line(12) + &line(13) + &line(14);
         assert_eq!(read(&generation_path(&path, 2)), oldest);
         assert!(!generation_path(&path, 3).exists(), "three in all");
+    }
+
+    /// A reopen that fails the way a full disk does.
+    fn refused(_: &Path) -> io::Result<File> {
+        Err(io::ErrorKind::StorageFull.into())
+    }
+
+    /// W2-08 F1: a roll moved the file and the log did not reopen. The
+    /// lines stay in `.1`, no later roll moves that file away, and the log
+    /// reopens on the first line that can open it.
+    #[test]
+    fn a_failed_reopen_keeps_the_moved_file_until_the_log_opens_again() {
+        let root = tempfile::tempdir().expect("log fixture");
+        let path = root.path().join("logs/codescribe.log");
+        let policy = RollPolicy {
+            bytes: 64,
+            generations: 3,
+        };
+        let log = RollingLog::open_rolling(&path, policy, false).unwrap();
+        let line = |index: usize| format!("line {index:02} padded to thirty b\n");
+        for index in 0..20 {
+            log.append_with(line(index).as_bytes(), refused).unwrap();
+        }
+        assert!(!path.exists(), "the log did not reopen");
+        let kept: String = (0..20).map(line).collect();
+        assert_eq!(read(&generation_path(&path, 1)), kept);
+        assert!(!generation_path(&path, 2).exists(), "no roll moved it");
+
+        append(&log, &line(20));
+        append(&log, &line(21));
+        assert_eq!(read(&path), line(20) + &line(21));
+        assert_eq!(read(&generation_path(&path, 1)), kept);
     }
 
     #[test]
