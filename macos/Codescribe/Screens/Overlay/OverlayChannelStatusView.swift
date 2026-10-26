@@ -442,21 +442,18 @@ struct OverlayGlyphInk: ViewModifier {
   }
 }
 
-/// Flat on an Intercom fiszka the audio pair rests in the muted ink of the
-/// glyphs beside it (minimise, dock, the bar's count) and brightens under the
-/// pointer as they do. Semibold primary ink read hyper-white there (Maciej,
-/// 2026-10-23: "Przydym też troszkę te hiperbiałe przyciski").
-private struct OverlayFlatAudioInk: ViewModifier {
-  let flat: Bool
+/// Audio and reception controls share one disabled-aware native hover owner.
+/// Off rests in muted ink; on keeps its canonical accent even without motion.
+/// The button supplies ink so an inner glyph cannot defeat hover feedback.
+private struct OverlayAudioControlInk: ViewModifier {
   let palette: OverlayAppearancePalette
-  @ViewBuilder
+  let lit: Color?
+  var unlitOpacity: Double = 1
+
   func body(content: Content) -> some View {
-    if flat {
-      content.conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color)
-    } else {
-      content
-    }
+    content.conversationActionHover(
+      restingColor: lit ?? palette.mutedText.color.opacity(unlitOpacity),
+      hoverColor: lit ?? palette.primaryText.color)
   }
 }
 
@@ -565,17 +562,6 @@ struct OverlayAgentAudioControls: View {
     color?.opacity(litGlassOpacity)
   }
 
-  /// A lit glyph keeps its whole colour. At rest a glass circle keeps the
-  /// primary ink it was tuned for; flat on an Intercom fiszka the glyph sets
-  /// no ink and takes the one `OverlayFlatAudioInk` puts around it. An
-  /// explicit `.foreground` resolved to the full primary instead, so every
-  /// flat control read hyper-white beside the smoked wordmark (Maciej,
-  /// 2026-10-23: "przydym też troszkę te hiperbiałe przyciski").
-  private func glyphInk(lit: Color?) -> AnyShapeStyle? {
-    if let lit { return AnyShapeStyle(lit) }
-    return chrome ? AnyShapeStyle(palette.primaryText.color) : nil
-  }
-
   private var microphoneLabel: String {
     if broadcast {
       return open
@@ -583,6 +569,11 @@ struct OverlayAgentAudioControls: View {
         : String(localized: "Speak to everyone (Control–0)")
     }
     return open ? String(localized: "Stop speaking to agent") : String(localized: "Speak to agent")
+  }
+  private var microphoneHint: String {
+    microphoneEnabled
+      ? microphoneLabel
+      : String(localized: "Microphone unavailable", comment: "Disabled agent microphone control")
   }
   private var playbackLabel: String {
     if muted == nil { return String(localized: "Playback status unavailable") }
@@ -632,7 +623,6 @@ struct OverlayAgentAudioControls: View {
           Image(systemName: microphoneSymbol)
             .overlayMirrored(broadcast)
             .font(.system(size: glyphSize, weight: .semibold))
-            .modifier(OverlayGlyphInk(ink: glyphInk(lit: open ? recordingAccent : nil)))
             .symbolEffect(
               .pulse,
               isActive: Self.microphoneActivityActive(
@@ -643,25 +633,17 @@ struct OverlayAgentAudioControls: View {
               width: glyphBox, height: glyphBox,
               alignment: chrome ? .center : .trailing)
         }
-        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .modifier(OverlayAudioControlInk(palette: palette, lit: open ? recordingAccent : nil))
         .tint(Self.litGlass(open ? recordingAccent : nil))
-        .csFocusOutline()
         .disabled(!microphoneEnabled)
-        .overlayFastHint(microphoneLabel, palette: palette)
+        .overlayFastHint(microphoneHint, palette: palette)
         .accessibilityLabel(Text(verbatim: microphoneLabel))
         .accessibilityValue(
           Text(
             verbatim: open
               ? String(localized: "Microphone active") : String(localized: "Microphone off"))
         )
-        .accessibilityHint(
-          Text(
-            verbatim: microphoneEnabled
-              ? microphoneLabel
-              : String(
-                localized: "Microphone unavailable",
-                comment: "Disabled agent microphone control"))
-        )
+        .accessibilityHint(Text(verbatim: microphoneHint))
         .accessibilityIdentifier("overlay-agent-microphone")
       }
 
@@ -674,20 +656,19 @@ struct OverlayAgentAudioControls: View {
                 ? "speaker.slash.fill" : speakingNow ? "speaker.wave.3.fill" : "speaker.wave.2"
           )
           .font(.system(size: glyphSize, weight: .semibold))
-          .modifier(
-            OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
-          )
           .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
           .padding(.leading, flatPairInset)
           .frame(
             width: glyphBox, height: glyphBox,
             alignment: chrome ? .center : .leading)
         }
-        .modifier(OverlayFlatAudioInk(flat: !chrome, palette: palette))
+        .modifier(
+          OverlayAudioControlInk(
+            palette: palette, lit: muted == false ? palette.agentAccent.color : nil)
+        )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
-        .csFocusOutline()
         .disabled(!playbackEnabled || muted == nil)
-        .overlayFastHint(speakerHint, palette: palette)
+        .overlayFastHint(playbackEnabled ? playbackLabel : speakerAccessibilityHint, palette: palette)
         .accessibilityLabel(Text(verbatim: playbackLabel))
         .accessibilityValue(Text(verbatim: playbackValue))
         .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
@@ -964,6 +945,7 @@ struct OverlayReceptionMarks: View {
     HStack(spacing: 3) {
       mark(
         symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
+        hint: policy.member ? String(localized: "Leave channel 0") : String(localized: "Join channel 0"),
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
       ) {
         apply { $0.member.toggle() }
@@ -975,6 +957,8 @@ struct OverlayReceptionMarks: View {
       mark(
         symbol: policy.quietSymbol, lit: policy.moon, litColor: palette.primaryText.color,
         unlitOpacity: 0.45,
+        hint: policy.moon
+          ? String(localized: "Turn off do not disturb") : String(localized: "Do not disturb"),
         help: policy.quietHelp, identifier: "overlay-quiet-policy-\(channel.channel)"
       ) {
         apply { $0.moon.toggle() }
@@ -985,19 +969,22 @@ struct OverlayReceptionMarks: View {
 
   private func mark(
     symbol: String, lit: Bool, litColor: Color, unlitOpacity: Double = 1,
-    help: String, identifier: String,
+    hint: String, help: String, identifier: String,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
         .font(.system(size: 10 * textScale))
-        .foregroundStyle(lit ? litColor : palette.mutedText.color.opacity(unlitOpacity))
         .frame(width: 14 * textScale, height: 14 * textScale)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .modifier(
+      OverlayAudioControlInk(
+        palette: palette, lit: lit ? litColor : nil, unlitOpacity: unlitOpacity)
+    )
     .disabled(!enabled || pending || channel.broadcastIdentity == nil)
-    .overlayFastHint(help, palette: palette)
+    .overlayFastHint(hint, palette: palette)
     .accessibilityLabel(Text(verbatim: help))
     .accessibilityIdentifier(identifier)
   }
