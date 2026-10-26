@@ -1571,16 +1571,16 @@ private struct AssistantTurn: View {
       .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 4,
-          bottomTrailingRadius: 14, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: 4,
+          bottomTrailingRadius: CSRadius.card, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
         .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 4,
-          bottomTrailingRadius: 14, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: 4,
+          bottomTrailingRadius: CSRadius.card, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
       )
