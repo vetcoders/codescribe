@@ -22856,19 +22856,19 @@
       }
     },
     "hotkeys.mode.agent.noShortcut" : {
-      "comment" : "Shortcuts screen: replaces the gesture picker for the Agent",
+      "comment" : "Shortcuts screen: replaces the gesture picker for the Agent; the quoted name is a menu bar item",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Start the Agent from the menu bar or the overlay. The keyboard shortcut is turned off."
+            "value" : "Start the Agent from the menu bar (“Start in Agent mode”). The keyboard shortcut is turned off."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Agenta uruchomisz z menu na pasku lub z nakładki. Skrót klawiaturowy jest wyłączony."
+            "value" : "Agenta uruchomisz z menu na pasku („Start w trybie Agenta”). Skrót klawiaturowy jest wyłączony."
           }
         }
       }

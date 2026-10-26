@@ -1,6 +1,6 @@
 # Recording Modes
 
-Codescribe exposes **three work modes**. Dictation has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**. Formatting and Assistive have no shortcut and start from the menu bar or the overlay: Option types characters, and the right Option double-tap used to start the Agent on its own.
+Codescribe exposes **three work modes**. Dictation has **one shortcut binding** you can customize (or disable) in **Settings → Hotkeys**. Formatting and Assistive have no shortcut: Option types characters, and the right Option double-tap used to start the Agent on its own. Both start from the menu bar or the overlay, and the menu bar's **Start in Agent mode** switch decides which one.
 
 ---
 

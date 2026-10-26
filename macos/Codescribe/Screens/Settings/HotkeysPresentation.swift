@@ -65,8 +65,10 @@ extension CsWorkMode {
       return String(
         localized: "hotkeys.mode.agent.noShortcut",
         defaultValue:
-          "Start the Agent from the menu bar or the overlay. The keyboard shortcut is turned off.",
-        comment: "Shortcuts screen: replaces the gesture picker for the Agent")
+          "Start the Agent from the menu bar (“Start in Agent mode”). The keyboard shortcut is turned off.",
+        comment:
+          "Shortcuts screen: replaces the gesture picker for the Agent; the quoted name is a menu bar item"
+      )
     }
   }
 }

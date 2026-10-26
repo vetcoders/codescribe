@@ -69,14 +69,14 @@ not require the user to replace it with Copy first.
 
 ## Intent → route
 
-| Intent            | Typical gesture                        | Route                                                                                                                |
-| ----------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `AgentVoice`      | menu bar Agent start / overlay         | `AgentComposer`                                                                                                      |
-| `OverlayToAgent`  | overlay **To Agent**                   | `AgentComposer`                                                                                                      |
-| `OrientDictation` | Hold Fn / Globe                        | `ClipboardPaste` / `ClipboardHold` per paste mode; `OrientCanvas` if overlay caret / mode `off`                      |
-| `OrientFormat`    | menu bar Start transcription / overlay | same as dictation                                                                                                    |
-| `OverlayInsert`   | overlay Insert / defer                 | `ClipboardPaste` into a latched foreign caret (Alacritty, Notes, …); `DeferredInsert` when Codescribe owns the caret |
-| `NotesOnly`       | save-only notes                        | `ArchiveOnly`                                                                                                        |
+| Intent            | Typical gesture                                 | Route                                                                                                                |
+| ----------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `AgentVoice`      | menu bar or overlay, **Start in Agent mode** on | `AgentComposer`                                                                                                      |
+| `OverlayToAgent`  | overlay **To Agent**                            | `AgentComposer`                                                                                                      |
+| `OrientDictation` | Hold Fn / Globe                                 | `ClipboardPaste` / `ClipboardHold` per paste mode; `OrientCanvas` if overlay caret / mode `off`                      |
+| `OrientFormat`    | menu bar Start transcription / overlay          | same as dictation                                                                                                    |
+| `OverlayInsert`   | overlay Insert / defer                          | `ClipboardPaste` into a latched foreign caret (Alacritty, Notes, …); `DeferredInsert` when Codescribe owns the caret |
+| `NotesOnly`       | save-only notes                                 | `ArchiveOnly`                                                                                                        |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, overlay canvas holds the caret.

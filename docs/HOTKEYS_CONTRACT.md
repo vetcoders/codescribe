@@ -329,8 +329,8 @@ opened), the lane continues its bound conversation as before.
 _intent_; it does not paste into the frontmost app. `resolve_delivery_route`
 (`docs/DELIVERY_ROUTE.md`) is the only destination function:
 
-- Assistive take (started from the menu bar or the overlay; Assistive has no
-  hold) → Agent composer (first-class message, never Cmd+V)
+- Assistive take (menu bar or overlay with **Start in Agent mode** on;
+  Assistive has no hold) → Agent composer (first-class message, never Cmd+V)
 - Hold Fn / Globe → Orient canvas, plus auto-paste **only** into the app
   latched at key-down — never into Codescribe itself
 - Overlay **To Agent** → Agent composer, even after the session reset
@@ -452,10 +452,10 @@ lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech op
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
 fresh epoch. Recording does not stop. This is not a wav-only chunker knob and not `CODESCRIBE_VAD_*`.
 
-| Mode binding           | Keys                          | Mode                                          |
-| ---------------------- | ----------------------------- | --------------------------------------------- |
-| `Dictation=DoubleCtrl` | Ctrl double-tap               | Raw dictation                                 |
-| `Disabled`             | no gesture for that work mode | Formatting and Assistive: menu bar or overlay |
+| Mode binding           | Keys                          | Mode                                                                               |
+| ---------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
+| `Dictation=DoubleCtrl` | Ctrl double-tap               | Raw dictation                                                                      |
+| `Disabled`             | no gesture for that work mode | Formatting and Assistive: menu bar or overlay; **Start in Agent mode** picks which |
 
 Formatting is orthogonal to the trigger and destination. Hold, normal toggle,
 and assistive sessions all honor the session's Auto Format setting. The trigger
