@@ -6759,6 +6759,150 @@ def tts_language(environ: Any = None) -> str:
     return DEFAULT_TTS_LANGUAGE
 
 
+# What a voice says of a message written for the screen. Founder, 2026-10-26:
+# paths, slashes, underscores and version numbers were read out as English
+# characters. Only the speaker gets this text; the published reply, its
+# receipts and the screen keep the original. The rules are deterministic, so
+# the same message always sounds the same and costs nothing to prepare.
+SPOKEN_WORDS = {
+    "pl": {"arrow": "na", "of": "z", "channel": "kanał", "range": "do", "union": "i",
+           "section": "paragraf", "approx": "około"},
+    "en": {"arrow": "to", "of": "of", "channel": "channel", "range": "to", "union": "and",
+           "section": "section", "approx": "about"},
+}
+SPOKEN_FILE_SUFFIXES = ("py", "rs", "swift", "md", "json", "jsonl", "toml", "sh", "txt", "yml",
+                        "yaml", "plist", "xcstrings", "wav", "log", "html", "js", "ts", "csv",
+                        "command")
+_SPOKEN_PATH_CHARS = r"[^\s/,;()\[\]„”“\"'<>]"
+_SPOKEN_LIST_MARK = re.compile(r"^\s*(?:[-*•]+|#{1,6})\s+")
+# "hania → as:" or "as (kanał 1) → Monika, Basia:" opening a message.
+_SPOKEN_HEADER = re.compile(
+    r"^(?P<name>[^\W\d_][\w-]*)(?:\s*\([^)\n]*\))?\s*(?:→|->|=>)\s*[^:\n]{1,80}:\s*")
+_SPOKEN_URL = re.compile(r"\bhttps?://\S+")
+_SPOKEN_BUILD_SUFFIX = re.compile(r"\b(\d+\.\d+\.\d+)\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*")
+_SPOKEN_ROOTED_PATH = re.compile(
+    rf"(?<![\w.~/-])(?:~|\.{{1,2}})?/{_SPOKEN_PATH_CHARS}+(?:/{_SPOKEN_PATH_CHARS}*)*")
+_SPOKEN_LONG_PATH = re.compile(r"(?<![\w.~/-])(?:[\w.@+-]+/){2,}[\w.@+:–-]*")
+# A file name, alone or after one folder ("scripts/bus-demux.py:5350–5352").
+_SPOKEN_FILE = re.compile(
+    r"(?<![\w.~/-])(?:[\w.@+-]+/)?[\w-]+(?:\.[\w-]+)*?\.(?:" + "|".join(SPOKEN_FILE_SUFFIXES)
+    + r")(?::\d+(?:[–-]\d+)?)?(?![\w/])")
+_SPOKEN_FRACTION = re.compile(r"(?<![\w./])(\d+)/(\d+)(?![\w/])")
+_SPOKEN_NAME_CHANNEL = re.compile(r"(?<![\w./])([^\W\d_][\w-]*)/(\d)(?![\w/])")
+_SPOKEN_SHORT_PATH = re.compile(r"(?<![\w./~-])([\w.@+-]+)/([\w.@+-]+)(?![\w/])")
+# A commit, blob or lease id: 7 to 64 hex characters with a digit and a letter,
+# optionally cut short with an ellipsis.
+_SPOKEN_HASH = re.compile(
+    r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?:…|\.\.\.)?(?![\w-])")
+_SPOKEN_UTC_CLOCK = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2})(?::\d{2})?Z(?!\w)")
+_SPOKEN_SECONDS = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2}):\d{2}(?![\w:])")
+_SPOKEN_RANGE = re.compile(r"(?<=\d)\s*[–—]\s*(?=\d)")
+_SPOKEN_ARROW = re.compile(r"\s*(?:→|->|=>)\s*")
+_SPOKEN_FLAG = re.compile(r"(?<![\w-])--(?=[A-Za-z])")
+_SPOKEN_INNER_UNDERSCORE = re.compile(r"(?<=[^\W_])_+(?=[^\W_])")
+_SPOKEN_EDGE_UNDERSCORE = re.compile(r"(?<![^\W_])_+|_+(?![^\W_])")
+_SPOKEN_ANGLE_NAME = re.compile(r"<([\w-]+)>")
+
+
+def _spoken_name(path: str) -> str:
+    """The last name of a path or file as words: no folders, extension, line or separators.
+
+    Long numbers inside the name (dates such as 20261025) are dropped; a
+    listener cannot use them and they take several seconds to say.
+    """
+    parts = [part for part in path.split("/") if part not in ("", "~", ".", "..")]
+    name = re.sub(r":\d+(?:[–-]\d+)?$", "", parts[-1] if parts else "")
+    stem, dot, suffix = name.rpartition(".")
+    if dot and stem and suffix.lower() in SPOKEN_FILE_SUFFIXES:
+        name = stem
+    words = [word for word in re.split(r"[-_.:\s]+", name)
+             if word and not (word.isdigit() and len(word) >= 5)]
+    return " ".join(words)
+
+
+def _spoken_path(match: re.Match[str]) -> str:
+    text = match.group(0)
+    tail = text[-1] if text[-1] in ".:" else ""
+    return _spoken_name(text.rstrip(".:")) + tail
+
+
+def spoken_text(
+    text: str,
+    language: str = DEFAULT_TTS_LANGUAGE,
+    *,
+    now: datetime.datetime | None = None,
+    zone: datetime.tzinfo | None = None,
+) -> str:
+    """The words a voice should say for `text`, which stays as written everywhere else.
+
+    A message header ("hania → as:") becomes the author's name; arrows,
+    fractions ("2/4"), bus names ("basia/2") and ranges become words; a path
+    or file becomes its last name; commit and lease hashes, build suffixes,
+    flag dashes, underscores, backticks and list marks are dropped; a UTC
+    clock ("11:53:17Z") becomes the local time (`zone`, default the system's)
+    without seconds. A line break becomes a sentence end. A text the rules do
+    not change, or one with nothing left to say, is returned as written.
+    """
+    words = SPOKEN_WORDS.get(language, SPOKEN_WORDS[DEFAULT_TTS_LANGUAGE])
+    lines = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            continue
+        line = _SPOKEN_LIST_MARK.sub("", line).strip()
+        if line:
+            lines.append(line)
+    # A line break is a pause: every line but the last ends as a sentence.
+    spoken = " ".join(line if index == len(lines) - 1 or line[-1] in ".!?…:;," else line + "."
+                      for index, line in enumerate(lines))
+    spoken = _SPOKEN_HEADER.sub(
+        lambda match: match.group("name")[:1].upper() + match.group("name")[1:] + ": ", spoken)
+    spoken = _SPOKEN_URL.sub("", spoken)
+    spoken = _SPOKEN_BUILD_SUFFIX.sub(r"\1", spoken)
+    spoken = _SPOKEN_ROOTED_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_LONG_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_FILE.sub(lambda match: _spoken_name(match.group(0)), spoken)
+    spoken = _SPOKEN_FRACTION.sub(rf"\1 {words['of']} \2", spoken)
+    spoken = _SPOKEN_NAME_CHANNEL.sub(rf"\1, {words['channel']} \2", spoken)
+    spoken = _SPOKEN_SHORT_PATH.sub(r"\1 \2", spoken)
+    spoken = _SPOKEN_HASH.sub("", spoken)
+    moment = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(datetime.timezone.utc)
+
+    def local_clock(match: re.Match[str]) -> str:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            return match.group(0)
+        local = moment.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(zone)
+        return f"{local.hour}:{local.minute:02d}"
+
+    spoken = _SPOKEN_UTC_CLOCK.sub(local_clock, spoken)
+    spoken = _SPOKEN_SECONDS.sub(r"\1:\2", spoken)
+    spoken = _SPOKEN_RANGE.sub(f" {words['range']} ", spoken)
+    spoken = _SPOKEN_ARROW.sub(f" {words['arrow']} ", spoken)
+    spoken = _SPOKEN_FLAG.sub("", spoken)
+    spoken = _SPOKEN_INNER_UNDERSCORE.sub(" ", spoken)
+    spoken = _SPOKEN_EDGE_UNDERSCORE.sub("", spoken)
+    spoken = _SPOKEN_ANGLE_NAME.sub(r"\1", spoken)
+    spoken = spoken.replace("`", "").replace("*", "")
+    spoken = spoken.replace("∪", f" {words['union']} ").replace("≈", f" {words['approx']} ")
+    spoken = re.sub(r"§\s*", f"{words['section']} ", spoken)
+    # What the removals leave behind: empty brackets, stacked punctuation and
+    # spaces before a mark.
+    spoken = re.sub(r"\([\s,;:]*\)", "", spoken)
+    spoken = re.sub(r"\(\s*[,;]\s*", "(", spoken)
+    spoken = re.sub(r"\s*[,;]\s*\)", ")", spoken)
+    spoken = re.sub(r"[ \t]{2,}", " ", spoken)
+    spoken = re.sub(r"\s+([,.;:!?…)”\]])", r"\1", spoken)
+    spoken = re.sub(r"([(„“\[])\s+", r"\1", spoken)
+    spoken = re.sub(r",(?:\s*,)+", ",", spoken)
+    spoken = re.sub(r"[,;:]\s*([.!?…])", r"\1", spoken)
+    spoken = re.sub(r"^[\s,;:.]+", "", spoken).strip()
+    # Nothing to say for listening, or nothing but spacing changed: the text
+    # goes as written, so a plain sentence keeps its cached recording.
+    if not any(character.isalpha() for character in spoken) or spoken.split() == text.split():
+        return text
+    return spoken
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -8815,7 +8959,10 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
             spoken, error, reason = False, "playback stopped", "stopped"
         else:
             speaker = _speak_openai if reply["tts_vendor"] == "openai" else _speak_xai
-            spoken, error, reason = speaker(reply["text"], reply["voice"], reply["speed"],
+            # The reply, its receipts and the screen keep the written text;
+            # the voice and the speech cache get the words for listening.
+            words = spoken_text(reply["text"], tts_language())
+            spoken, error, reason = speaker(words, reply["voice"], reply["speed"],
                                             playback_root=args.bridge_home, bus=bus_path(), control=control)
             if control.stopped() and not spoken:
                 error, reason = "playback stopped", "stopped"

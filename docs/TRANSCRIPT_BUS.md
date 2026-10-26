@@ -1453,6 +1453,29 @@ language, so recordings made with `auto` are never replayed. The helper does
 not read the app's settings; the app sends its configured speech language
 the same way (`docs/STT_CONTRACT.md`, `tts_language`).
 
+A voice gets words for listening, not the characters written for the screen
+(`spoken_text`, applied once in `speak_published_reply` for `--say`, Play and
+automatic playback, on both vendors). The published reply, its receipts and
+the overlay keep the written text; only the synthesis request and the speech
+cache key use the spoken one. The rules are fixed, not a model:
+
+| Written | Spoken |
+| --- | --- |
+| `hania → as:` opening a message | `Hania:` |
+| `0.17.0 → 0.18.0`, `2/4`, `basia/2`, `12:51–12:53` | `0.17.0 na 0.18.0`, `2 z 4`, `basia, kanał 2`, `12:51 do 12:53` |
+| a path or file (`~/x/raport-20261026.md`, `core/llm/speech.rs`, `bus-demux.py:120`) | its last name (`raport`, `speech`, `bus demux`) |
+| `runtime/receipts`, `sent_to`, `--takeover` | `runtime receipts`, `sent to`, `takeover` |
+| a commit or lease hash (7–64 hex with a digit), `+g…` build suffix, URL | nothing |
+| `11:53:17Z` | local time without seconds (`12:53` in winter in Poland) |
+| backticks, `*`, list marks, fence lines, `∪`, `§`, `<name>` | dropped or said as a word |
+
+A line break becomes a sentence end. A text the rules leave unchanged is sent
+byte for byte, so plain sentences keep their cached recordings; a text with
+nothing left to say is spoken as written. Words follow the speech language
+(`na`/`to`, `z`/`of`, `kanał`/`channel`). Agents still write to the founder
+in plain words: the rules are a safety net for text that was written to be
+read, such as a channel message played with Play.
+
 A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
 The existing stable `runtime/playback.lock` serializes all speakers, including
 channel 0. The microphone guard always starts from the canonical global
