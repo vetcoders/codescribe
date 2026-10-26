@@ -869,7 +869,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if let error = model.admissionReadError {
         statusRow(
-          color: CSColor.terracottaText,
+          tone: .bad,
           title: "Readiness check unavailable",
           detail: error
         )
@@ -956,7 +956,7 @@ struct AudioPanel: View {
         summary, recordingState: recordingState, tray: tray, stopRequested: stopRequested)
 
       Divider()
-        .overlay(Color.primary.opacity(0.12))
+        .overlay(Color.primary.opacity(CSAlpha.stroke))
         .padding(.vertical, SettingsScale.rowGap)
 
       HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -1135,7 +1135,7 @@ struct AudioPanel: View {
             Text(
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )
-            .font(CSFont.mono(9.5, .medium))
+            .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.secondaryInk)
           }
         }
@@ -1324,9 +1324,11 @@ struct AudioPanel: View {
     model.settings.audioInputDevice ?? String(localized: "System default")
   }
 
-  private func statusRow(color: Color, title: LocalizedStringKey, detail: String) -> some View {
+  private func statusRow(tone: CsMcpRowTone, title: LocalizedStringKey, detail: String)
+    -> some View
+  {
     HStack(alignment: .top, spacing: 9) {
-      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
+      StatusToneGlyph(tone: tone).padding(.top, 2)
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
           .font(SettingsScale.settingName)
@@ -1345,7 +1347,7 @@ struct AudioPanel: View {
     case .healthy: return CSColor.oliveLight
     case .neutral: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
-    case .unavailable: return CSColor.terracottaText
+    case .unavailable: return CSColor.dangerLight
     }
   }
 

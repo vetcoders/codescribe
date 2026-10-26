@@ -45,7 +45,7 @@ struct InterfaceLanguageStepView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
-        Text(error).font(.callout).foregroundStyle(CSColor.terracottaText)
+        Text(error).font(.callout).foregroundStyle(CSColor.dangerLight)
           .accessibilityIdentifier("onboarding-interface-language-error")
       }
     }
@@ -268,7 +268,7 @@ struct AgenticReadinessStepView: View {
                       "\(client.displayName) needs setup", locale: model.interfaceLocale,
                       comment: "Status below an agent client card; %@ is Codex or Claude Code"))
                 )
-                .font(CSFont.mono(10.5, .medium))
+                .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.terracottaLight)
                 Spacer(minLength: 0)
                 Button(
@@ -291,7 +291,7 @@ struct AgenticReadinessStepView: View {
 
             if model.agentClientShowsError(client), let error = model.agentBridgeError {
               Text(error)
-                .font(CSFont.mono(10.5, .medium))
+                .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.terracottaLight)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
@@ -307,7 +307,7 @@ struct AgenticReadinessStepView: View {
               "Ready to go ✓", locale: model.interfaceLocale,
               comment: "Agent setup status below the client cards"))
         )
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.oliveLight)
       } else if model.agentReadinessPending {
         Text(
@@ -316,7 +316,7 @@ struct AgenticReadinessStepView: View {
               "Checking provider access…", locale: model.interfaceLocale,
               comment: "Setup Agent readiness while the provider snapshot is loading"))
         )
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(CSColor.secondaryInk)
       } else if model.agentNeedsGlobalSetup {
         HStack(spacing: 10) {
@@ -326,7 +326,7 @@ struct AgenticReadinessStepView: View {
                 "Agent needs setup", locale: model.interfaceLocale,
                 comment: "Global provider or native readiness problem, not a client installation"))
           )
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           Spacer(minLength: 0)
           Button(
@@ -344,7 +344,7 @@ struct AgenticReadinessStepView: View {
 
       if model.agentBridgeErrorClient == nil, let error = model.agentBridgeError {
         Text(error)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.terracottaLight)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -612,7 +612,7 @@ struct ApiKeyStepView: View {
         }
       } label: {
         Text(model.selectedProvider?.displayName ?? model.selectedProviderId)
-          .font(CSFont.ui(12.5, .semibold))
+          .font(CSFont.ui(13, .semibold))
           .foregroundStyle(.primary)
       }
       .menuStyle(.borderlessButton)
@@ -637,7 +637,7 @@ struct ApiKeyStepView: View {
               "Agent account", locale: model.interfaceLocale,
               comment: "Setup provider account row label"))
         )
-        .font(CSFont.ui(13.5, .semibold))
+        .font(CSFont.ui(14, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
         Text(model.selectedProviderAccountStatus)
@@ -669,7 +669,7 @@ struct ApiKeyStepView: View {
               "API key", locale: model.interfaceLocale,
               comment: "Setup provider API key row label"))
         )
-        .font(CSFont.ui(13.5, .semibold))
+        .font(CSFont.ui(14, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
         Text(model.selectedProviderKeyStatus)

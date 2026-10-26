@@ -368,7 +368,7 @@ struct OverlayComposerAttachmentPill: View {
               .resizable()
               .aspectRatio(contentMode: .fill)
               .frame(width: 18, height: 18)
-              .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+              .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
           } else {
             Image(systemName: "doc")
               .font(.system(size: 10, weight: .medium))
@@ -376,7 +376,7 @@ struct OverlayComposerAttachmentPill: View {
           }
           // A label, not code: the system voice, per the mono policy.
           Text(verbatim: name)
-            .font(CSFont.ui(10.5, .medium))
+            .font(CSFont.ui(11, .medium))
             .foregroundStyle(palette.primaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -403,10 +403,10 @@ struct OverlayComposerAttachmentPill: View {
     .padding(.vertical, 5)
     .background(palette.primaryText.color.opacity(0.05))
     .overlay(
-      RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+      Capsule(style: .continuous)
         .strokeBorder(palette.primaryText.color.opacity(0.10), lineWidth: 1)
     )
-    .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+    .clipShape(Capsule(style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(Text(verbatim: name))
     .task(id: path) {

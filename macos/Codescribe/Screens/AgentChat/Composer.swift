@@ -128,7 +128,7 @@ struct Composer: View {
       .modifier(OverlayControlGlass())
       .overlay {
         if isDragging {
-          RoundedRectangle(cornerRadius: 20)
+          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
             .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
             .allowsHitTesting(false)
         }
@@ -138,7 +138,7 @@ struct Composer: View {
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
       // the rest of the time.
       .overlay(dropCatcher)
-      .animation(.easeOut(duration: 0.12), value: isDragging)
+      .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isDragging)
 
       if let notice = store.unsentDictationNotice {
         Text(verbatim: notice)
@@ -218,7 +218,7 @@ struct Composer: View {
           .buttonStyle(.borderless)
         }
         .padding(8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer))
         .accessibilityIdentifier("composer.recovery.inspect." + document.id)
       }
@@ -238,7 +238,7 @@ struct Composer: View {
       HStack(spacing: 9) {
         CSIconView(icon: .warning, size: 11, color: CSColor.amberLight)
         Text(message)
-          .font(CSFont.ui(11.5, .medium))
+          .font(CSFont.ui(12, .medium))
           .foregroundStyle(Color.primary)
         Spacer(minLength: 8)
         Button("Enter license") {
@@ -246,12 +246,12 @@ struct Composer: View {
           openWindow.presentSettings()
         }
         .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -287,7 +287,7 @@ struct Composer: View {
       paletteList {
         if entries.isEmpty {
           Text("No matches")
-            .font(CSFont.ui(11.5, .regular))
+            .font(CSFont.ui(12, .regular))
             .foregroundStyle(CSColor.textTertiary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -317,7 +317,7 @@ struct Composer: View {
       }
     }
     .frame(maxHeight: 190)
-    .background(Color.primary.opacity(0.05))
+    .background(Color.primary.opacity(CSAlpha.fill))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -335,7 +335,7 @@ struct Composer: View {
       HStack(spacing: 8) {
         VStack(alignment: .leading, spacing: 1) {
           Text(title)
-            .font(CSFont.mono(11.5, .semibold))
+            .font(CSFont.mono(12, .semibold))
             .foregroundStyle(Color.primary)
           if let subtitle, !subtitle.isEmpty {
             Text(subtitle)
@@ -413,7 +413,7 @@ struct Composer: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         .accessibilityIdentifier("agent-live-capture")
     }
@@ -437,7 +437,7 @@ struct Composer: View {
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
     .accessibilityLabel(Text(micState.accessibilityLabel))
-    .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: store.dictationPhase)
   }
 
   /// One shared recorder ⇒ the live-capture affordances belong to exactly one
@@ -476,9 +476,9 @@ struct Composer: View {
   private var dictationFeedback: some View {
     if case .failed(let message) = store.dictationPhase {
       HStack(spacing: 6) {
-        CSIconView(icon: .error, size: 10.5)
+        CSIconView(icon: .error, size: 11)
         Text(message)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
       }
       .foregroundStyle(CSColor.amberLight)
       .padding(.leading, 2)
@@ -513,7 +513,7 @@ struct Composer: View {
               HStack(spacing: 6) {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
                 Text(attachment.name)
-                  .font(CSFont.mono(10.5, .medium))
+                  .font(CSFont.mono(11, .medium))
                   .foregroundStyle(Color.primary)
                   .lineLimit(1)
                   .truncationMode(.middle)
@@ -530,12 +530,12 @@ struct Composer: View {
           }
           .padding(.horizontal, 9)
           .padding(.vertical, 5)
-          .background(Color.primary.opacity(0.05))
+          .background(Color.primary.opacity(CSAlpha.fill))
           .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            Capsule(style: .continuous)
+              .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
           )
-          .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+          .clipShape(Capsule(style: .continuous))
         }
       }
       .padding(.horizontal, 2)

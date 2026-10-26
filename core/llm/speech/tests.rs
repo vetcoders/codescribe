@@ -12,7 +12,58 @@ fn options(vendor: ProviderKind) -> SpeechOptions {
         .into(),
         voice: if vendor == OPENAI { "cedar" } else { "eve" }.into(),
         speed: 1.25,
+        language: DEFAULT_TTS_LANGUAGE,
     }
+}
+
+#[test]
+fn xai_speech_sends_the_configured_language_and_never_auto() {
+    for (configured, sent) in [
+        (Language::Polish, "pl"),
+        (Language::English, "en"),
+        (Language::Auto, DEFAULT_TTS_LANGUAGE),
+    ] {
+        assert_eq!(tts_language(configured), sent);
+        let options = SpeechOptions {
+            language: tts_language(configured),
+            ..options(XAI)
+        };
+        let body = options.request_body("W nocy było cicho.");
+        assert_eq!(body["language"], sent, "{configured:?}");
+        assert_ne!(body["language"], "auto");
+    }
+    assert_eq!(DEFAULT_TTS_LANGUAGE, "pl");
+    assert!(
+        options(OPENAI)
+            .request_body("W nocy")
+            .get("language")
+            .is_none(),
+        "OpenAI speech has no language parameter"
+    );
+}
+
+#[test]
+fn xai_cache_key_carries_the_language_and_retires_auto_recordings() {
+    let text = "W nocy było cicho.";
+    let polish = options(XAI);
+    let english = SpeechOptions {
+        language: "en",
+        ..options(XAI)
+    };
+    assert_ne!(polish.cache_key(text), english.cache_key(text));
+    // The key every recording made with `language: auto` was stored under:
+    // the same identity without a language. No request now resolves to it.
+    let legacy = json!({"vendor":format!("{:?}",XAI),"model":polish.model,"voice":polish.voice,"speed":polish.speed,"text":text,"sample_rate":SAMPLE_RATE});
+    let legacy = hex::encode(Sha256::digest(legacy.to_string().as_bytes()));
+    assert_ne!(polish.cache_key(text), legacy);
+    assert_ne!(english.cache_key(text), legacy);
+    // OpenAI audio is not language-keyed: its existing recordings stay valid.
+    let openai = options(OPENAI);
+    let unchanged = json!({"vendor":format!("{:?}",OPENAI),"model":openai.model,"voice":openai.voice,"speed":openai.speed,"text":text,"sample_rate":SAMPLE_RATE});
+    assert_eq!(
+        openai.cache_key(text),
+        hex::encode(Sha256::digest(unchanged.to_string().as_bytes()))
+    );
 }
 #[tokio::test]
 async fn signed_in_account_wins_and_never_reads_key() {

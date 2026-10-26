@@ -77,7 +77,7 @@ struct TranscriptMarkersSection: View {
         switch templateView {
         case .edit:
           TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
-            .font(CSFont.mono(11.5, .regular))
+            .font(CSFont.mono(12, .regular))
             .foregroundStyle(Color.primary)
             .textFieldStyle(.plain)
             .lineLimit(3...8)
@@ -85,7 +85,7 @@ struct TranscriptMarkersSection: View {
             .accessibilityValue(model.settings.transcriptTagTemplate)
         case .preview:
           Text(model.transcriptTagPreview)
-            .font(CSFont.mono(11.5, .regular))
+            .font(CSFont.mono(12, .regular))
             .foregroundStyle(Color.primary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,11 +121,11 @@ struct TranscriptMarkersSection: View {
               .padding(.vertical, 4)
               .background(
                 Capsule(style: .continuous)
-                  .fill(Color.primary.opacity(0.08))
+                  .fill(Color.primary.opacity(CSAlpha.line))
               )
               .overlay(
                 Capsule(style: .continuous)
-                  .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                  .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
               )
           }
           .buttonStyle(.plain)

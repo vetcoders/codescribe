@@ -1436,6 +1436,17 @@ owner; it contains no reply text and is not a transcript archive. Stream
 replacement, missing source, incomplete chunks and foreign ownership refuse
 playback. Existing `voices.json` profiles and the synthesis lane stay authoritative.
 
+The helper's xAI speech is sent in a bare language code, never `auto`:
+`CS_SAY_LANGUAGE`, `pl` when unset, cut to its first part (`pl-PL` and
+`pl_PL` are `pl`) and accepted only as `pl` or `en`; any other value speaks
+`pl` with one warning. With `auto`, xAI takes a sentence that opens with a
+short Polish word (W, U, A, I) for English and spells it ("W nocy" read as
+"double-u nocy"), and a long reply goes out one sentence per request; xAI
+also reads `pl-PL` or `polish` like `auto`. The speech cache key includes the
+language, so recordings made with `auto` are never replayed. The helper does
+not read the app's settings; the app sends its configured speech language
+the same way (`docs/STT_CONTRACT.md`, `tts_language`).
+
 A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
 The existing stable `runtime/playback.lock` serializes all speakers, including
 channel 0. The microphone guard always starts from the canonical global
@@ -1634,15 +1645,216 @@ not atomic: a write failure can leave earlier recipients delivered, so errors
 must not trigger automatic retry. No audio capture or agent identity is invented.
 
 Conversational deliveries expose `addressed_to` from the original source address.
-For channel zero it reads `0 (all audience)`, even when a private copy carries
-one agent's name in `audience` and one recipient in `recipients`. Codex's native
-queue includes the same explicit `ADDRESSED TO: 0 (all audience)` line; mailbox
-reads, MCP reads and watch notifications retain the label. The queue header's
-channel identifies the receiving mailbox, not the original address. A private
-message keeps its target channel/name. A named utterance without a channel keeps
-its named audience; a missing address is reported as unknown, never inferred
-from mentions in the text. This projection changes neither routing nor delivery
-identity, recipients, ACK state or the original message text.
+For channel zero it names the publisher's frozen list when the copy carries one:
+`0 (sent to: as, hania)`, with the same list under `sent_to` as `{name, channel}`
+entries in mailbox reads, MCP reads and watch notifications. Every channel-zero
+publisher writes that list into every copy: a channel take as `recipients` beside
+`audience: "*"`, a peer `--send --to 0` and a typed `--send-text --channel 0` as
+`target.recipients`. The list is the admitted set at sending (owners with channel
+zero `off` are not on it; an owner on it can still skip the copy when its policy
+changed before delivery), so it says who the message was sent to, not who read
+it. The copy's own `recipients` and `peer_to` stay its delivery key, never the
+address. A stamped empty list reads `0 (sent to: nobody)` with `sent_to: []`:
+every bound agent had channel zero off, and the copy reached this mailbox only
+for its own skip record. A channel-zero copy without the stamp reads
+`0 (all audience)` and has no `sent_to`: its reach is unknown, and no reader
+derives one from bindings or other agents' policies. `sent_to` carries the
+publisher's names verbatim, like `recipients` and `target`; only the prose
+label is sanitized and bounded (nine names, each cut to the queue-metadata
+alphabet). Codex's native queue includes the same explicit `ADDRESSED TO:`
+line. The queue header's channel identifies the receiving
+mailbox, not the original address. A private message keeps its target
+channel/name. A named utterance without a channel keeps its named audience; a
+missing address is reported as unknown, never inferred from mentions in the
+text. This projection changes neither routing nor delivery identity,
+recipients, ACK state or the original message text.
+
+## Receipts
+
+Agents can read what the overlay already shows: who a message was delivered
+to, who read it, who skipped it, whether it was withdrawn, and whether the
+user heard it. Every such fact is one private file under
+`runtime/receipts/<message_id>/`, written once by the process that produces
+the fact and never rewritten, replaced or removed by any other process:
+
+| File                           | Writer                                                                                                              | Content                                                                                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
+| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                 |
+| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                          |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                     |
+| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                   |
+| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                  |
+
+Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
+`message_id`; none carries message text or WAV paths. The identity fields
+(`provider`, `provider_session_id`, `lease_id`) name the mailbox that
+produced the fact; they stay in the private files and are not part of the
+`--receipts` projection. The key is `delivery_id`, not the lease: after a channel handover the next session
+acknowledges the delivery the previous lease received, and that is one
+recipient in two files, not two recipients. Only copies of a message leave
+receipts: typed, peer and channel-take copies carry a 24-hex `message_id`;
+a plain dictation seal has none and leaves no receipt. Drafts leave none.
+
+The state of a delivery is its farthest existing file: `delivered → read`;
+`skipped` stands alone and is final (turning channel zero back on does not
+deliver the skipped copy); `withdrawn` is a separate fact about a held copy
+that never reached `pending`. A follower restart re-offering the same copy,
+or a second `--ack`, finds the first file and changes nothing: `read` never
+falls back to `delivered`. `--ack` writes the `read` file before the ACK
+marker: the marker ends the delivery's pending life and a repeated `--ack`
+is filtered by it, so a crash between the two leaves the half that the next
+`--ack` completes, never a marker without its `read`. `wake` records the broadcast policy as it stood
+at delivery (`on`, or `quiet` under the moon or the legacy quiet membership),
+the same answer the follower gave the native wake; whether the copy wakes
+now is read from the current policy, not from this file. The moon is not a
+message state.
+
+`spoken` is a fact per message, taken from the playback files, not from the
+`spoken` field of the `agent_reply` row (which stays `false` after a later
+Play) and not from the conversation that happened to play it: a playback of a
+channel-0 text lands in the player's own conversation. One ticket is one
+file; a later terminal publish of the same ticket (the failure path after a
+refusal) changes nothing. The ACK marker under `acknowledgments/<lease_id>/`
+and the skip marker under `broadcast-skipped/<lease_id>/` now also carry
+`message_id`; their shape is otherwise unchanged and the app keeps reading
+them.
+
+`receipt_state(root, message_id)` composes the directory into one state:
+`{message_id, sent_to, recipients: [{delivery_id, name, channel, state: delivered|read|skipped|no_receipt, wake, delivered_at, at}], denominator, withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at, playback_ticket} | null}`. Agents appear by name and channel only; no provider,
+session or lease leaves the files through this projection.
+
+The helper owns the contract of the denominator: the formula below and
+the model directories that pin it. `sent_to` comes from `sent.json` when
+the publisher wrote one, so it does not depend on any reader having been
+alive; without that file (messages before this helper generation, and
+channel takes, whose list the app stamps into `recipients` outside the
+helper) it is the stamp the recipients' files carried, or null when none
+did. Every member of `sent_to` without any file is listed as
+`{name, channel, state: no_receipt}`: the copy was sent and no reader has
+recorded it yet, or the reader predates this generation. `denominator` is
+the number of agents on `sent_to` plus every agent delivered to or read
+outside that list, minus every agent whose copy was skipped (one agent by
+name and channel, however many deliveries reached it); `no_receipt` counts,
+`skipped` is shown but never counted. The list is frozen at publication
+and a skip is recorded at delivery, so a member of `sent_to` can turn out
+skipped: the skip wins, the entry stays `skipped`, and the count does not
+wait for a read that cannot come. The overlay and agents read
+`denominator` and the states; neither derives the count a second time from
+the roster or from policies. `sent.json` proves nothing about the caller:
+it does not open `--receipts` authorization, so an agent on the list with
+no file of its own cannot read the receipts of that message, as before.
+`spoken` is the completed playback when one exists, else the latest
+terminal one. Files whose name and content disagree, foreign schemas and
+foreign message ids are ignored, never repaired.
+
+**One contract, two implementations.** This is a deliberate exception to
+the one-owner rule: the overlay cannot call the helper, so the same
+formula is computed twice, once by `receipt_state` in the helper and once
+by the overlay's composer (`OverlayReceiptState.compose`, the one state
+machine its projection keeps). Both are pinned to the same model
+directories under `scripts/tests/fixtures/receipts/<case>/`, each with its
+exact `expected.json`, and both test suites read those cases. Every new
+state or rule goes to the model directories first, then to both
+implementations; a change that passes in one implementation but not the
+other is not done. The overlay computes only the formula from the files:
+no roster, no policies, no reach of its own.
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]
+```
+
+prints that state as one JSON line (`kind: receipts`) and exits 0. The caller
+must hold a copy of the message or be its author: a receipt file for this
+lease (or provider/session), a pending or held envelope with that
+`message_id` in this lease's mailbox, this lease's name and bound channel on
+the frozen `sent_to` list, or ownership of `runtime/reply-sources/<message_id>.json`.
+Anyone else gets `{"kind": "receipts_refused", "message_id", "reason"}` and
+exit 3, the same answer whether or not the message exists. `--receipts` never
+reads the bus or prints message text; names in its JSON are the agents' raw
+names, like `sent_to`.
+
+Receipts exist from the helper generation that writes them: followers started
+earlier write `delivered` only after they reattach, and messages acknowledged
+before that have no `read` file unless the backfill below gave them one.
+Like `acknowledgments/`, `broadcast-skipped/`, `reply-playback/` and
+`reply-sources/`, `runtime/receipts/` has no retention sweeper; all marker
+directories share that limitation.
+
+### Backfill
+
+The overlay reads `runtime/receipts/` only and never falls back to the
+older markers, so history from before receipts keeps its read count by
+being rewritten into the same files, once:
+
+```bash
+cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
+```
+
+takes no `--provider/--session` (it works on the whole bridge home, not on
+one mailbox), combines with no other command, and prints one JSON line
+`{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped", "playback", "sent"}, "existing", "unmapped", "mapped_by_bus", "failed", "dry_run"}`, exit 0,
+or exit 3 when `failed > 0` (a receipt that could not be written, for
+example under an unwritable `runtime/receipts/`; a refused run never looks
+like "nothing to do"). It is the
+operator's one-time step after installing this helper; it is not run by
+`make install-bus` or by a follower. Sources are read and never changed,
+moved or removed; nothing is written outside `runtime/receipts/`:
+
+| Source                                                                                                                                                             | Receipt                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox)                              | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at`                                                       |
+| a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals                                                     | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file                               |
+| `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field)                           | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none                                                 |
+| `broadcast-skipped/<lease_id>/<delivery_id>.json` (`message_id` on the marker; a marker older than that field is tied to its copy through the bus it names, below) | `<delivery_id>.skipped.json` (`policy: off`)                                                                                              |
+| `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`)                                                   | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
+| the frozen `target.recipients` stamp on a journal row or an ACK envelope                                                                                           | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed                                          |
+
+`wake: null` is the one value that means "history from before receipts":
+the delivery is a fact (the row is in the reader's own journal), its wake
+was never recorded and is not reconstructed. The runtime always writes
+`on` or `quiet`; `receipt_state` passes `null` through as that value and
+nothing else. The mailbox is the second source because of a gap in the
+first: a copy delivered under the quiet policy (the moon) leaves no row in
+the journal (the follower publishes a row only under `on`, while the
+runtime of this generation writes `delivered` with `wake: quiet` for it),
+so an unread quiet delivery is found only in `pending`; one that was
+acknowledged is found through its ACK marker. In both sources `at` is the
+copy's own `emitted_at`, the time it was published, not the moment it
+entered the mailbox. A copy in neither (and without an ACK marker) gets no
+`delivered` file and stays `no_receipt`. Only the copies the runtime
+receipts are sources: a terminal kind with a `message_id`; a plain
+dictation seal is passed over and a draft is not a delivery. Name and
+channel come from `leases/<lease_id>.json`
+and the copy's frozen `recipients` entry, as `receipt_recipient` resolves
+them at runtime; the names are the agents' raw names.
+
+A skip marker written before markers carried `message_id` names only its
+`delivery_id`, its lease and the `bus` its reader refused to read from.
+The backfill reads that bus (its whole generation chain) once per lease
+with the reader's default chain (the normalizer, admission by the frozen
+`recipients`, `consider` under the lease's name, without `--hear-all` or
+fuzzy name routing, so a copy that reached a reader only through those
+leaves its marker unmapped) and computes each copy's delivery id with
+`delivery_identity`, the one function `SessionLease.enrich` stamps it
+with. A marker whose delivery id is exactly one copy's takes that copy's
+`message_id` and gets the same `skipped` file a marker with the field
+gets; `mapped_by_bus` counts these. Text and time are never compared.
+
+Nothing is guessed. A source that cannot be tied to a `message_id` (the
+oldest ACK shape without an envelope, an envelope without `message_id`, a
+dictation seal behind an ACK marker, a temporary `.tmp` file, an unreadable
+JSON or lease file, a `pending` entry or `message` row without a usable
+`message_id`, `delivery_id` or `emitted_at`, an incomplete last journal
+row, a playback file of another schema, a skip marker without `message_id`
+whose bus is gone, whose generation chain is over 256 MiB, or which
+holds no copy, or more than one message, under that delivery id) is counted as
+`unmapped` and left alone; `unmapped` is information, not an error, and
+the exit code stays 0. Idempotence is the write-once rule itself, not a
+register of what was done: a second run finds every file, writes nothing,
+and counts them as `existing`; `--dry-run` reports the same counts without
+creating a file or directory, so it cannot detect a write that would fail.
+The command never prints message text.
 
 ## Open-channel co-audience
 

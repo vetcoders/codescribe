@@ -174,7 +174,9 @@ JSON, PCM receipts and command logs in diagnostics. Choose the destination:
   `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` with the
   exact owned ID read and ACKed. Keep the retained voice and mute choice.
 - **Requested agent coordination:** use `cs-bus --send "TEXT" --to NAME`
-  (or `--to 0` for the requested group discussion), with your provider/session.
+  (or `--to 0` for the group), with your provider/session. On channel 0, send
+  one text, then `cs-bus --play-reply MESSAGE_ID --playback-ticket TICKET`
+  speaks that same message to the user; do not add a separate `cs-say`.
 
 The [messaging guide](references/inbox.md) explains inbox history, channel
 selection, co-audience and how to verify the destination. Follow [Voice reply](references/voice-reply.md)

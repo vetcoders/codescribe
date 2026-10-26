@@ -124,11 +124,11 @@ struct ShortcutsPanel: View {
       .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.08))
+          .fill(Color.primary.opacity(CSAlpha.line))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
     }
     .menuStyle(.borderlessButton)
@@ -158,7 +158,7 @@ struct ShortcutsPanel: View {
                 .fill(
                   model.canSaveBindings
                     ? CSColor.terracotta.opacity(0.9)
-                    : Color.primary.opacity(0.06))
+                    : Color.primary.opacity(CSAlpha.fill))
             )
         }
         .csFocusRing()
@@ -192,7 +192,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: 6) {
       if model.hasBlockingBindingConflicts {
         statusLine(
-          color: CSColor.terracottaText,
+          color: CSColor.dangerLight,
           text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
         )
       } else if model.hasPendingBindingChanges {
@@ -204,7 +204,7 @@ struct ShortcutsPanel: View {
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.terracottaText : CSColor.oliveLight,
+            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.oliveLight,
             text: sentence
           )
           if let detail = receipt.failureDetail {
@@ -224,7 +224,7 @@ struct ShortcutsPanel: View {
         .font(CSFont.mono(11, .medium))
         .foregroundStyle(color)
       Text(text)
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -566,7 +566,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
-        validationRow(conflict, accent: CSColor.terracottaText, marker: "!")
+        validationRow(conflict, accent: CSColor.dangerLight, marker: "!")
       }
     }
   }
@@ -600,7 +600,7 @@ struct ShortcutsPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
   }
 
@@ -674,7 +674,7 @@ struct ShortcutsPanel: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 }
 

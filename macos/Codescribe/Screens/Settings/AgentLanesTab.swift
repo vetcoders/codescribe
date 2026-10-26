@@ -103,7 +103,7 @@ struct AgentLanesTab: View {
               key: String(localized: "\(lane.title) provider"),
               value: laneModel.providerDisplayName,
               tint: false,
-              trailing: .dot(laneModel.availabilityTint),
+              trailing: .mark(laneModel.availabilityTone),
               keyWidth: Self.keyWidth
             )
             divider
@@ -141,7 +141,7 @@ struct AgentLanesTab: View {
         .clipShape(.rect(cornerRadius: CSRadius.composer))
         .overlay {
           RoundedRectangle(cornerRadius: CSRadius.composer)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
         }
         .padding(.top, SettingsScale.headerGap)
       } label: {
@@ -153,7 +153,7 @@ struct AgentLanesTab: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 }
 

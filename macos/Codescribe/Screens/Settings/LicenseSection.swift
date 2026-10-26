@@ -62,7 +62,7 @@ struct LicenseSection: View {
       if let details = model.licenseErrorDetails {
         DisclosureGroup("Details") {
           Text(details)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.mono(11, .medium))
             .textSelection(.enabled)
         }
         .font(SettingsScale.helper)
@@ -234,7 +234,7 @@ struct LicenseSection: View {
       actionsRow
         .padding(SettingsScale.cardPadding)
     }
-    .background(Color.primary.opacity(0.03))
+    .background(Color.primary.opacity(CSAlpha.subtle))
   }
 
   // MARK: - Activation
@@ -248,16 +248,16 @@ struct LicenseSection: View {
         .accessibilityHidden(true)
       HStack(alignment: .center, spacing: CSSpace.sm) {
         SecureField(Self.keyPlaceholder, text: $key)
-          .font(CSFont.mono(11.5, .regular))
+          .font(CSFont.mono(12, .regular))
           .textFieldStyle(.plain)
           .focused($keyFocused)
           .padding(.horizontal, CSSpace.md)
           .padding(.vertical, CSSpace.sm)
-          .background(Color.primary.opacity(0.08))
+          .background(Color.primary.opacity(CSAlpha.line))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+              .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
           )
           .overlay {
             CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
@@ -314,7 +314,7 @@ struct LicenseSection: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   // MARK: - Actions

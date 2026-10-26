@@ -300,7 +300,7 @@ struct OverlaySidebarToggleButton: View {
 /// wash's edge.
 struct OverlayRowHoverHighlight: ViewModifier {
   let palette: OverlayAppearancePalette
-  var cornerRadius: CGFloat = 9
+  var cornerRadius: CGFloat = CSRadius.chip
   var outset: CGFloat = 0
   var enabled = true
   @State private var hovered = false
@@ -345,7 +345,7 @@ struct OverlayRowHoverHighlight: ViewModifier {
 struct OverlayRosterRowSelection: ViewModifier {
   let palette: OverlayAppearancePalette
   let selected: Bool
-  var cornerRadius: CGFloat = 10
+  var cornerRadius: CGFloat = CSRadius.chip
 
   func body(content: Content) -> some View {
     content
@@ -1619,7 +1619,7 @@ struct OverlayChannelStatusView: View {
                       onSelectConversation?(broadcast.id)
                     } label: {
                       Text(verbatim: Self.drawerPreview(message: last))
-                        .font(.system(size: 12.5 * textScale))
+                        .font(.system(size: 13 * textScale))
                         .foregroundStyle(
                           unread > 0 ? palette.bodyText.color : palette.mutedText.color
                         )
@@ -1661,11 +1661,11 @@ struct OverlayChannelStatusView: View {
               OverlayRosterRowSelection(
                 palette: palette, selected: selectedConversationID == broadcast.id)
             )
-            .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 10))
+            .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: CSRadius.chip))
             .modifier(
               OverlayGestureFocusRing(
                 focused: broadcast.id == gestureFocusID,
-                shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+                shape: RoundedRectangle(cornerRadius: CSRadius.chip), palette: palette,
                 targetID: broadcast.id, onHover: onGestureHover)
             )
             .id(broadcast.id)
@@ -1952,7 +1952,7 @@ struct OverlayChannelStatusView: View {
     )
     .modifier(
       OverlayRowHoverHighlight(
-        palette: palette, cornerRadius: 10,
+        palette: palette, cornerRadius: CSRadius.chip,
         enabled: (conversation != nil && onSelectConversation != nil)
           || (showsPanelFocusButton(for: channel) && !panelFocusUnreachable(channel))
       )
@@ -1960,7 +1960,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       OverlayGestureFocusRing(
         focused: conversation != nil && conversation?.id == gestureFocusID,
-        shape: RoundedRectangle(cornerRadius: 10), palette: palette,
+        shape: RoundedRectangle(cornerRadius: CSRadius.chip), palette: palette,
         targetID: conversation?.id, onHover: onGestureHover)
     )
     .id(conversation?.id ?? "overlay-channel-\(channel.channel)")
@@ -2162,7 +2162,7 @@ struct OverlayChannelStatusView: View {
     }
     .buttonStyle(.plain)
     .modifier(OptionalRowFocus(binding: rowFocus, id: conversation.id))
-    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 9, outset: 6))
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: CSRadius.chip, outset: 6))
     .overlayFastHint(
       String(localized: "View conversation without changing the microphone"), palette: palette
     )
@@ -2307,7 +2307,8 @@ struct OverlayChannelStatusView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(palette.mutedText.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .background(
+          palette.mutedText.color.opacity(0.08), in: RoundedRectangle(cornerRadius: CSRadius.chip))
 
         Menu {
           Picker(
@@ -2791,7 +2792,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
           .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)) {
               proxy.scrollTo(target, anchor: .center)
             }
           }

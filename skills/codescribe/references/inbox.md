@@ -10,7 +10,7 @@ name, a microphone channel or another listener to attach.
 | --- | --- | --- |
 | User inbox, channel 10 | A retained report intended for the person using this installation | `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION` |
 | Named agent or channel 1–9 | Requested peer coordination | `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION` |
-| Shared group, channel 0 | Requested discussion with the other bound agents | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION` |
+| Shared group, channel 0 | Requested discussion with the agents it was `sent_to`, listed per copy | `cs-bus --send "TEXT" --to 0 --provider PROVIDER --session SESSION` |
 | Voice / this agent's conversation | Answer the exact owned user delivery | `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` |
 
 Use your real attached provider/session; reuse its lease and profile. Channel 10
@@ -57,8 +57,20 @@ agent's copied notice is coordination and does not give you its mailbox.
 ## Address and co-audience are different facts
 
 - `delivery_owner` identifies this reader's provider/session/lease.
-- `addressed_to` preserves the source address; channel 0 stays **all audience**
-  even if this private copy has only one entry in `recipients`.
+- `addressed_to` preserves the source address. A channel-0 copy with the
+  publisher's frozen list reads `0 (sent to: as, hania)` and carries that list
+  as `sent_to`; `0 (sent to: nobody)` with `sent_to: []` means every bound
+  agent had channel 0 off when it was sent; without the stamp it reads
+  `0 (all audience)` and the reach is unknown. Never infer "everyone" or
+  "only me" from a missing `sent_to`.
+- `sent_to` is who the message was sent to (the admitted list at sending; a
+  recipient with channel 0 off may still skip its copy), not who answers. Who
+  answers follows the content: a question to a named agent stays theirs; a
+  request to the group, or with no addressee, concerns everyone on the list.
+  Each agent the request concerns answers once; do not wait for another agent
+  to answer for you, and do not add a second reply because someone else did.
+- `peer_to` on a channel-0 copy is that copy's delivery key, not its address;
+  a private-looking copy of a broadcast is still a broadcast.
 - `recipients` are frozen delivery/ACK coordinates, not a list to enlarge from
   names mentioned in speech.
 - `co_audience` describes other Live capture channels in the same local
@@ -68,6 +80,33 @@ agent's copied notice is coordination and does not give you its mailbox.
   complete utterance and not permission to ACK, route or forward to them.
 - A peer message's `target` gives its original requested destination; its
   per-copy recipient list is not the complete original broadcast address.
+
+## Who read it
+
+Do not ask on channel 0 whether anyone got or read a message; the helper
+knows. For any message you hold a copy of, or wrote yourself:
+
+```bash
+cs-bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
+```
+
+`MESSAGE_ID` is the `message_id` of the delivery (or of your own
+`peer_message_published` receipt). The one JSON line lists `sent_to` and, per
+recipient, `name`, `channel` and `state`: `delivered` (in their mailbox,
+unread), `read` (they acknowledged it), `skipped` (their channel 0 was off;
+final, they will not get it) or `no_receipt` (on the list, but no reader has
+recorded the copy: not running yet, or older than this helper). `wake` says
+whether that delivery woke them (`on`) or waited quietly (`quiet`) at the
+time, and `null` when the receipt was backfilled from markers older than
+receipts (the delivery is known, its wake was never recorded; see
+`cs-bus --backfill-receipts`, an operator step, not yours); `withdrawn` lists
+held copies the user pulled back; `spoken` says
+whether the user heard the message (see [Voice reply](voice-reply.md)).
+`denominator` is the count to report against: "read 1 of 3" is the number
+of `read` entries over `denominator`. Do not count the entries yourself:
+`skipped` agents are listed but not in the denominator, `no_receipt` agents
+are. The command never shows the text; `receipts_refused` means you hold no
+copy of that message and did not write it.
 
 Preserve co-audience and its basis through normalization, watches and native
 queue summaries. Do not replace `recipients` or claim a private delivery is a

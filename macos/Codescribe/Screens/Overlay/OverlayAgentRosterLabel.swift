@@ -43,7 +43,7 @@ struct OverlayAgentRosterLabel: View {
               channel.map { "overlay-channel-delivery-\($0)" } ?? "overlay-channel-delivery"
             )
           Text(verbatim: title)
-            .font(.system(size: 13.5 * textScale, weight: .semibold))
+            .font(.system(size: 14 * textScale, weight: .semibold))
             .lineLimit(1)
             .truncationMode(.tail)
             .layoutPriority(1)
@@ -74,7 +74,7 @@ struct OverlayAgentRosterLabel: View {
         }
         if let preview {
           Text(verbatim: preview)
-            .font(.system(size: 12.5 * textScale))
+            .font(.system(size: 13 * textScale))
             .foregroundStyle(unreadCount > 0 ? palette.bodyText.color : palette.mutedText.color)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)

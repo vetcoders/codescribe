@@ -152,6 +152,50 @@ does not need changes to these owners.
 - Capture-open, follower-alive, queued, acknowledged, unread and speaking are
   different facts. ACK confirms receipt, not task completion. Color, elapsed
   time, a hover animation or an unread badge must not manufacture a receipt.
+- Delivery states come from `runtime/receipts/<message_id>/` only (the
+  contract is the Receipts section of `docs/TRANSCRIPT_BUS.md`): the reader
+  lists the directory of every unsettled message when its stamp changed (a
+  copy neither read nor skipped, a channel-0 text without a known list, one
+  of the newest replies not yet heard) and hands all its files to the
+  composer, `OverlayReceiptState.compose`. The projection keeps the composed
+  state (`OverlayConversationMessage.receipt`) and derives from it the
+  recipient rows (`delivered`, `read`, `skipped`), the admitted list
+  (`sent.json`, else the files' stamp) and a reply's playback
+  (`playback.<ticket>.json`). The ACK and skip markers under
+  `acknowledgments/` and `broadcast-skipped/` are not read by the overlay:
+  one owner per state, no fallback to the previous files. A write in
+  progress (`.*.tmp`) is never read; a file whose name and content disagree
+  marks nothing. A delivery without a `message_id` (a plain dictation seal)
+  has no directory and stays "Addressed". Provider acceptance (`wakeups/`),
+  a lease's `pending` and the app's own `codescribe.agent-ack.v1` bus row
+  still mark a copy's row as accepted, queued or read; they are hints ahead
+  of the files, not receipts: they never count and never end the listing,
+  which stops only when the composed files show every copy and every listed
+  agent as `read`, `skipped` or withdrawn. A reply additionally leaves the
+  poll once its playback is known from either source, the bus's playback
+  rows or the receipt file. The poll costs at most 128 directory
+  `fstatat` calls plus 128 wakeup `fstatat` calls per tick and bus. A reply's
+  "Spoken" label is decided by one ticket arbiter (`applyPlayback`) for the
+  bus's playback rows and the receipt files alike; the composed `spoken` is
+  an input to that arbiter, not a second label.
+- "Read X/Y" counts the agents the message was sent to, not its copies.
+  Y is the contract's denominator (`OverlayConversationMessage.readReceipt`):
+  the admitted list (`target.recipients` on the copy, outranked by
+  `sent.json`) plus every agent delivered to or read outside it, minus every
+  agent whose copy was skipped. A skipped agent is shown as "Skipped: off
+  channel 0" and is not an unread one: a skip is final, so it never counts.
+  An admitted agent with no copy and no file is "No receipt" and counts: its
+  reader was not running or predates receipts. Without a list the copies are
+  the list, today's denominator; a channel take's admitted owners are its
+  `recipients`. **One contract, two implementations:** the overlay cannot
+  call the helper, so it computes the same formula a second time, from the
+  same files, in one place: the composer the reader feeds. There is no
+  second state machine next to it; the count is read off the composed state.
+  Both implementations are pinned to the model directories under
+  `scripts/tests/fixtures/receipts/<case>/` with their `expected.json`, every
+  new state goes to those directories first and then to both, and the
+  overlay computes only the formula: no roster, no policies, no reach of its
+  own. `delivered` with `wake: null` is history the helper backfilled.
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.

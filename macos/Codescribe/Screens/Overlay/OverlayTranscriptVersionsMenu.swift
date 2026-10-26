@@ -8,6 +8,12 @@ struct OverlayTranscriptVersionsMenu: View {
   let versions: OverlayTranscriptVersionsPresentation
   let onSelect: (UInt64) -> Void
   let close: () -> Void
+  @Environment(\.colorScheme) private var colorScheme
+
+  /// Secondary lines take the overlay's muted rung, as Transcription history
+  /// does. An explicit colour does not fade with a disabled row by itself,
+  /// so a version that cannot be chosen dims its secondary lines with it.
+  private var mutedText: Color { OverlayAppearancePalette.resolve(colorScheme).mutedText.color }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -18,7 +24,7 @@ struct OverlayTranscriptVersionsMenu: View {
       if let reason = versions.blockedReason {
         Text(reason)
           .font(CSFont.ui(11))
-          .foregroundStyle(.secondary)
+          .foregroundStyle(mutedText)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("overlay-versions-unavailable")
       }
@@ -34,7 +40,7 @@ struct OverlayTranscriptVersionsMenu: View {
             comment: "Versions list footer: selection moves the cursor, a new change ends redo")
         )
         .font(CSFont.ui(10))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(mutedText)
         .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -59,12 +65,12 @@ struct OverlayTranscriptVersionsMenu: View {
             if let time = option.timeLabel {
               Text(verbatim: time)
                 .font(CSFont.ui(10))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(mutedText.opacity(enabled ? 1 : 0.5))
             }
           }
           Text(verbatim: option.text)
             .font(CSFont.ui(10))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(mutedText.opacity(enabled ? 1 : 0.5))
             .lineLimit(2)
             .multilineTextAlignment(.leading)
         }

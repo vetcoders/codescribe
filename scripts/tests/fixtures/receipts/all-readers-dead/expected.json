@@ -1,0 +1,49 @@
+{
+  "denominator": 3,
+  "message_id": "0123456789abcdef00000004",
+  "recipients": [
+    {
+      "at": null,
+      "channel": "3",
+      "delivered_at": null,
+      "delivery_id": null,
+      "name": "lena",
+      "state": "no_receipt",
+      "wake": null
+    },
+    {
+      "at": null,
+      "channel": "7",
+      "delivered_at": null,
+      "delivery_id": null,
+      "name": "igor",
+      "state": "no_receipt",
+      "wake": null
+    },
+    {
+      "at": null,
+      "channel": "2",
+      "delivered_at": null,
+      "delivery_id": null,
+      "name": "nina",
+      "state": "no_receipt",
+      "wake": null
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "3",
+      "name": "lena"
+    },
+    {
+      "channel": "7",
+      "name": "igor"
+    },
+    {
+      "channel": "2",
+      "name": "nina"
+    }
+  ],
+  "spoken": null,
+  "withdrawn": []
+}

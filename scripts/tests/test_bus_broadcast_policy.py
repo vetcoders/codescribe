@@ -138,6 +138,17 @@ class BroadcastPolicyTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["kind"], rows[0]["origin_channel"], rows[0]["policy"]),
                          ("broadcast_skipped", "0", "off"))
+        # A copy of a message (one with a message_id) also leaves the one
+        # skipped receipt agents read; a plain take without one leaves none.
+        self.assertNotIn("message_id", rows[0])
+        self.assertFalse((self.root / "runtime" / "receipts").exists())
+        copy = self.payload(lease, index=2, message_id="a" * 24)
+        with contextlib.redirect_stdout(output):
+            self.assertFalse(lease.queue_delivery(copy))
+        marker = DEMUX.read_json(DEMUX.broadcast_skip_path(self.root, self.lease_id, copy["delivery_id"]))
+        self.assertEqual(marker["message_id"], "a" * 24)
+        receipt = DEMUX.read_json(self.root / "runtime" / "receipts" / ("a" * 24) / f"{copy['delivery_id']}.skipped.json")
+        self.assertEqual((receipt["kind"], receipt["policy"], receipt["name"]), ("skipped", "off", "lena"))
         self.assertEqual(rows[0]["delivery_id"], payload["delivery_id"])
         self.assertNotIn("text", rows[0])
         self.assertFalse(DEMUX.delivery_acknowledged(self.root, self.lease_id, payload["delivery_id"]))

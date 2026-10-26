@@ -142,7 +142,7 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertFalse(lane.usesDiscoveredPicker)
     provider.accountSignedIn = false
     XCTAssertEqual(
-      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.terracottaText)
+      SettingsViewModel.availabilityTint(for: provider, lane: .formatting), CSColor.dangerLight)
   }
 
   /// A stored key is presence, not validity: the lane says "Stored API key"

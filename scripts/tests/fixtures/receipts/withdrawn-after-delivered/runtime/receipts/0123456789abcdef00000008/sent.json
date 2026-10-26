@@ -1,0 +1,1 @@
+{"at": "2026-10-26T06:00:00Z", "bus": "/fixture/bus-1.jsonl", "kind": "sent", "message_id": "0123456789abcdef00000008", "schema": "codescribe.message-receipt.v1", "sent_to": [{"channel": "3", "name": "lena"}]}
