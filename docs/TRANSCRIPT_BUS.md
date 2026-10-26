@@ -1655,7 +1655,7 @@ the fact and never rewritten, replaced or removed by any other process:
 
 | File | Writer | Content |
 | --- | --- | --- |
-| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet`, `at`, `sent_to` when the copy carries the publisher's list |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history) | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
 | `<delivery_id>.read.json` | `cs-bus --ack` | the same identity fields and `read_at` |
 | `<delivery_id>.skipped.json` | the follower, instead of `delivered`, when channel zero is `off` | the same identity fields, `policy: off`, `at` |
 | `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy | `control_id`, `at` |
@@ -1754,9 +1754,55 @@ names, like `sent_to`.
 
 Receipts exist from the helper generation that writes them: followers started
 earlier write `delivered` only after they reattach, and messages acknowledged
-before that have no `read` file. Like `acknowledgments/`, `broadcast-skipped/`,
-`reply-playback/` and `reply-sources/`, `runtime/receipts/` has no retention
-sweeper; all marker directories share that limitation.
+before that have no `read` file unless the backfill below gave them one.
+Like `acknowledgments/`, `broadcast-skipped/`, `reply-playback/` and
+`reply-sources/`, `runtime/receipts/` has no retention sweeper; all marker
+directories share that limitation.
+
+### Backfill
+
+The overlay reads `runtime/receipts/` only and never falls back to the
+older markers, so history from before receipts keeps its read count by
+being rewritten into the same files, once:
+
+```bash
+cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
+```
+
+takes no `--provider/--session` (it works on the whole bridge home, not on
+one mailbox), combines with no other command, and prints one JSON line
+`{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped",
+"playback", "sent"}, "existing", "unmapped", "dry_run"}`, exit 0. It is the
+operator's one-time step after installing this helper; it is not run by
+`make install-bus` or by a follower. Sources are read and never changed,
+moved or removed; nothing is written outside `runtime/receipts/`:
+
+| Source | Receipt |
+| --- | --- |
+| a `kind: message` row in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox) | `<delivery_id>.delivered.json` with `wake: null` and `at` = the row's `emitted_at` |
+| `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field) | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none |
+| `broadcast-skipped/<lease_id>/<delivery_id>.json` | `<delivery_id>.skipped.json` (`policy: off`) |
+| `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`) | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
+| the frozen `target.recipients` stamp on a journal row or an ACK envelope | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed |
+
+`wake: null` is the one value that means "history from before receipts":
+the delivery is a fact (the row is in the reader's own journal), its wake
+was never recorded and is not reconstructed. The runtime always writes
+`on` or `quiet`; `receipt_state` passes `null` through as that value and
+nothing else. A copy with no row in any journal gets no `delivered` file
+and stays `no_receipt`. Name and channel come from `leases/<lease_id>.json`
+and the copy's frozen `recipients` entry, as `receipt_recipient` resolves
+them at runtime; the names are the agents' raw names.
+
+Nothing is guessed. A source that cannot be tied to a `message_id` (the
+oldest ACK shape without an envelope, an envelope without `message_id`, a
+dictation seal, a temporary `.tmp` file, an unreadable JSON, an incomplete
+last journal row, a playback file of another schema) is counted as
+`unmapped` and left alone; `unmapped` is information, not an error, and
+the exit code stays 0. Idempotence is the write-once rule itself, not a
+register of what was done: a second run finds every file, writes nothing,
+and counts them as `existing`; `--dry-run` reports the same counts without
+creating a file or directory. The command never prints message text.
 
 ## Open-channel co-audience
 

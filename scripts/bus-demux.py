@@ -7885,30 +7885,36 @@ def receipt_recipient(root: Path, payload: dict[str, Any], name: str | None) -> 
 
 
 def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
-                           name: str | None, wake: str | None = None,
-                           policy: str | None = None) -> Path | None:
+                           name: str | None, wake: str | None = "on",
+                           policy: str | None = None, at: str | None = None) -> Path | None:
     """Write the one file that says this copy was delivered, read or skipped.
 
     `delivered` is written by the follower when the copy enters `pending`,
     with `wake` as the policy stood at that moment; `read` by `--ack`;
     `skipped` by the follower instead of `delivered` when channel zero is
     off. Each is written once under `runtime/receipts/<message_id>/`; a
-    later writer of the same fact changes nothing. Deliveries without a
-    `message_id` (plain dictation seals) leave no receipt.
+    later writer of the same fact changes nothing, and the path comes back
+    only when this call wrote the file. Deliveries without a `message_id`
+    (plain dictation seals) leave no receipt. `at` is the fact's own time
+    (now when omitted) and `wake=None` is the one value the backfill of
+    markers older than receipts writes: the delivery is known, its wake is
+    not; the runtime always knows its wake.
     """
     if state not in MESSAGE_RECEIPT_STATES:
         raise ValueError(f"unknown receipt state {state!r}")
+    if state == "delivered" and wake not in ("on", "quiet", None):
+        raise ValueError(f"unknown wake {wake!r}")
     message_id = receipt_message_id(payload)
     delivery_id = payload.get("delivery_id")
     if message_id is None or not isinstance(delivery_id, str) or not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
         return None
-    stamp = utc_now()
+    stamp = utc_now() if at is None else at
     row: dict[str, Any] = {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": state,
                            "message_id": message_id, "delivery_id": delivery_id,
                            **receipt_recipient(root, payload, name),
                            ("read_at" if state == "read" else "at"): stamp}
     if state == "delivered":
-        row["wake"] = "quiet" if wake == "quiet" else "on"
+        row["wake"] = wake
     if state == "skipped":
         row["policy"] = policy or "off"
     reach = broadcast_reach(payload)
@@ -7916,17 +7922,17 @@ def record_message_receipt(root: Path, payload: dict[str, Any], state: str, *,
         row["sent_to"] = reach
     path = receipts_directory(root, message_id) / f"{delivery_id}.{state}.json"
     try:
-        write_receipt_once(path, row)
+        written = write_receipt_once(path, row)
     except OSError as error:
         # The delivery itself is already persisted or acknowledged; a receipt
         # that could not be written is reported, never allowed to undo that.
         sys.stderr.write(f"bus-demux: {state} receipt not written: {error}\n")
         return None
-    return path
+    return path if written else None
 
 
 def record_sent_receipt(root: Path, message_id: str, sent_to: list[dict[str, str]], *,
-                        bus: str | None, at: str) -> Path | None:
+                        bus: str | None, at: str | None) -> Path | None:
     """The publisher's own record of who a channel-zero text was sent to.
 
     Written once at publication, so `receipt_state` knows the admitted list
@@ -7984,16 +7990,16 @@ def record_playback_receipt(root: Path, reply: dict[str, Any], ticket: str, stat
         return None
     path = receipts_directory(root, identity) / f"playback.{ticket}.json"
     try:
-        write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "playback",
-                                  "message_id": identity, "playback_ticket": ticket,
-                                  "state": state, "reason": reason, "spoken": state == "spoken",
-                                  "provider": reply.get("provider"),
-                                  "provider_session_id": reply.get("provider_session_id"),
-                                  "lease_id": reply.get("lease_id"), "at": at})
+        written = write_receipt_once(path, {"schema": MESSAGE_RECEIPT_SCHEMA, "kind": "playback",
+                                            "message_id": identity, "playback_ticket": ticket,
+                                            "state": state, "reason": reason, "spoken": state == "spoken",
+                                            "provider": reply.get("provider"),
+                                            "provider_session_id": reply.get("provider_session_id"),
+                                            "lease_id": reply.get("lease_id"), "at": at})
     except OSError as error:
         sys.stderr.write(f"bus-demux: playback receipt not written: {error}\n")
         return None
-    return path
+    return path if written else None
 
 
 def read_receipt(path: Path) -> dict[str, Any] | None:
@@ -8166,6 +8172,187 @@ def receipts_command(args: argparse.Namespace) -> int:
               "reason": "this provider session holds no copy of the message and is not its author"})
         return 3
     emit({"kind": "receipts", **receipt_state(args.bridge_home, message_id)})
+    return 0
+
+
+RECEIPT_BACKFILL_KINDS = ("delivered", "read", "skipped", "playback", "sent")
+
+
+def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Give the markers older than receipts their receipt files, once.
+
+    The overlay reads `runtime/receipts/` only, so history from before this
+    helper generation keeps its read count by being rewritten into the same
+    files through the same write-once functions the runtime uses. Sources
+    are read, never changed: a reader's journal (`kind: message` rows are
+    deliveries to that mailbox) becomes `delivered` with `wake: null`, the
+    one value that says "before receipts" (the delivery is known, its wake
+    is not); an ACK marker becomes `read` with the marker's `read_at` (its
+    mtime when the marker has none); a skip marker becomes `skipped`; a
+    terminal playback ticket becomes `playback`; a frozen `target.recipients`
+    stamp becomes `sent.json` (its publisher's lane is not reconstructed:
+    `bus: null`). Nothing is guessed: a source that cannot be
+    tied to a `message_id` (an envelope without one, a dictation seal, a
+    temporary or unreadable file) is counted as `unmapped` and left alone.
+    Running again finds the files and writes nothing; `existing` counts
+    them. Message text is never printed and `at` is never invented.
+    """
+    counts = dict.fromkeys(RECEIPT_BACKFILL_KINDS, 0)
+    existing = unmapped = 0
+    plans: dict[Path, tuple[str, Any]] = {}
+    names: dict[str, str | None] = {}
+
+    def lease_name(lease_id: str) -> str | None:
+        if lease_id not in names:
+            state = read_json(root / "leases" / f"{lease_id}.json") or {}
+            names[lease_id] = state["name"] if isinstance(state.get("name"), str) else None
+        return names[lease_id]
+
+    def plan(path: Path, kind: str, write: Any) -> None:
+        plans.setdefault(path, (kind, write))
+
+    def entries(directory: Path) -> list[Path]:
+        try:
+            with os.scandir(directory) as listing:
+                found = [entry for entry in listing if entry.is_file(follow_symlinks=False)]
+        except OSError:
+            return []
+        return [Path(entry.path) for entry in sorted(found, key=lambda entry: entry.name)]
+
+    def lease_directories(directory: Path) -> list[Path]:
+        try:
+            with os.scandir(directory) as listing:
+                found = [entry for entry in listing
+                         if entry.is_dir(follow_symlinks=False) and re.fullmatch(r"[0-9a-f]{32}", entry.name)]
+        except OSError:
+            return []
+        return [Path(entry.path) for entry in sorted(found, key=lambda entry: entry.name)]
+
+    def marker(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+        """The JSON of one regular marker file and its mtime as a stamp."""
+        try:
+            metadata = path.lstat()
+            if not S_ISREG(metadata.st_mode) or metadata.st_size > 1 << 20:
+                return None, None
+            row = read_reply_json(path, 1 << 20)
+        except (OSError, ValueError, UnicodeError):
+            return None, None
+        return row, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(metadata.st_mtime))
+
+    def stamp(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    def plan_sent(payload: dict[str, Any], message_id: str) -> None:
+        reach = broadcast_reach(payload)
+        if reach is not None:
+            plan(receipts_directory(root, message_id) / "sent.json", "sent",
+                 lambda: record_sent_receipt(root, message_id, reach, bus=None,
+                                             at=stamp(payload.get("emitted_at"))))
+
+    # Readers' journals: every `message` row was a delivery to that mailbox.
+    for path in entries(root / "runtime" / "followers"):
+        if not path.name.endswith(".events.jsonl"):
+            continue
+        lease_id = path.name[: -len(".events.jsonl")]
+        if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
+            continue
+        try:
+            for raw in replay(path):
+                try:
+                    row = json.loads(raw)
+                except ValueError:
+                    unmapped += 1
+                    continue
+                if not isinstance(row, dict) or row.get("kind") != "message":
+                    continue
+                delivery_id, message_id = row.get("delivery_id"), receipt_message_id(row)
+                at = stamp(row.get("emitted_at"))
+                if (message_id is None or at is None or not isinstance(delivery_id, str)
+                        or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)):
+                    unmapped += 1
+                    continue
+                payload = {**row, "lease_id": lease_id}
+                plan(receipts_directory(root, message_id) / f"{delivery_id}.delivered.json", "delivered",
+                     lambda payload=payload, lease_id=lease_id, at=at: record_message_receipt(
+                         root, payload, "delivered", name=lease_name(lease_id), wake=None, at=at))
+                plan_sent(payload, message_id)
+        except (OSError, ValueError, UnicodeError):
+            # An incomplete last row: what was read stays planned, the rest is unknown.
+            unmapped += 1
+
+    # ACK markers: the reader read this copy.
+    for directory in lease_directories(root / "acknowledgments"):
+        lease_id = directory.name
+        for path in entries(directory):
+            row, modified = marker(path)
+            delivery_id = path.name[:-5] if path.name.endswith(".json") else ""
+            envelope = row.get("envelope") if row else None
+            payload = dict(envelope) if isinstance(envelope, dict) else {}
+            message_id = (receipt_message_id(row) or receipt_message_id(payload)) if row else None
+            if (row is None or message_id is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
+                    or row.get("delivery_id") != delivery_id or row.get("lease_id") != lease_id):
+                unmapped += 1
+                continue
+            for key in ("provider", "provider_session_id", "bus"):
+                if key in row:
+                    payload[key] = row[key]
+            payload.update(message_id=message_id, delivery_id=delivery_id, lease_id=lease_id)
+            plan(receipts_directory(root, message_id) / f"{delivery_id}.read.json", "read",
+                 lambda payload=payload, lease_id=lease_id, at=stamp(row.get("read_at")) or modified:
+                 record_message_receipt(root, payload, "read", name=lease_name(lease_id), at=at))
+            plan_sent(payload, message_id)
+
+    # Skip markers: channel zero was off, the copy was skipped instead of delivered.
+    for directory in lease_directories(root / "broadcast-skipped"):
+        lease_id = directory.name
+        for path in entries(directory):
+            row, modified = marker(path)
+            delivery_id = path.name[:-5] if path.name.endswith(".json") else ""
+            message_id = receipt_message_id(row) if row else None
+            if (row is None or message_id is None or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)
+                    or row.get("delivery_id") != delivery_id or row.get("lease_id") != lease_id):
+                unmapped += 1
+                continue
+            payload = {**row, "delivery_id": delivery_id, "lease_id": lease_id}
+            plan(receipts_directory(root, message_id) / f"{delivery_id}.skipped.json", "skipped",
+                 lambda payload=payload, lease_id=lease_id, at=stamp(row.get("emitted_at")) or modified:
+                 record_message_receipt(root, payload, "skipped", name=lease_name(lease_id),
+                                        policy=stamp(row.get("policy")) or "off", at=at))
+
+    # Playback tickets: only a terminal state is a fact about hearing.
+    for path in entries(root / "runtime" / "reply-playback"):
+        if path.name.endswith(".lock") or path.name.endswith(".stop.json"):
+            continue
+        match = re.fullmatch(r"([0-9a-f]{24})\.([0-9a-f]{24})\.json", path.name)
+        row, modified = marker(path) if match else (None, None)
+        if (match is None or row is None or row.get("schema") != REPLY_CONTROL_SCHEMA
+                or row.get("reply_id") != match[1] or row.get("playback_ticket") != match[2]):
+            unmapped += 1
+            continue
+        state = row.get("state")
+        if state not in PLAYBACK_TERMINAL_STATES:
+            continue
+        plan(receipts_directory(root, match[1]) / f"playback.{match[2]}.json", "playback",
+             lambda row=row, ticket=match[2], state=state, at=stamp(row.get("emitted_at")) or modified:
+             record_playback_receipt(root, row, ticket, state, reason=stamp(row.get("reason")), at=at))
+
+    for path, (kind, write) in plans.items():
+        if dry_run:
+            if path.exists():
+                existing += 1
+            else:
+                counts[kind] += 1
+        elif write() is not None:
+            counts[kind] += 1
+        elif path.exists():
+            existing += 1
+    return {"kind": "receipts_backfill", "written": counts, "existing": existing,
+            "unmapped": unmapped, "dry_run": dry_run}
+
+
+def backfill_receipts_command(args: argparse.Namespace) -> int:
+    """`cs-bus --backfill-receipts [--dry-run]`: one JSON line of counts, exit 0."""
+    emit(backfill_receipts(args.bridge_home, dry_run=args.dry_run))
     return 0
 
 
@@ -10942,6 +11129,12 @@ def main() -> int:
     parser.add_argument("--receipts", metavar="MESSAGE_ID",
                         help="print who a message was delivered to, who read or skipped it and whether "
                         "it was spoken; requires --provider/--session holding a copy or authoring it")
+    parser.add_argument("--backfill-receipts", action="store_true",
+                        help="write receipt files once for markers older than receipts (readers' journals, "
+                        "ACK and skip markers, terminal playback tickets) across the whole bridge home; "
+                        "idempotent, sources untouched, counts as one JSON line")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --backfill-receipts: report the counts without writing")
     mute = parser.add_mutually_exclusive_group()
     mute.add_argument("--mute-agent", action="store_true", help="mute automatic replies for this provider session and bus")
     mute.add_argument("--unmute-agent", action="store_true", help="unmute future automatic replies for this provider session and bus")
@@ -11069,6 +11262,17 @@ def main() -> int:
             return 3
     if args.extensions_directory:
         parser.error("--extensions-directory requires --install-junie-extension")
+    if args.backfill_receipts or args.dry_run:
+        allowed = {"backfill_receipts", "dry_run", "bridge_home", "entrypoint"}
+        if not args.backfill_receipts or any(value != parser.get_default(key) for key, value in vars(args).items()
+                                             if key not in allowed):
+            parser.error("--backfill-receipts combines only with --dry-run and --bridge-home")
+        args.bridge_home = (args.bridge_home or bridge_home()).expanduser().resolve(strict=False)
+        try:
+            return backfill_receipts_command(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"cs-bus: receipts backfill refused: {error}\n")
+            return 3
     if args.mute_all or args.unmute_all:
         allowed = {"mute_all", "unmute_all", "bridge_home", "entrypoint"}
         if any(value != parser.get_default(key) for key, value in vars(args).items()

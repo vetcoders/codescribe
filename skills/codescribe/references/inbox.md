@@ -97,7 +97,10 @@ unread), `read` (they acknowledged it), `skipped` (their channel 0 was off;
 final, they will not get it) or `no_receipt` (on the list, but no reader has
 recorded the copy: not running yet, or older than this helper). `wake` says
 whether that delivery woke them (`on`) or waited quietly (`quiet`) at the
-time; `withdrawn` lists held copies the user pulled back; `spoken` says
+time, and `null` when the receipt was backfilled from markers older than
+receipts (the delivery is known, its wake was never recorded; see
+`cs-bus --backfill-receipts`, an operator step, not yours); `withdrawn` lists
+held copies the user pulled back; `spoken` says
 whether the user heard the message (see [Voice reply](voice-reply.md)).
 `denominator` is the count to report against: "read 1 of 3" is the number
 of `read` entries over `denominator`. Do not count the entries yourself:

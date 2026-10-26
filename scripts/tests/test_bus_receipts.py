@@ -1,6 +1,7 @@
 """Receipts: one file per fact under runtime/receipts/<message_id>/, one composer."""
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -102,9 +103,21 @@ class WriteOnceTests(ReceiptFixture):
         first = DEMUX.record_message_receipt(self.root, payload, "delivered", name="lena", wake="on")
         content = first.read_text()
         again = DEMUX.record_message_receipt(self.root, payload, "delivered", name="lena", wake="quiet")
-        self.assertEqual(again, first)
+        self.assertIsNone(again)
         self.assertEqual(first.read_text(), content)
         self.assertEqual(json.loads(content)["wake"], "on")
+
+    def test_wake_is_on_quiet_or_the_backfill_null(self):
+        lease = self.lease()
+        self.bind()
+        payload = self.payload(lease)
+        with self.assertRaises(ValueError):
+            DEMUX.record_message_receipt(self.root, payload, "delivered", name="lena", wake="loud")
+        path = DEMUX.record_message_receipt(self.root, payload, "delivered", name="lena", wake=None,
+                                            at="2026-10-20T09:00:00Z")
+        row = json.loads(path.read_text())
+        self.assertIsNone(row["wake"])
+        self.assertEqual(row["at"], "2026-10-20T09:00:00Z")
 
     def test_deliveries_without_a_message_id_leave_no_receipt(self):
         lease = self.lease()
@@ -399,8 +412,8 @@ class ReceiptStateTests(ReceiptFixture):
     def test_the_fixture_directories_pin_the_exact_state(self):
         fixtures = Path(__file__).resolve().parent / "fixtures" / "receipts"
         cases = sorted(p for p in fixtures.iterdir() if p.is_dir())
-        self.assertGreaterEqual(len(cases), 6)
-        self.assertIn("skipped-on-sent-to", {case.name for case in cases})
+        self.assertGreaterEqual(len(cases), 7)
+        self.assertLessEqual({"skipped-on-sent-to", "legacy-delivered-unread"}, {case.name for case in cases})
         for case in cases:
             with self.subTest(case=case.name):
                 expected = json.loads((case / "expected.json").read_text())
@@ -539,3 +552,178 @@ class ReceiptsCommandTests(ReceiptFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackfillTests(ReceiptFixture):
+    """`--backfill-receipts`: yesterday's markers get today's files, once."""
+
+    M1, M2, M3 = "0123456789abcdef00000101", "0123456789abcdef00000102", "0123456789abcdef00000103"
+    TICKET, PLAYING = "f" * 24, "e" * 24
+    IGOR_SESSION = "igor-session"
+
+    def lease_state(self, lease_id, session, name):
+        DEMUX.atomic_json(self.root / "leases" / f"{lease_id}.json", {
+            "schema": DEMUX.LEASE_SCHEMA, "lease_id": lease_id, "provider": self.provider,
+            "provider_session_id": session, "name": name, "bus": str(self.bus), "pending": [], "held": {}})
+
+    def history(self):
+        """A bridge home as a helper older than receipts left it."""
+        lease = self.lease()
+        self.bind()
+        self.bind(channel="7", name="igor", session=self.IGOR_SESSION)
+        igor = DEMUX.lease_identifier(self.provider, self.IGOR_SESSION)
+        self.lease_state(self.lease_id, self.session, "lena")
+        self.lease_state(igor, self.IGOR_SESSION, "igor")
+        # Lena's journal: two deliveries (one stamped with the sent list, one
+        # not), a draft in between. One is acknowledged, one is unread.
+        read = self.payload(lease, 1, message_id=self.M1, emitted_at="2026-10-20T09:00:00Z")
+        unread = self.payload(lease, 2, message_id=self.M2, emitted_at="2026-10-20T09:00:02Z", target=None)
+        draft = self.payload(lease, 3, kind="draft", message_id=self.M2, emitted_at="2026-10-20T09:00:01Z")
+        _, journal = DEMUX.follower_paths(self.root, self.lease_id)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        for row in (read, draft, unread):
+            DEMUX.emit_follower(row, journal, None, human_output=False)
+        # An ACK marker as the old helper wrote it: message_id only inside the envelope.
+        markers = self.root / "acknowledgments" / self.lease_id
+        DEMUX.atomic_json(markers / f"{read['delivery_id']}.json", {
+            "lease_id": self.lease_id, "delivery_id": read["delivery_id"], "provider": self.provider,
+            "provider_session_id": self.session, "read_at": "2026-10-20T10:00:00Z", "bus": str(self.bus),
+            "envelope": DEMUX.receipt_envelope(read, str(self.bus))})
+        # A marker of this generation (message_id on top) whose journal is gone.
+        gone = self.payload(lease, 4, message_id=self.M3, target=None)
+        DEMUX.atomic_json(markers / f"{gone['delivery_id']}.json", {
+            "lease_id": self.lease_id, "delivery_id": gone["delivery_id"], "provider": self.provider,
+            "provider_session_id": self.session, "read_at": "2026-10-20T10:01:00Z", "bus": str(self.bus),
+            "message_id": self.M3, "envelope": DEMUX.receipt_envelope(gone, str(self.bus))})
+        # The oldest marker shape: no envelope at all, nothing to tie it to.
+        DEMUX.atomic_json(markers / f"{'9' * 24}.json", {"lease_id": self.lease_id, "delivery_id": "9" * 24})
+        # Igor's copy of the first message was skipped (channel zero off).
+        DEMUX.atomic_json(DEMUX.broadcast_skip_path(self.root, igor, "4" * 24), {
+            "schema": DEMUX.BROADCAST_POLICY_SCHEMA, "kind": "broadcast_skipped", "delivery_id": "4" * 24,
+            "lease_id": igor, "provider": self.provider, "provider_session_id": self.IGOR_SESSION,
+            "bus": str(self.bus), "message_id": self.M1, "origin_channel": "0", "policy": "off",
+            "emitted_at": "2026-10-20T09:00:05Z"})
+        # The first message was heard; the second is still playing.
+        playback = self.root / "runtime" / "reply-playback"
+        playback.mkdir(parents=True, exist_ok=True)
+        for reply_id, ticket, state in ((self.M1, self.TICKET, "spoken"), (self.M2, self.PLAYING, "playing")):
+            DEMUX.atomic_json(playback / f"{reply_id}.{ticket}.json", {
+                "schema": DEMUX.REPLY_CONTROL_SCHEMA, "kind": "agent_reply_playback",
+                "emitted_at": "2026-10-20T10:05:00Z", "reply_id": reply_id, "provider": self.provider,
+                "provider_session_id": self.session, "lease_id": self.lease_id, "playback_ticket": ticket,
+                "state": state, "spoken": state == "spoken", "bus": str(self.bus)})
+            (playback / f"{reply_id}.{ticket}.lock").write_bytes(b"")
+        (playback / f"{self.M2}.{self.PLAYING}.stop.json").write_text("{}")
+        return {"read": read, "unread": unread, "gone": gone, "igor": igor}
+
+    def sources(self):
+        digests = {}
+        for directory in ("acknowledgments", "broadcast-skipped", "leases", "runtime/followers",
+                          "runtime/reply-playback"):
+            for path in sorted((self.root / directory).rglob("*")):
+                if path.is_file():
+                    digests[str(path.relative_to(self.root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return digests
+
+    def backfill(self, *arguments):
+        output, error = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", [str(HELPER), "--bridge-home", str(self.root), *arguments]), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            result = DEMUX.main()
+        return result, output.getvalue(), error.getvalue()
+
+    EXPECTED = {"kind": "receipts_backfill", "dry_run": False, "existing": 0, "unmapped": 1,
+                "written": {"delivered": 2, "read": 2, "skipped": 1, "playback": 1, "sent": 1}}
+
+    def test_history_gets_its_files_once_and_the_sources_stay(self):
+        copies = self.history()
+        before = self.sources()
+        result, output, error = self.backfill("--backfill-receipts")
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(json.loads(output), self.EXPECTED)
+        self.assertNotIn("Iwo", output)
+        self.assertEqual(self.sources(), before)
+        directory = DEMUX.receipts_directory(self.root, self.M1)
+        delivered = json.loads((directory / f"{copies['read']['delivery_id']}.delivered.json").read_text())
+        self.assertEqual((delivered["wake"], delivered["at"], delivered["name"], delivered["channel"]),
+                         (None, "2026-10-20T09:00:00Z", "lena", "3"))
+        self.assertEqual(delivered["sent_to"], REACH)
+        self.assertNotIn("text", delivered)
+        read = json.loads((directory / f"{copies['read']['delivery_id']}.read.json").read_text())
+        self.assertEqual((read["read_at"], read["name"], read["channel"], read["provider_session_id"]),
+                         ("2026-10-20T10:00:00Z", "lena", "3", self.session))
+        skipped = json.loads((directory / f"{'4' * 24}.skipped.json").read_text())
+        self.assertEqual((skipped["name"], skipped["channel"], skipped["policy"], skipped["at"]),
+                         ("igor", "7", "off", "2026-10-20T09:00:05Z"))
+        sent = json.loads((directory / "sent.json").read_text())
+        self.assertEqual((sent["sent_to"], sent["at"], sent["bus"]), (REACH, "2026-10-20T09:00:00Z", None))
+        spoken = json.loads((directory / f"playback.{self.TICKET}.json").read_text())
+        self.assertEqual((spoken["state"], spoken["spoken"], spoken["at"]), ("spoken", True, "2026-10-20T10:05:00Z"))
+        self.assertEqual(sorted(p.name for p in DEMUX.receipts_directory(self.root, self.M2).iterdir()),
+                         [f"{copies['unread']['delivery_id']}.delivered.json"])
+        self.assertEqual(sorted(p.name for p in DEMUX.receipts_directory(self.root, self.M3).iterdir()),
+                         [f"{copies['gone']['delivery_id']}.read.json"])
+        # The second run finds every file and writes nothing.
+        receipts = {str(p): p.read_bytes() for p in (self.root / "runtime" / "receipts").rglob("*.json")}
+        result, output, _ = self.backfill("--backfill-receipts")
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "existing": 7,
+                                              "written": dict.fromkeys(self.EXPECTED["written"], 0)})
+        self.assertEqual({str(p): p.read_bytes() for p in (self.root / "runtime" / "receipts").rglob("*.json")},
+                         receipts)
+        self.assertEqual(self.sources(), before)
+
+    def test_dry_run_reports_the_same_counts_and_writes_nothing(self):
+        self.history()
+        before = self.sources()
+        result, output, error = self.backfill("--backfill-receipts", "--dry-run")
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "dry_run": True})
+        self.assertFalse((self.root / "runtime" / "receipts").exists())
+        self.assertEqual(self.sources(), before)
+        self.backfill("--backfill-receipts")
+        result, output, _ = self.backfill("--backfill-receipts", "--dry-run")
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "dry_run": True, "existing": 7,
+                                              "written": dict.fromkeys(self.EXPECTED["written"], 0)})
+
+    def test_receipt_state_reads_the_backfilled_history(self):
+        copies = self.history()
+        self.backfill("--backfill-receipts")
+        state = DEMUX.receipt_state(self.root, self.M1)
+        self.assertEqual(state["sent_to"], REACH)
+        self.assertEqual([(r["name"], r["channel"], r["state"], r["wake"], r["delivered_at"], r["at"])
+                          for r in state["recipients"]],
+                         [("igor", "7", "skipped", None, None, "2026-10-20T09:00:05Z"),
+                          ("lena", "3", "read", None, "2026-10-20T09:00:00Z", "2026-10-20T10:00:00Z")])
+        self.assertEqual(state["denominator"], 1)
+        self.assertEqual((state["spoken"]["state"], state["spoken"]["spoken"]), ("spoken", True))
+        unread = DEMUX.receipt_state(self.root, self.M2)
+        self.assertEqual([(r["state"], r["wake"], r["delivery_id"]) for r in unread["recipients"]],
+                         [("delivered", None, copies["unread"]["delivery_id"])])
+        self.assertEqual((unread["sent_to"], unread["denominator"], unread["spoken"]), (None, 1, None))
+        gone = DEMUX.receipt_state(self.root, self.M3)
+        self.assertEqual([(r["state"], r["wake"], r["delivered_at"]) for r in gone["recipients"]],
+                         [("read", None, None)])
+
+    def test_temporary_and_unreadable_sources_count_as_unmapped(self):
+        self.history()
+        markers = self.root / "acknowledgments" / self.lease_id
+        (markers / ".7777777777777777777777.json.tmp").write_text("{")
+        (markers / f"{'8' * 24}.json").write_text("not json")
+        (self.root / "runtime" / "reply-playback" / f"{self.M3}.{'d' * 24}.json").write_text("{}")
+        result, output, _ = self.backfill("--backfill-receipts", "--dry-run")
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output)["unmapped"], 4)
+
+    def test_the_command_stands_alone(self):
+        for arguments in (("--backfill-receipts", "--provider", "codex", "--session", "s"),
+                          ("--backfill-receipts", "--receipts", MESSAGE_ID),
+                          ("--backfill-receipts", "--mute-all"),
+                          ("--dry-run",)):
+            with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as refused:
+                self.backfill(*arguments)
+            self.assertEqual(refused.exception.code, 2)
+        result, output, error = self.backfill("--backfill-receipts")
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "unmapped": 0,
+                                              "written": dict.fromkeys(self.EXPECTED["written"], 0)})
