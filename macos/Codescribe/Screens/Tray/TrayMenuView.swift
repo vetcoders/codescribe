@@ -137,7 +137,7 @@ struct TrayMenuView: View {
           .padding(.top, 2)
       }
     }
-    .animation(.easeOut(duration: 0.18), value: viewModel.copyStatus)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: viewModel.copyStatus)
   }
 
   // MARK: - History (nested disclosure → copy a recent transcript)

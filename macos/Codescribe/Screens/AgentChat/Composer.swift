@@ -138,7 +138,7 @@ struct Composer: View {
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
       // the rest of the time.
       .overlay(dropCatcher)
-      .animation(.easeOut(duration: 0.12), value: isDragging)
+      .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isDragging)
 
       if let notice = store.unsentDictationNotice {
         Text(verbatim: notice)
@@ -437,7 +437,7 @@ struct Composer: View {
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
     .accessibilityLabel(Text(micState.accessibilityLabel))
-    .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: store.dictationPhase)
   }
 
   /// One shared recorder ⇒ the live-capture affordances belong to exactly one

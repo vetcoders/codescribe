@@ -116,11 +116,11 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   /// Opacity of a pulsing light at `time`: a raised cosine between 0.45 and 1
   /// with a 1.2 s period, computed from the clock so a paused timeline stops it.
   static func pulseOpacity(at time: TimeInterval) -> Double {
-    0.725 + 0.275 * cos(time * 2 * .pi / 1.2)
+    0.725 + 0.275 * cos(time * 2 * .pi / CSMotion.Tempo.lampPulse)
   }
 
   /// One full turn of the processing arc.
-  static let rotationPeriod: TimeInterval = 1.2
+  static let rotationPeriod: TimeInterval = CSMotion.Tempo.processingArc
 
   /// Share of the circle the processing arc covers: an open arc, not a ring.
   static let arcFraction: CGFloat = 0.3

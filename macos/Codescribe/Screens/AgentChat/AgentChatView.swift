@@ -501,7 +501,7 @@ private struct ThreadDetail: View {
         .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
-    .animation(.easeOut(duration: 0.18), value: isContextOpen)
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.sheet)
     .alert(

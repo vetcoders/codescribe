@@ -2789,7 +2789,7 @@ private struct OverlayAgentMonitorBody<Header: View, Pinned: View, Content: View
           .accessibilityIdentifier("overlay-agent-monitor-scroll")
           .onChange(of: scrollTargetID) { _, target in
             guard let target else { return }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover)) {
               proxy.scrollTo(target, anchor: .center)
             }
           }

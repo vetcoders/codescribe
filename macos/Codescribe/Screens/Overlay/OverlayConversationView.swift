@@ -290,7 +290,7 @@ struct OverlayConversationView: View {
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .animation(.easeOut(duration: 0.18), value: followsLatest)
+          .animation(.easeOut(duration: CSMotion.Tempo.hover), value: followsLatest)
         }
         .overlay(alignment: .top) {
           VStack(spacing: 0) {

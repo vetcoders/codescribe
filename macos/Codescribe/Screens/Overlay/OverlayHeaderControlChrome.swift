@@ -97,7 +97,7 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintSize) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear { anchor.hide() }
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
+      .animation(reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: hovered)
   }
 
   /// One owner: the shared panel. Leave, a title change, or `showsHint`

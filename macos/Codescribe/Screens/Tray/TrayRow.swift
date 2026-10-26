@@ -53,7 +53,7 @@ enum TrayRowScale {
 /// down when expanded — the standard macOS disclosure gesture.
 enum TrayDisclosureChevron {
   static let icon: CSIcon = .chevronRight
-  static let animation = Animation.easeOut(duration: 0.18)
+  static let animation = Animation.easeOut(duration: CSMotion.Tempo.hover)
   static func rotationDegrees(expanded: Bool) -> Double { expanded ? 90 : 0 }
 }
 

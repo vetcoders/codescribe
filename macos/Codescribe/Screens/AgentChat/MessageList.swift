@@ -377,7 +377,7 @@ struct MessageList: View {
               .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
           }
-          .animation(.easeOut(duration: 0.18), value: pillVisible)
+          .animation(.easeOut(duration: CSMotion.Tempo.hover), value: pillVisible)
         }
       }
     }
@@ -395,7 +395,7 @@ struct MessageList: View {
   ) {
     guard action == .scrollToLiveEdge else { return }
     if animated {
-      withAnimation(.easeOut(duration: 0.25)) {
+      withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) {
         proxy.scrollTo(bottomAnchor, anchor: .bottom)
       }
     } else {
@@ -834,7 +834,7 @@ private struct ContextChip: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Button {
-        withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+        withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) { expanded.toggle() }
       } label: {
         HStack(spacing: 4) {
           CSIconView(
@@ -1434,7 +1434,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
   func makeBody(configuration: Configuration) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       Button {
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(.easeOut(duration: CSMotion.Tempo.hover)) {
           configuration.isExpanded.toggle()
         }
       } label: {
