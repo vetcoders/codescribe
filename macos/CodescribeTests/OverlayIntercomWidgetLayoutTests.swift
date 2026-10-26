@@ -8,6 +8,52 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   private typealias Layout = OverlayIntercomWidgetLayout
 
   @MainActor
+  func testMainHeaderAndExpandedArrowDoNotOwnResizeHitTargets() throws {
+    let suite = "CodescribeTests.chrome-hit.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState()
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
+    let owner = try XCTUnwrap(OverlayConversationOwner(row: [
+      "provider": "codex", "provider_session_id": "chrome-fixture",
+      "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
+    ]))
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: "Agent", owner: owner, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    let identity = OverlayIntercomCardIdentity(digit: "3", conversation: conversation)
+    for header in [true, false] {
+      let height: CGFloat = header ? Layout.controlHeight(scale: 1) : 400
+      let content: AnyView = header
+        ? AnyView(controller.offscreenHeader(width: 500))
+        : AnyView(controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
+      let host = NSHostingView(rootView: content.environment(\.csTextScale, 1))
+      host.sizingOptions = []
+      host.frame = NSRect(x: 0, y: 0, width: 500, height: height)
+      let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
+      let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
+      let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
+      func resizeAt(_ x: CGFloat, _ y: CGFloat) -> Bool {
+        let target = host.hitTest(host.convert(NSPoint(x: x, y: y), to: host.superview))
+        return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") } ?? false
+      }
+      XCTAssertFalse(resizeAt(493, top), "Main header and expanded arrow never resize")
+      for x in [CGFloat(7), 493] {
+        XCTAssertEqual(resizeAt(x, bottom), !header, "Only the card retains bottom resize targets")
+      }
+    }
+    XCTAssertEqual(controller.interactionWindowCounts.owned, 0)
+  }
+
+  @MainActor
   func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
     XCTAssertNotNil(
       NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
