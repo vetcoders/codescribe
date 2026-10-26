@@ -6,6 +6,42 @@ import XCTest
 
 @MainActor
 final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
+  func testControlStateReviewImagesInBothAppearances() throws {
+    for dark in [false, true] {
+      for state in ["unavailable", "off", "linked", "recording", "sending"] {
+        let palette: OverlayAppearancePalette = dark ? .dark : .light
+        let unavailable = state == "unavailable"
+        let host = NSHostingView(
+          rootView: OverlayConversationComposer(
+            palette: palette,
+            draft: .constant(state == "sending" ? "Sending draft" : ""),
+            maximumEditorHeight: 96, sending: state == "sending", onSubmit: {},
+            draftMicrophoneRecording: state == "recording",
+            onToggleDraftMicrophone: unavailable ? nil : {},
+            draftSyncChoices: [.init(id: "peer", title: "Peer", selected: false, enabled: true)],
+            draftSyncNames: state == "linked" ? ["Agent", "Peer"] : [],
+            draftSyncEnabled: !unavailable, onActivateDraftSync: {}
+          )
+          .environment(\.colorScheme, dark ? .dark : .light)
+          .environment(\.csTextScale, 1)
+          .background(palette.desktopBackground.color))
+        host.sizingOptions = []
+        host.frame = NSRect(x: 0, y: 0, width: 360, height: 120)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.04))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(bitmap)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Composer-state-\(dark ? "dark" : "light")-\(state)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+    }
+  }
+
   func testMultilineEditorUsesTheWholeComposerWidthAndKeepsTheLastLineVisible() throws {
     for dark in [false, true] {
       for width in [CGFloat(280), 420, 640] {
