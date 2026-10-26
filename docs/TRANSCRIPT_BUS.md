@@ -1703,26 +1703,40 @@ withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at,
 playback_ticket} | null}`. Agents appear by name and channel only; no provider,
 session or lease leaves the files through this projection.
 
-The helper is the one owner of the denominator. `sent_to` comes from
-`sent.json` when the publisher wrote one, so it does not depend on any
-reader having been alive; without that file (messages before this helper
-generation, and channel takes, whose list the app stamps into `recipients`
-outside the helper) it is the stamp the recipients' files carried, or null
-when none did. Every member of `sent_to` without any file is listed as
+The helper owns the contract of the denominator: the formula below and
+the model directories that pin it. `sent_to` comes from `sent.json` when
+the publisher wrote one, so it does not depend on any reader having been
+alive; without that file (messages before this helper generation, and
+channel takes, whose list the app stamps into `recipients` outside the
+helper) it is the stamp the recipients' files carried, or null when none
+did. Every member of `sent_to` without any file is listed as
 `{name, channel, state: no_receipt}`: the copy was sent and no reader has
 recorded it yet, or the reader predates this generation. `denominator` is
 the number of agents on `sent_to` plus every agent delivered to or read
-outside that list (one agent by name and channel, however many deliveries
-reached it); `no_receipt` counts, `skipped` is shown but never counted.
-The overlay and agents read `denominator` and the states; neither derives
-the count a second time from the roster or from policies. `spoken` is the
-completed playback when one exists, else the latest terminal one. Files
-whose name and content disagree, foreign schemas and foreign message ids
-are ignored, never repaired.
+outside that list, minus every agent whose copy was skipped (one agent by
+name and channel, however many deliveries reached it); `no_receipt` counts,
+`skipped` is shown but never counted. The list is frozen at publication
+and a skip is recorded at delivery, so a member of `sent_to` can turn out
+skipped: the skip wins, the entry stays `skipped`, and the count does not
+wait for a read that cannot come. The overlay and agents read
+`denominator` and the states; neither derives the count a second time from
+the roster or from policies. `sent.json` proves nothing about the caller:
+it does not open `--receipts` authorization, so an agent on the list with
+no file of its own cannot read the receipts of that message, as before.
+`spoken` is the completed playback when one exists, else the latest
+terminal one. Files whose name and content disagree, foreign schemas and
+foreign message ids are ignored, never repaired.
 
-`scripts/tests/fixtures/receipts/<case>/` holds model directories with their
-exact `expected.json`; the helper's tests and the overlay's tests read the
-same cases, so both sides compute one state.
+**One contract, two implementations.** This is a deliberate exception to
+the one-owner rule: the overlay cannot call the helper, so the same
+formula is computed twice, once by `receipt_state` in the helper and once
+by the overlay's projection. Both are pinned to the same model
+directories under `scripts/tests/fixtures/receipts/<case>/`, each with its
+exact `expected.json`, and both test suites read those cases. Every new
+state or rule goes to the model directories first, then to both
+implementations; a change that passes in one implementation but not the
+other is not done. The overlay computes only the formula from the files:
+no roster, no policies, no reach of its own.
 
 ```bash
 cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]

@@ -183,8 +183,9 @@ class FollowerReceiptTests(ReceiptFixture):
         state = DEMUX.receipt_state(self.root, MESSAGE_ID)
         self.assertEqual([(r["name"], r["state"], r["wake"]) for r in state["recipients"]],
                          [("lena", "skipped", None), ("igor", "no_receipt", None)])
-        # lena is on the frozen list, so she is counted although her copy was skipped.
-        self.assertEqual(state["denominator"], 2)
+        # lena is on the frozen list, but her copy was skipped at delivery:
+        # the skip wins, she stays listed as skipped and leaves the count.
+        self.assertEqual(state["denominator"], 1)
 
     def test_drafts_leave_no_receipt(self):
         lease = self.lease()
@@ -398,7 +399,8 @@ class ReceiptStateTests(ReceiptFixture):
     def test_the_fixture_directories_pin_the_exact_state(self):
         fixtures = Path(__file__).resolve().parent / "fixtures" / "receipts"
         cases = sorted(p for p in fixtures.iterdir() if p.is_dir())
-        self.assertGreaterEqual(len(cases), 5)
+        self.assertGreaterEqual(len(cases), 6)
+        self.assertIn("skipped-on-sent-to", {case.name for case in cases})
         for case in cases:
             with self.subTest(case=case.name):
                 expected = json.loads((case / "expected.json").read_text())

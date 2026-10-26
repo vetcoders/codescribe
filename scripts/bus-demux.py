@@ -8017,8 +8017,9 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
     stamp the recipients' files carried. A member of `sent_to` with no file
     at all is listed as `no_receipt`. `denominator` is the one count the
     overlay and agents read: the members of `sent_to` plus every agent that
-    was delivered to or read outside that list; `skipped` is shown, never
-    counted. `spoken` is the playback that completed, else the latest
+    was delivered to or read outside that list, minus every agent whose copy
+    was skipped; `skipped` is shown, never counted, even for a member of the
+    list. `spoken` is the playback that completed, else the latest
     terminal playback, else None. Message text is never read, and the
     projection names agents by name and channel only: the provider/session
     pair (a mailbox capability) and the lease hash stay in the files.
@@ -8085,19 +8086,25 @@ def receipt_state(root: Path, message_id: str) -> dict[str, Any]:
     if published is not None:
         sent_to = published
     # The denominator: everyone on the admitted list, plus anyone delivered to
-    # or read outside it (a list frozen by the app, an older helper). A
-    # recipient is one agent by name and channel, however many deliveries
-    # reached it; skipped is shown but not counted; a member without any
-    # file is counted and listed as no_receipt.
+    # or read outside it (a list frozen by the app, an older helper), minus
+    # everyone whose copy was skipped. A recipient is one agent by name and
+    # channel, however many deliveries reached it. The list is frozen at
+    # publication and a skip happens at delivery, so a member can be both on
+    # the list and skipped: the skip wins (QC, 2026-10-26), the entry stays
+    # as skipped, and the count does not wait for a read that cannot come.
+    # A member without any file is counted and listed as no_receipt.
+    def agent(item: dict[str, Any]) -> tuple[Any, Any]:
+        return (item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
+
     listed = [(item["name"], item["channel"]) for item in sent_to or []]
-    reached = {(item["name"], item["channel"]) if item["name"] else (item["delivery_id"], None)
-               for item in recipients if item["state"] in ("delivered", "read")}
+    reached = {agent(item) for item in recipients if item["state"] in ("delivered", "read")}
+    skipped = {agent(item) for item in recipients if item["state"] == "skipped"}
     for name, channel in listed:
         if (name, channel) not in reached and not any(
                 item["name"] == name and item["channel"] == channel for item in recipients):
             recipients.append({"delivery_id": None, "name": name, "channel": channel,
                                "state": "no_receipt", "wake": None, "delivered_at": None, "at": None})
-    denominator = len(dict.fromkeys(listed)) + len(reached - set(listed))
+    denominator = len((set(listed) | reached) - skipped)
     withdrawn.sort(key=lambda item: (str(item["at"] or ""), item["delivery_id"]))
     playbacks.sort(key=lambda item: (str(item["at"] or ""), item["playback_ticket"]))
     spoken = next((item for item in playbacks if item["spoken"]), playbacks[-1] if playbacks else None)
