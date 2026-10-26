@@ -7,6 +7,27 @@ import XCTest
 
 @MainActor
 final class OverlayIntercomMetadataTests: XCTestCase {
+  override class func setUp() {
+    super.setUp()
+    // Vision's first request loads Apple's OCR model. Keep that fixture
+    // initialization outside the per-scenario render budget; the suite still
+    // includes its cost and every capture retains the same OCR assertions.
+    do {
+      let context = try XCTUnwrap(
+        CGContext(
+          data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+          space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+      let image = try XCTUnwrap(context.makeImage())
+      let request = VNRecognizeTextRequest()
+      request.recognitionLevel = .accurate
+      request.usesLanguageCorrection = false
+      try VNImageRequestHandler(cgImage: image).perform([request])
+    } catch {
+      XCTFail("Vision OCR fixture initialization failed: \(error)")
+    }
+  }
+
   func testOneMetadataLineUnlocksContextAndReturnsSpaceToPreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: scale)
@@ -19,7 +40,8 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight), .context)
       // The lightweight preview needs one prose line and its route. Input
       // remains a later tier with the complete message renderer's own budget.
-      let previewHeight = body + metadata
+      let previewHeight =
+        body + metadata
         + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
         + OverlayIntercomWidgetLayout.compactPreviewSpacing
       let firstPreviewHeight = contextHeight + previewHeight
@@ -132,7 +154,10 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       .environment(\.colorScheme, .dark)
       .symbolEffectsRemoved()
       // OCR measures the settled metadata, not the card's spring entrance.
-      .transaction { $0.disablesAnimations = true; $0.animation = nil }
+      .transaction {
+        $0.disablesAnimations = true
+        $0.animation = nil
+      }
       .background(OverlayAppearancePalette.dark.desktopBackground.color))
     host.sizingOptions = []
     host.frame = CGRect(x: 0, y: 0, width: width, height: height)
