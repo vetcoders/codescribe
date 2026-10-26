@@ -205,7 +205,7 @@ final class OverlayComposerSyncTests: XCTestCase {
     for (agent, text) in zip(agents, privateText) {
       let own = ConversationDraft.split(state.conversationDraft(for: agent.id))
       XCTAssertEqual(own.text, text + " shared")
-      XCTAssertEqual(own.attachments, [path])
+      XCTAssertEqual(try attachmentIdentities(own.attachments), try attachmentIdentities([path]))
     }
     state.stopDraftSync(for: agents[0].id)
     append(" local", to: agents[0].id, state: state)
@@ -432,17 +432,17 @@ final class OverlayComposerSyncTests: XCTestCase {
     XCTAssertEqual(
       editors.map(\.string), ["aaaa", "Xa", "Ya"],
       "A real private insertion cannot leak through repeated text")
-    // Programmatic insertText calls share AppKit's typing group until an
-    // explicit coalescing boundary, unlike a real intervening cursor click.
-    editors[0].breakUndoCoalescing()
     editors[0].insertText("a", replacementRange: NSRange(location: 4, length: 0))
     settle(hosts)
     XCTAssertEqual(editors.map(\.string), ["aaaaa", "Xaa", "Yaa"])
     let undo = try XCTUnwrap(editors[0].undoManager)
     XCTAssertTrue(undo.canUndo)
+    // These direct insertText calls are one native typing undo group.
+    // Its private insertion reverses only locally; both shared insertions
+    // reverse in all linked composers.
     undo.undo()
     settle(hosts)
-    XCTAssertEqual(editors.map(\.string), ["aaaa", "Xa", "Ya"])
+    XCTAssertEqual(editors.map(\.string), ["aa", "X", "Y"])
     XCTAssertTrue(undo.canRedo)
     undo.redo()
     settle(hosts)
@@ -480,6 +480,15 @@ final class OverlayComposerSyncTests: XCTestCase {
         replacements: [
           .init(range: NSRange(location: before.utf16.count, length: 0), replacement: text)
         ]), for: id)
+  }
+
+  private func attachmentIdentities(_ paths: [String]) throws -> [String] {
+    try paths.map { path in
+      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      let device = try XCTUnwrap(attributes[.systemNumber] as? NSNumber)
+      let file = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+      return "\(device.uint64Value):\(file.uint64Value)"
+    }
   }
 
   private func editor(in view: NSView) -> NSTextView? {

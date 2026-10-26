@@ -121,12 +121,16 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
     state.setConversationDraft(
       ConversationDraft.compose(text: "A", attachments: [own]), for: agents[0].id)
     XCTAssertEqual(
-      ConversationDraft.split(state.conversationDraft(for: agents[1].id)).attachments, [peer])
+      try attachmentIdentities(
+        ConversationDraft.split(state.conversationDraft(for: agents[1].id)).attachments),
+      try attachmentIdentities([peer]))
     state.setConversationDraft("A", for: agents[0].id)
     state.setConversationDraft(
       ConversationDraft.compose(text: "A", attachments: [own]), for: agents[0].id)
     XCTAssertEqual(
-      ConversationDraft.split(state.conversationDraft(for: agents[1].id)).attachments, [peer, own])
+      try attachmentIdentities(
+        ConversationDraft.split(state.conversationDraft(for: agents[1].id)).attachments),
+      try attachmentIdentities([peer, own]))
     state.setConversationDraft(
       ConversationDraft.compose(text: "B", attachments: [peer]), for: agents[1].id)
     XCTAssertEqual(
@@ -241,6 +245,15 @@ final class OverlayForwardSyncProvenanceTests: XCTestCase {
     }
     await state.sendConversationText(agents[0])
     XCTAssertEqual(publications, 1)
+  }
+
+  private func attachmentIdentities(_ paths: [String]) throws -> [String] {
+    try paths.map { path in
+      let attributes = try FileManager.default.attributesOfItem(atPath: path)
+      let device = try XCTUnwrap(attributes[.systemNumber] as? NSNumber)
+      let file = try XCTUnwrap(attributes[.systemFileNumber] as? NSNumber)
+      return "\(device.uint64Value):\(file.uint64Value)"
+    }
   }
 
   private func drafts(_ state: OverlayState, _ agents: [OverlayConversation]) -> [String] {
