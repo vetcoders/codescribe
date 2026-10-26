@@ -46,6 +46,12 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
       let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
       let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
+      func resizeViews(_ view: NSView) -> [NSView] {
+        let own = String(describing: type(of: view)).contains("OverlayIntercomResizeView") ? [view] : []
+        return own + view.subviews.flatMap { resizeViews($0) }
+      }
+      let nativeHandles = resizeViews(host)
+      print("chrome-hit-witness header=\(header) bounds=\(host.bounds) handles=\(nativeHandles.map { $0.convert($0.bounds, to: host) })")
       func resizeAt(_ x: CGFloat, _ y: CGFloat) -> Bool {
         let target = host.hitTest(host.convert(NSPoint(x: x, y: y), to: host.superview))
         return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") } ?? false

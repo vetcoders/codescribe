@@ -223,10 +223,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       let panel = OverlayIntercomPanel()
       panel.delegate = self
       panel.onScroll = { [weak self] delta in self?.scrollGroup(delta > 0 ? -1 : 1) }
-      panel.contentView = NSHostingView(
+      let hosting = NSHostingView(
         rootView: TextScaleRoot(controller: textScale) {
           OverlayIntercomHeader(state: state, controller: self)
         }.csFocusPolicy())
+      // This controller owns the header frame. Intrinsic/minimum host sizing
+      // must not round a just-set fractional width during the final layout.
+      hosting.sizingOptions = []
+      panel.contentView = hosting
       let fallback = anchor?.frame ?? NSScreen.main?.visibleFrame ?? .zero
       let stored = UserDefaults.standard.array(forKey: Self.positionKey) as? [Double]
       let origin: CGPoint
