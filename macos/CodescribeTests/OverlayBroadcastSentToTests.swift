@@ -117,10 +117,12 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       root.appendingPathComponent("runtime/receipts/\(messageID)", isDirectory: true)
     }
 
-    /// One receipt file as `record_message_receipt` writes it.
+    /// One receipt file as `record_message_receipt` writes it: a stamped
+    /// copy's file carries the publisher's `sent_to` list (`broadcast_reach`).
     func receipt(
       _ kind: String, messageID: String, delivery: String, owner name: String,
-      lease: String? = nil, session: String? = nil, fileName: String? = nil
+      lease: String? = nil, session: String? = nil, fileName: String? = nil,
+      sentTo: [String]? = nil
     ) throws {
       try FileManager.default.createDirectory(
         at: directory(messageID), withIntermediateDirectories: true)
@@ -131,6 +133,7 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       row["delivery_id"] = delivery
       if let lease { row["lease_id"] = lease }
       if let session { row["provider_session_id"] = session }
+      if let sentTo { row["sent_to"] = reach(sentTo) }
       switch kind {
       case "read": row["read_at"] = "2026-10-26T04:19:00Z"
       case "delivered":
@@ -262,42 +265,56 @@ final class OverlayBroadcastSentToTests: XCTestCase {
     for name in ["lena", "igor", "kuba", "nina"] {
       try fixture.append(fixture.typedCopy(Self.typedID, to: name, sentTo: ["lena", "igor"]))
     }
+    // The helper never lists the sender on its own send (`--send --to 0`
+    // selects the other leases, and the stamp is built from that selection):
+    // igor's text is admitted to lena alone; kuba and nina get their copies
+    // off the list.
     try fixture.append(
       fixture.agentText(
-        Self.agentTextID, from: "igor", to: ["lena", "kuba", "nina"], sentTo: ["lena", "igor"]))
+        Self.agentTextID, from: "igor", to: ["lena", "kuba", "nina"], sentTo: ["lena"]))
     let reader = OverlayChannelDeliveryReader(root: fixture.root, cacheRoot: fixture.cacheRoot)
     let initial = try await reader.readSnapshot()
-    for id in ["typed:" + Self.typedID, "reply:" + Self.agentTextID] {
+    let lena = OverlayConversationReach(name: "lena", channel: "3")
+    let igor = OverlayConversationReach(name: "igor", channel: "7")
+    for (id, listed) in [
+      ("typed:" + Self.typedID, [lena, igor]), ("reply:" + Self.agentTextID, [lena]),
+    ] {
       let message = try conversationMessage(id, in: initial)
+      XCTAssertEqual(message.sentTo, listed, "the publisher's stamp is the admitted list")
       XCTAssertEqual(
-        message.sentTo,
-        [
-          OverlayConversationReach(name: "lena", channel: "3"),
-          OverlayConversationReach(name: "igor", channel: "7"),
-        ],
-        "the publisher's stamp is the admitted list")
-      XCTAssertEqual(
-        message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
+        message.readReceipt,
+        OverlayReadReceipt(read: 0, denominator: listed.count, unreceipted: []))
     }
     // Two delivered, one read, two skipped: the files the followers wrote.
     let typed = try deliveries(of: try conversationMessage("typed:" + Self.typedID, in: initial))
     XCTAssertEqual(typed.count, 4, "four copies, four recipients")
+    let admitted = ["lena", "igor"]
     try fixture.receipt(
-      "delivered", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena")
-    try fixture.receipt("read", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena")
+      "delivered", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena",
+      sentTo: admitted)
     try fixture.receipt(
-      "delivered", messageID: Self.typedID, delivery: typed["igor"]!, owner: "igor")
-    try fixture.receipt("skipped", messageID: Self.typedID, delivery: typed["kuba"]!, owner: "kuba")
-    try fixture.receipt("skipped", messageID: Self.typedID, delivery: typed["nina"]!, owner: "nina")
+      "read", messageID: Self.typedID, delivery: typed["lena"]!, owner: "lena", sentTo: admitted)
+    try fixture.receipt(
+      "delivered", messageID: Self.typedID, delivery: typed["igor"]!, owner: "igor",
+      sentTo: admitted)
+    try fixture.receipt(
+      "skipped", messageID: Self.typedID, delivery: typed["kuba"]!, owner: "kuba",
+      sentTo: admitted)
+    try fixture.receipt(
+      "skipped", messageID: Self.typedID, delivery: typed["nina"]!, owner: "nina",
+      sentTo: admitted)
     let agent = try deliveries(
       of: try conversationMessage("reply:" + Self.agentTextID, in: initial))
     XCTAssertEqual(Set(agent.keys), ["lena", "kuba", "nina"], "the author is not a recipient")
     try fixture.receipt(
-      "read", messageID: Self.agentTextID, delivery: agent["lena"]!, owner: "lena")
+      "read", messageID: Self.agentTextID, delivery: agent["lena"]!, owner: "lena",
+      sentTo: ["lena"])
     try fixture.receipt(
-      "skipped", messageID: Self.agentTextID, delivery: agent["kuba"]!, owner: "kuba")
+      "skipped", messageID: Self.agentTextID, delivery: agent["kuba"]!, owner: "kuba",
+      sentTo: ["lena"])
     try fixture.receipt(
-      "skipped", messageID: Self.agentTextID, delivery: agent["nina"]!, owner: "nina")
+      "skipped", messageID: Self.agentTextID, delivery: agent["nina"]!, owner: "nina",
+      sentTo: ["lena"])
     try fixture.playback(
       Self.agentTextID, ticket: String(repeating: "f", count: 24), state: "spoken", by: "igor")
     var snapshot = initial
@@ -323,8 +340,9 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       ])
     let text = try conversationMessage("reply:" + Self.agentTextID, in: snapshot)
     XCTAssertEqual(
-      text.readReceipt, OverlayReadReceipt(read: 1, denominator: 2, unreceipted: []),
-      "igor is admitted and the author: listed, not a copy, never unread")
+      text.readReceipt, OverlayReadReceipt(read: 1, denominator: 1, unreceipted: []),
+      "the author is not on its own list; the skipped copies are shown, never counted")
+    XCTAssertEqual(text.receipt?.sentTo, [lena], "the files carry the publisher's stamp")
     XCTAssertEqual(text.playback?.state, "spoken")
     XCTAssertEqual(text.playback?.spoken, true)
     XCTAssertEqual(ReplyPlaybackCopy.label(state: "spoken", reason: nil), "Spoken")
