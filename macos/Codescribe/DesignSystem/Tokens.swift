@@ -94,6 +94,9 @@ enum CSPalette {
   /// sheet (#DFDDD9, 2026-10-20), including every selectable sheet shade.
   /// Travertine's chip is the darkest light surface.
   static let textMuted = adaptive(light: NSColor(hex: 0x4B4D46), dark: NSColor(hex: 0xA0A39D))
+  /// The faint rungs are decoration only, never text: rules, separators and
+  /// hairlines that clear 3:1. Text uses the three warm rungs above —
+  /// textHigh, textBody, textMuted (Founder, 2026-10-26).
   static let textFaint = adaptive(light: NSColor(hex: 0x9DA094), dark: NSColor(hex: 0x6F7268))
   static let textFaintAlt = adaptive(light: NSColor(hex: 0xB2B5A9), dark: NSColor(hex: 0x5D6058))
 
@@ -250,8 +253,8 @@ enum CSColor {
   static let textBody = Color(nsColor: CSPalette.textBody)
   static let textBodyAlt = Color(nsColor: CSPalette.textBodyAlt)
   static let textMuted = Color(nsColor: CSPalette.textMuted)
-  static let textFaint = Color(nsColor: CSPalette.textFaint)  // mono meta
-  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // timestamps
+  static let textFaint = Color(nsColor: CSPalette.textFaint)  // decoration only, never text
+  static let textFaintAlt = Color(nsColor: CSPalette.textFaintAlt)  // decoration only, never text
 }
 
 enum CSRadius {
