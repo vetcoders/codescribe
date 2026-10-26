@@ -437,7 +437,7 @@ A panel reads the role, never a bare number.
   linear `ProgressView` on macOS paints the system accent and ignores
   `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
   progress keeps the native spinner. A status word that is verified
-  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a filled check on
+  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a thin check on
   an olive capsule — and stored identity that nothing has tested ("Saved") is
   the same capsule with the empty circle; `StatusPill` remains the dotted
   live-activity pill.

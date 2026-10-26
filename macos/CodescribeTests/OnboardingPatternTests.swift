@@ -158,7 +158,7 @@ final class OnboardingPatternTests: XCTestCase {
   /// Founder decision of 2026-10-26: the brand terracotta marks state in the
   /// wizard (progress, the selected choice, the step icon) while the macOS
   /// accent keeps the controls; verified statuses are an olive capsule with a
-  /// filled check, stored identity the empty circle, on step 6 and step 9 alike.
+  /// thin check, stored identity the empty circle, on step 6 and step 9 alike.
   func testStateWearsTheBrandAccentAndStatusesTheOlive() throws {
     let sources = try onboardingSources()
     let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
@@ -186,6 +186,9 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
     XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
     XCTAssertTrue(components.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
+    XCTAssertTrue(
+      components.contains("CSIconView(icon: .success, size: 9, weight: .semibold,"),
+      "a verified status is the thin check of the glyph canon, never a filled badge")
     XCTAssertFalse(steps.contains("struct OnboardingStatusBadge"), "the wizard owns no badge")
     XCTAssertTrue(steps.contains("mark: state.isGranted ? .verified : .none"), "granted scope")
     XCTAssertTrue(steps.contains("mark: .verified)"), "ready to go")

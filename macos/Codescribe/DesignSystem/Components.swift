@@ -512,7 +512,8 @@ struct CSProgressBar: View {
 }
 
 /// A status word in the wizard and in Settings. A verified state ("Granted",
-/// "Ready") is a filled check on an olive capsule (Founder, 2026-10-26);
+/// "Ready") is a thin check on an olive capsule (Founder, 2026-10-26; the
+/// 2026-10-10 rule: a thin check, never a filled badge);
 /// stored identity that nothing has tested ("Saved") is an empty circle on
 /// the same capsule, the deliberate exception of 2026-10-26 to the grey
 /// "saved" of 99758557a. Every other state, "Optional" included, is plain
@@ -536,7 +537,7 @@ struct CSStatusBadge: View {
       case .saved:
         CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
       case .verified:
-        CSIconView(icon: .checkCircleFill, size: 9, weight: .semibold, color: CSColor.oliveLight)
+        CSIconView(icon: .success, size: 9, weight: .semibold, color: CSColor.oliveLight)
       }
       Text(text).font(CSFont.ui(11, .medium))
     }
