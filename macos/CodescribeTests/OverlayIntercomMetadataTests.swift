@@ -33,11 +33,53 @@ final class OverlayIntercomMetadataTests: XCTestCase {
   }
 
   func testRenderedMetadataIsOneLineWithoutExecutionCoordinates() throws {
-    for scale in [CGFloat(0.8), 1, 1.6] {
-      for scenario in ["known", "unknown", "long", "foreign-lease"] {
-        try renderMetadata(scale: scale, scenario: scenario)
-      }
-    }
+    try renderMetadata(scale: 1, scenario: "known")
+  }
+
+  // Each native OCR capture keeps its own ten-second budget and failure
+  // attribution. The same twelve cases previously shared one test budget.
+  func testKnownMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "known")
+  }
+
+  func testKnownMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "known")
+  }
+
+  func testUnknownMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "unknown")
+  }
+
+  func testUnknownMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "unknown")
+  }
+
+  func testUnknownMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "unknown")
+  }
+
+  func testLongMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "long")
+  }
+
+  func testLongMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "long")
+  }
+
+  func testLongMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "long")
+  }
+
+  func testForeignLeaseMetadataAtSmallScale() throws {
+    try renderMetadata(scale: 0.8, scenario: "foreign-lease")
+  }
+
+  func testForeignLeaseMetadataAtNormalScale() throws {
+    try renderMetadata(scale: 1, scenario: "foreign-lease")
+  }
+
+  func testForeignLeaseMetadataAtLargeScale() throws {
+    try renderMetadata(scale: 1.6, scenario: "foreign-lease")
   }
 
   private func renderMetadata(scale: CGFloat, scenario: String) throws {
