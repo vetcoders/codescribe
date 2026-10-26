@@ -128,7 +128,7 @@ struct Composer: View {
       .modifier(OverlayControlGlass())
       .overlay {
         if isDragging {
-          RoundedRectangle(cornerRadius: 20)
+          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
             .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
             .allowsHitTesting(false)
         }
@@ -532,10 +532,10 @@ struct Composer: View {
           .padding(.vertical, 5)
           .background(Color.primary.opacity(0.05))
           .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+            Capsule(style: .continuous)
               .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
           )
-          .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+          .clipShape(Capsule(style: .continuous))
         }
       }
       .padding(.horizontal, 2)

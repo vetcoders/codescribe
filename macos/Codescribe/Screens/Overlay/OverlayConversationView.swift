@@ -908,10 +908,10 @@ struct OverlayConversationView: View {
     .padding(12)
     .background(
       palette.primaryText.color.opacity(0.06),
-      in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+      in: RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
     )
     .overlay {
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(
           message.kind == .user ? CSColor.terracotta.opacity(0.65) : palette.border.color,
           lineWidth: 1 / max(displayScale, 1)

@@ -353,18 +353,18 @@ private struct AgentIntegratedChrome: ViewModifier {
         .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.secondaryInk)
         .frame(width: 24, height: 20)
         .background(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+          Capsule(style: .continuous)
             .fill(isPinned ? CSColor.chromeAccent.opacity(0.16) : Color.clear)
         )
         .overlay(
-          RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+          Capsule(style: .continuous)
             .strokeBorder(
               isPinned ? CSColor.chromeAccent.opacity(0.32) : Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
     }
     .buttonStyle(.borderless)
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .help(
       isPinned
         ? String(

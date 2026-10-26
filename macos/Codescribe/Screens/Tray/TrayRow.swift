@@ -1,7 +1,7 @@
 import SwiftUI
 
 // Row primitives for the tray dropdown. Top-level geometry is taken straight
-// from the mock: rows are 9×12 padded, 9pt-radius, 11pt icon→label gap, 18pt
+// from the mock: rows are 9×12 padded, 8pt-radius, 11pt icon→label gap, 18pt
 // icon column. Rows nested inside an expanded disclosure take the denser
 // `TrayRowScale.child` numbers below.
 

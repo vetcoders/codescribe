@@ -544,13 +544,13 @@ struct ShowEarlierButton: View {
       .padding(.vertical, 6)
       .background(Color.primary.opacity(0.04))
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        Capsule(style: .continuous)
           .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .onHover { hovering = $0 }
     .accessibilityLabel("Show earlier messages")
     .help("Render the previous \(window) turns")
@@ -577,12 +577,12 @@ struct JumpToCurrentButton: View {
       .padding(.vertical, 6)
       .background(CSColor.controlFill)
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        Capsule(style: .continuous)
           .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
     }
-    .csFocusRing(cornerRadius: CSRadius.pill)
+    .csFocusRing(cornerRadius: CSRadius.window)
     .onHover { hovering = $0 }
     .accessibilityLabel("Jump to current")
     .help("Jump to the current reply")
@@ -782,16 +782,16 @@ private struct YouTurn: View {
       .background(Color.primary.opacity(0.06))
       .overlay(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 14,
-          bottomTrailingRadius: 4, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: CSRadius.card,
+          bottomTrailingRadius: 4, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
         .strokeBorder(CSColor.terracotta.opacity(0.18), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
-          topLeadingRadius: 14, bottomLeadingRadius: 14,
-          bottomTrailingRadius: 4, topTrailingRadius: 14,
+          topLeadingRadius: CSRadius.card, bottomLeadingRadius: CSRadius.card,
+          bottomTrailingRadius: 4, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
       )
@@ -920,7 +920,7 @@ struct AttachmentChip: View {
             .resizable()
             .aspectRatio(contentMode: .fill)
             .frame(width: 18, height: 18)
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
         } else {
           CSIconView(icon: .photo, size: 11)
         }
@@ -934,10 +934,10 @@ struct AttachmentChip: View {
       .padding(.vertical, 5)
       .background(Color.primary.opacity(0.05))
       .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+        Capsule(style: .continuous)
           .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+      .clipShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
     .conversationActionHover(
@@ -1330,11 +1330,11 @@ private struct ToolInspectPanel: View {
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .fill(Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
     )
   }
@@ -1846,10 +1846,10 @@ private struct ReasonedChip: View {
       .padding(.vertical, 3)
       .background(CSColor.amber.opacity(0.1))
       .overlay(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
+        RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
           .strokeBorder(CSColor.amber.opacity(0.22), lineWidth: 1)
       )
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
   }
 }
 

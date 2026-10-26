@@ -257,10 +257,9 @@ enum CSColor {
 
 enum CSRadius {
   static let chip: CGFloat = 8
-  static let input: CGFloat = 9
+  static let input: CGFloat = 8
   static let card: CGFloat = 12
-  static let composer: CGFloat = 13
-  static let pill: CGFloat = 20
+  static let composer: CGFloat = 12
   static let window: CGFloat = 22
 }
 

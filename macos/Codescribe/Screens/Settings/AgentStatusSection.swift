@@ -543,11 +543,11 @@ private struct CapabilityMatrixRow: View {
         .padding(.horizontal, CSSpace.xs)
         .padding(.vertical, 2)
         .background(
-          RoundedRectangle(cornerRadius: 5, style: .continuous)
+          RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
             .fill(tierColor.opacity(0.12))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 5, style: .continuous)
+          RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
             .strokeBorder(tierColor.opacity(0.28), lineWidth: 1)
         )
         .frame(width: 100, alignment: .leading)
