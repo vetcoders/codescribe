@@ -632,8 +632,50 @@ class BackfillTests(ReceiptFixture):
             result = DEMUX.main()
         return result, output.getvalue(), error.getvalue()
 
-    EXPECTED = {"kind": "receipts_backfill", "dry_run": False, "existing": 0, "unmapped": 1,
+    EXPECTED = {"kind": "receipts_backfill", "dry_run": False, "existing": 0, "unmapped": 1, "failed": 0,
                 "written": {"delivered": 2, "read": 2, "skipped": 1, "playback": 1, "sent": 1}}
+
+    def test_a_pending_copy_is_delivered_too_and_the_journal_file_wins(self):
+        lease = self.lease()
+        self.bind()
+        quiet = self.payload(lease, 5, message_id="0123456789abcdef00000104", emitted_at="2026-10-20T11:00:00Z",
+                             target=None)
+        both = self.payload(lease, 1, message_id=self.M1, emitted_at="2026-10-20T09:00:00Z")
+        draft = self.payload(lease, 6, kind="draft", message_id=self.M1, emitted_at="2026-10-20T09:00:01Z")
+        untied = self.payload(lease, 7, message_id="not-a-message", emitted_at="2026-10-20T09:00:02Z", target=None)
+        _, journal = DEMUX.follower_paths(self.root, self.lease_id)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        DEMUX.emit_follower(both, journal, None, human_output=False)
+        DEMUX.atomic_json(self.root / "leases" / f"{self.lease_id}.json", {
+            "schema": DEMUX.LEASE_SCHEMA, "lease_id": self.lease_id, "provider": self.provider,
+            "provider_session_id": self.session, "name": "lena", "bus": str(self.bus),
+            "pending": [quiet, both, draft, untied], "held": {}})
+        result, output, error = self.backfill("--backfill-receipts")
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "unmapped": 1, "written": {
+            "delivered": 2, "read": 0, "skipped": 0, "playback": 0, "sent": 1}})
+        row = json.loads((DEMUX.receipts_directory(self.root, "0123456789abcdef00000104")
+                          / f"{quiet['delivery_id']}.delivered.json").read_text())
+        self.assertEqual((row["wake"], row["at"], row["name"], row["channel"]), (None, "2026-10-20T11:00:00Z", "lena", "3"))
+        self.assertNotIn("text", row)
+        state = DEMUX.receipt_state(self.root, "0123456789abcdef00000104")
+        self.assertEqual([(r["state"], r["wake"]) for r in state["recipients"]], [("delivered", None)])
+        self.assertEqual(sorted(p.name for p in DEMUX.receipts_directory(self.root, self.M1).iterdir()),
+                         [f"{both['delivery_id']}.delivered.json", "sent.json"])
+
+    def test_an_unwritable_receipts_directory_is_counted_and_fails_the_run(self):
+        self.history()
+        receipts = self.root / "runtime" / "receipts"
+        receipts.mkdir(parents=True)
+        receipts.chmod(0o500)
+        self.addCleanup(receipts.chmod, 0o700)
+        result, output, error = self.backfill("--backfill-receipts")
+        self.assertEqual(result, 3)
+        self.assertEqual(json.loads(output), {**self.EXPECTED, "failed": 7,
+                                              "written": dict.fromkeys(self.EXPECTED["written"], 0)})
+        self.assertIn("receipt not written", error)
+        self.assertNotIn("Iwo", error)
+        self.assertEqual(sorted(receipts.iterdir()), [])
 
     def test_history_gets_its_files_once_and_the_sources_stay(self):
         copies = self.history()

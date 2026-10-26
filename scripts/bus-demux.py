@@ -8195,10 +8195,19 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
     tied to a `message_id` (an envelope without one, a dictation seal, a
     temporary or unreadable file) is counted as `unmapped` and left alone.
     Running again finds the files and writes nothing; `existing` counts
-    them. Message text is never printed and `at` is never invented.
+    them. A file that could not be written (an unwritable receipts
+    directory) is counted as `failed`, so a refused run never reads as
+    "nothing to do". A copy delivered under the quiet policy left no row in
+    its reader's journal (rows are published only under `on`), so the
+    mailbox itself is the second source: a copy still in `pending` of
+    `leases/<lease_id>.json` was delivered and never acknowledged and
+    becomes `delivered` with `wake: null` too; the journal is read first and
+    write-once keeps its file when both name one delivery. In both the `at`
+    is the copy's own `emitted_at`, not the moment of delivery. Message text
+    is never printed and `at` is never invented.
     """
     counts = dict.fromkeys(RECEIPT_BACKFILL_KINDS, 0)
-    existing = unmapped = 0
+    existing = unmapped = failed = 0
     plans: dict[Path, tuple[str, Any]] = {}
     names: dict[str, str | None] = {}
 
@@ -8249,7 +8258,29 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
                  lambda: record_sent_receipt(root, message_id, reach, bus=None,
                                              at=stamp(payload.get("emitted_at"))))
 
-    # Readers' journals: every `message` row was a delivery to that mailbox.
+    def plan_delivered(copy: dict[str, Any], lease_id: str) -> bool:
+        """Plan `delivered` for one copy as a reader held it; False when it cannot be tied.
+
+        Only the copies the runtime receipts count: a terminal kind with a
+        `message_id`. A plain dictation seal is not a receipt source and is
+        passed over; a draft is not a delivery.
+        """
+        kind = copy.get("kind")
+        if kind not in TERMINAL_KINDS or (kind == "seal" and receipt_message_id(copy) is None):
+            return True
+        delivery_id, message_id = copy.get("delivery_id"), receipt_message_id(copy)
+        at = stamp(copy.get("emitted_at"))
+        if (message_id is None or at is None or not isinstance(delivery_id, str)
+                or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)):
+            return False
+        payload = {**copy, "lease_id": lease_id}
+        plan(receipts_directory(root, message_id) / f"{delivery_id}.delivered.json", "delivered",
+             lambda: record_message_receipt(root, payload, "delivered", name=lease_name(lease_id),
+                                            wake=None, at=at))
+        plan_sent(payload, message_id)
+        return True
+
+    # Readers' journals: every terminal row was a delivery to that mailbox.
     for path in entries(root / "runtime" / "followers"):
         if not path.name.endswith(".events.jsonl"):
             continue
@@ -8263,22 +8294,29 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
                 except ValueError:
                     unmapped += 1
                     continue
-                if not isinstance(row, dict) or row.get("kind") != "message":
-                    continue
-                delivery_id, message_id = row.get("delivery_id"), receipt_message_id(row)
-                at = stamp(row.get("emitted_at"))
-                if (message_id is None or at is None or not isinstance(delivery_id, str)
-                        or not re.fullmatch(r"[0-9a-f]{24}", delivery_id)):
+                if isinstance(row, dict) and not plan_delivered(row, lease_id):
                     unmapped += 1
-                    continue
-                payload = {**row, "lease_id": lease_id}
-                plan(receipts_directory(root, message_id) / f"{delivery_id}.delivered.json", "delivered",
-                     lambda payload=payload, lease_id=lease_id, at=at: record_message_receipt(
-                         root, payload, "delivered", name=lease_name(lease_id), wake=None, at=at))
-                plan_sent(payload, message_id)
         except (OSError, ValueError, UnicodeError):
             # An incomplete last row: what was read stays planned, the rest is unknown.
             unmapped += 1
+
+    # Mailboxes: a copy still pending was delivered and never acknowledged;
+    # under the quiet policy this is the only trace of that delivery.
+    for path in entries(root / "leases"):
+        lease_id = path.name[:-5] if path.name.endswith(".json") else ""
+        if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
+            continue
+        try:
+            metadata = path.lstat()
+            state = read_reply_json(path, 16 << 20) if S_ISREG(metadata.st_mode) else None
+        except (OSError, ValueError, UnicodeError):
+            state = None
+        if state is None or state.get("lease_id") != lease_id or not isinstance(state.get("pending"), list):
+            unmapped += 1
+            continue
+        for entry in state["pending"]:
+            if not isinstance(entry, dict) or not plan_delivered(entry, lease_id):
+                unmapped += 1
 
     # ACK markers: the reader read this copy.
     for directory in lease_directories(root / "acknowledgments"):
@@ -8346,14 +8384,21 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
             counts[kind] += 1
         elif path.exists():
             existing += 1
+        else:
+            failed += 1
     return {"kind": "receipts_backfill", "written": counts, "existing": existing,
-            "unmapped": unmapped, "dry_run": dry_run}
+            "unmapped": unmapped, "failed": failed, "dry_run": dry_run}
 
 
 def backfill_receipts_command(args: argparse.Namespace) -> int:
-    """`cs-bus --backfill-receipts [--dry-run]`: one JSON line of counts, exit 0."""
-    emit(backfill_receipts(args.bridge_home, dry_run=args.dry_run))
-    return 0
+    """`cs-bus --backfill-receipts [--dry-run]`: one JSON line of counts.
+
+    Exit 0, or 3 when a receipt could not be written (`failed > 0`);
+    `unmapped` is information and never changes the exit code.
+    """
+    result = backfill_receipts(args.bridge_home, dry_run=args.dry_run)
+    emit(result)
+    return 3 if result["failed"] else 0
 
 
 def broadcast_skip_path(root: Path, lease_id: str, delivery_id: str) -> Path:

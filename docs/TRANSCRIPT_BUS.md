@@ -1772,14 +1772,18 @@ cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
 takes no `--provider/--session` (it works on the whole bridge home, not on
 one mailbox), combines with no other command, and prints one JSON line
 `{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped",
-"playback", "sent"}, "existing", "unmapped", "dry_run"}`, exit 0. It is the
+"playback", "sent"}, "existing", "unmapped", "failed", "dry_run"}`, exit 0,
+or exit 3 when `failed > 0` (a receipt that could not be written, for
+example under an unwritable `runtime/receipts/`; a refused run never looks
+like "nothing to do"). It is the
 operator's one-time step after installing this helper; it is not run by
 `make install-bus` or by a follower. Sources are read and never changed,
 moved or removed; nothing is written outside `runtime/receipts/`:
 
 | Source | Receipt |
 | --- | --- |
-| a `kind: message` row in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox) | `<delivery_id>.delivered.json` with `wake: null` and `at` = the row's `emitted_at` |
+| a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox) | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at` |
+| a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file |
 | `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field) | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none |
 | `broadcast-skipped/<lease_id>/<delivery_id>.json` | `<delivery_id>.skipped.json` (`policy: off`) |
 | `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`) | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
@@ -1789,20 +1793,33 @@ moved or removed; nothing is written outside `runtime/receipts/`:
 the delivery is a fact (the row is in the reader's own journal), its wake
 was never recorded and is not reconstructed. The runtime always writes
 `on` or `quiet`; `receipt_state` passes `null` through as that value and
-nothing else. A copy with no row in any journal gets no `delivered` file
-and stays `no_receipt`. Name and channel come from `leases/<lease_id>.json`
+nothing else. The mailbox is the second source because of a gap in the
+first: a copy delivered under the quiet policy (the moon) leaves no row in
+the journal (the follower publishes a row only under `on`, while the
+runtime of this generation writes `delivered` with `wake: quiet` for it),
+so an unread quiet delivery is found only in `pending`; one that was
+acknowledged is found through its ACK marker. In both sources `at` is the
+copy's own `emitted_at`, the time it was published, not the moment it
+entered the mailbox. A copy in neither (and without an ACK marker) gets no
+`delivered` file and stays `no_receipt`. Only the copies the runtime
+receipts are sources: a terminal kind with a `message_id`; a plain
+dictation seal is passed over and a draft is not a delivery. Name and
+channel come from `leases/<lease_id>.json`
 and the copy's frozen `recipients` entry, as `receipt_recipient` resolves
 them at runtime; the names are the agents' raw names.
 
 Nothing is guessed. A source that cannot be tied to a `message_id` (the
 oldest ACK shape without an envelope, an envelope without `message_id`, a
-dictation seal, a temporary `.tmp` file, an unreadable JSON, an incomplete
-last journal row, a playback file of another schema) is counted as
+dictation seal behind an ACK marker, a temporary `.tmp` file, an unreadable
+JSON or lease file, a `pending` entry or `message` row without a usable
+`message_id`, `delivery_id` or `emitted_at`, an incomplete last journal
+row, a playback file of another schema) is counted as
 `unmapped` and left alone; `unmapped` is information, not an error, and
 the exit code stays 0. Idempotence is the write-once rule itself, not a
 register of what was done: a second run finds every file, writes nothing,
 and counts them as `existing`; `--dry-run` reports the same counts without
-creating a file or directory. The command never prints message text.
+creating a file or directory, so it cannot detect a write that would fail.
+The command never prints message text.
 
 ## Open-channel co-audience
 
