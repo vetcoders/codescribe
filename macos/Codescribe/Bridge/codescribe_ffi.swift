@@ -2949,8 +2949,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func reserveIdleRestart() throws  -> Bool
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture) and reload.
      */
     func resetBindingsToDefaults() throws
 
@@ -3042,7 +3042,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func startComposerTurnRecording() async throws  -> CsCaptureHandle
 
     /**
-     * Start the same toggle recording flow used by the default hotkey.
+     * Start the Formatting toggle, from the menu bar or the overlay; no key
+     * starts it.
      */
     func startRecording() async throws
 
@@ -3810,8 +3811,8 @@ open func reserveIdleRestart()throws  -> Bool  {
 }
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture) and reload.
      */
 open func resetBindingsToDefaults()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_reset_bindings_to_defaults(
@@ -4042,7 +4043,8 @@ open func startComposerTurnRecording()async throws  -> CsCaptureHandle  {
 }
 
     /**
-     * Start the same toggle recording flow used by the default hotkey.
+     * Start the Formatting toggle, from the menu bar or the overlay; no key
+     * starts it.
      */
 open func startRecording()async throws   {
     return
@@ -22017,7 +22019,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 51863) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 44608) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
@@ -22059,7 +22061,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_composer_turn_recording() != 48894) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 17686) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 5857) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop() != 44257) {
