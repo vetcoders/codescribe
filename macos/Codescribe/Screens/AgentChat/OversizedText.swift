@@ -97,7 +97,7 @@ struct OversizedMessageBody<Head: View>: View {
         )
         .frame(maxWidth: .infinity)
         .frame(height: 380)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       } else {
         head(OversizedBubblePolicy.head(of: fullText))

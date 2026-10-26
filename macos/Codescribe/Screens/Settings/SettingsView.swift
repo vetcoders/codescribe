@@ -301,7 +301,7 @@ struct SettingsHealthFooter: View {
     .padding(.vertical, 12)
     .contentShape(Rectangle())
     .overlay(alignment: .top) {
-      Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+      Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
     }
   }
 }
@@ -426,11 +426,11 @@ extension View {
       .padding(padding)
       .background(
         RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
-          .fill(Color.primary.opacity(0.05))
+          .fill(Color.primary.opacity(CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: SettingsScale.cardRadius, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
   }
 }
@@ -467,7 +467,7 @@ struct RuntimeRow: View {
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, SettingsScale.rowInsetV)
-    .background(tint ? Color.primary.opacity(0.04) : Color.clear)
+    .background(tint ? Color.primary.opacity(CSAlpha.subtle) : Color.clear)
   }
 
   @ViewBuilder

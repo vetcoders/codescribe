@@ -234,7 +234,7 @@ struct LicenseSection: View {
       actionsRow
         .padding(SettingsScale.cardPadding)
     }
-    .background(Color.primary.opacity(0.03))
+    .background(Color.primary.opacity(CSAlpha.subtle))
   }
 
   // MARK: - Activation
@@ -253,11 +253,11 @@ struct LicenseSection: View {
           .focused($keyFocused)
           .padding(.horizontal, CSSpace.md)
           .padding(.vertical, CSSpace.sm)
-          .background(Color.primary.opacity(0.08))
+          .background(Color.primary.opacity(CSAlpha.line))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+              .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
           )
           .overlay {
             CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
@@ -314,7 +314,7 @@ struct LicenseSection: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   // MARK: - Actions

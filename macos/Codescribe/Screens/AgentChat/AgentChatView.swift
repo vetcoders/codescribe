@@ -686,10 +686,10 @@ private struct QueuedTurnRow: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 7)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay {
@@ -795,7 +795,7 @@ struct ToolApprovalCard: View {
       }
     }
     .padding(CSSpace.card)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)

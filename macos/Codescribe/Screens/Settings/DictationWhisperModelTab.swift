@@ -468,7 +468,7 @@ struct DictationWhisperModelTab: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   // MARK: - Copy (pure, tested)

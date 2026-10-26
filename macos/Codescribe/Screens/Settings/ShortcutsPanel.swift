@@ -124,11 +124,11 @@ struct ShortcutsPanel: View {
       .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.08))
+          .fill(Color.primary.opacity(CSAlpha.line))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
     }
     .menuStyle(.borderlessButton)
@@ -158,7 +158,7 @@ struct ShortcutsPanel: View {
                 .fill(
                   model.canSaveBindings
                     ? CSColor.terracotta.opacity(0.9)
-                    : Color.primary.opacity(0.06))
+                    : Color.primary.opacity(CSAlpha.fill))
             )
         }
         .csFocusRing()
@@ -600,7 +600,7 @@ struct ShortcutsPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
   }
 
@@ -674,7 +674,7 @@ struct ShortcutsPanel: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 }
 

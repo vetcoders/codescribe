@@ -542,10 +542,10 @@ struct ShowEarlierButton: View {
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 6)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         Capsule(style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(Capsule(style: .continuous))
       .contentShape(Rectangle())
@@ -578,7 +578,7 @@ struct JumpToCurrentButton: View {
       .background(CSColor.controlFill)
       .overlay(
         Capsule(style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .clipShape(Capsule(style: .continuous))
     }
@@ -779,7 +779,7 @@ private struct YouTurn: View {
       // Calm surface, not an alarm plate (U17): the bubble sits on the
       // shared raised surface; terracotta stays on ACCENTS only — the
       // timestamp above and this thin border.
-      .background(Color.primary.opacity(0.06))
+      .background(Color.primary.opacity(CSAlpha.fill))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: CSRadius.card, bottomLeadingRadius: CSRadius.card,
@@ -886,7 +886,7 @@ private struct ContextChip: View {
               }
             }
             .padding(8)
-            .background(Color.primary.opacity(0.05))
+            .background(Color.primary.opacity(CSAlpha.fill))
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
             .clipped()
           }
@@ -932,10 +932,10 @@ struct AttachmentChip: View {
       }
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
-      .background(Color.primary.opacity(0.05))
+      .background(Color.primary.opacity(CSAlpha.fill))
       .overlay(
         Capsule(style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(Capsule(style: .continuous))
     }
@@ -1027,7 +1027,7 @@ struct AttachmentPreviewSheet: View {
           // 280 pt minimum pushed those controls outside small overlay sheets.
           .frame(minHeight: 120, idealHeight: 280, maxHeight: 480)
           .layoutPriority(-1)
-          .background(Color.primary.opacity(0.04))
+          .background(Color.primary.opacity(CSAlpha.subtle))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
           HStack(spacing: 10) {
@@ -1077,7 +1077,7 @@ struct AttachmentPreviewSheet: View {
       }
       .padding(10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
       HStack(spacing: 10) {
@@ -1137,7 +1137,7 @@ struct AttachmentPreviewSheet: View {
     }
     .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
-    .background(Color.primary.opacity(0.04))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
         .strokeBorder(CSColor.dangerLight.opacity(0.22), lineWidth: 1)
@@ -1331,11 +1331,11 @@ private struct ToolInspectPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.fill), lineWidth: 1)
     )
   }
 
@@ -1406,10 +1406,10 @@ private struct ToolTurn: View {
         .contentShape(Rectangle())
       }
       .disclosureGroupStyle(FlatDisclosureStyle())
-      .background(Color.primary.opacity(0.025))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
       .clipped()
@@ -1443,7 +1443,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       .csFocusRing()
 
       if configuration.isExpanded {
-        Rectangle().fill(Color.primary.opacity(0.05)).frame(height: 1)
+        Rectangle().fill(Color.primary.opacity(CSAlpha.fill)).frame(height: 1)
         configuration.content
       }
     }
@@ -1568,14 +1568,14 @@ private struct AssistantTurn: View {
       }
       .padding(.horizontal, 15)
       .padding(.vertical, 13)
-      .background(Color.primary.opacity(0.03))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         UnevenRoundedRectangle(
           topLeadingRadius: 14, bottomLeadingRadius: 4,
           bottomTrailingRadius: 14, topTrailingRadius: 14,
           style: .continuous
         )
-        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
@@ -1654,10 +1654,10 @@ private struct ReasoningDisclosure: View {
     .onChange(of: isLive) { _, live in
       if live { expanded = true }
     }
-    .background(Color.primary.opacity(0.018))
+    .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.fill), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }

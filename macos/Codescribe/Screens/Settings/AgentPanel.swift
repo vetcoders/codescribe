@@ -60,7 +60,7 @@ struct LLMLanesSection: View {
         LLMLaneEditor(model: model, lane: lane)
         if lane != LLMLane.allCases.last {
           Rectangle()
-            .fill(Color.primary.opacity(0.12))
+            .fill(Color.primary.opacity(CSAlpha.stroke))
             .frame(height: 1)
         }
       }

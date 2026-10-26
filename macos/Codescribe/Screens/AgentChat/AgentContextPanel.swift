@@ -167,7 +167,7 @@ struct AgentWidthModeButton: View {
         .frame(width: 26, height: 22)
         .overlay(
           Capsule(style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
         )
         .contentShape(Rectangle())
     }
@@ -205,7 +205,7 @@ struct AgentContextToggle: View {
       .overlay(
         Capsule(style: .continuous)
           .strokeBorder(
-            isOpen ? CSColor.chromeAccent.opacity(0.32) : Color.primary.opacity(0.09),
+            isOpen ? CSColor.chromeAccent.opacity(0.32) : Color.primary.opacity(CSAlpha.line),
             lineWidth: 1)
       )
       .contentShape(Rectangle())
@@ -386,10 +386,10 @@ struct AgentContextPanel: View {
 private struct AgentContextCardSurface: ViewModifier {
   func body(content: Content) -> some View {
     content
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }

@@ -218,7 +218,7 @@ struct Composer: View {
           .buttonStyle(.borderless)
         }
         .padding(8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer))
         .accessibilityIdentifier("composer.recovery.inspect." + document.id)
       }
@@ -251,7 +251,7 @@ struct Composer: View {
       }
       .padding(.horizontal, 11)
       .padding(.vertical, 8)
-      .background(Color.primary.opacity(0.04))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -317,7 +317,7 @@ struct Composer: View {
       }
     }
     .frame(maxHeight: 190)
-    .background(Color.primary.opacity(0.05))
+    .background(Color.primary.opacity(CSAlpha.fill))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -413,7 +413,7 @@ struct Composer: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.04))
+        .background(Color.primary.opacity(CSAlpha.subtle))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         .accessibilityIdentifier("agent-live-capture")
     }
@@ -530,10 +530,10 @@ struct Composer: View {
           }
           .padding(.horizontal, 9)
           .padding(.vertical, 5)
-          .background(Color.primary.opacity(0.05))
+          .background(Color.primary.opacity(CSAlpha.fill))
           .overlay(
             Capsule(style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+              .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
           )
           .clipShape(Capsule(style: .continuous))
         }

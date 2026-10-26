@@ -191,7 +191,7 @@ struct MarkdownText: View {
       codeBlock(language, content, isLast: isLast)
     case .thematicBreak:
       Rectangle()
-        .fill(Color.primary.opacity(0.12))
+        .fill(Color.primary.opacity(CSAlpha.stroke))
         .frame(height: 1)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
@@ -372,7 +372,7 @@ struct MarkdownText: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
     )
     .fixedSize(horizontal: false, vertical: true)
   }
@@ -413,11 +413,11 @@ struct MarkdownText: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
-      .background(isHeader ? Color.primary.opacity(0.05) : Color.clear)
+      .background(isHeader ? Color.primary.opacity(CSAlpha.fill) : Color.clear)
       .overlay(alignment: .bottom) {
         if !isLastRow {
           Rectangle()
-            .fill(Color.primary.opacity(isHeader ? 0.12 : 0.06))
+            .fill(Color.primary.opacity(isHeader ? CSAlpha.stroke : CSAlpha.fill))
             .frame(height: 1)
         }
       }
@@ -483,7 +483,7 @@ struct MarkdownText: View {
     for range in codeRanges {
       attr[range].font = CSFont.mono(fontSize - 1)
       attr[range].foregroundColor = CSColor.oliveLight
-      attr[range].backgroundColor = Color.primary.opacity(0.10)
+      attr[range].backgroundColor = Color.primary.opacity(CSAlpha.line)
     }
     // Links use the operator's system accent and a subtle underline.
     for range in linkRanges {
@@ -674,7 +674,7 @@ private struct CodeBlockView: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.fill), lineWidth: 1)
       )
       .overlay(alignment: .topTrailing) {
         if hovering || copied {

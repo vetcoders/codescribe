@@ -32,8 +32,8 @@ struct ToolSearchField: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
       RoundedRectangle(cornerRadius: SettingsScale.controlRadius)
-        .fill(Color.primary.opacity(0.06))
-        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        .fill(Color.primary.opacity(CSAlpha.fill))
+        .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
     }
     .overlay {
       CSFocusOutline(isFocused: searchFocused, cornerRadius: SettingsScale.controlRadius)

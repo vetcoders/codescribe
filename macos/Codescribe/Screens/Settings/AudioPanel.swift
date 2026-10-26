@@ -956,7 +956,7 @@ struct AudioPanel: View {
         summary, recordingState: recordingState, tray: tray, stopRequested: stopRequested)
 
       Divider()
-        .overlay(Color.primary.opacity(0.12))
+        .overlay(Color.primary.opacity(CSAlpha.stroke))
         .padding(.vertical, SettingsScale.rowGap)
 
       HStack(alignment: .firstTextBaseline, spacing: 8) {

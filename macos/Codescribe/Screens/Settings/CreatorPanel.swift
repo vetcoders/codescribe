@@ -872,11 +872,11 @@ private struct QuickStartCard: View {
       .padding(.vertical, 16)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .fill(Color.primary.opacity(hovered ? 0.1 : 0.05))
+          .fill(Color.primary.opacity(hovered ? CSAlpha.line : CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }

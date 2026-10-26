@@ -353,8 +353,8 @@ struct ProviderCard: View {
       .foregroundStyle(CSColor.secondaryInk)
       .padding(.horizontal, CSSpace.xs)
       .padding(.vertical, 2)
-      .background(Capsule().fill(Color.primary.opacity(0.1)))
-      .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+      .background(Capsule().fill(Color.primary.opacity(CSAlpha.line)))
+      .overlay(Capsule().strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1))
       .accessibilityLabel("\(wireLabel) wire")
       .fixedSize(horizontal: true, vertical: false)
   }

@@ -263,6 +263,20 @@ enum CSRadius {
   static let window: CGFloat = 22
 }
 
+/// Ink veils: `Color.primary` at one of four strengths, from the faintest
+/// surface tint to a control's border (Founder, 2026-10-26). Surfaces pick a
+/// level; they do not invent an alpha.
+enum CSAlpha {
+  /// A barely raised surface: a bubble or a quiet well.
+  static let subtle: Double = 0.03
+  /// A filled control or chip at rest.
+  static let fill: Double = 0.05
+  /// A hairline rule or a hovered fill.
+  static let line: Double = 0.08
+  /// A control's border.
+  static let stroke: Double = 0.12
+}
+
 /// Layout rhythm. Screens were inventing 6/7/8/11/12/14/15/20/28/44 independently.
 /// Cluster onto this scale; overlay/tray preview inset stays 44 — that is hit-geometry, not page padding.
 enum CSSpace {

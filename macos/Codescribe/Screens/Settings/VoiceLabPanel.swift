@@ -423,7 +423,7 @@ struct VoiceLabPanel: View {
       header
 
       Divider()
-        .overlay(Color.primary.opacity(0.12))
+        .overlay(Color.primary.opacity(CSAlpha.stroke))
         .padding(.top, SettingsScale.sectionGap)
 
       // The page leads with what happened on this Mac today, in human terms
@@ -1030,7 +1030,7 @@ struct VoiceLabPanel: View {
         .padding(8)
         .background(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-            .fill(Color.primary.opacity(0.08))
+            .fill(Color.primary.opacity(CSAlpha.line))
         )
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)

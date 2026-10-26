@@ -260,7 +260,7 @@ struct DictionaryRecentTakes: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-        .fill(Color.primary.opacity(0.04))
+        .fill(Color.primary.opacity(CSAlpha.subtle))
     )
   }
 

@@ -28,11 +28,11 @@ private struct SettingsInputChrome: ViewModifier {
       .padding(.vertical, SettingsScale.controlInsetV)
       .background(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .fill(Color.primary.opacity(0.06))
+          .fill(Color.primary.opacity(CSAlpha.fill))
       )
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .overlay {
         CSFocusOutline(isFocused: isFocused, cornerRadius: CSRadius.input)
@@ -87,11 +87,11 @@ struct SettingsChipButton<Label: View>: View {
         .padding(.vertical, SettingsScale.controlInsetV)
         .background(
           RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
-            .fill(Color.primary.opacity(0.06))
+            .fill(Color.primary.opacity(CSAlpha.fill))
         )
         .overlay(
           RoundedRectangle(cornerRadius: SettingsScale.controlRadius, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
         )
     }
     .csFocusRing(cornerRadius: SettingsScale.controlRadius)

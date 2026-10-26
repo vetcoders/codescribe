@@ -121,11 +121,11 @@ struct TranscriptMarkersSection: View {
               .padding(.vertical, 4)
               .background(
                 Capsule(style: .continuous)
-                  .fill(Color.primary.opacity(0.08))
+                  .fill(Color.primary.opacity(CSAlpha.line))
               )
               .overlay(
                 Capsule(style: .continuous)
-                  .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                  .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
               )
           }
           .buttonStyle(.plain)

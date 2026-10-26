@@ -69,7 +69,7 @@ struct AgentStatusSection: View {
             .padding(.leading, 20)
         }
         if !summary.notes.isEmpty {
-          Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+          Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
             .padding(.vertical, SettingsScale.rowGap)
           VStack(alignment: .leading, spacing: CSSpace.xs) {
             // Says how to read the list, so a warning under "Configuration
@@ -92,7 +92,7 @@ struct AgentStatusSection: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
       .padding(.top, SettingsScale.headerGap)
       .accessibilityIdentifier("settings-diagnostics-summary")
@@ -397,7 +397,7 @@ struct AgentStatusSection: View {
   // MARK: Shared chrome
 
   private var rowDivider: some View {
-    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
+    Rectangle().fill(Color.primary.opacity(CSAlpha.stroke)).frame(height: 1)
   }
 
   /// Bordered list container shared by the compact sections.
@@ -406,7 +406,7 @@ struct AgentStatusSection: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-          .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+          .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
       )
   }
 
