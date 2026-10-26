@@ -137,6 +137,25 @@ class ChannelHandoverTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"take did not reach the mailbox: {text}")
 
+    def settled(self, identity, delivery_id):
+        """Wait until the session's follower drops an acknowledged delivery.
+
+        `--ack` only writes the marker; the follower takes the envelope out of
+        the mailbox on a later pass, so a snapshot taken right after the ACK
+        can still hold it and differ from the same mailbox a moment later.
+        """
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                pending = self.lease(identity).get("pending", [])
+            except (OSError, ValueError):
+                pending = None
+            if pending is not None and all(
+                    item.get("delivery_id") != delivery_id for item in pending):
+                return
+            time.sleep(0.05)
+        self.fail(f"acknowledged delivery stayed in the mailbox: {delivery_id}")
+
     def gone(self, pid):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and alive(pid):
@@ -289,6 +308,7 @@ class ChannelHandoverTests(unittest.TestCase):
         waiting = self.delivered(OLD, "James, czeka na ciebie.")
         self.assertEqual(
             self.helper("--bus", str(self.bus), "--ack", read, *self.owner(OLD)).returncode, 0)
+        self.settled(OLD, read)
 
         before = self.binding.read_bytes()
         plain = self.attach(NEW)
