@@ -779,12 +779,13 @@ private struct PermissionChecklistRow: View {
 
   var body: some View {
     HStack(spacing: SettingsScale.rowInsetH) {
-      // A granted row says it with the capsule; the status stays for VoiceOver.
+      // A granted row says it with the capsule, which VoiceOver reads once;
+      // a missing scope keeps its state on the name, beside the warning disc.
       VStack(alignment: .leading, spacing: 2) {
         Text(kind.displayName)
           .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
-          .accessibilityValue(state.label)
+          .accessibilityValue(granted ? "" : state.label)
         if let note {
           Text(note)
             .font(.caption)

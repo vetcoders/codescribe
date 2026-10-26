@@ -17,11 +17,14 @@ import SwiftUI
 /// fields in the MCP form; one owner, so every field follows).
 private struct SettingsInputChrome: ViewModifier {
   let isFocused: Bool
+  /// A sentence to format or a display name reads in the UI face; keys,
+  /// tokens and addresses keep the mono face (Founder smoke, 2026-10-26, A7).
+  var prose = false
 
   func body(content: Content) -> some View {
     content
       .textFieldStyle(.plain)
-      .font(CSFont.mono(12, .regular))
+      .font(prose ? CSFont.ui(13) : CSFont.mono(12, .regular))
       .foregroundStyle(Color.primary)
       .autocorrectionDisabled()
       .padding(.horizontal, SettingsScale.controlInsetH)
@@ -41,8 +44,8 @@ private struct SettingsInputChrome: ViewModifier {
 }
 
 extension View {
-  func settingsInputChrome(isFocused: Bool) -> some View {
-    modifier(SettingsInputChrome(isFocused: isFocused))
+  func settingsInputChrome(isFocused: Bool, prose: Bool = false) -> some View {
+    modifier(SettingsInputChrome(isFocused: isFocused, prose: prose))
   }
 }
 

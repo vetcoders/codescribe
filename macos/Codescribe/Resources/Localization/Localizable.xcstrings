@@ -22436,6 +22436,17 @@
         }
       }
     },
+    "e.g. meet at nine tomorrow then send me the notes" : {
+      "comment" : "Formatting test placeholder: a neutral raw unpunctuated transcript",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "np. spotkanie jutro o dziewiątej potem wyślij mi notatki"
+          }
+        }
+      }
+    },
     "e.g. prview" : {
       "localizations" : {
         "pl" : {
@@ -25164,17 +25175,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończono pomyślnie"
-          }
-        }
-      }
-    },
-    "tak jeśli nie stosuje się zaleceń dokumentacji…" : {
-      "comment" : "Formatting test placeholder: a raw unpunctuated transcript",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "tak jeśli nie stosuje się zaleceń dokumentacji…"
           }
         }
       }
