@@ -1123,11 +1123,8 @@ struct AudioPanel: View {
         TimelineView(.periodic(from: .now, by: 0.2)) { context in
           let elapsed = context.date.timeIntervalSince(startedAt)
           VStack(alignment: .trailing, spacing: 3) {
-            ProgressView(
-              value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed)
-            )
-            .progressViewStyle(.linear)
-            .frame(width: 92)
+            CSProgressBar(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
+              .frame(width: 92)
             Text(
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )

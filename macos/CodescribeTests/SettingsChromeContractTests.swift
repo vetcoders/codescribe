@@ -1814,6 +1814,9 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(audio.contains("CSStatusBadge(text: fact.value, mark: .verified)"))
     XCTAssertTrue(audio.contains("statusValue(calibration)"))
     XCTAssertTrue(audio.contains("statusValue(sealLane)"))
+    XCTAssertTrue(
+      audio.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("),
+      "the Audio pane's calibration capture")
 
     let eyebrowFace = ".font(CSFont.mono(10, .semibold))\n      .foregroundStyle("
     XCTAssertFalse(voiceLab.contains(eyebrowFace + "CSColor.chromeAccent)"), "eyebrow in accent")
