@@ -337,8 +337,11 @@ headless_signing_recipe() {
   echo "         open -a Terminal <lane>.command" >&2
   echo "       (a locked screen is fine). This build does not fall back to ad-hoc signing." >&2
 }
+# A host without any real identity would sign ad-hoc anyway, so it is not
+# held up by a keychain it would never use.
 if [ "${SKIP_XCODEBUILD:-0}" != "1" ] && [ "${CODESCRIBE_CODESIGN_IDENTITY:-}" != "-" ] \
   && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] \
+  && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Developer ID Application: \|"Apple Development: ' \
   && ! security show-keychain-info "${DEFAULT_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}" >/dev/null 2>&1; then
   headless_signing_recipe " (the keychain is locked here)"
   exit 1
