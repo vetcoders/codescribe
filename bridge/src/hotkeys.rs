@@ -813,6 +813,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             EngineEventWire::Warning { code, message } => {
                 if codescribe_core::pipeline::contracts::warning_is_user_terminal(&code) {
                     listener.on_error(format!("{code}: {message}"));
+                } else if code == codescribe_core::pipeline::contracts::OVERLAP_PIN_REFUSED {
+                    // The emitter logs a take's first refusal and their count.
+                    tracing::debug!(code, message, "engine warning (receipt, not forwarded)");
                 } else {
                     tracing::info!(code, message, "engine warning (receipt, not forwarded)");
                 }

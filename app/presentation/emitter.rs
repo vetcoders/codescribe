@@ -3937,6 +3937,8 @@ pub struct PresentationEmitter {
     transcription_controls: TranscriptionControls,
     /// A terminal diagnostic cannot erase visible words before stop snapshots them.
     stop_snapshot_pending: std::sync::atomic::AtomicBool,
+    /// Refused overlap pins in this take; see [`Self::overlap_refusal_repeats`].
+    overlap_pins_refused: std::sync::atomic::AtomicU64,
     formatter_pending: std::sync::atomic::AtomicBool,
     derived_projection_notify: tokio::sync::Notify,
     sentence_pause_sec: f32,
@@ -3946,6 +3948,32 @@ pub struct PresentationEmitter {
 }
 
 impl PresentationEmitter {
+    /// One take can refuse an overlap pin thousands of times (24 646 lines
+    /// in four days, 85% of engine warnings, on 2026-10-26). The first stays
+    /// a warning, later ones go to debug, and finalisation reports the count.
+    fn overlap_refusal_repeats(&self, code: &str) -> bool {
+        if code != codescribe_core::pipeline::contracts::OVERLAP_PIN_REFUSED {
+            return false;
+        }
+        let earlier = self
+            .overlap_pins_refused
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        earlier > 0
+    }
+
+    /// Report this take's refused overlap pins once, at finalisation.
+    fn report_overlap_refusals(&self) {
+        let refused = self
+            .overlap_pins_refused
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
+        if refused > 1 {
+            tracing::info!(
+                refused,
+                "overlap_pin_refused repeated in this take; repeats are at debug level"
+            );
+        }
+    }
+
     /// Fence only presentation callbacks; the retired take still drains into
     /// its own ledger, reducer, transcript buffer, and archive.
     pub fn retire_presentation(&self) {
@@ -4213,6 +4241,7 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            overlap_pins_refused: std::sync::atomic::AtomicU64::new(0),
             transcription_controls: TranscriptionControls::default(),
             stop_snapshot_pending: std::sync::atomic::AtomicBool::new(false),
             formatter_pending: std::sync::atomic::AtomicBool::new(false),
@@ -5893,7 +5922,11 @@ impl EventSink for PresentationEmitter {
                 // owner that truly retires the presentation.
             }
             EngineEvent::Warning { code, message } => {
-                tracing::warn!("Engine warning [{}]: {}", code, message);
+                if self.overlap_refusal_repeats(code) {
+                    tracing::debug!("Engine warning [{}]: {}", code, message);
+                } else {
+                    tracing::warn!("Engine warning [{}]: {}", code, message);
+                }
                 if (code.starts_with("live_refinement_")
                     || code.starts_with("tail_patch_")
                     || code == "agent_raw_whisper_disabled"
@@ -5909,6 +5942,7 @@ impl EventSink for PresentationEmitter {
                 }
             }
             EngineEvent::SessionFinalised { .. } => {
+                self.report_overlap_refusals();
                 if self
                     .stop_snapshot_pending
                     .load(std::sync::atomic::Ordering::SeqCst)

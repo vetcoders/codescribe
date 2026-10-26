@@ -1552,7 +1552,8 @@ constantly and has no path-identity role therefore lives in
 `core/config/loader.rs` is its only resolver; Swift receives it as
 `CodescribeConfig.churnDir()`. It holds:
 
-- `logs/`: `codescribe.log` (Rust tracing) and `diagnostic.log` (Swift);
+- `logs/`: `codescribe.log` (Rust tracing; the app rolls it at 200 MB and
+  keeps `.1` to `.4`) and `diagnostic.log` (Swift);
 - `overlay-delivery-cursor/` and the earlier `overlay-delivery-cursor.v1.json`;
 - `overlay-read-state.v1.json`.
 
@@ -1564,9 +1565,13 @@ paths), `takes/`, `transcriptions/`, and every `agent-bridge/runtime/` file that
 `bus-demux` or the plugins read or write (followers, wake ledgers, reply
 playback, playback mutes, broadcast policy, channel speech, the ack cursor).
 
-Every app and CLI process moves entries left by an earlier build once, inside
-the logging initialization and before the log sink opens
-(`core/config/churn.rs`). Each entry is one same-volume rename that refuses an
+The app moves entries left by an earlier build once per start, inside the
+logging initialization and before the log sink opens
+(`core/config/churn.rs`). The CLI moves nothing and creates no log folder: it
+only appends to `logs/codescribe.log` when the app's folder exists.
+`bus-demux` starts the CLI for every bus publication, and a CLI that created
+the new folder first would leave both locations present for good. Each entry
+is one same-volume rename that refuses an
 existing destination: nothing is copied, deleted or replaced. An entry that
 exists at both locations, or on another volume, is left untouched and logged as
 an error on every start until it is resolved by hand. The moved entries are not

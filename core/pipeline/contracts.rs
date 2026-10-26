@@ -1051,6 +1051,10 @@ pub enum EngineEvent {
 /// that held the microphone behind an Idle tray (2026-08-12 incident).
 pub const USER_TERMINAL_WARNING_CODES: &[&str] = &["transcription_failed"];
 
+/// Warning code of a refused overlap pin. One take can raise it thousands of
+/// times, so the emitter logs the first at warning level and counts the rest.
+pub const OVERLAP_PIN_REFUSED: &str = "overlap_pin_refused";
+
 /// Whether a [`EngineEvent::Warning`] code is a user-terminal failure
 /// (forward to `on_error`) rather than a quality receipt (log only).
 ///

@@ -4341,7 +4341,7 @@ impl AppleSealState {
                 SidePin::NoVoicedHop | SidePin::BelowExistence => "no_voiced_hop_in_pin",
             };
             let _ = ev_tx.send(EngineEvent::Warning {
-                code: "overlap_pin_refused".into(),
+                code: crate::pipeline::contracts::OVERLAP_PIN_REFUSED.into(),
                 message: format!(
                     "segment {}..{} occurrence [{occurrence_ranges}] ledger={ledger_reason}",
                     pin.sample_start, pin.sample_end

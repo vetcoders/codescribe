@@ -863,7 +863,7 @@ outside the detector.
 ### Raw-input journal (INFO)
 
 To see what was pressed next to what the app understood, the event tap keeps a
-raw-input journal in `~/.codescribe/logs/codescribe.log` (the single log owner;
+raw-input journal in `~/.codescribe/data.noindex/logs/codescribe.log` (the single log owner;
 no new file or setting). Each line holds the raw event and the detector's
 decision for it:
 
