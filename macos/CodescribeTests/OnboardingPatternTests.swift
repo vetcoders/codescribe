@@ -137,9 +137,9 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertFalse(steps.contains("\"Ready to go ✓\""), "the check mark left the sentence")
     XCTAssertTrue(steps.contains("\"Ready to go\""))
     let frame = try XCTUnwrap(sources["OnboardingView.swift"])
-    XCTAssertTrue(
-      frame.contains("EyebrowLabel(text: current.label, font: CSFont.ui(11, .semibold))"),
-      "the step's category label uses the system face")
+    let eyebrow =
+      "EyebrowLabel(text: current.label, color: CSColor.textMuted, font: CSFont.ui(11, .semibold))"
+    XCTAssertTrue(frame.contains(eyebrow), "the category label: system face, muted grey")
     XCTAssertTrue(whisper.contains(".truncationMode(.middle)"), "the model path keeps both ends")
 
     let polish = try polishCatalog()
@@ -153,5 +153,42 @@ final class OnboardingPatternTests: XCTestCase {
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
+  }
+
+  /// Founder decision of 2026-10-26: the brand terracotta marks state in the
+  /// wizard (progress, the selected choice, the step icon) while the macOS
+  /// accent keeps the controls; verified statuses are an olive capsule with a
+  /// filled check, stored identity the empty circle, on step 6 and step 9 alike.
+  func testStateWearsTheBrandAccentAndStatusesTheOlive() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    let frame = try XCTUnwrap(sources["OnboardingView.swift"])
+    let componentsURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/DesignSystem/Components.swift")
+    let components = try String(contentsOf: componentsURL, encoding: .utf8)
+
+    XCTAssertTrue(components.contains("func csChoice(selected: Bool)"), "a choice has a style")
+    XCTAssertTrue(
+      components.contains("CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash"))
+    XCTAssertTrue(steps.contains(".csChoice(selected: isSelected)"))
+    XCTAssertTrue(steps.contains("isSelected ? CSColor.brandAccent : CSColor.secondaryInk"))
+    XCTAssertFalse(steps.contains(".csAction(prominent: isSelected)"), "a selection is no action")
+    XCTAssertEqual(frame.components(separatedBy: ".tint(CSColor.brandAccent)").count, 2, "progress")
+    XCTAssertTrue(frame.contains(".foregroundStyle(CSColor.brandAccent)"), "the step icon")
+    for source in [steps, frame] {
+      XCTAssertFalse(source.contains(".tint(CSColor.chromeAccent)"), "no chrome-accent progress")
+    }
+
+    XCTAssertTrue(steps.contains("struct OnboardingStatusBadge"))
+    XCTAssertTrue(steps.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
+    XCTAssertTrue(steps.contains("mark: state.isGranted ? .verified : .none"), "granted scope")
+    XCTAssertTrue(steps.contains("mark: .verified)"), "ready to go")
+    XCTAssertTrue(steps.contains("mark: keySaved ? .saved : .none"), "saved key")
+    XCTAssertTrue(
+      steps.contains("icon: done && !presenceOnly ? .checkCircleFill : .circleEmpty"),
+      "step 9 draws stored identity with the empty circle of step 6")
+    XCTAssertFalse(steps.contains("private func statusBadge("), "one badge, not two")
   }
 }

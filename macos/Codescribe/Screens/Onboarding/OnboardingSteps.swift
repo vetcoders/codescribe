@@ -57,9 +57,9 @@ struct InterfaceLanguageStepView: View {
 // The heading, the category label and the reading column belong to the frame
 // in OnboardingView.swift; these components fill that column.
 
-/// A single radio-style selectable card: title + optional subtitle, with an
-/// olive checkmark (Founder, 2026-10-26) and the prominent card surface when
-/// selected. Reused by every choice step.
+/// A single radio-style selectable card: title + optional subtitle. The
+/// selected one carries the brand accent: a filled check, a wash and a
+/// one-point edge (Founder, 2026-10-26). Reused by every choice step.
 struct OnboardingChoiceCard: View {
   let title: String
   let subtitle: String?
@@ -70,7 +70,7 @@ struct OnboardingChoiceCard: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(isSelected ? CSColor.oliveLight : CSColor.secondaryInk)
+          .foregroundStyle(isSelected ? CSColor.brandAccent : CSColor.secondaryInk)
         VStack(alignment: .leading, spacing: 3) {
           Text(title).font(CSFont.ui(13, .semibold))
           if let subtitle {
@@ -85,7 +85,7 @@ struct OnboardingChoiceCard: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(6)
     }
-    .csAction(prominent: isSelected)
+    .csChoice(selected: isSelected)
     .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
@@ -123,6 +123,44 @@ private struct OnboardingStepNote: View {
       .foregroundStyle(CSColor.secondaryInk)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.top, 4)
+  }
+}
+
+/// A status word of the wizard. A verified state ("Granted", "Ready to go")
+/// is a filled check on an olive capsule (Founder, 2026-10-26); stored
+/// identity that nothing has tested ("Saved") is an empty circle on the same
+/// capsule, the deliberate exception of 2026-10-26 to the grey "saved" of
+/// 99758557a. Every other state, "Optional" included, is plain ink.
+private struct OnboardingStatusBadge: View {
+  enum Mark {
+    case none
+    case saved
+    case verified
+  }
+
+  let text: String
+  let mark: Mark
+
+  var body: some View {
+    HStack(spacing: 5) {
+      switch mark {
+      case .none:
+        EmptyView()
+      case .saved:
+        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      case .verified:
+        CSIconView(icon: .checkCircleFill, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      }
+      Text(text).font(CSFont.ui(11, .medium))
+    }
+    .foregroundStyle(mark == .none ? CSColor.secondaryInk : CSColor.oliveLight)
+    .padding(.horizontal, mark == .none ? 0 : 8)
+    .padding(.vertical, mark == .none ? 0 : 3)
+    .background {
+      if mark != .none {
+        Capsule().fill(CSColor.oliveLight.opacity(0.14))
+      }
+    }
   }
 }
 
@@ -301,18 +339,12 @@ struct AgenticReadinessStepView: View {
       }
 
       if model.agentBridgeReadyToGo {
-        // The mark is a glyph in the success colour; the words stay body ink.
-        HStack(spacing: 8) {
-          CSIconView(icon: .checkCircleFill, size: 12, weight: .semibold, color: CSColor.oliveLight)
-          Text(
-            String(
-              localized: LocalizedStringResource(
-                "Ready to go", locale: model.interfaceLocale,
-                comment: "Agent setup status below the client cards"))
-          )
-          .font(CSFont.ui(13, .medium))
-          .foregroundStyle(CSColor.textBody)
-        }
+        OnboardingStatusBadge(
+          text: String(
+            localized: LocalizedStringResource(
+              "Ready to go", locale: model.interfaceLocale,
+              comment: "Agent setup status below the client cards")),
+          mark: .verified)
       } else if model.agentReadinessPending {
         Text(
           String(
@@ -470,9 +502,9 @@ private struct OnboardingPermissionRow: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       VStack(alignment: .trailing, spacing: 6) {
-        Text(state.label(locale: model.interfaceLocale))
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(state.isGranted ? CSColor.oliveLight : CSColor.secondaryInk)
+        OnboardingStatusBadge(
+          text: state.label(locale: model.interfaceLocale),
+          mark: state.isGranted ? .verified : .none)
         if !state.isGranted {
           let repair = kind.repair(for: state)
           if repair.requestsNatively {
@@ -641,7 +673,8 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        statusBadge(model.selectedProviderAccountStatus, saved: accountSaved)
+        OnboardingStatusBadge(
+          text: model.selectedProviderAccountStatus, mark: accountSaved ? .saved : .none)
         Button(accountActionTitle, action: openProviderSettings)
           .csAction()
           .disabled(model.providerMutationPending)
@@ -668,7 +701,8 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        statusBadge(model.selectedProviderKeyStatus, saved: keySaved)
+        OnboardingStatusBadge(
+          text: model.selectedProviderKeyStatus, mark: keySaved ? .saved : .none)
         Button(keyActionTitle) {
           model.beginApiKeyEditing()
           keyFocused = true
@@ -761,10 +795,7 @@ struct ApiKeyStepView: View {
 
   /// These rows report stored identity only. The existing Settings lane Test
   /// measures service acceptance, so a stored account or key is "saved", never
-  /// verified: it gets the soft olive accent of the welcome wizard (Founder,
-  /// 2026-10-26, a deliberate exception to the grey "saved" of 99758557a; the
-  /// filled check stays reserved for verified states). Every other state,
-  /// "Optional" included, is plain ink.
+  /// verified; see `OnboardingStatusBadge`.
   private var accountSaved: Bool {
     model.selectedProviderAccountConnected && !model.providerAccessPending
       && model.providerAccessError == nil && model.selectedProviderAccountError == nil
@@ -773,23 +804,6 @@ struct ApiKeyStepView: View {
   private var keySaved: Bool {
     model.selectedProviderKeySet && !model.providerAccessPending
       && model.providerAccessError == nil
-  }
-
-  private func statusBadge(_ text: String, saved: Bool) -> some View {
-    HStack(spacing: 5) {
-      if saved {
-        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
-      }
-      Text(text).font(CSFont.ui(11, .medium))
-    }
-    .foregroundStyle(saved ? CSColor.oliveLight : CSColor.secondaryInk)
-    .padding(.horizontal, saved ? 8 : 0)
-    .padding(.vertical, saved ? 3 : 0)
-    .background {
-      if saved {
-        Capsule().fill(CSColor.oliveLight.opacity(0.12))
-      }
-    }
   }
 
   private var accountActionTitle: String {
@@ -1171,7 +1185,7 @@ struct DoneStepView: View {
       HStack(spacing: 10) {
         ProgressView(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
           .progressViewStyle(.linear)
-          .tint(CSColor.chromeAccent)
+          .tint(CSColor.brandAccent)
         Text(
           String(
             localized: LocalizedStringResource(
@@ -1241,16 +1255,20 @@ struct DoneStepView: View {
       .foregroundStyle(CSColor.secondaryInk)
   }
 
+  /// A checklist line of the Done step. A verified state is the filled check;
+  /// stored identity (`presenceOnly`) is the empty olive circle, the same sign
+  /// the provider step's "saved" badge shows, so one state keeps one glyph
+  /// across steps 6 and 9.
   private func summaryRow(
     _ label: String, done: Bool, doneLabel: String,
     missingLabel: String? = nil, statusLabel: String? = nil, presenceOnly: Bool = false
   ) -> some View {
     HStack(spacing: 10) {
       CSIconView(
-        icon: done ? .checkCircleFill : .circleEmpty,
+        icon: done && !presenceOnly ? .checkCircleFill : .circleEmpty,
         size: 12,
         weight: .semibold,
-        color: done && !presenceOnly ? CSColor.oliveLight : CSColor.secondaryInk
+        color: done ? CSColor.oliveLight : CSColor.secondaryInk
       )
       Text(label)
         .font(CSFont.ui(13))
@@ -1266,7 +1284,7 @@ struct DoneStepView: View {
                   "Optional", locale: model.interfaceLocale, comment: "Status chip"))))
       )
       .font(CSFont.ui(11, .medium))
-      .foregroundStyle(done && !presenceOnly ? CSColor.oliveLight : CSColor.secondaryInk)
+      .foregroundStyle(done ? CSColor.oliveLight : CSColor.secondaryInk)
     }
   }
 }

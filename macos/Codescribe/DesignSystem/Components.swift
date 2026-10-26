@@ -333,6 +333,47 @@ extension View {
   }
 }
 
+/// A selectable choice (a radio-style row or card) shares the flat action's
+/// shape; the selected one wears the brand accent as a wash and a one-point
+/// edge (Founder, 2026-10-26), never the chrome accent of a pressed action.
+/// An unselected choice rests on the same quiet surface as a plain action.
+private struct CSChoiceButtonStyle: ButtonStyle {
+  let selected: Bool
+  @Environment(\.isEnabled) private var isEnabled
+  @Environment(\.displayScale) private var displayScale
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.body.weight(selected ? .semibold : .regular))
+      .foregroundStyle(Color.primary.opacity(isEnabled ? 1 : 0.4))
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      .background(
+        selected
+          ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash : 0.015)
+          : CSColor.chromeAccent.opacity(isEnabled ? 0.035 : 0.015),
+        in: .rect(cornerRadius: CSRadius.chip)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: CSRadius.chip)
+          .strokeBorder(
+            selected
+              ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionStroke : 0.08)
+              : CSColor.chromeAccent.opacity(isEnabled ? 0.22 : 0.08),
+            lineWidth: selected ? 1 : 1 / max(displayScale, 1))
+      }
+      .contentShape(.rect(cornerRadius: CSRadius.chip))
+      .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
+  }
+}
+
+extension View {
+  func csChoice(selected: Bool) -> some View {
+    buttonStyle(CSChoiceButtonStyle(selected: selected))
+      .csFocusOutline()
+  }
+}
+
 /// Small mode/brand dot.
 struct ModeDot: View {
   var color: Color = CSColor.terracotta

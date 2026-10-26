@@ -224,8 +224,11 @@ struct OnboardingView: View {
           .font(CSFont.ui(12, .regular))
           .foregroundStyle(CSColor.textMuted)
       }
+      // Progress is state, so it wears the brand hue rather than the macOS
+      // accent, which turns grey under Graphite (Founder, 2026-10-26).
       ProgressView(value: model.progressFraction)
         .controlSize(.small)
+        .tint(CSColor.brandAccent)
         .accessibilityLabel("Setup progress")
     }
     .padding(.horizontal, 28)
@@ -242,7 +245,7 @@ struct OnboardingView: View {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         Image(systemName: current.symbol)
           .font(.title2.weight(.regular))
-          .foregroundStyle(CSColor.secondaryInk)
+          .foregroundStyle(CSColor.brandAccent)
           .accessibilityHidden(true)
         Text(current.title)
           .font(.title2.weight(.semibold))
@@ -252,8 +255,9 @@ struct OnboardingView: View {
           .accessibilityIdentifier("onboarding-step-heading")
       }
       // The wizard speaks in one family: the section marker keeps its
-      // uppercase, tracking and olive, in the system face.
-      EyebrowLabel(text: current.label, font: CSFont.ui(11, .semibold))
+      // uppercase and tracking in the system face, and reads in the muted
+      // grey so the step's colour belongs to its icon (Founder, 2026-10-26).
+      EyebrowLabel(text: current.label, color: CSColor.textMuted, font: CSFont.ui(11, .semibold))
     }
   }
 
