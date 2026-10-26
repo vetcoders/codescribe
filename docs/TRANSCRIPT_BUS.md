@@ -1664,14 +1664,14 @@ user heard it. Every such fact is one private file under
 `runtime/receipts/<message_id>/`, written once by the process that produces
 the fact and never rewritten, replaced or removed by any other process:
 
-| File | Writer | Content |
-| --- | --- | --- |
-| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history) | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
-| `<delivery_id>.read.json` | `cs-bus --ack` | the same identity fields and `read_at` |
-| `<delivery_id>.skipped.json` | the follower, instead of `delivered`, when channel zero is `off` | the same identity fields, `policy: off`, `at` |
-| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy | `control_id`, `at` |
-| `playback.<ticket>.json` | the reply player, at the ticket's first terminal state | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at` |
-| `sent.json` | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at` |
+| File                           | Writer                                                                                                              | Content                                                                                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
+| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                 |
+| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                          |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                     |
+| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                   |
+| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                  |
 
 Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
 `message_id`; none carries message text or WAV paths. The identity fields
@@ -1708,10 +1708,7 @@ and the skip marker under `broadcast-skipped/<lease_id>/` now also carry
 them.
 
 `receipt_state(root, message_id)` composes the directory into one state:
-`{message_id, sent_to, recipients: [{delivery_id, name, channel,
-state: delivered|read|skipped|no_receipt, wake, delivered_at, at}], denominator,
-withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at,
-playback_ticket} | null}`. Agents appear by name and channel only; no provider,
+`{message_id, sent_to, recipients: [{delivery_id, name, channel, state: delivered|read|skipped|no_receipt, wake, delivered_at, at}], denominator, withdrawn: [{delivery_id, control_id, at}], spoken: {state, reason, spoken, at, playback_ticket} | null}`. Agents appear by name and channel only; no provider,
 session or lease leaves the files through this projection.
 
 The helper owns the contract of the denominator: the formula below and
@@ -1783,9 +1780,7 @@ cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
 
 takes no `--provider/--session` (it works on the whole bridge home, not on
 one mailbox), combines with no other command, and prints one JSON line
-`{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped",
-"playback", "sent"}, "existing", "unmapped", "mapped_by_bus", "failed",
-"dry_run"}`, exit 0,
+`{"kind": "receipts_backfill", "written": {"delivered", "read", "skipped", "playback", "sent"}, "existing", "unmapped", "mapped_by_bus", "failed", "dry_run"}`, exit 0,
 or exit 3 when `failed > 0` (a receipt that could not be written, for
 example under an unwritable `runtime/receipts/`; a refused run never looks
 like "nothing to do"). It is the
@@ -1793,14 +1788,14 @@ operator's one-time step after installing this helper; it is not run by
 `make install-bus` or by a follower. Sources are read and never changed,
 moved or removed; nothing is written outside `runtime/receipts/`:
 
-| Source | Receipt |
-| --- | --- |
-| a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox) | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at` |
-| a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file |
-| `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field) | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none |
-| `broadcast-skipped/<lease_id>/<delivery_id>.json` (`message_id` on the marker; a marker older than that field is tied to its copy through the bus it names, below) | `<delivery_id>.skipped.json` (`policy: off`) |
-| `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`) | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
-| the frozen `target.recipients` stamp on a journal row or an ACK envelope | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed |
+| Source                                                                                                                                                             | Receipt                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| a terminal row with a `message_id` in a reader's journal `runtime/followers/<lease_id>.events.jsonl` (that copy entered that mailbox)                              | `<delivery_id>.delivered.json` with `wake: null` and `at` = the copy's `emitted_at`                                                       |
+| a copy still in `pending` of `leases/<lease_id>.json` (delivered, never acknowledged), read after the journals                                                     | the same `delivered` file; when the journal already named the delivery, write-once keeps the journal's file                               |
+| `acknowledgments/<lease_id>/<delivery_id>.json` (`message_id` on the marker, or inside its `envelope` for markers older than that field)                           | `<delivery_id>.read.json` with the marker's `read_at`, its mtime when the marker has none                                                 |
+| `broadcast-skipped/<lease_id>/<delivery_id>.json` (`message_id` on the marker; a marker older than that field is tied to its copy through the bus it names, below) | `<delivery_id>.skipped.json` (`policy: off`)                                                                                              |
+| `runtime/reply-playback/<reply_id>.<ticket>.json` in a terminal state (`spoken`, `failed`, `refused`, `stopped`)                                                   | `playback.<ticket>.json`; a ticket still `waiting` or `playing` is left for the player, `.lock` and `.stop.json` siblings are not markers |
+| the frozen `target.recipients` stamp on a journal row or an ACK envelope                                                                                           | `sent.json` with the copy's `emitted_at`; `bus: null`, the publisher's lane is not reconstructed                                          |
 
 `wake: null` is the one value that means "history from before receipts":
 the delivery is a fact (the row is in the reader's own journal), its wake
