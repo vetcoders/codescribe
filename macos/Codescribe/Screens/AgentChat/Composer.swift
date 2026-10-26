@@ -114,10 +114,8 @@ struct Composer: View {
           )
         }
         .csFocusRing()
-        .disabled(
-          !primaryAction.isEnabled || (primaryAction == .stop && !store.canStopSelectedTurn)
-        )
-        .opacity(primaryAction == .stopping ? 0.72 : 1)
+        .disabled(!primaryActionEnabled)
+        .opacity(primaryAction == .stopping ? 0.72 : primaryActionEnabled ? 1 : 0.35)
         .help(primaryAction.accessibilityLabel)
         .accessibilityIdentifier(ComposerActionAccessibility.identifier)
         .accessibilityLabel(Text(primaryAction.accessibilityLabel))
@@ -125,10 +123,10 @@ struct Composer: View {
       .buttonStyle(.plain)
       .padding(.horizontal, ComposerControlMetrics.horizontalPadding)
       .padding(.vertical, ComposerControlMetrics.verticalPadding)
-      .modifier(OverlayControlGlass())
+      .modifier(OverlayControlGlass(cornerRadius: CSRadius.composer))
       .overlay {
         if isDragging {
-          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
+          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
             .strokeBorder(CSColor.chromeAccent, lineWidth: 1.5)
             .allowsHitTesting(false)
         }
@@ -230,6 +228,10 @@ struct Composer: View {
       canSend: store.canSend,
       activePhase: store.selectedComposerTurnPhase
     )
+  }
+
+  private var primaryActionEnabled: Bool {
+    primaryAction.isEnabled && (primaryAction != .stop || store.canStopSelectedTurn)
   }
 
   @ViewBuilder
@@ -768,6 +770,7 @@ enum ComposerControlMetrics {
   static let spacing: CGFloat = 8
   static let horizontalPadding: CGFloat = 12
   static let verticalPadding: CGFloat = 8
+  static let restingActionOpacity = 0.75
 
   // Inline agent cards share the editor and actions, with less surrounding chrome.
   static let intercomGlyphSize: CGFloat = 14

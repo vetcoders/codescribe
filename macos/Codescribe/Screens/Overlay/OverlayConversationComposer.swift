@@ -61,11 +61,14 @@ struct OverlayConversationComposer: View {
   private var controlGlyphSize: CGFloat {
     isCompact ? ComposerControlMetrics.intercomGlyphSize : ComposerControlMetrics.glyphSize
   }
+  private var restingActionColor: Color {
+    palette.mutedText.color.opacity(ComposerControlMetrics.restingActionOpacity)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
       composerContent
-        .modifier(OverlayControlGlass())
+        .modifier(OverlayControlGlass(cornerRadius: CSRadius.composer))
       if let pasteError {
         Text(verbatim: pasteError)
           .font(.system(size: 10 * textScale))
@@ -219,8 +222,8 @@ struct OverlayConversationComposer: View {
     .contentShape(Circle())
     .disabled(sending)
     .conversationActionHover(
-      restingColor: palette.mutedText.color,
-      hoverColor: palette.primaryText.color
+      restingColor: draftSyncNames.count > 1 ? palette.agentAccent.color : restingActionColor,
+      hoverColor: draftSyncNames.count > 1 ? palette.agentAccent.color : palette.primaryText.color
     )
     .help(Text(verbatim: draftSyncHelp))
     .accessibilityLabel(Text("Sync draft"))
@@ -264,6 +267,7 @@ struct OverlayConversationComposer: View {
         if prose.wrappedValue.isEmpty {
           Text(verbatim: placeholder)
             .font(.system(size: ComposerControlMetrics.textSize * textScale))
+            .lineLimit(1)
             .foregroundStyle(palette.mutedText.color)
             .padding(.top, ComposerControlMetrics.textVerticalInset)
             .allowsHitTesting(false)
@@ -289,7 +293,7 @@ struct OverlayConversationComposer: View {
         .contentShape(Circle()).buttonStyle(.plain)
         .conversationActionHover(
           restingColor: draftMicrophoneRecording
-            ? palette.agentAccent.color : palette.mutedText.color,
+            ? palette.agentAccent.color : restingActionColor,
           hoverColor: draftMicrophoneRecording
             ? palette.agentAccent.color : palette.primaryText.color
         )
@@ -306,7 +310,7 @@ struct OverlayConversationComposer: View {
         .contentShape(Circle())
         .buttonStyle(.plain)
         .conversationActionHover(
-          restingColor: palette.mutedText.color,
+          restingColor: restingActionColor,
           hoverColor: palette.primaryText.color
         )
         .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

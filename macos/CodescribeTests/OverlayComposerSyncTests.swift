@@ -14,14 +14,24 @@ final class OverlayComposerSyncTests: XCTestCase {
     try assertNativeComposerActions(compact: true, width: 220)
   }
 
-  private func assertNativeComposerActions(compact: Bool, width: CGFloat) throws {
+  func testLinkedSyncUsesAccentWhileOtherActionsStayMuted() throws {
+    try assertNativeComposerActions(compact: true, width: 220, linked: true)
+  }
+
+  func testDisabledSendIsDimmerThanAvailableActions() throws {
+    try assertNativeComposerActions(compact: true, width: 220, sendEnabled: false)
+  }
+
+  private func assertNativeComposerActions(
+    compact: Bool, width: CGFloat, linked: Bool = false, sendEnabled: Bool = true
+  ) throws {
     let palette = OverlayAppearancePalette.dark
     let composer = OverlayConversationComposer(
-      palette: palette, draft: .constant("A shared draft"),
+      palette: palette, draft: .constant(sendEnabled ? "A shared draft" : ""),
       maximumEditorHeight: compact ? 28 : nil, sending: false, onSubmit: {},
       onToggleDraftMicrophone: {},
-      draftSyncChoices: [.init(id: "peer", title: "Peer", selected: true, enabled: true)],
-      draftSyncNames: ["Agent", "Peer"])
+      draftSyncChoices: [.init(id: "peer", title: "Peer", selected: linked, enabled: true)],
+      draftSyncNames: linked ? ["Agent", "Peer"] : [])
     let host = NSHostingView(rootView: composer
       .padding(12).background(palette.desktopBackground.color)
       .environment(\.colorScheme, .dark))
@@ -42,7 +52,9 @@ final class OverlayComposerSyncTests: XCTestCase {
     host.cacheDisplay(in: host.bounds, to: bitmap)
     let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
     let screenshot = XCTAttachment(image: image)
-    screenshot.name = compact ? "Compact-narrow-composer-actions" : "Muted-aligned-composer-actions"
+    screenshot.name = linked ? "Compact-linked-sync-accent"
+      : !sendEnabled ? "Compact-disabled-send"
+      : compact ? "Compact-narrow-composer-actions" : "Muted-aligned-composer-actions"
     screenshot.lifetime = .keepAlways
     add(screenshot)
     // Measure visible ink, rather than assuming equal layout metrics imply
@@ -70,7 +82,7 @@ final class OverlayComposerSyncTests: XCTestCase {
         for x in Int(left * pixelScale)..<Int(right * pixelScale) {
           guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
           let brightness = max(color.redComponent, color.greenComponent, color.blueComponent)
-          guard brightness > 0.35 else { continue }
+          guard brightness > (!sendEnabled && slot == 0 ? 0.12 : 0.35) else { continue }
           inkCount += 1
           minY = min(minY, y)
           maxY = max(maxY, y)
@@ -78,7 +90,9 @@ final class OverlayComposerSyncTests: XCTestCase {
         }
       }
       XCTAssertGreaterThan(inkCount, 20, "Each action must actually render its glyph")
-      XCTAssertLessThan(peak, 0.8, "Idle action must not render bright white/accent ink")
+      if !linked || slot != 2 {
+        XCTAssertLessThan(peak, 0.8, "Idle action must not render bright white/accent ink")
+      }
       centers.append(CGFloat(minY + maxY) / (2 * pixelScale))
       heights.append(CGFloat(maxY - minY + 1) / pixelScale)
       peaks.append(peak)
@@ -86,8 +100,12 @@ final class OverlayComposerSyncTests: XCTestCase {
     for index in 1..<3 {
       XCTAssertEqual(centers[index], centers[0], accuracy: 1.5, "Visible glyph centers must align")
       XCTAssertEqual(heights[index], heights[0], accuracy: 2, "Glyphs must have the same optical size")
-      XCTAssertEqual(peaks[index], peaks[0], accuracy: 0.05, "Idle glyphs must use the same ink")
+      if !linked && sendEnabled {
+        XCTAssertEqual(peaks[index], peaks[0], accuracy: 0.05, "Idle glyphs must use the same ink")
+      }
     }
+    if linked { XCTAssertGreaterThan(peaks[2], max(peaks[0], peaks[1]) + 0.1) }
+    if !sendEnabled { XCTAssertLessThan(peaks[0], min(peaks[1], peaks[2]) * 0.6) }
   }
 
   func testTypedPublisherCarriesOnlyExplicitOwnerCoordinatesAsSyncContext() throws {
