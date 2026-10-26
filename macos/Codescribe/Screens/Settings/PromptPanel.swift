@@ -232,7 +232,7 @@ private struct PromptEditor: View {
         sourceTag
         if hasUnsavedChanges {
           Text("Unsaved changes")
-            .font(CSFont.ui(11.5, .medium))
+            .font(CSFont.ui(12, .medium))
             .foregroundStyle(CSColor.chromeAccent)
         }
         if editing {
@@ -312,7 +312,7 @@ private struct PromptEditor: View {
   private var cancelButton: some View {
     Button("Cancel", action: onDiscard)
       .csFocusRing()
-      .font(CSFont.ui(11.5, .semibold))
+      .font(CSFont.ui(12, .semibold))
       .foregroundStyle(CSColor.secondaryInk)
       .help("Discard unsaved changes")
   }
@@ -328,7 +328,7 @@ private struct PromptEditor: View {
       confirmingRestore = true
     }
     .csFocusRing()
-    .font(CSFont.ui(11.5, .semibold))
+    .font(CSFont.ui(12, .semibold))
     .foregroundStyle(CSColor.secondaryInk)
     .disabled(!canRestore)
     .help(
@@ -353,11 +353,11 @@ private struct PromptEditor: View {
   private func failureLine(_ failure: PromptOperationFailure) -> some View {
     VStack(alignment: .leading, spacing: 2) {
       Text(promptFailureLabel(failure.operation, title: title))
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.dangerLight)
       if !failure.detail.isEmpty {
         Text(failure.detail)
-          .font(CSFont.mono(10.5, .regular))
+          .font(CSFont.mono(11, .regular))
           .foregroundStyle(CSColor.dangerLight)
           .textSelection(.enabled)
       }
@@ -379,7 +379,7 @@ private struct PromptEditor: View {
           // One line, truncated in the middle: a deep path must not widen the
           // pane past the minimum window width.
           Text(pathDisplay)
-            .font(CSFont.mono(10.5, .regular))
+            .font(CSFont.mono(11, .regular))
             .foregroundStyle(CSColor.secondaryInk)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -395,7 +395,7 @@ private struct PromptEditor: View {
               .font(CSFont.ui(11))
               .foregroundStyle(CSColor.dangerLight)
             Text(error)
-              .font(CSFont.mono(10.5, .regular))
+              .font(CSFont.mono(11, .regular))
               .foregroundStyle(CSColor.dangerLight)
               .textSelection(.enabled)
           }
@@ -405,7 +405,7 @@ private struct PromptEditor: View {
     } label: {
       HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
         Text("File details")
-          .font(CSFont.ui(11.5, .medium))
+          .font(CSFont.ui(12, .medium))
           .foregroundStyle(CSColor.secondaryInk)
         Spacer(minLength: CSSpace.sm)
         restoreButton
@@ -429,7 +429,7 @@ private struct PromptEditor: View {
     if editing {
       TextEditor(text: $draft)
         .focused($editorFocused)
-        .font(CSFont.mono(12.5, .regular))
+        .font(CSFont.mono(13, .regular))
         .foregroundStyle(Color.primary)
         .scrollContentBackground(.hidden)
         .frame(minHeight: 132)

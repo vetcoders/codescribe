@@ -514,7 +514,7 @@ struct VoiceLabPanel: View {
         HStack(spacing: 5) {
           CSIconView(icon: .tip, size: 10, weight: .semibold)
           Text(String(localized: "Learn from corrections", comment: "Dictionary: button"))
-            .font(CSFont.ui(11.5, .semibold))
+            .font(CSFont.ui(12, .semibold))
         }
         .foregroundStyle(
           model.voiceLabTeachPending ? CSColor.secondaryInk : CSColor.chromeAccent
@@ -552,7 +552,7 @@ struct VoiceLabPanel: View {
         activeRules: activeRulesCount
       ).joined(separator: " · ")
     )
-    .font(CSFont.ui(11.5, .medium))
+    .font(CSFont.ui(12, .medium))
     .foregroundStyle(CSColor.secondaryInk)
     .fixedSize(horizontal: false, vertical: true)
     .accessibilityIdentifier("dictionary-counters")
@@ -633,7 +633,7 @@ struct VoiceLabPanel: View {
   private var correctionFreshness: some View {
     if let latest = corrections.max(by: { $0.timestampMs < $1.timestampMs }) {
       Text("Last correction on this Mac: \(timestampLabel(latest.timestampMs))")
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-correction")
       Text("No newer correction has been saved on this Mac.")
@@ -641,7 +641,7 @@ struct VoiceLabPanel: View {
         .foregroundStyle(CSColor.secondaryInk)
     } else if model.voiceLabReadError == nil {
       Text("Last correction on this Mac: none saved")
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityIdentifier("dictionary-last-correction")
     }
@@ -673,7 +673,7 @@ struct VoiceLabPanel: View {
       Divider().opacity(0.4)
       if stages.isEmpty {
         Text("No text change — kept for its confidence telemetry.")
-          .font(CSFont.ui(12.5))
+          .font(CSFont.ui(13))
           .foregroundStyle(CSColor.secondaryInk)
       } else {
         changesBlock(stages)
@@ -683,7 +683,7 @@ struct VoiceLabPanel: View {
         HStack(spacing: 6) {
           ForEach(Array(row.telemetryChips.enumerated()), id: \.offset) { _, chip in
             Text(chip)
-              .font(CSFont.mono(9.5, .semibold))
+              .font(CSFont.mono(10, .semibold))
               .foregroundStyle(row.isLowConfidence ? CSColor.terracottaText : CSColor.oliveLight)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
@@ -707,12 +707,12 @@ struct VoiceLabPanel: View {
       }
       if let error = model.voiceLabEditErrors[row.id] {
         Text("Save failed: \(error)")
-          .font(CSFont.ui(10.5))
+          .font(CSFont.ui(11))
           .foregroundStyle(CSColor.dangerLight)
       }
       if let note = model.voiceLabEditNotes[row.id] {
         Text(note)
-          .font(CSFont.ui(10.5))
+          .font(CSFont.ui(11))
           .foregroundStyle(CSColor.oliveLight)
           .accessibilityLabel("Correction saved. \(note)")
       }
@@ -758,7 +758,7 @@ struct VoiceLabPanel: View {
           if row.isLowConfidence {
             Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
               .textCase(.uppercase)
-              .font(CSFont.ui(9.5, .semibold))
+              .font(CSFont.ui(10, .semibold))
               .foregroundStyle(CSColor.terracottaText)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
@@ -772,7 +772,7 @@ struct VoiceLabPanel: View {
               comment: "Dictionary badge: the session closed before this take was reviewed"
             )
             .textCase(.uppercase)
-            .font(CSFont.ui(9.5, .semibold))
+            .font(CSFont.ui(10, .semibold))
             .foregroundStyle(CSColor.chromeAccent)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -809,7 +809,7 @@ struct VoiceLabPanel: View {
           localized: "Changes in the transcript",
           comment: "Dictionary: header above the compared versions of the text")
       )
-      .font(CSFont.ui(11.5, .semibold))
+      .font(CSFont.ui(12, .semibold))
       .foregroundStyle(CSColor.secondaryInk)
       .accessibilityAddTraits(.isHeader)
       VStack(alignment: .leading, spacing: CSSpace.md) {
@@ -913,7 +913,7 @@ struct VoiceLabPanel: View {
       ForEach(Array(stages.enumerated()), id: \.offset) { stageIndex, stage in
         if stages.count > 1 {
           Text(stage.stage.title)
-            .font(CSFont.ui(10.5, .semibold))
+            .font(CSFont.ui(11, .semibold))
             .foregroundStyle(CSColor.secondaryInk)
             .accessibilityAddTraits(.isHeader)
         }
@@ -992,14 +992,14 @@ struct VoiceLabPanel: View {
       }
       if let retranscribeReason, !helperPending {
         Text(retranscribeReason)
-          .font(CSFont.ui(10.5))
+          .font(CSFont.ui(11))
           .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("dictionary-retranscribe-reason")
       }
       if let playbackMessage {
         Text(playbackMessage)
-          .font(CSFont.ui(10.5))
+          .font(CSFont.ui(11))
           .foregroundStyle(CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -1105,7 +1105,7 @@ struct VoiceLabPanel: View {
   private func diffEyebrow(_ text: String) -> some View {
     Text(text)
       .textCase(.uppercase)
-      .font(CSFont.mono(9.5, .semibold))
+      .font(CSFont.mono(10, .semibold))
       .foregroundStyle(CSColor.secondaryInk)
   }
 
@@ -1259,7 +1259,7 @@ struct VoiceLabPanel: View {
             .disabled(safeIndex == 0)
           Spacer()
           Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
-            .font(CSFont.ui(10.5, .medium))
+            .font(CSFont.ui(11, .medium))
             .monospacedDigit()
             .foregroundStyle(CSColor.secondaryInk)
           Spacer()
@@ -1279,7 +1279,7 @@ struct VoiceLabPanel: View {
   private func lexiconRow(_ row: VoiceLabLexiconRow) -> some View {
     HStack(spacing: 10) {
       Text(row.variant)
-        .font(CSFont.mono(11.5, .medium))
+        .font(CSFont.mono(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .textSelection(.enabled)
       // Keep the arrow plain; the canonical text separates its AX label and stored value.
@@ -1287,7 +1287,7 @@ struct VoiceLabPanel: View {
         .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
       Text(row.canonical)
-        .font(CSFont.mono(11.5, .semibold))
+        .font(CSFont.mono(12, .semibold))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.localizedOrigin)")
@@ -1296,7 +1296,7 @@ struct VoiceLabPanel: View {
       Spacer(minLength: 0)
       if sharedRuleOrigin == nil {
         Text(row.localizedOrigin)
-          .font(CSFont.ui(10.5))
+          .font(CSFont.ui(11))
           .foregroundStyle(CSColor.secondaryInk)
           .accessibilityHidden(true)
       }
@@ -1315,7 +1315,7 @@ struct VoiceLabPanel: View {
         VStack(alignment: .leading, spacing: 10) {
           HStack(spacing: 10) {
             Text(candidate.target)
-              .font(CSFont.mono(11.5, .semibold))
+              .font(CSFont.mono(12, .semibold))
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
             Spacer(minLength: 0)
@@ -1339,7 +1339,7 @@ struct VoiceLabPanel: View {
                 Button("Teach") {
                   model.teachRuleCandidate(target: candidate.target, variant: variant)
                 }
-                .font(CSFont.ui(10.5, .semibold))
+                .font(CSFont.ui(11, .semibold))
                 .controlSize(.small)
                 .disabled(model.voiceLabTeachPending)
                 .accessibilityLabel("Teach \(variant) as \(candidate.target)")
@@ -1356,7 +1356,7 @@ struct VoiceLabPanel: View {
               .disabled(safeIndex == 0)
             Spacer()
             Text("\(safeIndex + 1) of \(model.ruleCandidates.count)")
-              .font(CSFont.ui(10.5, .medium))
+              .font(CSFont.ui(11, .medium))
               .monospacedDigit()
               .foregroundStyle(CSColor.secondaryInk)
             Spacer()
@@ -1372,7 +1372,7 @@ struct VoiceLabPanel: View {
 
   private func emptyState(_ message: LocalizedStringKey) -> some View {
     Text(message)
-      .font(CSFont.ui(12.5))
+      .font(CSFont.ui(13))
       .lineSpacing(2)
       .foregroundStyle(CSColor.secondaryInk)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -1381,7 +1381,7 @@ struct VoiceLabPanel: View {
 
   private func readError(_ error: String) -> some View {
     Text("Live quality data is unavailable: \(error)")
-      .font(CSFont.ui(12.5))
+      .font(CSFont.ui(13))
       .foregroundStyle(CSColor.dangerLight)
       .frame(maxWidth: .infinity, alignment: .leading)
       .settingsGroupedInset()
@@ -1403,7 +1403,7 @@ struct VoiceLabPanel: View {
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityAddTraits(.isHeader)
       Text(text)
-        .font(CSFont.ui(12.5, .medium))
+        .font(CSFont.ui(13, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)

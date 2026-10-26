@@ -369,7 +369,7 @@ struct OverlayComposerAttachmentPill: View {
           }
           // A label, not code: the system voice, per the mono policy.
           Text(verbatim: name)
-            .font(CSFont.ui(10.5, .medium))
+            .font(CSFont.ui(11, .medium))
             .foregroundStyle(palette.primaryText.color)
             .lineLimit(1)
             .truncationMode(.middle)

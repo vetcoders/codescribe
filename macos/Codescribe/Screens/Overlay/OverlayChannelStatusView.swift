@@ -1619,7 +1619,7 @@ struct OverlayChannelStatusView: View {
                       onSelectConversation?(broadcast.id)
                     } label: {
                       Text(verbatim: Self.drawerPreview(message: last))
-                        .font(.system(size: 12.5 * textScale))
+                        .font(.system(size: 13 * textScale))
                         .foregroundStyle(
                           unread > 0 ? palette.bodyText.color : palette.mutedText.color
                         )

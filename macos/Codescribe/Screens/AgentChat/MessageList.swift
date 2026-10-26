@@ -504,7 +504,7 @@ private struct AgentEmptyThread: View {
         .foregroundStyle(Color.primary)
         .padding(.top, 2)
       Text(agentEmptyThreadDetail)
-        .font(CSFont.ui(12.5, .regular))
+        .font(CSFont.ui(13, .regular))
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -537,7 +537,7 @@ struct ShowEarlierButton: View {
           icon: .chevronRight, size: 8, weight: .semibold,
           color: CSColor.textTertiary)
         Text("Show earlier · \(hiddenCount) turns")
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.textTertiary)
       }
       .padding(.horizontal, 11)
@@ -570,7 +570,7 @@ struct JumpToCurrentButton: View {
           icon: .chevronDown, size: 9, weight: .semibold,
           color: CSColor.chromeAccent)
         Text("Current")
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(hovering ? Color.primary : CSColor.secondaryInk)
       }
       .padding(.horizontal, 11)
@@ -858,7 +858,7 @@ private struct ContextChip: View {
         VStack(alignment: .leading, spacing: 5) {
           if let app {
             Text("app · \(app)")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.secondaryInk)
           }
           if let selection {
@@ -869,7 +869,7 @@ private struct ContextChip: View {
               if OversizedBubblePolicy.isOversized(selection) {
                 OversizedMessageBody(fullText: selection) { head in
                   Text(head)
-                    .font(CSFont.mono(10.5))
+                    .font(CSFont.mono(11))
                     .foregroundStyle(Color.primary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -877,7 +877,7 @@ private struct ContextChip: View {
                 }
               } else {
                 Text(selection)
-                  .font(CSFont.mono(10.5))
+                  .font(CSFont.mono(11))
                   .foregroundStyle(Color.primary)
                   .textSelection(.enabled)
                   .lineSpacing(3)
@@ -925,7 +925,7 @@ struct AttachmentChip: View {
           CSIconView(icon: .photo, size: 11)
         }
         Text(attachment.name)
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .lineLimit(1)
           .truncationMode(.middle)
           .frame(maxWidth: 160)
@@ -996,7 +996,7 @@ struct AttachmentPreviewSheet: View {
             .lineLimit(2)
             .truncationMode(.middle)
           Text(attachment.type)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.mono(11, .medium))
             .foregroundStyle(CSColor.textTertiary)
         }
         Spacer(minLength: 8)
@@ -1032,11 +1032,11 @@ struct AttachmentPreviewSheet: View {
 
           HStack(spacing: 10) {
             Text("Zoom")
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.textTertiary)
             Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
             Text(String(format: "%.0f%%", zoom * 100))
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.secondaryInk)
               .frame(width: 44, alignment: .trailing)
           }
@@ -1069,7 +1069,7 @@ struct AttachmentPreviewSheet: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
         Text(pathText)
-          .font(CSFont.mono(10.5))
+          .font(CSFont.mono(11))
           .foregroundStyle(Color.primary)
           .textSelection(.enabled)
           .lineLimit(3)
@@ -1243,7 +1243,7 @@ private struct ToolLineRow: View {
           let detail = Text(verbatim: " " + detailRun).foregroundStyle(
             isQuiet ? CSColor.textTertiary : ChatPalette.toolBody)
           Text("\(verb)\(detail)")
-            .font(CSFont.mono(11.5, .medium))
+            .font(CSFont.mono(12, .medium))
             .lineSpacing(4)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1300,11 +1300,11 @@ private struct ToolInspectPanel: View {
               ? String(localized: "error", comment: "Tool inspect section")
               : String(localized: "result", comment: "Tool inspect section")
           )
-          .font(CSFont.mono(9.5, .semibold))
+          .font(CSFont.mono(10, .semibold))
           .foregroundStyle(CSColor.textTertiary)
           .textCase(.uppercase)
           Text(reason)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.mono(11, .medium))
             .foregroundStyle(line.state == .failed ? CSColor.dangerLight : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
@@ -1320,7 +1320,7 @@ private struct ToolInspectPanel: View {
       HStack(spacing: 10) {
         CopyMessageButton(text: line.technicalCopyText)
         Text("request/response bodies not on this event")
-          .font(CSFont.mono(9.5, .medium))
+          .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .lineLimit(1)
       }
@@ -1342,12 +1342,12 @@ private struct ToolInspectPanel: View {
   private func inspectRow(label: String, value: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text(label)
-        .font(CSFont.mono(9.5, .semibold))
+        .font(CSFont.mono(10, .semibold))
         .foregroundStyle(CSColor.textTertiary)
         .textCase(.uppercase)
         .frame(width: 64, alignment: .leading)
       Text(value)
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1642,7 +1642,7 @@ private struct ReasoningDisclosure: View {
             ? String(localized: "thinking...", comment: "The model is still reasoning")
             : String(localized: "reasoning summary")
         )
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(ChatPalette.thinking)
         Spacer(minLength: 0)
       }
@@ -1664,7 +1664,7 @@ private struct ReasoningDisclosure: View {
 
   private func reasoningBody(_ content: String) -> some View {
     Text(content)
-      .font(CSFont.mono(10.5, .medium))
+      .font(CSFont.mono(11, .medium))
       .foregroundStyle(ChatPalette.thinking.opacity(0.86))
       .textSelection(.enabled)
       .lineSpacing(3)

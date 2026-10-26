@@ -62,7 +62,7 @@ struct LicenseSection: View {
       if let details = model.licenseErrorDetails {
         DisclosureGroup("Details") {
           Text(details)
-            .font(CSFont.mono(10.5, .medium))
+            .font(CSFont.mono(11, .medium))
             .textSelection(.enabled)
         }
         .font(SettingsScale.helper)
@@ -248,7 +248,7 @@ struct LicenseSection: View {
         .accessibilityHidden(true)
       HStack(alignment: .center, spacing: CSSpace.sm) {
         SecureField(Self.keyPlaceholder, text: $key)
-          .font(CSFont.mono(11.5, .regular))
+          .font(CSFont.mono(12, .regular))
           .textFieldStyle(.plain)
           .focused($keyFocused)
           .padding(.horizontal, CSSpace.md)

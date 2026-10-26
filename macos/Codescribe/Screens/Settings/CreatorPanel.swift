@@ -783,7 +783,7 @@ private struct PermissionChecklistRow: View {
       // A granted row says it with the badge; the status stays for VoiceOver.
       VStack(alignment: .leading, spacing: 2) {
         Text(kind.displayName)
-          .font(CSFont.ui(13.5, .medium))
+          .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
           .accessibilityValue(state.label)
         if let note {

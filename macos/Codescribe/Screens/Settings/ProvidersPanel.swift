@@ -42,7 +42,7 @@ struct ProvidersPanel: View {
           : String(localized: "Provider access is unavailable. No credential status has been confirmed."))
           .font(SettingsScale.helper)
           .padding(.top, SettingsScale.sectionGap)
-        Text(error).font(CSFont.mono(10.5)).textSelection(.enabled)
+        Text(error).font(CSFont.mono(11)).textSelection(.enabled)
       }
       HStack(spacing: CSSpace.md) {
         // The status slot beside the chip carries the progress line, so the
@@ -541,7 +541,7 @@ struct CustomProviderForm: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
-        .font(CSFont.ui(10.5, .semibold))
+        .font(CSFont.ui(11, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
       control()
     }
@@ -724,7 +724,7 @@ struct SttLaneCard: View {
           }
           if DeveloperSurface.isEnabled() {
             Text(Self.accepts(for: lane))
-              .font(CSFont.mono(10.5, .medium))
+              .font(CSFont.mono(11, .medium))
               .fixedSize(horizontal: false, vertical: true)
           }
           SettingsDetailRow(

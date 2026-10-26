@@ -331,7 +331,7 @@ struct MCPServerRow: View {
         .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 150, alignment: .leading)
       Text(verbatim: value)
-        .font(CSFont.mono(10.5, .regular))
+        .font(CSFont.mono(11, .regular))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)

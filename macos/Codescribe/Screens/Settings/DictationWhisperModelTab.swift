@@ -192,7 +192,7 @@ struct DictationWhisperModelTab: View {
         // font; monospace stays for technical values on this pane
         // (Founder brief, round 13, 2026-10-10).
         Text(localWhisperRuntimeLabel)
-          .font(CSFont.ui(11.5, .semibold))
+          .font(CSFont.ui(12, .semibold))
           .foregroundStyle(localWhisperRuntimeColor)
         Button("Recheck", action: model.recheckLocalWhisperRuntime)
           .buttonStyle(.bordered)
@@ -291,7 +291,7 @@ struct DictationWhisperModelTab: View {
                 .foregroundStyle(Color.primary)
               Spacer(minLength: CSSpace.sm)
               Text(Self.reasonTag(entry.element.reason))
-                .font(CSFont.ui(11.5, .medium))
+                .font(CSFont.ui(12, .medium))
                 .foregroundStyle(CSColor.amberLight)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
@@ -430,7 +430,7 @@ struct DictationWhisperModelTab: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
-        .font(CSFont.ui(11.5, .semibold))
+        .font(CSFont.ui(12, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
         .accessibilityAddTraits(.isHeader)
       content()
@@ -446,7 +446,7 @@ struct DictationWhisperModelTab: View {
         .font(CSFont.ui(11))
         .foregroundStyle(CSColor.secondaryInk)
       Text(verbatim: value)
-        .font(CSFont.mono(10.5))
+        .font(CSFont.mono(11))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)

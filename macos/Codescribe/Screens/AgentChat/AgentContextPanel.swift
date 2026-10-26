@@ -303,7 +303,7 @@ struct AgentContextPanel: View {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         CSIconView(icon: .agent, size: 12, color: CSColor.textTertiary)
         Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
           .lineLimit(3)
           .truncationMode(.tail)
@@ -341,7 +341,7 @@ struct AgentContextPanel: View {
         .lineLimit(1)
       Spacer(minLength: 8)
       value()
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
         .foregroundStyle(Color.primary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -354,7 +354,7 @@ struct AgentContextPanel: View {
       HStack(spacing: 8) {
         CSIconView(icon: .settings, size: 12, color: CSColor.secondaryInk)
         Text(AgentContextPanelCopy.toolSettings)
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
           .lineLimit(2)
           .fixedSize(horizontal: false, vertical: true)

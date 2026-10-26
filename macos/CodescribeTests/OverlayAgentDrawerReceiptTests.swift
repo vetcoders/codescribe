@@ -332,7 +332,7 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
       func lineHeight(_ size: CGFloat) -> CGFloat {
         ceil(layout.defaultLineHeight(for: .systemFont(ofSize: size * scale)))
       }
-      let fiveLines = lineHeight(13.5) + lineHeight(11) * 2 + lineHeight(12.5) * 2
+      let fiveLines = lineHeight(14) + lineHeight(11) * 2 + lineHeight(13) * 2
       let spacingAndBadge: CGFloat = 8 + 4 + 4
       XCTAssertGreaterThan(row.height, 0)
       XCTAssertLessThanOrEqual(

@@ -224,7 +224,7 @@ struct ShortcutsPanel: View {
         .font(CSFont.mono(11, .medium))
         .foregroundStyle(color)
       Text(text)
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .fixedSize(horizontal: false, vertical: true)
     }

@@ -735,7 +735,7 @@ struct ToolApprovalCard: View {
           .foregroundStyle(CSColor.textTertiary)
       }
       Text(verbatim: "\(request.server) · \(request.tool)")
-        .font(CSFont.mono(11.5, .semibold))
+        .font(CSFont.mono(12, .semibold))
         .foregroundStyle(Color.primary)
         .textSelection(.enabled)
       if !request.summary.isEmpty {
@@ -751,13 +751,13 @@ struct ToolApprovalCard: View {
       }
       if let cwd = request.cwd {
         Text(verbatim: "cwd: \(cwd)")
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
       ForEach(request.distinctPaths, id: \.self) { path in
         Text(path)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           .textSelection(.enabled)
       }
@@ -767,11 +767,11 @@ struct ToolApprovalCard: View {
             "Arguments",
             comment: "Heading above the argument snapshot on an agent permission card"
           )
-          .font(CSFont.ui(10.5, .medium))
+          .font(CSFont.ui(11, .medium))
           .foregroundStyle(CSColor.textTertiary)
           ScrollView {
             Text(verbatim: arguments)
-              .font(CSFont.mono(10.5, .regular))
+              .font(CSFont.mono(11, .regular))
               .foregroundStyle(Color.primary)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)

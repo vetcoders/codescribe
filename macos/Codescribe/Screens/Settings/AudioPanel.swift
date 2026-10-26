@@ -1135,7 +1135,7 @@ struct AudioPanel: View {
             Text(
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )
-            .font(CSFont.mono(9.5, .medium))
+            .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.secondaryInk)
           }
         }

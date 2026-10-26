@@ -478,7 +478,7 @@ private struct LLMLaneEditor: View {
       if !failureShownOnAgent, let details = laneModel.discoveryErrorDetails {
         DisclosureGroup("Error details") {
           Text(details)
-            .font(CSFont.mono(10.5))
+            .font(CSFont.mono(11))
             .foregroundStyle(CSColor.secondaryInk)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)

@@ -238,7 +238,7 @@ struct Composer: View {
       HStack(spacing: 9) {
         CSIconView(icon: .warning, size: 11, color: CSColor.amberLight)
         Text(message)
-          .font(CSFont.ui(11.5, .medium))
+          .font(CSFont.ui(12, .medium))
           .foregroundStyle(Color.primary)
         Spacer(minLength: 8)
         Button("Enter license") {
@@ -246,7 +246,7 @@ struct Composer: View {
           openWindow.presentSettings()
         }
         .csFocusRing()
-        .font(CSFont.mono(10.5, .semibold))
+        .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
       }
       .padding(.horizontal, 11)
@@ -287,7 +287,7 @@ struct Composer: View {
       paletteList {
         if entries.isEmpty {
           Text("No matches")
-            .font(CSFont.ui(11.5, .regular))
+            .font(CSFont.ui(12, .regular))
             .foregroundStyle(CSColor.textTertiary)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -335,7 +335,7 @@ struct Composer: View {
       HStack(spacing: 8) {
         VStack(alignment: .leading, spacing: 1) {
           Text(title)
-            .font(CSFont.mono(11.5, .semibold))
+            .font(CSFont.mono(12, .semibold))
             .foregroundStyle(Color.primary)
           if let subtitle, !subtitle.isEmpty {
             Text(subtitle)
@@ -476,9 +476,9 @@ struct Composer: View {
   private var dictationFeedback: some View {
     if case .failed(let message) = store.dictationPhase {
       HStack(spacing: 6) {
-        CSIconView(icon: .error, size: 10.5)
+        CSIconView(icon: .error, size: 11)
         Text(message)
-          .font(CSFont.mono(10.5, .medium))
+          .font(CSFont.mono(11, .medium))
       }
       .foregroundStyle(CSColor.amberLight)
       .padding(.leading, 2)
@@ -513,7 +513,7 @@ struct Composer: View {
               HStack(spacing: 6) {
                 CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
                 Text(attachment.name)
-                  .font(CSFont.mono(10.5, .medium))
+                  .font(CSFont.mono(11, .medium))
                   .foregroundStyle(Color.primary)
                   .lineLimit(1)
                   .truncationMode(.middle)

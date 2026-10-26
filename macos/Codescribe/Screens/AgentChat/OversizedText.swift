@@ -123,7 +123,7 @@ struct OversizedMessageBody<Head: View>: View {
               localized: "Show full text · \(OversizedBubblePolicy.byteSummary(fullText))",
               comment: "The placeholder is a size, e.g. 142 KB")
         )
-        .font(CSFont.mono(10.5, .medium))
+        .font(CSFont.mono(11, .medium))
       }
       .contentShape(Rectangle())
     }
@@ -149,7 +149,7 @@ struct StreamWindowNote: View {
       "live view shows the newest output · full text kept (\(OversizedBubblePolicy.byteSummary(fullText)))",
       comment: "The placeholder is a size, e.g. 142 KB"
     )
-    .font(CSFont.mono(9.5, .medium))
+    .font(CSFont.mono(10, .medium))
     .foregroundStyle(CSColor.textTertiary)
   }
 }

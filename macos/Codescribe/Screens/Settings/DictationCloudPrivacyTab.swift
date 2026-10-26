@@ -52,7 +52,7 @@ struct DictationCloudPrivacyTab: View {
         SettingsDeepLink.shared.present(.keys, anchor: .providersCloudTranscription)
       }
       .buttonStyle(.link)
-      .font(CSFont.ui(11.5, .medium))
+      .font(CSFont.ui(12, .medium))
     }
   }
 
@@ -88,7 +88,7 @@ struct DictationCloudPrivacyTab: View {
       VStack(alignment: .leading, spacing: 3) {
         // Item label, one step under the section header above it.
         Text(title)
-          .font(CSFont.ui(12.5, .medium))
+          .font(CSFont.ui(13, .medium))
           .foregroundStyle(Color.primary)
         Text(detail)
           .font(SettingsScale.helper)

@@ -73,7 +73,7 @@ private struct LastTranscriptionRow: View {
   private var valueText: some View {
     if mono {
       Text(verbatim: value)
-        .font(CSFont.mono(11.5, .semibold))
+        .font(CSFont.mono(12, .semibold))
         .lineLimit(1)
         .truncationMode(.middle)
     } else {

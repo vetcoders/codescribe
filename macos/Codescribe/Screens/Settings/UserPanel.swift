@@ -236,7 +236,7 @@ struct UserPanel: View {
       }
       // The launch record verbatim, for support; it repeats the key names.
       Text(verbatim: notice.raw)
-        .font(CSFont.mono(10.5, .regular))
+        .font(CSFont.mono(11, .regular))
         .foregroundStyle(CSColor.secondaryInk)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -386,7 +386,7 @@ struct UserPanel: View {
         .foregroundStyle(CSColor.secondaryInk)
         .frame(width: 110, alignment: .leading)
       Text(value)
-        .font(mono ? CSFont.mono(11.5, .medium) : .subheadline)
+        .font(mono ? CSFont.mono(12, .medium) : .subheadline)
         .foregroundStyle(.primary)
         .textSelection(.enabled)
       Spacer(minLength: 0)

@@ -24,7 +24,7 @@ struct ToolSearchField: View {
         // Input text, not a label: the scale's control rung is semibold and
         // reads wrong under a caret, and the one input rung the pane owns
         // (`settingsInputChrome`) is mono and taller than this row allows.
-        .font(CSFont.ui(11.5, .medium))
+        .font(CSFont.ui(12, .medium))
         .foregroundStyle(Color.primary)
     }
     .padding(.horizontal, SettingsScale.controlInsetH)
