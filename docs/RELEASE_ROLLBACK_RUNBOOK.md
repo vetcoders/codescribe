@@ -18,14 +18,16 @@ To halt automatic updates to a bad `vX.Y.Z` release within minutes:
    `appcast.xml` (or revert the release publication commit on `main` that
    updated the feed/site metadata) so the top `<item>` points back to the last
    known-good release `vX.Y.(Z-1)`.
-2. Trigger the Pages deployment workflow:
+2. Trigger the Pages deployment workflow and wait for it to finish:
    ```sh
    gh workflow run pages.yml --repo vetcoders/codescribe --ref main
+   gh run watch --repo vetcoders/codescribe
    ```
-3. Download the live `appcast.xml` feed to a temporary file and verify that its
+3. Download the live `SUFeedURL` feed (`https://codescribe.vetcoders.io/appcast.xml`,
+   configured in `macos/project.yml`) to a temporary file and verify that its
    release identity matches `X.Y.(Z-1)` (and no longer advertises `X.Y.Z`):
    ```sh
-   curl -fsSL https://github.com/vetcoders/codescribe/releases/latest/download/appcast.xml -o /tmp/appcast.xml
+   curl -fsSL https://codescribe.vetcoders.io/appcast.xml -o /tmp/appcast.xml
    python3 scripts/verify-appcast-version.py /tmp/appcast.xml --version X.Y.(Z-1)
    ```
 
@@ -58,18 +60,19 @@ bad version. Clients that already installed `vX.Y.Z` need a release with a
    make release-standard
    make verify-dmg DMG=Codescribe_vX.Y.(Z+1).dmg VARIANT=slim VERSION=X.Y.(Z+1)
    ```
-3. Regenerate and sign `appcast.xml` with `scripts/generate-appcast.sh`:
+3. Regenerate and sign `appcast.xml` with `scripts/generate-appcast.sh` (with
+   `SPARKLE_ED_PRIVATE_KEY` and `SPARKLE_ED_PUBLIC_KEY` already exported in the
+   environment from Keychain/secret store — never paste private key material
+   inline into shell history):
    ```sh
-   SPARKLE_ED_PRIVATE_KEY="<base64-ed25519-private-key>" \
-   SPARKLE_ED_PUBLIC_KEY="<base64-ed25519-public-key>" \
-     scripts/generate-appcast.sh . -o appcast.xml \
-       --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/vX.Y.(Z+1)/"
+   scripts/generate-appcast.sh . -o appcast.xml \
+     --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/vX.Y.(Z+1)/"
    ```
-4. Publish `vX.Y.(Z+1)` and verify both the local signed `appcast.xml` and the
-   live published feed:
+4. Publish `vX.Y.(Z+1)`, wait for the `pages.yml` deployment to complete, and
+   verify both the local signed `appcast.xml` and the live `SUFeedURL` feed:
    ```sh
    python3 scripts/verify-appcast-version.py appcast.xml --version X.Y.(Z+1)
-   curl -fsSL https://github.com/vetcoders/codescribe/releases/latest/download/appcast.xml -o /tmp/appcast-live.xml
+   curl -fsSL https://codescribe.vetcoders.io/appcast.xml -o /tmp/appcast-live.xml
    python3 scripts/verify-appcast-version.py /tmp/appcast-live.xml --version X.Y.(Z+1)
    bash tests/release_appcast_contract.sh
    python3 scripts/tests/test_appcast_version.py
