@@ -1802,14 +1802,12 @@ final class SettingsChromeContractTests: XCTestCase {
     let voiceLab = try XCTUnwrap(sources["VoiceLabPanel.swift"])
     let joined = try joinedSettingsSources()
 
-    for (name, source) in [("WhisperDownloadView", whisper), ("ModelTab", modelTab)] {
-      XCTAssertTrue(source.contains(".tint(CSColor.brandAccent)"), "\(name): progress in brand")
-    }
-    let linearChrome = ".progressViewStyle(.linear)\n          .tint(CSColor.chromeAccent)"
-    XCTAssertFalse(joined.contains(linearChrome), "a progress bar still follows the macOS accent")
-    let largeChrome =
-      ".controlSize(.large)\n            .tint(CSColor.chromeAccent)"
-    XCTAssertFalse(joined.contains(largeChrome), "the download bar still follows the macOS accent")
+    XCTAssertTrue(whisper.contains("CSProgressBar(value: fraction, height: 6)"), "download bar")
+    XCTAssertTrue(modelTab.contains("CSProgressBar(value: fraction)"), "model tab download bar")
+    // The native linear bar paints the macOS accent whatever its tint; only
+    // the indeterminate spinner stays native.
+    XCTAssertFalse(joined.contains("ProgressView(value:"), "a determinate native bar remains")
+    XCTAssertFalse(joined.contains(".progressViewStyle(.linear)"), "a linear native bar remains")
 
     let runtimeBadge = "CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)"
     XCTAssertTrue(modelTab.contains(runtimeBadge))
@@ -1819,7 +1817,8 @@ final class SettingsChromeContractTests: XCTestCase {
 
     let eyebrowFace = ".font(CSFont.mono(10, .semibold))\n      .foregroundStyle("
     XCTAssertFalse(voiceLab.contains(eyebrowFace + "CSColor.chromeAccent)"), "eyebrow in accent")
-    XCTAssertTrue(voiceLab.contains(eyebrowFace + "CSColor.textMuted)"), "eyebrow in muted grey")
+    // Settings keeps its muted rung in `secondaryInk` (the pane bans `textMuted`).
+    XCTAssertTrue(voiceLab.contains(eyebrowFace + "CSColor.secondaryInk)"), "eyebrow in muted ink")
 
     // The chrome accent stays on the controls.
     let slider = "Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)\n          .tint("

@@ -126,7 +126,6 @@ private struct OnboardingStepNote: View {
   }
 }
 
-
 // MARK: - Mode (Basic vs Agentic operating lane)
 
 struct ModeStepView: View {
@@ -1146,9 +1145,7 @@ struct DoneStepView: View {
     TimelineView(.periodic(from: startedAt, by: 0.2)) { context in
       let elapsed = context.date.timeIntervalSince(startedAt)
       HStack(spacing: 10) {
-        ProgressView(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
-          .progressViewStyle(.linear)
-          .tint(CSColor.brandAccent)
+        CSProgressBar(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
         Text(
           String(
             localized: LocalizedStringResource(

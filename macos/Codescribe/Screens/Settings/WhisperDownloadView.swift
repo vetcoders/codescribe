@@ -59,10 +59,7 @@ struct WhisperDownloadView: View {
 
       if store.inFlight {
         if let fraction = store.fraction {
-          ProgressView(value: fraction, total: 1)
-            .progressViewStyle(.linear)
-            .controlSize(.large)
-            .tint(CSColor.brandAccent)
+          CSProgressBar(value: fraction, height: 6)
             .frame(maxWidth: .infinity)
         } else {
           ProgressView().controlSize(.small)

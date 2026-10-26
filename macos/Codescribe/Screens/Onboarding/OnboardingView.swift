@@ -226,9 +226,7 @@ struct OnboardingView: View {
       }
       // Progress is state, so it wears the brand hue rather than the macOS
       // accent, which turns grey under Graphite (Founder, 2026-10-26).
-      ProgressView(value: model.progressFraction)
-        .controlSize(.small)
-        .tint(CSColor.brandAccent)
+      CSProgressBar(value: model.progressFraction)
         .accessibilityLabel("Setup progress")
     }
     .padding(.horizontal, 28)

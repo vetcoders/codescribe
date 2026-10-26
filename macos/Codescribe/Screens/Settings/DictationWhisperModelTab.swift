@@ -252,9 +252,7 @@ struct DictationWhisperModelTab: View {
   private var downloadProgress: some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       if let fraction = model.whisperDownloadFraction {
-        ProgressView(value: fraction)
-          .progressViewStyle(.linear)
-          .tint(CSColor.brandAccent)
+        CSProgressBar(value: fraction)
       } else {
         ProgressView()
           .controlSize(.small)

@@ -485,6 +485,31 @@ struct StaticStatusPill: View {
   }
 }
 
+/// A determinate linear progress bar in the brand accent. The macOS linear
+/// `ProgressView` paints the system accent and ignores `tint`, so progress
+/// that must wear the brand hue (Founder, 2026-10-26) draws its own track:
+/// a faint capsule and the brand capsule over it. Indeterminate progress
+/// keeps the native spinner.
+struct CSProgressBar: View {
+  let value: Double
+  var height: CGFloat = 4
+
+  private var fraction: Double { max(0, min(1, value)) }
+
+  var body: some View {
+    GeometryReader { proxy in
+      ZStack(alignment: .leading) {
+        Capsule().fill(Color.primary.opacity(CSAlpha.line))
+        Capsule().fill(CSColor.brandAccent)
+          .frame(width: fraction * proxy.size.width)
+      }
+    }
+    .frame(height: height)
+    .accessibilityElement(children: .ignore)
+    .accessibilityValue(Text(verbatim: "\(Int((fraction * 100).rounded())) %"))
+  }
+}
+
 /// A status word in the wizard and in Settings. A verified state ("Granted",
 /// "Ready") is a filled check on an olive capsule (Founder, 2026-10-26);
 /// stored identity that nothing has tested ("Saved") is an empty circle on

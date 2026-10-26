@@ -175,13 +175,16 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(steps.contains(".csChoice(selected: isSelected)"))
     XCTAssertTrue(steps.contains("isSelected ? CSColor.brandAccent : CSColor.secondaryInk"))
     XCTAssertFalse(steps.contains(".csAction(prominent: isSelected)"), "a selection is no action")
-    XCTAssertEqual(frame.components(separatedBy: ".tint(CSColor.brandAccent)").count, 2, "progress")
+    XCTAssertTrue(frame.contains("CSProgressBar(value: model.progressFraction)"), "progress")
+    XCTAssertTrue(components.contains("struct CSProgressBar"), "the brand bar lives in the system")
+    XCTAssertFalse(frame.contains("ProgressView("), "the native bar ignores a brand tint")
     XCTAssertTrue(frame.contains(".foregroundStyle(CSColor.brandAccent)"), "the step icon")
     for source in [steps, frame] {
       XCTAssertFalse(source.contains(".tint(CSColor.chromeAccent)"), "no chrome-accent progress")
     }
 
     XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
+    XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
     XCTAssertTrue(components.contains("Capsule().fill(CSColor.oliveLight.opacity(0.14))"))
     XCTAssertFalse(steps.contains("struct OnboardingStatusBadge"), "the wizard owns no badge")
     XCTAssertTrue(steps.contains("mark: state.isGranted ? .verified : .none"), "granted scope")

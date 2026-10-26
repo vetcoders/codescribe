@@ -1021,7 +1021,7 @@ struct VoiceLabPanel: View {
       )
       .textCase(.uppercase)
       .font(CSFont.mono(10, .semibold))
-      .foregroundStyle(CSColor.textMuted)
+      .foregroundStyle(CSColor.secondaryInk)
       TextEditor(text: $editor.canonical)
         .focused($focusedCorrectionID, equals: row.id)
         .font(CSFont.ui(13))
