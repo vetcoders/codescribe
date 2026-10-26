@@ -535,6 +535,12 @@ struct OverlayAgentAudioControls: View {
     return base * controlScale
   }
 
+  /// Keep the flat pair close without pressing the symbols against each other.
+  /// At the usual 30pt hit square, each symbol retreats 4pt from the shared edge.
+  private var flatPairInset: CGFloat {
+    chrome || shared ? 0 : glyphBox * (4.0 / 30.0)
+  }
+
   /// The broadcast row speaks through a left-facing outline megaphone; agent
   /// rows wear the live-speech glyph, a microphone with a waveform (Maciej,
   /// 2026-10-23: "to jest ewidentnie symbol dyktowania live"). The plain
@@ -618,9 +624,8 @@ struct OverlayAgentAudioControls: View {
   }
 
   var body: some View {
-    // Glass rows keep 6pt between chrome circles. A flat Intercom pair uses
-    // 2pt and pins each glyph to the shared edge, so the 30pt hit squares
-    // stay put while the icons are no longer a glyph-width apart.
+    // Glass rows keep 6pt between circles. Flat hit squares stay 2pt apart;
+    // the inner glyph insets leave 10pt between the symbols at the base size.
     HStack(spacing: chrome ? 6 : 2) {
       if showsMicrophone {
         Button(action: onMicrophone) {
@@ -633,6 +638,7 @@ struct OverlayAgentAudioControls: View {
               isActive: Self.microphoneActivityActive(
                 open: open, renderVisible: renderVisible, reduceMotion: reduceMotion)
             )
+            .padding(.trailing, flatPairInset)
             .frame(
               width: glyphBox, height: glyphBox,
               alignment: chrome ? .center : .trailing)
@@ -672,6 +678,7 @@ struct OverlayAgentAudioControls: View {
             OverlayGlyphInk(ink: glyphInk(lit: speakingNow ? palette.agentAccent.color : nil))
           )
           .symbolEffect(.variableColor.iterative, isActive: speakingNow && !reduceMotion)
+          .padding(.leading, flatPairInset)
           .frame(
             width: glyphBox, height: glyphBox,
             alignment: chrome ? .center : .leading)

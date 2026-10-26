@@ -2545,8 +2545,9 @@ private struct OverlayIntercomInstanceCard: View {
         Image(systemName: "bubble.left").csFont(11)
           .overlayFastHint(instance.name, palette: palette)
       }
-      // Mini restores on its name; an open window is already key under the
-      // click, so its name is plain text and part of the drag surface.
+      // Mini keeps its restore button for keyboard and accessibility. Its
+      // pointer events reach the existing header drag surface, which restores
+      // on a click and moves on a drag. Expanded names are part of that surface too.
       if layout.tier != .icon {
         if mini {
           Button {
@@ -2560,6 +2561,7 @@ private struct OverlayIntercomInstanceCard: View {
             hoverColor: palette.primaryText.color
           )
           .accessibilityLabel(String(localized: "Restore fiszka") + ": " + instance.name)
+          .allowsHitTesting(false)
         } else {
           // Glyphs would otherwise take the hit from the drag surface below:
           // the hosting view hands only text and buttons to SwiftUI.
@@ -2638,6 +2640,9 @@ private struct OverlayIntercomInstanceCard: View {
     // whole header, is the one road that already moves these panels.
     .background(
       OverlayIntercomDragHandle(
+        onClick: {
+          if mini { controller.setInstanceMinimized(instanceID, false) }
+        },
         onDrag: { controller.beginInstanceDrag(instanceID) },
         onDragEnded: { controller.finishInstanceDrag() }, cursorHint: false))
     // The title bar carries the control glass of the composer and the name
