@@ -12043,6 +12043,17 @@
         }
       }
     },
+    "No receipt" : {
+      "comment" : "Agent row receipt: on the admitted list, but no reader recorded the copy",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bez pokwitowania"
+          }
+        }
+      }
+    },
     "No recorded word slots for this take." : {
       "extractionState" : "manual",
       "localizations" : {

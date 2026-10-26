@@ -686,11 +686,20 @@ struct OverlayConversationView: View {
   }
 
   /// The follower's receipt for a broadcast it skipped: the agent was off
-  /// channel 0 when this delivery reached it.
+  /// channel 0 when this delivery reached it. Shown, never counted as unread.
   static var skippedBroadcastText: String {
     String(
       localized: "Skipped: off channel 0",
       comment: "Agent row receipt: a broadcast skipped because the agent is off channel 0")
+  }
+
+  /// An agent on the publisher's admitted list with no copy and no receipt
+  /// file at all: its reader was not running, or predates receipts. It was
+  /// sent to, so it counts, unlike a skipped one.
+  static var noReceiptText: String {
+    String(
+      localized: "No receipt",
+      comment: "Agent row receipt: on the admitted list, but no reader recorded the copy")
   }
 
   private func submit() {
@@ -763,15 +772,23 @@ struct OverlayConversationView: View {
       Text("Held")
         .font(.system(size: 10 * textScale))
         .foregroundStyle(palette.mutedText.color)
-    } else if message.showsDeliveryReceipts && !message.recipients.isEmpty {
-      if message.recipients.count > 1 {
-        let readCount = message.recipients.filter { $0.acknowledged }.count
+    } else if message.showsDeliveryReceipts
+      && (!message.recipients.isEmpty || !(message.sentTo ?? []).isEmpty)
+    {
+      // X/Y by the receipts contract (`OverlayConversationMessage.readReceipt`):
+      // Y is the admitted list plus anyone reached outside it, minus the
+      // skipped; a listed agent without any file is "No receipt" and counts.
+      let receipt = message.readReceipt
+      if message.recipients.count > 1 || receipt.denominator > 1 || !receipt.unreceipted.isEmpty {
         Menu {
           ForEach(message.recipients, id: \.owner.id) { recipient in
             Text(verbatim: "\(recipient.owner.name) · \(Self.receiptStatusText(for: recipient))")
           }
+          ForEach(receipt.unreceipted, id: \.self) { reach in
+            Text(verbatim: "\(reach.name) · \(Self.noReceiptText)")
+          }
         } label: {
-          Text("Read \(readCount)/\(message.recipients.count)")
+          Text("Read \(receipt.read)/\(receipt.denominator)")
             .font(.system(size: 10 * textScale))
             .lineLimit(1)
         }

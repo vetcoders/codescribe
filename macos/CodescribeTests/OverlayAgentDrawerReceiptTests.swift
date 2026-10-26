@@ -125,8 +125,9 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
 
   func testSkippedComesOnlyFromTheFollowersReceiptForThatDeliveryAndOwner() throws {
     // Olek (2026-10-17): the current policy must not rewrite an old message's
-    // fate. Skipped needs the follower's broadcast_skipped receipt
-    // (bus-demux `record_broadcast_skipped`) for exactly this delivery and owner.
+    // fate. Skipped needs the follower's `skipped` receipt
+    // (`runtime/receipts/<message_id>/<delivery_id>.skipped.json`) for
+    // exactly this delivery.
     var bus = OverlayChannelDelivery.Bus()
     let session = "agent-channel-0-drawer"
     bus.consume([
@@ -146,17 +147,20 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     let owner = try XCTUnwrap(conversation().owner)
     let coordinate = try XCTUnwrap(bus.receiptCoordinates().first)
     XCTAssertTrue(coordinate.broadcast, "a channel-0 seal is the kind a follower may skip")
-    func skip(_ row: [String: Any]) -> [String: Any] {
+    let messageID = try XCTUnwrap(coordinate.messageID)
+    func skip(_ row: [String: Any], delivery: String) -> [String: Any] {
       row.merging([
-        "schema": "codescribe.broadcast-policy.v1", "kind": "broadcast_skipped",
-        "delivery_id": coordinate.delivery, "origin_channel": "0", "policy": "off",
+        "schema": "codescribe.message-receipt.v1", "kind": "skipped", "message_id": messageID,
+        "delivery_id": delivery, "policy": "off", "at": "2026-10-17T11:00:00Z",
       ]) { _, new in new }
     }
-    bus.observeBroadcastSkip(
-      skip(ownerRow(String(repeating: "b", count: 32), session: "foreign")), owner: owner,
+    bus.observeMessageReceipt(
+      skip(ownerRow(), delivery: String(repeating: "b", count: 24)), owner: owner,
       delivery: coordinate.delivery)
-    XCTAssertEqual(try receipt(conversation()), "Addressed", "a foreign lease's skip marks nothing")
-    bus.observeBroadcastSkip(skip(ownerRow()), owner: owner, delivery: coordinate.delivery)
+    XCTAssertEqual(
+      try receipt(conversation()), "Addressed", "a skip naming another delivery marks nothing")
+    bus.observeMessageReceipt(
+      skip(ownerRow(), delivery: coordinate.delivery), owner: owner, delivery: coordinate.delivery)
     XCTAssertEqual(try receipt(conversation()), "Skipped: off channel 0")
     XCTAssertTrue(bus.receiptCoordinates().isEmpty, "a recorded skip is never polled again")
   }

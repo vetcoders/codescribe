@@ -75,8 +75,8 @@ actor OverlayChannelDeliveryReader {
   /// quarter of the app's busy samples (sample 2026-10-18).
   private var unchangedReceipts: [String: MetadataObjectStamp] = [:]
   private static let unchangedReceiptEntries = 1 << 14
-  /// Coordinates a bus stops polling: per bus, receipt file to the bus its
-  /// acknowledgment names. That bus is read too, its copy of the
+  /// Coordinates a bus stops polling: per bus, owner lease and delivery to
+  /// the bus its `read` receipt names. That bus is read too, its copy of the
   /// delivery settles there, and the conversation merge carries the flag to
   /// every copy. The stamp memo above still left one `fstatat` per foreign
   /// coordinate and tick, plus the enumeration, about 40 % of the reader
@@ -394,43 +394,73 @@ actor OverlayChannelDeliveryReader {
       // system (getattrlist) on every call, six times per coordinate here,
       // and that was the hottest frame of the 500 ms poll (sample 2026-10-14).
       let wakeups = root.path + "/wakeups/"
-      let acknowledgments = root.path + "/acknowledgments/"
-      let skips = root.path + "/broadcast-skipped/"
+      let receipts = root.path + "/runtime/receipts/"
       let busPath = bus.path
       let elsewhere = acknowledgedElsewhere[busPath] ?? [:]
       let coordinates = cursor.projection.receiptCoordinates { owner, delivery in
-        guard let home = elsewhere[owner.leaseID + "/" + delivery + ".json"] else { return false }
+        guard let home = elsewhere[owner.leaseID + "/" + delivery] else { return false }
         return usedPaths.contains(home)
       }
-      for (owner, delivery, accepted, broadcast) in coordinates {
+      for (owner, delivery, accepted, broadcast, messageID, delivered) in coordinates {
         guard Self.isDeliveryID(delivery) else { continue }
-        let file = owner.leaseID + "/" + delivery + ".json"
         if !accepted {
-          observeReceipt(atPath: wakeups + file, busPath: busPath, in: &cursor.projection) {
+          observeReceipt(
+            atPath: wakeups + owner.leaseID + "/" + delivery + ".json", busPath: busPath,
+            in: &cursor.projection
+          ) {
             $0.observeAcceptance($1)
           }
         }
-        // Only an unaccepted channel-0 delivery can have been skipped; a
-        // recorded skip drops the coordinate from the next poll. The
-        // acknowledgment is still read below: a skip file naming another
-        // owner marks nothing and must not hide a real ACK (Lena, 2026-10-17).
-        if broadcast && !accepted {
-          observeReceipt(atPath: skips + file, busPath: busPath, in: &cursor.projection) {
-            $0.observeBroadcastSkip($1, owner: owner, delivery: delivery)
+        // The state of a delivery is its receipt files under the message's
+        // directory (`docs/TRANSCRIPT_BUS.md`, Receipts), keyed by delivery:
+        // `delivered`, then `read`; `skipped` on its own. A plain dictation
+        // seal has no message id, no directory and no receipt. Nothing else
+        // on disk is a second source of that state.
+        guard let messageID else { continue }
+        let file = receipts + messageID + "/" + delivery
+        // Only an undelivered channel-0 copy can have been skipped; a
+        // recorded skip drops the coordinate from the next poll. The read
+        // receipt is still read below: a skip file naming another delivery
+        // marks nothing and must not hide a real read (Lena, 2026-10-17).
+        if broadcast && !delivered {
+          observeReceipt(atPath: file + ".skipped.json", busPath: busPath, in: &cursor.projection) {
+            $0.observeMessageReceipt($1, owner: owner, delivery: delivery)
           }
         }
-        observeReceipt(atPath: acknowledgments + file, busPath: busPath, in: &cursor.projection) {
-          $0.observeAcknowledgment($1, owner: owner, delivery: delivery, busPath: busPath)
-          // The owner's own receipt for this delivery, naming another bus
-          // this reader also polls: that copy settles, this one stops asking.
-          guard $1["lease_id"] as? String == owner.leaseID,
-            $1["delivery_id"] as? String == delivery,
+        if !delivered {
+          observeReceipt(atPath: file + ".delivered.json", busPath: busPath, in: &cursor.projection)
+          {
+            $0.observeMessageReceipt($1, owner: owner, delivery: delivery)
+          }
+        }
+        observeReceipt(atPath: file + ".read.json", busPath: busPath, in: &cursor.projection) {
+          $0.observeMessageReceipt($1, owner: owner, delivery: delivery)
+          // The read receipt for this delivery names the mailbox's bus; when
+          // this reader polls that bus too, the copy settles there and this
+          // one stops asking.
+          guard $1["delivery_id"] as? String == delivery,
             let named = $1["bus"] as? String, named.hasPrefix("/")
           else { return }
           let home = URL(fileURLWithPath: named).standardizedFileURL.path
           if home != busPath, usedPaths.contains(home) {
-            acknowledgedElsewhere[busPath, default: [:]][file] = home
+            acknowledgedElsewhere[busPath, default: [:]][owner.leaseID + "/" + delivery] = home
           }
+        }
+      }
+      // The publisher's admitted list of a channel-0 text, once per message.
+      for messageID in cursor.projection.sentReceiptCoordinates() {
+        observeReceipt(atPath: receipts + messageID + "/sent.json", busPath: busPath, in: &cursor.projection)
+        {
+          $0.observeSentReceipt($1, messageID: messageID)
+        }
+      }
+      // Whether a reply was heard: its playback tickets, listed only when
+      // the message's directory changed.
+      for replyID in cursor.projection.playbackReceiptCoordinates() {
+        observeReceiptDirectory(
+          atPath: receipts + replyID, prefix: "playback.", busPath: busPath, in: &cursor.projection
+        ) {
+          $0.observePlaybackReceipt($1, replyID: replyID)
         }
       }
       buses[bus] = cursor
@@ -611,6 +641,7 @@ actor OverlayChannelDeliveryReader {
       result.captureState = .finished
     }
     result.supportsSpeechPlayback = first.supportsSpeechPlayback || second.supportsSpeechPlayback
+    if result.sentTo == nil { result.sentTo = other.sentTo }
     // The shared capture stream can mirror the same document without the
     // attachment receipt written on recipient buses. Revision/path ordering
     // chooses the prose, but cannot discard independently committed pointers.
@@ -683,6 +714,38 @@ actor OverlayChannelDeliveryReader {
     else { return }
     let revision = projection.revision
     observe(&projection, receipt)
+    if projection.revision != revision {
+      unchangedReceipts.removeValue(forKey: key)
+    } else {
+      if unchangedReceipts.count >= Self.unchangedReceiptEntries { unchangedReceipts.removeAll() }
+      unchangedReceipts[key] = stamp
+    }
+  }
+
+  /// Applies every `<prefix>*.json` receipt of one message directory, listed
+  /// only when the directory's stamp changed since this bus last read it (a
+  /// receipt is written once and never replaced, so a new file is the only
+  /// change). An absent directory costs one `fstatat`. A write in progress
+  /// (`.*.tmp`) does not carry the prefix and is never read.
+  private func observeReceiptDirectory(
+    atPath path: String, prefix: String, busPath: String,
+    in projection: inout OverlayChannelDelivery.Bus,
+    _ observe: (inout OverlayChannelDelivery.Bus, [String: Any]) -> Void
+  ) {
+    receiptProbes &+= 1
+    var metadata = stat()
+    guard fstatat(AT_FDCWD, path, &metadata, 0) == 0 else { return }
+    let stamp = MetadataObjectStamp(metadata)
+    let key = busPath + "\0" + path + "/"
+    guard unchangedReceipts[key] != stamp,
+      let names = try? FileManager.default.contentsOfDirectory(atPath: path)
+    else { return }
+    let revision = projection.revision
+    for name in names.sorted() where name.hasPrefix(prefix) && name.hasSuffix(".json") {
+      guard let receipt = try? object(at: URL(fileURLWithPath: path + "/" + name, isDirectory: false))
+      else { continue }
+      observe(&projection, receipt)
+    }
     if projection.revision != revision {
       unchangedReceipts.removeValue(forKey: key)
     } else {

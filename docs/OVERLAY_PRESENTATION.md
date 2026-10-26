@@ -152,6 +152,32 @@ does not need changes to these owners.
 - Capture-open, follower-alive, queued, acknowledged, unread and speaking are
   different facts. ACK confirms receipt, not task completion. Color, elapsed
   time, a hover animation or an unread badge must not manufacture a receipt.
+- Delivery states come from `runtime/receipts/<message_id>/` only (the
+  contract is the Receipts section of `docs/TRANSCRIPT_BUS.md`): the reader
+  probes `<delivery_id>.delivered.json`, `.read.json` and `.skipped.json` by
+  path for every unsettled copy, the publisher's `sent.json` once per
+  channel-0 text, and lists a reply's directory for `playback.<ticket>.json`
+  only when that directory changed. The ACK and skip markers under
+  `acknowledgments/` and `broadcast-skipped/` are not read by the overlay:
+  one owner per state, no fallback to the previous files. A write in
+  progress (`.*.tmp`) is never read. A delivery without a `message_id` (a
+  plain dictation seal) has no directory and stays "Addressed".
+- "Read X/Y" counts the agents the message was sent to, not its copies.
+  Y is the contract's denominator (`OverlayConversationMessage.readReceipt`):
+  the admitted list (`target.recipients` on the copy, outranked by
+  `sent.json`) plus every agent delivered to or read outside it, minus every
+  agent whose copy was skipped. A skipped agent is shown as "Skipped: off
+  channel 0" and is not an unread one: a skip is final, so it never counts.
+  An admitted agent with no copy and no file is "No receipt" and counts: its
+  reader was not running or predates receipts. Without a list the copies are
+  the list, today's denominator; a channel take's admitted owners are its
+  `recipients`. **One contract, two implementations:** the overlay cannot
+  call the helper, so it computes the same formula a second time, from the
+  same files; both implementations are pinned to the model directories
+  under `scripts/tests/fixtures/receipts/<case>/` with their `expected.json`,
+  every new state goes to those directories first and then to both, and the
+  overlay computes only the formula: no roster, no policies, no reach of its
+  own. `delivered` with `wake: null` is history the helper backfilled.
 - Scale text through the existing text-scale projection, preserve Reduce
   Motion/Reduce Transparency, tooltips, keyboard focus and accessibility IDs.
   Change a symbol's font separately from the button's hit area.
