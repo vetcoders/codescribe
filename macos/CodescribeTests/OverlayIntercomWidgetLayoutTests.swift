@@ -13,15 +13,17 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = OverlayState()
-    let owner = try XCTUnwrap(OverlayConversationOwner(row: [
-      "provider": "codex", "provider_session_id": "chrome-fixture",
-      "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
-    ]))
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "chrome-fixture",
+        "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
+      ]))
     let conversation = OverlayConversation(
       id: owner.id, channel: "3", name: "Agent", owner: owner, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.applyChannelRoster([
-      .init(channel: "3", audience: "Agent", provider: owner.provider,
+      .init(
+        channel: "3", audience: "Agent", provider: owner.provider,
         providerSessionId: owner.providerSessionID, open: false, loud: false,
         autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
     ])
@@ -32,15 +34,21 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let identity = OverlayIntercomCardIdentity(digit: "3", conversation: conversation)
     for header in [true, false] {
       let height: CGFloat = header ? Layout.controlHeight(scale: 1) : 400
-      let content: AnyView = header
+      let content: AnyView =
+        header
         ? AnyView(controller.offscreenHeader(width: 500))
-        : AnyView(controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
+        : AnyView(
+          controller.offscreenCard(identity, width: 500, height: height, scale: 1, expanded: true))
       let host = NSHostingView(
         rootView: content.environment(\.csTextScale, 1).symbolEffectsRemoved()
-          .transaction { $0.animation = nil; $0.disablesAnimations = true })
+          .transaction {
+            $0.animation = nil
+            $0.disablesAnimations = true
+          })
       host.sizingOptions = []
       host.frame = NSRect(x: 0, y: 0, width: 500, height: height)
-      let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
       defer { window.close() }
@@ -50,14 +58,18 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let top = host.isFlipped ? host.bounds.minY + 7 : host.bounds.maxY - 7
       let bottom = host.isFlipped ? host.bounds.maxY - 7 : host.bounds.minY + 7
       func resizeViews(_ view: NSView) -> [NSView] {
-        let own = String(describing: type(of: view)).contains("OverlayIntercomResizeView") ? [view] : []
+        let own =
+          String(describing: type(of: view)).contains("OverlayIntercomResizeView") ? [view] : []
         return own + view.subviews.flatMap { resizeViews($0) }
       }
       let nativeHandles = resizeViews(host)
-      print("chrome-hit-witness header=\(header) bounds=\(host.bounds) handles=\(nativeHandles.map { $0.convert($0.bounds, to: host) })")
+      print(
+        "chrome-hit-witness header=\(header) bounds=\(host.bounds) handles=\(nativeHandles.map { $0.convert($0.bounds, to: host) })"
+      )
       func resizeAt(_ x: CGFloat, _ y: CGFloat) -> Bool {
         let target = host.hitTest(host.convert(NSPoint(x: x, y: y), to: host.superview))
-        return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") } ?? false
+        return target.map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") }
+          ?? false
       }
       XCTAssertFalse(resizeAt(493, top), "Main header and expanded arrow never resize")
       for x in [CGFloat(7), 493] {
@@ -159,13 +171,18 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       XCTAssertFalse(
         try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 220 * factor))
           .showsComposer, "The former admission height is too early for the complete input")
-      let height = CGFloat(try XCTUnwrap((100...2000).first {
-        metrics.compactPreviewLayout(width: width, cardHeight: CGFloat($0))?.showsComposer == true
-      }))
+      let height = CGFloat(
+        try XCTUnwrap(
+          (100...2000).first {
+            metrics.compactPreviewLayout(width: width, cardHeight: CGFloat($0))?.showsComposer
+              == true
+          }))
       for growth in [CGFloat(1), 1.5, 2, 4] {
         XCTAssertTrue(
-          try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
-            .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
+          try XCTUnwrap(
+            metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth)
+          )
+          .showsComposer, "Growing the card must never withdraw its input (scale=\(scale))")
       }
     }
   }
@@ -301,15 +318,19 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
       let attachmentStore = ConversationAttachmentPointer.configDirectory
         .appendingPathComponent("attachments", isDirectory: true)
-      let attachmentURL = attachmentStore.appendingPathComponent("review-attachment-\(UUID().uuidString).txt")
+      let attachmentURL = attachmentStore.appendingPathComponent(
+        "review-attachment-\(UUID().uuidString).txt")
       if supplementaryDraft {
-        try FileManager.default.createDirectory(at: attachmentStore, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+          at: attachmentStore, withIntermediateDirectories: true)
         try Data("Local review attachment".utf8).write(to: attachmentURL)
         retainedDraft = ConversationDraft.compose(
           text: "Review draft", attachments: [attachmentURL.path])
         XCTAssertEqual(ConversationDraft.split(retainedDraft).attachments.count, 1)
         state.conversationReplies[conversation.id] = OverlayUserReplyReference(
-          row: ["message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply"])
+          row: [
+            "message_id": "fixture-parent", "author": "Agent", "text": "Context for this reply",
+          ])
       }
       defer { if supplementaryDraft { try? FileManager.default.removeItem(at: attachmentURL) } }
       state.conversationDrafts[conversation.id] = retainedDraft
@@ -454,7 +475,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           let minimum = metrics.minimumWidth(paging: paging)
           XCTAssertTrue(metrics.content(width: minimum, paging: paging).showsCount)
           XCTAssertEqual(metrics.audioWidth, 2 * Layout.controlHeight(scale: scale) + 6)
-          let controls = metrics.groupWidth + metrics.audioWidth + metrics.countWidth
+          let controls =
+            metrics.groupWidth + metrics.audioWidth + metrics.countWidth
             + 2 * IntercomHeaderContent(showsCount: true).horizontalInset
             + IntercomHeaderMetrics.spacerMinimum
             + CGFloat(paging ? 5 : 3) * IntercomHeaderMetrics.spacing
@@ -470,7 +492,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let empty = IntercomHeaderMetrics(agentCount: 1, scale: scale)
       let busy = IntercomHeaderMetrics(agentCount: 25, scale: scale)
       XCTAssertGreaterThan(busy.countWidth, empty.countWidth)
-      XCTAssertGreaterThan(busy.width(showsCount: true, paging: false),
+      XCTAssertGreaterThan(
+        busy.width(showsCount: true, paging: false),
         empty.width(showsCount: true, paging: false))
       XCTAssertGreaterThan(busy.minimumWidth(paging: true), busy.minimumWidth(paging: false))
       XCTAssertTrue(busy.content(width: 2000, paging: false).showsCount)
@@ -664,7 +687,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       for height in [metrics.iconSide, 2 * metrics.iconSide, 500] {
         XCTAssertEqual(metrics.tier(width: width, cardHeight: height), .name)
       }
-      XCTAssertEqual(metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
+      XCTAssertEqual(
+        metrics.tier(width: metrics.actionsWidth, cardHeight: metrics.iconSide), .actions)
       XCTAssertEqual(metrics.tier(width: metrics.iconSide, cardHeight: 500), .icon)
     }
   }

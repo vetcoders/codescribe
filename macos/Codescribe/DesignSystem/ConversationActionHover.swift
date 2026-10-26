@@ -39,8 +39,9 @@ extension View {
     restingColor: Color, hoverColor: Color, hoverBackground: Color = .clear,
     restingOpacity: Double = 1
   ) -> some View {
-    modifier(ConversationActionHover(
-      restingColor: restingColor, hoverColor: hoverColor,
-      hoverBackground: hoverBackground, restingOpacity: restingOpacity))
+    modifier(
+      ConversationActionHover(
+        restingColor: restingColor, hoverColor: hoverColor,
+        hoverBackground: hoverBackground, restingOpacity: restingOpacity))
   }
 }

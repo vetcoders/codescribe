@@ -72,7 +72,8 @@ struct OverlayConversationComposer: View {
   private var editorViewportHeight: CGFloat {
     ComposerTextLayout.resolve(
       contentHeight: editorHeight,
-      lineHeight: ComposerTextLayout.lineHeight(fontSize: ComposerControlMetrics.textSize * textScale),
+      lineHeight: ComposerTextLayout.lineHeight(
+        fontSize: ComposerControlMetrics.textSize * textScale),
       maximumHeight: maximumEditorHeight
         ?? ComposerControlMetrics.conversationEditorMaximumHeight * textScale
     ).height
@@ -123,11 +124,16 @@ struct OverlayConversationComposer: View {
           ScrollView(.vertical, showsIndicators: false) {
             accessoryContent
               .fixedSize(horizontal: false, vertical: true)
-              .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+              .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+              } action: { height in
                 if abs(accessoryHeight - height) > 0.5 { accessoryHeight = height }
               }
           }
-          .frame(height: min(accessoryHeight, ComposerControlMetrics.intercomSupplementaryHeight(scale: textScale)))
+          .frame(
+            height: min(
+              accessoryHeight, ComposerControlMetrics.intercomSupplementaryHeight(scale: textScale))
+          )
           .csAutohidingScrollers()
         } else {
           accessoryContent
@@ -138,7 +144,9 @@ struct OverlayConversationComposer: View {
     .padding(
       .horizontal,
       isCompact
-        ? ComposerControlMetrics.intercomHorizontalPadding : ComposerControlMetrics.horizontalPadding)
+        ? ComposerControlMetrics.intercomHorizontalPadding
+        : ComposerControlMetrics.horizontalPadding
+    )
     .padding(
       .vertical,
       isCompact
@@ -241,7 +249,8 @@ struct OverlayConversationComposer: View {
     .font(.system(size: controlGlyphSize, weight: .semibold))
     .frame(
       width: ComposerControlMetrics.hitTargetSize,
-      height: ComposerControlMetrics.hitTargetSize)
+      height: ComposerControlMetrics.hitTargetSize
+    )
     .contentShape(Circle())
     .conversationActionHover(
       restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
@@ -279,7 +288,8 @@ struct OverlayConversationComposer: View {
   private var draftSyncActive: Bool { draftSyncArmed || draftSyncNames.count > 1 }
 
   private var draftSyncAccessibilityValue: String {
-    let status = draftSyncArmed
+    let status =
+      draftSyncArmed
       ? String(localized: "Sync armed")
       : draftSyncNames.count > 1 ? String(localized: "Sync linked") : String(localized: "Sync off")
     guard !draftSyncNames.isEmpty else { return status }
@@ -350,7 +360,8 @@ struct OverlayConversationComposer: View {
           }
           .font(.system(size: controlGlyphSize, weight: .semibold))
           .frame(
-            width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+            width: ComposerControlMetrics.hitTargetSize,
+            height: ComposerControlMetrics.hitTargetSize
           )
           .contentShape(Circle()).buttonStyle(.plain)
           .conversationActionHover(
@@ -368,7 +379,8 @@ struct OverlayConversationComposer: View {
           .labelStyle(.iconOnly)
           .font(.system(size: controlGlyphSize, weight: .semibold))
           .frame(
-            width: ComposerControlMetrics.hitTargetSize, height: ComposerControlMetrics.hitTargetSize
+            width: ComposerControlMetrics.hitTargetSize,
+            height: ComposerControlMetrics.hitTargetSize
           )
           .contentShape(Circle())
           .buttonStyle(.plain)
@@ -559,8 +571,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     // coordinator keeps it pinned across "Show scroll bars" changes.
     context.coordinator.scrollerPin.attach(to: scroll)
     scroll.borderType = .noBorder
-    scroll.maximumEditorHeight = maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize / ComposerControlMetrics.textSize
+    scroll.maximumEditorHeight =
+      maximumEditorHeight
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
+      / ComposerControlMetrics.textSize
     let editor = MessageTextView()
     editor.wantsLayer = true
     editor.canDrawConcurrently = false
@@ -606,7 +620,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     context.coordinator.parent = self
     (scroll as? MessageScrollView)?.maximumEditorHeight =
       maximumEditorHeight
-      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize / ComposerControlMetrics.textSize
+      ?? ComposerControlMetrics.conversationEditorMaximumHeight * fontSize
+      / ComposerControlMetrics.textSize
     (scroll as? MessageScrollView)?.onHeightChange = { context.coordinator.updateHeight($0) }
     guard let editor = scroll.documentView as? MessageTextView else { return }
     let font = NSFont.systemFont(ofSize: fontSize)

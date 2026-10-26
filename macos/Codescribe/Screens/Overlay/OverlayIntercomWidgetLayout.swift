@@ -183,22 +183,26 @@ struct IntercomContentMetrics: Equatable {
     let lineHeight = ceil(NSLayoutManager().defaultLineHeight(for: font))
     let contextFont = NSFont.systemFont(ofSize: 10 * scale)
     let metadataLine = ceil(NSLayoutManager().defaultLineHeight(for: contextFont))
-    let available = cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    let available =
+      cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
-    let minimum = lineHeight + metadataLine
+    let minimum =
+      lineHeight + metadataLine
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
     let editorHeightLimit = 28 * scale
     // The shared composer owns the stacked editor/action-row measurements.
     // Only ConversationView's external insets belong to this admission gate.
-    let composerHeight = ComposerControlMetrics.intercomComposerHeight(
-      editorHeight: editorHeightLimit, scale: scale) + 6 + 8
+    let composerHeight =
+      ComposerControlMetrics.intercomComposerHeight(
+        editorHeight: editorHeightLimit, scale: scale) + 6 + 8
     let composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
     // The full renderer caps its bubbles more narrowly than the passive preview.
     // Preserve a readable text measure inside the bubble's own 12pt padding too.
-    let readableConversationWidth = OverlayConversationView.bubbleCap(
-      contentWidth: width, textScale: scale) - 2 * 12
+    let readableConversationWidth =
+      OverlayConversationView.bubbleCap(
+        contentWidth: width, textScale: scale) - 2 * 12
     return IntercomCompactPreviewLayout(
       height: available,
       showsComposer: width >= composerWidth

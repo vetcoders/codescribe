@@ -27,11 +27,15 @@ final class OverlayComposerGeometryAcceptanceTests: XCTestCase {
         }
         .padding(12).background(palette.desktopBackground.color)
         .symbolEffectsRemoved()
-        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+        .transaction {
+          $0.animation = nil
+          $0.disablesAnimations = true
+        }
         .environment(\.colorScheme, dark ? .dark : .light))
       host.sizingOptions = []
       host.frame = NSRect(x: 0, y: 0, width: 360, height: 100)
-      let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+      let window = NSWindow(
+        contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
       window.isReleasedWhenClosed = false
       window.contentView = host
       defer { window.close() }

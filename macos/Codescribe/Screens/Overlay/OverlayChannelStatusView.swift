@@ -668,7 +668,9 @@ struct OverlayAgentAudioControls: View {
         )
         .tint(Self.litGlass(speakingNow ? palette.agentAccent.color : nil))
         .disabled(!playbackEnabled || muted == nil)
-        .overlayFastHint(playbackEnabled ? playbackLabel : speakerAccessibilityHint, palette: palette)
+        .overlayFastHint(
+          playbackEnabled ? playbackLabel : speakerAccessibilityHint, palette: palette
+        )
         .accessibilityLabel(Text(verbatim: playbackLabel))
         .accessibilityValue(Text(verbatim: playbackValue))
         .accessibilityHint(Text(verbatim: speakerAccessibilityHint))
@@ -945,7 +947,8 @@ struct OverlayReceptionMarks: View {
     HStack(spacing: 3) {
       mark(
         symbol: policy.statusSymbol, lit: policy.member, litColor: palette.agentAccent.color,
-        hint: policy.member ? String(localized: "Leave channel 0") : String(localized: "Join channel 0"),
+        hint: policy.member
+          ? String(localized: "Leave channel 0") : String(localized: "Join channel 0"),
         help: policy.statusHelp, identifier: "overlay-broadcast-policy-\(channel.channel)"
       ) {
         apply { $0.member.toggle() }

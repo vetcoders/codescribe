@@ -95,7 +95,8 @@ struct Composer: View {
             restingColor: store.pendingAttachments.isEmpty
               ? CSColor.textTertiary.opacity(ComposerControlMetrics.restingActionOpacity)
               : CSColor.chromeAccent,
-            hoverColor: store.pendingAttachments.isEmpty ? Color.primary : CSColor.chromeAccent)
+            hoverColor: store.pendingAttachments.isEmpty ? Color.primary : CSColor.chromeAccent
+          )
           .help("Attach")
           .accessibilityLabel(Text("Attach an image (PNG, JPEG, GIF, WebP)"))
 
@@ -123,7 +124,8 @@ struct Composer: View {
             restingColor: primaryAction.isSend
               ? CSColor.textTertiary.opacity(ComposerControlMetrics.restingActionOpacity)
               : CSColor.chromeAccent,
-            hoverColor: primaryAction.isSend ? Color.primary : CSColor.chromeAccent)
+            hoverColor: primaryAction.isSend ? Color.primary : CSColor.chromeAccent
+          )
           .disabled(!primaryActionEnabled)
           .help(primaryAction.accessibilityLabel)
           .accessibilityIdentifier(ComposerActionAccessibility.identifier)
@@ -445,7 +447,8 @@ struct Composer: View {
     }
     .conversationActionHover(
       restingColor: CSColor.textTertiary, hoverColor: Color.primary,
-      restingOpacity: micState == .recording ? 1 : ComposerControlMetrics.restingActionOpacity)
+      restingOpacity: micState == .recording ? 1 : ComposerControlMetrics.restingActionOpacity
+    )
     .disabled(!micState.isEnabled)
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
