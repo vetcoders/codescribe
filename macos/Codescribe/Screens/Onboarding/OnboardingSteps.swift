@@ -57,9 +57,9 @@ struct InterfaceLanguageStepView: View {
 // The heading, the category label and the reading column belong to the frame
 // in OnboardingView.swift; these components fill that column.
 
-/// A single radio-style selectable card: title + optional subtitle, with a
-/// Brand-colored checkmark and the prominent card surface when selected.
-/// Reused by every choice step.
+/// A single radio-style selectable card: title + optional subtitle, with an
+/// olive checkmark (Founder, 2026-10-26) and the prominent card surface when
+/// selected. Reused by every choice step.
 struct OnboardingChoiceCard: View {
   let title: String
   let subtitle: String?
@@ -70,7 +70,7 @@ struct OnboardingChoiceCard: View {
     Button(action: action) {
       HStack(alignment: .top, spacing: 12) {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-          .foregroundStyle(isSelected ? CSColor.terracottaText : CSColor.secondaryInk)
+          .foregroundStyle(isSelected ? CSColor.oliveLight : CSColor.secondaryInk)
         VStack(alignment: .leading, spacing: 3) {
           Text(title).font(CSFont.ui(13, .semibold))
           if let subtitle {
@@ -632,9 +632,6 @@ struct ApiKeyStepView: View {
   private var accountField: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
-        Circle()
-          .fill(accountStatusColor.opacity(0.85))
-          .frame(width: 7, height: 7)
         Text(
           String(
             localized: LocalizedStringResource(
@@ -644,9 +641,7 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        Text(model.selectedProviderAccountStatus)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(accountStatusColor)
+        statusBadge(model.selectedProviderAccountStatus, saved: accountSaved)
         Button(accountActionTitle, action: openProviderSettings)
           .csAction()
           .disabled(model.providerMutationPending)
@@ -664,9 +659,6 @@ struct ApiKeyStepView: View {
   private var keyField: some View {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
-        Circle()
-          .fill(keyStatusColor.opacity(0.85))
-          .frame(width: 7, height: 7)
         Text(
           String(
             localized: LocalizedStringResource(
@@ -676,9 +668,7 @@ struct ApiKeyStepView: View {
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(CSColor.textBody)
         Spacer(minLength: 0)
-        Text(model.selectedProviderKeyStatus)
-          .font(CSFont.ui(11, .medium))
-          .foregroundStyle(keyStatusColor)
+        statusBadge(model.selectedProviderKeyStatus, saved: keySaved)
         Button(keyActionTitle) {
           model.beginApiKeyEditing()
           keyFocused = true
@@ -770,9 +760,37 @@ struct ApiKeyStepView: View {
   }
 
   /// These rows report stored identity only. The existing Settings lane Test
-  /// measures service acceptance; setup must not paint presence as success.
-  private var accountStatusColor: Color { CSColor.secondaryInk }
-  private var keyStatusColor: Color { CSColor.secondaryInk }
+  /// measures service acceptance, so a stored account or key is "saved", never
+  /// verified: it gets the soft olive accent of the welcome wizard (Founder,
+  /// 2026-10-26, a deliberate exception to the grey "saved" of 99758557a; the
+  /// filled check stays reserved for verified states). Every other state,
+  /// "Optional" included, is plain ink.
+  private var accountSaved: Bool {
+    model.selectedProviderAccountConnected && !model.providerAccessPending
+      && model.providerAccessError == nil && model.selectedProviderAccountError == nil
+  }
+
+  private var keySaved: Bool {
+    model.selectedProviderKeySet && !model.providerAccessPending
+      && model.providerAccessError == nil
+  }
+
+  private func statusBadge(_ text: String, saved: Bool) -> some View {
+    HStack(spacing: 5) {
+      if saved {
+        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
+      }
+      Text(text).font(CSFont.ui(11, .medium))
+    }
+    .foregroundStyle(saved ? CSColor.oliveLight : CSColor.secondaryInk)
+    .padding(.horizontal, saved ? 8 : 0)
+    .padding(.vertical, saved ? 3 : 0)
+    .background {
+      if saved {
+        Capsule().fill(CSColor.oliveLight.opacity(0.12))
+      }
+    }
+  }
 
   private var accountActionTitle: String {
     if model.selectedProviderAccountConnected {
