@@ -108,6 +108,25 @@ final class OverlayComposerSyncTests: XCTestCase {
     if !sendEnabled { XCTAssertLessThan(peaks[0], min(peaks[1], peaks[2]) * 0.6) }
   }
 
+  func testForwardSyncJoinKeepsDifferentPrivateDraftsUnchanged() throws {
+    let (state, agents) = try fixture(count: 2)
+    state.setConversationDraft("Private source", for: agents[0].id)
+    state.setConversationDraft("Private target", for: agents[1].id)
+
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertEqual(state.conversationDraft(for: agents[0].id), "Private source")
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), "Private target")
+  }
+
+  func testForwardSyncJoinNeverCopiesExistingProseIntoEmptyTarget() throws {
+    let (state, agents) = try fixture(count: 2)
+    state.setConversationDraft("Private source", for: agents[0].id)
+
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertEqual(state.conversationDraft(for: agents[0].id), "Private source")
+    XCTAssertEqual(state.conversationDraft(for: agents[1].id), "")
+  }
+
   func testTypedPublisherCarriesOnlyExplicitOwnerCoordinatesAsSyncContext() throws {
     let (_, agents) = try fixture(count: 2)
     let owner = try XCTUnwrap(agents[0].owner)
