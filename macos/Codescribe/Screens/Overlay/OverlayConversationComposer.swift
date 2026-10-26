@@ -54,6 +54,7 @@ struct OverlayConversationComposer: View {
   var onStopDraftSync: (() -> Void)? = nil
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var pasteError: String?
+  @State private var accessoryHeight: CGFloat = 0
   @State private var editorHeight: CGFloat = 28
 
   /// Only the inline card supplies a height budget. Full conversation windows
@@ -81,7 +82,7 @@ struct OverlayConversationComposer: View {
     VStack(alignment: .leading, spacing: 4) {
       composerContent
         .modifier(OverlayControlGlass(cornerRadius: CSRadius.composer))
-      if let pasteError {
+      if let pasteError, !isCompact {
         Text(verbatim: pasteError)
           .font(.system(size: 10 * textScale))
           .foregroundStyle(palette.errorStatus.color)
@@ -115,12 +116,18 @@ struct OverlayConversationComposer: View {
 
   private var composerContent: some View {
     VStack(alignment: .leading, spacing: isCompact ? ComposerControlMetrics.intercomSpacing : 6) {
-      if replySelection != nil || !pendingCaptureAttachments.isEmpty || !attachments.isEmpty {
+      if replySelection != nil || !pendingCaptureAttachments.isEmpty || !attachments.isEmpty
+        || pasteError != nil
+      {
         if isCompact {
           ScrollView(.vertical, showsIndicators: false) {
             accessoryContent
+              .fixedSize(horizontal: false, vertical: true)
+              .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                if abs(accessoryHeight - height) > 0.5 { accessoryHeight = height }
+              }
           }
-          .frame(height: ComposerControlMetrics.intercomSupplementaryHeight(scale: textScale))
+          .frame(height: min(accessoryHeight, ComposerControlMetrics.intercomSupplementaryHeight(scale: textScale)))
           .csAutohidingScrollers()
         } else {
           accessoryContent
@@ -207,6 +214,12 @@ struct OverlayConversationComposer: View {
         // field keeps its text cursor, since editable text never inherits
         // menu ownership.
         .background { OverlayMenuCursorRegion() }
+      }
+      if let pasteError, isCompact {
+        Text(verbatim: pasteError)
+          .font(.system(size: 10 * textScale))
+          .foregroundStyle(palette.errorStatus.color)
+          .accessibilityIdentifier("overlay-conversation-paste-error")
       }
     }
   }
