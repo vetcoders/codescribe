@@ -553,10 +553,43 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
 # dies on every rebuild. An explicit "-" selects it for isolated test builds;
 # otherwise prefer a real identity whenever the caller did not specify one.
+# The keychain that holds the identity. Over SSH the login keychain is locked
+# and codesign without --keychain searches only the user search list (login),
+# so a headless build fails with errSecInternalComponent even when the same
+# certificate sits in an unlocked build keychain. Prefer the build keychain
+# (pensieve's by default) when it exists and is unlocked in this security
+# session; the caller unlocks it (`unlock_build_keychain`), this script only
+# checks. Name its identity by SHA-1 hash: the same certificate may also live
+# in login, and a name would be ambiguous across keychains.
+SIGN_KEYCHAIN="${CODESCRIBE_CODESIGN_KEYCHAIN:-}"
+if [ -z "$SIGN_KEYCHAIN" ]; then
+  BUILD_KEYCHAIN="${PENSIEVE_BUILD_KEYCHAIN:-$HOME/Library/Keychains/pensieve-build.keychain-db}"
+  if [ -f "$BUILD_KEYCHAIN" ] && security show-keychain-info "$BUILD_KEYCHAIN" >/dev/null 2>&1; then
+    SIGN_KEYCHAIN="$BUILD_KEYCHAIN"
+  fi
+fi
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
+if [ -z "$SIGN_ID" ] && [ -n "$SIGN_KEYCHAIN" ]; then
+  SIGN_ID="$(security find-identity -v -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
+  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)"
+  # A build keychain without a usable identity does not select itself.
+  [ -z "$SIGN_ID" ] && SIGN_KEYCHAIN=""
+fi
 if [ -z "$SIGN_ID" ]; then
   SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
   [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+fi
+# Every real-identity codesign below goes through here so the keychain choice
+# is made once. Ad-hoc signing never needs a keychain.
+sign() {
+  if [ -n "$SIGN_KEYCHAIN" ]; then
+    codesign --keychain "$SIGN_KEYCHAIN" "$@"
+  else
+    codesign "$@"
+  fi
+}
+if [ -n "$SIGN_KEYCHAIN" ]; then
+  echo "    signing from keychain: $SIGN_KEYCHAIN"
 fi
 # Entitlements for the hardened-runtime signing path below. Same default path
 # as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from
@@ -568,13 +601,13 @@ ENTITLEMENTS_PATH="${CODESCRIBE_ENTITLEMENTS:-$REPO_ROOT/scripts/entitlements.pl
 # on every executable in the bundle); ad-hoc stays plain since ad-hoc +
 # hardened runtime breaks local TCC (Accessibility/Input Monitoring) testing.
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+  sign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
-  codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
@@ -584,7 +617,7 @@ python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRI
 # with the outer signature without signing that child a second time (no
 # --deep here by design: the nested code is already sealed above).
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
 fi

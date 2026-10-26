@@ -67,6 +67,22 @@ manual re-sign. The ad-hoc path (`CODESCRIBE_CODESIGN_IDENTITY=-`) stays
 plain: ad-hoc plus hardened runtime breaks local TCC grants and is not meant
 to be notarized.
 
+On a build host reached over SSH the login keychain is locked, and `codesign`
+without `--keychain` searches only the user search list, so a headless
+`make app PROFILE=local-release` used to fail on the publisher's signature
+with `errSecInternalComponent` even when the same certificate sat in an
+unlocked build keychain. `scripts/build-app.sh` therefore signs from the build
+keychain when one is available: `CODESCRIBE_CODESIGN_KEYCHAIN` names it
+explicitly; otherwise `PENSIEVE_BUILD_KEYCHAIN` or
+`~/Library/Keychains/pensieve-build.keychain-db` is used when the file exists
+and is unlocked in the current security session (the caller unlocks it, for
+example with pensieve's `unlock_build_keychain`, in the same session). The
+identity is then named by its SHA-1 hash from that keychain, because the same
+certificate may also live in login where a name would be ambiguous, and every
+real-identity `codesign` call receives `--keychain`. With no unlocked build
+keychain, or with `CODESCRIBE_CODESIGN_IDENTITY` set, the resolution above is
+unchanged; ad-hoc signing never involves a keychain.
+
 For an isolated build/test bundle on a host whose signing keychain is locked,
 `CODESCRIBE_CODESIGN_IDENTITY=- make app` explicitly selects ad-hoc signing;
 the app build script preserves that choice instead of selecting a listed
