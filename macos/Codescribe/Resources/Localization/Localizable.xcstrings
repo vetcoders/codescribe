@@ -7014,17 +7014,6 @@
         }
       }
     },
-    "Default location: %@" : {
-      "comment" : "Default model storage folder; the placeholder is a directory path",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domyślne miejsce: %@"
-          }
-        }
-      }
-    },
     "Defaults" : {
       "localizations" : {
         "pl" : {
@@ -9193,23 +9182,6 @@
         }
       }
     },
-    "Hugging Face · %@ · %@" : {
-      "comment" : "Download source: first placeholder is a repository id, second is approximate disk size",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Hugging Face · %1$@ · %2$@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Hugging Face · %@ · %@"
-          }
-        }
-      }
-    },
     "Hybrid (both)" : {
       "comment" : "Hotkey preset name: hold and toggle",
       "localizations" : {
@@ -11030,6 +11002,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Szczegóły modelu"
+          }
+        }
+      }
+    },
+    "Model location on this Mac" : {
+      "comment" : "Whisper model card: field label for the folder or file of the model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokalizacja modelu na komputerze"
           }
         }
       }
@@ -14481,13 +14464,13 @@
         }
       }
     },
-    "Ready to go ✓" : {
+    "Ready to go" : {
       "comment" : "Agent setup status below the client cards",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gotowe do pracy ✓"
+            "value" : "Gotowe do pracy"
           }
         }
       }
@@ -17277,6 +17260,17 @@
         }
       }
     },
+    "Size" : {
+      "comment" : "Whisper model card: field label for the approximate download size",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmiar"
+          }
+        }
+      }
+    },
     "Size of the indicator next to the cursor" : {
       "localizations" : {
         "pl" : {
@@ -17458,7 +17452,7 @@
       }
     },
     "Source" : {
-      "comment" : "Tool permissions: which tool source is listed",
+      "comment" : "Tool permissions: which tool source is listed\nWhisper model card: field label for where the model downloads from",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

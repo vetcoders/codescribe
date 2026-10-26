@@ -117,4 +117,37 @@ final class OnboardingPatternTests: XCTestCase {
       XCTAssertNil(polish[retired], "retired key still in the catalog: \(retired)")
     }
   }
+
+  /// D1 (2026-10-26): the wizard speaks in one type family. Status labels,
+  /// field labels and sentences use the system face in the E3 roles; the
+  /// success mark is a glyph, not a character inside the sentence.
+  func testWizardUsesOneTypeFamilyAndAGlyphForReady() throws {
+    let sources = try onboardingSources()
+    let steps = try XCTUnwrap(sources["OnboardingSteps.swift"])
+    let whisperURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Settings/WhisperDownloadView.swift")
+    let whisper = try String(contentsOf: whisperURL, encoding: .utf8)
+    let checked = [("OnboardingSteps.swift", steps), ("WhisperDownloadView.swift", whisper)]
+    for (name, source) in checked {
+      XCTAssertFalse(source.contains("CSFont.mono("), "\(name) still sets a mono face")
+      XCTAssertFalse(source.contains(".font(.caption"), "\(name) still uses the caption style")
+    }
+    XCTAssertFalse(steps.contains("\"Ready to go ✓\""), "the check mark left the sentence")
+    XCTAssertTrue(steps.contains("\"Ready to go\""))
+    XCTAssertTrue(whisper.contains(".truncationMode(.middle)"), "the model path keeps both ends")
+
+    let polish = try polishCatalog()
+    XCTAssertNil(polish["Ready to go ✓"], "retired key still in the catalog")
+    let expected: [String: String] = [
+      "Ready to go": "Gotowe do pracy",
+      "Source": "Źródło",
+      "Size": "Rozmiar",
+      "Model location on this Mac": "Lokalizacja modelu na komputerze",
+    ]
+    for (key, value) in expected {
+      XCTAssertEqual(polish[key], value, key)
+    }
+  }
 }
