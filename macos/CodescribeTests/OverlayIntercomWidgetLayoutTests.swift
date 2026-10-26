@@ -13,10 +13,6 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let state = OverlayState()
-    let controller = OverlayIntercomWidgetController(
-      state: state, textScale: TextScaleController(key: suite),
-      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
-    defer { controller.invalidate() }
     let owner = try XCTUnwrap(OverlayConversationOwner(row: [
       "provider": "codex", "provider_session_id": "chrome-fixture",
       "lease_id": String(repeating: "c", count: 32), "channel": "3", "name": "Agent",
@@ -24,6 +20,15 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let conversation = OverlayConversation(
       id: owner.id, channel: "3", name: "Agent", owner: owner, messages: [])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
+    state.applyChannelRoster([
+      .init(channel: "3", audience: "Agent", provider: owner.provider,
+        providerSessionId: owner.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    let controller = OverlayIntercomWidgetController(
+      state: state, textScale: TextScaleController(key: suite),
+      desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
+    defer { controller.invalidate() }
     let identity = OverlayIntercomCardIdentity(digit: "3", conversation: conversation)
     for header in [true, false] {
       let height: CGFloat = header ? Layout.controlHeight(scale: 1) : 400

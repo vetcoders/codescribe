@@ -39,7 +39,7 @@ final class OverlayComposerSyncTests: XCTestCase {
         .padding(12).background(palette.desktopBackground.color)
         .environment(\.colorScheme, .dark))
     host.sizingOptions = []
-    let height: CGFloat = compact ? 60 : 100
+    let height: CGFloat = compact ? 120 : 160
     host.frame = NSRect(x: 0, y: 0, width: width, height: height)
     let window = NSWindow(
       contentRect: NSRect(x: -10000, y: -10000, width: width, height: height),
@@ -77,6 +77,10 @@ final class OverlayComposerSyncTests: XCTestCase {
         ? ComposerControlMetrics.intercomHorizontalPadding
         : ComposerControlMetrics.horizontalPadding)
     let textView = try XCTUnwrap(editor(in: host))
+    let viewport = try XCTUnwrap(textView.enclosingScrollView)
+    let editorFrame = viewport.convert(viewport.bounds, to: host)
+    let editorBottom = host.isFlipped ? editorFrame.maxY : host.bounds.height - editorFrame.minY
+    let actionStart = max(0, Int(ceil(editorBottom * pixelScale)))
     XCTAssertGreaterThan(textView.enclosingScrollView?.bounds.width ?? 0, 60)
     XCTAssertEqual(textView.font?.pointSize ?? 0, 14)
     var centers: [CGFloat] = []
@@ -90,7 +94,7 @@ final class OverlayComposerSyncTests: XCTestCase {
       var inkCount = 0
       var peak = CGFloat.zero
       var pixels: [(y: Int, brightness: CGFloat)] = []
-      for y in 0..<bitmap.pixelsHigh {
+      for y in min(actionStart, bitmap.pixelsHigh)..<bitmap.pixelsHigh {
         for x in Int(left * pixelScale)..<Int(right * pixelScale) {
           guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
           let brightness = max(color.redComponent, color.greenComponent, color.blueComponent)
