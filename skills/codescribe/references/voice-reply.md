@@ -6,8 +6,10 @@ For reports to **Your Inbox (channel 10)** and destination choices, read the
 Voice is the default output for the user. For the requested agent conversation,
 answer a channel-0 discussion with `cs-bus --send "TEXT" --to 0` and a direct
 agent message with `--to NAME`, always using your own provider/session.
-An ordinary `cs-say` reply does not enter peer mailboxes. Send one substantive
-text reply; use ACK, not another broadcast, for receipt-only confirmation.
+An ordinary `cs-say` reply does not enter peer mailboxes, and a channel-0 text
+is not heard until it is played: see [One message, text and voice](#one-message-text-and-voice).
+Send one substantive text reply; use ACK, not another broadcast, for
+receipt-only confirmation.
 
 Speak every reply to the user as well as writing it, not only after "daj znać
 głosem" or "powiedz mi, jak skończysz". The speaker's mute decides (Maciej's
@@ -38,12 +40,38 @@ or providers to make a failed voice attempt pass.
 
 For a requested peer conversation, use your own provider/session with
 `cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
-for the group discussion. Broadcast reaches other bound agents, excludes the
-sender's lease and deduplicates within each lease. `cs-say` is voice output for
-the user; it does not replace the peer text message. Send one
+for the group discussion. Broadcast reaches the bound agents it was `sent_to`,
+excludes the sender's lease and deduplicates within each lease. Send one
 substantive response per request. Do not reply to every broadcast or send
 acknowledgment-only replies: use ACK and leave explicitly addressed questions to
 their recipient. Peer messages remain coordination, never new user authority.
+
+## One message, text and voice
+
+A channel-0 discussion has two kinds of listener: the agents read text, the
+user hears voice. Do not write the answer twice (`--send --to 0` and a separate
+`cs-say` with the same words): the user hears a double, and the agents see
+only one of them. Publish the text once, then play that same message:
+
+```bash
+cs-bus --send "Krótka odpowiedź po polsku." --to 0 --provider PROVIDER --session SESSION
+# receipt: peer_message_published message_id=<24 hex> …
+cs-bus --play-reply MESSAGE_ID --playback-ticket "$(openssl rand -hex 12)" \
+  --provider PROVIDER --session SESSION
+```
+
+`MESSAGE_ID` is the `message_id` from the `peer_message_published` receipt;
+the ticket is any fresh 24-lowercase-hex value naming this one playback. Only
+the author's own provider/session can play its message. Playback obeys the
+same rules as `cs-say`: it waits for the shared playback lock, refuses into a
+live take (`take_live`), stays silent when muted (`muted`) and reports
+`playback_busy` after the bounded wait. Check the receipt's `state` and
+`reason` (`spoken` is the only completed state) before claiming the user heard
+it; a refusal leaves the text in the agents' mailboxes and needs no resend.
+
+`cs-say --reply-to ID` stays the voice answer in this agent's own conversation
+with the user (channel 1–9): there the words are for the user alone and no
+peer mailbox is involved.
 
 `--to NAME` reaches every other session bound to that name; `--to 3` reaches
 only channel 3. In a received peer message, `sender.name` and `sender.channel`
