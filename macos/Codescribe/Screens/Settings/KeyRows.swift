@@ -288,6 +288,10 @@ struct KeyRow: View {
   /// probe chip carries a successful request's green verdict.
   private var accent: Color { CSColor.secondaryInk }
 
+  /// A stored key is "saved, unverified" until a probe answers; only the
+  /// probe's verdict may turn the glyph into a check, warning or error.
+  private var statusTone: CsMcpRowTone { probeResult?.status.tone ?? .neutral }
+
   init(
     account: String, label: String, isSet: Bool, optional: Bool = false,
     embedded: Bool = false, presentation: KeyRowPresentation = .standard,
@@ -321,7 +325,7 @@ struct KeyRow: View {
       }
     }
     // Presence-tinted card: green when set, grey when not.
-    // Embedded rows keep the tint on the dot and state text only.
+    // Embedded rows keep the tint on the glyph and state text only.
     .padding(.horizontal, embedded ? 0 : SettingsScale.cardPadding)
     .padding(.vertical, embedded ? 2 : SettingsScale.cardPadding)
     .background(
@@ -365,7 +369,7 @@ struct KeyRow: View {
 
   private var standardSummary: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: statusTone)
       Text(label)
         .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)
@@ -380,7 +384,7 @@ struct KeyRow: View {
 
   private var compactSummary: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: statusTone)
       Text(label)
         .font(SettingsScale.controlLabel)
         .foregroundStyle(Color.primary)
@@ -531,6 +535,18 @@ extension KeyRow {
   }
 }
 
+extension CsApiKeyProbeStatus {
+  /// One verdict → tone map for the probe chip and the key row's glyph.
+  var tone: CsMcpRowTone {
+    switch self {
+    case .ok: return .good
+    case .invalid, .noQuota: return .bad
+    case .network, .rejected: return .warn
+    case .missing, .unsupported: return .neutral
+    }
+  }
+}
+
 struct KeyProbeChip: View {
   let result: CsApiKeyProbeResult
 
@@ -554,14 +570,7 @@ struct KeyProbeChip: View {
     return "\(verdict) @ \(host)"
   }
 
-  private var tint: Color {
-    switch result.status {
-    case .ok: return CSColor.oliveLight
-    case .invalid, .noQuota: return CSColor.dangerLight
-    case .network, .rejected: return CSColor.amberLight
-    case .missing, .unsupported: return CSColor.secondaryInk
-    }
-  }
+  private var tint: Color { result.status.tone.dotColor }
 
   var body: some View {
     Text(label)
@@ -598,7 +607,6 @@ struct AccountLoginRow: View {
   let onSignOut: () -> Void
 
   private var signedIn: Bool { provider.accountSignedIn }
-  private var accent: Color { CSColor.secondaryInk }
   private var accountBrand: String { Self.brand(for: provider) }
 
   /// Short brand for the account row — OpenCode-style, not a client-id dump.
@@ -625,7 +633,7 @@ struct AccountLoginRow: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: .neutral)
       Text("\(accountBrand) account", comment: "The placeholder is a vendor brand, e.g. ChatGPT")
         .font(SettingsScale.settingName)
         .foregroundStyle(Color.primary)

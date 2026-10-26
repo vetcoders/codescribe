@@ -283,12 +283,14 @@ struct SettingsHealthFooter: View {
     }
   }
 
-  /// The coloured dot is the whole status signal. The line beside it is
-  /// ordinary secondary text in the system face, so the column ends quietly
-  /// instead of shouting a second time in colour (Monika, 2026-10-18).
+  /// The glyph is the whole status signal: a check, a warning, an error mark
+  /// or an empty circle in the level's colour. The line beside it is ordinary
+  /// secondary text in the system face, so the column ends quietly instead of
+  /// shouting a second time in colour (Founder, 2026-10-26; the glyph replaces
+  /// the coloured dot of 2026-10-18).
   private func content(_ health: SettingsHealthState, message: String) -> some View {
     HStack(spacing: 8) {
-      Circle().fill(health.level.color).frame(width: 6, height: 6)
+      StatusToneGlyph(tone: health.level.tone)
       Text(message)
         .font(.caption)
         .foregroundStyle(CSColor.secondaryInk)
@@ -305,12 +307,12 @@ struct SettingsHealthFooter: View {
 }
 
 extension SettingsHealthLevel {
-  fileprivate var color: Color {
+  fileprivate var tone: CsMcpRowTone {
     switch self {
-    case .healthy: return CSColor.oliveLight
-    case .degraded: return CSColor.amberLight
-    case .offline: return CSColor.dangerLight
-    case .unknown: return CSColor.secondaryInk
+    case .healthy: return .good
+    case .degraded: return .warn
+    case .offline: return .bad
+    case .unknown: return .neutral
     }
   }
 }
@@ -437,7 +439,7 @@ extension View {
 struct RuntimeRow: View {
   enum Trailing {
     case none
-    case dot(Color)
+    case mark(CsMcpRowTone)
     case text(String, Color)
   }
 
@@ -473,8 +475,8 @@ struct RuntimeRow: View {
     switch trailing {
     case .none:
       EmptyView()
-    case .dot(let color):
-      Circle().fill(color).frame(width: 7, height: 7)
+    case .mark(let tone):
+      StatusToneGlyph(tone: tone)
     case .text(let label, let color):
       Text(label)
         .font(SettingsScale.statusBadge)

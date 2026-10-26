@@ -172,10 +172,10 @@ struct LaneResetNotice: View {
 
   var body: some View {
     HStack(spacing: CSSpace.sm) {
-      Circle().fill(CSColor.amberLight).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: .warn)
       Text(text)
         .font(SettingsScale.helper)
-        .foregroundStyle(CSColor.amberLight)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(2)
     }
     .accessibilityIdentifier("lane-reset-notice")

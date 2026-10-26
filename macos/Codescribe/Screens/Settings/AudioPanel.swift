@@ -869,7 +869,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if let error = model.admissionReadError {
         statusRow(
-          color: CSColor.dangerLight,
+          tone: .bad,
           title: "Readiness check unavailable",
           detail: error
         )
@@ -1324,9 +1324,11 @@ struct AudioPanel: View {
     model.settings.audioInputDevice ?? String(localized: "System default")
   }
 
-  private func statusRow(color: Color, title: LocalizedStringKey, detail: String) -> some View {
+  private func statusRow(tone: CsMcpRowTone, title: LocalizedStringKey, detail: String)
+    -> some View
+  {
     HStack(alignment: .top, spacing: 9) {
-      Circle().fill(color).frame(width: 7, height: 7).padding(.top, 4)
+      StatusToneGlyph(tone: tone).padding(.top, 2)
       VStack(alignment: .leading, spacing: 3) {
         Text(title)
           .font(SettingsScale.settingName)

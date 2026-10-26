@@ -357,30 +357,30 @@ private struct LLMLaneEditor: View {
   private func formattingProbeResult(_ probe: CsFormattingProbe) -> some View {
     let seconds = { (ms: UInt64) in String(format: "%.1f s", Double(ms) / 1000) }
     let verdict: String
-    let color: Color
+    let tone: CsMcpRowTone
     switch probe.status {
     case "applied":
       verdict = String(localized: "Formatted", comment: "Formatting test verdict")
-      color = CSColor.oliveLight
+      tone = .good
     case "unchanged":
       verdict = String(localized: "Answered, text unchanged", comment: "Formatting test verdict")
-      color = CSColor.oliveLight
+      tone = .good
     case "skipped":
       verdict = String(
         localized: "Not sent: formatting is off or runs on the Agent",
         comment: "Formatting test verdict")
-      color = .secondary
+      tone = .neutral
     case "timed_out":
       verdict = String(localized: "No answer in time", comment: "Formatting test verdict")
-      color = CSColor.amberLight
+      tone = .warn
     default:
       verdict = String(localized: "Formatting failed", comment: "Formatting test verdict")
-      color = CSColor.dangerLight
+      tone = .bad
     }
     let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
     return VStack(alignment: .leading, spacing: CSSpace.xs) {
       HStack(spacing: CSSpace.sm) {
-        Circle().fill(color.opacity(0.85)).frame(width: 7, height: 7)
+        StatusToneGlyph(tone: tone)
         Text(verdict)
         Text(
           "\(seconds(probe.elapsedMs)) / \(seconds(probe.deadlineMs)) · \(probe.model) · reasoning \(level)"

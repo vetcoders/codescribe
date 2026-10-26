@@ -462,14 +462,29 @@ struct AgentStatusSection: View {
   }
 }
 
-// MARK: - Status mark (dot + word, tooltip, VoiceOver)
+// MARK: - Status glyph and mark (glyph + word, tooltip, VoiceOver)
+
+/// The glyph is the whole status signal: a thin check, a warning, an error
+/// mark or an empty circle in the tone's colour; the line beside it stays
+/// quiet `secondaryInk` (Founder, 2026-10-26, replacing the coloured dot of
+/// 2026-10-18). Hidden from VoiceOver: the row that carries it says the state.
+struct StatusToneGlyph: View {
+  let tone: CsMcpRowTone
+  var size: CGFloat = 10
+
+  var body: some View {
+    CSIconView(icon: tone.statusIcon, size: size, weight: .semibold, color: tone.dotColor)
+      .frame(width: size + 2, height: size + 2)
+      .accessibilityHidden(true)
+  }
+}
 
 struct StatusToneMark: View {
   let tone: CsMcpRowTone
 
   var body: some View {
     HStack(spacing: CSSpace.xxs) {
-      Circle().fill(tone.dotColor).frame(width: 7, height: 7)
+      StatusToneGlyph(tone: tone)
       Text(tone.label)
         .font(SettingsScale.statusBadge)
         .foregroundStyle(CSColor.secondaryInk)
@@ -574,7 +589,8 @@ private struct CapabilityMatrixRow: View {
 // MARK: - Tone → color and glyph
 
 extension CsMcpRowTone {
-  /// Map the UI-agnostic core tone onto concrete brand tokens.
+  /// Map the UI-agnostic core tone onto concrete brand tokens; this is the
+  /// colour of the tone's glyph (`statusIcon`).
   var dotColor: Color {
     switch self {
     case .good: return CSColor.oliveLight

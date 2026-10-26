@@ -949,12 +949,14 @@ struct LLMLaneModel {
       && discoveryFailed && other.discoveryFailed
   }
 
-  var availabilityTint: Color {
-    guard credentialAccessResolved, credentialAccessError == nil else {
-      return CSColor.secondaryInk
-    }
-    return runtime.available ? CSColor.secondaryInk : CSColor.dangerLight
+  /// Unavailable is the only state the lane can prove on its own; everything
+  /// else stays neutral until a probe answers.
+  var availabilityTone: CsMcpRowTone {
+    guard credentialAccessResolved, credentialAccessError == nil else { return .neutral }
+    return runtime.available ? .neutral : .bad
   }
+
+  var availabilityTint: Color { availabilityTone.dotColor }
 
   var discoveryDescription: String {
     guard credentialAccessResolved else { return String(localized: "Checking provider access…") }

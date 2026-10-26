@@ -103,7 +103,7 @@ struct AgentLanesTab: View {
               key: String(localized: "\(lane.title) provider"),
               value: laneModel.providerDisplayName,
               tint: false,
-              trailing: .dot(laneModel.availabilityTint),
+              trailing: .mark(laneModel.availabilityTone),
               keyWidth: Self.keyWidth
             )
             divider
