@@ -17,6 +17,61 @@ sys.modules[SPEC.name] = DEMUX
 SPEC.loader.exec_module(DEMUX)
 
 class UserTextTests(unittest.TestCase):
+    def test_sync_context_survives_publication_read_and_watch_without_routing_or_text_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owners = []
+            for channel, name in [("2", "lena"), ("5", "tomek"), ("7", "igor")]:
+                bus = root / f"bus-{channel}.jsonl"
+                lid = DEMUX.lease_identifier("codex", name)
+                DEMUX.write_channel_binding(root, channel, name, "codex", name, str(bus))
+                DEMUX.atomic_json(root / "leases" / f"{lid}.json", {
+                    "schema": DEMUX.LEASE_SCHEMA, "provider": "codex", "provider_session_id": name,
+                    "lease_id": lid, "bus": str(bus)})
+                owners.append({"channel": channel, "provider": "codex",
+                               "provider_session_id": name, "lease_id": lid})
+            target, peer, stale = owners
+            stale = {**stale, "provider_session_id": "replaced-owner"}
+            args = argparse.Namespace(bridge_home=root, channel="2", bus=root / "bus-2.jsonl",
+                lease=target["lease_id"], provider="codex", session="lena",
+                also_sent_to=json.dumps([target, peer, peer, stale]))
+            receipt = {"stream_id": "fixture", "stream_dev": 1, "stream_inode": 2,
+                       "offset": 0, "length": 12}
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"Unchanged user text"))):
+                self.assertEqual(DEMUX.send_text_command(args), 0)
+            self.assertEqual(publish.call_count, 1, "Metadata must not create a second route")
+            event = publish.call_args.args[1]
+            self.assertEqual(event["recipients"][0]["lease_id"], target["lease_id"])
+            self.assertEqual(len(event["recipients"]), 1)
+            self.assertEqual(event["also_sent_to_basis"], "sync_selection")
+            self.assertEqual([m["lease_id"] for m in event["also_sent_to"]], [peer["lease_id"]])
+            payload = DEMUX.consider(event, name="lena", hear_all=False, drafts=False, debug=False)
+            payload.update(delivery_id="b" * 24, lease_id=target["lease_id"],
+                           provider="codex", provider_session_id="lena")
+            for projection in (payload, DEMUX.conversation_envelope(payload),
+                               DEMUX.watch_line(payload, target["lease_id"])):
+                self.assertEqual(projection["text"], "Unchanged user text")
+                self.assertEqual(projection["also_sent_to"], event["also_sent_to"])
+                self.assertEqual(projection["also_sent_to_basis"], "sync_selection")
+            self.assertIsNone(DEMUX.consider(event, name="tomek", hear_all=False,
+                                            drafts=False, debug=False))
+
+    def test_invalid_sync_metadata_is_refused_before_resolving_any_peer(self):
+        target = {"provider": "codex", "provider_session_id": "target", "lease_id": "a" * 32}
+        valid = {"channel": "5", "provider": "codex", "provider_session_id": "peer",
+                 "lease_id": "b" * 32}
+        cases = ["not JSON", "null", "{}", json.dumps([valid] * 9),
+                 json.dumps([{**valid, "channel": "0"}]),
+                 json.dumps([{**valid, "provider_session_id": "peer\nspoof"}]),
+                 json.dumps([{**valid, "name": "caller-chosen"}])]
+        with tempfile.TemporaryDirectory() as directory:
+            for raw in cases:
+                with self.subTest(raw=raw), self.assertRaises(ValueError):
+                    DEMUX.sync_selection_owners(raw, {}, Path(directory), target)
+
     def test_five_equal_messages_keep_distinct_delivery_ids_without_pcm(self):
         with tempfile.TemporaryDirectory() as directory:
             with closing(DEMUX.SessionLease(root=Path(directory), provider="codex", provider_session_id="agent-a",

@@ -151,7 +151,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let conversation = try XCTUnwrap(roster.conversation(for: channel))
     let generation = state.captureGeneration
     state.conversationDrafts[conversation.id] = "retain my draft"
-    state.publishConversationText = { _, _, _ in XCTFail("Menu presentation is not sending") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Menu presentation is not sending") }
     let action = try XCTUnwrap(roster.onShowAgentInMonitor)
     action(channel.channel)
     XCTAssertEqual(reveals, 1)
@@ -209,7 +209,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
     defer { controller.invalidate() }
     let generation = state.captureGeneration
-    state.publishConversationText = { _, _, _ in XCTFail("Opening is not sending") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Opening is not sending") }
     state.conversationDrafts["0"] = "shared draft"
     state.conversationDrafts["10"] = "private retained text"
     for route in ["10", "0"] {
@@ -297,7 +297,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
     XCTAssertFalse(identities.contains(where: \.isHumanInbox), "mailboxes occupy the header")
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
-    state.publishConversationText = { _, _, _ in XCTFail("The inbox is read-only") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("The inbox is read-only") }
     await state.sendConversationText(inbox)
     XCTAssertEqual(state.conversationDrafts[inbox.id], "This cannot be sent to myself")
   }
@@ -532,7 +532,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       refused.fulfill()
       throw CocoaError(.fileWriteNoPermission)
     }
-    state.publishConversationText = { _, _, _ in XCTFail("Recovery must never send a message") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Recovery must never send a message") }
     let generation = state.captureGeneration
     XCTAssertTrue(state.stageConversationAttachments([path], in: conversation))
     await fulfillment(of: [refused], timeout: 2)

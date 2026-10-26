@@ -216,7 +216,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         longDraft
         ? "Preserved draft " + String(repeating: "Shared text stays intact. ", count: 20) : ""
       state.conversationDrafts[conversation.id] = retainedDraft
-      state.publishConversationText = { _, _, _ in XCTFail("Mounting a preview must not send") }
+      state.publishConversationText = { _, _, _, _ in XCTFail("Mounting a preview must not send") }
       let keyWindow = NSApp.keyWindow
       let generation = state.captureGeneration
       let suite = "CodescribeTests.compact.\(UUID().uuidString)"

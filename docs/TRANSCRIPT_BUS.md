@@ -1655,6 +1655,19 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
+Synchronized composers freeze their selected exact owners alongside the text
+and reply references. Each private typed send passes the other owners as
+`--also-sent-to JSON` (`channel`, `provider`, `provider_session_id`, `lease_id`).
+Under the same binding lock, the canonical publisher resolves their names from
+matching current bindings and omits self, duplicates and unavailable or rebound
+owners. It records `also_sent_to` with `also_sent_to_basis: sync_selection`.
+The native queue, mailbox read and watch expose the simple informational header
+`Also sent to: 5 (tomek)`. This is frozen co-address context, like CC: it is not
+an ACK or a certificate that the other copy was published, delivered or read.
+Partial sends and retries retain their existing receipts and behavior; context
+never selects recipients or changes the user's text. Ordinary single-recipient
+sends and channel-zero broadcasts do not carry this Sync header.
+
 The channel-zero composer uses `cs-bus --send-text --channel 0`. Under the
 same binding lock, it validates every bound recipient before publication and
 writes one private copy per recipient. Copies share a message ID and timestamp;

@@ -160,8 +160,9 @@ coverage or answered aloud.
 
 ## Type or paste to several agents
 
-Open **Sync draft** in a channel conversation's composer and select the other
-agents that should share its input. Their names appear above the editor. Typing,
+Open the chain-link **Sync draft** icon beside the composer's microphone and
+Send controls, then select the other agents that should share its input.
+Hover the icon for the explanation and linked agents' names. Typing,
 editing and pasted attachment chips update the same draft in every linked
 conversation, including its main overlay and detached windows.
 

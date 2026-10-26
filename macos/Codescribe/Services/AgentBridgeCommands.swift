@@ -668,6 +668,7 @@ extension RealAgentBridgeInstaller {
   static func sendBusText(
     owner: OverlayConversationOwner?, text: String, holdSeconds: UInt32? = nil,
     userReplyTo: OverlayUserReplyReference? = nil,
+    alsoSentTo: [OverlayConversationOwner] = [],
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws {
     let executable = installer.commandURL("cs-bus")
@@ -685,7 +686,8 @@ extension RealAgentBridgeInstaller {
     let hold = holdSeconds ?? CodescribeConfig().loadSettings().agentSendHoldSec
     try await Task.detached(priority: .userInitiated) {
       var arguments = try busTextArguments(
-        holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo)
+        holdSeconds: hold, owner: owner, root: root, userReplyTo: userReplyTo,
+        alsoSentTo: alsoSentTo)
       for path in message.paths { arguments += ["--attach-file", path] }
       let process = Process()
       let input = Pipe()
@@ -797,7 +799,8 @@ extension RealAgentBridgeInstaller {
 
   static func busTextArguments(
     holdSeconds: UInt32, owner: OverlayConversationOwner?, root: URL,
-    userReplyTo: OverlayUserReplyReference? = nil
+    userReplyTo: OverlayUserReplyReference? = nil,
+    alsoSentTo: [OverlayConversationOwner] = []
   ) throws -> [String] {
     // The owner block stays right behind --send-text; the hold is a trailing
     // option, so existing publisher receipts keep their argument prefix.
@@ -807,6 +810,16 @@ extension RealAgentBridgeInstaller {
     if let userReplyTo {
       let encoded = try JSONEncoder().encode(userReplyTo)
       arguments += ["--user-reply-to", String(decoding: encoded, as: UTF8.self)]
+    }
+    if owner != nil, !alsoSentTo.isEmpty {
+      let peers = alsoSentTo.map {
+        [
+          "channel": $0.channel, "provider": $0.provider,
+          "provider_session_id": $0.providerSessionID, "lease_id": $0.leaseID,
+        ]
+      }
+      let encoded = try JSONSerialization.data(withJSONObject: peers, options: [.sortedKeys])
+      arguments += ["--also-sent-to", String(decoding: encoded, as: UTF8.self)]
     }
     return arguments
   }

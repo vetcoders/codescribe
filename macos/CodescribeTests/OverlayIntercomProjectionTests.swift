@@ -63,7 +63,7 @@ final class OverlayIntercomProjectionTests: XCTestCase {
       })
     XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.digit), ["3", "4"])
     state.conversationDrafts = [agentConversation.id: "unfinished reply", "10": "private draft"]
-    state.publishConversationText = { _, _, _ in XCTFail("Hiding windows must not send") }
+    state.publishConversationText = { _, _, _, _ in XCTFail("Hiding windows must not send") }
     var desktop = OverlayIntercomDesktopState()
     desktop.groupWidth = 600
     desktop.groupRowHeight = 240

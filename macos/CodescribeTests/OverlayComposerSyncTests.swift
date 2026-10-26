@@ -6,6 +6,107 @@ import XCTest
 
 @MainActor
 final class OverlayComposerSyncTests: XCTestCase {
+  func testNativeComposerActionsRenderAlignedAndMuted() throws {
+    let palette = OverlayAppearancePalette.dark
+    let composer = OverlayConversationComposer(
+      palette: palette, draft: .constant("A shared draft"), sending: false, onSubmit: {},
+      onToggleDraftMicrophone: {},
+      draftSyncChoices: [.init(id: "peer", title: "Peer", selected: true, enabled: true)],
+      draftSyncNames: ["Agent", "Peer"])
+    let host = NSHostingView(rootView: composer
+      .padding(12).background(palette.desktopBackground.color)
+      .environment(\.colorScheme, .dark))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 480, height: 100)
+    let window = NSWindow(
+      contentRect: NSRect(x: -10000, y: -10000, width: 480, height: 100),
+      styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    BackgroundTestWindow.present(window)
+    host.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size)
+    let screenshot = XCTAttachment(image: image)
+    screenshot.name = "Muted-aligned-composer-actions"
+    screenshot.lifetime = .keepAlways
+    add(screenshot)
+    // Measure visible ink, rather than assuming equal layout metrics imply
+    // equal native Menu/Button output. AX is unavailable in this background host.
+    let pixelScale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+    let controlSize = ComposerControlMetrics.hitTargetSize
+    let stride = controlSize + ComposerControlMetrics.spacing
+    let rightInset: CGFloat = 12 + ComposerControlMetrics.horizontalPadding
+    var centers: [CGFloat] = []
+    var heights: [CGFloat] = []
+    var peaks: [CGFloat] = []
+    for slot in 0..<3 {
+      let right = host.bounds.width - rightInset - CGFloat(slot) * stride
+      let left = right - controlSize
+      var minY = bitmap.pixelsHigh
+      var maxY = -1
+      var inkCount = 0
+      var peak = CGFloat.zero
+      for y in 0..<bitmap.pixelsHigh {
+        for x in Int(left * pixelScale)..<Int(right * pixelScale) {
+          guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+          let brightness = max(color.redComponent, color.greenComponent, color.blueComponent)
+          guard brightness > 0.35 else { continue }
+          inkCount += 1
+          minY = min(minY, y)
+          maxY = max(maxY, y)
+          peak = max(peak, brightness)
+        }
+      }
+      XCTAssertGreaterThan(inkCount, 20, "Each action must actually render its glyph")
+      XCTAssertLessThan(peak, 0.8, "Idle action must not render bright white/accent ink")
+      centers.append(CGFloat(minY + maxY) / (2 * pixelScale))
+      heights.append(CGFloat(maxY - minY + 1) / pixelScale)
+      peaks.append(peak)
+    }
+    for index in 1..<3 {
+      XCTAssertEqual(centers[index], centers[0], accuracy: 1.5, "Visible glyph centers must align")
+      XCTAssertEqual(heights[index], heights[0], accuracy: 2, "Glyphs must have the same optical size")
+      XCTAssertEqual(peaks[index], peaks[0], accuracy: 0.05, "Idle glyphs must use the same ink")
+    }
+  }
+
+  func testTypedPublisherCarriesOnlyExplicitOwnerCoordinatesAsSyncContext() throws {
+    let (_, agents) = try fixture(count: 2)
+    let owner = try XCTUnwrap(agents[0].owner)
+    let peer = try XCTUnwrap(agents[1].owner)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("leases"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receipt: [String: String] = [
+      "schema": "codescribe.agent-bridge.lease.v1", "provider": owner.provider,
+      "provider_session_id": owner.providerSessionID, "lease_id": owner.leaseID,
+      "bus": root.appendingPathComponent("bus.jsonl").path,
+    ]
+    try JSONSerialization.data(withJSONObject: receipt).write(
+      to: root.appendingPathComponent("leases/\(owner.leaseID).json"))
+    let args = try RealAgentBridgeInstaller.busTextArguments(
+      holdSeconds: 0, owner: owner, root: root, alsoSentTo: [peer])
+    let index = try XCTUnwrap(args.firstIndex(of: "--also-sent-to"))
+    let metadata = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(args[index + 1].utf8)) as? [[String: String]])
+    XCTAssertEqual(metadata, [[
+      "channel": peer.channel, "provider": peer.provider,
+      "provider_session_id": peer.providerSessionID, "lease_id": peer.leaseID,
+    ]])
+    let single = try RealAgentBridgeInstaller.busTextArguments(
+      holdSeconds: 0, owner: owner, root: root)
+    let broadcast = try RealAgentBridgeInstaller.busTextArguments(
+      holdSeconds: 0, owner: nil, root: root, alsoSentTo: [peer])
+    XCTAssertFalse(single.contains("--also-sent-to"))
+    XCTAssertFalse(broadcast.contains("--also-sent-to"))
+  }
+
   func testTypingAndAttachmentsHaveOneSharedDraftAndUnlinkRetainsBoth() throws {
     let (state, agents) = try fixture()
     state.setConversationDraft("Shared", for: agents[0].id)
@@ -55,8 +156,11 @@ final class OverlayComposerSyncTests: XCTestCase {
     state.conversationReplies[agents[1].id] = reply
     var calls: [(String, String, OverlayUserReplyReference?)] = []
     var refuseSecond = true
-    state.publishConversationText = { owner, text, reference in
+    var expectedText = "First"
+    state.publishConversationText = { owner, text, reference, peers in
       let owner = try XCTUnwrap(owner)
+      XCTAssertEqual(Set(peers.map(\.id)), Set(agents.map(\.id)).subtracting([owner.id]))
+      XCTAssertEqual(text, expectedText, "Co-addressing must never become user text")
       calls.append((owner.id, text, reference))
       if owner.id == agents[1].id && refuseSecond { throw CocoaError(.fileWriteNoPermission) }
     }
@@ -73,6 +177,7 @@ final class OverlayComposerSyncTests: XCTestCase {
     for agent in agents { XCTAssertEqual(state.conversationDraft(for: agent.id), "") }
     XCTAssertEqual(state.conversationDraftGroups.count, 1, "Sync remains enabled after Send")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
+    expectedText = "Second"
     state.setConversationDraft("Second", for: agents[1].id)
     await state.sendConversationText(agents[1])
     XCTAssertEqual(calls.suffix(3).map { $0.1 }, ["Second", "Second", "Second"])
@@ -83,7 +188,7 @@ final class OverlayComposerSyncTests: XCTestCase {
     XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
     state.setConversationDraft("Frozen outgoing text", for: agents[0].id)
     var texts: [String] = []
-    state.publishConversationText = { _, text, _ in
+    state.publishConversationText = { _, text, _, _ in
       texts.append(text)
       if texts.count == 1 {
         state.setConversationDraft("New draft", for: agents[1].id)
@@ -96,6 +201,25 @@ final class OverlayComposerSyncTests: XCTestCase {
     await state.sendConversationText(agents[1])
     XCTAssertEqual(texts.suffix(2), ["New draft", "New draft"])
     XCTAssertEqual(state.conversationDraft(for: agents[0].id), "")
+  }
+
+  func testSyncCoAddressesStayFrozenWhenAChannelIsReboundDuringSend() async throws {
+    let (state, agents) = try fixture(count: 2)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.setConversationDraft("Frozen group", for: agents[0].id)
+    let successor = try conversation(channel: agents[1].channel, suffix: "new-owner")
+    var targets: [String] = []
+    state.publishConversationText = { owner, text, _, peers in
+      let owner = try XCTUnwrap(owner)
+      targets.append(owner.id)
+      XCTAssertEqual(text, "Frozen group")
+      XCTAssertEqual(peers.map(\.id), agents.filter { $0.id != owner.id }.map(\.id))
+      XCTAssertFalse(peers.contains { $0.id == successor.id })
+      if targets.count == 1 { self.apply([agents[0], successor], to: state) }
+    }
+    await state.sendConversationText(agents[0])
+    XCTAssertEqual(targets, agents.map(\.id))
+    XCTAssertFalse(state.hasSynchronizedDraft(successor.id))
   }
 
   func testChannelReuseDoesNotJoinSuccessorAndRetiredDraftIsPreserved() throws {

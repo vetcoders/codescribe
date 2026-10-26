@@ -410,7 +410,6 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     #[test]
     fn warning_log_keeps_stdout_clean() {

@@ -2759,10 +2759,13 @@ final class OverlayState {
   private(set) var textMessageErrors: [String: String] = [:]
   private(set) var conversationFocusRevision: UInt64 = 0
   @ObservationIgnored var publishConversationText:
-    @MainActor (OverlayConversationOwner?, String, OverlayUserReplyReference?) async throws -> Void =
+    @MainActor (
+      OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
+    ) async throws -> Void =
       {
-        owner, text, reply in
-        try await RealAgentBridgeInstaller.sendBusText(owner: owner, text: text, userReplyTo: reply)
+        owner, text, reply, alsoSentTo in
+        try await RealAgentBridgeInstaller.sendBusText(
+          owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
@@ -2790,7 +2793,7 @@ final class OverlayState {
       ? draft
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     do {
-      try await publishConversationText(conversation.owner, outgoing, reply)
+      try await publishConversationText(conversation.owner, outgoing, reply, [])
       // A newer draft belongs to the Founder, even if publication finishes late.
       if conversationDraft(for: conversation.id) == draft {
         setConversationDraft("", for: conversation.id)
@@ -2813,6 +2816,7 @@ final class OverlayState {
     else { return }
     let recipients = draftSyncConversations.filter { group.members.contains($0.id) }
     guard Set(recipients.map(\.id)) == group.members else { return }
+    let selectedOwners = recipients.compactMap(\.owner)
     let pending = recipients.filter { !group.sent.contains($0.id) }.map {
       (conversation: $0, reply: conversationReplies[$0.id])
     }
@@ -2823,7 +2827,11 @@ final class OverlayState {
     for recipient in pending {
       let id = recipient.conversation.id
       do {
-        try await publishConversationText(recipient.conversation.owner, draft, recipient.reply)
+        let alsoSentTo = selectedOwners.filter {
+          $0.id != recipient.conversation.owner?.id
+        }
+        try await publishConversationText(
+          recipient.conversation.owner, draft, recipient.reply, alsoSentTo)
         if let current = conversationDraftGroups.firstIndex(where: { $0.id == group.id }),
           conversationDraftGroups[current].revision == group.revision,
           conversationDrafts[group.id] == draft

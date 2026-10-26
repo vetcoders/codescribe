@@ -474,7 +474,7 @@ final class OverlayStateTests: XCTestCase {
       text: "Edited", attachments: [attachment])
     state.conversationDrafts[other.id] = "Other draft"
     var sends = 0
-    state.publishConversationText = { _, _, _ in sends += 1 }
+    state.publishConversationText = { _, _, _, _ in sends += 1 }
     await state.toggleDraftMicrophone(in: origin)
     state.openConversation(for: other.owner!)
     projectText(
@@ -657,7 +657,7 @@ final class OverlayStateTests: XCTestCase {
       OverlayUserReplyReference(row: ["message_id": "parent-B", "author": "Astra", "text": "Next"]))
     state.conversationDrafts[origin.id] = "Initial"
     state.conversationReplies[origin.id] = first
-    state.publishConversationText = { owner, text, reference in
+    state.publishConversationText = { owner, text, reference, _ in
       XCTAssertEqual(owner, origin.owner)
       XCTAssertEqual(text, "Initial")
       XCTAssertEqual(reference, first)
@@ -667,7 +667,7 @@ final class OverlayStateTests: XCTestCase {
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "Newer draft")
     XCTAssertEqual(state.conversationReplies[origin.id], newer)
-    state.publishConversationText = { _, _, reference in XCTAssertEqual(reference, newer) }
+    state.publishConversationText = { _, _, reference, _ in XCTAssertEqual(reference, newer) }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "")
     XCTAssertNil(state.conversationReplies[origin.id])
@@ -1948,20 +1948,21 @@ final class OverlayStateTests: XCTestCase {
     let conversation = OverlayConversation(
       id: owner.id, channel: "2", name: "Lena", owner: owner, messages: [])
     state.conversationDrafts[owner.id] = "Pierwszy szkic"
-    state.publishConversationText = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
+    state.publishConversationText = { _, _, _, _ in throw CocoaError(.fileWriteUnknown) }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Pierwszy szkic")
     XCTAssertNotNil(state.textMessageErrors[owner.id])
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
-    state.publishConversationText = { recipient, text, _ in
+    state.publishConversationText = { recipient, text, _, peers in
       XCTAssertEqual(recipient?.id, owner.id)
+      XCTAssertTrue(peers.isEmpty, "An ordinary send has no sync co-addressing")
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
     XCTAssertNil(state.textMessageErrors[owner.id])
-    state.publishConversationText = { _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "")
     let focus = state.conversationFocusRevision
@@ -1977,22 +1978,23 @@ final class OverlayStateTests: XCTestCase {
     let conversation = OverlayConversation(
       id: "0", channel: "0", name: "All", owner: nil, messages: [])
     state.conversationDrafts["0"] = "Do wszystkich"
-    state.publishConversationText = { owner, _, _ in
+    state.publishConversationText = { owner, _, _, _ in
       XCTAssertNil(owner)
       throw CocoaError(.fileWriteUnknown)
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Do wszystkich")
     XCTAssertNotNil(state.textMessageErrors["0"])
-    state.publishConversationText = { owner, text, _ in
+    state.publishConversationText = { owner, text, _, peers in
       XCTAssertNil(owner)
+      XCTAssertTrue(peers.isEmpty, "Broadcast must not inherit a sync cohort")
       XCTAssertEqual(text, "Do wszystkich")
       state.conversationDrafts["0"] = "Nowy szkic"
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
     XCTAssertNil(state.textMessageErrors["0"])
-    state.publishConversationText = { _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
