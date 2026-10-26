@@ -1501,7 +1501,6 @@ private struct OverlayIntercomHeader: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @State private var hovering = false
   let state: OverlayState
   let controller: OverlayIntercomWidgetController
 
@@ -1632,19 +1631,8 @@ private struct OverlayIntercomHeader: View {
         archivedOwners: state.archivedAgentOwners, controller: controller
       )
     )
-    .overlay {
-      // The same three marked corners resize the group. The top-left menu
-      // and all control centers stay outside the resize targets.
-      OverlayIntercomResizeHandles(
-        revealed: hovering,
-        onEnded: { controller.finishInteractiveResize() }
-      ) { frame, delta, edge, gesture in
-        controller.resizeGroup(from: frame, delta: delta, edge: edge, gesture: gesture)
-      }
-    }
     // The header is always on screen while the group is: it pages the stack
     // to the row the wheel focused.
-    .onHover { hovering = $0 }
     .onChange(of: state.agentGestureFocusID) { _, focus in
       controller.revealChooserFocus(focus)
     }
@@ -2007,7 +1995,7 @@ private struct OverlayIntercomCard: View {
     .overlay {
       if expanded {
         OverlayIntercomResizeHandles(
-          revealed: hovering,
+          cornerRadius: corner, topRight: false, revealed: hovering,
           onEnded: { controller.finishInteractiveResize() }
         ) { frame, delta, edge, gesture in
           controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
@@ -2016,7 +2004,7 @@ private struct OverlayIntercomCard: View {
         // Detach owns the top-left corner. Only the other three visible grips
         // resize; the remaining perimeter does not intercept content controls.
         OverlayIntercomResizeHandles(
-          revealed: hovering,
+          cornerRadius: corner, revealed: hovering,
           onEnded: { controller.finishInteractiveResize() }
         ) { frame, delta, edge, gesture in
           controller.resizeGroup(
@@ -2327,6 +2315,23 @@ private struct OverlayIntercomAudioControls: View {
         shared: shared
       )
       .fixedSize()
+      .background(alignment: .leading) {
+        // The canonical open flag keeps recording visible between pulses,
+        // including reduced motion. The shared audio controls still own input.
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(palette.agentAccent.color.opacity(palette.appearance == .light ? 0.14 : 0.22))
+          .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+              .strokeBorder(palette.agentAccent.color.opacity(0.6), lineWidth: 1)
+          }
+          .frame(
+            width: OverlayIntercomWidgetLayout.controlHeight(scale: scale) - 4,
+            height: OverlayIntercomWidgetLayout.controlHeight(scale: scale) - 6)
+          .padding(.leading, 2)
+          .opacity(open ? 1 : 0)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
       .accessibilityIdentifier("overlay-intercom-audio-\(digit)")
     }
   }
@@ -2436,7 +2441,7 @@ private struct OverlayIntercomFocusButton: View {
         restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
       )
       .disabled(!action.enabled)
-      .overlayFastHint(roster.panelFocusHelp(for: channel, state: focusState), palette: palette)
+      .overlayFastHint(action.title, palette: palette)
       .accessibilityLabel(Text(verbatim: action.title))
       .accessibilityIdentifier("overlay-intercom-focus-\(channel.channel)")
     } else {
@@ -2707,6 +2712,8 @@ private typealias OverlayIntercomResizeAction = (
 
 private struct OverlayIntercomResizeHandles: View {
   @Environment(\.colorScheme) private var colorScheme
+  let cornerRadius: CGFloat
+  var topRight = true
   var revealed = false
   var onEnded: () -> Void = {}
   let resize: OverlayIntercomResizeAction
@@ -2715,7 +2722,7 @@ private struct OverlayIntercomResizeHandles: View {
     VStack(spacing: 0) {
       HStack(spacing: 0) {
         Spacer(minLength: 0)
-        handle(.topRight)
+        if topRight { handle(.topRight) }
       }
       Spacer(minLength: 0)
       HStack(spacing: 0) {
@@ -2730,13 +2737,13 @@ private struct OverlayIntercomResizeHandles: View {
   private func handle(_ edge: OverlayIntercomWidgetLayout.ResizeEdge) -> some View {
     OverlayIntercomResizeHandle(
       edge: edge, accent: OverlayAppearancePalette.resolve(colorScheme).agentAccent.nsColor,
-      revealed: revealed, onEnded: onEnded, resize: resize
+      cornerRadius: cornerRadius, revealed: revealed, onEnded: onEnded, resize: resize
     )
     .frame(width: Self.cornerBand, height: Self.cornerBand)
   }
 
-  /// Visible corner targets only. Top-left remains exclusively the detach grip;
-  /// there are no invisible side bands covering buttons, selection or scrolling.
+  /// Visible corner targets only. Top-left belongs to detach; a reserved top-right
+  /// arrow omits its target too. No side bands cover buttons, selection or scrolling.
   static let cornerBand: CGFloat = 12
 }
 
@@ -2802,7 +2809,7 @@ private struct OverlayIntercomInstanceCard: View {
     .overlay {
       if !mini {
         OverlayIntercomResizeHandles(
-          revealed: hovering,
+          cornerRadius: corner, topRight: false, revealed: hovering,
           onEnded: { controller.finishInteractiveResize() }
         ) { frame, delta, edge, _ in
           controller.resizeInstance(instanceID, from: frame, delta: delta, edge: edge)
@@ -3012,6 +3019,7 @@ private struct OverlayIntercomInstanceCard: View {
 private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   let edge: OverlayIntercomWidgetLayout.ResizeEdge
   let accent: NSColor
+  let cornerRadius: CGFloat
   let revealed: Bool
   let onEnded: () -> Void
   let resize: OverlayIntercomResizeAction
@@ -3020,6 +3028,7 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   func updateNSView(_ nsView: OverlayIntercomResizeView, context: Context) {
     nsView.edge = edge
     nsView.accent = accent
+    nsView.cornerRadius = cornerRadius
     nsView.revealed = revealed
     nsView.resize = resize
     nsView.onEnded = onEnded
@@ -3030,6 +3039,7 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
 private final class OverlayIntercomResizeView: NSView {
   var edge = OverlayIntercomWidgetLayout.ResizeEdge.bottomRight
   var accent = OverlayAppearancePalette.dark.agentAccent.nsColor
+  var cornerRadius: CGFloat = OverlayIntercomWidgetLayout.conversationCornerRadius
   var revealed = false
   var resize: OverlayIntercomResizeAction = { _, _, _, _ in }
   var onEnded: () -> Void = {}
@@ -3077,18 +3087,25 @@ private final class OverlayIntercomResizeView: NSView {
   override func mouseExited(with event: NSEvent) { hovering = false; needsDisplay = true }
   override func draw(_ dirtyRect: NSRect) {
     guard revealed || hovering || moved else { return }
-    accent.withAlphaComponent(hovering || moved ? 0.65 : 0.28).setStroke()
+    accent.withAlphaComponent(hovering || moved ? 0.6 : 0.32).setStroke()
     let path = NSBezierPath()
     let left = edge == .bottomLeft
     let top = edge == .topRight
-    let x = left ? bounds.minX + 2 : bounds.maxX - 2
-    let y = top ? bounds.maxY - 2 : bounds.minY + 2
-    path.move(to: NSPoint(x: x, y: y + (top ? -7 : 7)))
-    path.line(to: NSPoint(x: x, y: y))
-    path.line(to: NSPoint(x: x + (left ? 7 : -7), y: y))
-    path.lineWidth = 1.5
+    // The target sits 4pt inside the card. A further 1pt stroke inset follows
+    // its rounded contour instead of drawing two straight teeth. Clip the arc
+    // to the existing target even when text scale increases the card radius.
+    let x = left ? bounds.minX + cornerRadius - 4 : bounds.maxX - cornerRadius + 4
+    let y = top ? bounds.maxY - cornerRadius + 4 : bounds.minY + cornerRadius - 4
+    NSGraphicsContext.saveGraphicsState()
+    NSBezierPath(rect: bounds).addClip()
+    path.appendArc(
+      withCenter: NSPoint(x: x, y: y), radius: max(1, cornerRadius - 5),
+      startAngle: top ? 0 : left ? 180 : 270,
+      endAngle: top ? 90 : left ? 270 : 360)
+    path.lineWidth = 1.25
     path.lineCapStyle = .round
     path.stroke()
+    NSGraphicsContext.restoreGraphicsState()
   }
   override func resetCursorRects() {
     discardCursorRects()
