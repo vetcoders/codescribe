@@ -299,8 +299,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       }
       if !expanded {
         XCTAssertEqual(
-          editors.count, hover || height < 220 ? 0 : 1,
-          "Hover stays read-only; a 360pt card reveals one shared composer from 220pt height")
+          editors.count, hover || height < 150 ? 0 : 1,
+          "Hover stays read-only; a 360pt card reveals one shared composer at 150pt height")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)
@@ -328,7 +328,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     do {
       // Native control hover and backdrop compositing can change between hosts.
       // Preserve both review images rather than treating a pixel count as proof
-      // of absent content. The phase policy above pins the metadata-only range.
+      // of absent content. The phase policy above pins the early input range.
       for height in [CGFloat(30), 60, 90] {
         _ = try render(channel: "3", text: nil, height: height, dark: dark)
         _ = try render(channel: "3", text: richMessage, height: height, dark: dark)
