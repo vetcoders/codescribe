@@ -1658,8 +1658,17 @@ ACK and native queue path. Agent replies retain the exact delivery association;
 written input never passes through acoustic finality or microphone ownership.
 Publication uncertainty is reported without automatic replay.
 
-Synchronized composers freeze their selected exact owners alongside the text
-and reply references. Each private typed send passes the other owners as
+Sync links future input, retaining each exact owner's existing private text
+and attachment pointers. Native edits carry their actual UTF-16 ranges;
+unknown edit provenance stays private and begins a new sharing epoch.
+Joining or leaving a group never copies earlier text into another composer.
+Each send freezes the selected exact owners, each owner's complete payload
+and reply reference. Later edits do not recall that frozen send; only the
+retirement/rebinding of an exact recipient cancels its copy. Surviving recipients
+remain selected even if another member's retirement dissolves the group.
+Successful unchanged payloads clear independently;
+failed or newer drafts remain available to retry. Each private typed send
+passes only other selected owners receiving the identical complete payload as
 `--also-sent-to JSON` (`channel`, `provider`, `provider_session_id`, `lease_id`).
 Under the same binding lock, the canonical publisher resolves their names from
 matching current bindings and omits self, duplicates and unavailable or rebound

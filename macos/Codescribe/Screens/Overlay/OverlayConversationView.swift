@@ -175,6 +175,7 @@ struct OverlayConversationView: View {
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
   var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
   var onActivateDraftSync: (() -> Void)? = nil
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
@@ -416,7 +417,8 @@ struct OverlayConversationView: View {
           onRetryCaptureAttachments: onRetryCaptureAttachments,
           onNavigateReply: { navigateToReply(replySelection?.messageID) },
           draftSyncChoices: draftSyncChoices, draftSyncNames: draftSyncNames,
-          draftSyncArmed: draftSyncArmed, onActivateDraftSync: onActivateDraftSync,
+          draftSyncArmed: draftSyncArmed, draftSyncEnabled: draftSyncEnabled,
+          onActivateDraftSync: onActivateDraftSync,
           onProseEdit: onProseEdit,
           onToggleDraftSync: onToggleDraftSync, onStopDraftSync: onStopDraftSync)
         // A reused native coordinator must never redirect an old owner's

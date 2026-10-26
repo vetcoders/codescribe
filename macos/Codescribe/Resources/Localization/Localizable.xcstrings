@@ -5014,12 +5014,42 @@
         }
       }
     },
+    "Click Sync in another composer to share future input. Click again to cancel." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kliknij synchronizację w innym polu, aby współdzielić nową treść. Kliknij ponownie, aby anulować."
+          }
+        }
+      }
+    },
+    "Click here, then click Sync in another composer to share future input. Right-click to choose a target." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kliknij tutaj, a następnie synchronizację w innym polu, aby współdzielić nową treść. Kliknij prawym przyciskiem, aby wybrać pole."
+          }
+        }
+      }
+    },
     "Click to edit. Edits stay local until committed to the transcript ledger." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kliknij, aby edytować. Zmiany pozostaną lokalne, dopóki nie zatwierdzisz ich w rejestrze transkrypcji."
+          }
+        }
+      }
+    },
+    "Click to leave Sync. Right-click to choose linked composers." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kliknij, aby wyłączyć synchronizację tego pola. Kliknij prawym przyciskiem, aby wybrać połączone pola."
           }
         }
       }
@@ -16826,6 +16856,16 @@
         }
       }
     },
+    "Share future typing and pasted attachments with this composer" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Udostępniaj temu polu dalszy tekst i wklejane załączniki"
+          }
+        }
+      }
+    },
     "Share typing and pasted attachments with this composer" : {
       "localizations" : {
         "pl" : {
@@ -18612,12 +18652,42 @@
         }
       }
     },
+    "Sync armed" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Oczekiwanie na drugie pole"
+          }
+        }
+      }
+    },
     "Sync draft" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Synchronizuj szkic"
+          }
+        }
+      }
+    },
+    "Sync linked" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja włączona"
+          }
+        }
+      }
+    },
+    "Sync off" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Synchronizacja wyłączona"
           }
         }
       }
@@ -19594,6 +19664,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Ten kompozytor ma inny szkic lub oczekuje na zakończenie wysyłania."
+          }
+        }
+      }
+    },
+    "This composer has a pending delivery or recording attachments." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "To pole ma oczekującą wiadomość lub załączniki do nagrania."
           }
         }
       }

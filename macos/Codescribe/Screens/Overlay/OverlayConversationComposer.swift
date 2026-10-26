@@ -47,6 +47,7 @@ struct OverlayConversationComposer: View {
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
   var draftSyncArmed: Bool = false
+  var draftSyncEnabled: Bool = false
   var onActivateDraftSync: (() -> Void)? = nil
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
@@ -209,7 +210,7 @@ struct OverlayConversationComposer: View {
       restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
       hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
     )
-    .disabled(sending || onActivateDraftSync == nil)
+    .disabled(!draftSyncEnabled || onActivateDraftSync == nil)
     .contextMenu {
       ForEach(draftSyncChoices) { choice in
         Toggle(

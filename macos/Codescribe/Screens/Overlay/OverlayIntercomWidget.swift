@@ -2522,6 +2522,7 @@ private struct OverlayIntercomConversationBody: View {
       draftSyncChoices: current ? state.draftSyncChoices(for: conversation) : [],
       draftSyncNames: state.draftSyncNames(for: conversation.id),
       draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+      draftSyncEnabled: current && state.canActivateDraftSync(for: conversation.id),
       onActivateDraftSync: {
         guard current else { return }
         state.activateDraftSync(for: conversation.id)

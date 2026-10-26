@@ -2955,14 +2955,11 @@ final class OverlayState {
     return current == publication
   }
 
-  private func draftSyncGroupIsCurrent(
-    _ group: OverlayDraftSyncGroup, publication: OverlayComposerDraftPublication
-  ) -> Bool {
-    guard let current = conversationDraftGroups.first(where: { $0.id == group.id }),
-      let member = current.participants[publication.id]
-    else { return false }
-    return member.owner.id == publication.owner.id
-      && member.owner.channel == publication.owner.channel
+  private func draftPublicationOwnerIsCurrent(_ publication: OverlayComposerDraftPublication) -> Bool {
+    draftSyncConversations.contains {
+      $0.id == publication.id && $0.owner?.id == publication.owner.id
+        && $0.channel == publication.owner.channel && $0.owner?.channel == publication.owner.channel
+    }
   }
 
   /// Freeze each exact owner's own payload and reply. A late receipt may clear
@@ -2989,17 +2986,15 @@ final class OverlayState {
     defer { pendingTextMessages.subtract(group.members) }
     for recipient in pending { textMessageErrors.removeValue(forKey: recipient.id) }
     for recipient in pending {
-      // An await can retire/rebind an owner or edit its buffer. Do not publish
-      // a stale frozen payload, and never redirect it to a successor's channel.
-      guard draftSyncGroupIsCurrent(group, publication: recipient),
-        draftPublicationIsCurrent(recipient)
-      else { continue }
+      // Send authorized the frozen payload. Subsequent editing does not recall
+      // it; only retirement/rebinding can cancel this exact recipient. A group
+      // dissolving after another owner retires cannot cancel a surviving owner.
+      guard draftPublicationOwnerIsCurrent(recipient) else { continue }
       let id = recipient.id
       do {
         let alsoSentTo = frozen.filter {
           $0.id != id && OverlayComposerProseEdit.identical($0.payload, recipient.payload)
-            && draftSyncGroupIsCurrent(group, publication: $0) && draftPublicationIsCurrent($0)
-            && conversationDraftReceipts[$0.id] == $0
+            && draftPublicationOwnerIsCurrent($0)
         }.map(\.owner)
         try await publishConversationText(
           recipient.owner, recipient.payload, recipient.reply, alsoSentTo)
@@ -3009,9 +3004,7 @@ final class OverlayState {
           conversationDraftReceipts[id] = recipient
         }
       } catch {
-        if draftSyncGroupIsCurrent(group, publication: recipient),
-          draftPublicationIsCurrent(recipient)
-        {
+        if draftPublicationOwnerIsCurrent(recipient) {
           textMessageErrors[id] = error.userFacingMessage
         }
       }

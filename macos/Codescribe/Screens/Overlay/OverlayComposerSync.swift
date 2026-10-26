@@ -298,16 +298,25 @@ extension OverlayState {
     return !groupIsBusy(sourceMembers.union(targetMembers))
   }
 
+  func canActivateDraftSync(for id: String) -> Bool {
+    guard draftSyncConversations.contains(where: { $0.id == id }) else { return false }
+    if let armed = armedDraftSyncConversationID {
+      return armed == id || canLinkDraft(armed, with: id)
+    }
+    let members = draftGroupIndex(for: id).map { conversationDraftGroups[$0].members } ?? [id]
+    return !groupIsBusy(members)
+  }
+
   func activateDraftSync(for id: String) {
     reconcileDraftSyncOwners()
-    guard draftSyncConversations.contains(where: { $0.id == id }) else { return }
+    guard canActivateDraftSync(for: id) else { return }
     if let armed = armedDraftSyncConversationID {
       if armed == id || toggleDraftSync(from: armed, with: id) {
         armedDraftSyncConversationID = nil
       }
     } else if hasSynchronizedDraft(id) {
       stopDraftSync(for: id)
-    } else if !groupIsBusy([id]) {
+    } else {
       armedDraftSyncConversationID = id
     }
   }
