@@ -2521,8 +2521,23 @@ private struct OverlayIntercomConversationBody: View {
       },
       draftSyncChoices: current ? state.draftSyncChoices(for: conversation) : [],
       draftSyncNames: state.draftSyncNames(for: conversation.id),
-      onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
-      onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
+      draftSyncArmed: state.armedDraftSyncConversationID == conversation.id,
+      onActivateDraftSync: {
+        guard current else { return }
+        state.activateDraftSync(for: conversation.id)
+      },
+      onProseEdit: { edit in
+        guard current else { return }
+        state.applyConversationProseEdit(edit, for: conversation.id)
+      },
+      onToggleDraftSync: {
+        guard current else { return }
+        state.toggleDraftSync(from: conversation.id, with: $0)
+      },
+      onStopDraftSync: {
+        guard current else { return }
+        state.stopDraftSync(for: conversation.id)
+      }
     )
   }
 }
