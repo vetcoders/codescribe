@@ -188,6 +188,66 @@ final class OverlayIntercomDragAcceptanceTests: XCTestCase {
     rig.verifyTruth()
   }
 
+  func testNativeResizeCornersAndDeferredGestureLifecycle() throws {
+    for cancelled in [false, true] {
+      let rig = try Rig(secondRow: true)
+      defer { rig.cleanup() }
+      let root = try XCTUnwrap(rig.card.contentView)
+      root.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+      let top = root.isFlipped ? root.bounds.minY + 7 : root.bounds.maxY - 7
+      let bottom = root.isFlipped ? root.bounds.maxY - 7 : root.bounds.minY + 7
+      let left = root.bounds.minX + 7
+      let right = root.bounds.maxX - 7
+      // NSView.hitTest takes its superview's coordinates. Hosting and theme
+      // frames can disagree on flippedness; convert before testing a corner.
+      func target(_ point: CGPoint) -> NSView? {
+        root.hitTest(root.convert(point, to: root.superview))
+      }
+      func isResize(_ point: CGPoint) -> Bool {
+        target(point).map { String(describing: type(of: $0)).contains("OverlayIntercomResizeView") }
+          ?? false
+      }
+      XCTAssertTrue(isResize(CGPoint(x: right, y: top)), "Top-right is a visible resize corner")
+      XCTAssertTrue(isResize(CGPoint(x: left, y: bottom)), "Bottom-left is a visible resize corner")
+      XCTAssertTrue(isResize(CGPoint(x: right, y: bottom)), "Bottom-right is a visible resize corner")
+      XCTAssertFalse(isResize(CGPoint(x: left, y: top)), "Top-left belongs to detach")
+      XCTAssertFalse(isResize(CGPoint(x: root.bounds.midX, y: bottom)), "No invisible edge band")
+      let point = CGPoint(x: right, y: bottom)
+      let handle = try XCTUnwrap(target(point))
+      let desktop = rig.controller.desktop
+      let stored = rig.store.load()
+      let frame = rig.card.frame
+      let alpha = rig.card.alphaValue
+      let reconciliations = rig.controller.reconciliationRequests
+      func event(_ type: NSEvent.EventType) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(
+          with: type, location: root.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+          windowNumber: rig.card.windowNumber, context: nil, eventNumber: 1,
+          clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+      }
+      handle.mouseDown(with: try event(.leftMouseDown))
+      for _ in 0..<5 { handle.mouseDragged(with: try event(.leftMouseDragged)) }
+      XCTAssertEqual(rig.controller.desktop, desktop)
+      XCTAssertEqual(rig.store.load(), stored)
+      XCTAssertEqual(rig.controller.reconciliationRequests, reconciliations)
+      XCTAssertEqual(rig.card.frame, frame, "Only native preview changes during tracking")
+      XCTAssertLessThan(rig.card.alphaValue, alpha)
+      if cancelled {
+        rig.controller.setVisible(false, relativeTo: nil)
+        XCTAssertEqual(rig.store.load(), stored)
+        XCTAssertEqual(rig.controller.desktop, desktop)
+        XCTAssertEqual(rig.card.alphaValue, alpha, accuracy: 0.001)
+      } else {
+        handle.mouseUp(with: try event(.leftMouseUp))
+        XCTAssertEqual(rig.controller.reconciliationRequests, reconciliations + 1)
+        XCTAssertEqual(rig.store.load(), rig.controller.desktop)
+        XCTAssertEqual(try XCTUnwrap(rig.controller.desktop.groupWidth), Double(rig.header.frame.width), accuracy: 0.01)
+      }
+      rig.verifyTruth()
+    }
+  }
+
   func testLastRowDocksOverVisibleHeaderIncludingFoldedGroup() throws {
     for folded in [false, true] {
       let rig = try Rig()
