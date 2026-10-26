@@ -422,6 +422,25 @@ A panel reads the role, never a bare number.
   styling so the system can resolve selected and inactive text.
   `DesignSystemAdaptiveTests` holds these pairs in standard and high-contrast
   appearances; light text rungs account for travertine's darkest tinted card.
+  The terracotta rungs are the brand hue with only its lightness moved in
+  OKLCH (C 0.13, H 39°), brick rather than a blend with black.
+- **Brand accent for state, chrome accent for controls.** `CSColor.brandAccent`
+  (`#BA5C3C` on paper, `#D97757` on ink; 3:1 as a mark on every sheet shade)
+  colours what reports state: the setup progress bar, the mark of a selected
+  choice and the icon of a wizard step. A selected choice row is drawn by
+  `csChoice(selected:)` (the wash at `CSAlpha.selectionWash`, the one-point
+  edge at `CSAlpha.selectionStroke`), never by the prominent action surface.
+  `CSColor.chromeAccent` stays the macOS accent for focus, switches, sliders,
+  bordered and prominent buttons, links and the dictionary pins; actions read
+  as clickable through their shape, not through a hue (Founder, 2026-10-24
+  and 2026-10-26). A determinate progress bar is `CSProgressBar`: the native
+  linear `ProgressView` on macOS paints the system accent and ignores
+  `.tint`, so a brand-coloured bar must draw its own track. Indeterminate
+  progress keeps the native spinner. A status word that is verified
+  ("Granted", "Ready") is `CSStatusBadge(mark: .verified)` — a filled check on
+  an olive capsule — and stored identity that nothing has tested ("Saved") is
+  the same capsule with the empty circle; `StatusPill` remains the dotted
+  live-activity pill.
 
 ### Agent window header
 
