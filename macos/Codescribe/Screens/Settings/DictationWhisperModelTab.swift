@@ -40,7 +40,7 @@ struct DictationWhisperModelTab: View {
         if let error = model.whisperDownloadStore.error {
           Text(error)
             .font(SettingsScale.helper)
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
         }
         SettingsControlRow(
@@ -322,13 +322,13 @@ struct DictationWhisperModelTab: View {
       }
       Spacer(minLength: CSSpace.sm)
       if removable {
-        SettingsChipButton("Remove", tint: CSColor.terracottaText) {
+        SettingsChipButton("Remove", tint: CSColor.dangerLight) {
           remove(directory)
         }
       } else {
         // Disabled, not hidden: the line must still show that removal is the
         // action it would otherwise offer, and say why it cannot.
-        SettingsChipButton("Remove", tint: CSColor.terracottaText, enabled: false) {}
+        SettingsChipButton("Remove", tint: CSColor.dangerLight, enabled: false) {}
           .help("The selected model cannot be removed.")
           .accessibilityHint("The selected model cannot be removed.")
       }

@@ -173,7 +173,7 @@ struct MCPServerRow: View {
   private var accent: Color {
     guard server.enabled else { return CSColor.secondaryInk }
     if pending { return CSColor.amberLight }
-    if let result { return result.ok ? CSColor.olive : CSColor.terracottaText }
+    if let result { return result.ok ? CSColor.olive : CSColor.dangerLight }
     return CSColor.secondaryInk
   }
 
@@ -261,7 +261,7 @@ struct MCPServerRow: View {
           color: CSColor.oliveLight
         )
       } else {
-        resultLine(text: String(localized: "Last test: failed"), color: CSColor.terracottaText)
+        resultLine(text: String(localized: "Last test: failed"), color: CSColor.dangerLight)
       }
     } else {
       resultLine(text: String(localized: "Connection not tested"), color: CSColor.secondaryInk)
@@ -388,7 +388,7 @@ struct MCPServerRow: View {
     SettingsChipButton(action: onRemove) {
       // A glyph has no cap height to pad against: the square matches the line
       // height of the two labelled chips beside it, so all three are one row.
-      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.terracottaText)
+      CSIconView(icon: .delete, size: 11, weight: .semibold, color: CSColor.dangerLight)
         .frame(width: 14, height: 14)
     }
     .accessibilityLabel(Text("Remove", comment: "Button label: remove an MCP server"))
@@ -594,12 +594,12 @@ private struct MCPServerForm: View {
     }
   }
 
-  /// The user sentence in the accent colour; the store's own words, when they
+  /// The user sentence in the error colour; the store's own words, when they
   /// differ, stay one hover away instead of on the screen.
   private func errorLine(_ failure: MCPAddFailure) -> some View {
     Text(verbatim: failure.message)
       .font(SettingsScale.helper)
-      .foregroundStyle(CSColor.terracottaText)
+      .foregroundStyle(CSColor.dangerLight)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
       .help(failure.detail == failure.message ? "" : failure.detail)

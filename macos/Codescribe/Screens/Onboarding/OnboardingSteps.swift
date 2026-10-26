@@ -45,7 +45,7 @@ struct InterfaceLanguageStepView: View {
         .fixedSize(horizontal: false, vertical: true)
       }
       if let error = model.lastError {
-        Text(error).font(.callout).foregroundStyle(CSColor.terracottaText)
+        Text(error).font(.callout).foregroundStyle(CSColor.dangerLight)
           .accessibilityIdentifier("onboarding-interface-language-error")
       }
     }

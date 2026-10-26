@@ -141,7 +141,7 @@ struct AgentLiveStatusPill: View {
     case .stopping:
       StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.textTertiary)
     case .failed:
-      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText)
+      StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.dangerLight)
     }
   }
 }

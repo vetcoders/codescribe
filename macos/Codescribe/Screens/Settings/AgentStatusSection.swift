@@ -565,7 +565,7 @@ private struct CapabilityMatrixRow: View {
     switch row.tier.lowercased() {
     case "native": return CSColor.oliveLight
     case "enhanced": return CSColor.amberLight
-    case "unavailable": return CSColor.terracottaText
+    case "unavailable": return CSColor.dangerLight
     default: return CSColor.secondaryInk
     }
   }
@@ -579,7 +579,7 @@ extension CsMcpRowTone {
     switch self {
     case .good: return CSColor.oliveLight
     case .warn: return CSColor.amberLight
-    case .bad: return CSColor.terracottaText
+    case .bad: return CSColor.dangerLight
     case .neutral: return CSColor.secondaryInk
     }
   }

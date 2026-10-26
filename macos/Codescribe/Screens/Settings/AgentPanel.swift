@@ -109,7 +109,7 @@ private struct LLMLaneEditor: View {
     case "fresh": return CSColor.olive
     case "cached": return CSColor.amberLight
     case "no_key", "loading": return CSColor.secondaryInk
-    default: return CSColor.terracottaText
+    default: return CSColor.dangerLight
     }
   }
 
@@ -375,7 +375,7 @@ private struct LLMLaneEditor: View {
       color = CSColor.amberLight
     default:
       verdict = String(localized: "Formatting failed", comment: "Formatting test verdict")
-      color = CSColor.terracottaText
+      color = CSColor.dangerLight
     }
     let level = probe.reasoning ?? String(localized: "not sent", comment: "Reasoning field absent")
     return VStack(alignment: .leading, spacing: CSSpace.xs) {
@@ -391,7 +391,7 @@ private struct LLMLaneEditor: View {
       if let message = Self.formattingFailureMessage(probe) {
         Text(message)
           .font(SettingsScale.helper)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
       }
       let checked = Date(timeIntervalSince1970: Double(probe.checkedAtUnixMs) / 1000)

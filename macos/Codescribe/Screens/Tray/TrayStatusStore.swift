@@ -202,7 +202,7 @@ final class TrayStatusStore: ObservableObject {
     case .warning:
       return Color(nsColor: CSPalette.modeProcessingLight)
     case .critical:
-      return CSColor.terracottaText
+      return CSColor.dangerLight
     }
   }
 

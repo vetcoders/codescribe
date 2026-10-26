@@ -338,7 +338,7 @@ struct ProviderCard: View {
         SettingsChipButton("Edit", tint: CSColor.secondaryInk) { onEdit?() }
           .accessibilityLabel("Edit custom provider \(provider.displayName)")
         SettingsChipButton(action: { confirmRemove = true }) {
-          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.terracottaText)
+          CSIconView(icon: .delete, size: 12, weight: .semibold, color: CSColor.dangerLight)
             .frame(width: 10, height: 18)
         }
         .accessibilityLabel("Remove custom provider \(provider.displayName)")
@@ -485,7 +485,7 @@ struct CustomProviderForm: View {
         if let endpointError {
           Text(endpointError)
             .font(CSFont.ui(11, .medium))
-            .foregroundStyle(CSColor.terracottaText)
+            .foregroundStyle(CSColor.dangerLight)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("custom-provider-endpoint-error")
         }
@@ -501,7 +501,7 @@ struct CustomProviderForm: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("custom-provider-form-error")
       }

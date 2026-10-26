@@ -1129,7 +1129,7 @@ struct AttachmentPreviewSheet: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(title)
         .font(CSFont.mono(12, .semibold))
-        .foregroundStyle(CSColor.terracottaText)
+        .foregroundStyle(CSColor.dangerLight)
       Text(detail)
         .font(CSFont.mono(11))
         .foregroundStyle(CSColor.secondaryInk)
@@ -1140,7 +1140,7 @@ struct AttachmentPreviewSheet: View {
     .background(Color.primary.opacity(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+        .strokeBorder(CSColor.dangerLight.opacity(0.22), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }
@@ -1222,7 +1222,7 @@ private struct ToolLineRow: View {
     case .running:
       return CSColor.amberLight
     case .failed:
-      return CSColor.terracottaText
+      return CSColor.dangerLight
     case .cancelled, .unknown:
       return CSColor.textTertiary
     case .succeeded:
@@ -1305,7 +1305,7 @@ private struct ToolInspectPanel: View {
           .textCase(.uppercase)
           Text(reason)
             .font(CSFont.mono(10.5, .medium))
-            .foregroundStyle(line.state == .failed ? CSColor.terracottaText : Color.primary)
+            .foregroundStyle(line.state == .failed ? CSColor.dangerLight : Color.primary)
             .textSelection(.enabled)
             .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)

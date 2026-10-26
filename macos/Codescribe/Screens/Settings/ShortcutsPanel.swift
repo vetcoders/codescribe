@@ -192,7 +192,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: 6) {
       if model.hasBlockingBindingConflicts {
         statusLine(
-          color: CSColor.terracottaText,
+          color: CSColor.dangerLight,
           text: String(localized: "Resolve the conflict above to save the mode shortcuts.")
         )
       } else if model.hasPendingBindingChanges {
@@ -204,7 +204,7 @@ struct ShortcutsPanel: View {
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.terracottaText : CSColor.oliveLight,
+            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.oliveLight,
             text: sentence
           )
           if let detail = receipt.failureDetail {
@@ -566,7 +566,7 @@ struct ShortcutsPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.headerGap) {
       SettingsSectionLabel(String(localized: "Conflicts"))
       ForEach(Array(blockingConflicts.enumerated()), id: \.offset) { _, conflict in
-        validationRow(conflict, accent: CSColor.terracottaText, marker: "!")
+        validationRow(conflict, accent: CSColor.dangerLight, marker: "!")
       }
     }
   }

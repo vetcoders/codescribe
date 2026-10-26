@@ -597,7 +597,7 @@ enum CalloutKind {
     case .tip: return CSColor.oliveLight
     case .important: return CSColor.terracottaDeep
     case .warning: return CSColor.amberLight
-    case .caution: return CSColor.terracottaText
+    case .caution: return CSColor.dangerLight
     }
   }
 

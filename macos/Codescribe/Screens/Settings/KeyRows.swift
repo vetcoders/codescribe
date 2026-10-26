@@ -192,7 +192,7 @@ struct SettingsUrlRow: View {
       if let error {
         Text(error)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("settings-url-row-error")
       }
@@ -458,7 +458,7 @@ struct KeyRow: View {
         SettingsChipButton(enabled: isSet && !isUpdating, action: clear) {
           CSIconView(
             icon: .delete, size: 12, weight: .semibold,
-            color: isSet ? CSColor.terracottaText : CSColor.secondaryInk
+            color: isSet ? CSColor.dangerLight : CSColor.secondaryInk
           )
           .frame(width: 10, height: 18)
         }
@@ -557,7 +557,7 @@ struct KeyProbeChip: View {
   private var tint: Color {
     switch result.status {
     case .ok: return CSColor.oliveLight
-    case .invalid, .noQuota: return CSColor.terracottaText
+    case .invalid, .noQuota: return CSColor.dangerLight
     case .network, .rejected: return CSColor.amberLight
     case .missing, .unsupported: return CSColor.secondaryInk
     }
@@ -641,7 +641,7 @@ struct AccountLoginRow: View {
       if let loginNotice, !loginNotice.isEmpty {
         Text(loginNotice)
           .font(SettingsScale.statusBadge)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
           .lineLimit(1)
           .help(loginNotice)
       }

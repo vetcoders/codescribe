@@ -309,7 +309,7 @@ extension SettingsHealthLevel {
     switch self {
     case .healthy: return CSColor.oliveLight
     case .degraded: return CSColor.amberLight
-    case .offline: return CSColor.terracottaText
+    case .offline: return CSColor.dangerLight
     case .unknown: return CSColor.secondaryInk
     }
   }

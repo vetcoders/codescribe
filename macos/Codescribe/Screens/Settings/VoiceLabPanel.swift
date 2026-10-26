@@ -708,7 +708,7 @@ struct VoiceLabPanel: View {
       if let error = model.voiceLabEditErrors[row.id] {
         Text("Save failed: \(error)")
           .font(CSFont.ui(10.5))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.dangerLight)
       }
       if let note = model.voiceLabEditNotes[row.id] {
         Text(note)
@@ -1382,7 +1382,7 @@ struct VoiceLabPanel: View {
   private func readError(_ error: String) -> some View {
     Text("Live quality data is unavailable: \(error)")
       .font(CSFont.ui(12.5))
-      .foregroundStyle(CSColor.terracottaText)
+      .foregroundStyle(CSColor.dangerLight)
       .frame(maxWidth: .infinity, alignment: .leading)
       .settingsGroupedInset()
   }

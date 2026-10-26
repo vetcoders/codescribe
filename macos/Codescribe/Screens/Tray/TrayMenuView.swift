@@ -405,13 +405,13 @@ struct TrayMenuView: View {
 // MARK: - Notes action result banner
 
 /// Transient confirmation row for the Notes actions. Olive check on success,
-/// terracotta cross on failure — a permission-free, always-visible replacement
+/// danger cross on failure — a permission-free, always-visible replacement
 /// for the OS notification that an accessory app can't guarantee.
 private struct TrayNoteStatusRow: View {
   let status: TrayActionStatus
 
   private var isSuccess: Bool { status.kind == .success }
-  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.terracottaText }
+  private var tint: Color { isSuccess ? CSColor.oliveLight : CSColor.dangerLight }
 
   var body: some View {
     HStack(spacing: 6) {

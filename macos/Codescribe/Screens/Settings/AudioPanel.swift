@@ -869,7 +869,7 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
       if let error = model.admissionReadError {
         statusRow(
-          color: CSColor.terracottaText,
+          color: CSColor.dangerLight,
           title: "Readiness check unavailable",
           detail: error
         )
@@ -1345,7 +1345,7 @@ struct AudioPanel: View {
     case .healthy: return CSColor.oliveLight
     case .neutral: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
-    case .unavailable: return CSColor.terracottaText
+    case .unavailable: return CSColor.dangerLight
     }
   }
 

@@ -1484,10 +1484,10 @@ final class SettingsChromeContractTests: XCTestCase {
       "Pełne porównanie · %1$lld → %2$lld znaków")
   }
 
-  func testAvailabilityTintsUseSolidTerracotta() throws {
+  func testAvailabilityTintsUseDangerLight() throws {
     let model = try XCTUnwrap(settingsSources()["SettingsViewModel.swift"])
     XCTAssertEqual(
-      model.components(separatedBy: "? CSColor.oliveLight : CSColor.terracottaText").count, 3)
+      model.components(separatedBy: "? CSColor.secondaryInk : CSColor.dangerLight").count, 3)
     XCTAssertTrue(
       model.contains(
         "static func availabilityTint(for provider: CsProviderOption, lane: LLMLane = .assistive)"))

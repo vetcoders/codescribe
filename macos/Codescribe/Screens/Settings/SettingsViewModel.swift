@@ -953,7 +953,7 @@ struct LLMLaneModel {
     guard credentialAccessResolved, credentialAccessError == nil else {
       return CSColor.secondaryInk
     }
-    return runtime.available ? CSColor.secondaryInk : CSColor.terracottaText
+    return runtime.available ? CSColor.secondaryInk : CSColor.dangerLight
   }
 
   var discoveryDescription: String {
@@ -3663,7 +3663,7 @@ final class SettingsViewModel: ObservableObject {
     provider.apiKeySet
       || (provider.wire == "responses" && provider.accountSignedIn)
       || !provider.keyRequired
-      ? CSColor.secondaryInk : CSColor.terracottaText
+      ? CSColor.secondaryInk : CSColor.dangerLight
   }
 
   /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).
