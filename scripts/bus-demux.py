@@ -962,7 +962,7 @@ def slim(
     # Which other channels were open beside this one: context for the reader,
     # never an admission, routing or ownership input.
     for key in ("message_id", "occurrences", "hold_until", "user_reply_to", "attachments", "co_audience",
-                "co_audience_basis"):
+                "co_audience_basis", "also_sent_to", "also_sent_to_basis"):
         if key in event:
             payload[key] = event[key]
     coverage = event.get("coverage")
@@ -1710,7 +1710,8 @@ class EvidenceNormalizer:
         if channel_of_session(str(event.get("session_id") or "")) is not None and event.get("utterance_id") is None:
             clean.pop("utterance_id", None)
         for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id",
-                    "hold_until", "closing_decision", "co_audience", "co_audience_basis"):
+                    "hold_until", "closing_decision", "co_audience", "co_audience_basis",
+                    "also_sent_to", "also_sent_to_basis"):
             if key in event:
                 clean[key] = event[key]
         return clean
@@ -4655,6 +4656,32 @@ def founder_provenance_label(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def also_sent_to_queue_label(payload: dict[str, Any]) -> str | None:
+    """Frozen Sync co-addresses, not routing authority or a delivery receipt."""
+    if (payload.get("producer_schema", payload.get("schema")) != AGENT_USER_MESSAGE_SCHEMA
+            or payload.get("also_sent_to_basis") != "sync_selection"):
+        return None
+    members = payload.get("also_sent_to")
+    if not isinstance(members, list) or not members:
+        return None
+    labels = []
+    seen = set()
+    for member in members[:8]:
+        if not isinstance(member, dict):
+            continue
+        channel, audience = member.get("channel"), member.get("audience")
+        identity = tuple(member.get(key) for key in ("provider", "provider_session_id", "lease_id"))
+        if (not all(isinstance(value, str) and value for value in identity)
+                or identity in seen
+                or identity == tuple(payload.get(key) for key in ("provider", "provider_session_id", "lease_id"))
+                or not isinstance(channel, str) or channel not in "123456789" or len(channel) != 1
+                or not isinstance(audience, str) or not audience):
+            continue
+        seen.add(identity)
+        labels.append(f"{channel} ({queue_metadata(audience, 48, peer_controlled=True)})")
+    return "Also sent to: " + ", ".join(labels) if labels else None
+
+
 def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
     """Present complete task text and provenance without acoustic diagnostics.
 
@@ -4669,10 +4696,14 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "bus", "recipients", "broadcast_id", "channel", "origin_channel", "routing_match", "routing_candidates",
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
-        "co_audience", "co_audience_basis",
+        "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis",
     )
-    return {**{key: payload[key] for key in fields if key in payload},
-            "addressed_to": delivery_address_label(payload)}
+    envelope = {**{key: payload[key] for key in fields if key in payload},
+                "addressed_to": delivery_address_label(payload)}
+    also_sent_to = also_sent_to_queue_label(payload)
+    if also_sent_to is not None:
+        envelope["also_sent_to_label"] = also_sent_to
+    return envelope
 
 
 class MailboxReadError(ValueError):
@@ -5116,6 +5147,9 @@ class NativeQueueWakeup:
             co_audience = co_audience_queue_label(payload)
             if co_audience is not None:
                 header += "\n" + co_audience
+            also_sent_to = also_sent_to_queue_label(payload)
+            if also_sent_to is not None:
+                header += "\n" + also_sent_to
             founder_source = founder_provenance_label(payload)
             if founder_source is not None:
                 # Founder authority: keep the full-text copy, now with an
@@ -8351,6 +8385,42 @@ def validate_user_reply_reference(value: Any) -> dict[str, str]:
     return {"message_id": identity, "author": author, "text": text}
 
 
+def sync_selection_owners(raw: str | None, bindings: dict[str, Any], root: Path,
+                          recipient: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve optional CC context against exact bindings without selecting targets."""
+    if raw is None:
+        return []
+    if len(raw.encode("utf-8")) > 16384:
+        raise ValueError("Sync co-addresses exceed the metadata limit")
+    members = json.loads(raw)
+    fields = {"channel", "provider", "provider_session_id", "lease_id"}
+    if not isinstance(members, list) or len(members) > 8:
+        raise ValueError("invalid Sync co-addresses")
+    resolved = []
+    seen = set()
+    for member in members:
+        if (not isinstance(member, dict) or set(member) != fields
+                or any(not isinstance(value, str) or not value or len(value) > 512
+                       or any(not character.isprintable() for character in value)
+                       for value in member.values())
+                or len(member["channel"]) != 1 or member["channel"] not in "123456789"
+                or re.fullmatch(r"[0-9a-f]{32}", member["lease_id"]) is None):
+            raise ValueError("invalid Sync co-address")
+        owner, refusal = binding_identity(member["channel"], bindings.get(member["channel"]))
+        if (refusal is not None
+                or owner["provider"] != member["provider"].casefold()
+                or owner["provider_session_id"] != member["provider_session_id"]
+                or owner["lease_id"] != member["lease_id"]):
+            continue
+        identity = tuple(owner[key] for key in ("provider", "provider_session_id", "lease_id"))
+        if (identity == tuple(recipient[key] for key in ("provider", "provider_session_id", "lease_id"))
+                or identity in seen or owner_refusal(root, owner) is not None):
+            continue
+        seen.add(identity)
+        resolved.append(owner)
+    return sorted(resolved, key=lambda owner: owner["channel"])
+
+
 def send_text_command(args: argparse.Namespace) -> int:
     """Publish user text to every reachable owner of channel zero, or one exact owner."""
     raw_reply = getattr(args, "user_reply_to", None)
@@ -8358,6 +8428,9 @@ def send_text_command(args: argparse.Namespace) -> int:
     attachments = [describe_attachment(raw) for raw in (getattr(args, "attach_file", None) or [])]
     root = args.bridge_home
     broadcast = str(args.channel) == "0"
+    raw_also_sent_to = getattr(args, "also_sent_to", None)
+    if broadcast and raw_also_sent_to is not None:
+        raise ValueError("Sync co-addresses require one exact recipient")
     path = root / AUDIENCE_BINDING_FILENAME
     with path.with_suffix(".lock").open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
@@ -8387,6 +8460,7 @@ def send_text_command(args: argparse.Namespace) -> int:
         if not owners:
             raise ValueError("no agents are listening; draft retained" if skipped
                              else "no agents are bound; draft retained")
+        also_sent_to = sync_selection_owners(raw_also_sent_to, bindings, root, owners[0])
         text = sys.stdin.buffer.read(65537)
         if len(text) > 65536:
             raise ValueError("message exceeds 64 KiB; draft retained")
@@ -8414,6 +8488,9 @@ def send_text_command(args: argparse.Namespace) -> int:
                      "sender": dict(FOUNDER_SENDER), "recipients": [owner]}
             if user_reply is not None:
                 event["user_reply_to"] = user_reply
+            if also_sent_to:
+                event["also_sent_to"] = also_sent_to
+                event["also_sent_to_basis"] = "sync_selection"
             if attachments:
                 event["attachments"] = attachments
             if broadcast:
@@ -9965,9 +10042,12 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
                 "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
                 "routing_candidates", "instructions", "attachments", "user_reply_to",
-                "co_audience", "co_audience_basis"):
+                "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis"):
         if key in payload:
             line[key] = payload[key]
+    also_sent_to = also_sent_to_queue_label(payload)
+    if also_sent_to is not None:
+        line["also_sent_to_label"] = also_sent_to
     return line
 
 
@@ -10456,6 +10536,7 @@ def main() -> int:
         "defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
+    parser.add_argument("--also-sent-to", metavar="JSON", help="with --send-text: frozen exact-owner Sync co-addresses, informational only")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
     parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
                         "one channel digit 1-9, or 0 to broadcast to every other bound agent")
@@ -10530,6 +10611,8 @@ def main() -> int:
         parser.error("capture target flags require --stage-capture-attachment")
     if args.user_reply_to is not None and not args.send_text:
         parser.error("--user-reply-to requires --send-text")
+    if args.also_sent_to is not None and not args.send_text:
+        parser.error("--also-sent-to requires --send-text")
     if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
         parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):
