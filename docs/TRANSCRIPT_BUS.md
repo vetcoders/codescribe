@@ -1353,10 +1353,15 @@ not rewritten.
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
-Silero speech-end edge. Text arrivals do not start or reset this clock. While
-speech is measured active, or no complete speech-start/end pair is available,
-there is no automatic silence deadline; manual hang-up remains available. `0`
-disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
+Silero speech-end edge, or the session measured no speech edge at all for
+30 s after it opened. The words so far are delivered and the session ends as
+a hang-up does: its capture is released and nothing reopens it, so the next
+message is the next Fn+digit (one press, one message; Founder decision
+2026-10-26, which replaces the reopen half of voice seal `cc6c8248`). Text
+arrivals do not start or reset these clocks. While speech is measured
+active, or the speech-start/end pair after heard voice is incomplete, there
+is no automatic silence deadline; manual hang-up remains available. `0`
+disables both. `state: sealed` with `reason: hangup` means Fn+digit was
 pressed again and nothing reopens the session. `state: sealed` with
 `reason: orphan` means the process that opened the session ended without
 sealing it (quit or crash); the next controller start writes it for each
@@ -1380,7 +1385,7 @@ The helper admits playback only after the existing capture interlock proves
 idle, and stops its own player when a take starts. An open channel does not
 block a reply by itself: the app publishes its measured speech phase in
 `runtime/channel-speech-<digit>.json`. A `fresh` session (no speech since it
-opened, e.g. the reopen after a silence seal) admits any reply after 1 s.
+opened, e.g. a channel opened to answer a reply) admits any reply after 1 s.
 A `quiet` session (speech, then silence, inside the same take) admits only
 the reply of the agent bound to that channel: a pause in a message to one
 agent is not room for another, which waits for that take to seal. Quiet is
