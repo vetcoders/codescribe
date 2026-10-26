@@ -1517,11 +1517,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     XCTAssertEqual(conversation.frame.width, splitWidth, accuracy: 1)
 
     state.hideAgentsCanvas()
-    for sample: TimeInterval in [0.05, 0.1, 0.15, 0.6] {
-      settle(sample == 0.05 ? 0.05 : 0.05)
+    for sample in 1...4 {
+      settle(0.05)
       XCTAssertEqual(
         conversation.frame.width, splitWidth, accuracy: 1,
-        "the folding conversation keeps its split width at \(sample) s")
+        "the folding conversation keeps its split width at \(sample * 50) ms")
       XCTAssertEqual(conversation.frame.minX, 0, accuracy: 1)
     }
     settle(0.5)

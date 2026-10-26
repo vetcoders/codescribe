@@ -528,7 +528,8 @@ struct DictationOverlayView: View {
         // unfolds: the pane slide animates a clip, never a reflow. Laying the
         // text out at the folding cell's width wrapped it one character per
         // line in the edge column, and a stalled frame kept it there
-        // (Founder, 2026-10-26). The width changes only with the window.
+        // (Founder, 2026-10-26). The width follows the window, the preferred
+        // drawer width, a drag of the divider and the text scale, never the slide.
         let splitDrawerWidth = OverlayAgentDrawerLayout.drawerWidth(
           textScale: textScale,
           preferredWidth: agentDrawerResize?.width ?? CGFloat(preferredAgentDrawerWidth),
