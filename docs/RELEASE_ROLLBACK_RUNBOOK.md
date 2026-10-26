@@ -65,9 +65,12 @@ bad version. Clients that already installed `vX.Y.Z` need a release with a
      scripts/generate-appcast.sh . -o appcast.xml \
        --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/vX.Y.(Z+1)/"
    ```
-4. Verify the signed `appcast.xml` release identity and the release contract:
+4. Publish `vX.Y.(Z+1)` and verify both the local signed `appcast.xml` and the
+   live published feed:
    ```sh
    python3 scripts/verify-appcast-version.py appcast.xml --version X.Y.(Z+1)
+   curl -fsSL https://github.com/vetcoders/codescribe/releases/latest/download/appcast.xml -o /tmp/appcast-live.xml
+   python3 scripts/verify-appcast-version.py /tmp/appcast-live.xml --version X.Y.(Z+1)
    bash tests/release_appcast_contract.sh
    python3 scripts/tests/test_appcast_version.py
    ```

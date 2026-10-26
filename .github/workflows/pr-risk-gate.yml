@@ -129,6 +129,12 @@ jobs:
                   ":!.github/workflows/pr-risk-gate.yml",
                   ":!AGENTS.md",
                   ":!.github/copilot-instructions.md",
+                  ":!docs/ADR/README.md",
+                  ":!Cargo.lock",
+                  ":!**/package-lock.json",
+                  ":!**/*.xcstrings",
+                  ":!macos/Codescribe/Bridge/codescribe_ffi.swift",
+                  ":!macos/Codescribe/Bridge/codescribe_ffiFFI.h",
               ],
               text=True,
           )
