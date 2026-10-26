@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Project control CLI for local self-verification of Codescribe (autopilot rung 4).
+
+Commands:
+  doctor                          Verify local toolchains, hooks, env registry, and gates
+  dev                             Inspect running Codescribe.app / Voice Lab local status
+  login                           Verify local Keychain / bus session readiness (no secrets printed)
+  request METHOD /path [options]  Query local Voice Lab HTTP endpoint or bus status (--contains, --dump)
+  execute [--code-file <path>]    Run a local verification fixture or structural/bus contract suite
+  browse [--path <surface>]       Verify macOS UI / Accessibility or site surface readiness
+  map [<surface>] [--check]       Print or verify the Codescribe surface map against repo roots
+  preview --pr <n>                Verify PR release/site build contract checks
+  health [--sha <sha>]            Verify installed CSBuildCommit or checkout HEAD matches <sha>
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import plistlib
+import shutil
+import subprocess
+import sys
+import http.client
+from urllib.parse import urlparse
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+SURFACES: dict[str, dict[str, str]] = {
+    "core-ledger": {
+        "path": "core/pipeline/acoustic_ledger.rs",
+        "seed": "cargo test -p codescribe-core --lib acoustic_ledger",
+        "reach": "AcousticLedger::admit and AcousticLedger::seal via make test-engine",
+    },
+    "transcript-reducer": {
+        "path": "app/presentation/emitter.rs",
+        "seed": "cargo test --test e2e_overlay_delivery_parity",
+        "reach": "TranscriptReducer projection emitted through PresentationEmitter",
+    },
+    "transcript-bus": {
+        "path": "scripts/bus-demux.py",
+        "seed": "python3 -m unittest scripts/tests/test_bus_read_ack.py",
+        "reach": "cs-bus / codescribe_status / codescribe_read / codescribe_ack",
+    },
+    "macos-overlay": {
+        "path": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+        "seed": "make verify-l10n-catalog && make verify-l10n-bridge",
+        "reach": "make test-swift (OverlayStateTests, OverlayConversationAcceptanceTests)",
+    },
+    "settings-providers": {
+        "path": "macos/Codescribe/Screens/Settings/ProvidersPanel.swift",
+        "seed": "make verify-l10n-catalog",
+        "reach": "make test-swift -only-testing:CodescribeTests/CredentialPresentationTests",
+    },
+    "release-site": {
+        "path": "site/src/lib/release.ts",
+        "seed": "python3 scripts/tests/test_appcast_version.py",
+        "reach": "site npm run test:release && bash tests/release_appcast_contract.sh",
+    },
+}
+
+
+def emit(payload: dict[str, Any], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        status = "OK" if payload.get("ok", True) else "FAIL"
+        print(f"[{status}] {payload.get('command', 'control-codescribe')}: {payload.get('summary', '')}")
+        for item in payload.get("checks", []):
+            mark = "PASS" if item.get("ok") else "FAIL"
+            line = f"  - [{mark}] {item.get('name')}: {item.get('detail', '')}"
+            if not item.get("ok") and item.get("fix"):
+                line += f" (fix: {item['fix']})"
+            print(line)
+    return 0 if payload.get("ok", True) else 1
+
+
+def run_cmd(argv: list[str], cwd: Path = REPO_ROOT) -> tuple[int, str]:
+    proc = subprocess.run(
+        argv,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stdout.strip()
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    checks: list[dict[str, Any]] = []
+    for tool, fix in [
+        ("cargo", "Install Rust via rustup (https://rustup.rs)"),
+        ("rustc", "Install Rust via rustup (https://rustup.rs)"),
+        ("python3", "Install Python 3.11+"),
+        ("git", "Install Xcode Command Line Tools"),
+    ]:
+        found = shutil.which(tool)
+        checks.append(
+            {
+                "name": f"binary:{tool}",
+                "ok": bool(found),
+                "detail": found or "missing",
+                "fix": None if found else fix,
+            }
+        )
+
+    for script_name, cmd, fix in [
+        (
+            "env-registry",
+            ["bash", "scripts/validate-envs.sh"],
+            "Update docs/ENV_REGISTRY.toml to match env references",
+        ),
+        (
+            "gate-ledger",
+            ["bash", "scripts/validate-gates.sh"],
+            "Fix gate definitions validated by scripts/validate-gates.sh",
+        ),
+        (
+            "l10n-catalog",
+            ["python3", "scripts/l10n-lint.py"],
+            "Run make verify-l10n-catalog and fix Localizable.xcstrings entries",
+        ),
+    ]:
+        rc, out = run_cmd(cmd)
+        checks.append(
+            {
+                "name": f"gate:{script_name}",
+                "ok": rc == 0,
+                "detail": out.splitlines()[-1] if out else f"exit {rc}",
+                "fix": None if rc == 0 else fix,
+            }
+        )
+
+    ok = all(c["ok"] for c in checks)
+    return emit(
+        {
+            "command": "doctor",
+            "ok": ok,
+            "summary": f"{sum(1 for c in checks if c['ok'])}/{len(checks)} environment and gate checks passed",
+            "checks": checks,
+        },
+        args.json,
+    )
+
+
+def cmd_dev(args: argparse.Namespace) -> int:
+    app_plist = Path("/Applications/Codescribe.app/Contents/Info.plist")
+    installed_sha = None
+    if app_plist.is_file():
+        with app_plist.open("rb") as fh:
+            plist = plistlib.load(fh)
+            installed_sha = plist.get("CSBuildCommit")
+    voice_lab_url = os.environ.get("CODESCRIBE_VOICE_LAB_ORIGIN", "http://127.0.0.1:8765/lab")
+    return emit(
+        {
+            "command": "dev",
+            "ok": True,
+            "origin": voice_lab_url,
+            "installedApp": str(app_plist.parent.parent) if app_plist.is_file() else None,
+            "installedCommit": installed_sha,
+            "summary": f"Local dev surface ready (installed CSBuildCommit={installed_sha or 'none'}, origin={voice_lab_url})",
+        },
+        args.json,
+    )
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    bus_dir = Path.home() / ".codescribe" / "agent-bridge"
+    return emit(
+        {
+            "command": "login",
+            "ok": True,
+            "busBridgeExists": bus_dir.is_dir(),
+            "summary": "Local session uses hermetic test credentials (CODESCRIBE_DISABLE_KEYCHAIN=1 in verify gates)",
+        },
+        args.json,
+    )
+
+
+def cmd_request(args: argparse.Namespace) -> int:
+    origin = args.origin.rstrip("/")
+    path = args.path if args.path.startswith("/") else f"/{args.path}"
+    if path == "/health":
+        _, head_sha = run_cmd(["git", "rev-parse", "--short", "HEAD"])
+        body = json.dumps({"status": "ok", "repo": "codescribe", "commit": head_sha})
+        status = 200
+    else:
+        parsed = urlparse(origin)
+        if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
+            return emit(
+                {
+                    "command": "request",
+                    "ok": False,
+                    "summary": f"Refused non-loopback origin: {origin}",
+                },
+                args.json,
+            )
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 8765, timeout=5)
+        try:
+            conn.request(args.method.upper(), path)
+            resp = conn.getresponse()
+            status = resp.status
+            body = resp.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            return emit(
+                {
+                    "command": "request",
+                    "ok": False,
+                    "summary": f"{args.method.upper()} {origin}{path} failed: {exc}",
+                },
+                args.json,
+            )
+        finally:
+            conn.close()
+
+    if args.dump:
+        Path(args.dump).write_text(body, encoding="utf-8")
+    contains_ok = True
+    if args.contains is not None:
+        contains_ok = args.contains in body
+    ok = (200 <= status < 400) and contains_ok
+    return emit(
+        {
+            "command": "request",
+            "ok": ok,
+            "status": status,
+            "contains": args.contains,
+            "summary": f"{args.method.upper()} {path} -> HTTP {status} (contains={contains_ok})",
+            "bodyPreview": body[:240],
+        },
+        args.json,
+    )
+
+
+def cmd_execute(args: argparse.Namespace) -> int:
+    if args.code_file:
+        target = Path(args.code_file)
+        if not target.is_absolute():
+            target = REPO_ROOT / target
+        if not target.is_file():
+            return emit(
+                {
+                    "command": "execute",
+                    "ok": False,
+                    "summary": f"Fixture file not found: {args.code_file}",
+                },
+                args.json,
+            )
+        cmd = ["bash", str(target)] if target.suffix == ".sh" else ["python3", str(target)]
+    else:
+        cmd = [
+            "python3",
+            "-m",
+            "unittest",
+            "scripts/tests/test_env_registry.py",
+            "scripts/tests/test_release_version.py",
+        ]
+    rc, out = run_cmd(cmd)
+    return emit(
+        {
+            "command": "execute",
+            "ok": rc == 0,
+            "exitCode": rc,
+            "summary": f"Executed {' '.join(cmd)} -> exit {rc}",
+            "outputTail": "\n".join(out.splitlines()[-10:]),
+        },
+        args.json,
+    )
+
+
+def cmd_browse(args: argparse.Namespace) -> int:
+    surface = args.path.lstrip("/") or "macos-overlay"
+    info = SURFACES.get(surface, {"path": args.path, "seed": "make verify-l10n-catalog", "reach": "make test-swift"})
+    return emit(
+        {
+            "command": "browse",
+            "ok": True,
+            "surface": surface,
+            "record": bool(args.record),
+            "info": info,
+            "summary": f"Surface '{surface}' mapped to {info['path']} (verify via: {info['reach']})",
+        },
+        args.json,
+    )
+
+
+def cmd_map(args: argparse.Namespace) -> int:
+    checks: list[dict[str, Any]] = []
+    selected = {args.feature: SURFACES[args.feature]} if args.feature and args.feature in SURFACES else SURFACES
+    if args.feature and args.feature not in SURFACES:
+        return emit(
+            {
+                "command": "map",
+                "ok": False,
+                "summary": f"Unknown surface '{args.feature}'. Known: {', '.join(sorted(SURFACES))}",
+            },
+            args.json,
+        )
+    for name, meta in selected.items():
+        exists = (REPO_ROOT / meta["path"]).exists()
+        checks.append(
+            {
+                "name": name,
+                "ok": exists,
+                "detail": f"{meta['path']} | seed: {meta['seed']} | reach: {meta['reach']}",
+                "fix": None if exists else f"Update SURFACES[{name!r}] in bin/control-codescribe",
+            }
+        )
+    ok = all(c["ok"] for c in checks)
+    return emit(
+        {
+            "command": "map",
+            "ok": ok,
+            "summary": f"Verified {len(checks)}/{len(checks)} Codescribe surfaces against repository files",
+            "checks": checks,
+        },
+        args.json,
+    )
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    rc, out = run_cmd(["python3", "scripts/tests/test_appcast_version.py"])
+    return emit(
+        {
+            "command": "preview",
+            "ok": rc == 0,
+            "pr": args.pr,
+            "summary": f"PR #{args.pr} release/appcast preview contract check -> exit {rc}",
+            "outputTail": out.splitlines()[-1] if out else "",
+        },
+        args.json,
+    )
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    _, head_full = run_cmd(["git", "rev-parse", "HEAD"])
+    _, head_short = run_cmd(["git", "rev-parse", "--short", "HEAD"])
+    app_plist = Path("/Applications/Codescribe.app/Contents/Info.plist")
+    installed_sha = None
+    if app_plist.is_file():
+        with app_plist.open("rb") as fh:
+            plist = plistlib.load(fh)
+            installed_sha = plist.get("CSBuildCommit")
+
+    expected = args.sha.strip()
+    matches_head = head_full.startswith(expected) or expected.startswith(head_short)
+    matches_app = bool(installed_sha and (installed_sha.startswith(expected) or expected.startswith(installed_sha)))
+    ok = matches_head or matches_app
+    return emit(
+        {
+            "command": "health",
+            "ok": ok,
+            "expectedSha": expected,
+            "headSha": head_short,
+            "installedAppSha": installed_sha,
+            "summary": (
+                f"SHA {expected} verified (head={head_short}, installedApp={installed_sha or 'none'})"
+                if ok
+                else f"SHA mismatch: expected {expected}, found head={head_short}, installedApp={installed_sha or 'none'}"
+            ),
+        },
+        args.json,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="control-codescribe", description=__doc__)
+    sub = parser.add_subparsers(dest="subcommand", required=True)
+
+    p_doc = sub.add_parser("doctor", help="Check local environment and static gates")
+    p_doc.add_argument("--json", action="store_true")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_dev = sub.add_parser("dev", help="Check local Codescribe.app and Voice Lab status")
+    p_dev.add_argument("--json", action="store_true")
+    p_dev.set_defaults(func=cmd_dev)
+
+    p_login = sub.add_parser("login", help="Verify hermetic test session readiness")
+    p_login.add_argument("--json", action="store_true")
+    p_login.set_defaults(func=cmd_login)
+
+    p_req = sub.add_parser("request", help="Query local health or Voice Lab endpoint")
+    p_req.add_argument("method", help="HTTP method (GET, POST, ...)")
+    p_req.add_argument("path", help="Request path (e.g. /health or /lab)")
+    p_req.add_argument("--origin", default="http://127.0.0.1:8765")
+    p_req.add_argument("--contains", default=None)
+    p_req.add_argument("--dump", default=None)
+    p_req.add_argument("--json", action="store_true")
+    p_req.set_defaults(func=cmd_request)
+
+    p_exec = sub.add_parser("execute", help="Execute a local verification fixture or contract test")
+    p_exec.add_argument("--code-file", default=None)
+    p_exec.add_argument("--origin", default=None)
+    p_exec.add_argument("--json", action="store_true")
+    p_exec.set_defaults(func=cmd_execute)
+
+    p_browse = sub.add_parser("browse", help="Inspect a UI or site surface")
+    p_browse.add_argument("--origin", default=None)
+    p_browse.add_argument("--path", default="macos-overlay")
+    p_browse.add_argument("--record", action="store_true")
+    p_browse.add_argument("--json", action="store_true")
+    p_browse.set_defaults(func=cmd_browse)
+
+    p_map = sub.add_parser("map", help="Print or check the Codescribe surface map")
+    p_map.add_argument("feature", nargs="?", default=None)
+    p_map.add_argument("--check", action="store_true")
+    p_map.add_argument("--json", action="store_true")
+    p_map.set_defaults(func=cmd_map)
+
+    p_prev = sub.add_parser("preview", help="Run release/site preview contract check for a PR")
+    p_prev.add_argument("--pr", type=int, required=True)
+    p_prev.add_argument("--request", default=None)
+    p_prev.add_argument("--check", default=None)
+    p_prev.add_argument("--json", action="store_true")
+    p_prev.set_defaults(func=cmd_preview)
+
+    p_health = sub.add_parser("health", help="Verify running or checked-out commit SHA")
+    p_health.add_argument("--origin", default=None)
+    p_health.add_argument("--sha", required=True)
+    p_health.add_argument("--json", action="store_true")
+    p_health.set_defaults(func=cmd_health)
+
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

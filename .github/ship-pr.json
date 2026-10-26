@@ -1,0 +1,14 @@
+{
+  // AI reviewers required per risk tier (case-insensitive login or check name).
+  "reviewers": {
+    "low": [],
+    "medium": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"],
+    "high": ["copilot-pull-request-reviewer", "chatgpt-codex-connector"]
+  },
+  // High-risk changes (Release/signing/appcast, Core ledger/bus/FFI contracts) always require human approval.
+  "humanApprovalFor": ["high"],
+  // Tiers the agent may merge automatically once CI and tier checks are green.
+  "autoMergeFor": ["low", "medium"],
+  "mergeMethod": "squash",
+  "deployCheck": ["python3", "scripts/tests/test_appcast_version.py"]
+}

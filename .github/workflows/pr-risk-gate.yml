@@ -1,0 +1,97 @@
+name: PR Risk & Self-Verification Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  risk-and-control-gate:
+    name: PR Risk & Control Map
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Verify control-codescribe surface map and env registry
+        run: |
+          python3 bin/control-codescribe map --check --json
+          python3 scripts/validate_env_registry.py docs/ENV_REGISTRY.toml >/dev/null
+          python3 -m unittest scripts/tests/test_env_registry.py
+
+      - name: Classify risk tier and check test-expectation changes on PRs
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          base = os.environ["BASE_SHA"]
+          head = os.environ["HEAD_SHA"]
+          body = os.environ.get("PR_BODY") or ""
+
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}...{head}"],
+              text=True,
+          ).splitlines()
+
+          high_patterns = (
+              r"^\.github/workflows/release\.yml$",
+              r"^scripts/release",
+              r"^scripts/generate-appcast\.sh$",
+              r"^core/pipeline/acoustic_ledger\.rs$",
+              r"^app/presentation/emitter\.rs$",
+              r"^app/presentation/transcript_bus\.rs$",
+              r"^bridge/",
+          )
+          high_files = [
+              f for f in changed if any(re.search(p, f) for p in high_patterns)
+          ]
+          prod_files = [
+              f for f in changed
+              if f.startswith(("core/", "app/", "bridge/", "macos/Codescribe/"))
+          ]
+          test_files = [
+              f for f in changed
+              if f.startswith(("tests/", "macos/CodescribeTests/", "scripts/tests/"))
+              or f.endswith(("_test.rs", "Tests.swift"))
+          ]
+
+          declared_risk = "low"
+          m = re.search(r"Risk:\s*(low|medium|high)", body, re.IGNORECASE)
+          if m:
+              declared_risk = m.group(1).lower()
+
+          print(f"Changed files ({len(changed)}): {changed}")
+          print(f"Declared risk: {declared_risk}")
+          if high_files:
+              print(f"Always-Human high-risk surfaces touched: {high_files}")
+              if declared_risk != "high":
+                  print(
+                      "ERROR: PR touches Always-Human surfaces (Release/signing/appcast or Core ledger/bus/FFI) "
+                      "and must declare 'Risk: high' in ## System recap.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+
+          if prod_files and test_files:
+              print(f"Both production ({len(prod_files)}) and test ({len(test_files)}) files changed.")
+              if "## Testing" not in body or "## Why" not in body:
+                  print(
+                      "ERROR: PR modifies both production code and tests; include ## Why and ## Testing in PR body.",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+          PY

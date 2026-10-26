@@ -79,6 +79,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGISTERED=$(python3 "$SCRIPT_DIR/validate_env_registry.py" "$REGISTRY")
+# Feature-flag entries in docs/ENV_REGISTRY.toml that declare any of
+# owner / metric / removal_condition are validated by validate_env_registry.py
+# to ensure all three lifecycle fields are non-empty strings.
 
 # Find all env vars used in Rust code (env::var patterns)
 echo "Scanning Rust code for env var usage..."
