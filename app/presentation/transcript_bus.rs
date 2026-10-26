@@ -37,7 +37,8 @@ pub const TRANSCRIPT_BUS_FILENAME: &str = "transcript-events.jsonl";
 pub enum TranscriptMode {
     /// Plain dictation or formatting; the downstream action is paste/format.
     Dictation,
-    /// Right Option / composer Agent voice input; the downstream action is send.
+    /// Agent voice input (menu bar, overlay or composer); the downstream
+    /// action is send.
     Agent,
     /// Hold-based Chat/Selection assistance; downstream action is Agent delivery.
     Assistive,

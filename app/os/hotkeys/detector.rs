@@ -87,7 +87,7 @@ pub enum HotkeyEvent {
     /// Raw toggle gesture (double-tap Ctrl)
     ToggleRaw,
     /// Assistive toggle, started from the menu bar or the overlay. No key
-    /// produces it: Right Option only types characters.
+    /// produces it: Option only types characters.
     ToggleAssistive,
     /// Configured modifier + 0..9 toggles one agent channel. This is not a dictation take.
     ///

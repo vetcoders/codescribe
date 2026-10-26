@@ -213,7 +213,7 @@ pub enum ShortcutBinding {
 
 impl ShortcutBinding {
     /// Human-readable gesture description for the settings UI ("Hold Ctrl",
-    /// "Double-tap Left Option"). Presentation only.
+    /// "Double-tap Ctrl"). Presentation only.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",

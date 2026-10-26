@@ -21504,7 +21504,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Skróty możesz później zmienić w Ustawienia › Skróty."
+            "value" : "Skróty zmienisz w Ustawieniach › Skróty."
           }
         }
       }
@@ -22856,19 +22856,19 @@
       }
     },
     "hotkeys.mode.agent.noShortcut" : {
-      "comment" : "Shortcuts screen: replaces the gesture picker; the quoted names are menu bar items",
+      "comment" : "Shortcuts screen: replaces the gesture picker for the Agent",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "No shortcut: a double Right Option could start the Agent on its own. In the menu bar, turn on “Start in Agent mode” and choose “Start transcription in Agent mode”."
+            "value" : "Start the Agent from the menu bar or the overlay. The keyboard shortcut is turned off."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak skrótu: podwójny prawy Option potrafił sam włączyć Agenta. W menu na pasku włącz „Start w trybie Agenta” i wybierz „Rozpocznij transkrypcję w trybie agentowym”."
+            "value" : "Agenta uruchomisz z menu na pasku lub z nakładki. Skrót klawiaturowy jest wyłączony."
           }
         }
       }
@@ -22928,19 +22928,19 @@
       }
     },
     "hotkeys.mode.formatting.noShortcut" : {
-      "comment" : "Shortcuts screen: replaces the gesture picker; the quoted name is a menu bar item",
+      "comment" : "Shortcuts screen: replaces the gesture picker for Formatting",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "No shortcut, because Option types characters. Start Formatting from the menu bar: “Start transcription”."
+            "value" : "Start Formatting from the menu bar or the overlay. The keyboard shortcut is turned off."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak skrótu, bo Option wpisuje znaki. Formatowanie włączysz z menu na pasku: „Rozpocznij transkrypcję”."
+            "value" : "Formatowanie uruchomisz z menu na pasku lub z nakładki. Skrót klawiaturowy jest wyłączony."
           }
         }
       }

@@ -49,8 +49,8 @@ extension CsWorkMode {
 
   /// Where a mode without a gesture starts, shown in place of the gesture
   /// picker. `nil` for Dictation, which keeps its shortcut. Formatting and the
-  /// Agent lost theirs on 2026-10-26: Option types characters, and the right
-  /// Option double-tap could start the Agent on its own.
+  /// Agent lost theirs on 2026-10-26 (Option types characters); the note
+  /// states where they start, not why the shortcut went.
   var noShortcutNote: String? {
     switch self {
     case .dictation:
@@ -59,16 +59,14 @@ extension CsWorkMode {
       return String(
         localized: "hotkeys.mode.formatting.noShortcut",
         defaultValue:
-          "No shortcut, because Option types characters. Start Formatting from the menu bar: “Start transcription”.",
-        comment: "Shortcuts screen: replaces the gesture picker; the quoted name is a menu bar item"
-      )
+          "Start Formatting from the menu bar or the overlay. The keyboard shortcut is turned off.",
+        comment: "Shortcuts screen: replaces the gesture picker for Formatting")
     case .assistive:
       return String(
         localized: "hotkeys.mode.agent.noShortcut",
         defaultValue:
-          "No shortcut: a double Right Option could start the Agent on its own. In the menu bar, turn on “Start in Agent mode” and choose “Start transcription in Agent mode”.",
-        comment:
-          "Shortcuts screen: replaces the gesture picker; the quoted names are menu bar items")
+          "Start the Agent from the menu bar or the overlay. The keyboard shortcut is turned off.",
+        comment: "Shortcuts screen: replaces the gesture picker for the Agent")
     }
   }
 }

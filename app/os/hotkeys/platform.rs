@@ -397,9 +397,9 @@ mod macos {
     const K_CG_SCROLL_WHEEL_EVENT_MOMENTUM_PHASE: CGEventField = 123;
 
     // macOS virtual keycodes for Option keys
-    /// Left Option — the formatting-mode double-tap side.
+    /// Left Option.
     const K_VK_OPTION: i64 = 58; // Left Option
-    /// Right Option — the assistive-mode double-tap side.
+    /// Right Option.
     const K_VK_RIGHT_OPTION: i64 = 61; // Right Option
     // macOS virtual keycodes for Control keys
     /// Left Control.

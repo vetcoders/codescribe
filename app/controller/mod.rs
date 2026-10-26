@@ -1863,7 +1863,7 @@ pub struct RecordingController {
     ///
     /// This is true for:
     /// - Hold modes: Chat (Shift) / Selection (Cmd)
-    /// - Assistive toggle (right Option double-tap, if enabled)
+    /// - Assistive toggle (started from the menu bar or the overlay)
     assistive_mode: Arc<RwLock<bool>>,
     /// Current hold intent (Raw/Chat/Selection) for the active session.
     hold_mode: Arc<RwLock<HoldMode>>,
@@ -1945,7 +1945,7 @@ pub struct RecordingController {
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
 
-    /// Assistive hands-off loop active (Right Option toggle)
+    /// Assistive hands-off loop active (the Assistive toggle)
     assistive_loop_active: Arc<AtomicBool>,
 
     /// Toggle session: track whether we've already appended user/assistant text

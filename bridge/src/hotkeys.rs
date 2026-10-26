@@ -3297,8 +3297,8 @@ impl CodescribeHotkeys {
         Ok(())
     }
 
-    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-    /// Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+    /// Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+    /// Formatting and Assistive have no gesture) and reload.
     pub fn reset_bindings_to_defaults(&self) -> Result<(), CsError> {
         let mut settings = UserSettings::load();
         // `None` normalizes to `default_mode_bindings()` on the next read, so this
