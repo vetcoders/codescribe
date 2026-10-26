@@ -4882,16 +4882,6 @@
         }
       }
     },
-    "Choose the composers that share this draft. Send delivers to the linked agents." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Wybierz kompozytory współdzielące szkic. Wysłanie dostarczy wiadomość połączonym agentom."
-          }
-        }
-      }
-    },
     "Choose the horizontal strip or floating vertical agent pills." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -16866,16 +16856,6 @@
         }
       }
     },
-    "Share typing and pasted attachments with this composer" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Współdziel wpisywany tekst i wklejane załączniki z tym kompozytorem"
-          }
-        }
-      }
-    },
     "Shared conversation" : {
       "localizations" : {
         "pl" : {
@@ -19654,16 +19634,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ta wersja aplikacji korzysta z wbudowanego modelu Whisper. Wybór modelu z dysku jest pomijany."
-          }
-        }
-      }
-    },
-    "This composer has a different draft or a pending delivery." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Ten kompozytor ma inny szkic lub oczekuje na zakończenie wysyłania."
           }
         }
       }
