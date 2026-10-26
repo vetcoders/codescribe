@@ -46,6 +46,9 @@ struct OverlayConversationComposer: View {
   var onNavigateReply: (() -> Void)? = nil
   var draftSyncChoices: [OverlayComposerSyncChoice] = []
   var draftSyncNames: [String] = []
+  var draftSyncArmed: Bool = false
+  var onActivateDraftSync: (() -> Void)? = nil
+  var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
   var onToggleDraftSync: ((String) -> Void)? = nil
   var onStopDraftSync: (() -> Void)? = nil
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -190,7 +193,24 @@ struct OverlayConversationComposer: View {
   }
 
   private var draftSyncControl: some View {
-    Menu {
+    Button {
+      onActivateDraftSync?()
+    } label: {
+      Label("Sync draft", systemImage: "link")
+        .labelStyle(.iconOnly)
+    }
+    .buttonStyle(.plain)
+    .font(.system(size: controlGlyphSize, weight: .semibold))
+    .frame(
+      width: ComposerControlMetrics.hitTargetSize,
+      height: ComposerControlMetrics.hitTargetSize)
+    .contentShape(Circle())
+    .conversationActionHover(
+      restingColor: draftSyncActive ? palette.agentAccent.color : restingActionColor,
+      hoverColor: draftSyncActive ? palette.agentAccent.color : palette.primaryText.color
+    )
+    .disabled(sending || onActivateDraftSync == nil)
+    .contextMenu {
       ForEach(draftSyncChoices) { choice in
         Toggle(
           isOn: Binding(
@@ -199,41 +219,47 @@ struct OverlayConversationComposer: View {
         ) {
           Text(verbatim: choice.title)
         }
-        .disabled(!choice.enabled)
+        .disabled(sending || !choice.enabled)
         .help(
           choice.enabled
-            ? String(localized: "Share typing and pasted attachments with this composer")
-            : String(localized: "This composer has a different draft or a pending delivery."))
+            ? String(localized: "Share future typing and pasted attachments with this composer")
+            : String(localized: "This composer has a pending delivery or recording attachments."))
       }
       if draftSyncNames.count > 1 {
         Divider()
         Button("Stop syncing") { onStopDraftSync?() }
+          .disabled(sending)
       }
-    } label: {
-      Label("Sync draft", systemImage: "link")
-        .labelStyle(.iconOnly)
     }
-    .menuStyle(.button).menuIndicator(.hidden)
-    .buttonStyle(.plain)
-    .font(.system(size: controlGlyphSize, weight: .semibold))
-    .frame(
-      width: ComposerControlMetrics.hitTargetSize,
-      height: ComposerControlMetrics.hitTargetSize)
-    .contentShape(Circle())
-    .disabled(sending)
-    .conversationActionHover(
-      restingColor: draftSyncNames.count > 1 ? palette.agentAccent.color : restingActionColor,
-      hoverColor: draftSyncNames.count > 1 ? palette.agentAccent.color : palette.primaryText.color
-    )
     .help(Text(verbatim: draftSyncHelp))
     .accessibilityLabel(Text("Sync draft"))
-    .accessibilityValue(Text(verbatim: draftSyncNames.joined(separator: " · ")))
+    .accessibilityValue(Text(verbatim: draftSyncAccessibilityValue))
+    .accessibilityHint(Text(verbatim: draftSyncHelp))
     .accessibilityIdentifier("overlay-conversation-draft-sync")
   }
 
+  private var draftSyncActive: Bool { draftSyncArmed || draftSyncNames.count > 1 }
+
+  private var draftSyncAccessibilityValue: String {
+    let status = draftSyncArmed
+      ? String(localized: "Sync armed")
+      : draftSyncNames.count > 1 ? String(localized: "Sync linked") : String(localized: "Sync off")
+    guard !draftSyncNames.isEmpty else { return status }
+    return status + ": " + draftSyncNames.joined(separator: " · ")
+  }
+
   private var draftSyncHelp: String {
-    let explanation = String(
-      localized: "Choose the composers that share this draft. Send delivers to the linked agents.")
+    let explanation: String
+    if draftSyncArmed {
+      explanation = String(
+        localized: "Click Sync in another composer to share future input. Click again to cancel.")
+    } else if draftSyncNames.count > 1 {
+      explanation = String(
+        localized: "Click to leave Sync. Right-click to choose linked composers.")
+    } else {
+      explanation = String(
+        localized: "Click here, then click Sync in another composer to share future input. Right-click to choose a target.")
+    }
     guard draftSyncNames.count > 1 else { return explanation }
     return explanation + "\n" + draftSyncNames.joined(separator: " · ")
   }
@@ -257,7 +283,8 @@ struct OverlayConversationComposer: View {
         onFocusChange: { onFocusChange?($0) },
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
-        hasAttachments: { !attachments.isEmpty }, onAttach: attach
+        hasAttachments: { !attachments.isEmpty }, onAttach: attach,
+        onProseEdit: onProseEdit
       )
       .frame(height: min(editorHeight, maximumEditorHeight ?? editorHeight))
       .transaction { $0.animation = nil }
@@ -274,7 +301,7 @@ struct OverlayConversationComposer: View {
             .accessibilityHidden(true)
         }
       }
-      if !draftSyncChoices.isEmpty || draftSyncNames.count > 1 {
+      if !draftSyncChoices.isEmpty || draftSyncActive {
         draftSyncControl
       }
       if let onToggleDraftMicrophone {
@@ -472,6 +499,7 @@ private struct ConversationMessageField: NSViewRepresentable {
   let onPasteError: (String?) -> Void
   var hasAttachments: () -> Bool = { false }
   var onAttach: ([String]) -> Void = { _ in }
+  var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -527,6 +555,9 @@ private struct ConversationMessageField: NSViewRepresentable {
   }
 
   static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    coordinator.applyingExternalText = true
+    coordinator.pendingProseEdit = nil
+    (scroll.documentView as? NSTextView)?.delegate = nil
     coordinator.scrollerPin.detach()
     coordinator.undoHistory.removeAllActions()
   }
@@ -562,8 +593,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.hasAttachments = hasAttachments
     editor.onAttach = onAttach
     editor.onCancel = onCancel
-    if editor.string != text {
+    if !editor.string.utf16.elementsEqual(text.utf16) {
       context.coordinator.applyingExternalText = true
+      context.coordinator.pendingProseEdit = nil
       // Another linked editor replaced the document. Local undo operations
       // describe its previous contents and must not overwrite that newer edit.
       context.coordinator.undoHistory.removeAllActions()
@@ -608,6 +640,9 @@ private struct ConversationMessageField: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     var parent: ConversationMessageField
     var applyingExternalText = false
+    /// One native proposal, consumed by the corresponding textDidChange only.
+    /// This is provenance, not another draft or an inferred text difference.
+    var pendingProseEdit: OverlayComposerProseEdit?
     var focusRevision: UInt64 = 0
     var isCovered = false
     let scrollerPin = CSScrollerPin()
@@ -635,10 +670,75 @@ private struct ConversationMessageField: NSViewRepresentable {
       }
     }
 
+    func textView(
+      _ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange,
+      replacementString: String?
+    ) -> Bool {
+      recordProseEdit(
+        in: textView, ranges: [affectedCharRange],
+        replacementStrings: replacementString.map { [$0] })
+      return true
+    }
+
+    func textView(
+      _ textView: NSTextView, shouldChangeTextInRanges affectedRanges: [NSValue],
+      replacementStrings: [String]?
+    ) -> Bool {
+      recordProseEdit(
+        in: textView, ranges: affectedRanges.map(\.rangeValue),
+        replacementStrings: replacementStrings)
+      return true
+    }
+
+    private func recordProseEdit(
+      in editor: NSTextView, ranges: [NSRange], replacementStrings: [String]?
+    ) {
+      pendingProseEdit = nil
+      // A nil replacement is an attribute-only proposal. Unknown edits still
+      // reach the canonical setter; they never acquire guessed shared ranges.
+      guard !applyingExternalText, parent.onProseEdit != nil,
+        let replacementStrings, !ranges.isEmpty,
+        ranges.count == replacementStrings.count
+      else { return }
+      let before = editor.string
+      guard before.utf16.elementsEqual(parent.text.utf16) else { return }
+      let length = before.utf16.count
+      var previousEnd: Int?
+      for range in ranges {
+        guard range.location != NSNotFound, range.location >= 0, range.length >= 0,
+          range.location <= length, range.length <= length - range.location,
+          Range(range, in: before) != nil
+        else { return }
+        if let previousEnd, range.location <= previousEnd { return }
+        if ranges.count > 1, range.length == 0 { return }
+        previousEnd = range.location + range.length
+      }
+      let replacements = zip(ranges, replacementStrings).map {
+        OverlayComposerTextReplacement(range: $0.0, replacement: $0.1)
+      }
+      let proposed = NSMutableString(string: before)
+      for replacement in replacements.reversed() {
+        proposed.replaceCharacters(in: replacement.range, with: replacement.replacement)
+      }
+      pendingProseEdit = OverlayComposerProseEdit(
+        before: before, after: proposed as String, replacements: replacements)
+    }
+
     func textDidChange(_ notification: Notification) {
+      let edit = pendingProseEdit
+      pendingProseEdit = nil
       guard !applyingExternalText else { return }
       if let editor = notification.object as? MessageTextView {
-        parent.text = editor.string
+        if let edit, let onProseEdit = parent.onProseEdit,
+          edit.before.utf16.elementsEqual(parent.text.utf16),
+          edit.after.utf16.elementsEqual(editor.string.utf16)
+        {
+          onProseEdit(edit)
+        } else {
+          // Preserve native input even if AppKit supplied no usable proposal
+          // (including undo/IME variants); the model resets its sharing epoch.
+          parent.text = editor.string
+        }
         editor.revealCaretAfterLayout()
       }
       parent.onTypingActivity()
@@ -661,6 +761,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     func submit(_ text: String) {
+      guard !applyingExternalText else { return }
+      pendingProseEdit = nil
       parent.text = text
       parent.onSubmit()
     }
