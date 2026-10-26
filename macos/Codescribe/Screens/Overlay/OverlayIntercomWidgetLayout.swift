@@ -190,19 +190,19 @@ struct IntercomContentMetrics: Equatable {
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
     let editorHeightLimit = 28 * scale
-    let composerHeight = max(
-      ComposerControlMetrics.intercomMinimumHeight,
-      editorHeightLimit + 2 * ComposerControlMetrics.intercomVerticalPadding
-    ) + 14 // ConversationView's 6pt top and Intercom's 8pt bottom insets.
-    let inputFont = NSFont.systemFont(ofSize: ComposerControlMetrics.textSize * scale)
-    let inputWidth = ceil(("Message" as NSString).size(withAttributes: [.font: inputFont]).width)
-    // Three real 28pt controls, their gaps, the editor and both layers of padding.
-    let composerWidth = inputWidth + 3 * ComposerControlMetrics.hitTargetSize
-      + 3 * ComposerControlMetrics.intercomSpacing
-      + 2 * ComposerControlMetrics.intercomHorizontalPadding + 24
+    // The shared composer owns the stacked editor/action-row measurements.
+    // Only ConversationView's external insets belong to this admission gate.
+    let composerHeight = ComposerControlMetrics.intercomComposerHeight(
+      editorHeight: editorHeightLimit, scale: scale) + 6 + 8
+    let composerWidth = ComposerControlMetrics.intercomComposerMinimumWidth(scale: scale) + 2 * 12
+    // The full renderer caps its bubbles more narrowly than the passive preview.
+    // Preserve a readable text measure inside the bubble's own 12pt padding too.
+    let readableConversationWidth = OverlayConversationView.bubbleCap(
+      contentWidth: width, textScale: scale) - 2 * 12
     return IntercomCompactPreviewLayout(
       height: available,
       showsComposer: width >= composerWidth
+        && readableConversationWidth >= readableWidth
         && available >= OverlayIntercomWidgetLayout.minimumReadableConversationHeight(scale: scale)
           + composerHeight,
       composerEditorHeightLimit: editorHeightLimit)
@@ -266,13 +266,13 @@ enum OverlayIntercomWidgetLayout {
 
   /// OverlayConversationView.messageBubble: route + two prose lines + footer,
   /// 5pt between its three sections and 12pt padding on either edge. The list
-  /// adds 8pt top/bottom and its 1pt bottom anchor. Optional taller content
+  /// adds 8pt top/bottom, 12pt before its 1pt bottom anchor. Optional taller content
   /// still scrolls; this is the same reading budget used by the input gate.
   static func minimumReadableConversationHeight(scale: CGFloat) -> CGFloat {
     let layout = NSLayoutManager()
     let body = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 13 * scale)))
     let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
-    return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 1
+    return 2 * body + 2 * metadata + 2 * 5 + 2 * 12 + 2 * 8 + 12 + 1
   }
 
   /// One corner for the header, every row and a mini fiszka. A radius of half
