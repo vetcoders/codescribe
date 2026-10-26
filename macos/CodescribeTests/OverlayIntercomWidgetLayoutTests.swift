@@ -67,13 +67,15 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testMetadataSharesTheHeaderAndPreviewUsesTheNextAvailableRows() throws {
+  func testMetadataGetsOneReadableLineBeforePreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let width = max(metrics.actionsWidth, 400 * scale)
       let row = Layout.controlHeight(scale: scale)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: row), .header)
-      let metadataHeight = row + 3 * scale
+      let metadataLine = ceil(
+        NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
+      let metadataHeight = row + metadataLine + 6
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: metadataHeight), .context)
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: metadataHeight))
       XCTAssertNotNil(metrics.compactPreviewLayout(width: width, cardHeight: 3 * row))
@@ -91,9 +93,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let factor = max(1, scale)
-      // A narrow, low card must expose input well before the former 320x220 gate.
+      // A narrow card exposes input once readable message content also fits;
+      // the former fixed 320pt width must not hide the same editor.
       let width: CGFloat = 220 * factor
-      let height: CGFloat = 160 * factor
+      let height: CGFloat = 220 * factor
       for growth in [CGFloat(1), 1.5, 2, 4] {
         XCTAssertTrue(
           try XCTUnwrap(metrics.compactPreviewLayout(width: width * growth, cardHeight: height * growth))
@@ -299,8 +302,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       }
       if !expanded {
         XCTAssertEqual(
-          editors.count, hover || height < 150 ? 0 : 1,
-          "Hover stays read-only; a 360pt card reveals one shared composer at 150pt height")
+          editors.count, hover || height < 220 ? 0 : 1,
+          "Low cards retain readable preview; a 360pt card exposes input when message chrome fits")
         for editor in editors {
           XCTAssertEqual(editor.string, retainedDraft)
           XCTAssertLessThanOrEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 28.5)

@@ -17,11 +17,17 @@ final class OverlayIntercomMetadataTests: XCTestCase {
       let contextHeight = header + metadata + 6
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight - 0.5), .header)
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: contextHeight), .context)
-      let firstPreviewHeight = contextHeight + 3 * body + metadata + 12
+      // The lightweight preview needs one prose line and its route. Input
+      // remains a later tier with the complete message renderer's own budget.
+      let previewHeight = body + metadata
+        + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
+        + OverlayIntercomWidgetLayout.compactPreviewSpacing
+      let firstPreviewHeight = contextHeight + previewHeight
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight - 0.5))
       let preview = try XCTUnwrap(
         metrics.compactPreviewLayout(width: width, cardHeight: firstPreviewHeight))
-      XCTAssertEqual(preview.height, 3 * body + metadata + 12, accuracy: 0.01)
+      XCTAssertEqual(preview.height, previewHeight, accuracy: 0.01)
+      XCTAssertFalse(preview.showsComposer, "The first readable message must precede its input")
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: firstPreviewHeight), .preview)
     }
   }
@@ -35,6 +41,7 @@ final class OverlayIntercomMetadataTests: XCTestCase {
   }
 
   private func renderMetadata(scale: CGFloat, scenario: String) throws {
+    let context = "scenario=\(scenario), scale=\(scale)"
     let identity = AgentPlaybackIdentity(
       provider: "codex", session: "metadata", bus: "/fixture/bus")
     let owner = try XCTUnwrap(
@@ -110,11 +117,11 @@ final class OverlayIntercomMetadataTests: XCTestCase {
     try VNImageRequestHandler(cgImage: cgImage).perform([request])
     let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     let metadata = lines.filter { $0.localizedCaseInsensitiveContains("codex") }
-    XCTAssertEqual(metadata.count, 1, "One physical metadata row: \(lines)")
+    XCTAssertEqual(metadata.count, 1, "\(context): One physical metadata row: \(lines)")
     if scenario == "known" || scenario == "long" {
       XCTAssertTrue(
         metadata.first?.localizedCaseInsensitiveContains("codescribe") == true,
-        "Keep the declared repository at the end: \(lines)")
+        "\(context): Keep the declared repository at the end: \(lines)")
     }
     let text = lines.joined(separator: " ")
     XCTAssertFalse(text.localizedCaseInsensitiveContains("Frame"), text)
