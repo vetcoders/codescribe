@@ -512,8 +512,16 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     if current && targets.contains(where: { $0.frame.contains(point) }) {
       closeInstance(drag.id)
     } else {
-      saveDesktop()
       materializeInstances()
+      // Materialization contains the window inside its display. Persist the
+      // geometry actually presented after that clamp, not the raw drag frame.
+      // A mini still retains its full expanded frame underneath the pill.
+      if !instance.minimized, instancePanels[drag.id] === panel,
+        let settledIndex = desktop.instances.firstIndex(where: { drag.matches($0) })
+      {
+        desktop.instances[settledIndex].frame = panel.frame
+      }
+      saveDesktop()
     }
   }
 
