@@ -107,7 +107,7 @@ struct TrayMenuView: View {
       TrayRow(
         icon: .agent,
         title: String(localized: "Agent"),
-        titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textFaint,
+        titleColor: viewModel.agentAvailable ? CSColor.textBody : CSColor.textMuted,
         titleWeight: .semibold,
         shortcut: "⌥⌥",
         shortcutColor: TrayRow.primaryShortcutColor,
@@ -247,7 +247,7 @@ struct TrayMenuView: View {
       icon: .send,
       title: String(localized: "Auto Paste"),
       shortcut: viewModel.pasteMode.visibleName,
-      shortcutColor: viewModel.pasteMode == .off ? CSColor.textFaintAlt : CSColor.oliveLight,
+      shortcutColor: viewModel.pasteMode == .off ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setPasteMode(viewModel.pasteMode.next) }
     .accessibilityLabel("Auto Paste")
@@ -264,7 +264,7 @@ struct TrayMenuView: View {
       title: String(localized: "Auto Format"),
       shortcut: viewModel.autoFormatLevel.visibleName,
       shortcutColor: viewModel.autoFormatLevel == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
     .accessibilityLabel("Auto Format")
@@ -284,7 +284,7 @@ struct TrayMenuView: View {
         comment: "Tray row: size of the recording dot drawn next to the mouse cursor"),
       shortcut: viewModel.holdBadgeOption.visibleName,
       shortcutColor: viewModel.holdBadgeOption == .off
-        ? CSColor.textFaintAlt : CSColor.oliveLight,
+        ? CSColor.textMuted : CSColor.oliveLight,
       scale: .child
     ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
     .accessibilityLabel("Cursor indicator")
@@ -311,7 +311,7 @@ struct TrayMenuView: View {
         : String(
           localized: "tray.keycap.off", defaultValue: "Off",
           comment: "Tray keycap, a few letters wide: this toggle is disabled"),
-      shortcutColor: isOn ? onColor : CSColor.textFaintAlt,
+      shortcutColor: isOn ? onColor : CSColor.textMuted,
       scale: .child
     ) { set(!isOn) }
   }

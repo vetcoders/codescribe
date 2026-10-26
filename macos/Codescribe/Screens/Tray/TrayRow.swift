@@ -36,7 +36,7 @@ enum TrayRowScale {
   /// Label colour. Weight stays `.medium` on both scales: the hierarchy comes
   /// from size and colour, so a nested row reads as legible as the
   /// `TrayChildRow` beside it.
-  var titleColor: Color { self == .top ? CSColor.textBodyAlt : CSColor.textMuted }
+  var titleColor: Color { self == .top ? CSColor.textBody : CSColor.textMuted }
   var iconSize: CGFloat { self == .top ? 13 : 12 }
   /// Fixed icon column: labels align whatever glyph the row carries.
   var iconColumn: CGFloat { self == .top ? 18 : 16 }
@@ -67,7 +67,7 @@ struct TrayRow: View {
   var titleColor: Color? = nil
   var titleWeight: Font.Weight = .medium
   var shortcut: String? = nil
-  var shortcutColor: Color = CSColor.textFaintAlt
+  var shortcutColor: Color = CSColor.textMuted
   /// Expansion state of the disclosure group this row heads; `nil` for plain
   /// action rows without a chevron.
   var disclosureExpanded: Bool? = nil
@@ -170,7 +170,7 @@ struct TrayChildRow: View {
       if let suffix {
         Text(suffix)
           .font(CSFont.mono(TrayRowScale.child.keycapSize))
-          .foregroundStyle(CSColor.textFaintAlt)
+          .foregroundStyle(CSColor.textMuted)
       }
       Spacer(minLength: 0)
     }
@@ -217,7 +217,7 @@ struct TrayHistoryRow: View {
       Text(time)
         .font(CSFont.mono(TrayRowScale.child.keycapSize, .medium))
         .monospacedDigit()
-        .foregroundStyle(CSColor.textFaintAlt)
+        .foregroundStyle(CSColor.textMuted)
         .lineLimit(1)
         .frame(width: Self.timeColumn, alignment: .leading)
       Text(snippet)
