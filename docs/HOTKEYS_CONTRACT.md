@@ -93,7 +93,7 @@ gesture during the delay (an agents-list click) cancels that pending hold.
 The channel modifier never records (one key, one role, below), so a hold or
 toggle take is never a channel chord's prefix. A take on another key keeps
 running beside a channel opened from the agents list.
-The same unified overlay then shows My dictation. Channel auto-reopening shares
+The same unified overlay then shows My dictation. The channel silence poll shares
 the controller's serial transition lock with this handover. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
 
@@ -155,7 +155,13 @@ The channel digit chord is claimed by the CoreGraphics tap: down, repeat and up
 are consumed, including an up after modifier release. Ordinary typing, other
 shortcuts and mouse events still reach the frontmost app. A successfully opened
 live channel plays **Pop**, respecting Start sound and its configured volume.
-A rejected open, a close or automatic phrase reopening does not play that cue.
+A rejected open or a close does not play that cue. A channel session ends on
+the second press (hang-up) or on silence: `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`
+after heard voice, or 30 s after the open when no voice was heard (an agent
+reply playing into the channel does not count). Silence
+delivers the words and releases the microphone like a hang-up; nothing
+reopens the channel, so one press carries one message (Founder decision
+2026-10-26).
 
 Each named conversation has a written-message composer. Clicking it takes the
 existing overlay keyboard gate; opening a voice channel never steals keyboard
@@ -857,7 +863,7 @@ outside the detector.
 ### Raw-input journal (INFO)
 
 To see what was pressed next to what the app understood, the event tap keeps a
-raw-input journal in `~/.codescribe/logs/codescribe.log` (the single log owner;
+raw-input journal in `~/.codescribe/data.noindex/logs/codescribe.log` (the single log owner;
 no new file or setting). Each line holds the raw event and the detector's
 decision for it:
 

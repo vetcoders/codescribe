@@ -2692,10 +2692,13 @@ final class OverlayState {
       }
   }
 
-  /// Bring one newly admitted reply's owner into the existing surface.
-  /// History, a repeated id, playback or ACK of a known id, and an owner that
-  /// is not unique stay where the user already is. Channel number, display
-  /// name and reply text are not identity.
+  /// Bring the owner of one newly admitted message to the Founder into the
+  /// existing surface. Only an agent's reply on its own channel or a message
+  /// to her inbox moves the selection; a message between agents and anything
+  /// on channel 0 never does and stays unread where it lies (Founder decision
+  /// 2026-10-26). History, a repeated id, playback or ACK of a known id, and
+  /// an owner that is not unique stay where the user already is. Channel
+  /// number, display name and reply text are not identity.
   private func followNewlyReceivedReply(preservingControllerFocus: Bool) {
     let current = Set(conversations.flatMap(\.replyIDs))
     let fresh = replyInventoryBaselined ? current.subtracting(observedReplyIDs) : []
@@ -2707,9 +2710,21 @@ final class OverlayState {
     // here, so the horizon ending later cannot select that owner.
     guard !establishingInventory, !fresh.isEmpty, !preservingControllerFocus,
       !activeCaptureOwnsPresentation,
-      !composerRetainsAutomaticReplyFocus,
-      let conversation = ownedConversation(forNewReplies: fresh)
+      !composerRetainsAutomaticReplyFocus
     else { return }
+    let addressed = repliesAddressedToFounder(among: fresh)
+    guard !addressed.isEmpty else { return }
+    guard let conversation = ownedConversation(forNewReplies: addressed) else {
+      traceUnownedAdmission(addressed)
+      return
+    }
+    let note = [
+      "reply=\(addressed.sorted().joined(separator: ","))",
+      "owner=\(Self.traceOwner(conversation.owner))",
+      "source=\(traceSources(of: addressed))",
+      "from=\(traceSelectedChannel) to=\(conversation.channel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSelected, note: note)
     if selectedConversationID == conversation.id {
       if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
     } else {
@@ -2722,10 +2737,80 @@ final class OverlayState {
     freshReplyPresentationRequested = true
   }
 
-  /// The reader places a causal broadcast reply on channel 0 and on its
-  /// private owner. Focus follows the private owner id (provider, session,
-  /// lease). Channel 0 is not a second owner, and two owners in one snapshot
-  /// are not a guess.
+  /// Fresh replies the Founder is the reader of: an agent's reply on its own
+  /// channel (no peer destination) or a message to her inbox (channel 10).
+  /// A peer message to channel 1–9 and any reply that sits in channel 0 are
+  /// left out and traced as skipped; they were already added to the observed
+  /// inventory, so a later poll cannot admit them again.
+  private func repliesAddressedToFounder(among fresh: Set<String>) -> Set<String> {
+    let onChannelZero = Set(conversations.filter { $0.channel == "0" }.flatMap(\.replyIDs))
+    var addressed = Set<String>()
+    for id in fresh.sorted() {
+      let message = freshReply(id)
+      let source = message?.sourceChannel
+      let reason: String
+      if onChannelZero.contains(id) {
+        reason = "channel-0"
+      } else if source == nil || source == "10" {
+        addressed.insert(id)
+        continue
+      } else {
+        reason = "agent-to-agent"
+      }
+      let note = [
+        "reply=\(id)",
+        "owner=\(Self.traceOwner(message?.owner))",
+        "source=\(source ?? "-")",
+        "reason=\(reason) stays=\(traceSelectedChannel)",
+      ].joined(separator: " ")
+      OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+    }
+    return addressed
+  }
+
+  /// Replies to the Founder without one owning conversation stay where the
+  /// user is: two authors are ambiguous, and an author without its own
+  /// conversation has no owner here.
+  private func traceUnownedAdmission(_ ids: Set<String>) {
+    let authors = Set(ids.compactMap { freshReply($0)?.owner?.id })
+    let reason = authors.count > 1 ? "ambiguous_owner" : "no_owner"
+    let owners = Set(ids.map { Self.traceOwner(freshReply($0)?.owner) }).sorted()
+    let note = [
+      "reply=\(ids.sorted().joined(separator: ","))",
+      "owner=\(owners.joined(separator: ","))",
+      "source=\(traceSources(of: ids))",
+      "reason=\(reason) stays=\(traceSelectedChannel)",
+    ].joined(separator: " ")
+    OverlayPresentationTrace.shared.record(.conversationAutoSkipped, note: note)
+  }
+
+  private func freshReply(_ id: String) -> OverlayConversationMessage? {
+    for conversation in conversations {
+      if let message = conversation.messages.first(where: { $0.kind == .reply && $0.id == id }) {
+        return message
+      }
+    }
+    return nil
+  }
+
+  /// Owner ids join their parts with NUL; the trace line needs printable
+  /// text, and eight characters of the session and the lease suffice.
+  private static func traceOwner(_ owner: OverlayConversationOwner?) -> String {
+    guard let owner else { return "-" }
+    return "\(owner.provider):\(owner.providerSessionID.prefix(8)):\(owner.leaseID.prefix(8))"
+  }
+
+  private func traceSources(of ids: Set<String>) -> String {
+    Set(ids.map { freshReply($0)?.sourceChannel ?? "-" }).sorted().joined(separator: ",")
+  }
+
+  private var traceSelectedChannel: String {
+    conversations.first { $0.id == selectedConversationID }?.channel ?? "-"
+  }
+
+  /// Focus follows the private owner id (provider, session, lease) of the
+  /// replies addressed to the Founder. Channel 0 is not an owner, and two
+  /// owners in one snapshot are not a guess.
   private func ownedConversation(forNewReplies fresh: Set<String>) -> OverlayConversation? {
     var match: OverlayConversation?
     for conversation in conversations {

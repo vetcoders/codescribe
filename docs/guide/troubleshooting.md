@@ -255,6 +255,11 @@ tail -f ~/.codescribe/data.noindex/logs/codescribe.log
 codescribe -v
 ```
 
+The app rolls `codescribe.log` at 200 MB and keeps four earlier files
+(`codescribe.log.1`, the newest, to `codescribe.log.4`), so the logs stay
+under about 1 GB. Search an older period with
+`grep PATTERN ~/.codescribe/data.noindex/logs/codescribe.log*`.
+
 ### Important log messages
 
 | Message                      | Meaning                     |

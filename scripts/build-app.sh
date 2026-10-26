@@ -322,6 +322,31 @@ fi
 STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 
+# Signing preflight for a headless build. The unlocked state of the login
+# keychain belongs to the security session that unlocked it: the graphical
+# session has it open while an SSH session to the same Mac sees it locked, and
+# no keychain setting or partition list changes that. A real-identity build
+# over SSH would therefore run xcodebuild for minutes and then die in codesign
+# with errSecInternalComponent, so probe the default keychain now and stop with
+# the way out: run the same lane inside the graphical session.
+DEFAULT_KEYCHAIN="$(security default-keychain 2>/dev/null | sed -n 's/^ *"\(.*\)" *$/\1/p' | head -1)"
+headless_signing_recipe() {
+  echo "error: the signing key in ${DEFAULT_KEYCHAIN:-the login keychain} is not usable from this SSH session$1." >&2
+  echo "       The login keychain is unlocked only inside the graphical session of this Mac; a keychain timeout or" >&2
+  echo "       \`security set-key-partition-list\` does not change that. Run the same lane in that session instead, e.g." >&2
+  echo "         open -a Terminal <lane>.command" >&2
+  echo "       (a locked screen is fine). This build does not fall back to ad-hoc signing." >&2
+}
+# A host without any real identity would sign ad-hoc anyway, so it is not
+# held up by a keychain it would never use.
+if [ "${SKIP_XCODEBUILD:-0}" != "1" ] && [ "${CODESCRIBE_CODESIGN_IDENTITY:-}" != "-" ] \
+  && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] \
+  && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Developer ID Application: \|"Apple Development: ' \
+  && ! security show-keychain-info "${DEFAULT_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}" >/dev/null 2>&1; then
+  headless_signing_recipe " (the keychain is locked here)"
+  exit 1
+fi
+
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 # Verify emitted artifact receipts before any consumer can touch stale files.
 # A configured build.target puts artifacts in a triple subdirectory. This app
@@ -553,10 +578,31 @@ BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundle
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
 # dies on every rebuild. An explicit "-" selects it for isolated test builds;
 # otherwise prefer a real identity whenever the caller did not specify one.
+# The identity comes from the default keychain search list (login), named by
+# its SHA-1 hash so the choice is unambiguous even when a certificate is
+# installed twice. There is no separate build keychain. The headless preflight
+# above already refused an SSH build whose login keychain is locked; the sign
+# helper keeps a second line of defence for a keychain that locked meanwhile.
+SIGN_KEYCHAIN="$DEFAULT_KEYCHAIN"
 SIGN_ID="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_ID" ]; then
-  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
-  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | head -1)"
+  SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Developer ID Application: .*/\1/p' | head -1)"
+  [ -z "$SIGN_ID" ] && SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) "Apple Development: .*/\1/p' | head -1)"
+fi
+# Every real-identity codesign below goes through here. Ad-hoc signing never
+# needs a keychain and never comes here.
+sign() {
+  local out rc=0
+  out="$(codesign "$@" 2>&1)" || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" >&2
+  if [ "$rc" -ne 0 ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && printf '%s' "$out" | grep -q "errSecInternalComponent"; then
+    headless_signing_recipe " (errSecInternalComponent)"
+    exit 1
+  fi
+  return "$rc"
+}
+if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
+  echo "    signing from keychain: ${SIGN_KEYCHAIN:-<default>}"
 fi
 # Entitlements for the hardened-runtime signing path below. Same default path
 # as the Makefile's CODESCRIBE_ENTITLEMENTS (`make install-app`); honored from
@@ -568,13 +614,13 @@ ENTITLEMENTS_PATH="${CODESCRIBE_ENTITLEMENTS:-$REPO_ROOT/scripts/entitlements.pl
 # on every executable in the bundle); ad-hoc stays plain since ad-hoc +
 # hardened runtime breaks local TCC (Accessibility/Input Monitoring) testing.
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
+  sign --force --options runtime --timestamp --sign "$SIGN_ID" --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
   echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
-  codesign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
@@ -584,7 +630,7 @@ python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRI
 # with the outer signature without signing that child a second time (no
 # --deep here by design: the nested code is already sealed above).
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  sign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
 fi

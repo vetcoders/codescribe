@@ -321,6 +321,8 @@ pub(crate) struct ChannelSpeechClock {
     last_edge: Option<SpeechEdgeCursor>,
     phase: ChannelSpeechPhase,
     now_file: Option<SpeechNowFile>,
+    /// Last poll that saw agent playback; the voiceless limit restarts there.
+    voiceless_from: Option<SystemTime>,
 }
 
 impl ChannelSpeechClock {
@@ -471,6 +473,26 @@ impl ChannelSpeechClock {
             .is_some_and(|since| silence_is_due(since, now, secs))
     }
 
+    /// Agent playback drops the channel feed (`tts_duck`), so no voice can be
+    /// measured while it plays: that time is not voiceless.
+    fn note_agent_playback(&mut self, now: SystemTime) {
+        self.voiceless_from = Some(now);
+    }
+
+    /// No edge since the session opened, and the voiceless limit has passed
+    /// since it opened or since the last agent playback, whichever is later.
+    fn voiceless_due(&self, opened_at: SystemTime, now: SystemTime, secs: u64) -> bool {
+        let from = self
+            .voiceless_from
+            .map_or(opened_at, |from| from.max(opened_at));
+        secs != 0
+            && matches!(
+                (&self.phase, &self.last_edge),
+                (ChannelSpeechPhase::Unmeasured, None)
+            )
+            && silence_is_due(from, now, CHANNEL_VOICELESS_CLOSE_SECS)
+    }
+
     fn deadline(&self, secs: u64) -> Option<SystemTime> {
         if secs == 0 {
             return None;
@@ -489,7 +511,7 @@ pub(crate) struct OpenAgentChannel {
     pub opened_at: SystemTime,
     pub speech_clock: Arc<StdMutex<ChannelSpeechClock>>,
     pub session_id: Option<String>,
-    /// How this channel was opened; a silence-sealed channel reopens the same way.
+    /// How this channel was opened.
     pub mode: ChannelOpenMode,
     /// Dedicated channel bus; `None` writes receipts to the shared bus.
     pub bus: Option<PathBuf>,
@@ -628,11 +650,19 @@ fn utterance_silence_ms(seconds: f32) -> u32 {
 }
 
 pub const CHANNEL_AUTOSEAL_SECS_ENV: &str = "CODESCRIBE_CHANNEL_AUTOSEAL_SECS";
-/// Hands-free delivery boundary (Founder decision, voice seal cc6c8248,
-/// 2026-09-29): five seconds of silence seal the utterance and deliver it,
-/// and the channel reopens immediately — silence is a delivery boundary,
-/// never a hang-up.
+/// Hands-free delivery boundary: five seconds of silence after heard voice
+/// seal the utterance, deliver it and end the channel session — one press,
+/// one message (Founder decision 2026-10-26). This replaces the reopen half
+/// of voice seal cc6c8248 (2026-09-29), under which the channel reopened
+/// immediately and kept the microphone live after every delivery.
 pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
+
+/// A channel that hears no voice ends this many seconds after it opened, so
+/// a press without a message never leaves the microphone live (Founder
+/// decision 2026-10-26). It closes through the silence seal; `0` in
+/// [`CHANNEL_AUTOSEAL_SECS_ENV`] turns it off with the utterance threshold.
+/// Agent playback, during which the channel hears nothing, does not count.
+pub const CHANNEL_VOICELESS_CLOSE_SECS: u64 = 30;
 
 pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
@@ -728,8 +758,8 @@ pub(crate) enum ChannelOpenMode {
 /// Why a channel session ended: the `reason` of its one `sealed` receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChannelSealReason {
-    /// Utterance silence delivered the words; the quiet contract reopens
-    /// the channel on the same binding.
+    /// Utterance silence delivered the words and ended the session, as a
+    /// hang-up does; nothing reopens it (Founder decision 2026-10-26).
     Silence,
     /// Fn+digit pressed again: the Founder hung up and nothing reopens it.
     Hangup,
@@ -1849,7 +1879,7 @@ impl RecordingController {
 
     pub(crate) async fn poll_channel_autoseal(&self, now: SystemTime, bus: &Path) -> Vec<u8> {
         let _serial = self.serial_lock.lock().await;
-        self.seal_channels_silent_for(now, bus, channel_autoseal_secs(), Some(&binding_path()))
+        self.seal_channels_silent_for(now, bus, channel_autoseal_secs())
             .await
     }
 
@@ -1895,26 +1925,33 @@ impl RecordingController {
         }
     }
 
-    /// Quiet delivery contract (Founder seal cc6c8248): silence seals and
-    /// delivers the utterance spoken so far, then the channel reopens on the
-    /// same binding. A channel that has heard no voice yet stays open — the
-    /// session is persistent and only the Fn toggle hangs it up.
+    /// One press, one message (Founder decision 2026-10-26): silence after
+    /// heard voice seals and delivers the utterance and ends the channel
+    /// session through the same close a hang-up uses, so the capture is
+    /// released. Nothing reopens it; the next message is the next Fn+digit.
+    /// A channel that hears no voice ends the same way
+    /// [`CHANNEL_VOICELESS_CLOSE_SECS`] after it opened; agent playback into
+    /// it does not count.
     pub(crate) async fn seal_channels_silent_for(
         &self,
         now: SystemTime,
         bus: &Path,
         secs: u64,
-        reopen_binding: Option<&Path>,
     ) -> Vec<u8> {
+        let playback = crate::audio::tts_duck::channel_capture_should_drop();
         let due: Vec<(u8, OpenAgentChannel)> = {
             let mut channels = self.agent_channels.lock().await;
             let digits: Vec<u8> = channels
                 .iter()
                 .filter(|(_, open)| {
-                    open.speech_clock
+                    let mut clock = open
+                        .speech_clock
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .silence_due(now, secs)
+                        .unwrap_or_else(|error| error.into_inner());
+                    if playback {
+                        clock.note_agent_playback(now);
+                    }
+                    clock.silence_due(now, secs) || clock.voiceless_due(open.opened_at, now, secs)
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
@@ -1930,7 +1967,6 @@ impl RecordingController {
         };
         let mut sealed = Vec::new();
         for (digit, open) in due {
-            let mode = open.mode;
             if let Err(error) = self
                 .close_open_channel(digit, open, ChannelSealReason::Silence, bus, secs)
                 .await
@@ -1939,15 +1975,6 @@ impl RecordingController {
                 continue;
             }
             sealed.push(digit);
-            if let Some(binding) = reopen_binding
-                && let Err(error) = self.dispatch_agent_channel(digit, binding, bus, mode).await
-            {
-                tracing::warn!(
-                    %error,
-                    digit,
-                    "quiet-contract reopen failed; the channel stays closed"
-                );
-            }
         }
         sealed
     }
@@ -3063,33 +3090,26 @@ mod tests {
         let snapshot = controller.agent_channel_snapshot(3).await.expect("open");
         let opened = snapshot.opened_at;
         let still_open = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(10), &bus, 120)
             .await;
         assert!(still_open.is_empty());
         assert!(controller.agent_channel_snapshot(3).await.is_some());
-        let voiceless = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 120, None)
-            .await;
-        assert!(
-            voiceless.is_empty(),
-            "a channel that heard no voice is persistent and never seals on silence"
-        );
         let disabled = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(10_000), &bus, 0)
             .await;
-        assert!(disabled.is_empty(), "0 disables the threshold");
+        assert!(disabled.is_empty(), "0 turns automatic closing off");
         assert!(controller.channel_hud_states().await[0].loud);
 
         measured_speech_end(&snapshot, opened + Duration::from_secs(60));
         let too_soon = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(179), &bus, 120, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(179), &bus, 120)
             .await;
         assert!(
             too_soon.is_empty(),
             "silence is measured from the last voice"
         );
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(180), &bus, 120, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(180), &bus, 120)
             .await;
         assert_eq!(sealed, vec![3]);
         assert!(controller.agent_channel_snapshot(3).await.is_none());
@@ -3098,7 +3118,7 @@ mod tests {
         assert_eq!(count, 0);
         assert!(!channel);
         let again = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(500), &bus, 120)
             .await;
         assert!(again.is_empty());
 
@@ -3185,7 +3205,7 @@ mod tests {
         measured_speech_end(&snapshot, opened + Duration::from_secs(60));
 
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120, None)
+            .seal_channels_silent_for(opened + Duration::from_secs(180), &shared_bus, 120)
             .await;
         assert_eq!(sealed, vec![3]);
 
@@ -3206,9 +3226,13 @@ mod tests {
         );
     }
 
+    /// One press, one message (Founder decision 2026-10-26; replaces the
+    /// reopen half of voice seal cc6c8248): silence delivers the utterance and
+    /// ends the session like a hang-up. Nothing reopens it and the capture is
+    /// released, so the microphone goes off with the delivery.
     #[tokio::test]
     #[serial]
-    async fn silence_seal_reopens_the_channel_on_the_same_binding() {
+    async fn silence_seal_ends_the_session_and_releases_the_capture() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -3226,31 +3250,77 @@ mod tests {
         measured_speech_end(&snapshot, opened + Duration::from_secs(1));
 
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5, Some(&path))
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &bus, 5)
             .await;
         assert_eq!(sealed, vec![3]);
 
-        let reopened = controller
-            .agent_channel_snapshot(3)
-            .await
-            .expect("the quiet contract reopens the channel after delivery");
-        assert_eq!(reopened.mode, ChannelOpenMode::AttachedOnly);
-        assert_eq!(reopened.audience, "Leon");
-        assert_eq!(
-            reopened.speech_clock.lock().unwrap().deadline(5),
-            None,
-            "the reopened channel starts unmeasured, without an invented silence deadline"
+        assert!(
+            controller.agent_channel_snapshot(3).await.is_none(),
+            "nothing reopens the channel after delivery"
         );
-        let hud = controller.channel_hud_states().await;
-        assert_eq!(hud.len(), 1);
-        assert!(hud[0].open, "{hud:?}");
+        assert!(controller.channel_hud_states().await.is_empty());
+        let (count, channel, _) = controller.capture_subscriber_view().await;
+        assert_eq!(count, 0, "the channel capture is released");
+        assert!(!channel);
+        let later = controller
+            .seal_channels_silent_for(opened + Duration::from_secs(600), &bus, 5)
+            .await;
+        assert!(later.is_empty(), "no session is left to seal");
 
-        let text = std::fs::read_to_string(&bus).expect("sealed receipt");
-        assert_eq!(
-            text.lines().count(),
-            1,
-            "one silence seal writes one receipt; the attached-only reopen adds none: {text}"
+        let rows = bus_rows(&bus);
+        assert_eq!(rows.len(), 1, "one silence seal, no new open: {rows:?}");
+        assert_eq!(rows[0]["state"], "sealed");
+        assert_eq!(rows[0]["reason"], "silence");
+    }
+
+    /// A press that brings no voice does not keep the microphone live
+    /// (Founder decision 2026-10-26): the session ends through the silence
+    /// seal once the voiceless limit has passed since it opened. Heard voice
+    /// moves the session to the utterance clock instead.
+    #[tokio::test]
+    #[serial]
+    async fn a_channel_that_hears_no_voice_ends_after_the_voiceless_limit() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let limit = Duration::from_secs(CHANNEL_VOICELESS_CLOSE_SECS);
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-silent").await;
+        let too_soon = controller
+            .seal_channels_silent_for(opened + limit - Duration::from_secs(1), &shared_bus, 5)
+            .await;
+        assert!(too_soon.is_empty(), "the limit counts from the open");
+        let disabled = controller
+            .seal_channels_silent_for(opened + limit * 10, &shared_bus, 0)
+            .await;
+        assert!(disabled.is_empty(), "0 turns automatic closing off");
+        let sealed = controller
+            .seal_channels_silent_for(opened + limit, &shared_bus, 5)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert!(controller.channel_hud_states().await.is_empty());
+        let (count, channel, _) = controller.capture_subscriber_view().await;
+        assert_eq!(count, 0, "the channel capture is released");
+        assert!(!channel);
+
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-spoken").await;
+        hear_voice_at(&controller, opened + limit).await;
+        let heard = controller
+            .seal_channels_silent_for(opened + limit + Duration::from_secs(2), &shared_bus, 5)
+            .await;
+        assert!(
+            heard.is_empty(),
+            "heard voice runs on the utterance silence"
         );
+        assert!(controller.agent_channel_snapshot(3).await.is_some());
+        let rows = sealed_rows(&bus_rows(&channel_bus));
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "agent-channel-3-silent");
+        assert_eq!(rows[0].1, "silence");
+        assert!(!shared_bus.exists());
     }
 
     /// The observed loss: drafts reached the bus, the ledger refused terminal
@@ -3270,7 +3340,7 @@ mod tests {
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
         assert!(
             controller
-                .seal_channels_silent_for(opened + Duration::from_secs(2), &shared_bus, 5, None)
+                .seal_channels_silent_for(opened + Duration::from_secs(2), &shared_bus, 5)
                 .await
                 .is_empty()
         );
@@ -3317,12 +3387,7 @@ mod tests {
 
         // The hung-up session is gone: a later silence poll seals nothing.
         let later = controller
-            .seal_channels_silent_for(
-                opened + Duration::from_secs(600),
-                &shared_bus,
-                5,
-                Some(&path),
-            )
+            .seal_channels_silent_for(opened + Duration::from_secs(600), &shared_bus, 5)
             .await;
         assert!(later.is_empty());
         assert_eq!(bus_rows(&channel_bus).len(), 1);
@@ -3722,9 +3787,47 @@ mod tests {
         assert!(frozen_channel_recipients(3, &binding, &bus).is_empty());
     }
 
+    /// A press made to answer a long agent reply stays open through the
+    /// reply: the channel hears nothing while it plays, so that time is not
+    /// voiceless, and the limit counts again from the end of the playback.
+    #[tokio::test]
+    #[serial]
+    async fn agent_playback_does_not_count_toward_the_voiceless_limit() {
+        crate::audio::tts_duck::clear();
+        let controller = RecordingController::new_without_keychain();
+        let dir = tempfile::tempdir().expect("temp");
+        let (path, channel_bus) = write_dedicated_binding(dir.path());
+        let shared_bus = dir.path().join("shared-bus.jsonl");
+        let limit = Duration::from_secs(CHANNEL_VOICELESS_CLOSE_SECS);
+        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-answer").await;
+
+        crate::audio::tts_duck::arm_for(Duration::from_secs(600));
+        let playing = opened + limit + Duration::from_secs(10);
+        let during = controller
+            .seal_channels_silent_for(playing, &shared_bus, 5)
+            .await;
+        crate::audio::tts_duck::clear();
+        assert!(
+            during.is_empty(),
+            "a reply playing into the channel is not silence"
+        );
+        let after = controller
+            .seal_channels_silent_for(playing + limit - Duration::from_secs(1), &shared_bus, 5)
+            .await;
+        assert!(
+            after.is_empty(),
+            "the limit counts again from the end of the playback"
+        );
+        let sealed = controller
+            .seal_channels_silent_for(playing + limit, &shared_bus, 5)
+            .await;
+        assert_eq!(sealed, vec![3]);
+        assert_eq!(sealed_rows(&bus_rows(&channel_bus)).len(), 1);
+    }
+
     /// One closing throne: a session sealed by silence is never sealed again
-    /// by a hang-up. The hang-up closes the session the quiet contract
-    /// reopened, and a digit press after a seal without reopen opens.
+    /// by a hang-up. Silence ends the session, so the next press opens a new
+    /// one, and the press after it hangs that one up.
     #[tokio::test]
     #[serial]
     async fn a_silence_sealed_session_is_never_sealed_again_by_a_hang_up() {
@@ -3737,57 +3840,32 @@ mod tests {
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-first").await;
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5)
             .await;
         assert_eq!(sealed, vec![3]);
-        stamp_session(&controller, "agent-channel-3-reopened").await;
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+
+        open_stamped(&controller, &path, &shared_bus, "agent-channel-3-next").await;
         controller
             .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::Live)
             .await
-            .expect("hang up the reopened session");
+            .expect("hang up the next session");
         assert!(controller.agent_channel_snapshot(3).await.is_none());
         assert_eq!(
             sealed_rows(&bus_rows(&channel_bus)),
             vec![
                 ("agent-channel-3-first".to_string(), "silence".to_string()),
-                ("agent-channel-3-reopened".to_string(), "hangup".to_string()),
+                ("agent-channel-3-next".to_string(), "hangup".to_string()),
             ]
         );
-
-        // Silence without a reopen leaves the digit closed; the next press
-        // opens a fresh session instead of sealing the finished one twice.
-        let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-last").await;
-        hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
-        let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, None)
-            .await;
-        assert_eq!(sealed, vec![3]);
-        controller
-            .dispatch_agent_channel(3, &path, &shared_bus, ChannelOpenMode::AttachedOnly)
-            .await
-            .expect("press after a seal opens");
-        assert!(controller.agent_channel_snapshot(3).await.is_some());
-        let sealed = sealed_rows(&bus_rows(&channel_bus));
-        assert_eq!(sealed.len(), 3, "{sealed:?}");
-        for session in [
-            "agent-channel-3-first",
-            "agent-channel-3-reopened",
-            "agent-channel-3-last",
-        ] {
-            assert_eq!(
-                sealed.iter().filter(|(id, _)| id == session).count(),
-                1,
-                "{session} is sealed exactly once: {sealed:?}"
-            );
-        }
         assert!(!shared_bus.exists());
     }
 
-    /// A hang-up ends one session, not the channel: the next press reopens
-    /// on the same binding and the quiet contract runs as before.
+    /// A hang-up ends one session, not the binding: the next press opens on
+    /// the same binding, and silence after voice ends that session too.
     #[tokio::test]
     #[serial]
-    async fn reopen_after_a_hang_up_keeps_the_quiet_contract() {
+    async fn a_press_after_a_hang_up_opens_and_silence_ends_it() {
         crate::audio::tts_duck::clear();
         let controller = RecordingController::new_without_keychain();
         let dir = tempfile::tempdir().expect("temp");
@@ -3808,15 +3886,11 @@ mod tests {
         assert_eq!(hud[0].audience, "Leon");
         hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
         let sealed = controller
-            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5, Some(&path))
+            .seal_channels_silent_for(opened + Duration::from_secs(6), &shared_bus, 5)
             .await;
         assert_eq!(sealed, vec![3]);
-        let reopened = controller
-            .agent_channel_snapshot(3)
-            .await
-            .expect("the quiet contract reopens after a hang-up cycle");
-        assert_eq!(reopened.audience, "Leon");
-        assert_eq!(reopened.bus.as_deref(), Some(channel_bus.as_path()));
+        assert!(controller.agent_channel_snapshot(3).await.is_none());
+        assert!(controller.channel_hud_states().await.is_empty());
         assert_eq!(
             sealed_rows(&bus_rows(&channel_bus)),
             vec![

@@ -943,8 +943,9 @@ struct TranscriptBusWriter {
     /// channel close reads this marker instead when the take opted out.
     direct_terminal: Option<DirectPublicationCapability>,
     /// Documents whose start row already reached a channel bus. Quiet delivery
-    /// contract (Founder seal cc6c8248): between that start row and the
-    /// terminal seal, channel revisions stay in-process.
+    /// contract (Founder seal cc6c8248; only its reopen half was replaced on
+    /// 2026-10-26): between that start row and the terminal seal, channel
+    /// revisions stay in-process.
     announced_documents: HashSet<u64>,
 }
 
@@ -1852,10 +1853,11 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): a channel
-        // bus carries one start row per document, the terminal seal, manual
-        // edits and coverage verdicts. Intermediate revisions stay in-process;
-        // they still project to the HUD and in-process consumers below.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): a channel bus carries one
+        // start row per document, the terminal seal, manual edits and coverage
+        // verdicts. Intermediate revisions stay in-process; they still project
+        // to the HUD and in-process consumers below.
         let channel_quiet = self.session.audience.is_some();
         let is_terminal_seal = matches!(
             &revision.action,
@@ -2108,9 +2110,10 @@ impl TranscriptBus {
         } else {
             self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false)
         };
-        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29): identical
-        // for the direct lane — one start row per document, the terminal row,
-        // intermediate revisions in-process only.
+        // Quiet delivery contract (Founder seal cc6c8248, 2026-09-29; only its
+        // reopen half was replaced on 2026-10-26): identical for the direct
+        // lane — one start row per document, the terminal row, intermediate
+        // revisions in-process only.
         let channel_quiet = self.session.audience.is_some();
         let mut emitted = Vec::new();
         let mut persisted = Vec::new();
@@ -4346,8 +4349,9 @@ mod tests {
         assert!(!broken.exists());
     }
 
-    /// Quiet delivery contract (Founder seal cc6c8248): between one start row
-    /// per document and the terminal seal, channel revisions stay off disk.
+    /// Quiet delivery contract (Founder seal cc6c8248; only its reopen half was
+    /// replaced on 2026-10-26): between one start row per document and the
+    /// terminal seal, channel revisions stay off disk.
     #[test]
     fn channel_bus_carries_only_document_starts_and_the_terminal_seal() {
         let dir = tempfile::tempdir().unwrap();

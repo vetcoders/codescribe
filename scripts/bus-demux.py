@@ -79,8 +79,9 @@ CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
 #: lifecycle boundaries can invoke the coverage-refused delivery net.
 PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
 #: Clean lifecycle terminal. For the flush net it is the hang-up boundary:
-#: a channel closed by a second digit / Fn press is not reopened, so no
-#: later channel-session row would ever release its refused take.
+#: a channel closed by a second digit / Fn press is not reopened (since
+#: 2026-10-26 neither is one closed by silence), so no later
+#: channel-session row would ever release its refused take.
 SESSION_ENDED = "session_ended"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
 DIRECT_TERMINAL = "apply_direct_transcript_terminal"
@@ -626,8 +627,8 @@ def installation_idle(
                                     channel, emitted if isinstance(emitted, str) else None
                                 )
                             else:
-                                # The controller reopens a channel before the
-                                # predecessor's tail publishes its seal (20:23:35
+                                # A new open of the same channel can precede the
+                                # predecessor's tail seal (20:23:35
                                 # open b868b9ec, 20:23:36 sealed 896f2cea). That
                                 # close names only its own session, as in
                                 # _consume_channel_row; ending the successor let
@@ -1360,9 +1361,9 @@ class EvidenceNormalizer:
     controller's closing seal; its drafts alone settle silently.
     """
 
-    #: Unsealed channel sessions retained for the flush net. The quiet
-    #: contract reopens a channel within seconds of every real utterance, so
-    #: anything beyond a handful of sessions is an abandoned bus replay.
+    #: Unsealed channel sessions retained for the flush net. A channel session
+    #: ends with its utterance (silence or a hang-up seals it), so anything
+    #: beyond a handful of unsealed sessions is an abandoned bus replay.
     MAX_TRACKED_SESSIONS = 16
 
     def __init__(self) -> None:
@@ -1657,7 +1658,7 @@ class EvidenceNormalizer:
         if previous is not None and previous != identity:
             return
         self._channel_open_times[session] = identity
-        # Capture reopen can precede its predecessor's retained decoder tail.
+        # A new capture can open before its predecessor's retained decoder tail.
         # Only that predecessor's named close/session-ended (including an
         # explicit orphan receipt) owns its delivery boundary. A newer open
         # cannot settle or flush another capture's unfinished document.
@@ -4783,15 +4784,15 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
         "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis",
     )
-    envelope = {**{key: payload[key] for key in fields if key in payload},
-                "addressed_to": delivery_address_label(payload)}
-    also_sent_to = also_sent_to_queue_label(payload)
-    if also_sent_to is not None:
-        envelope["also_sent_to_label"] = also_sent_to
+    view = {**{key: payload[key] for key in fields if key in payload},
+            "addressed_to": delivery_address_label(payload)}
     reach = broadcast_reach(payload)
     if reach is not None:
-        envelope["sent_to"] = reach
-    return envelope
+        view["sent_to"] = reach
+    also_sent_to = also_sent_to_queue_label(payload)
+    if also_sent_to is not None:
+        view["also_sent_to_label"] = also_sent_to
+    return view
 
 
 class MailboxReadError(ValueError):
@@ -6791,6 +6792,150 @@ def tts_language(environ: Any = None) -> str:
     return DEFAULT_TTS_LANGUAGE
 
 
+# What a voice says of a message written for the screen. Founder, 2026-10-26:
+# paths, slashes, underscores and version numbers were read out as English
+# characters. Only the speaker gets this text; the published reply, its
+# receipts and the screen keep the original. The rules are deterministic, so
+# the same message always sounds the same and costs nothing to prepare.
+SPOKEN_WORDS = {
+    "pl": {"arrow": "na", "of": "z", "channel": "kanał", "range": "do", "union": "i",
+           "section": "paragraf", "approx": "około"},
+    "en": {"arrow": "to", "of": "of", "channel": "channel", "range": "to", "union": "and",
+           "section": "section", "approx": "about"},
+}
+SPOKEN_FILE_SUFFIXES = ("py", "rs", "swift", "md", "json", "jsonl", "toml", "sh", "txt", "yml",
+                        "yaml", "plist", "xcstrings", "wav", "log", "html", "js", "ts", "csv",
+                        "command")
+_SPOKEN_PATH_CHARS = r"[^\s/,;()\[\]„”“\"'<>]"
+_SPOKEN_LIST_MARK = re.compile(r"^\s*(?:[-*•]+|#{1,6})\s+")
+# "hania → as:" or "as (kanał 1) → Monika, Basia:" opening a message.
+_SPOKEN_HEADER = re.compile(
+    r"^(?P<name>[^\W\d_][\w-]*)(?:\s*\([^)\n]*\))?\s*(?:→|->|=>)\s*[^:\n]{1,80}:\s*")
+_SPOKEN_URL = re.compile(r"\bhttps?://\S+")
+_SPOKEN_BUILD_SUFFIX = re.compile(r"\b(\d+\.\d+\.\d+)\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*")
+_SPOKEN_ROOTED_PATH = re.compile(
+    rf"(?<![\w.~/-])(?:~|\.{{1,2}})?/{_SPOKEN_PATH_CHARS}+(?:/{_SPOKEN_PATH_CHARS}*)*")
+_SPOKEN_LONG_PATH = re.compile(r"(?<![\w.~/-])(?:[\w.@+-]+/){2,}[\w.@+:–-]*")
+# A file name, alone or after one folder ("scripts/bus-demux.py:5350–5352").
+_SPOKEN_FILE = re.compile(
+    r"(?<![\w.~/-])(?:[\w.@+-]+/)?[\w-]+(?:\.[\w-]+)*?\.(?:" + "|".join(SPOKEN_FILE_SUFFIXES)
+    + r")(?::\d+(?:[–-]\d+)?)?(?![\w/])")
+_SPOKEN_FRACTION = re.compile(r"(?<![\w./])(\d+)/(\d+)(?![\w/])")
+_SPOKEN_NAME_CHANNEL = re.compile(r"(?<![\w./])([^\W\d_][\w-]*)/(\d)(?![\w/])")
+_SPOKEN_SHORT_PATH = re.compile(r"(?<![\w./~-])([\w.@+-]+)/([\w.@+-]+)(?![\w/])")
+# A commit, blob or lease id: 7 to 64 hex characters with a digit and a letter,
+# optionally cut short with an ellipsis.
+_SPOKEN_HASH = re.compile(
+    r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}(?:…|\.\.\.)?(?![\w-])")
+_SPOKEN_UTC_CLOCK = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2})(?::\d{2})?Z(?!\w)")
+_SPOKEN_SECONDS = re.compile(r"(?<![\w:.])(\d{1,2}):(\d{2}):\d{2}(?![\w:])")
+_SPOKEN_RANGE = re.compile(r"(?<=\d)\s*[–—]\s*(?=\d)")
+_SPOKEN_ARROW = re.compile(r"\s*(?:→|->|=>)\s*")
+_SPOKEN_FLAG = re.compile(r"(?<![\w-])--(?=[A-Za-z])")
+_SPOKEN_INNER_UNDERSCORE = re.compile(r"(?<=[^\W_])_+(?=[^\W_])")
+_SPOKEN_EDGE_UNDERSCORE = re.compile(r"(?<![^\W_])_+|_+(?![^\W_])")
+_SPOKEN_ANGLE_NAME = re.compile(r"<([\w-]+)>")
+
+
+def _spoken_name(path: str) -> str:
+    """The last name of a path or file as words: no folders, extension, line or separators.
+
+    Long numbers inside the name (dates such as 20261025) are dropped; a
+    listener cannot use them and they take several seconds to say.
+    """
+    parts = [part for part in path.split("/") if part not in ("", "~", ".", "..")]
+    name = re.sub(r":\d+(?:[–-]\d+)?$", "", parts[-1] if parts else "")
+    stem, dot, suffix = name.rpartition(".")
+    if dot and stem and suffix.lower() in SPOKEN_FILE_SUFFIXES:
+        name = stem
+    words = [word for word in re.split(r"[-_.:\s]+", name)
+             if word and not (word.isdigit() and len(word) >= 5)]
+    return " ".join(words)
+
+
+def _spoken_path(match: re.Match[str]) -> str:
+    text = match.group(0)
+    tail = text[-1] if text[-1] in ".:" else ""
+    return _spoken_name(text.rstrip(".:")) + tail
+
+
+def spoken_text(
+    text: str,
+    language: str = DEFAULT_TTS_LANGUAGE,
+    *,
+    now: datetime.datetime | None = None,
+    zone: datetime.tzinfo | None = None,
+) -> str:
+    """The words a voice should say for `text`, which stays as written everywhere else.
+
+    A message header ("hania → as:") becomes the author's name; arrows,
+    fractions ("2/4"), bus names ("basia/2") and ranges become words; a path
+    or file becomes its last name; commit and lease hashes, build suffixes,
+    flag dashes, underscores, backticks and list marks are dropped; a UTC
+    clock ("11:53:17Z") becomes the local time (`zone`, default the system's)
+    without seconds. A line break becomes a sentence end. A text the rules do
+    not change, or one with nothing left to say, is returned as written.
+    """
+    words = SPOKEN_WORDS.get(language, SPOKEN_WORDS[DEFAULT_TTS_LANGUAGE])
+    lines = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            continue
+        line = _SPOKEN_LIST_MARK.sub("", line).strip()
+        if line:
+            lines.append(line)
+    # A line break is a pause: every line but the last ends as a sentence.
+    spoken = " ".join(line if index == len(lines) - 1 or line[-1] in ".!?…:;," else line + "."
+                      for index, line in enumerate(lines))
+    spoken = _SPOKEN_HEADER.sub(
+        lambda match: match.group("name")[:1].upper() + match.group("name")[1:] + ": ", spoken)
+    spoken = _SPOKEN_URL.sub("", spoken)
+    spoken = _SPOKEN_BUILD_SUFFIX.sub(r"\1", spoken)
+    spoken = _SPOKEN_ROOTED_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_LONG_PATH.sub(_spoken_path, spoken)
+    spoken = _SPOKEN_FILE.sub(lambda match: _spoken_name(match.group(0)), spoken)
+    spoken = _SPOKEN_FRACTION.sub(rf"\1 {words['of']} \2", spoken)
+    spoken = _SPOKEN_NAME_CHANNEL.sub(rf"\1, {words['channel']} \2", spoken)
+    spoken = _SPOKEN_SHORT_PATH.sub(r"\1 \2", spoken)
+    spoken = _SPOKEN_HASH.sub("", spoken)
+    moment = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(datetime.timezone.utc)
+
+    def local_clock(match: re.Match[str]) -> str:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if hour > 23 or minute > 59:
+            return match.group(0)
+        local = moment.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(zone)
+        return f"{local.hour}:{local.minute:02d}"
+
+    spoken = _SPOKEN_UTC_CLOCK.sub(local_clock, spoken)
+    spoken = _SPOKEN_SECONDS.sub(r"\1:\2", spoken)
+    spoken = _SPOKEN_RANGE.sub(f" {words['range']} ", spoken)
+    spoken = _SPOKEN_ARROW.sub(f" {words['arrow']} ", spoken)
+    spoken = _SPOKEN_FLAG.sub("", spoken)
+    spoken = _SPOKEN_INNER_UNDERSCORE.sub(" ", spoken)
+    spoken = _SPOKEN_EDGE_UNDERSCORE.sub("", spoken)
+    spoken = _SPOKEN_ANGLE_NAME.sub(r"\1", spoken)
+    spoken = spoken.replace("`", "").replace("*", "")
+    spoken = spoken.replace("∪", f" {words['union']} ").replace("≈", f" {words['approx']} ")
+    spoken = re.sub(r"§\s*", f"{words['section']} ", spoken)
+    # What the removals leave behind: empty brackets, stacked punctuation and
+    # spaces before a mark.
+    spoken = re.sub(r"\([\s,;:]*\)", "", spoken)
+    spoken = re.sub(r"\(\s*[,;]\s*", "(", spoken)
+    spoken = re.sub(r"\s*[,;]\s*\)", ")", spoken)
+    spoken = re.sub(r"[ \t]{2,}", " ", spoken)
+    spoken = re.sub(r"\s+([,.;:!?…)”\]])", r"\1", spoken)
+    spoken = re.sub(r"([(„“\[])\s+", r"\1", spoken)
+    spoken = re.sub(r",(?:\s*,)+", ",", spoken)
+    spoken = re.sub(r"[,;:]\s*([.!?…])", r"\1", spoken)
+    spoken = re.sub(r"^[\s,;:.]+", "", spoken).strip()
+    # Nothing to say for listening, or nothing but spacing changed: the text
+    # goes as written, so a plain sentence keeps its cached recording.
+    if not any(character.isalpha() for character in spoken) or spoken.split() == text.split():
+        return text
+    return spoken
+
+
 def _speak_xai(
     text: str,
     voice: str,
@@ -7091,7 +7236,7 @@ def channel_quiet_for_playback(
     """An open channel admits a reply after measured quiet.
 
     ``fresh`` is a session whose voice detector has reported no speech since
-    it opened (the reopen after a silence seal); ``unmeasured`` is a broken
+    it opened (e.g. one opened to answer a reply); ``unmeasured`` is a broken
     edge chain and never counts as quiet. ``quiet`` follows speech inside the
     take and admits only the agent that channel addresses: a pause in a
     message to one agent is not room for another (Monika, 2026-10-23 06:58,
@@ -7124,7 +7269,7 @@ def channel_keeps_playback(runtime: Path, playing_into: set[str]) -> Callable[[s
 
     Our own voice cannot open speech in the app (its channel feed is dropped
     while the reply plays), so a channel that was open when the reply started
-    may seal and reopen under it. A channel opened during the reply is a Fn
+    may seal under it. A channel opened during the reply is a Fn
     press, and measured speech on any channel is a person: both stop it.
     """
     def kept(channel: str, session_id: str) -> bool:
@@ -8847,7 +8992,10 @@ def speak_published_reply(args: argparse.Namespace, bus: Path, reply: dict[str, 
             spoken, error, reason = False, "playback stopped", "stopped"
         else:
             speaker = _speak_openai if reply["tts_vendor"] == "openai" else _speak_xai
-            spoken, error, reason = speaker(reply["text"], reply["voice"], reply["speed"],
+            # The reply, its receipts and the screen keep the written text;
+            # the voice and the speech cache get the words for listening.
+            words = spoken_text(reply["text"], tts_language())
+            spoken, error, reason = speaker(words, reply["voice"], reply["speed"],
                                             playback_root=args.bridge_home, bus=bus_path(), control=control)
             if control.stopped() and not spoken:
                 error, reason = "playback stopped", "stopped"
@@ -10894,12 +11042,12 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
                 "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis"):
         if key in payload:
             line[key] = payload[key]
-    also_sent_to = also_sent_to_queue_label(payload)
-    if also_sent_to is not None:
-        line["also_sent_to_label"] = also_sent_to
     reach = broadcast_reach(payload)
     if reach is not None:
         line["sent_to"] = reach
+    also_sent_to = also_sent_to_queue_label(payload)
+    if also_sent_to is not None:
+        line["also_sent_to_label"] = also_sent_to
     return line
 
 

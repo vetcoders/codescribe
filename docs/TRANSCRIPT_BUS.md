@@ -1353,10 +1353,16 @@ not rewritten.
 An open channel session also appends `codescribe.channel-session.v1` (`kind: channel_session`). `state: open` with `loud: true` means the microphone is
 live. `state: sealed` with `reason: silence` means
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS` elapsed after the capture's measured
-Silero speech-end edge. Text arrivals do not start or reset this clock. While
-speech is measured active, or no complete speech-start/end pair is available,
-there is no automatic silence deadline; manual hang-up remains available. `0`
-disables that cap. `state: sealed` with `reason: hangup` means Fn+digit was
+Silero speech-end edge, or the session measured no speech edge at all for
+30 s after it opened (time while an agent reply plays into it does not
+count). The words so far are delivered and the session ends as
+a hang-up does: its capture is released and nothing reopens it, so the next
+message is the next Fn+digit (one press, one message; Founder decision
+2026-10-26, which replaces the reopen half of voice seal `cc6c8248`). Text
+arrivals do not start or reset these clocks. While speech is measured
+active, or the speech-start/end pair after heard voice is incomplete, there
+is no automatic silence deadline; manual hang-up remains available. `0`
+disables both. `state: sealed` with `reason: hangup` means Fn+digit was
 pressed again and nothing reopens the session. `state: sealed` with
 `reason: orphan` means the process that opened the session ended without
 sealing it (quit or crash); the next controller start writes it for each
@@ -1380,7 +1386,7 @@ The helper admits playback only after the existing capture interlock proves
 idle, and stops its own player when a take starts. An open channel does not
 block a reply by itself: the app publishes its measured speech phase in
 `runtime/channel-speech-<digit>.json`. A `fresh` session (no speech since it
-opened, e.g. the reopen after a silence seal) admits any reply after 1 s.
+opened, e.g. a channel opened to answer a reply) admits any reply after 1 s.
 A `quiet` session (speech, then silence, inside the same take) admits only
 the reply of the agent bound to that channel: a pause in a message to one
 agent is not room for another, which waits for that take to seal. Quiet is
@@ -1446,6 +1452,29 @@ also reads `pl-PL` or `polish` like `auto`. The speech cache key includes the
 language, so recordings made with `auto` are never replayed. The helper does
 not read the app's settings; the app sends its configured speech language
 the same way (`docs/STT_CONTRACT.md`, `tts_language`).
+
+A voice gets words for listening, not the characters written for the screen
+(`spoken_text`, applied once in `speak_published_reply` for `--say`, Play and
+automatic playback, on both vendors). The published reply, its receipts and
+the overlay keep the written text; only the synthesis request and the speech
+cache key use the spoken one. The rules are fixed, not a model:
+
+| Written                                                                             | Spoken                                                          |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `hania → as:` opening a message                                                     | `Hania:`                                                        |
+| `0.17.0 → 0.18.0`, `2/4`, `basia/2`, `12:51–12:53`                                  | `0.17.0 na 0.18.0`, `2 z 4`, `basia, kanał 2`, `12:51 do 12:53` |
+| a path or file (`~/x/raport-20261026.md`, `core/llm/speech.rs`, `bus-demux.py:120`) | its last name (`raport`, `speech`, `bus demux`)                 |
+| `runtime/receipts`, `sent_to`, `--takeover`                                         | `runtime receipts`, `sent to`, `takeover`                       |
+| a commit or lease hash (7–64 hex with a digit), `+g…` build suffix, URL             | nothing                                                         |
+| `11:53:17Z`                                                                         | local time without seconds (`12:53` in winter in Poland)        |
+| backticks, `*`, list marks, fence lines, `∪`, `§`, `<name>`                         | dropped or said as a word                                       |
+
+A line break becomes a sentence end. A text the rules leave unchanged is sent
+byte for byte, so plain sentences keep their cached recordings; a text with
+nothing left to say is spoken as written. Words follow the speech language
+(`na`/`to`, `z`/`of`, `kanał`/`channel`). Agents still write to the founder
+in plain words: the rules are a safety net for text that was written to be
+read, such as a channel message played with Play.
 
 A fresh ticket is required for each deliberate Play. Ticket reuse is refused.
 The existing stable `runtime/playback.lock` serializes all speakers, including
@@ -1523,7 +1552,8 @@ constantly and has no path-identity role therefore lives in
 `core/config/loader.rs` is its only resolver; Swift receives it as
 `CodescribeConfig.churnDir()`. It holds:
 
-- `logs/`: `codescribe.log` (Rust tracing) and `diagnostic.log` (Swift);
+- `logs/`: `codescribe.log` (Rust tracing; the app rolls it at 200 MB and
+  keeps `.1` to `.4`) and `diagnostic.log` (Swift);
 - `overlay-delivery-cursor/` and the earlier `overlay-delivery-cursor.v1.json`;
 - `overlay-read-state.v1.json`.
 
@@ -1535,9 +1565,13 @@ paths), `takes/`, `transcriptions/`, and every `agent-bridge/runtime/` file that
 `bus-demux` or the plugins read or write (followers, wake ledgers, reply
 playback, playback mutes, broadcast policy, channel speech, the ack cursor).
 
-Every app and CLI process moves entries left by an earlier build once, inside
-the logging initialization and before the log sink opens
-(`core/config/churn.rs`). Each entry is one same-volume rename that refuses an
+The app moves entries left by an earlier build once per start, inside the
+logging initialization and before the log sink opens
+(`core/config/churn.rs`). The CLI moves nothing and creates no log folder: it
+only appends to `logs/codescribe.log` when the app's folder exists.
+`bus-demux` starts the CLI for every bus publication, and a CLI that created
+the new folder first would leave both locations present for good. Each entry
+is one same-volume rename that refuses an
 existing destination: nothing is copied, deleted or replaced. An entry that
 exists at both locations, or on another volume, is left untouched and logged as
 an error on every start until it is resolved by hand. The moved entries are not
