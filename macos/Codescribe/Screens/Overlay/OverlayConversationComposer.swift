@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 /// One input surface; the conversation owner retains the draft and publishes it.
@@ -709,9 +710,11 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.typingAttributes[.font] = font
     editor.textContainerInset = NSSize(width: 0, height: ComposerControlMetrics.textVerticalInset)
     editor.textContainer?.lineFragmentPadding = 0
-    editor.textContainer?.widthTracksTextView = true
+    editor.textContainer?.widthTracksTextView = false
     editor.isHorizontallyResizable = false
-    editor.isVerticallyResizable = true
+    // MessageScrollView owns the measured document frame, including the fixed
+    // space that lets the last line scroll clear of the corner controls.
+    editor.isVerticallyResizable = false
     editor.minSize = .zero
     editor.maxSize = NSSize(
       width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -962,10 +965,11 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
     var caretRevealPending = false
     private var previousViewport = NSSize.zero
-    private var laidOutOrigin = NSPoint.zero
+    private var observedOrigin = NSPoint.zero
     private var exclusionRects: [NSRect] = []
     private var needsContentMeasurement = true
-    private var fittedHeight: CGFloat = 28
+    private var usesViewportCorners = false
+    private let cornerClip = CAShapeLayer()
     private var arranging = false
 
     func invalidateContentMeasurement() {
@@ -975,9 +979,84 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func reflectScrolledClipView(_ clipView: NSClipView) {
       super.reflectScrolledClipView(clipView)
-      // The controls stay in viewport coordinates while the document scrolls.
-      // Reflow their two small corners, never a full-height side column.
-      if clipView.bounds.origin != laidOutOrigin { needsLayout = true }
+      guard clipView === contentView else { return }
+      if clipView.bounds.origin != observedOrigin {
+        // A later scroll wins over an older selection/edit reveal. Geometry
+        // changes inside layout consume their reveal once, without rearming it.
+        if !arranging { caretRevealPending = false }
+        observedOrigin = clipView.bounds.origin
+      }
+      // Scrolling changes only the viewport clip. It never invalidates TextKit,
+      // measures the document, resizes it, or requests another layout pass.
+      updateCornerClip()
+    }
+
+    private func updateCornerClip() {
+      guard let layer = contentView.layer else { return }
+      CATransaction.begin()
+      CATransaction.setDisableActions(true)
+      defer { CATransaction.commit() }
+      guard usesViewportCorners, let corners else {
+        layer.mask = nil
+        return
+      }
+      let viewport = contentView.bounds
+      let upper = NSRect(
+        x: viewport.minX, y: viewport.minY, width: viewport.width,
+        height: max(0, viewport.height - corners.actionHeight))
+      let middle = NSRect(
+        x: viewport.minX + corners.leadingWidth + corners.clearance, y: upper.maxY,
+        width: max(
+          0, viewport.width - corners.leadingWidth - corners.trailingWidth - 2 * corners.clearance),
+        height: corners.actionHeight)
+      let path = CGMutablePath()
+      // AppKit owns the backing layer's coordinate system (including flipping).
+      path.addRect(contentView.convertToLayer(upper))
+      path.addRect(contentView.convertToLayer(middle))
+      cornerClip.frame = layer.bounds
+      cornerClip.bounds = layer.bounds
+      cornerClip.path = path
+      layer.mask = cornerClip
+    }
+
+    func prepareForCaretReveal() {
+      caretRevealPending = false
+      if !arranging { layoutSubtreeIfNeeded() }
+    }
+
+    private func caretRect(_ range: NSRange, in editor: NSTextView) -> NSRect? {
+      guard let window = editor.window, range.location != NSNotFound else { return nil }
+      let index = min(range.location, editor.textStorage?.length ?? 0)
+      let screenRect = editor.firstRect(
+        forCharacterRange: NSRange(location: index, length: 0), actualRange: nil)
+      // An insertion rectangle may have zero width and still have a visible
+      // line height. Do not discard it as an empty NSRect.
+      guard screenRect.height > 0, screenRect.origin.x.isFinite, screenRect.origin.y.isFinite,
+        screenRect.height.isFinite
+      else { return nil }
+      return editor.convert(window.convertFromScreen(screenRect), from: nil)
+    }
+
+    func revealUnobscuredRange(_ range: NSRange, in editor: NSTextView) {
+      guard usesViewportCorners, let corners, range.location != NSNotFound else { return }
+      let viewport = contentView.bounds
+      let length = editor.textStorage?.length ?? 0
+      let start = min(range.location, length)
+      let end = start + min(range.length, length - start)
+      let blockedRects = corners.exclusions(viewport: viewport, textOrigin: .zero)
+      // Native scrolling chooses the visible end of a selection. Correct only
+      // an endpoint actually under a control, never drag an offscreen endpoint
+      // back into view or replace the native selected range.
+      for index in [end, start] {
+        guard let rect = caretRect(NSRange(location: index, length: 0), in: editor),
+          blockedRects.contains(where: { $0.intersects(rect.insetBy(dx: -1, dy: 0)) })
+        else { continue }
+        var target = viewport
+        target.origin.y = rect.maxY - (viewport.height - corners.actionHeight)
+        contentView.scroll(to: contentView.constrainBoundsRect(target).origin)
+        reflectScrolledClipView(contentView)
+        break
+      }
     }
 
     private func reserveCorners(
@@ -993,35 +1072,33 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func layout() {
       guard !arranging else { return }
+      arranging = true
+      defer { arranging = false }
       super.layout()
-      guard let corners, let editor = documentView as? NSTextView,
+      guard let corners, let editor = documentView as? MessageTextView,
         let container = editor.textContainer, let textLayout = editor.layoutManager,
         contentSize.width > 0
       else { return }
-      arranging = true
-      defer { arranging = false }
       let viewport = contentSize
-      if previousViewport != viewport, window?.firstResponder === editor {
-        caretRevealPending = true
+      if previousViewport != viewport {
+        // Preserve a visible caret on resize, but never jump from a manually
+        // scrolled passage to an offscreen selection.
+        let oldViewport = NSRect(origin: observedOrigin, size: previousViewport)
+        if window?.firstResponder === editor,
+          let rect = caretRect(editor.selectedRange(), in: editor), oldViewport.intersects(rect)
+        {
+          caretRevealPending = true
+        }
+        needsContentMeasurement = true
       }
-      if previousViewport.width != viewport.width { needsContentMeasurement = true }
       previousViewport = viewport
-      laidOutOrigin = contentView.bounds.origin
-      if editor.frame.width != viewport.width {
-        editor.setFrameSize(NSSize(width: viewport.width, height: editor.frame.height))
-      }
-      let containerSize = NSSize(
-        width: max(1, viewport.width - 2 * editor.textContainerInset.width),
-        height: .greatestFiniteMagnitude)
-      if container.containerSize != containerSize { container.containerSize = containerSize }
       func documentHeight() -> CGFloat {
         textLayout.ensureLayout(for: container)
         return ceil(
           max(textLayout.usedRect(for: container).maxY, textLayout.extraLineFragmentRect.maxY)
             + editor.textContainerOrigin.y + editor.textContainerInset.height)
       }
-      let contentChanged = needsContentMeasurement
-      if contentChanged {
+      if needsContentMeasurement {
         // Full-width text is a lower bound for the fitting height. Start there
         // each time, then admit native line increments for the bottom corners.
         // Reusing yesterday's exclusions makes growth/shrink oscillate; starting
@@ -1034,50 +1111,66 @@ private struct ConversationMessageField: NSViewRepresentable {
           ComposerTextLayout.resolve(
             contentHeight: .greatestFiniteMagnitude, lineHeight: corners.lineHeight,
             maximumHeight: maximumEditorHeight).height)
-        if !exclusionRects.isEmpty {
+        editor.leadingTextInset = 0
+        exclusionRects = []
+        container.exclusionPaths = []
+        container.containerSize = NSSize(
+          width: max(1, viewport.width), height: .greatestFiniteMagnitude)
+        var measuredHeight = documentHeight()
+        var candidate = min(limit, max(minimum, measuredHeight))
+        if measuredHeight <= limit {
+          // A fitting draft has stationary native corner wrapping. No scroll
+          // origin participates in these document coordinates.
+          while true {
+            reserveCorners(
+              corners,
+              viewport: NSRect(origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
+              editor: editor, container: container)
+            measuredHeight = documentHeight()
+            if measuredHeight <= candidate || candidate >= limit { break }
+            candidate = min(limit, candidate + corners.lineHeight)
+          }
+        }
+        usesViewportCorners = measuredHeight > candidate
+        if usesViewportCorners {
           exclusionRects = []
           container.exclusionPaths = []
+          if viewport.height - corners.actionHeight
+            < corners.lineHeight + 2 * editor.textContainerInset.height
+          {
+            // In a one-row viewport the controls occupy every visible line.
+            // Lay out in its writable middle until resizing admits a full-width
+            // row above them; clipping must never make edge characters unreachable.
+            editor.leadingTextInset = corners.leadingWidth + corners.clearance
+            container.containerSize = NSSize(
+              width: max(
+                1, viewport.width - corners.leadingWidth - corners.trailingWidth
+                  - 2 * corners.clearance), height: .greatestFiniteMagnitude)
+            usesViewportCorners = false
+          }
+          measuredHeight = documentHeight()
         }
-        var candidate = min(limit, max(minimum, documentHeight()))
-        while true {
-          reserveCorners(
-            corners,
-            viewport: NSRect(origin: .zero, size: NSSize(width: viewport.width, height: candidate)),
-            editor: editor, container: container)
-          if documentHeight() <= candidate || candidate >= limit { break }
-          candidate = min(limit, candidate + corners.lineHeight)
-        }
-        fittedHeight = candidate
+        // Overflow has stable full-width layout plus one fixed corner-height
+        // tail. Every character can scroll above the cutouts. This extent is
+        // derived only from text/size/configuration, never the scroll origin or
+        // yesterday's frame, so roundtrips cannot accumulate a blank tail.
+        let documentSize = NSSize(
+          width: viewport.width,
+          height: max(
+            viewport.height, measuredHeight + (usesViewportCorners ? corners.actionHeight : 0)))
+        editor.minSize = NSSize(width: 0, height: viewport.height)
+        if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
         needsContentMeasurement = false
+        onHeightChange(candidate)
       }
-      reserveCorners(corners, viewport: contentView.bounds, editor: editor, container: container)
-      let measuredHeight = documentHeight()
-      // Moving the corner exclusions can unwrap a line. Keep the visible
-      // viewport admitted while scrolling so a smaller measurement cannot
-      // clamp its origin back and forth. This floor cannot grow the previous
-      // document (including during elastic scrolling); only measured text can.
-      // An actual edit/resize may shrink it immediately.
-      let documentFloor =
-        contentChanged
-        ? viewport.height
-        : min(max(viewport.height, editor.frame.height), max(viewport.height, contentView.bounds.maxY))
-      let documentSize = NSSize(width: viewport.width, height: max(documentFloor, measuredHeight))
-      editor.minSize = NSSize(width: 0, height: viewport.height)
-      if editor.frame.size != documentSize { editor.setFrameSize(documentSize) }
-      onHeightChange(fittedHeight)
+      updateCornerClip()
       let revealCaret = caretRevealPending
       caretRevealPending = false
-      if documentSize.height <= viewport.height {
+      if editor.frame.height <= viewport.height {
         contentView.scroll(to: .zero)
         reflectScrolledClipView(contentView)
-      } else if revealCaret {
+      } else if revealCaret, window?.firstResponder === editor {
         editor.scrollRangeToVisible(editor.selectedRange())
-      }
-      if contentView.bounds.origin != laidOutOrigin {
-        // A native caret reveal can itself scroll. Reconcile that new viewport
-        // before drawing the next frame, without replacing text or selection.
-        caretRevealPending = revealCaret
-        needsLayout = true
       }
     }
   }
@@ -1097,6 +1190,23 @@ private struct ConversationMessageField: NSViewRepresentable {
     private var isFirstResponderActive = false
     private var isWindowKey = false
     private var windowObservers: [NSObjectProtocol] = []
+    var leadingTextInset: CGFloat = 0 {
+      didSet {
+        if oldValue != leadingTextInset { invalidateTextContainerOrigin() }
+      }
+    }
+
+    override var textContainerOrigin: NSPoint {
+      let origin = super.textContainerOrigin
+      return NSPoint(x: leadingTextInset > 0 ? leadingTextInset : origin.x, y: origin.y)
+    }
+
+    override func scrollRangeToVisible(_ range: NSRange) {
+      let scroll = enclosingScrollView as? MessageScrollView
+      scroll?.prepareForCaretReveal()
+      super.scrollRangeToVisible(range)
+      scroll?.revealUnobscuredRange(range, in: self)
+    }
 
     func revealCaretAfterLayout() {
       guard let scroll = enclosingScrollView as? MessageScrollView else { return }
