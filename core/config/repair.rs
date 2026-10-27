@@ -268,11 +268,6 @@ fn analyze_settings(
             }
             None => defaults,
         };
-        // Before either schema parses: a retired gesture would refuse the
-        // whole document.
-        for pointer in ["/interaction/mode_bindings", "/mode_bindings"] {
-            retire_shortcut_bindings(&mut value, pointer, &mut receipt);
-        }
         // V1 belongs to the existing migration; future schemas must not be downgraded.
         if value.get("schema_version").is_none() {
             serde_json::from_value::<UserSettings>(value.clone())
@@ -618,56 +613,6 @@ mod tests {
                 metadata.modified().unwrap()
             );
         }
-    }
-
-    #[test]
-    fn retired_option_gestures_rebind_to_disabled_and_keep_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let original = serde_json::json!({
-            "schema_version": 3,
-            "interaction": { "mode_bindings": [
-                { "mode": "dictation", "binding": "double_ctrl" },
-                { "mode": "formatting", "binding": "double_left_option" },
-                { "mode": "assistive", "binding": "double_right_option" }
-            ]},
-            "ui": { "chat_zoom": 1.25 }
-        });
-        let bytes = serde_json::to_vec(&original).unwrap();
-        fs::write(&path, &bytes).unwrap();
-
-        let projected = project_settings(&path, &bytes).unwrap();
-        assert_eq!(
-            projected["interaction"]["mode_bindings"][2]["binding"],
-            "disabled"
-        );
-        assert_eq!(fs::read(&path).unwrap(), bytes, "projection never writes");
-
-        let receipt = repair_settings(&path, None);
-        assert!(receipt.unrepairable.is_empty());
-        assert_eq!(
-            receipt.actions,
-            vec![
-                RepairAction::FieldReset {
-                    field: "interaction.mode_bindings.formatting.binding".into(),
-                    from: Value::from("double_left_option"),
-                    to: Value::from("disabled"),
-                },
-                RepairAction::FieldReset {
-                    field: "interaction.mode_bindings.assistive.binding".into(),
-                    from: Value::from("double_right_option"),
-                    to: Value::from("disabled"),
-                },
-            ]
-        );
-        assert_eq!(fs::read(&receipt.backups[0]).unwrap(), bytes);
-        let repaired: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let bindings = &repaired["interaction"]["mode_bindings"];
-        assert_eq!(bindings[0]["binding"], "double_ctrl");
-        assert_eq!(bindings[1]["binding"], "disabled");
-        assert_eq!(bindings[2]["binding"], "disabled");
-        assert_eq!(repaired["ui"]["chat_zoom"], 1.25);
-        assert_eq!(repair_settings(&path, None), RepairReceipt::default());
     }
 
     #[cfg(unix)]

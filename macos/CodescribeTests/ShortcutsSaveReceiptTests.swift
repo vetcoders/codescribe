@@ -293,23 +293,23 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     }
   }
 
-  /// Formatting and the Agent have no gesture (founder decision 2026-10-26):
-  /// their rows say where they start instead of offering a picker, judged by
-  /// the bridge's own picker projection. Dictation keeps its picker, and a
-  /// hand-edited gesture on Formatting keeps the picker so it can be fixed.
-  func testModesWithoutAGestureShowWhereTheyStartInsteadOfAPicker() {
-    func row(_ mode: CsWorkMode, _ binding: CsShortcutBinding) -> CsModeBinding {
-      CsModeBinding(
-        mode: mode, modeLabel: "", modeDescription: "", binding: binding, bindingLabel: "")
+  /// Option double-taps are opt-in for Formatting and Assistive: the picker
+  /// offers them there, and only the two Option gestures count as Option
+  /// double-taps (the ones the timing controls and the gesture tester are for).
+  func testOptionDoubleTapsAreOfferedToFormattingAndFlagged() {
+    XCTAssertTrue(CsShortcutBinding.doubleLeftOption.isOptionDoubleTap)
+    XCTAssertTrue(CsShortcutBinding.doubleRightOption.isOptionDoubleTap)
+    for binding in [
+      CsShortcutBinding.disabled, .holdFn, .holdCtrl, .holdCtrlAlt, .holdCtrlShift,
+      .holdCtrlCmd, .doubleCtrl,
+    ] {
+      XCTAssertFalse(binding.isOptionDoubleTap, "\(binding)")
     }
 
-    XCTAssertTrue(row(.dictation, .holdFn).offersGesturePicker)
-    XCTAssertFalse(row(.formatting, .disabled).offersGesturePicker)
-    XCTAssertFalse(row(.assistive, .disabled).offersGesturePicker)
-    XCTAssertTrue(row(.formatting, .holdCtrl).offersGesturePicker)
-    XCTAssertNil(CsWorkMode.dictation.noShortcutNote)
-    XCTAssertNotNil(CsWorkMode.formatting.noShortcutNote)
-    XCTAssertNotNil(CsWorkMode.assistive.noShortcutNote)
+    let formatting = availableBindingsForMode(mode: .formatting).map(\.binding)
+    XCTAssertTrue(formatting.contains(.doubleLeftOption))
+    XCTAssertTrue(formatting.contains(.doubleCtrl))
+    XCTAssertTrue(formatting.contains(.disabled))
   }
 
   /// A Formatting gesture blocks Save before anything is written, and the

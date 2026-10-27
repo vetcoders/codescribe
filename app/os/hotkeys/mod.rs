@@ -33,18 +33,21 @@ mod manager;
 mod platform;
 
 pub use config::{
-    HotkeyRuntimeConfig, ModeHotkeyBindings, apply_hotkey_config, apply_hotkey_runtime_config,
-    composer_caret_owned, get_channel_modifier, get_deferred_insert_shortcut,
+    GESTURE_TEST_LEASE, HotkeyRuntimeConfig, ModeHotkeyBindings, TAP_MAX_MS_RANGE,
+    TYPING_QUIET_MS_RANGE, apply_hotkey_config, apply_hotkey_runtime_config, composer_caret_owned,
+    gesture_test_active, get_channel_modifier, get_deferred_insert_shortcut,
     get_double_tap_interval_ms, get_exclusive_mode, get_hold_arm_modifier, get_hold_start_delay_ms,
-    get_hotkey_runtime_config, get_mode_hotkey_bindings, set_agent_gesture_capture,
+    get_hotkey_runtime_config, get_mode_hotkey_bindings, get_tap_max_ms, get_typing_quiet_ms,
+    last_double_tap_outcome, record_double_tap_outcome, set_agent_gesture_capture,
     set_channel_modifier, set_composer_caret_owned, set_deferred_insert_shortcut,
-    set_double_tap_interval_ms, set_exclusive_mode, set_hold_arm_modifier, set_hold_start_delay_ms,
-    set_mode_hotkey_bindings,
+    set_double_tap_interval_ms, set_exclusive_mode, set_gesture_test_active, set_hold_arm_modifier,
+    set_hold_start_delay_ms, set_mode_hotkey_bindings, set_tap_max_ms, set_typing_quiet_ms,
 };
 pub use detector::{
-    AgentGestureInput, HoldAction, HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent,
-    HotkeyModifierSnapshot, HotkeyPhysicalKey, ModifierFlags, arm_ignored_diagnostic_line,
-    mode_binding_reachable,
+    AgentGestureInput, DoubleTapBlockReason, DoubleTapGesture, DoubleTapOutcome, HoldAction,
+    HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot,
+    HotkeyPhysicalKey, ModifierFlags, arm_ignored_diagnostic_line,
+    blocked_double_tap_diagnostic_line, mode_binding_reachable,
 };
 pub use manager::{
     HotkeyManager, are_hotkeys_enabled, disable_hotkeys, enable_hotkeys,

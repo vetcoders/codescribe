@@ -1205,6 +1205,20 @@ reload = "hot"
 category = "hotkeys"
 description = "Double-tap interval for toggle detection (ms)"
 
+[vars.TAP_MAX_MS]
+default = "220"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Longest Option press that still counts as one tap of an Option double-tap (ms, 120..=300)"
+
+[vars.TYPING_QUIET_MS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "hotkeys"
+description = "Option taps count for nothing this long after any typed key (ms, 0..=1000); keeps Option-typed characters such as Polish diacritics from pairing into a double-tap"
+
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
 type = "f32"

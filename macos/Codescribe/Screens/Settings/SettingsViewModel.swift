@@ -2958,6 +2958,26 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Option double-tap timing. Each write reloads the hotkey atomics, so the
+  /// next tap already uses the new value.
+  func setDoubleTapIntervalMs(_ ms: UInt64) {
+    guard settings.doubleTapIntervalMs != ms else { return }
+    settings.doubleTapIntervalMs = ms
+    persist("DOUBLE_TAP_INTERVAL_MS", String(ms))
+  }
+
+  func setTapMaxMs(_ ms: UInt64) {
+    guard settings.tapMaxMs != ms else { return }
+    settings.tapMaxMs = ms
+    persist("TAP_MAX_MS", String(ms))
+  }
+
+  func setTypingQuietMs(_ ms: UInt64) {
+    guard settings.typingQuietMs != ms else { return }
+    settings.typingQuietMs = ms
+    persist("TYPING_QUIET_MS", String(ms))
+  }
+
   func setToggleSilenceSeconds(_ seconds: Float) {
     settings.toggleSilenceSec = seconds
     persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))

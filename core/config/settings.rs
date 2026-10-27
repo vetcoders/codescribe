@@ -229,6 +229,12 @@ pub struct UserSettings {
     pub hold_start_delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub double_tap_interval_ms: Option<u64>,
+    /// Longest Option press that counts as a tap. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tap_max_ms: Option<u64>,
+    /// Option taps ignored this long after typing. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typing_quiet_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
     /// Layer 1 Whisper context, seconds. `None` keeps the code default.
@@ -1600,6 +1606,10 @@ struct TriggerV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     double_tap_interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tap_max_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    typing_quiet_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     toggle_silence_timeout_sec: Option<f32>,
 }
 
@@ -1851,6 +1861,8 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "WHISPER_LANGUAGE",
     "HOLD_START_DELAY_MS",
     "DOUBLE_TAP_INTERVAL_MS",
+    "TAP_MAX_MS",
+    "TYPING_QUIET_MS",
     "TOGGLE_SILENCE_SEC",
     "WHISPER_CONTEXT_WINDOW_SEC",
     "WHISPER_ADAPTIVE_BUFFER",
@@ -2017,6 +2029,8 @@ typed_setting_writes! {
         AGENT_CHANNEL_FORMAT_WAIT_KEY => agent_channel_format_wait_sec,
         "HOLD_START_DELAY_MS" => hold_start_delay_ms,
         "DOUBLE_TAP_INTERVAL_MS" => double_tap_interval_ms,
+        "TAP_MAX_MS" => tap_max_ms,
+        "TYPING_QUIET_MS" => typing_quiet_ms,
         "CODESCRIBE_BUFFER_DELAY_MS" => buffer_delay_ms,
         "CODESCRIBE_EMIT_WORDS_MAX" => emit_words_max,
         "BACKEND_MAX_UPLOAD_MB" => backend_max_upload_mb,
@@ -2046,6 +2060,8 @@ impl UserSettings {
             interaction: Some(InteractionV2 {
                 trigger: Some(TriggerV2 {
                     double_tap_interval_ms: self.double_tap_interval_ms,
+                    tap_max_ms: self.tap_max_ms,
+                    typing_quiet_ms: self.typing_quiet_ms,
                     toggle_silence_timeout_sec: self.toggle_silence_sec,
                 }),
                 hold: Some(HoldV2 {
@@ -2270,6 +2286,8 @@ impl UserSettings {
             mode_bindings: cloned!(v2.interaction, mode_bindings),
             hold_start_delay_ms: copy!(v2.interaction, hold, start_delay_ms),
             double_tap_interval_ms: copy!(v2.interaction, trigger, double_tap_interval_ms),
+            tap_max_ms: copy!(v2.interaction, trigger, tap_max_ms),
+            typing_quiet_ms: copy!(v2.interaction, trigger, typing_quiet_ms),
             toggle_silence_sec: copy!(v2.interaction, trigger, toggle_silence_timeout_sec),
             format_on_device: copy!(v2.speech, formatting, on_device),
             paste_mode: copy!(v2.interaction, paste_mode),
