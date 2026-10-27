@@ -11,8 +11,12 @@
 
 - `RecordingController` owns capture; `StreamingRecorder` fans one physical
   stream out to registered subscribers. Dictation and Agent channels do not
-  allocate independent microphones. Their transcription sessions, ledgers and
-  lifecycle are nevertheless distinct.
+  allocate independent microphones. A dictation take has its own transcription
+  session, ledger and lifecycle. All open Agent channels share one channel
+  subscriber, one transcription session, one ledger and one archive; each
+  channel receives only the occurrences inside its own sample-clock interval
+  (`core/audio/channel_demux.rs`, see TRANSCRIPT_BUS.md "Shared channel
+  recognition and participation intervals").
 - Apple supplies fast observations. Rust retains the open phrase; Swift partial
   revisions do not manufacture finals. Timed Apple phrase ends may qualify an
   existing owner at a measured, calibrated Silero valley. Neither string

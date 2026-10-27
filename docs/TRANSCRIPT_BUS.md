@@ -2223,6 +2223,50 @@ It does not alter `recipients`, address selection, message identity, ACK/CAS,
 transcript text, ledger decisions, microphone ownership or recognition. Remote
 hosts do not implicitly join a local controller's roster.
 
+## Shared channel recognition and participation intervals
+
+Every Live agent channel open at the same time listens to ONE capture
+subscriber, ONE `transcription_session`, ONE `AcousticLedger` and ONE archive
+(`StreamingRecorder::begin_channel_session` / `join_channel_session`). The
+first channel opens that shared capture under its own ledger namespace,
+`agent-channels-<uuid>`; it is not the owner. The stream, ledger and archive run
+until the last participant leaves. Each channel keeps its own reducer, bus
+session (`agent-channel-<digit>-<uuid>`), receipts and send hold.
+
+What differs per channel is the interval it listened. The capture clock is the
+count of PCM samples the shared session actually received, the same clock its
+ledger stamps on every occurrence. A join at sample `t` opens `[t, …)`; a
+detach at `t` closes it. `core/audio/channel_demux.rs` attributes each occurrence
+by its sample midpoint, so a word split by a join or leave belongs to exactly
+one side while the decoder keeps its acoustic context. Speech that ended before
+a join is never backfilled; speech after a detach never reaches that channel,
+even when the same owner joins again with a new interval. Text is never used to
+attribute, merge or deduplicate.
+
+A detached channel freezes its own intervals when the decoder commits an
+occurrence starting at or after the detach sample, when the shared capture
+ends, or after `CHANNEL_DETACH_SETTLE_BUDGET` (10 s), whichever comes first. It
+then publishes its closing projection and seal as before.
+
+Bus rows carry the identities:
+
+- `codescribe.channel-recipients.v1` adds `capture_session_id` and
+  `delivery_seat` (`primary` | `projection`). The first open seat of a logical
+  agent session (`provider`, `provider_session_id`) executes delivery; another
+  seat of the same session in this capture only projects history.
+- The `sealed` channel-session row adds `participation`:
+  `{capture_session_id, start_sample, end_sample, delivery_seat}`.
+- Evidence rows keep the channel's own `session_id`; occurrence coordinates name
+  the shared capture.
+
+The shared WAV is retained under `capture_session_id`, never under a channel
+session, so no follower maps another channel's private audio to its own take.
+When more than one channel shared it, the take store records no single
+transcript for it.
+
+`co_audience` (above) stays an informational roster snapshot. Participation is
+the sample interval in the sealed row.
+
 ## Native provider queue receipt
 
 The queue message's content depends on who the normalizer attributed the
