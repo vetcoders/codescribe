@@ -21684,14 +21684,14 @@
         }
       }
     },
-    "Your transcript is retained without the requested formatting. Check the formatter in Settings." : {
-      "comment" : "Recovery advice after automatic formatting fails",
+    "Your transcript is retained without the requested formatting." : {
+      "comment" : "Notice that the retained transcript does not use the requested formatting",
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Transkrypcja została zachowana bez wybranego formatowania. Sprawdź formatowanie w Ustawieniach."
+            "value" : "Transkrypcja została zachowana bez wybranego formatowania."
           }
         }
       }
@@ -22604,14 +22604,14 @@
         }
       }
     },
-    "formatting unavailable" : {
+    "formatting not applied" : {
       "comment" : "Status of a transcript delivered without the requested formatting",
       "extractionState" : "manual",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "formatowanie niedostępne"
+            "value" : "formatowanie niezastosowane"
           }
         }
       }

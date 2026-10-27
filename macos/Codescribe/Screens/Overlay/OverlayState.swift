@@ -5350,12 +5350,12 @@ final class OverlayState {
         kind: event.kind,
         code: event.code,
         statusLabel: String(
-          localized: "formatting unavailable",
+          localized: "formatting not applied",
           comment: "Status of a transcript delivered without the requested formatting"),
         headline: headline,
         message: String(
-          localized: "Your transcript is retained without the requested formatting. Check the formatter in Settings.",
-          comment: "Recovery advice after automatic formatting fails"),
+          localized: "Your transcript is retained without the requested formatting.",
+          comment: "Notice that the retained transcript does not use the requested formatting"),
         isError: event.isError,
         terminal: false,
         calibrationVersion: nil

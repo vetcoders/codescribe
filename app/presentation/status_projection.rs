@@ -39,18 +39,18 @@ pub struct PresentationStatusProjection {
 }
 
 impl PresentationStatusProjection {
-    /// Formatting failure retains the transcript and all of its actions. This
-    /// is a notice for one take, never a capture-ending error.
+    /// The requested formatting was not selected. The transcript and all of
+    /// its actions remain available, including deliberately protected edits.
     pub fn formatting_degraded(session_id: String) -> Self {
         Self {
             schema: PRESENTATION_STATUS_SCHEMA.to_string(),
             emitted_at: now_rfc3339(),
             session_id: Some(session_id),
             kind: PresentationStatusKind::FormattingDegraded,
-            code: "formatting_unavailable".to_string(),
-            status_label: "formatting unavailable".to_string(),
+            code: "formatting_not_applied".to_string(),
+            status_label: "formatting not applied".to_string(),
             headline: "Formatting was not applied".to_string(),
-            message: "Your transcript is retained without the requested formatting. Check the formatter in Settings.".to_string(),
+            message: "Your transcript is retained without the requested formatting.".to_string(),
             is_error: false,
             terminal: false,
             calibration_version: None,
