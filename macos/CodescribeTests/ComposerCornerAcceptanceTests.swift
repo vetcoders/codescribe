@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 import XCTest
 
@@ -13,10 +14,10 @@ final class ComposerCornerAcceptanceTests: XCTestCase {
     let editor: NSTextView
     let scroll: NSScrollView
 
-    init(text: String, width: CGFloat = 360) throws {
+    init(text: String, width: CGFloat = 360, draft: Binding<String>? = nil) throws {
       host = NSHostingView(
         rootView: OverlayConversationComposer(
-          palette: .dark, draft: .constant(text), maximumEditorHeight: 120, sending: false,
+          palette: .dark, draft: draft ?? .constant(text), maximumEditorHeight: 120, sending: false,
           onSubmit: { XCTFail("Geometry must never send") }))
       host.sizingOptions = []
       host.frame = NSRect(x: 0, y: 0, width: width, height: 140)
@@ -126,6 +127,60 @@ final class ComposerCornerAcceptanceTests: XCTestCase {
       XCTAssertTrue(
         fixture.scroll.contentView.bounds.insetBy(dx: -2, dy: -2).intersects(line),
         "Native caret line must remain in the viewport after corner reconciliation")
+    }
+  }
+
+  func testNativeEditsPublishDraftAndShrinkTheOverflowDocument() throws {
+    let original = String(repeating: "Editable native text with 🦊 and é.\n", count: 300)
+    var draft = original
+    let fixture = try Fixture(
+      text: original, draft: Binding(get: { draft }, set: { draft = $0 }))
+    defer { fixture.window.close() }
+    XCTAssertTrue(fixture.window.makeFirstResponder(fixture.editor))
+    fixture.editor.insertText(
+      "last words", replacementRange: NSRange(location: original.utf16.count, length: 0))
+    for _ in 0..<3 {
+      fixture.settle()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.005))
+    }
+    XCTAssertEqual(draft, original + "last words")
+    XCTAssertEqual(fixture.editor.string, draft)
+    let longHeight = fixture.editor.frame.height
+    fixture.editor.insertText(
+      "short", replacementRange: NSRange(location: 0, length: draft.utf16.count))
+    for _ in 0..<3 {
+      fixture.settle()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.005))
+    }
+    XCTAssertEqual(draft, "short")
+    XCTAssertEqual(fixture.editor.string, "short")
+    XCTAssertLessThan(fixture.editor.frame.height, longHeight / 2)
+    XCTAssertEqual(fixture.scroll.contentView.bounds.origin.y, 0, accuracy: 1)
+  }
+
+  func testRevealedCaretIsInsideTheActualPaintClip() throws {
+    let text = String(repeating: "The final caret must clear both corner controls.\n", count: 300)
+    let fixture = try Fixture(text: text)
+    defer { fixture.window.close() }
+    XCTAssertTrue(fixture.window.makeFirstResponder(fixture.editor))
+    for index in [text.utf16.count, 0, text.utf16.count] {
+      let range = NSRange(location: index, length: 0)
+      fixture.editor.setSelectedRange(range)
+      fixture.editor.scrollRangeToVisible(range)
+      for _ in 0..<3 { fixture.settle() }
+      let screen = fixture.editor.firstRect(forCharacterRange: range, actualRange: nil)
+      XCTAssertGreaterThan(screen.height, 0)
+      let clip = fixture.scroll.contentView
+      let caret = clip.convert(fixture.window.convertFromScreen(screen), from: nil)
+      let center = NSPoint(x: caret.midX, y: caret.midY)
+      XCTAssertTrue(clip.bounds.insetBy(dx: -2, dy: -2).contains(center))
+      if let mask = clip.layer?.mask as? CAShapeLayer, let path = mask.path {
+        XCTAssertTrue(
+          path.contains(clip.convertToLayer(center)),
+          "An in-bounds caret must also remain painted outside the corner cutouts")
+      }
+      XCTAssertEqual(fixture.editor.selectedRange(), range)
+      XCTAssertEqual(fixture.editor.string, text)
     }
   }
 }
