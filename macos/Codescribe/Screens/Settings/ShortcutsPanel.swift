@@ -87,18 +87,26 @@ struct ShortcutsPanel: View {
             .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
+        if !row.offersGesturePicker, let note = row.mode.noShortcutNote {
+          Text(note)
+            .font(SettingsScale.helper)
+            .foregroundStyle(CSColor.secondaryInk)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("shortcuts-no-gesture-\(row.mode)")
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
-      bindingPicker(row)
+      if row.offersGesturePicker {
+        bindingPicker(row)
+      }
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, SettingsScale.rowInsetV)
   }
 
-  /// The pill shows the terse gesture (`2× Left ⌥ (Option)`); VoiceOver reads
-  /// the spelled-out form, so left and right Option stay distinguishable for a
-  /// screen reader that skips key caps.
+  /// The pill shows the terse gesture (`2× ⌃ (Ctrl)`); VoiceOver reads the
+  /// spelled-out form for a screen reader that skips key caps.
   private func bindingPicker(_ row: CsModeBinding) -> some View {
     Menu {
       ForEach(availableBindingsForMode(mode: row.mode), id: \.binding) { option in
@@ -184,10 +192,10 @@ struct ShortcutsPanel: View {
   /// persisted outcome of the last save — never a guess built from the draft.
   ///
   /// The receipt is not an `else` branch. A partial save can leave the
-  /// snapped-back draft in a blocking conflict (Dictation=Double Ctrl lands,
-  /// Agent=Hold Ctrl is refused and snaps back to Double Right Option, which
-  /// Double Ctrl disables); the conflict line and the receipt then both apply,
-  /// and hiding the receipt would hide completed writes and the refusal.
+  /// snapped-back draft in a blocking conflict (one write lands, another is
+  /// refused and snaps back to a binding that now conflicts); the conflict
+  /// line and the receipt then both apply, and hiding the receipt would hide
+  /// completed writes and the refusal.
   @ViewBuilder private var saveStatus: some View {
     VStack(alignment: .leading, spacing: 6) {
       if model.hasBlockingBindingConflicts {

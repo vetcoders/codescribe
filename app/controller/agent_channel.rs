@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, anyhow};
 use codescribe_core::config::Config;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
-use codescribe_core::pipeline::contracts::{EventSink, SidebandEvidence, SidebandEvidenceKind};
+use codescribe_core::pipeline::contracts::EventSink;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
@@ -32,6 +32,7 @@ use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, Tr
 use crate::stt::active_names;
 
 use super::RecordingController;
+use super::speech_clock::SpeechClock;
 
 /// Schema id and filename. The file lives in the agent-bridge home, next to
 /// the leases followers already read.
@@ -277,24 +278,6 @@ fn frozen_channel_recipients(
     recipients
 }
 
-#[derive(Debug, Default)]
-enum ChannelSpeechPhase {
-    #[default]
-    Unmeasured,
-    Speaking,
-    Quiet {
-        since: SystemTime,
-    },
-}
-
-#[derive(Debug)]
-struct SpeechEdgeCursor {
-    capture_epoch: u64,
-    sequence: u64,
-    sample: u64,
-    sample_rate_hz: u32,
-}
-
 /// Schema of the per-channel file the reply playback guard reads.
 const CHANNEL_SPEECH_NOW_SCHEMA: &str = "codescribe.channel-speech-now.v1";
 
@@ -315,77 +298,15 @@ struct SpeechNowFile {
     published: Option<&'static str>,
 }
 
-/// Cadence follows measured speech edges, never recognizer output timing.
+/// The channel's speech clock and the phase file the reply playback guard
+/// reads. Cadence follows measured speech edges, never recognizer output.
 #[derive(Debug, Default)]
 pub(crate) struct ChannelSpeechClock {
-    last_edge: Option<SpeechEdgeCursor>,
-    phase: ChannelSpeechPhase,
+    pub(crate) speech: SpeechClock,
     now_file: Option<SpeechNowFile>,
-    /// Last poll that saw agent playback; the voiceless limit restarts there.
-    voiceless_from: Option<SystemTime>,
 }
 
 impl ChannelSpeechClock {
-    /// The emitter has already checked the opened session and capture owner.
-    fn observe(&mut self, evidence: &SidebandEvidence, received_at: SystemTime) {
-        let speaking = match &evidence.evidence {
-            SidebandEvidenceKind::SpeechStart { .. } => true,
-            SidebandEvidenceKind::SpeechEnd { .. } => false,
-            SidebandEvidenceKind::Pause { .. } => return,
-        };
-        let range = &evidence.range;
-        // Speech edges are zero-width boundaries, including at sample zero.
-        if range.capture_epoch == 0
-            || evidence.sample_rate_hz == 0
-            || range.sample_start != range.sample_end
-            || self.last_edge.as_ref().is_some_and(|previous| {
-                previous.capture_epoch != range.capture_epoch
-                    || previous.sample_rate_hz != evidence.sample_rate_hz
-                    || evidence.sequence <= previous.sequence
-                    || range.sample_start < previous.sample
-            })
-        {
-            return;
-        }
-        let same_boundary = self
-            .last_edge
-            .as_ref()
-            .is_some_and(|previous| previous.sample == range.sample_start);
-        self.last_edge = Some(SpeechEdgeCursor {
-            capture_epoch: range.capture_epoch,
-            sequence: evidence.sequence,
-            sample: range.sample_start,
-            sample_rate_hz: evidence.sample_rate_hz,
-        });
-        if speaking {
-            self.phase = ChannelSpeechPhase::Speaking;
-        } else {
-            match &self.phase {
-                ChannelSpeechPhase::Speaking => {
-                    // Receipt time cannot backdate measured silence.
-                    self.phase = ChannelSpeechPhase::Quiet { since: received_at };
-                }
-                ChannelSpeechPhase::Quiet { .. } if !same_boundary => {
-                    // A different end without its start is an incomplete edge
-                    // chain, not proof of continuous silence since the old end.
-                    self.phase = ChannelSpeechPhase::Unmeasured;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// `fresh` has seen no edge since the session opened; `unmeasured` is a
-    /// broken edge chain and is never reported as quiet.
-    fn phase_label(&self) -> &'static str {
-        match (&self.phase, &self.last_edge) {
-            (ChannelSpeechPhase::Unmeasured, None) => "fresh",
-            (ChannelSpeechPhase::Unmeasured, Some(_)) => "unmeasured",
-            (ChannelSpeechPhase::Speaking, _) => "speaking",
-            (ChannelSpeechPhase::Quiet { .. }, _) => "quiet",
-        }
-    }
-
     /// Publish this session's phase from now on.
     fn publish_to(
         &mut self,
@@ -407,12 +328,10 @@ impl ChannelSpeechClock {
     /// Rewrite the file when the phase changed. Runs under the clock lock, so
     /// an earlier edge never overwrites a later one.
     fn publish_now(&mut self, now: SystemTime) {
-        let phase = self.phase_label();
-        let since = match (&self.phase, &self.now_file) {
-            (ChannelSpeechPhase::Quiet { since }, _) => *since,
-            (ChannelSpeechPhase::Unmeasured, Some(file)) if self.last_edge.is_none() => {
-                file.opened_at
-            }
+        let phase = self.speech.phase_label();
+        let since = match (self.speech.quiet_since(), &self.now_file) {
+            (Some(since), _) => since,
+            (None, Some(file)) if self.speech.last_edge.is_none() => file.opened_at,
             _ => now,
         };
         let Some(file) = self.now_file.as_mut() else {
@@ -459,45 +378,6 @@ impl ChannelSpeechClock {
         if let Some(file) = self.now_file.take() {
             let _ = std::fs::remove_file(&file.path);
         }
-    }
-
-    fn quiet_since(&self) -> Option<SystemTime> {
-        match &self.phase {
-            ChannelSpeechPhase::Quiet { since } => Some(*since),
-            ChannelSpeechPhase::Unmeasured | ChannelSpeechPhase::Speaking => None,
-        }
-    }
-
-    fn silence_due(&self, now: SystemTime, secs: u64) -> bool {
-        self.quiet_since()
-            .is_some_and(|since| silence_is_due(since, now, secs))
-    }
-
-    /// Agent playback drops the channel feed (`tts_duck`), so no voice can be
-    /// measured while it plays: that time is not voiceless.
-    fn note_agent_playback(&mut self, now: SystemTime) {
-        self.voiceless_from = Some(now);
-    }
-
-    /// No edge since the session opened, and the voiceless limit has passed
-    /// since it opened or since the last agent playback, whichever is later.
-    fn voiceless_due(&self, opened_at: SystemTime, now: SystemTime, secs: u64) -> bool {
-        let from = self
-            .voiceless_from
-            .map_or(opened_at, |from| from.max(opened_at));
-        secs != 0
-            && matches!(
-                (&self.phase, &self.last_edge),
-                (ChannelSpeechPhase::Unmeasured, None)
-            )
-            && silence_is_due(from, now, CHANNEL_VOICELESS_CLOSE_SECS)
-    }
-
-    fn deadline(&self, secs: u64) -> Option<SystemTime> {
-        if secs == 0 {
-            return None;
-        }
-        self.quiet_since()?.checked_add(Duration::from_secs(secs))
     }
 }
 
@@ -657,13 +537,6 @@ pub const CHANNEL_AUTOSEAL_SECS_ENV: &str = "CODESCRIBE_CHANNEL_AUTOSEAL_SECS";
 /// immediately and kept the microphone live after every delivery.
 pub const CHANNEL_AUTOSEAL_SECS_DEFAULT: u64 = 5;
 
-/// A channel that hears no voice ends this many seconds after it opened, so
-/// a press without a message never leaves the microphone live (Founder
-/// decision 2026-10-26). It closes through the silence seal; `0` in
-/// [`CHANNEL_AUTOSEAL_SECS_ENV`] turns it off with the utterance threshold.
-/// Agent playback, during which the channel hears nothing, does not count.
-pub const CHANNEL_VOICELESS_CLOSE_SECS: u64 = 30;
-
 pub fn channel_open_label(digit: u8) -> String {
     format!("CHANNEL {digit} OPEN — mic is live")
 }
@@ -736,13 +609,6 @@ pub fn channel_autoseal_secs() -> u64 {
             .unwrap_or(CHANNEL_AUTOSEAL_SECS_DEFAULT),
         Err(_) => CHANNEL_AUTOSEAL_SECS_DEFAULT,
     }
-}
-
-fn silence_is_due(last_voice: SystemTime, now: SystemTime, secs: u64) -> bool {
-    if secs == 0 {
-        return false;
-    }
-    now.duration_since(last_voice).unwrap_or_default() >= Duration::from_secs(secs)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,7 +1265,7 @@ impl RecordingController {
                             let mut clock = voice_clock
                                 .lock()
                                 .unwrap_or_else(|error| error.into_inner());
-                            clock.observe(evidence, SystemTime::now());
+                            clock.speech.observe(evidence, SystemTime::now());
                             clock.publish_now(SystemTime::now());
                         }))
                         .with_cursor_observer(Arc::new(move |projection| {
@@ -1930,8 +1796,8 @@ impl RecordingController {
     /// session through the same close a hang-up uses, so the capture is
     /// released. Nothing reopens it; the next message is the next Fn+digit.
     /// A channel that hears no voice ends the same way
-    /// [`CHANNEL_VOICELESS_CLOSE_SECS`] after it opened; agent playback into
-    /// it does not count.
+    /// [`VOICELESS_CLOSE_SECS`](super::speech_clock::VOICELESS_CLOSE_SECS) after it opened; agent playback into it does
+    /// not count. `0` in [`CHANNEL_AUTOSEAL_SECS_ENV`] turns both off.
     pub(crate) async fn seal_channels_silent_for(
         &self,
         now: SystemTime,
@@ -1949,9 +1815,10 @@ impl RecordingController {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
                     if playback {
-                        clock.note_agent_playback(now);
+                        clock.speech.note_agent_playback(now);
                     }
-                    clock.silence_due(now, secs) || clock.voiceless_due(open.opened_at, now, secs)
+                    clock.speech.silence_due(now, secs)
+                        || clock.speech.voiceless_due(open.opened_at, now, secs)
                 })
                 .map(|(digit, _)| *digit)
                 .collect();
@@ -1993,6 +1860,7 @@ impl RecordingController {
                     .speech_clock
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
+                    .speech
                     .deadline(secs);
                 Some(ChannelHudState {
                     open: true,
@@ -2211,6 +2079,7 @@ impl RecordingController {
 
 #[cfg(test)]
 mod tests {
+    use super::super::speech_clock::VOICELESS_CLOSE_SECS;
     use super::channel_transcription_controls_tests::measured_speech_end;
     use super::*;
     use serial_test::serial;
@@ -3043,23 +2912,6 @@ mod tests {
         assert_eq!(channel_autoseal_secs(), CHANNEL_AUTOSEAL_SECS_DEFAULT);
         unsafe { std::env::set_var(CHANNEL_AUTOSEAL_SECS_ENV, " 40 ") };
         assert_eq!(channel_autoseal_secs(), 40);
-
-        let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        assert!(!super::silence_is_due(
-            opened,
-            opened + Duration::from_secs(119),
-            120
-        ));
-        assert!(super::silence_is_due(
-            opened,
-            opened + Duration::from_secs(120),
-            120
-        ));
-        assert!(!super::silence_is_due(
-            opened,
-            opened + Duration::from_secs(10_000),
-            0
-        ));
     }
 
     #[tokio::test]
@@ -3285,7 +3137,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp");
         let (path, channel_bus) = write_dedicated_binding(dir.path());
         let shared_bus = dir.path().join("shared-bus.jsonl");
-        let limit = Duration::from_secs(CHANNEL_VOICELESS_CLOSE_SECS);
+        let limit = Duration::from_secs(VOICELESS_CLOSE_SECS);
 
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-silent").await;
         let too_soon = controller
@@ -3798,7 +3650,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp");
         let (path, channel_bus) = write_dedicated_binding(dir.path());
         let shared_bus = dir.path().join("shared-bus.jsonl");
-        let limit = Duration::from_secs(CHANNEL_VOICELESS_CLOSE_SECS);
+        let limit = Duration::from_secs(VOICELESS_CLOSE_SECS);
         let opened = open_stamped(&controller, &path, &shared_bus, "agent-channel-3-answer").await;
 
         crate::audio::tts_duck::arm_for(Duration::from_secs(600));
@@ -4605,6 +4457,8 @@ mod channel_transcription_controls_tests {
     };
     use codescribe_core::pipeline::contracts::EngineEvent;
 
+    use super::super::speech_clock::measured_clock_edge;
+
     #[tokio::test]
     async fn channel_factory_uses_all_four_frozen_track_choices() {
         for ledger_on in [false, true] {
@@ -4685,95 +4539,19 @@ mod channel_transcription_controls_tests {
             }
         }
     }
-    fn measured_clock_edge(seq: u64, sample: u64, live: bool) -> SidebandEvidence {
-        SidebandEvidence {
-            sequence: seq,
-            range: codescribe_core::stt::tail_provider::TailSampleRange {
-                session: "clock-owner".into(),
-                capture_epoch: 1,
-                sample_start: sample,
-                sample_end: sample,
-            },
-            sample_rate_hz: 16_000,
-            provenance: codescribe_core::pipeline::contracts::SidebandProvenance::SileroVad,
-            evidence: if live {
-                SidebandEvidenceKind::SpeechStart {
-                    speech_probability: 0.95,
-                }
-            } else {
-                SidebandEvidenceKind::SpeechEnd {
-                    speech_probability: 0.05,
-                }
-            },
-        }
-    }
-
     pub(super) fn measured_speech_end(open: &OpenAgentChannel, at: SystemTime) {
         let mut clock = open.speech_clock.lock().unwrap();
         let (seq, sample) = clock
+            .speech
             .last_edge
             .as_ref()
             .map_or((1, 0), |edge| (edge.sequence + 1, edge.sample + 1));
-        clock.observe(&measured_clock_edge(seq, sample, true), at);
-        clock.observe(&measured_clock_edge(seq + 1, sample + 16_000, false), at);
-    }
-
-    #[test]
-    fn capture_clock_continuous_speech_outlives_sparse_whisper_and_only_real_end_arms_silence() {
-        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-        let mut clock = ChannelSpeechClock::default();
-        assert_eq!(clock.deadline(5), None);
-        assert!(!clock.silence_due(start + Duration::from_secs(1000), 5));
-        clock.observe(&measured_clock_edge(1, 0, true), start);
-        // No recognizer output for twenty seconds is not twenty seconds of silence.
-        assert!(!clock.silence_due(start + Duration::from_secs(20), 5));
-        assert_eq!(clock.deadline(5), None);
-        let ended = start + Duration::from_secs(21);
-        clock.observe(&measured_clock_edge(2, 336_000, false), ended);
-        assert_eq!(clock.deadline(5), Some(ended + Duration::from_secs(5)));
-        assert!(!clock.silence_due(ended + Duration::from_secs(4), 5));
-        assert!(clock.silence_due(ended + Duration::from_secs(5), 5));
-        assert!(!clock.silence_due(ended + Duration::from_secs(99), 0));
-        assert!(!clock.silence_due(start, 5));
-    }
-
-    #[test]
-    fn capture_clock_replays_regressions_and_incomplete_edges_never_invent_a_valley() {
-        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
-        let mut clock = ChannelSpeechClock::default();
-        clock.observe(&measured_clock_edge(1, 0, false), t);
-        assert_eq!(clock.deadline(5), None, "first end lacks its start");
-        clock.observe(&measured_clock_edge(2, 0, true), t);
-        clock.observe(&measured_clock_edge(3, 16_000, false), t);
-        let due = clock.deadline(5);
-        clock.observe(
-            &measured_clock_edge(4, 16_000, false),
-            t + Duration::from_secs(4),
-        );
-        assert_eq!(
-            clock.deadline(5),
-            due,
-            "repeated end cannot postpone delivery"
-        );
-        clock.observe(&measured_clock_edge(2, 0, true), t);
-        clock.observe(&measured_clock_edge(5, 0, true), t);
-        let mut bad_rate = measured_clock_edge(6, 32_000, true);
-        bad_rate.sample_rate_hz = 48_000;
-        clock.observe(&bad_rate, t);
-        let mut bad_epoch = measured_clock_edge(6, 32_000, true);
-        bad_epoch.range.capture_epoch = 2;
-        clock.observe(&bad_epoch, t);
-        assert_eq!(
-            clock.deadline(5),
-            due,
-            "regressing or foreign units leave the accepted boundary intact"
-        );
-        clock.observe(&measured_clock_edge(7, 32_000, false), t);
-        assert_eq!(
-            clock.deadline(5),
-            None,
-            "another end without its start is unmeasured"
-        );
+        clock
+            .speech
+            .observe(&measured_clock_edge(seq, sample, true), at);
+        clock
+            .speech
+            .observe(&measured_clock_edge(seq + 1, sample + 16_000, false), at);
     }
 
     /// The playback guard reads the phase file: a fresh session reports quiet
@@ -4802,10 +4580,12 @@ mod channel_transcription_controls_tests {
         assert_eq!(row["phase"], "fresh");
         assert_eq!(row["since_ms"], 1_000_000);
         assert_eq!(row["pid"], std::process::id());
-        clock.observe(&measured_clock_edge(1, 0, true), t);
+        clock.speech.observe(&measured_clock_edge(1, 0, true), t);
         clock.publish_now(t);
         assert_eq!(read()["phase"], "speaking");
-        clock.observe(&measured_clock_edge(2, 16_000, false), t);
+        clock
+            .speech
+            .observe(&measured_clock_edge(2, 16_000, false), t);
         clock.publish_now(t + Duration::from_secs(9));
         let row = read();
         assert_eq!(row["phase"], "quiet");
@@ -4813,7 +4593,9 @@ mod channel_transcription_controls_tests {
             row["since_ms"], 1_002_000,
             "quiet dates from the measured end"
         );
-        clock.observe(&measured_clock_edge(3, 32_000, false), t);
+        clock
+            .speech
+            .observe(&measured_clock_edge(3, 32_000, false), t);
         clock.publish_now(t);
         assert_eq!(read()["phase"], "unmeasured");
         clock.withdraw_now();
@@ -4839,7 +4621,7 @@ mod channel_transcription_controls_tests {
         )
         .with_transcription_controls(false, false)
         .with_speech_activity_observer(Arc::new(move |edge| {
-            observed.lock().unwrap().observe(edge, t)
+            observed.lock().unwrap().speech.observe(edge, t)
         }));
         emitter.on_capture_opened("clock-owner", 1);
         let mut foreign = measured_clock_edge(1, 0, true);
@@ -4854,7 +4636,7 @@ mod channel_transcription_controls_tests {
             evidence: measured_clock_edge(2, 16_000, false),
         });
         assert_eq!(
-            clock.lock().unwrap().deadline(5),
+            clock.lock().unwrap().speech.deadline(5),
             None,
             "a foreign start cannot pair with this capture's end"
         );
@@ -4865,13 +4647,14 @@ mod channel_transcription_controls_tests {
             !clock
                 .lock()
                 .unwrap()
+                .speech
                 .silence_due(t + Duration::from_secs(20), 5)
         );
         emitter.on_event(&EngineEvent::SidebandEvidence {
             evidence: measured_clock_edge(4, 48_000, false),
         });
         assert_eq!(
-            clock.lock().unwrap().deadline(5),
+            clock.lock().unwrap().speech.deadline(5),
             Some(t + Duration::from_secs(5))
         );
         emitter.finish().await;

@@ -436,7 +436,7 @@ fn test_settings_full_round_trip() {
 
     set_mode_binding(WorkMode::Dictation, ShortcutBinding::HoldCtrlShift);
     set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
-    set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
+    set_mode_binding(WorkMode::Assistive, ShortcutBinding::Disabled);
     config.save_to_env("HOLD_EXCLUSIVE", "0").expect("save");
 
     config.save_to_env("WHISPER_LANGUAGE", "en").expect("save");
@@ -457,7 +457,7 @@ fn test_settings_full_round_trip() {
     );
     assert_eq!(
         settings.mode_binding_for(WorkMode::Assistive),
-        ShortcutBinding::DoubleRightOption
+        ShortcutBinding::Disabled
     );
     assert!(!r.hold_exclusive);
     assert_eq!(r.whisper_language.as_str(), "en");

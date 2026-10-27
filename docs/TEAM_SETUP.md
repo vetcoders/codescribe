@@ -57,14 +57,16 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                             | Action                                    | AI Mode               |
-| ------------------------------- | ----------------------------------------- | --------------------- |
-| Hold **Fn**                     | Record → paste raw transcript             | ALWAYS RAW (no AI)    |
-| Hold **Fn+Shift** (default arm) | Record → agent voice chat                 | ALWAYS Assistive      |
-| Hold **Fn+Cmd** (arm alt)       | Same arm when Cmd is selected in Settings | ALWAYS Assistive      |
-| Armed hold **with selection**   | Selection transform lane                  | Assistive (selection) |
-| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects level        |
-| Double-tap **Right Option**     | Hands‑free toggle (assistive)             | Assistive             |
+| Key                                      | Action                                         | AI Mode                 |
+| ---------------------------------------- | ---------------------------------------------- | ----------------------- |
+| Hold **Fn**                              | Record → paste raw transcript                  | ALWAYS RAW (no AI)      |
+| **Shift** during a Fn hold (default arm) | Attaches the live selection as `{selection_N}` | Raw (destination stays) |
+| **Cmd** during a Fn hold (arm alt)       | Same, when Cmd is selected in Settings         | Raw (destination stays) |
+| Menu bar **Start transcription**         | Hands‑free toggle (Formatting)                 | Respects level          |
+| Menu bar, **Start in Agent mode** on     | Hands‑free toggle (Agent)                      | Assistive               |
+
+Option has no recording gesture: it types characters (founder decision 2026-10-26).
+Fn+Shift from idle is plain dictation.
 
 ### Mode Behavior
 

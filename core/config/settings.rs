@@ -5214,11 +5214,11 @@ mod tests {
         let mut settings = UserSettings::default();
 
         settings.set_mode_binding(WorkMode::Formatting, ShortcutBinding::Disabled);
-        settings.set_mode_binding(WorkMode::Assistive, ShortcutBinding::DoubleRightOption);
+        settings.set_mode_binding(WorkMode::Dictation, ShortcutBinding::DoubleCtrl);
 
         assert_eq!(
             settings.mode_binding_for(WorkMode::Dictation),
-            ShortcutBinding::HoldFn
+            ShortcutBinding::DoubleCtrl
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Formatting),
@@ -5226,7 +5226,7 @@ mod tests {
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
     }
 
@@ -5249,11 +5249,11 @@ mod tests {
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::DoubleLeftOption
+            ShortcutBinding::Disabled
         );
         assert_eq!(
             settings.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
         assert!(
             !UserSettings::settings_path().exists(),
@@ -5282,11 +5282,11 @@ mod tests {
         );
         assert_eq!(
             loaded.mode_binding_for(WorkMode::Formatting),
-            ShortcutBinding::DoubleLeftOption
+            ShortcutBinding::Disabled
         );
         assert_eq!(
             loaded.mode_binding_for(WorkMode::Assistive),
-            ShortcutBinding::DoubleRightOption
+            ShortcutBinding::Disabled
         );
     }
 

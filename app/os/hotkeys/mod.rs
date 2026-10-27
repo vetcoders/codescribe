@@ -41,9 +41,8 @@ pub use config::{
     set_hold_arm_modifier, set_hold_start_delay_ms, set_mode_hotkey_bindings,
 };
 pub use detector::{
-    AgentGestureInput, DoubleTapBlockReason, DoubleTapGesture, HoldAction, HoldMode,
-    HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey,
-    ModifierFlags, arm_ignored_diagnostic_line, blocked_double_tap_diagnostic_line,
+    AgentGestureInput, HoldAction, HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent,
+    HotkeyModifierSnapshot, HotkeyPhysicalKey, ModifierFlags, arm_ignored_diagnostic_line,
     mode_binding_reachable,
 };
 pub use manager::{

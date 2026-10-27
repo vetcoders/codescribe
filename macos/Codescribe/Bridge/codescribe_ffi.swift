@@ -2949,8 +2949,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func reserveIdleRestart() throws  -> Bool
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture) and reload.
      */
     func resetBindingsToDefaults() throws
 
@@ -3021,8 +3021,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route: the overlay and the right-Option
-     * double tap. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route, started from the menu bar or the
+     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -3042,7 +3042,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func startComposerTurnRecording() async throws  -> CsCaptureHandle
 
     /**
-     * Start the same toggle recording flow used by the default hotkey.
+     * Start the Formatting toggle, from the menu bar or the overlay; no key
+     * starts it.
      */
     func startRecording() async throws
 
@@ -3810,8 +3811,8 @@ open func reserveIdleRestart()throws  -> Bool  {
 }
 
     /**
-     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn,
-     * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
+     * Clear all custom bindings back to the built-in defaults (Dictation=Hold Fn;
+     * Formatting and Assistive have no gesture) and reload.
      */
 open func resetBindingsToDefaults()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_reset_bindings_to_defaults(
@@ -3991,8 +3992,8 @@ open func start()async throws   {
     /**
      * Start the same toggle flow in the assistive lane.
      *
-     * This is the hands-free assistive route: the overlay and the right-Option
-     * double tap. It keeps utterance silence epochs. The Agent composer mic is
+     * This is the hands-free assistive route, started from the menu bar or the
+     * overlay; no key starts it. It keeps utterance silence epochs. The Agent composer mic is
      * a separate, UI-initiated capture — see
      * [`Self::start_composer_turn_recording`].
      */
@@ -4042,7 +4043,8 @@ open func startComposerTurnRecording()async throws  -> CsCaptureHandle  {
 }
 
     /**
-     * Start the same toggle recording flow used by the default hotkey.
+     * Start the Formatting toggle, from the menu bar or the overlay; no key
+     * starts it.
      */
 open func startRecording()async throws   {
     return
@@ -19057,8 +19059,6 @@ public enum CsShortcutBinding: Equatable, Hashable {
     case holdCtrlShift
     case holdCtrlCmd
     case doubleCtrl
-    case doubleLeftOption
-    case doubleRightOption
 
 
 
@@ -19091,10 +19091,6 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
         case 6: return .holdCtrlCmd
 
         case 7: return .doubleCtrl
-
-        case 8: return .doubleLeftOption
-
-        case 9: return .doubleRightOption
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19130,14 +19126,6 @@ public struct FfiConverterTypeCsShortcutBinding: FfiConverterRustBuffer {
 
         case .doubleCtrl:
             writeInt(&buf, Int32(7))
-
-
-        case .doubleLeftOption:
-            writeInt(&buf, Int32(8))
-
-
-        case .doubleRightOption:
-            writeInt(&buf, Int32(9))
 
         }
     }
@@ -19186,6 +19174,11 @@ public enum CsTranscriptDelivery: Equatable, Hashable {
      */
     case retained
     /**
+     * The assistive take ended without voice; no destination was chosen and
+     * nothing may send the text on its own.
+     */
+    case endedWithoutVoice
+    /**
      * The text was copied to the clipboard without posting a paste.
      */
     case copiedToClipboard
@@ -19220,9 +19213,11 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
 
         case 4: return .retained
 
-        case 5: return .copiedToClipboard
+        case 5: return .endedWithoutVoice
 
-        case 6: return .deferredInsertArmed
+        case 6: return .copiedToClipboard
+
+        case 7: return .deferredInsertArmed
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -19248,12 +19243,16 @@ public struct FfiConverterTypeCsTranscriptDelivery: FfiConverterRustBuffer {
             writeInt(&buf, Int32(4))
 
 
-        case .copiedToClipboard:
+        case .endedWithoutVoice:
             writeInt(&buf, Int32(5))
 
 
-        case .deferredInsertArmed:
+        case .copiedToClipboard:
             writeInt(&buf, Int32(6))
+
+
+        case .deferredInsertArmed:
+            writeInt(&buf, Int32(7))
 
         }
     }
@@ -22031,7 +22030,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reserve_idle_restart() != 51863) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 44608) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
@@ -22067,13 +22066,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 1112) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 36343) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_composer_turn_recording() != 48894) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 17686) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 5857) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop() != 44257) {

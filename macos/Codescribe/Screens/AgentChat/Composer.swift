@@ -419,7 +419,7 @@ struct Composer: View {
     }
   }
 
-  /// The composer mic starts/stops the same Agent route as Right Option. The
+  /// The composer mic starts/stops the same Agent route as the menu bar. The
   /// ripple follows the shared controller lifecycle; live words render above
   /// the field from the overlay reducer (the overlay window stays closed).
   private var micButton: some View {
