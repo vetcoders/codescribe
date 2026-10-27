@@ -46,14 +46,14 @@ pub(crate) mod live_archive;
 pub use live_archive::ArchiveRefusal;
 #[cfg(test)]
 mod channel_tray_tests;
+#[cfg(test)]
+mod formatter_selection_acceptance;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
 #[cfg(test)]
 mod silver_start_refusal_tests;
-#[cfg(test)]
-mod formatter_selection_acceptance;
 /// Measured speech phases shared by agent channels and the assistive take.
 mod speech_clock;
 mod transcript_delivery;
@@ -117,9 +117,9 @@ use codescribe_core::tts::AudioPlayer;
 use delivery_route::DeliveryFacts;
 use helpers::send_assistive_with_agent_runtime_lane;
 use hotkey_policy::{
-    STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
-    should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
-    toggle_final_pass_enabled,
+    STOP_TIMEOUT, effective_hold_start_delay_ms, hold_start_redirects_to_composer,
+    should_apply_incoming_mode_flags, should_block_hotkey_during_agent_send,
+    should_use_toggle_adjudicated_stop, toggle_final_pass_enabled,
 };
 use transcript_delivery::TranscriptDeliveryTagger;
 
@@ -6228,6 +6228,24 @@ impl RecordingController {
                 return;
             }
 
+            // The caret sits in one of Codescribe's own message fields. That
+            // field records through its own microphone; global dictation would
+            // steal focus to the overlay and deliver elsewhere. Stay idle and
+            // let the field show the person where its microphone is.
+            if hold_start_redirects_to_composer(
+                assistive,
+                *hold_mode.read().await,
+                hotkeys::composer_caret_owned(),
+            ) {
+                info!("Hold-start refused: a Codescribe composer owns the caret");
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::ComposerDictationRedirected,
+                });
+                return;
+            }
+
             if !assistive && matches!(*hold_mode.read().await, HoldMode::Raw) {
                 if let Err(error) = controller.close_agent_channels_for_dictation().await {
                     error!(%error, "Hold-start refused: agent channel did not close");
@@ -7460,10 +7478,7 @@ impl RecordingController {
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
-        let consultation = match self
-            .selected_max_consultation(runtime_settings)
-            .await
-        {
+        let consultation = match self.selected_max_consultation(runtime_settings).await {
             Ok(consultation) => consultation,
             Err(error) => {
                 warn!(%error, "Max consultation unavailable; preserving committed transcript");
@@ -7533,7 +7548,10 @@ impl RecordingController {
             .visible_canvas_snapshot()
             .is_some_and(|canvas| Some(canvas.session_id.as_str()) == take_id)
         {
-            warn!(take_id, "Stop formatter selection refused a different capture presentation");
+            warn!(
+                take_id,
+                "Stop formatter selection refused a different capture presentation"
+            );
             return raw;
         }
         if presentation.literal_delivery() {
@@ -7562,7 +7580,8 @@ impl RecordingController {
         {
             info!(status = "Smart unavailable — delivered Corrections", source_revision = projection.source_raw_revision, receipt = %projection.receipt_id);
         }
-        if projection.requested_mode != projection.delivered_mode || projection.status != "applied" {
+        if projection.requested_mode != projection.delivered_mode || projection.status != "applied"
+        {
             self.publish_formatting_degraded(take_id);
         }
         projection.rendered_text

@@ -20581,6 +20581,18 @@
         }
       }
     },
+    "Use the microphone button in the message field" : {
+      "comment" : "Shown in a message field when Fn is held while typing in it",
+      "extractionState" : "manual",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Użyj mikrofonu w polu wiadomości"
+          }
+        }
+      }
+    },
     "Use the saved transcript when automatic pasting is unavailable." : {
       "localizations" : {
         "en" : {

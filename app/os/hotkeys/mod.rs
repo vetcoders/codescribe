@@ -34,11 +34,12 @@ mod platform;
 
 pub use config::{
     HotkeyRuntimeConfig, ModeHotkeyBindings, apply_hotkey_config, apply_hotkey_runtime_config,
-    get_channel_modifier, get_deferred_insert_shortcut, get_double_tap_interval_ms,
-    get_exclusive_mode, get_hold_arm_modifier, get_hold_start_delay_ms, get_hotkey_runtime_config,
-    get_mode_hotkey_bindings, set_agent_gesture_capture, set_channel_modifier,
-    set_deferred_insert_shortcut, set_double_tap_interval_ms, set_exclusive_mode,
-    set_hold_arm_modifier, set_hold_start_delay_ms, set_mode_hotkey_bindings,
+    composer_caret_owned, get_channel_modifier, get_deferred_insert_shortcut,
+    get_double_tap_interval_ms, get_exclusive_mode, get_hold_arm_modifier, get_hold_start_delay_ms,
+    get_hotkey_runtime_config, get_mode_hotkey_bindings, set_agent_gesture_capture,
+    set_channel_modifier, set_composer_caret_owned, set_deferred_insert_shortcut,
+    set_double_tap_interval_ms, set_exclusive_mode, set_hold_arm_modifier, set_hold_start_delay_ms,
+    set_mode_hotkey_bindings,
 };
 pub use detector::{
     AgentGestureInput, HoldAction, HoldMode, HotkeyDetector, HotkeyDetectorInput, HotkeyEvent,
