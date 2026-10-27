@@ -1095,8 +1095,8 @@ struct DictationOverlayView: View {
         .contentShape(Circle().inset(by: -7.5))
     }
     .buttonStyle(.plain)
-    .onHover {
-      closeDotHovered = $0
+    .background {
+      OverlayMenuCursorRegion { closeDotHovered = $0 }
     }
     .animation(
       reduceMotion ? nil : .easeOut(duration: CSMotion.Tempo.hover), value: closeDotHovered
