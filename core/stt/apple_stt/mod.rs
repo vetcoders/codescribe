@@ -15,7 +15,9 @@
 //!
 //! Optional `backend` field is additive.
 
+mod bridge_lock;
 mod live_stream;
+pub use bridge_lock::{BridgeLockGuard, BridgeLockWait};
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
 use std::fs;

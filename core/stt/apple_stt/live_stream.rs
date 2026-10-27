@@ -19,10 +19,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use tracing::info;
 
 use super::{
-    BridgeRequest, BridgeResponse, ENV_ALLOW_DOWNLOAD, bridge_binary, bridge_global_lock, env_bool,
-    resolved_locale,
+    BridgeLockGuard, BridgeLockWait, BridgeRequest, BridgeResponse, ENV_ALLOW_DOWNLOAD,
+    bridge_binary, env_bool, resolved_locale,
 };
 use crate::pipeline::contracts::TranscriptSegment;
 
@@ -89,20 +90,35 @@ pub struct LiveStreamSession {
     events_rx: Receiver<LiveStreamEvent>,
     reader: Option<JoinHandle<()>>,
     /// Held for the whole session so SFSpeech never races a concurrent bridge.
-    _lock_guard: std::sync::MutexGuard<'static, ()>,
+    lock_guard: BridgeLockGuard,
     sample_rate: u32,
     frames_written: u64,
+    /// Start of the active recognizer window: the moment the bridge was
+    /// spawned, after the lock wait. `asr_decode_ms` is measured from here.
+    opened_at: std::time::Instant,
 }
 
 impl LiveStreamSession {
-    /// Spawn bridge `stream`, send request + PCM header, start stdout reader.
-    pub fn open(language: Option<&str>, sample_rate: u32) -> Result<Self> {
+    /// Spawn bridge `stream` after a blocking wait for the bridge lock.
+    ///
+    /// Only for callers without a loop to keep turning. A worker that drains
+    /// PCM must acquire through [`BridgeLockWait::poll`] and call
+    /// [`LiveStreamSession::open_with_lock`].
+    pub fn open(language: Option<&str>, sample_rate: u32, holder: &str) -> Result<Self> {
+        let lock_guard = BridgeLockWait::start(holder).block();
+        Self::open_with_lock(language, sample_rate, lock_guard)
+    }
+
+    /// Spawn bridge `stream` under an already-held bridge lock, send request +
+    /// PCM header, start stdout reader.
+    pub fn open_with_lock(
+        language: Option<&str>,
+        sample_rate: u32,
+        lock_guard: BridgeLockGuard,
+    ) -> Result<Self> {
         if sample_rate == 0 {
             bail!("live stream: sample_rate must be > 0");
         }
-        let lock_guard = bridge_global_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let locale = resolved_locale(language);
         let bridge_bin = bridge_binary();
@@ -164,10 +180,23 @@ impl LiveStreamSession {
             stdin: Some(stdin),
             events_rx,
             reader: Some(reader),
-            _lock_guard: lock_guard,
+            lock_guard,
             sample_rate,
             frames_written: 0,
+            opened_at: std::time::Instant::now(),
         })
+    }
+
+    /// `bridge_lock_wait_ms`: time this session waited for the bridge lock.
+    /// Never mixed with session wall-clock or decode time.
+    pub fn bridge_lock_wait_ms(&self) -> u64 {
+        self.lock_guard.wait_ms()
+    }
+
+    /// `capture_pcm_duration_ms`: audio written to the recognizer, from sample
+    /// count over rate. Not a wall-clock figure.
+    pub fn fed_pcm_duration_ms(&self) -> u64 {
+        self.frames_written.saturating_mul(1000) / u64::from(self.sample_rate.max(1))
     }
 
     /// The rate declared to the bridge at open time; PCM fed to
@@ -281,6 +310,15 @@ impl LiveStreamSession {
             let _ = handle.join();
         }
         events.extend(self.poll_events());
+
+        // Three durations, three names: audio fed, lock wait, active decode.
+        info!(
+            target: "apple_stream_timing",
+            capture_pcm_duration_ms = self.fed_pcm_duration_ms(),
+            bridge_lock_wait_ms = self.bridge_lock_wait_ms(),
+            asr_decode_ms = self.opened_at.elapsed().as_millis() as u64,
+            "apple stream settled"
+        );
 
         Ok(events)
     }
@@ -481,9 +519,10 @@ mod tests {
             stdin,
             events_rx: rx,
             reader: Some(reader),
-            _lock_guard: TEST_LOCK.lock().expect("test lock"),
+            lock_guard: BridgeLockGuard::for_test(&TEST_LOCK),
             sample_rate: 16_000,
             frames_written: 0,
+            opened_at: std::time::Instant::now(),
         };
         let started = std::time::Instant::now();
         let events = session.finish().expect("finish");

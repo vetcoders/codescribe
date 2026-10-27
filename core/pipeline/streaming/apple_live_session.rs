@@ -103,7 +103,7 @@ use crate::pipeline::whisper_word_speech::{
     judge_whisper_words_tuned, repeat_key, separation_window, window_has_energy_valley,
     window_has_silero_dip,
 };
-use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
+use crate::stt::apple_stt::{BridgeLockGuard, BridgeLockWait, LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailProviderPayload, TailProviderRequest, TailRequestIdentity,
@@ -10247,6 +10247,69 @@ struct AppleWorkerConfig<'a> {
     cloud: Option<CloudWorkerChannels>,
 }
 
+/// An epoch that woke while another take held the Apple bridge lock.
+struct PendingEpochOpen {
+    wait: BridgeLockWait,
+    /// Sample the pre-roll is cut from once the bridge is ours.
+    preroll_from: u64,
+    /// Set when silence closed the epoch before acquisition.
+    sleep_at: Option<u64>,
+}
+
+/// Spawn the epoch's bridge under `lock` and feed it the retained audio from
+/// `preroll_from` up to `window_end`, then `current` when the caller still
+/// holds an unwritten chunk. Returns the session and its sample-time base,
+/// which is whatever audio the epoch ACTUALLY starts with, never what was asked
+/// for: a pre-roll that fell off retention resolves to nothing, and basing the
+/// epoch on it would shift every timestamp in it earlier by the missing audio.
+fn open_epoch_stream(
+    lock: BridgeLockGuard,
+    language: Option<&str>,
+    sample_rate: u32,
+    preroll_from: u64,
+    window_end: u64,
+    current: Option<&[f32]>,
+    state: &AppleSealState,
+) -> anyhow::Result<(LiveStreamSession, u64)> {
+    let lock_wait_ms = lock.wait_ms();
+    let mut session = LiveStreamSession::open_with_lock(language, sample_rate, lock)?;
+    let preroll = state.recognizer_window_by_samples(preroll_from, window_end);
+    let epoch_base_samples = preroll.as_ref().map_or(window_end, |w| w.sample_start);
+    let preroll_samples = preroll.as_ref().map_or(0, |window| window.samples.len());
+    if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
+        session.write_pcm(&window.samples)?;
+    }
+    if let Some(samples) = current {
+        session.write_pcm(samples)?;
+    }
+    info!(
+        epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
+        preroll_samples,
+        bridge_lock_wait_ms = lock_wait_ms,
+        "apple_lifecycle: epoch open (speech edge)"
+    );
+    Ok((session, epoch_base_samples))
+}
+
+/// Drain the first events of a freshly opened epoch and install it as the
+/// live stream.
+fn open_epoch_events(
+    mut session: LiveStreamSession,
+    stream: &mut Option<LiveStreamSession>,
+    epoch_base_samples: u64,
+    sample_rate: u32,
+    audio_secs: f32,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    state: &mut AppleSealState,
+) {
+    let events = shift_events(
+        session.poll_events(),
+        epoch_base_secs(epoch_base_samples, sample_rate),
+    );
+    emit_stream_events(events, ev_tx, state, audio_secs);
+    *stream = Some(session);
+}
+
 /// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
 fn apple_stream_worker(
     pcm_rx: std_mpsc::Receiver<Result<Option<SpeechInputFrame>, String>>,
@@ -10453,12 +10516,18 @@ fn apple_stream_worker(
         );
         None
     } else {
-        Some(LiveStreamSession::open(language, sample_rate)?)
+        Some(LiveStreamSession::open(
+            language,
+            sample_rate,
+            &state.session_id,
+        )?)
     };
     // Session-time base of the open epoch. Zero for the legacy single stream,
     // which is what makes `shift_events` the identity on that path.
     let mut epoch_base_samples: u64 = 0;
     let mut samples_seen: u64 = 0;
+    // An epoch that woke while another take held the bridge lock.
+    let mut pending_open: Option<PendingEpochOpen> = None;
 
     loop {
         state.tick_refinements(&ev_tx, Instant::now());
@@ -10470,6 +10539,48 @@ fn apple_stream_worker(
             samples_seen as f32 / sample_rate.max(1) as f32,
         );
         drain_dictation_witness_returns(&mut state, &ev_tx, &witness_done_rx);
+        if let Some(pending) = pending_open.take() {
+            match pending.wait.poll() {
+                None => pending_open = Some(pending),
+                Some(lock) => {
+                    let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+                    let (session, base) = open_epoch_stream(
+                        lock,
+                        language,
+                        sample_rate,
+                        pending.preroll_from,
+                        samples_seen,
+                        None,
+                        &state,
+                    )
+                    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+                    epoch_base_samples = base;
+                    open_epoch_events(
+                        session,
+                        &mut stream,
+                        epoch_base_samples,
+                        sample_rate,
+                        audio_secs,
+                        &ev_tx,
+                        &mut state,
+                    );
+                    if pending.sleep_at.is_some()
+                        && let Some(session) = stream.take()
+                    {
+                        let trailing = shift_events(
+                            session
+                                .finish()
+                                .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?,
+                            epoch_base_secs(epoch_base_samples, sample_rate),
+                        );
+                        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
+                        seal_open_partial(&mut state, &ev_tx, audio_secs);
+                        state.pump_capture_windows(&ev_tx);
+                        info!(audio_secs, "apple_lifecycle: deferred epoch closed on open");
+                    }
+                }
+            }
+        }
         // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(LIVE_WORKER_QUANTUM) {
@@ -10553,39 +10664,62 @@ fn apple_stream_worker(
                     }
                     EpochDecision::Wake { .. } if !state.apple_live_enabled => {}
                     EpochDecision::Wake { preroll_from } => {
-                        let mut session = LiveStreamSession::open(language, sample_rate)
-                            .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
-                        let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
-                        // The base is whatever audio this epoch ACTUALLY starts
-                        // with, never what was asked for: a pre-roll that fell
-                        // off retention resolves to nothing, and basing the
-                        // epoch on it would shift every timestamp in it earlier
-                        // by the missing audio.
-                        let preroll = state.recognizer_window_by_samples(preroll_from, chunk_start);
-                        epoch_base_samples =
-                            preroll.as_ref().map_or(chunk_start, |w| w.sample_start);
-                        let preroll_samples =
-                            preroll.as_ref().map_or(0, |window| window.samples.len());
-                        if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
-                            session
-                                .write_pcm(&window.samples)
-                                .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+                        if let Some(pending) = pending_open.as_mut() {
+                            // Still waiting from the epoch that went quiet:
+                            // one wait covers both, from the earlier pre-roll.
+                            pending.sleep_at = None;
+                        } else {
+                            let wait = BridgeLockWait::start(&state.session_id);
+                            match wait.poll() {
+                                Some(lock) => {
+                                    let chunk_start =
+                                        samples_seen.saturating_sub(samples.len() as u64);
+                                    let (session, base) = open_epoch_stream(
+                                        lock,
+                                        language,
+                                        sample_rate,
+                                        preroll_from,
+                                        chunk_start,
+                                        Some(samples),
+                                        &state,
+                                    )
+                                    .inspect_err(|_| state.return_outstanding_cloud(&ev_tx))?;
+                                    epoch_base_samples = base;
+                                    open_epoch_events(
+                                        session,
+                                        &mut stream,
+                                        epoch_base_samples,
+                                        sample_rate,
+                                        audio_secs,
+                                        &ev_tx,
+                                        &mut state,
+                                    );
+                                }
+                                // Another take owns the bridge. PCM, Silero and
+                                // the silence clock keep running; the loop head
+                                // retries and the audio is cut from retention.
+                                None => {
+                                    pending_open = Some(PendingEpochOpen {
+                                        wait,
+                                        preroll_from,
+                                        sleep_at: None,
+                                    });
+                                }
+                            }
                         }
-                        session.write_pcm(samples).inspect_err(|_| {
-                            state.return_outstanding_cloud(&ev_tx);
-                        })?;
+                    }
+                    EpochDecision::Sleep { silence_secs } if pending_open.is_some() => {
+                        // The epoch ended before the bridge was ours. Keep the
+                        // wait: the retained audio is still decoded once, then
+                        // closed at acquisition.
+                        if let Some(pending) = pending_open.as_mut() {
+                            pending.sleep_at = Some(samples_seen);
+                        }
                         info!(
                             audio_secs,
-                            epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
-                            preroll_samples,
-                            "apple_lifecycle: epoch open (speech edge)"
+                            silence_secs,
+                            "apple_lifecycle: epoch close while waiting for the bridge"
                         );
-                        let events = shift_events(
-                            session.poll_events(),
-                            epoch_base_secs(epoch_base_samples, sample_rate),
-                        );
-                        emit_stream_events(events, &ev_tx, &mut state, audio_secs);
-                        stream = Some(session);
                     }
                     EpochDecision::Sleep { silence_secs } => {
                         if let Some(session) = stream.take() {
@@ -10637,6 +10771,17 @@ fn apple_stream_worker(
         state.emit_speech_integrity(&ev_tx);
     }
 
+    if let Some(pending) = pending_open.take() {
+        // Hangup or silence seal beat the bridge: cancel at once instead of
+        // holding the stop path behind someone else's stream.
+        let wait_ms = pending.wait.cancel("capture_closed");
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "apple_bridge_lock_cancelled".into(),
+            message: format!(
+                "Apple bridge was busy for {wait_ms} ms; the epoch closed before it was acquired"
+            ),
+        });
+    }
     state.capture_stopping = true;
     state.pump_capture_windows(&ev_tx);
     let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
