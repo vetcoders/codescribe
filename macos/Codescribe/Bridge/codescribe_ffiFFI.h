@@ -390,6 +390,13 @@ typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod3)(uint64_t, Rust
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD4
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD4
+typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod4)(uint64_t, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_DOCUMENT_TOOL_HOST_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_DOCUMENT_TOOL_HOST_METHOD0
 typedef void (*UniffiCallbackInterfaceCsDocumentToolHostMethod0)(uint64_t, int8_t* _Nonnull,
@@ -565,6 +572,7 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
     UniffiCallbackInterfaceCsAppActionListenerMethod1 _Nonnull onToggleWidget;
     UniffiCallbackInterfaceCsAppActionListenerMethod2 _Nonnull onMaxApprovalsChanged;
     UniffiCallbackInterfaceCsAppActionListenerMethod3 _Nonnull onAgentGesture;
+    UniffiCallbackInterfaceCsAppActionListenerMethod4 _Nonnull onComposerDictationRedirected;
 } UniffiVTableCallbackInterfaceCsAppActionListener;
 
 #endif
@@ -1770,6 +1778,11 @@ void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_max_approvals_change
 void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(uint64_t ptr, RustBuffer input, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_COMPOSER_DICTATION_REDIRECTED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_COMPOSER_DICTATION_REDIRECTED
+void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_composer_dictation_redirected(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSAUDIOREADLEASE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSAUDIOREADLEASE
 uint64_t uniffi_codescribe_ffi_fn_clone_csaudioreadlease(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -2121,6 +2134,11 @@ RustBuffer uniffi_codescribe_ffi_fn_func_save_pasted_image(RustBuffer data, Rust
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_AGENT_CHOOSER_CAPTURE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_AGENT_CHOOSER_CAPTURE
 void uniffi_codescribe_ffi_fn_func_set_agent_chooser_capture(int8_t active, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_COMPOSER_CARET_OWNED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_COMPOSER_CARET_OWNED
+void uniffi_codescribe_ffi_fn_func_set_composer_caret_owned(int8_t owned, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SET_GESTURE_TEST_ACTIVE
@@ -2611,6 +2629,12 @@ uint16_t uniffi_codescribe_ffi_checksum_func_save_pasted_image(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_AGENT_CHOOSER_CAPTURE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_AGENT_CHOOSER_CAPTURE
 uint16_t uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_COMPOSER_CARET_OWNED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SET_COMPOSER_CARET_OWNED
+uint16_t uniffi_codescribe_ffi_checksum_func_set_composer_caret_owned(void
 
 );
 #endif
@@ -3829,6 +3853,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approv
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_AGENT_GESTURE
 uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_COMPOSER_DICTATION_REDIRECTED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_COMPOSER_DICTATION_REDIRECTED
+uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_composer_dictation_redirected(void
 
 );
 #endif

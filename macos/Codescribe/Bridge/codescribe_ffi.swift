@@ -6493,6 +6493,12 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onAgentGesture(input: CsAgentGestureInput)
 
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+    func onComposerDictationRedirected()
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -6586,6 +6592,17 @@ open func onAgentGesture(input: CsAgentGestureInput)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_gesture(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsAgentGestureInput_lower(input),$0
+    )
+}
+}
+
+    /**
+     * A long dictation hold was refused because a Codescribe message field
+     * owns the caret. UI-only: that field points at its own microphone.
+     */
+open func onComposerDictationRedirected()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_composer_dictation_redirected(
+            self.uniffiCloneHandle(),$0
     )
 }
 }
@@ -6698,6 +6715,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                 }
                 return uniffiObj.onAgentGesture(
                      input: try FfiConverterTypeCsAgentGestureInput_lift(input)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComposerDictationRedirected: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComposerDictationRedirected(
                 )
             }
 
@@ -14053,6 +14092,38 @@ public struct CsSettings: Equatable, Hashable {
      * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
      */
     public var agentSendHoldSec: UInt32
+    /**
+     * Built-in Agent auto-send countdown, `1...30` seconds.
+     */
+    public var agentAutoSendDelaySec: UInt64
+    /**
+     * A built-in Agent take without voice ends after this, `10...120` seconds.
+     */
+    public var agentTakeVoicelessEndSec: UInt64
+    /**
+     * `continuous` | `end_after_message`.
+     */
+    public var agentChannelSessionPolicy: String
+    /**
+     * Effective channel send pause; `0` only from the env override (off).
+     */
+    public var agentChannelSendPauseSec: Float
+    /**
+     * `settings` | `env_override`: where that pause came from.
+     */
+    public var agentChannelSendPauseSource: String
+    /**
+     * `0` = never, else `15...600` seconds.
+     */
+    public var agentChannelVoicelessCloseSec: UInt64
+    /**
+     * `off` | `light_plus` | `formatter`.
+     */
+    public var agentChannelSegmentFinish: String
+    /**
+     * Formatter budget for one channel message, `1...10` seconds.
+     */
+    public var agentChannelFormatWaitSec: UInt64
     public var dumpAudioLogs: Bool
     /**
      * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
@@ -14196,7 +14267,31 @@ public struct CsSettings: Equatable, Hashable {
          */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
         /**
          * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
-         */agentSendHoldSec: UInt32, dumpAudioLogs: Bool,
+         */agentSendHoldSec: UInt32,
+        /**
+         * Built-in Agent auto-send countdown, `1...30` seconds.
+         */agentAutoSendDelaySec: UInt64,
+        /**
+         * A built-in Agent take without voice ends after this, `10...120` seconds.
+         */agentTakeVoicelessEndSec: UInt64,
+        /**
+         * `continuous` | `end_after_message`.
+         */agentChannelSessionPolicy: String,
+        /**
+         * Effective channel send pause; `0` only from the env override (off).
+         */agentChannelSendPauseSec: Float,
+        /**
+         * `settings` | `env_override`: where that pause came from.
+         */agentChannelSendPauseSource: String,
+        /**
+         * `0` = never, else `15...600` seconds.
+         */agentChannelVoicelessCloseSec: UInt64,
+        /**
+         * `off` | `light_plus` | `formatter`.
+         */agentChannelSegmentFinish: String,
+        /**
+         * Formatter budget for one channel message, `1...10` seconds.
+         */agentChannelFormatWaitSec: UInt64, dumpAudioLogs: Bool,
         /**
          * Lane = full ProviderRef (vendor ID or `custom:<slug>`) + model; provider first.
          */llmFormattingProvider: String?, llmFormattingModel: String?,
@@ -14296,6 +14391,14 @@ public struct CsSettings: Equatable, Hashable {
         self.agentEnterSends = agentEnterSends
         self.agentAutoSend = agentAutoSend
         self.agentSendHoldSec = agentSendHoldSec
+        self.agentAutoSendDelaySec = agentAutoSendDelaySec
+        self.agentTakeVoicelessEndSec = agentTakeVoicelessEndSec
+        self.agentChannelSessionPolicy = agentChannelSessionPolicy
+        self.agentChannelSendPauseSec = agentChannelSendPauseSec
+        self.agentChannelSendPauseSource = agentChannelSendPauseSource
+        self.agentChannelVoicelessCloseSec = agentChannelVoicelessCloseSec
+        self.agentChannelSegmentFinish = agentChannelSegmentFinish
+        self.agentChannelFormatWaitSec = agentChannelFormatWaitSec
         self.dumpAudioLogs = dumpAudioLogs
         self.llmFormattingProvider = llmFormattingProvider
         self.llmFormattingModel = llmFormattingModel
@@ -14392,6 +14495,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 agentEnterSends: FfiConverterBool.read(from: &buf),
                 agentAutoSend: FfiConverterBool.read(from: &buf),
                 agentSendHoldSec: FfiConverterUInt32.read(from: &buf),
+                agentAutoSendDelaySec: FfiConverterUInt64.read(from: &buf),
+                agentTakeVoicelessEndSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSessionPolicy: FfiConverterString.read(from: &buf),
+                agentChannelSendPauseSec: FfiConverterFloat.read(from: &buf),
+                agentChannelSendPauseSource: FfiConverterString.read(from: &buf),
+                agentChannelVoicelessCloseSec: FfiConverterUInt64.read(from: &buf),
+                agentChannelSegmentFinish: FfiConverterString.read(from: &buf),
+                agentChannelFormatWaitSec: FfiConverterUInt64.read(from: &buf),
                 dumpAudioLogs: FfiConverterBool.read(from: &buf),
                 llmFormattingProvider: FfiConverterOptionString.read(from: &buf),
                 llmFormattingModel: FfiConverterOptionString.read(from: &buf),
@@ -14476,6 +14587,14 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterBool.write(value.agentEnterSends, into: &buf)
         FfiConverterBool.write(value.agentAutoSend, into: &buf)
         FfiConverterUInt32.write(value.agentSendHoldSec, into: &buf)
+        FfiConverterUInt64.write(value.agentAutoSendDelaySec, into: &buf)
+        FfiConverterUInt64.write(value.agentTakeVoicelessEndSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSessionPolicy, into: &buf)
+        FfiConverterFloat.write(value.agentChannelSendPauseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSendPauseSource, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelVoicelessCloseSec, into: &buf)
+        FfiConverterString.write(value.agentChannelSegmentFinish, into: &buf)
+        FfiConverterUInt64.write(value.agentChannelFormatWaitSec, into: &buf)
         FfiConverterBool.write(value.dumpAudioLogs, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingProvider, into: &buf)
         FfiConverterOptionString.write(value.llmFormattingModel, into: &buf)
@@ -21719,6 +21838,17 @@ public func setAgentChooserCapture(active: Bool)  {try! rustCall() {
 }
 }
 /**
+ * A Codescribe message field took or released the focused caret. While it
+ * holds the caret, a long dictation hold stays idle and the field is told to
+ * point at its own microphone.
+ */
+public func setComposerCaretOwned(owned: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_set_composer_caret_owned(
+        FfiConverterBool.lower(owned),$0
+    )
+}
+}
+/**
  * The Settings gesture tester takes (or renews) its lease, or releases it.
  * While held, a recognised Option pair is reported but starts nothing.
  */
@@ -21927,6 +22057,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_agent_chooser_capture() != 16074) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_set_composer_caret_owned() != 10890) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_set_gesture_test_active() != 50579) {
@@ -22536,6 +22669,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_gesture() != 52788) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_composer_dictation_redirected() != 43322) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csaudioreadlease_release() != 6902) {

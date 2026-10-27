@@ -241,6 +241,9 @@ prose CsRuntimeLlmLane.unavailableReason
 data  CsSettings.holdArmModifier
 data  CsSettings.deferredInsertShortcut
 data  CsSettings.channelModifier
+data  CsSettings.agentChannelSessionPolicy
+data  CsSettings.agentChannelSendPauseSource
+data  CsSettings.agentChannelSegmentFinish
 data CsSettings.widgetShortcut
 data CsSettings.widgetShortcutLabel
 data  CsSettings.transcriptSendMode
