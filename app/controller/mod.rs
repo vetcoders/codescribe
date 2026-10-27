@@ -117,9 +117,9 @@ use codescribe_core::tts::AudioPlayer;
 use delivery_route::DeliveryFacts;
 use helpers::send_assistive_with_agent_runtime_lane;
 use hotkey_policy::{
-    STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
-    should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
-    toggle_final_pass_enabled,
+    STOP_TIMEOUT, effective_hold_start_delay_ms, hold_start_redirects_to_composer,
+    should_apply_incoming_mode_flags, should_block_hotkey_during_agent_send,
+    should_use_toggle_adjudicated_stop, toggle_final_pass_enabled,
 };
 use transcript_delivery::TranscriptDeliveryTagger;
 
@@ -6225,6 +6225,24 @@ impl RecordingController {
                     "Hold-start cancelled before recorder start: state changed to {}",
                     current_state
                 );
+                return;
+            }
+
+            // The caret sits in one of Codescribe's own message fields. That
+            // field records through its own microphone; global dictation would
+            // steal focus to the overlay and deliver elsewhere. Stay idle and
+            // let the field show the person where its microphone is.
+            if hold_start_redirects_to_composer(
+                assistive,
+                *hold_mode.read().await,
+                hotkeys::composer_caret_owned(),
+            ) {
+                info!("Hold-start refused: a Codescribe composer owns the caret");
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::ComposerDictationRedirected,
+                });
                 return;
             }
 

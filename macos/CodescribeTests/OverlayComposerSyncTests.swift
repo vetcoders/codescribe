@@ -476,6 +476,47 @@ final class OverlayComposerSyncTests: XCTestCase {
     add(attachment)
   }
 
+  // MARK: Draft microphone freezes Sync membership (Roman's pre-join leak)
+
+  private final class MicrophoneFixture: ComposerCaptureControlling, @unchecked Sendable {
+    func isRecording() async -> Bool { false }
+    func startComposerTurnRecording() async throws -> CsCaptureHandle {
+      CsCaptureHandle(captureId: "sync-draft-capture")
+    }
+    func stopComposerTurnRecording(handle: CsCaptureHandle) async throws -> CsConditionalStop {
+      .stopped
+    }
+  }
+
+  /// Falsifier 1: while A's composer microphone is live, B cannot be linked
+  /// from either side, and the Sync menu shows the choice disabled.
+  func testLiveDraftMicrophoneRefusesLinkingAnotherConversation() async throws {
+    let (state, agents) = try fixture(count: 2)
+    state.draftCapture = OverlayDraftCapture(controller: MicrophoneFixture())
+    await state.toggleDraftMicrophone(in: agents[0])
+    XCTAssertTrue(state.draftCapture.hasRequest)
+
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    XCTAssertFalse(state.toggleDraftSync(from: agents[1].id, with: agents[0].id))
+    XCTAssertFalse(state.hasSynchronizedDraft(agents[1].id))
+    XCTAssertEqual(state.draftSyncChoices(for: agents[0]).map(\.enabled), [false])
+  }
+
+  /// An existing group is frozen too: no member leaves and nobody joins
+  /// while the take's words are still being spoken.
+  func testLiveDraftMicrophoneFreezesAnExistingGroup() async throws {
+    let (state, agents) = try fixture(count: 3)
+    XCTAssertTrue(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.draftCapture = OverlayDraftCapture(controller: MicrophoneFixture())
+    await state.toggleDraftMicrophone(in: agents[1])
+
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[2].id))
+    XCTAssertFalse(state.toggleDraftSync(from: agents[0].id, with: agents[1].id))
+    state.stopDraftSync(for: agents[0].id)
+    XCTAssertEqual(
+      Set(state.draftSyncNames(for: agents[0].id)), [agents[0].name, agents[1].name])
+  }
+
   private func append(_ text: String, to id: String, state: OverlayState) {
     let before = ConversationDraft.split(state.conversationDraft(for: id)).text
     state.applyConversationProseEdit(

@@ -56,6 +56,8 @@ struct OverlayConversationComposer: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @State private var pasteError: String?
+  /// A refused long Fn points here: hint line plus a lit microphone.
+  @State private var microphoneHint = ComposerMicrophoneHintState()
   @State private var accessoryHeight: CGFloat = 30
   @State private var editorHeight: CGFloat = 28
 
@@ -99,7 +101,13 @@ struct OverlayConversationComposer: View {
         }
         .modifier(
           OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency))
-      if let pasteError, !isCompact {
+      if microphoneHint.visible {
+        Text(verbatim: ComposerCaretOwnership.microphoneHint)
+          .font(.system(size: 10 * textScale, weight: .medium))
+          .foregroundStyle(palette.agentAccent.color)
+          .transition(.opacity)
+          .accessibilityIdentifier("overlay-conversation-microphone-hint")
+      } else if let pasteError, !isCompact {
         Text(verbatim: pasteError)
           .font(.system(size: 10 * textScale))
           .foregroundStyle(palette.errorStatus.color)
@@ -107,6 +115,8 @@ struct OverlayConversationComposer: View {
       }
     }
   }
+
+
 
   /// The editor holds the prose; pasted attachments ride as pills.
   private var prose: Binding<String> {
@@ -379,7 +389,9 @@ struct OverlayConversationComposer: View {
         clipboard: clipboard, saveImage: saveImage, saveFile: saveFile,
         onPasteError: { pasteError = $0 },
         hasAttachments: { !attachments.isEmpty }, onAttach: attach,
-        onProseEdit: onProseEdit
+        onProseEdit: onProseEdit,
+        onMicrophoneRedirect: onToggleDraftMicrophone == nil
+          ? nil : { microphoneHint.show(reduceMotion: reduceMotion) }
       )
       .frame(maxWidth: .infinity)
       .frame(height: geometry.size.height)
@@ -432,11 +444,12 @@ struct OverlayConversationComposer: View {
             .frame(width: corners.actionWidth, height: corners.actionHeight)
             .contentShape(Circle()).buttonStyle(.plain)
             .conversationActionHover(
-              restingColor: draftMicrophoneRecording || liveSpeechActive
+              restingColor: draftMicrophoneRecording || liveSpeechActive || microphoneHint.visible
                 ? palette.agentAccent.color : restingActionColor,
-              hoverColor: draftMicrophoneRecording || liveSpeechActive
+              hoverColor: draftMicrophoneRecording || liveSpeechActive || microphoneHint.visible
                 ? palette.agentAccent.color : palette.primaryText.color
             )
+            .scaleEffect(microphoneHint.visible && !reduceMotion ? 1.18 : 1)
             .disabled(draftMicrophoneBusy)
             .help(Text(verbatim: draftMicrophoneAccessibilityLabel))
             .accessibilityLabel(Text(verbatim: draftMicrophoneAccessibilityLabel))
@@ -670,6 +683,8 @@ private struct ConversationMessageField: NSViewRepresentable {
   var hasAttachments: () -> Bool = { false }
   var onAttach: ([String]) -> Void = { _ in }
   var onProseEdit: ((OverlayComposerProseEdit) -> Void)? = nil
+  /// Present when this field has its own microphone (see ComposerCaretOwnership).
+  var onMicrophoneRedirect: (() -> Void)? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -726,6 +741,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.onFocusChange = { [weak coordinator = context.coordinator] in
       coordinator?.noteFocusChange($0)
     }
+    editor.onMicrophoneRedirect = onMicrophoneRedirect
     scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
@@ -768,6 +784,9 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.onFocusChange = { [weak coordinator = context.coordinator] in
       coordinator?.noteFocusChange($0)
     }
+    let hadMicrophone = editor.onMicrophoneRedirect != nil
+    editor.onMicrophoneRedirect = onMicrophoneRedirect
+    if hadMicrophone != (onMicrophoneRedirect != nil) { editor.notifyFocusChange() }
     editor.pastedText = {
       try ConversationClipboardAttachment.text(
         from: clipboard, saveImage: saveImage, saveFile: saveFile)
@@ -1180,7 +1199,8 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
   }
 
-  private final class MessageTextView: NSTextView {
+  private final class MessageTextView: NSTextView, ComposerMicrophoneRedirecting {
+    var onMicrophoneRedirect: (() -> Void)?
     var sending = false
     var submit: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -1232,12 +1252,16 @@ private struct ConversationMessageField: NSViewRepresentable {
         isWindowKey = false
         clearWindowObservers()
         onFocusChange?(false)
+        ComposerCaretOwnership.shared.report(self, focused: false)
       }
     }
 
     isolated deinit {
       clearWindowObservers()
+      ComposerCaretOwnership.shared.release(ObjectIdentifier(self))
     }
+
+    func showMicrophoneRedirect() { onMicrophoneRedirect?() }
 
     private func clearWindowObservers() {
       for observer in windowObservers {
@@ -1292,6 +1316,8 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     func notifyFocusChange() {
       onFocusChange?(isFocusedInKeyWindow)
+      ComposerCaretOwnership.shared.report(
+        self, focused: isFocusedInKeyWindow && onMicrophoneRedirect != nil)
     }
 
     var isFocusedInKeyWindow: Bool {

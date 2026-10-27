@@ -383,6 +383,26 @@ flowchart TB
 
 ---
 
+### Long Fn while a composer owns the caret
+
+The Agent composer and the Intercom bus composer each carry their own
+microphone. While one of them owns the focused caret (first responder in the
+key window, with a microphone present), a dictation hold (`HoldFn`, Raw hold
+mode) that outlives `hold_start_delay_ms` does **not** open global dictation:
+
+- the recording controller refuses the start inside the delayed hold task
+  (`hold_start_redirects_to_composer`); state stays `Idle`, no capture
+  storage lease, no overlay;
+- it broadcasts `IpcEventPayload::ComposerDictationRedirected`, which the
+  bridge forwards only to `CsAppActionListener.on_composer_dictation_redirected`;
+- the owning field shows "Use the microphone button in the message field"
+  and lights its microphone for a few seconds.
+
+Swift is the only writer of the ownership fact (`set_composer_caret_owned`,
+reported by `ComposerCaretOwnership`). Assistive holds (Chat / Selection),
+toggles and fields without a microphone keep their usual behavior. A short
+Fn tap is never refused; the gate runs only after the hold delay.
+
 ## Modes
 
 ### 1. Hold Mode (Push-to-Talk)

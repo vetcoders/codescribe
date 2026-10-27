@@ -414,6 +414,27 @@ pub fn agent_gesture_capture_active(now: Instant) -> bool {
     until != 0 && capture_millis(now) < until
 }
 
+// ── Composer caret ownership ──────────────────────────────────────────────────
+//
+// Codescribe's own message fields (the Agent composer and the Intercom bus
+// composer) carry their own microphone. While one of them holds the focused
+// caret, a long Fn is not a request for global dictation into that field: the
+// recording controller refuses the hold start and the field shows where its
+// microphone is. Swift is the only writer; it reports first-responder plus
+// key-window truth and clears the flag when the field resigns or leaves.
+
+static COMPOSER_CARET_OWNED: AtomicBool = AtomicBool::new(false);
+
+/// Report whether a Codescribe composer currently owns the focused caret.
+pub fn set_composer_caret_owned(owned: bool) {
+    COMPOSER_CARET_OWNED.store(owned, AtomicOrdering::SeqCst);
+}
+
+/// Whether a Codescribe composer owns the focused caret right now.
+pub fn composer_caret_owned() -> bool {
+    COMPOSER_CARET_OWNED.load(AtomicOrdering::SeqCst)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The whole hotkey contract as one comparable value.
 ///
@@ -790,5 +811,18 @@ mod tests {
 
         set_agent_gesture_capture(false);
         assert!(!agent_gesture_capture_active(Instant::now()));
+    }
+
+    /// Composer caret ownership is a plain fact the UI sets and clears.
+    #[test]
+    fn composer_caret_ownership_follows_the_last_report() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        set_composer_caret_owned(true);
+        assert!(composer_caret_owned());
+        set_composer_caret_owned(false);
+        assert!(!composer_caret_owned());
     }
 }

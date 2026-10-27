@@ -282,10 +282,17 @@ extension OverlayState {
     }
   }
 
+  /// A draft microphone take freezes its audience at request. Membership
+  /// cannot change while its words are still being spoken or projected.
   private func groupIsBusy(_ members: Set<String>) -> Bool {
     !pendingTextMessages.isDisjoint(with: members)
       || !pendingCaptureAttachmentSends.isDisjoint(with: members)
       || members.contains { captureAttachmentDrafts[$0] != nil }
+      || (draftCapture.hasRequest
+        && draftCapture.conversationID.map { members.contains($0) } == true)
+      || pendingDraftProjections.values.contains { projection in
+        draftCapture.destination(for: projection.sessionId).map { members.contains($0) } == true
+      }
   }
 
   private func canLinkDraft(_ source: String, with target: String) -> Bool {

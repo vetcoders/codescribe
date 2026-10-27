@@ -166,6 +166,9 @@ pub trait CsAppActionListener: Send + Sync {
     /// Pointer input for the overlay's agent chooser. UI-only: the overlay
     /// decides what a click means and opens channels through its own path.
     fn on_agent_gesture(&self, input: CsAgentGestureInput);
+    /// A long dictation hold was refused because a Codescribe message field
+    /// owns the caret. UI-only: that field points at its own microphone.
+    fn on_composer_dictation_redirected(&self);
 }
 
 /// The pointer's input to the overlay's agent chooser.
@@ -663,6 +666,16 @@ fn forward_controller_state_to_listener(state: State, listener: Arc<dyn CsTransc
     }
 }
 
+/// The controller refused a long dictation hold while a Codescribe composer
+/// owned the caret. Only the UI-only action listener hears it; the
+/// transcription listener sees no lifecycle because none began.
+fn notify_composer_dictation_redirected(listener: Option<Arc<dyn CsAppActionListener>>) {
+    tracing::info!("Dictation hold redirected to the focused composer's microphone");
+    if let Some(listener) = listener {
+        listener.on_composer_dictation_redirected();
+    }
+}
+
 /// Translate one IPC payload into the Swift listener's callback vocabulary and
 /// keep the tray status in step.
 ///
@@ -685,6 +698,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             "legacy context-marker IPC telemetry is not product transcript truth"
         ),
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
+        IpcEventPayload::ComposerDictationRedirected => {
+            notify_composer_dictation_redirected(current_app_action_listener())
+        }
         IpcEventPayload::CompactProjection { json } => {
             match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
                 &json,
@@ -2518,6 +2534,7 @@ mod app_action_tests {
         show_agent_calls: AtomicUsize,
         toggle_widget_calls: AtomicUsize,
         agent_gestures: Mutex<Vec<CsAgentGestureInput>>,
+        composer_redirects: AtomicUsize,
     }
 
     impl CountingAppActionListener {
@@ -2526,6 +2543,7 @@ mod app_action_tests {
                 show_agent_calls: AtomicUsize::new(0),
                 toggle_widget_calls: AtomicUsize::new(0),
                 agent_gestures: Mutex::new(Vec::new()),
+                composer_redirects: AtomicUsize::new(0),
             }
         }
     }
@@ -2545,6 +2563,20 @@ mod app_action_tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(input);
         }
+        fn on_composer_dictation_redirected(&self) {
+            self.composer_redirects.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A refused hold reaches only the UI-only listener, exactly once.
+    #[test]
+    fn composer_dictation_redirect_is_ui_only() {
+        let listener = Arc::new(CountingAppActionListener::new());
+        notify_composer_dictation_redirected(Some(listener.clone()));
+        notify_composer_dictation_redirected(None);
+        assert_eq!(listener.composer_redirects.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.toggle_widget_calls.load(Ordering::SeqCst), 0);
     }
 
     /// The chooser's input reaches the UI listener and never the recording path.
@@ -2875,6 +2907,14 @@ pub fn available_bindings_for_mode(mode: CsWorkMode) -> Vec<CsBindingOption> {
 #[uniffi::export]
 pub fn set_agent_chooser_capture(active: bool) {
     hotkeys::set_agent_gesture_capture(active);
+}
+
+/// A Codescribe message field took or released the focused caret. While it
+/// holds the caret, a long dictation hold stays idle and the field is told to
+/// point at its own microphone.
+#[uniffi::export]
+pub fn set_composer_caret_owned(owned: bool) {
+    hotkeys::set_composer_caret_owned(owned);
 }
 
 /// Pair a mode with its binding and attach the display copy sourced from the
