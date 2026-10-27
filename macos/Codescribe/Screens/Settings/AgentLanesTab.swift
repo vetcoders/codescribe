@@ -304,7 +304,7 @@ struct AgentLanesTab: View {
       ChannelRuntimeRow(
         key: String(localized: "Channel formatting wait"),
         value: AgentChannelChain.seconds(Float(settings.agentChannelFormatWaitSec)), mono: true,
-        source: nil, overridden: false),
+        source: nil),
     ]
   }
 
