@@ -88,7 +88,8 @@ struct OverlayTooltipLayout: Layout {
 }
 
 /// Resting ink of an enabled control. Header and coverage chrome stay solid.
-/// The transcript rail rests slightly dim and brightens on hover. That dim is
+/// The transcript rail rests slightly dim and strengthens on hover: dark ink
+/// darkens on paper and light ink brightens on a dark canvas. That dim is
 /// presentation only: the control stays enabled, keeps its hit target and
 /// does not change size.
 enum OverlayHoverEmphasis: Equatable {
@@ -110,6 +111,7 @@ enum OverlayHoverEmphasis: Equatable {
 
 /// Hover describes; only button activation opens details or executes an action.
 struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
+  @Environment(\.isEnabled) private var environmentEnabled
   let id: String
   let title: String
   let palette: OverlayAppearancePalette
@@ -133,6 +135,8 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
   @State private var hovered = false
 
   var body: some View {
+    let enabled = isEnabled && environmentEnabled
+    let selected = presented == id
     Button {
       if let action {
         presented = nil
@@ -142,10 +146,13 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
       }
     } label: {
       label
-        .foregroundStyle(palette.primaryText.color)
-        .opacity(emphasis.opacity(enabled: isEnabled, hovered: hovered))
-        // Ink brightens on hover. A filled chip behind the glyph read as a
-        // halo; the hit target stays the padded rectangle.
+        .foregroundStyle(
+          enabled && selected && emphasis == .transcriptRail
+            ? CSColor.chromeAccent : palette.primaryText.color
+        )
+        .opacity(emphasis.opacity(enabled: enabled, hovered: hovered || selected))
+        // A menu keeps its accent ink after the pointer leaves for its
+        // popover. Emphasis never adds a halo or changes the hit rectangle.
         .padding(2)
         .contentShape(Rectangle())
     }
@@ -154,7 +161,10 @@ struct OverlayHoverControl<LabelContent: View, Detail: View>: View {
     .focusable(false)
     .accessibilityLabel(title)
     .accessibilityIdentifier(id)
-    .onHover { hovered = $0 }
+    .accessibilityAddTraits(selected ? .isSelected : [])
+    .background {
+      OverlayMenuCursorRegion { hovered = $0 }
+    }
     .modifier(
       OverlayMiniTooltip(
         title: title, palette: palette, enabled: showsTooltip && presented == nil,

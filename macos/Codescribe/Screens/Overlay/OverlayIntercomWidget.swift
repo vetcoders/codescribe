@@ -2266,9 +2266,16 @@ private struct OverlayIntercomCard: View {
         if expanded {
           // This folds the conversation back into its one-row fiszka. An X
           // here read as the agent pill's X, which archives the agent
-          // (Maciej, 2026-10-23); the ↗ is the overlay's return-to-mini glyph.
-          Button("Collapse", systemImage: OverlayControlSymbols.returnToMini) {
+          // (Maciej, 2026-10-23). The fiszka's ⇱ points back into its group.
+          Button {
             controller.close(identity)
+          } label: {
+            Label {
+              Text("Collapse")
+            } icon: {
+              Text(verbatim: "⇱").font(.system(size: 14, weight: .semibold))
+                .accessibilityHidden(true)
+            }
           }
           .labelStyle(.iconOnly).buttonStyle(.plain)
           .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
@@ -2953,15 +2960,20 @@ private struct OverlayIntercomInstanceCard: View {
       // only changes its visibility, never the row's geometry (Astra, V1 —
       // a reflow let a click aimed at the remembered microphone close the
       // fiszka). Closing hands the conversation back to its group row, so it
-      // wears the overlay's dock glyph, not an X (Maciej, 2026-10-23: "dokładnie
-      // tym samym piktogramem Dock").
+      // wears the fiszka's ⇱; an archived conversation keeps its close X.
       Button {
         controller.closeInstance(instanceID)
       } label: {
-        Label(
-          current ? String(localized: "Collapse") : String(localized: "Close conversation"),
-          systemImage: current ? OverlayControlSymbols.returnToMini : "xmark"
-        )
+        Label {
+          Text(current ? String(localized: "Collapse") : String(localized: "Close conversation"))
+        } icon: {
+          if current {
+            Text(verbatim: "⇱").font(.system(size: 14, weight: .semibold))
+              .accessibilityHidden(true)
+          } else {
+            Image(systemName: "xmark")
+          }
+        }
         .labelStyle(.iconOnly)
         .frame(width: 26 * max(1, scale), height: 30 * max(1, scale))
         .contentShape(Rectangle())
@@ -3148,8 +3160,16 @@ private final class OverlayIntercomResizeView: NSView {
     needsDisplay = true
   }
   override func draw(_ dirtyRect: NSRect) {
-    guard revealed || hovering || moved else { return }
-    accent.withAlphaComponent(hovering || moved ? 0.6 : 0.32).setStroke()
+    let opacity = OverlayResizeChrome.sideIndicatorOpacity(
+      pointerInside: revealed || hovering || moved)
+    guard opacity > 0 else { return }
+    let palette = OverlayAppearancePalette.resolve(
+      effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? ColorScheme.dark : ColorScheme.light)
+    // Match the main overlay's quiet ink and reveal strength. The existing
+    // inset arc still names this corner's two-axis resize direction.
+    let ink = hovering || moved ? palette.primaryText.nsColor : palette.mutedText.nsColor
+    ink.withAlphaComponent(CGFloat(opacity)).setStroke()
     let path = NSBezierPath()
     let left = edge == .bottomLeft
     let top = edge == .topRight
