@@ -273,14 +273,18 @@ soon as you change it.
 the Agent). None of the three promises a paste: where the
 transcript goes is **Paste after dictation** below, and `PASTE_MODE=off` means
 nowhere. The gesture pill shows the chord (`2× ⌃ (Ctrl)`); VoiceOver reads the
-spelled-out form. Formatting and Agent have no gesture: Option types
-characters, and the right Option double-tap used to start the Agent on its
-own. Their rows show where they start instead of a picker (Formatting: the
-menu bar's **Start transcription**; Agent: **Start in Agent mode**, then
-**Start transcription in Agent mode**). A settings file that still names an
-Option gesture is switched to Disabled at launch, with a backup and a notice in
-the User panel. The first-run setup wizard's hotkey step only explains this
-and never changes these gestures.
+spelled-out form. Formatting and Agent start with no gesture (Disabled); you
+can opt into **2× ⌃ (Ctrl)**, **2× Left ⌥** or **2× Right ⌥** for either one.
+One gesture starts one mode, and holds start only Dictation. Both also start
+from the menu bar's **Start transcription** (with **Start in Agent mode** on
+for the Agent) and from the overlay, as the section footer says. While a mode
+is on an Option double-tap, an **Option double-tap** section shows the
+double-tap interval (100–450 ms), the longest tap (120–300 ms) and how long
+taps are ignored after typing (0–1000 ms, so Option-typed Polish letters never
+pair); each applies on the next tap. Its **Gesture test** row shows what your
+last double-tap came to (Recognized, Too slow, Too long, Typing detected,
+Mouse, Synthetic) and starts nothing while the test runs. The first-run setup
+wizard's hotkey step never changes these gestures.
 
 **Save shortcuts** / **Restore defaults** sit directly under
 the three rows. The screen reports a blocking conflict that refuses the save,

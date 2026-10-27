@@ -65,7 +65,7 @@ Grant in: System Settings > Privacy & Security
 | Menu bar **Start transcription**         | Hands‑free toggle (Formatting)                 | Respects level          |
 | Menu bar, **Start in Agent mode** on     | Hands‑free toggle (Agent)                      | Assistive               |
 
-Option has no recording gesture: it types characters (founder decision 2026-10-26).
+The Option double-taps are opt-in for Formatting and the Agent (off by default).
 Fn+Shift from idle is plain dictation.
 
 ### Mode Behavior

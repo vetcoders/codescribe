@@ -426,27 +426,39 @@ recent committed utterance; it must never create a second delivered utterance.
 
 ### 2. Toggle Mode (Hands-Free)
 
-**Trigger:** Dictation bound to `DoubleCtrl`: double-tap Ctrl within
-`DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms); each tap is
-shorter than 220 ms (`TAP_MAX_MS`) with no key struck while Ctrl is down.
-Formatting and Assistive start only from the UI: the menu bar's **Start
-transcription** starts Formatting, and with **Start in Agent mode** on it
-reads **Start transcription in Agent mode** and starts Assistive
-(`RealTrayEngine.startRecording`); the overlay starts through the same engine
-(`ControllerDictationEngine`).
+**Trigger:** a double-tap gesture bound to the mode. `DoubleCtrl` may start
+any one mode. `DoubleLeftOption` and `DoubleRightOption` are **opt-in**
+gestures for Formatting or Assistive only; the defaults leave both modes on
+`disabled`, so an upgrade never arms an Option double-tap. Both taps land
+within `DOUBLE_TAP_INTERVAL_MS` (default **200 ms**, range 100–450 ms). A Ctrl
+tap is shorter than 220 ms; an Option tap is shorter than `TAP_MAX_MS` (default
+**220 ms**, range 120–300 ms). Formatting and Assistive also start from the
+UI: the menu bar's **Start transcription** starts Formatting, and with
+**Start in Agent mode** on it reads **Start transcription in Agent mode** and
+starts Assistive (`RealTrayEngine.startRecording`); the overlay starts through
+the same engine (`ControllerDictationEngine`).
 **Behavior:** The first gesture (or UI start) starts recording, the next one
 stops and sends.
-**No Option gesture (founder decision 2026-10-26).** Option types characters
-and one key keeps one role. The double-tap right Option started the Agent on
-its own three times (BUGSLOG `agent-self-starts-on-option-letter-chords`:
-25.09, 10.10 and 26.10, a 55-minute take); the detector could not tell a tap
-from Option with a click, a scroll or a synthetic event. Both Option
-double-taps left the closed binding set. A settings file that still names
-`double_left_option` or `double_right_option` is rebound to `disabled` at
-launch by the settings repair (`core/config/repair.rs`, with a backup and a
-`FieldReset` receipt that the User panel summarises), and a portable profile
-import does the same. Settings › Shortcuts shows, in place of the gesture
-picker, where Formatting and the Agent start.
+**Option guards.** Option also types characters, and on 2026-10-26 the right
+Option double-tap started the Agent on its own (BUGSLOG
+`agent-self-starts-on-option-letter-chords`, a 55-minute take). The Option
+gestures came back opt-in with guards in `HotkeyDetector::release_option`.
+One tap waits for its partner at a time and carries the first reason it
+cannot count; a pair with a reason on either tap starts nothing and emits
+`DoubleTapBlocked` with `blocked_double_tap gesture=… reason=…`:
+
+| Reason                                      | When                                                                                                                    |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `typed_recently`                            | A key was typed with Option (a chord), or any key-down came less than `TYPING_QUIET_MS` (default 300 ms) before the tap |
+| `mouse`                                     | A left click, right click or scroll landed while Option was down or a tap was pending (`PointerActivity`)               |
+| `synthetic_source`                          | The Option press or release did not come from `kCGEventSourceStateHIDSystemState` (another app posted it)               |
+| `tap_too_long`                              | A press lasted longer than `TAP_MAX_MS` (up to three times it; longer is a hold and explains nothing)                   |
+| `too_slow`                                  | The second clean tap came after the interval but within twice it                                                        |
+| `modifier_combo_active`, `binding_disabled` | Ctrl, Command or a hold was active; or no mode is bound to the tapped side                                              |
+
+Two chords in a row never log: a chord only taints the tap after it. The
+timing values are atomics re-read on every tap, so Settings changes apply
+without a restart.
 **Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
 lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
 epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
@@ -464,10 +476,12 @@ Agent auto-send stays off for that take, and the text stays in the take archive,
 send still works. A Stop before the 30 s delivers as before. Dictation and Formatting toggles run
 until stopped, and `TOGGLE_SILENCE_SEC` still only closes utterance epochs.
 
-| Mode binding           | Keys                          | Mode                                                                               |
-| ---------------------- | ----------------------------- | ---------------------------------------------------------------------------------- |
-| `Dictation=DoubleCtrl` | Ctrl double-tap               | Raw dictation                                                                      |
-| `Disabled`             | no gesture for that work mode | Formatting and Assistive: menu bar or overlay; **Start in Agent mode** picks which |
+| Mode binding                                    | Keys                    | Mode                |
+| ----------------------------------------------- | ----------------------- | ------------------- |
+| `<mode>=DoubleCtrl`                             | Ctrl double-tap         | that mode           |
+| `Formatting` or `Assistive`=`DoubleLeftOption`  | left Option double-tap  | that mode (opt-in)  |
+| `Formatting` or `Assistive`=`DoubleRightOption` | right Option double-tap | that mode (opt-in)  |
+| `Disabled`                                      | no gesture              | menu bar or overlay |
 
 Formatting is orthogonal to the trigger and destination. Hold, normal toggle,
 and assistive sessions all honor the session's Auto Format setting. The trigger
@@ -504,23 +518,19 @@ closed `ShortcutBinding` set through one predicate,
 `mode_binding_reachable(mode, binding)` in `core/config/types.rs`, re-exported
 by `app/os/hotkeys/detector.rs`:
 
-| Work mode  | Routed gestures                | Routing site in `HotkeyDetector::handle_flags_changed`                  |
-| ---------- | ------------------------------ | ----------------------------------------------------------------------- |
-| Dictation  | all five `Hold*`, `DoubleCtrl` | hold combo (`check_hold_combo`), raw toggle (`dictation == DoubleCtrl`) |
-| Formatting | none                           | none: Formatting starts from the menu bar or the overlay                |
-| Assistive  | none                           | none: `assistive_hold_binding` maps no hold to Assistive                |
+| Work mode  | Routed gestures                                       | Routing site in `HotkeyDetector::handle_flags_changed`          |
+| ---------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| Dictation  | all five `Hold*`, `DoubleCtrl`                        | hold combo (`check_hold_combo`), `double_tap_event(DoubleCtrl)` |
+| Formatting | `DoubleCtrl`, `DoubleLeftOption`, `DoubleRightOption` | `double_tap_event` → `ToggleNormal`                             |
+| Assistive  | `DoubleCtrl`, `DoubleLeftOption`, `DoubleRightOption` | `double_tap_event` → `ToggleAssistive`                          |
 
-`Disabled` binds nothing and is accepted for every mode, and it is the only
-choice for Formatting and Assistive. Their rows show a note naming the UI start
-instead of a picker (`CsWorkMode.noShortcutNote`,
-`CsModeBinding.offersGesturePicker`); a hand-edited gesture on either keeps the
-picker so the conflict can be fixed there.
-`reachability_predicate_matches_detector_routing_for_every_cell` (detector
-tests) binds each of the 18 mode × gesture cells alone, performs the gesture
-through `HotkeyDetector::feed` with synthetic key snapshots, and asserts that
-the predicate and the started mode agree: 6 routed cells, all Dictation, and
-12 unrouted. No cross-mode rule remains: the per-cell predicate is the whole
-routing decision.
+Holds stay Dictation-only: the controller has no hold that formats or talks to
+the agent, so a hold bound to Formatting or Assistive would be a dead cell.
+`Disabled` binds nothing and is accepted for every mode; it is the default for
+Formatting and Assistive. Every row shows its picker; the section footer says
+that Formatting and the Agent also start from the menu bar or the overlay.
+One gesture keeps one mode: two modes on the same routed gesture is a
+blocking conflict (`duplicate_binding_message`).
 
 **Unrouted cells are refused, not persisted.** One owner, three readers:
 
@@ -537,20 +547,27 @@ routing decision.
 
 **Precedence matrix (what one physical gesture starts):**
 
-| Bound configuration                          | Gesture   | Starts         | Settings                                                       |
-| -------------------------------------------- | --------- | -------------- | -------------------------------------------------------------- |
-| Dictation=`HoldFn`, Formatting=`HoldFn`      | hold Fn   | Dictation only | blocking: "This gesture only starts Dictation, so Formatting…" |
-| Dictation=`Hold*`, Assistive=same `Hold*`    | that hold | Dictation only | blocking: "This gesture only starts Dictation, so Assistive…"  |
-| Formatting=`HoldCtrl` (no duplicate)         | hold Ctrl | nothing        | blocking: "This gesture only starts Dictation, so Formatting…" |
-| Defaults: `HoldFn` / `Disabled` / `Disabled` | hold Fn   | Dictation      | clean                                                          |
+| Bound configuration                                          | Gesture        | Starts    | Settings                                                        |
+| ------------------------------------------------------------ | -------------- | --------- | --------------------------------------------------------------- |
+| Dictation=`HoldFn`, Formatting=`HoldFn`                      | hold Fn        | Dictation | blocking: "This gesture only starts Dictation, so Formatting…"  |
+| Dictation=`DoubleCtrl`, Assistive=`DoubleCtrl`               | Ctrl double    | Dictation | blocking: "This gesture already starts Dictation; one gesture…" |
+| Dictation=`DoubleLeftOption`                                 | left Option ×2 | nothing   | blocking: "This gesture only starts Formatting or Assistive…"   |
+| Formatting=`DoubleLeftOption`, Assistive=`DoubleRightOption` | Option ×2      | that mode | clean                                                           |
+| Defaults: `HoldFn` / `Disabled` / `Disabled`                 | hold Fn        | Dictation | clean                                                           |
 
 The macOS Fn/Globe tap note (`fn_tap_intercept_note`) is informational: it
 crosses the bridge with `blocking: false` and never blocks Save.
 
 A settings file written before this rule can still hold an unrouted cell. The
 Shortcuts tab shows it as a blocking conflict on load; choosing a routed
-gesture (or `Disabled`) for that mode clears it. A retired gesture never
-reaches the Shortcuts tab: the settings repair rebinds it to `disabled` first.
+gesture (or `Disabled`) for that mode clears it.
+
+**Option timing and the gesture tester.** While any mode is on an Option
+double-tap, Settings › Shortcuts shows three live sliders (`DOUBLE_TAP_INTERVAL_MS`,
+`TAP_MAX_MS`, `TYPING_QUIET_MS`) and a **Gesture test** row. The row renews a
+10 s lease (`set_gesture_test_active`); while it is held a recognised Option
+pair is recorded (`last_double_tap_outcome`) and held back in
+`platform::gesture_tester_filter`, so trying the gesture never starts a take.
 
 ### Capture and transcript ownership
 
@@ -677,7 +694,9 @@ The remaining runtime env surface only tunes detector behavior:
 | ------------------------ | ------- | --------------- | -------------------- |
 | `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART              |
 | `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART              |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART              |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | HOT (next tap)       |
+| `TAP_MAX_MS`             | `220`   | 120-300         | HOT (next tap)       |
+| `TYPING_QUIET_MS`        | `300`   | 0-1000          | HOT (next tap)       |
 | `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-30.0        | HOT (next recording) |
 
 ### VAD Configuration
@@ -826,7 +845,7 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 `HOLD_EXCLUSIVE` is read into the runtime config and changes nothing today:
 every hold latches Raw at key-down (`compute_hold_mode` ignores the flag), and
-no Option tap gesture is left to isolate. With either value:
+the Option double-taps carry their own guards. With either value:
 
 - Shift or Command _during_ an already-started Fn hold attaches `{selection_N}`
   (default arm modifier Shift; configurable to Cmd in Settings)
