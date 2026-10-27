@@ -56,6 +56,10 @@ fn lock_path(path: &Path) -> PathBuf {
 pub struct Lease(File);
 impl Lease {
     pub fn acquire(path: &Path) -> io::Result<Self> {
+        Self::acquire_with(path, libc::LOCK_EX)
+    }
+
+    fn acquire_with(path: &Path, operation: libc::c_int) -> io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -63,7 +67,7 @@ impl Lease {
             .write(true)
             .mode(0o600)
             .open(lock_path(path))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Self(file))
@@ -642,8 +646,8 @@ pub struct BusAppendReceipt {
 }
 
 /// Inspect complete logical events and their original physical coordinates.
-/// Call only inside append_durable_many_with's prepare closure: its descriptor
-/// locks and OS leases pin the stream while receipt reconciliation runs.
+/// Call inside append_durable_many_with's prepare closure or the durable
+/// observer below: both pin the stream under its existing OS generation lease.
 pub(crate) fn scan_durable_events(
     path: &Path,
     mut visit: impl FnMut(&Value, &BusAppendReceipt) -> io::Result<()>,
@@ -685,6 +689,27 @@ pub(crate) fn scan_durable_events(
         return Err(invalid());
     }
     Ok(())
+}
+
+/// Observe another journal's immutable commit prefix without waiting while a
+/// caller holds its own generation lease. Synchronize the observed authority
+/// before the caller may freeze a dependent snapshot in its local journal.
+pub(crate) fn observe_durable_events(
+    path: &Path,
+    visit: impl FnMut(&Value, &BusAppendReceipt) -> io::Result<()>,
+) -> io::Result<()> {
+    let _lease = Lease::acquire_with(path, libc::LOCK_EX | libc::LOCK_NB)?;
+    let manifest = view(path)?.ok_or_else(invalid)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !same_descriptor(&file, &manifest.active) {
+        return Err(invalid());
+    }
+    file.sync_all()?;
+    scan_durable_events(path, visit)
 }
 
 /// Reply text must reach the same private journal authority before speech.

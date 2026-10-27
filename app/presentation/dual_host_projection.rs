@@ -2,7 +2,7 @@
 //! Encoding, locking, append and durability stay in the existing generation owner.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -885,27 +885,12 @@ fn capture_committed(stage: &Value, path: &Path, commits: &[Value]) -> io::Resul
     if !commit_bus.is_absolute() || commit_bus.canonicalize()? != commit_bus {
         return Err(invalid());
     }
-    // Only observe an immutable complete commit prefix. Concurrent later appends
-    // cannot revoke it; a missing or incomplete commit never releases a stage.
-    let mut reader = BufReader::new(generation::Reader::open(commit_bus)?);
-    let mut decoder = generation::Decoder::default();
-    loop {
-        let mut line = Vec::new();
-        let width = (&mut reader)
-            .take((1 << 20) + 1)
-            .read_until(b'\n', &mut line)?;
-        if width == 0 {
-            return Ok(false);
-        }
-        if width > 1 << 20 || line.last() != Some(&b'\n') {
-            return Err(invalid());
-        }
-        for row in decoder.push(serde_json::from_slice(&line).map_err(|_| invalid())?)? {
-            if matches(&row) {
-                return Ok(true);
-            }
-        }
-    }
+    let mut committed = false;
+    generation::observe_durable_events(commit_bus, |row, _| {
+        committed |= matches(row);
+        Ok(())
+    })?;
+    Ok(committed)
 }
 
 #[cfg(test)]

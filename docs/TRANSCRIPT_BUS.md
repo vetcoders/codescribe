@@ -237,9 +237,13 @@ An eligible committed descriptor cannot be omitted from the snapshot. Its
 `capture` retains `stage_id`, `capture_epoch`, `source_sequence` and
 `attached_at_sample` (the stage's original `sample_start`) as attachment
 provenance, without asserting new transcript or acoustic authority. The
-canonical primary commit may reside in another local bus; the writer observes
-that immutable complete commit prefix and never appends there or opens a
-descriptor's `source_path`. Ordinary typed attachments have null `capture`.
+canonical primary commit may reside in another local bus. The generation owner
+takes that bus's existing lease without waiting, verifies its active descriptor
+and fsyncs it before observing the immutable commit prefix. A busy primary bus
+refuses the snapshot without waiting while the source lease is held; retry uses
+the same frozen identity. No snapshot is acknowledged against an unsynchronized
+foreign commit. The observer never appends there or opens a descriptor's
+`source_path`. Ordinary typed attachments have null `capture`.
 
 For a first source snapshot, supply `order.counter: 0`; the writer locates the
 exact original receipt in its own decoded stream, validates sender, recipient,

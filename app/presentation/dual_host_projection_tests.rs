@@ -495,6 +495,43 @@ fn stale_binding_host_pair_and_private_receipt_refuse() {
 }
 
 #[test]
+fn foreign_commit_lease_refuses_without_waiting_or_appending() {
+    let store = Store::new('1');
+    let other = Store::new('2');
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{}.generation.lock", other.bus.display()))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) },
+        0
+    );
+    let bus = store.bus.clone();
+    let foreign = other.bus.clone();
+    let (send, receive) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let shared = shared_bus_file(&bus).unwrap();
+        let result = generation::append_durable_many_with(
+            &[(bus, shared)],
+            || {
+                generation::observe_durable_events(&foreign, |_, _| Ok(()))?;
+                Ok(vec![Some(generation::encode(
+                    &json!({"schema":"fixture.unpublished"}),
+                )?)])
+            },
+            None,
+        );
+        send.send(result.unwrap_err().kind()).unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(2));
+    drop(lock_file);
+    worker.join().unwrap();
+    assert_eq!(result.unwrap(), io::ErrorKind::WouldBlock);
+    assert_eq!(store.rows().len(), 1);
+}
+
+#[test]
 fn binding_lock_revalidates_after_waiting_for_rebind() {
     let store = Store::new('1');
     let request = store.publish(1);
