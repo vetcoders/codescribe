@@ -5,7 +5,7 @@ use super::*;
 use codescribe_core::config::CapturedRuntimeInputs;
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity, ObservationProducer,
+    AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
     OccurrenceIdentity,
 };
 use codescribe_core::pipeline::contracts::{EventSink, LayerSummary};
@@ -15,6 +15,7 @@ const LABEL: &str = "niepoprawne zdanie";
 
 struct Fixture {
     controller: RecordingController,
+    recorder: StreamingRecorder,
     emitter: Arc<PresentationEmitter>,
     source: ObservationIdentity,
     raw: String,
@@ -25,10 +26,15 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_policy(FormattingPolicy::Smart, true).await
+    }
+
+    async fn with_policy(policy: FormattingPolicy, terminal: bool) -> Self {
         let controller = RecordingController::new_without_keychain();
         let directory = tempfile::tempdir().unwrap();
         let mut inputs = CapturedRuntimeInputs::defaults_at(directory.path().to_path_buf(), 1);
-        inputs.user_settings.formatting_level = Some("smart".into());
+        inputs.user_settings.formatting_level = Some(policy.as_str().into());
+        inputs.user_settings.seal_ledger_enabled = Some(true);
         *controller.runtime_settings.write().await =
             Arc::new(Config::runtime_snapshot_from_captured(inputs));
         let path = directory.path().join("bus.jsonl");
@@ -48,7 +54,9 @@ impl Fixture {
             .unwrap(),
         );
         bus.publish_started();
-        let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+        let mut recorder = StreamingRecorder::new().unwrap();
+        let ledger =
+            recorder.bind_session_authority(TAKE.into(), controller.runtime_settings_arc().await);
         let emitter = Arc::new(PresentationEmitter::new_with_authority(
             Arc::new(Mutex::new(String::new())),
             None,
@@ -90,24 +98,36 @@ impl Fixture {
         };
         emitter.on_event(&mutation);
         emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
-        emitter.on_event(&EngineEvent::SessionFinalised {
-            session_id: TAKE.into(),
-            layer_summary: LayerSummary::default(),
-        });
-        let request = emitter.terminal_formatter_request().unwrap();
+        if terminal {
+            emitter.on_event(&EngineEvent::SessionFinalised {
+                session_id: TAKE.into(),
+                layer_summary: LayerSummary::default(),
+            });
+        }
+        let canvas = emitter.visible_canvas_snapshot().unwrap();
         *controller.active_presentation.write().await = Some(Arc::clone(&emitter));
         Self {
             controller,
+            recorder,
             emitter,
             source,
-            raw: request.source_text,
-            revision: request.source_revision,
+            raw: canvas.text,
+            revision: canvas.revision,
             path,
             _directory: directory,
         }
     }
 
     fn propose(emitter: &PresentationEmitter, source: ObservationIdentity, text: &str) {
+        Self::propose_for_policy(emitter, source, text, FormattingPolicy::Smart);
+    }
+
+    fn propose_for_policy(
+        emitter: &PresentationEmitter,
+        source: ObservationIdentity,
+        text: &str,
+        policy: FormattingPolicy,
+    ) {
         let occurrence = &source.occurrence;
         emitter.on_event(&EngineEvent::OccurrenceLabelProposal {
             proposal: OccurrenceLabelProposal::for_existing_occurrence(
@@ -118,7 +138,7 @@ impl Fixture {
                 text,
                 LabelProposalDisposition::Propose,
             )
-            .with_source(source, LABEL.into(), FormattingPolicy::Smart),
+            .with_source(source, LABEL.into(), policy),
         });
     }
 }
@@ -207,4 +227,147 @@ async fn formatter_selection_cannot_borrow_another_take_or_override_literal() {
         .select_paste_projection(Some(TAKE), &settings, fixture.raw.clone())
         .await;
     assert_eq!(literal, fixture.raw);
+}
+
+#[tokio::test(start_paused = true)]
+async fn formatter_selection_first_stop_defers_pending_nonterminal_take() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let mut fixture = Fixture::with_policy(policy, false).await;
+        let settings = fixture.controller.runtime_settings_arc().await;
+        assert_eq!(settings.formatting_policy(), policy);
+        assert!(!fixture.emitter.literal_delivery());
+        assert!(fixture.emitter.terminal_formatter_request().is_none());
+        assert!(!fixture.raw.is_empty());
+        *fixture.recorder.transcript_buffer_handle().lock().await = fixture.raw.clone();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        fixture.recorder.bind_test_live_finals(1, closed_rx);
+        let mut take = fixture.recorder.detach_closed_take(false);
+        assert_eq!(take.capture_identity(), (Some(TAKE), 1));
+        fixture.emitter.on_formatter_pending(true);
+        let emitter = Arc::clone(&fixture.emitter);
+        let source = fixture.source.clone();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let job = tokio::spawn(async move {
+            release_rx.await.unwrap();
+            Fixture::propose_for_policy(&emitter, source, "Poprawione zdanie.", policy);
+            emitter.on_formatter_pending(false);
+        });
+        let painted = fixture.emitter.begin_stop_canvas();
+        // A real completion receiver on the original ClosedTake, not the blank
+        // recorder's missing-receiver path that would already defer on baseline.
+        closed_tx.send(()).unwrap();
+        let stopped_at = std::time::Instant::now();
+        let armed_order = take.seal_lane_armed();
+        let wait = await_live_finals_for_delivery(
+            async {
+                let admitted = take.wait_live_finals_admitted().await;
+                fixture.emitter.wait_paint_published().await && admitted
+            },
+            || fixture.emitter.finish_stop_canvas(),
+            tokio::time::Instant::from_std(stopped_at),
+            painted,
+            armed_order,
+            None,
+        )
+        .await;
+        assert!(wait.live_finals_admitted);
+        assert!(!wait.stop_final_timeout);
+        assert!(
+            wait.permits_first_delivery(Some(TAKE)),
+            "positive baseline control"
+        );
+        let initial = fixture
+            .controller
+            .stop_canvas_delivery(
+                Some(TAKE),
+                Some(&fixture.emitter),
+                wait,
+                stopped_at,
+                (false, CaptureTurnIntent::HandsFree, &settings),
+                |_| async { panic!("first Stop froze or delivered a nonterminal prefix") },
+            )
+            .await;
+        assert!(!initial.preempted);
+        let initial_delivery = initial.delivery.unwrap();
+        assert_eq!(initial_delivery, None);
+        assert!(fixture.controller.delivered_take.lock().await.is_none());
+        assert!(fixture.emitter.terminal_formatter_request().is_none());
+
+        fixture.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: TAKE.into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let request = fixture.emitter.terminal_formatter_request().unwrap();
+        let mut selecting = Box::pin(fixture.controller.select_paste_projection(
+            Some(TAKE),
+            &settings,
+            request.source_text.clone(),
+        ));
+        tokio::select! {
+            biased;
+            selected = &mut selecting => panic!("selected before formatter arrived: {selected}"),
+            () = tokio::task::yield_now() => {}
+        }
+        release_tx.send(()).unwrap();
+        let selected = selecting.await;
+        job.await.unwrap();
+        assert_eq!(selected, "Poprawione zdanie.");
+        let payloads = std::sync::Mutex::new(Vec::new());
+        let config = Config {
+            paste_mode: PasteMode::Comfort,
+            quick_notes_enabled: false,
+            transcript_tagging_enabled: false,
+            ..settings.values().clone()
+        };
+        let delivered = deliver_terminal_unless_settled(initial_delivery, || async {
+            fixture
+                .controller
+                .deliver_stop_transcript_with_sink(
+                    Some(TAKE),
+                    &selected,
+                    (false, false, CaptureTurnIntent::HandsFree, false),
+                    &config,
+                    |_, payload, _| {
+                        payloads.lock().unwrap().push(payload);
+                        std::future::ready(Ok(OverlayPasteResult {
+                            delivery: OverlayPasteDelivery::PasteRequested,
+                            target_app_name: None,
+                            frontmost_app_name: None,
+                            deferred_insert_shortcut: None,
+                            deferred_insert_failure: None,
+                        }))
+                    },
+                )
+                .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(delivered, TranscriptDelivery::SinkAccepted);
+        deliver_terminal_unless_settled(Some(delivered), || async {
+            panic!("terminal settlement delivered twice")
+        })
+        .await
+        .unwrap();
+        assert_eq!(*payloads.lock().unwrap(), [selected.clone()]);
+        let projection = fixture
+            .emitter
+            .delivery_projection(policy, &request.source_text)
+            .unwrap();
+        assert_eq!(projection.status, "applied");
+        assert_eq!(projection.delivered_mode, policy.as_str());
+        let deliveries: Vec<serde_json::Value> = std::fs::read_to_string(&fixture.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|row: &serde_json::Value| row["schema"] == "codescribe.projection-delivery.v1")
+            .collect();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(
+            deliveries[0]["source_raw_revision"],
+            request.source_revision
+        );
+        assert_eq!(deliveries[0]["selected_mode"], policy.as_str());
+        assert_eq!(deliveries[0]["projection_receipt"], projection.receipt_id);
+        assert_eq!(deliveries[0]["payload_utf8"], selected);
+    }
 }

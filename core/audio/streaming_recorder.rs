@@ -1017,6 +1017,19 @@ impl StreamingRecorder {
         acoustic_ledger
     }
 
+    /// Inject only recognizer completion ingress for cross-crate controller tests.
+    /// No microphone or provider is opened; detachment and Stop keep their owners.
+    #[cfg(feature = "test-isolation")]
+    pub fn bind_test_live_finals(&mut self, capture_epoch: u64, completion: oneshot::Receiver<()>) {
+        assert!(self.authority_session_id.is_some());
+        assert!(capture_epoch > 0);
+        assert!(!self.recorder.is_active());
+        assert!(self.transcription_handle.is_none());
+        assert!(self.last_window_closed.is_none());
+        self.capture_epoch = capture_epoch;
+        self.last_window_closed = Some(completion);
+    }
+
     /// Supply the existing host executor without creating another Agent session.
     /// The streaming lane still owes explicit whole-instruction admission.
     pub fn set_live_formatting_agent(
