@@ -3110,15 +3110,16 @@ private final class OverlayIntercomResizeView: NSView {
       trackingMonitor = NSEvent.addLocalMonitorForEvents(
         matching: [.leftMouseDragged, .leftMouseUp]
       ) { [weak self] event in
-        MainActor.assumeIsolated {
-          guard let self else { return event }
+        let consumed = MainActor.assumeIsolated {
+          guard let self else { return false }
           if event.type == .leftMouseUp {
             self.mouseUp(with: event)
           } else {
             self.mouseDragged(with: event)
           }
-          return nil
+          return true
         }
+        return consumed ? nil : event
       }
     }
     let point = NSEvent.mouseLocation
