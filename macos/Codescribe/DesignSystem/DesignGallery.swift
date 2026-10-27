@@ -6,6 +6,8 @@ struct DesignGallery: View {
   private let swatches: [(String, Color)] = [
     ("ink", CSColor.ink),
     ("terracotta", CSColor.terracotta),
+    ("brandAccent", CSColor.brandAccent),
+    ("terracottaText", CSColor.terracottaText),
     ("terracottaLight", CSColor.terracottaLight),
     ("terracottaDeep", CSColor.terracottaDeep),
     ("assistive", CSColor.assistive),

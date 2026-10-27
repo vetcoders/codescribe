@@ -963,9 +963,7 @@ struct AudioPanel: View {
         Text(calibration.label)
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
-        Text(calibration.value)
-          .font(SettingsScale.controlLabel)
-          .foregroundStyle(statusColor(calibration.tone))
+        statusValue(calibration)
         Spacer(minLength: 0)
         calibrationControl(recordingState: recordingState, tray: tray)
       }
@@ -977,9 +975,7 @@ struct AudioPanel: View {
           .font(SettingsScale.settingName)
           .foregroundStyle(Color.primary)
         Spacer(minLength: 0)
-        Text(sealLane.value)
-          .font(SettingsScale.controlLabel)
-          .foregroundStyle(statusColor(sealLane.tone))
+        statusValue(sealLane)
       }
       .padding(.vertical, SettingsScale.controlInsetV)
       .accessibilityElement(children: .ignore)
@@ -1127,11 +1123,8 @@ struct AudioPanel: View {
         TimelineView(.periodic(from: .now, by: 0.2)) { context in
           let elapsed = context.date.timeIntervalSince(startedAt)
           VStack(alignment: .trailing, spacing: 3) {
-            ProgressView(
-              value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed)
-            )
-            .progressViewStyle(.linear)
-            .frame(width: 92)
+            CSProgressBar(value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed))
+              .frame(width: 92)
             Text(
               "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
             )
@@ -1348,6 +1341,19 @@ struct AudioPanel: View {
     case .neutral: return CSColor.secondaryInk
     case .fallback: return CSColor.amberLight
     case .unavailable: return CSColor.dangerLight
+    }
+  }
+
+  /// A fact's value: a healthy one ("Ready") is the olive capsule with a check
+  /// (Founder, 2026-10-26); every other tone keeps its coloured word.
+  @ViewBuilder
+  private func statusValue(_ fact: AudioReadinessFact) -> some View {
+    if fact.tone == .healthy {
+      CSStatusBadge(text: fact.value, mark: .verified)
+    } else {
+      Text(fact.value)
+        .font(SettingsScale.controlLabel)
+        .foregroundStyle(statusColor(fact.tone))
     }
   }
 

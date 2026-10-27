@@ -325,14 +325,16 @@ private struct LLMLaneEditor: View {
     ) {
       VStack(alignment: .leading, spacing: CSSpace.sm) {
         HStack(spacing: CSSpace.sm) {
+          // A made-up sentence, never a real take: the placeholder shows on
+          // every screenshot and screen share (Founder smoke, 2026-10-26, A7).
           TextField(
             String(
-              localized: "tak jeśli nie stosuje się zaleceń dokumentacji…",
-              comment: "Formatting test placeholder: a raw unpunctuated transcript"),
+              localized: "e.g. meet at nine tomorrow then send me the notes",
+              comment: "Formatting test placeholder: a neutral raw unpunctuated transcript"),
             text: $probeSample, axis: .vertical
           )
           .lineLimit(1...4)
-          .settingsInputChrome(isFocused: false)
+          .settingsInputChrome(isFocused: false, prose: true)
           .accessibilityLabel("Formatting test text")
           Button {
             model.testFormatting(sample: probeSample)

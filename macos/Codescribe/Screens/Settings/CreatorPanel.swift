@@ -779,13 +779,13 @@ private struct PermissionChecklistRow: View {
 
   var body: some View {
     HStack(spacing: SettingsScale.rowInsetH) {
-      statusBadge
-      // A granted row says it with the badge; the status stays for VoiceOver.
+      // A granted row says it with the capsule, which VoiceOver reads once;
+      // a missing scope keeps its state on the name, beside the warning disc.
       VStack(alignment: .leading, spacing: 2) {
         Text(kind.displayName)
           .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
-          .accessibilityValue(state.label)
+          .accessibilityValue(granted ? "" : state.label)
         if let note {
           Text(note)
             .font(.caption)
@@ -794,7 +794,10 @@ private struct PermissionChecklistRow: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      if !granted {
+      if granted {
+        CSStatusBadge(text: state.label, mark: .verified)
+      } else {
+        missingMark
         let repair = kind.repair(for: state)
         if repair.requestsNatively {
           Button {
@@ -828,16 +831,12 @@ private struct PermissionChecklistRow: View {
     .padding(.vertical, 7)
   }
 
-  @ViewBuilder
-  private var statusBadge: some View {
+  /// A missing scope keeps its warning disc beside the repair action; a
+  /// granted one wears the olive capsule the wizard shows (Founder, 2026-10-26).
+  private var missingMark: some View {
     ZStack {
-      Circle().fill((granted ? CSColor.olive : CSColor.dangerLight).opacity(0.2))
-      CSIconView(
-        icon: granted ? .success : .warning,
-        size: 11,
-        weight: .semibold,
-        color: granted ? CSColor.oliveLight : CSColor.dangerLight
-      )
+      Circle().fill(CSColor.dangerLight.opacity(0.2))
+      CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)
     }
     .frame(width: 20, height: 20)
   }

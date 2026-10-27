@@ -190,10 +190,15 @@ struct DictationWhisperModelTab: View {
       HStack(spacing: 8) {
         // Readiness is an ordinary word, so it reads in the interface
         // font; monospace stays for technical values on this pane
-        // (Founder brief, round 13, 2026-10-10).
-        Text(localWhisperRuntimeLabel)
-          .font(CSFont.ui(12, .semibold))
-          .foregroundStyle(localWhisperRuntimeColor)
+        // (Founder brief, round 13, 2026-10-10). A ready runtime is the
+        // olive capsule with a check (Founder, 2026-10-26).
+        if model.localWhisperRuntimeState == .livePatchingConfigured {
+          CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)
+        } else {
+          Text(localWhisperRuntimeLabel)
+            .font(CSFont.ui(12, .semibold))
+            .foregroundStyle(localWhisperRuntimeColor)
+        }
         Button("Recheck", action: model.recheckLocalWhisperRuntime)
           .buttonStyle(.bordered)
           .controlSize(.small)
@@ -247,9 +252,7 @@ struct DictationWhisperModelTab: View {
   private var downloadProgress: some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
       if let fraction = model.whisperDownloadFraction {
-        ProgressView(value: fraction)
-          .progressViewStyle(.linear)
-          .tint(CSColor.chromeAccent)
+        CSProgressBar(value: fraction)
       } else {
         ProgressView()
           .controlSize(.small)

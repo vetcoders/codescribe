@@ -2317,7 +2317,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dodaj klucz API tego dostawcy. Możesz to zrobić także później."
+            "value" : "Dodaj klucz API tego dostawcy.\nMożesz to zrobić także później."
           }
         }
       }
@@ -4877,7 +4877,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wybierz agentów, z którymi chcesz pracować głosem."
+            "value" : "Wybierz agentów, z którymi chcesz pracować."
           }
         }
       }
@@ -7010,17 +7010,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Przetwarzanie danych"
-          }
-        }
-      }
-    },
-    "Default location: %@" : {
-      "comment" : "Default model storage folder; the placeholder is a directory path",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domyślne miejsce: %@"
           }
         }
       }
@@ -9182,23 +9171,6 @@
         }
       }
     },
-    "Hugging Face · %@ · %@" : {
-      "comment" : "Download source: first placeholder is a repository id, second is approximate disk size",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Hugging Face · %1$@ · %2$@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Hugging Face · %@ · %@"
-          }
-        }
-      }
-    },
     "Idle" : {
       "comment" : "Tray status: ready, not recording",
       "localizations" : {
@@ -11012,6 +10984,17 @@
         }
       }
     },
+    "Model location on this Mac" : {
+      "comment" : "Whisper model card: field label for the folder or file of the model",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lokalizacja modelu na komputerze"
+          }
+        }
+      }
+    },
     "Model provider" : {
       "comment" : "Diagnostics row label",
       "localizations" : {
@@ -12820,7 +12803,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API. Możesz to zrobić także później."
+            "value" : "Wystarczy jedno: zaloguj się kontem dostawcy albo dodaj klucz API.\nMożesz to zrobić także później."
           }
         }
       }
@@ -14459,13 +14442,13 @@
         }
       }
     },
-    "Ready to go ✓" : {
+    "Ready to go" : {
       "comment" : "Agent setup status below the client cards",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gotowe do pracy ✓"
+            "value" : "Gotowe do pracy"
           }
         }
       }
@@ -17255,6 +17238,17 @@
         }
       }
     },
+    "Size" : {
+      "comment" : "Whisper model card: field label for the approximate download size",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rozmiar"
+          }
+        }
+      }
+    },
     "Size of the indicator next to the cursor" : {
       "localizations" : {
         "pl" : {
@@ -17436,7 +17430,7 @@
       }
     },
     "Source" : {
-      "comment" : "Tool permissions: which tool source is listed",
+      "comment" : "Tool permissions: which tool source is listed\nWhisper model card: field label for where the model downloads from",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -22420,6 +22414,17 @@
         }
       }
     },
+    "e.g. meet at nine tomorrow then send me the notes" : {
+      "comment" : "Formatting test placeholder: a neutral raw unpunctuated transcript",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "np. spotkanie jutro o dziewiątej potem wyślij mi notatki"
+          }
+        }
+      }
+    },
     "e.g. prview" : {
       "localizations" : {
         "pl" : {
@@ -25004,17 +25009,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakończono pomyślnie"
-          }
-        }
-      }
-    },
-    "tak jeśli nie stosuje się zaleceń dokumentacji…" : {
-      "comment" : "Formatting test placeholder: a raw unpunctuated transcript",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "tak jeśli nie stosuje się zaleceń dokumentacji…"
           }
         }
       }

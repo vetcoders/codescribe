@@ -104,7 +104,10 @@ enum CSPalette {
   // The paper rungs are sized for the darkest light surface a label meets: a
   // chip on a travertine card, the glass sheet measured at #DFDDD9, or the
   // label's own 12 % tint on any selectable card or glass.
-  static let terracottaLight = adaptive(light: NSColor(hex: 0x75351E), dark: NSColor(hex: 0xE9B79F))
+  // The terracotta rungs are the brand hue with only its lightness moved in
+  // OKLCH (C 0.13, H 39°): brick, never the brown that blending with black
+  // used to give (Founder, 2026-10-26).
+  static let terracottaLight = adaptive(light: NSColor(hex: 0x862C08), dark: NSColor(hex: 0xE9B79F))
   static let assistiveLight = adaptive(light: NSColor(hex: 0x522EA2), dark: NSColor(hex: 0xC9B7FF))
   static let oliveLight = adaptive(light: NSColor(hex: 0x404D2C), dark: NSColor(hex: 0x9DB178))
   /// Section eyebrows sit on sheets, cards, chips and glass, never on their
@@ -116,10 +119,10 @@ enum CSPalette {
   static let dangerLight = adaptive(light: NSColor(hex: 0x8C1D17), dark: NSColor(hex: 0xFFAAA5))
   /// Terracotta drawn as a word or an essential glyph (an error line, a
   /// destructive icon, a failed status). The brand hue reads 2.57:1 on a light
-  /// card, so paper takes the label rung; ink keeps a saturated brand hue,
-  /// lifted to clear 4.5:1 on its own 12 % tint over warm carbon. This is not
-  /// `terracottaLight` (pale #E9B79F on ink).
-  static let terracottaText = adaptive(light: NSColor(hex: 0x75351E), dark: NSColor(hex: 0xE58D6F))
+  /// card, so paper takes the brick rung; ink keeps the brand hue at full
+  /// chroma, lifted to clear 4.5:1 on its own 12 % tint over a warm-carbon
+  /// card. This is not `terracottaLight` (pale #E9B79F on ink).
+  static let terracottaText = adaptive(light: NSColor(hex: 0x862C08), dark: NSColor(hex: 0xE88464))
   /// Secondary text: the system label ink at a strength that clears 4.5:1 on
   /// the app sheet, its cards, chips and bubbles. `secondaryLabelColor` (50 %)
   /// measured 3.82:1 for Settings helper text on a card (2026-10-24); the app
@@ -152,6 +155,17 @@ enum CSPalette {
   /// their shape (small bordered buttons), not through a brand hue; with the
   /// Graphite accent they stay grey by the user's choice.
   static let chromeAccent = NSColor.controlAccentColor
+
+  /// The brand hue as a colour of state, not of action: the setup progress
+  /// bar, the mark of a selected choice and the icon of a wizard step (Founder,
+  /// 2026-10-26). Actions keep their neutral bordered shape (2026-10-24) and
+  /// the chrome accent keeps focus, switches and sliders. Each rung clears 3:1
+  /// as a mark on every bare sheet shade of its appearance (travertine holds
+  /// the paper rung at 3.02); on its own selection wash the paper rung reads
+  /// 2.65–3.46 and stays the Founder's hex, the selection also carried by the
+  /// wash, the edge and the filled glyph. The paper rung is the brand hue
+  /// with its lightness lowered in OKLCH, the ink rung the brand terracotta.
+  static let brandAccent = adaptive(light: NSColor(hex: 0xBA5C3C), dark: NSColor(hex: 0xD97757))
 
   /// Primary-action wash: the chrome accent on paper; on ink the same accent
   /// lifted halfway to white. A translucent accent wash alone paints the same
@@ -226,8 +240,12 @@ enum CSColor {
   static let indicatorRecording = Color(nsColor: CSPalette.indicatorRecording)
   static let indicatorAgentQuiet = Color(nsColor: CSPalette.indicatorAgentQuiet)
 
-  // UI chrome — selection, focus and interactive controls follow macOS.
+  // UI chrome — focus and interactive controls follow macOS.
   static let chromeAccent = Color(nsColor: CSPalette.chromeAccent)
+  /// Progress, a selected choice's mark and a step's icon wear the brand hue;
+  /// a selected row sits on `brandAccent` at `CSAlpha.selectionWash` with a
+  /// `CSAlpha.selectionStroke` edge. See `CSPalette.brandAccent`.
+  static let brandAccent = Color(nsColor: CSPalette.brandAccent)
   /// The one primary action's fill tint (apply the wash alpha at the call site).
   static let accentWash = Color(nsColor: CSPalette.accentWash)
 
@@ -275,6 +293,10 @@ enum CSAlpha {
   static let line: Double = 0.08
   /// A control's border.
   static let stroke: Double = 0.12
+  /// A selected choice row: its wash and its one-point edge, both in
+  /// `CSColor.brandAccent` (Founder, 2026-10-26: 12–13 % plus about 45 %).
+  static let selectionWash: Double = 0.13
+  static let selectionStroke: Double = 0.45
 }
 
 /// Layout rhythm. Screens were inventing 6/7/8/11/12/14/15/20/28/44 independently.

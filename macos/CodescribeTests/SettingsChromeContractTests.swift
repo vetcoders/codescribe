@@ -1788,6 +1788,51 @@ final class SettingsChromeContractTests: XCTestCase {
     try settingsSources().values.joined(separator: "\n")
   }
 
+  /// Founder decision of 2026-10-26: in Settings the brand terracotta marks
+  /// progress, a ready or granted state is the olive capsule with a check, and
+  /// the one eyebrow reads in the muted grey; focus, switches, sliders, buttons
+  /// and links keep the macOS accent.
+  func testSettingsProgressWearsTheBrandAccentAndReadyTheOliveCapsule() throws {
+    let sources = try settingsSources()
+    let creator = try XCTUnwrap(sources["CreatorPanel.swift"])
+    XCTAssertTrue(
+      creator.contains("CSStatusBadge(text: state.label, mark: .verified)"),
+      "a granted scope in Settings › Creator")
+    XCTAssertFalse(creator.contains("Circle().fill((granted"), "no round olive badge")
+    let whisper = try XCTUnwrap(sources["WhisperDownloadView.swift"])
+    let modelTab = try XCTUnwrap(sources["DictationWhisperModelTab.swift"])
+    let audio = try XCTUnwrap(sources["AudioPanel.swift"])
+    let voiceLab = try XCTUnwrap(sources["VoiceLabPanel.swift"])
+    let joined = try joinedSettingsSources()
+
+    XCTAssertTrue(whisper.contains("CSProgressBar(value: fraction, height: 6)"), "download bar")
+    XCTAssertTrue(modelTab.contains("CSProgressBar(value: fraction)"), "model tab download bar")
+    // The native linear bar paints the macOS accent whatever its tint; only
+    // the indeterminate spinner stays native.
+    XCTAssertFalse(joined.contains("ProgressView(value:"), "a determinate native bar remains")
+    XCTAssertFalse(joined.contains(".progressViewStyle(.linear)"), "a linear native bar remains")
+
+    let runtimeBadge = "CSStatusBadge(text: localWhisperRuntimeLabel, mark: .verified)"
+    XCTAssertTrue(modelTab.contains(runtimeBadge))
+    XCTAssertTrue(audio.contains("CSStatusBadge(text: fact.value, mark: .verified)"))
+    XCTAssertTrue(audio.contains("statusValue(calibration)"))
+    XCTAssertTrue(audio.contains("statusValue(sealLane)"))
+    XCTAssertTrue(
+      audio.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("),
+      "the Audio pane's calibration capture")
+
+    let eyebrowFace = ".font(CSFont.mono(10, .semibold))\n      .foregroundStyle("
+    XCTAssertFalse(voiceLab.contains(eyebrowFace + "CSColor.chromeAccent)"), "eyebrow in accent")
+    // Settings keeps its muted rung in `secondaryInk` (the pane bans `textMuted`).
+    XCTAssertTrue(voiceLab.contains(eyebrowFace + "CSColor.secondaryInk)"), "eyebrow in muted ink")
+
+    // The chrome accent stays on the controls.
+    let slider = "Slider(value: soundVolumeBinding, in: 0...1, step: 0.05)\n          .tint("
+    XCTAssertTrue(joined.contains(slider + "CSColor.chromeAccent)"))
+    let toggle = ".controlSize(.small)\n      .labelsHidden()\n      .tint("
+    XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
+  }
+
   /// True when `token` occurs and the next character is not a letter, so
   /// `CSColor.olive` does not pass merely because `CSColor.oliveLight` exists.
   private func containsToken(_ source: String, _ token: String) -> Bool {
