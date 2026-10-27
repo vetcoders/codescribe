@@ -1348,7 +1348,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       if updateInstances { materializeInstances() }
       if persist { saveDesktop() }
     }
-    preview.finish(animated: !cancelled && visible)
+    preview.finish()
     noteGroupedActivity()
   }
 
@@ -1594,8 +1594,12 @@ private struct OverlayIntercomHeader: View {
       .accessibilityLabel("Intercom menu")
       .accessibilityIdentifier("overlay-intercom-menu")
       .help("Intercom menu")
+      .background {
+        if !content.showsCount { OverlayIntercomResizeAnchor() }
+      }
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
+          .background(OverlayIntercomResizeAnchor())
         Text(verbatim: chips.count.formatted()).csMono(10)
           .frame(width: metrics.countWidth).allowsHitTesting(false)
       }
@@ -2021,7 +2025,7 @@ private struct OverlayIntercomCard: View {
       if expanded {
         OverlayIntercomResizeHandles(
           cornerRadius: corner, topRight: false, revealed: hovering,
-          onEnded: { controller.finishInteractiveResize() }
+          onEnded: { controller.finishInteractiveResize(cancelled: $0) }
         ) { frame, delta, edge, gesture in
           controller.resize(identity, from: frame, delta: delta, edge: edge, gesture: gesture)
         }
@@ -2030,7 +2034,7 @@ private struct OverlayIntercomCard: View {
         // resize; the remaining perimeter does not intercept content controls.
         OverlayIntercomResizeHandles(
           cornerRadius: corner, revealed: hovering,
-          onEnded: { controller.finishInteractiveResize() }
+          onEnded: { controller.finishInteractiveResize(cancelled: $0) }
         ) { frame, delta, edge, gesture in
           controller.resizeGroup(
             from: frame, delta: delta, edge: edge, row: identity, gesture: gesture)
@@ -2094,7 +2098,7 @@ private struct OverlayIntercomCard: View {
     let detachGrip = OverlayIntercomDetachGrip(palette: palette, highlighted: hovering)
       .offset(x: detachPull.width, y: detachPull.height)
       .frame(
-        width: 24 * max(1, scale),
+        width: 14 * max(1, scale),
         height: OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       )
       .overlay(
@@ -2143,6 +2147,7 @@ private struct OverlayIntercomCard: View {
             } else {
               Text(verbatim: identity.displayDigit).csMono(10)
                 .foregroundStyle(detached ? palette.mutedText.color : palette.primaryText.color)
+                .background(OverlayIntercomResizeAnchor())
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
                 kind: channelRow.map { roster.statusDotKind(for: $0) } ?? .idle,
@@ -2235,6 +2240,7 @@ private struct OverlayIntercomCard: View {
           .accessibilityIdentifier("overlay-intercom-name-\(identity.digit)")
           .modifier(nameHint)
         }
+        .background(OverlayIntercomResizeAnchor())
         .opacity(detached ? 0.72 : 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
@@ -2729,7 +2735,7 @@ private struct OverlayIntercomResizeHandles: View {
   let cornerRadius: CGFloat
   var topRight = true
   var revealed = false
-  var onEnded: () -> Void = {}
+  var onEnded: (Bool) -> Void = { _ in }
   let resize: OverlayIntercomResizeAction
 
   var body: some View {
@@ -2824,7 +2830,7 @@ private struct OverlayIntercomInstanceCard: View {
       if !mini {
         OverlayIntercomResizeHandles(
           cornerRadius: corner, topRight: false, revealed: hovering,
-          onEnded: { controller.finishInteractiveResize() }
+          onEnded: { controller.finishInteractiveResize(cancelled: $0) }
         ) { frame, delta, edge, _ in
           controller.resizeInstance(instanceID, from: frame, delta: delta, edge: edge)
         }
@@ -2860,6 +2866,7 @@ private struct OverlayIntercomInstanceCard: View {
     let nameRow = Text(verbatim: instance.name).csFont(11, .semibold).lineLimit(1)
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
       .contentShape(Rectangle())
+      .background(OverlayIntercomResizeAnchor())
     return HStack(spacing: 3) {
       if !mini && !instance.isHumanInbox {
         Text(verbatim: instance.displayDigit).csMono(10).foregroundStyle(palette.mutedText.color)
@@ -3040,7 +3047,7 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
   let accent: NSColor
   let cornerRadius: CGFloat
   let revealed: Bool
-  let onEnded: () -> Void
+  let onEnded: (Bool) -> Void
   let resize: OverlayIntercomResizeAction
 
   func makeNSView(context: Context) -> OverlayIntercomResizeView { OverlayIntercomResizeView() }
@@ -3053,6 +3060,9 @@ private struct OverlayIntercomResizeHandle: NSViewRepresentable {
     nsView.onEnded = onEnded
     nsView.needsDisplay = true
   }
+  static func dismantleNSView(_ nsView: OverlayIntercomResizeView, coordinator: ()) {
+    nsView.finishResize(cancelled: true)
+  }
 }
 
 private final class OverlayIntercomResizeView: NSView {
@@ -3061,17 +3071,19 @@ private final class OverlayIntercomResizeView: NSView {
   var cornerRadius: CGFloat = OverlayIntercomWidgetLayout.conversationCornerRadius
   var revealed = false
   var resize: OverlayIntercomResizeAction = { _, _, _, _ in }
-  var onEnded: () -> Void = {}
+  var onEnded: (Bool) -> Void = { _ in }
   private var origin: CGPoint?
   private var originalFrame: CGRect?
   private var gesture = UUID()
   private var moved = false
   private var hovering = false
   private var hoverArea: NSTrackingArea?
+  private var trackingMonitor: Any?
 
   override var isOpaque: Bool { false }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
+    finishResize(cancelled: true)
     origin = NSEvent.mouseLocation
     originalFrame = window?.frame
     gesture = UUID()
@@ -3080,18 +3092,43 @@ private final class OverlayIntercomResizeView: NSView {
   override func mouseDragged(with event: NSEvent) {
     guard let origin, let originalFrame else { return }
     moved = true
+    if trackingMonitor == nil {
+      // Continue this native gesture even over the frozen, click-through
+      // source windows. Consume each event here so it has exactly one owner.
+      trackingMonitor = NSEvent.addLocalMonitorForEvents(
+        matching: [.leftMouseDragged, .leftMouseUp]
+      ) { [weak self] event in
+        MainActor.assumeIsolated {
+          guard let self else { return event }
+          if event.type == .leftMouseUp {
+            self.mouseUp(with: event)
+          } else {
+            self.mouseDragged(with: event)
+          }
+          return nil
+        }
+      }
+    }
     let point = NSEvent.mouseLocation
     resize(
       originalFrame, CGSize(width: point.x - origin.x, height: point.y - origin.y), edge, gesture)
   }
   override func mouseUp(with event: NSEvent) {
-    if moved {
-      mouseDragged(with: event)
-      onEnded()
-    }
+    if moved { mouseDragged(with: event) }
+    finishResize()
+  }
+  func finishResize(cancelled: Bool = false, notify: Bool = true) {
+    let ended = moved
+    if let trackingMonitor { NSEvent.removeMonitor(trackingMonitor) }
+    trackingMonitor = nil
     origin = nil
     originalFrame = nil
     moved = false
+    if ended && notify { onEnded(cancelled) }
+  }
+  static func cancelTracking(in view: NSView) {
+    (view as? OverlayIntercomResizeView)?.finishResize(notify: false)
+    for child in view.subviews { cancelTracking(in: child) }
   }
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
@@ -3138,20 +3175,42 @@ private final class OverlayIntercomResizeView: NSView {
   }
 }
 
+/// Measures the live header's flexible region once, before its bitmap is frozen.
+/// It paints nothing and never participates in the header's hit testing.
+private struct OverlayIntercomResizeAnchor: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlayIntercomResizeAnchorView {
+    OverlayIntercomResizeAnchorView()
+  }
+  func updateNSView(_ nsView: OverlayIntercomResizeAnchorView, context: Context) {}
+}
+
+private final class OverlayIntercomResizeAnchorView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  static func find(in view: NSView) -> OverlayIntercomResizeAnchorView? {
+    if let anchor = view as? OverlayIntercomResizeAnchorView { return anchor }
+    for child in view.subviews {
+      if let anchor = find(in: child) { return anchor }
+    }
+    return nil
+  }
+}
+
 /// Transient native feedback owned by the existing window controller. It has
 /// no document, draft or delivery state and performs no SwiftUI layout work.
 @MainActor
 private final class OverlayIntercomResizePreview {
   private let panel: NSPanel
   private let drawing: OverlayIntercomResizePreviewView
-  private let sources: [(panel: OverlayIntercomPanel, alpha: CGFloat)]
+  private let sources: [(panel: OverlayIntercomPanel, alpha: CGFloat, ignoresMouseEvents: Bool)]
+  private var finished = false
 
   init(
     panels: [OverlayIntercomPanel], group: Bool, headerHeight: CGFloat,
     palette: OverlayAppearancePalette
   ) {
-    sources = panels.map { ($0, $0.alphaValue) }
-    let headers: [NSImage?] = panels.map { panel in
+    sources = panels.map { ($0, $0.alphaValue, $0.ignoresMouseEvents) }
+    let headers: [OverlayIntercomResizePreviewView.Header?] = panels.map { panel in
       guard let view = panel.contentView else { return nil }
       let height = min(headerHeight, view.bounds.height)
       let rect = NSRect(
@@ -3163,7 +3222,13 @@ private final class OverlayIntercomResizePreview {
       else { return nil }
       view.cacheDisplay(in: rect, to: bitmap)
       guard let image = bitmap.cgImage else { return nil }
-      return NSImage(cgImage: image, size: rect.size)
+      let anchor = OverlayIntercomResizeAnchorView.find(in: view)
+      // The one-point cut is in the existing gap after the name/spacer, so
+      // only empty chrome stretches; labels and right controls stay 1:1.
+      let splitX = anchor.map { $0.convert($0.bounds, to: view).maxX - rect.minX + 1 }
+      return OverlayIntercomResizePreviewView.Header(
+        image: NSImage(cgImage: image, size: rect.size),
+        splitX: min(rect.width, max(0, splitX ?? rect.width)))
     }
     drawing = OverlayIntercomResizePreviewView(
       headers: headers, group: group, headerHeight: headerHeight, palette: palette)
@@ -3181,41 +3246,48 @@ private final class OverlayIntercomResizePreview {
       ?? OverlayIntercomPanel.passiveLevel
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     panel.contentView = drawing
-    for source in sources { source.panel.alphaValue = 0.12 }
+    for source in sources {
+      source.panel.ignoresMouseEvents = true
+      source.panel.alphaValue = 0
+    }
   }
 
   func update(frame: CGRect) {
+    guard !finished else { return }
     panel.setFrame(frame, display: true)
     drawing.needsDisplay = true
     if !panel.isVisible { panel.orderFrontRegardless() }
   }
 
-  func finish(animated: Bool) {
-    let animate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    for source in sources { source.panel.contentView?.layoutSubtreeIfNeeded() }
-    guard animate else {
-      for source in sources { source.panel.alphaValue = source.alpha }
-      panel.close()
-      return
+  func finish() {
+    guard !finished else { return }
+    finished = true
+    for source in sources {
+      if let view = source.panel.contentView {
+        OverlayIntercomResizeView.cancelTracking(in: view)
+        view.layoutSubtreeIfNeeded()
+      }
+      source.panel.alphaValue = source.alpha
+      source.panel.ignoresMouseEvents = source.ignoresMouseEvents
     }
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.12
-      for source in sources { source.panel.animator().alphaValue = source.alpha }
-      panel.animator().alphaValue = 0
-    } completionHandler: { [panel] in
-      Task { @MainActor in panel.close() }
-    }
+    // Settlement is atomic. An old fade must never dim the next gesture or
+    // leave a second header over newly interactive controls.
+    panel.close()
   }
 }
 
 private final class OverlayIntercomResizePreviewView: NSView {
-  let headers: [NSImage?]
+  struct Header {
+    let image: NSImage
+    let splitX: CGFloat
+  }
+  let headers: [Header?]
   let group: Bool
   let headerHeight: CGFloat
   let palette: OverlayAppearancePalette
 
   init(
-    headers: [NSImage?], group: Bool, headerHeight: CGFloat,
+    headers: [Header?], group: Bool, headerHeight: CGFloat,
     palette: OverlayAppearancePalette
   ) {
     self.headers = headers
@@ -3233,7 +3305,7 @@ private final class OverlayIntercomResizePreviewView: NSView {
       ? (bounds.height - headerHeight) / CGFloat(count) - OverlayIntercomWidgetLayout.gap
       : bounds.height
     var top = bounds.maxY
-    for (index, image) in headers.enumerated() {
+    for (index, header) in headers.enumerated() {
       let height = group && index == 0 ? headerHeight : rowHeight
       let rect = NSRect(x: bounds.minX, y: top - height, width: bounds.width, height: height)
       guard height > 0 else { continue }
@@ -3243,13 +3315,36 @@ private final class OverlayIntercomResizePreviewView: NSView {
       palette.agentAccent.nsColor.withAlphaComponent(0.45).setStroke()
       path.lineWidth = 1
       path.stroke()
-      if let image {
+      if let header {
         NSGraphicsContext.saveGraphicsState()
         path.addClip()
-        image.draw(
-          in: NSRect(
-            x: rect.minX, y: rect.maxY - min(headerHeight, height),
-            width: image.size.width, height: min(headerHeight, height)))
+        let image = header.image
+        let rightWidth = image.size.width - header.splitX
+        let rightX = rect.maxX - rightWidth
+        let y = rect.maxY - image.size.height
+        // Extend the empty gutter, not glyphs. The captured trailing fragment
+        // includes the original right inset and follows the new frame exactly.
+        if rightX > rect.minX + header.splitX, header.splitX >= 1 {
+          image.draw(
+            in: NSRect(
+              x: rect.minX + header.splitX, y: y,
+              width: rightX - rect.minX - header.splitX, height: image.size.height),
+            from: NSRect(x: header.splitX - 1, y: 0, width: 1, height: image.size.height),
+            operation: .sourceOver, fraction: 1)
+        }
+        let leftWidth = min(header.splitX, max(0, rightX - rect.minX))
+        if leftWidth > 0 {
+          image.draw(
+            in: NSRect(x: rect.minX, y: y, width: leftWidth, height: image.size.height),
+            from: NSRect(x: 0, y: 0, width: leftWidth, height: image.size.height),
+            operation: .sourceOver, fraction: 1)
+        }
+        if rightWidth > 0 {
+          image.draw(
+            in: NSRect(x: rightX, y: y, width: rightWidth, height: image.size.height),
+            from: NSRect(x: header.splitX, y: 0, width: rightWidth, height: image.size.height),
+            operation: .sourceOver, fraction: 1)
+        }
         NSGraphicsContext.restoreGraphicsState()
       }
       top = rect.minY - OverlayIntercomWidgetLayout.gap

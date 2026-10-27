@@ -451,9 +451,16 @@ private struct OverlayAudioControlInk: ViewModifier {
   var unlitOpacity: Double = 1
 
   func body(content: Content) -> some View {
+    // The resolved primary ink darkens a light canvas and brightens a dark
+    // one. Keep a lit control's hue while giving it its own hover step.
+    let hover = lit.map { ink in
+      let color = NSColor(ink)
+      return Color(
+        nsColor: color.blended(withFraction: 0.3, of: palette.primaryText.nsColor) ?? color)
+    } ?? palette.primaryText.color
     content.conversationActionHover(
       restingColor: lit ?? palette.mutedText.color.opacity(unlitOpacity),
-      hoverColor: lit ?? palette.primaryText.color)
+      hoverColor: hover)
   }
 }
 
