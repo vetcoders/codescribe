@@ -4491,7 +4491,7 @@ impl PresentationEmitter {
         let session = self
             .transcript_bus
             .as_ref()
-            .map(|bus| bus.session_id())
+            .map(|bus| bus.capture_session_id())
             .or_else(|| {
                 self.cursor_capture
                     .get()
@@ -5447,7 +5447,7 @@ impl EventSink for PresentationEmitter {
             || self
                 .transcript_bus
                 .as_ref()
-                .is_some_and(|bus| bus.session_id() != session_id)
+                .is_some_and(|bus| bus.capture_session_id() != session_id)
         {
             return;
         }

@@ -900,6 +900,10 @@ pub(crate) type PersistenceDiagnosticSink = Arc<dyn Fn(&PersistenceDiagnostic<'_
 /// projection attempts a flush; persistence loss cannot suppress live text.
 pub struct TranscriptBus {
     session: TranscriptSession,
+    /// Ledger namespace this publication reads, when it is not the session's
+    /// own: every agent channel on the shared capture publishes its own
+    /// session from the one shared capture ledger.
+    capture_session_id: Option<String>,
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
     persistence_diagnostic_sink: PersistenceDiagnosticSink,
@@ -1605,7 +1609,7 @@ impl Write for SharedBusWriter {
 impl TranscriptBus {
     /// Copy ownership from the recorder's physical capture-open callback.
     pub(crate) fn observe_capture_opened(&self, session_id: &str, capture_epoch: u64) {
-        if self.session.session_id != session_id || capture_epoch == 0 {
+        if self.capture_session_id() != session_id || capture_epoch == 0 {
             return;
         }
         let mut writer = self
@@ -1629,7 +1633,7 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        self.session.session_id == session_id
+        self.capture_session_id() == session_id
             && writer.started
             && writer.ended
             && writer.capture_epoch == Some(capture_epoch)
@@ -1675,6 +1679,20 @@ impl TranscriptBus {
         &self.session.session_id
     }
 
+    /// Publish this session from a shared capture's ledger. Occurrences keep
+    /// the capture's identity; rows keep this session's.
+    pub(crate) fn with_capture_session(mut self, capture_session_id: String) -> Self {
+        self.capture_session_id = Some(capture_session_id);
+        self
+    }
+
+    /// The ledger namespace every revision and coverage receipt must name.
+    pub(crate) fn capture_session_id(&self) -> &str {
+        self.capture_session_id
+            .as_deref()
+            .unwrap_or(&self.session.session_id)
+    }
+
     /// Match a stopped producer's refused document to the already published
     /// reducer receipt. This reads evidence; it cannot publish or repair text.
     pub(crate) fn matches_refused_document(
@@ -1689,7 +1707,7 @@ impl TranscriptBus {
         writer.started
             && !writer.ended
             && !writer.sealed
-            && refusal.session_id() == self.session.session_id
+            && refusal.session_id() == self.capture_session_id()
             && writer.last_projection.as_ref().is_some_and(|last| {
                 last.capture_epoch == refusal.capture_epoch()
                     && last.rendered_text == text
@@ -1746,7 +1764,7 @@ impl TranscriptBus {
     ) -> Vec<TranscriptBusEvidenceEvent> {
         // A refused empty capture has no lexical document to publish. Retain
         // only its authenticated source CAS and diagnostics for lifecycle end.
-        if revision.authenticates_capture_revision(ledger, &self.session.session_id) {
+        if revision.authenticates_capture_revision(ledger, self.capture_session_id()) {
             let mut writer = self
                 .writer
                 .lock()
@@ -1766,7 +1784,7 @@ impl TranscriptBus {
         }
         // Atomic refusal: no partial rows, sequence changes or last-render update.
         // The validator is owned by the reducer, not a second Bus text reducer.
-        if !revision.authenticates_publication(ledger, &self.session.session_id) {
+        if !revision.authenticates_publication(ledger, self.capture_session_id()) {
             return Vec::new();
         }
         let reducer_action = match &revision.action {
@@ -2083,7 +2101,7 @@ impl TranscriptBus {
     ) -> Vec<TranscriptBusEvidenceEvent> {
         // Atomic refusal: no partial rows, sequence changes or last-render
         // update. The capability validator is owned by the reducer.
-        let Some(capability) = revision.authenticates_direct_publication(&self.session.session_id)
+        let Some(capability) = revision.authenticates_direct_publication(self.capture_session_id())
         else {
             return Vec::new();
         };
@@ -2306,7 +2324,7 @@ impl TranscriptBus {
         let Some(coverage) = ledger.latest_seal_coverage() else {
             return;
         };
-        if coverage.session_id != self.session.session_id
+        if coverage.session_id != self.capture_session_id()
             || Some(coverage.capture_epoch) != writer.capture_epoch
             || coverage.status.unavailable_reason().is_some()
             || coverage.availability != "observed"
@@ -2319,7 +2337,7 @@ impl TranscriptBus {
         let mut has_slots = false;
         let mut entirely_unwitnessed = true;
         for occurrence in ledger.occurrences() {
-            if occurrence.session != self.session.session_id
+            if occurrence.session != self.capture_session_id()
                 || Some(occurrence.capture_epoch) != writer.capture_epoch
             {
                 return;
@@ -2349,7 +2367,7 @@ impl TranscriptBus {
         // Visibility-only receipts are explicitly unwitnessed text too. They
         // must not bypass publication merely because they own no word slot.
         let has_unanchored_label = ledger.layer_trail().iter().any(|entry| {
-            entry.observation.occurrence.session == self.session.session_id
+            entry.observation.occurrence.session == self.capture_session_id()
                 && Some(entry.observation.occurrence.capture_epoch) == writer.capture_epoch
                 && matches!(&entry.decision,
                     codescribe_core::pipeline::acoustic_ledger::MutationReceipt::KeepVisibleUnanchored { label, .. }
@@ -2557,6 +2575,7 @@ impl TranscriptBus {
     ) -> Self {
         Self {
             session,
+            capture_session_id: None,
             path,
             writer: Mutex::new(TranscriptBusWriter {
                 channel_recipients: None,

@@ -13,6 +13,9 @@
 //! prove publication. Dropping the sink early truncates delivered text.
 
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
+use crate::audio::channel_demux::{
+    CHANNEL_DETACH_SETTLE_BUDGET, ChannelDemux, ChannelParticipantOwner, DeliverySeat,
+};
 use crate::audio::recorder::{
     CaptureArchiveError, ClosedCaptureArchive, Recorder, RecorderConfig, SpillSender, SpillSink,
     convert_mono_f32_to_i16,
@@ -735,8 +738,9 @@ pub struct StreamingRecorder {
     /// `RecorderLayer1Lane::offer_pcm` contract): a full feed drops the block
     /// and counts it, a closed feed is reaped.
     pcm_feeds: Arc<PcmFeedRegistry>,
-    /// Agent-channel tasks. Separate from the take's `transcription_handle`.
-    channel_tasks: Vec<ChannelTask>,
+    /// The one recognition stream every open agent channel shares. Separate
+    /// from the take's `transcription_handle`.
+    shared_channel: Option<SharedChannelCapture>,
     captured_samples: Arc<AtomicU64>,
     /// Exact take archive, independent of the physical capture's lifetime.
     take_archive: Option<TakeArchive>,
@@ -762,6 +766,9 @@ struct PcmFeed {
     kind: CaptureSubscriberKind,
     sender: mpsc::Sender<Vec<f32>>,
     archive: Option<TakeArchiveFeed>,
+    /// Samples this feed's consumer actually received. Dropped blocks never
+    /// advance it, so it is the clock the consumer's ledger stamps.
+    delivered: Option<Arc<AtomicU64>>,
 }
 
 struct TakeArchiveFeed {
@@ -878,6 +885,49 @@ struct ChannelTask {
     sample_rate: u32,
 }
 
+/// The single recognition stream for every open agent channel: one capture
+/// subscriber, one `transcription_session`, one ledger and one archive,
+/// however many of the 1..=9 channels listen. The channel that opened it is
+/// not its owner: it lives until the last participant leaves.
+struct SharedChannelCapture {
+    task: ChannelTask,
+    demux: Arc<ChannelDemux>,
+    acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
+    /// Samples the shared session received: the ledger's capture clock.
+    delivered_samples: Arc<AtomicU64>,
+    /// Attached participants, each with an open interval in `demux`.
+    participants: Vec<CaptureSubscriberId>,
+}
+
+/// The participant a channel brings to the shared capture: its logical
+/// owner and the reducer sink its own intervals are routed to.
+pub struct ChannelParticipantOpen {
+    pub owner: Option<ChannelParticipantOwner>,
+    pub sink: Arc<dyn EventSink>,
+}
+
+/// One channel's participation in the shared capture.
+#[derive(Debug, Clone)]
+pub struct ChannelParticipation {
+    /// Participant identity; never the shared feed's subscriber.
+    pub id: CaptureSubscriberId,
+    /// First sample of this participation on the shared capture clock.
+    pub start_sample: u64,
+    pub seat: DeliverySeat,
+    /// Ledger namespace of the shared capture.
+    pub capture_session_id: String,
+    pub demux: Arc<ChannelDemux>,
+}
+
+/// The shared capture a joining channel binds its reducer to.
+#[derive(Debug, Clone)]
+pub struct SharedChannelView {
+    pub capture_session_id: String,
+    pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
+    pub demux: Arc<ChannelDemux>,
+    pub participants: usize,
+}
+
 /// What [`StreamingRecorder::register_channel_feed`] handed the caller.
 pub struct ChannelFeedRegistration {
     pub id: CaptureSubscriberId,
@@ -938,7 +988,7 @@ impl StreamingRecorder {
             next_capture_subscriber: 0,
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
-            channel_tasks: Vec::new(),
+            shared_channel: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
             prepared_capture_archive: None,
@@ -978,7 +1028,7 @@ impl StreamingRecorder {
             next_capture_subscriber: 0,
             take_subscriber: None,
             pcm_feeds: Arc::new(StdMutex::new(Vec::new())),
-            channel_tasks: Vec::new(),
+            shared_channel: None,
             captured_samples: Arc::new(AtomicU64::new(0)),
             take_archive: None,
             prepared_capture_archive: None,
@@ -1046,7 +1096,7 @@ impl StreamingRecorder {
         kind: CaptureSubscriberKind,
         pcm_feed: mpsc::Sender<Vec<f32>>,
     ) -> CaptureSubscriberId {
-        self.acquire_archived_capture_subscriber(kind, pcm_feed, None)
+        self.acquire_archived_capture_subscriber(kind, pcm_feed, None, None)
     }
 
     /// Register the feed and its archive in one registry push, so the archive
@@ -1056,6 +1106,7 @@ impl StreamingRecorder {
         kind: CaptureSubscriberKind,
         pcm_feed: mpsc::Sender<Vec<f32>>,
         archive: Option<TakeArchiveFeed>,
+        delivered: Option<Arc<AtomicU64>>,
     ) -> CaptureSubscriberId {
         self.next_capture_subscriber += 1;
         let id = CaptureSubscriberId(self.next_capture_subscriber);
@@ -1068,6 +1119,7 @@ impl StreamingRecorder {
                 kind,
                 sender: pcm_feed,
                 archive,
+                delivered,
             });
         id
     }
@@ -1131,6 +1183,12 @@ impl StreamingRecorder {
         let Some(id) = subscriber.or(self.take_subscriber) else {
             return;
         };
+        // A channel participant holds the shared feed, not a subscriber.
+        let id = self
+            .shared_channel
+            .as_ref()
+            .filter(|shared| shared.participants.contains(&id))
+            .map_or(id, |shared| shared.task.subscriber);
         if !self.recorder.is_active()
             || !self.capture_subscribers.iter().any(|(held, _)| *held == id)
         {
@@ -1320,6 +1378,7 @@ impl StreamingRecorder {
                 kind: CaptureSubscriberKind::Take,
                 sender: tx,
                 archive: Some(archive_feed),
+                delivered: None,
             });
         self.take_subscriber = Some(take_subscriber);
         self.take_archive = Some(archive);
@@ -1420,12 +1479,23 @@ impl StreamingRecorder {
         &mut self,
         archive: Option<TakeArchiveFeed>,
     ) -> ChannelFeedRegistration {
+        self.register_channel_feed_counted(archive, None)
+    }
+
+    /// Register the channel feed with the counter of samples its session
+    /// actually receives, in the same registry push as its archive.
+    fn register_channel_feed_counted(
+        &mut self,
+        archive: Option<TakeArchiveFeed>,
+        delivered: Option<Arc<AtomicU64>>,
+    ) -> ChannelFeedRegistration {
         let needs_physical_open = !self.recorder.is_active();
         let (sender, receiver) = mpsc::channel::<Vec<f32>>(AUDIO_BACKLOG_CHUNKS);
         let id = self.acquire_archived_capture_subscriber(
             CaptureSubscriberKind::Channel,
             sender,
             archive,
+            delivered,
         );
         ChannelFeedRegistration {
             id,
@@ -1434,32 +1504,40 @@ impl StreamingRecorder {
         }
     }
 
-    /// Open a channel session on the shared capture.
+    /// Open the one shared channel recognition stream and attach its first
+    /// participant at sample 0.
     ///
-    /// The channel gets its own ledger (passed in), its own event sink, and
-    /// its own `utterance_silence_sec`. That silence arms a separate
-    /// `EpochGate::for_session` inside `transcription_session`. The take's
-    /// silence field and capture epoch are not written.
+    /// Every later channel joins this stream through
+    /// [`Self::join_channel_session`]; none opens a second subscriber,
+    /// recognizer, ledger or archive. `session_id` names the shared capture
+    /// (the ledger namespace), not any one channel. The stream gets its own
+    /// `utterance_silence_sec`, which arms one `EpochGate::for_session` inside
+    /// `transcription_session`. The take's silence field and capture epoch are
+    /// not written.
     ///
-    /// `terminal_audio` carries the channel's own exact archive, as a take's.
-    /// Without it the session's terminal dictation witness has no owned PCM
-    /// and every gap Apple left stays unrecovered: Maciej's channel-0 take of
+    /// The shared session owns the stream's exact archive, as a take does.
+    /// Without it the terminal dictation witness has no owned PCM and every
+    /// gap Apple left stays unrecovered: Maciej's channel-0 take of
     /// 2026-10-16 20:43 had 72 % of its speech without a document owner and
-    /// `dictation_witness_pcm_unavailable` at stop. The seal now waits on the
-    /// channel archive (disk finalization, never the device span) exactly as
-    /// a dictation take does.
+    /// `dictation_witness_pcm_unavailable` at stop. The seal waits on this
+    /// archive (disk finalization, never the device span) exactly as a
+    /// dictation take does.
     pub async fn begin_channel_session(
         &mut self,
         session_id: String,
         runtime_settings: Arc<RuntimeSettingsSnapshot>,
-        event_sink: Arc<dyn EventSink>,
         language: Option<String>,
         configured_silence_sec: f32,
         acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
-    ) -> Result<CaptureSubscriberId> {
+        participant: ChannelParticipantOpen,
+    ) -> Result<ChannelParticipation> {
+        anyhow::ensure!(
+            self.shared_channel.is_none(),
+            "shared channel capture already open; a channel joins it instead"
+        );
         let utterance_silence_sec = channel_session_silence(configured_silence_sec);
         // The first subscriber owes the physical open (W1a). The device runs
-        // before anything is registered, so the channel's exact archive opens
+        // before anything is registered, so the stream's exact archive opens
         // at the native rate and joins the registry together with its feed.
         if !self.recorder.is_active() {
             self.install_pcm_fanout_callback();
@@ -1489,33 +1567,39 @@ impl StreamingRecorder {
                 actual
             }
         };
-        // Scoped to this subscription, like a take's. A channel that cannot
-        // open its scratch WAV still transcribes; only its retention is lost,
-        // and the log says so.
+        // Scoped to the shared subscription, like a take's. A stream that
+        // cannot open its scratch WAV still transcribes; only its retention is
+        // lost, and the log says so.
         let archive = match TakeArchive::spawn(actual_sample_rate, Arc::new(AtomicU64::new(0))) {
             Ok(archive) => Some(archive),
             Err(error) => {
-                warn!(%error, "channel admitted without its own PCM archive; its audio is not retained");
+                warn!(%error, "shared channel capture admitted without its PCM archive; its audio is not retained");
                 None
             }
         };
         let archive_feed = archive.as_ref().and_then(|archive| archive.feed().ok());
-        let registration = self.register_channel_feed_archived(archive_feed);
+        let delivered_samples = Arc::new(AtomicU64::new(0));
+        let registration =
+            self.register_channel_feed_counted(archive_feed, Some(Arc::clone(&delivered_samples)));
         let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle, lifecycle_events) = recorder_lifecycle_channel();
         let (last_window_tx, last_window_rx) = oneshot::channel();
-        // The channel owes its session the same PCM receipt a take owes its
+        // The stream owes its session the same PCM receipt a take owes its
         // own; a missing archive is reported through the receipt, not by
         // leaving the session without a sender.
         let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
         let terminal_audio = archive.is_some().then_some(terminal_rx);
         let terminal_audio_sender = terminal_audio.is_some().then_some(terminal_tx);
-        event_sink.on_capture_opened(&session_id, 1);
-        let sink = event_sink;
+        let demux = ChannelDemux::new(session_id.clone());
+        self.next_capture_subscriber += 1;
+        let first = CaptureSubscriberId(self.next_capture_subscriber);
+        let seat = demux.attach(first, participant.owner, participant.sink, 0);
+        let sink: Arc<dyn EventSink> = demux.clone();
+        sink.on_capture_opened(&session_id, 1);
         let feed = registration.receiver;
-        let id = registration.id;
         let task_session_id = session_id.clone();
+        let task_ledger = Arc::clone(&acoustic_ledger);
         let task = tokio::spawn(async move {
             transcription_session(
                 feed,
@@ -1525,7 +1609,7 @@ impl StreamingRecorder {
                     capture_epoch: 1,
                     runtime_settings,
                     live_formatting_agent: None,
-                    acoustic_ledger,
+                    acoustic_ledger: task_ledger,
                     sample_rate: actual_sample_rate,
                     capture_device_name,
                     language,
@@ -1540,17 +1624,86 @@ impl StreamingRecorder {
             )
             .await;
         });
-        self.channel_tasks.push(ChannelTask {
-            subscriber: id,
-            task,
-            lifecycle,
-            last_window: last_window_rx,
-            archive,
-            terminal_audio_sender,
-            session_id,
-            sample_rate: actual_sample_rate,
+        self.shared_channel = Some(SharedChannelCapture {
+            task: ChannelTask {
+                subscriber: registration.id,
+                task,
+                lifecycle,
+                last_window: last_window_rx,
+                archive,
+                terminal_audio_sender,
+                session_id: session_id.clone(),
+                sample_rate: actual_sample_rate,
+            },
+            demux: Arc::clone(&demux),
+            acoustic_ledger,
+            delivered_samples,
+            participants: vec![first],
         });
-        Ok(id)
+        Ok(ChannelParticipation {
+            id: first,
+            start_sample: 0,
+            seat,
+            capture_session_id: session_id,
+            demux,
+        })
+    }
+
+    /// The open shared channel capture a joining channel binds to.
+    pub fn shared_channel_view(&self) -> Option<SharedChannelView> {
+        self.shared_channel
+            .as_ref()
+            .map(|shared| SharedChannelView {
+                capture_session_id: shared.demux.capture_session_id().to_owned(),
+                acoustic_ledger: Arc::clone(&shared.acoustic_ledger),
+                demux: Arc::clone(&shared.demux),
+                participants: shared.participants.len(),
+            })
+    }
+
+    /// Attached channel participants of the shared capture.
+    pub fn channel_participant_count(&self) -> usize {
+        self.shared_channel
+            .as_ref()
+            .map_or(0, |shared| shared.participants.len())
+    }
+
+    /// Current position of the shared capture clock, read at a block boundary.
+    fn shared_channel_clock(&self) -> Option<u64> {
+        let shared = self.shared_channel.as_ref()?;
+        let _boundary = self
+            .pcm_feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(shared.delivered_samples.load(Ordering::SeqCst))
+    }
+
+    /// Attach one more channel to the open shared stream. Its interval starts
+    /// at the current capture sample: nothing heard earlier reaches it.
+    pub fn join_channel_session(
+        &mut self,
+        participant: ChannelParticipantOpen,
+    ) -> Result<ChannelParticipation> {
+        let start_sample = self
+            .shared_channel_clock()
+            .ok_or_else(|| anyhow!("no shared channel capture is open to join"))?;
+        self.next_capture_subscriber += 1;
+        let id = CaptureSubscriberId(self.next_capture_subscriber);
+        let shared = self
+            .shared_channel
+            .as_mut()
+            .ok_or_else(|| anyhow!("no shared channel capture is open to join"))?;
+        let seat = shared
+            .demux
+            .attach(id, participant.owner, participant.sink, start_sample);
+        shared.participants.push(id);
+        Ok(ChannelParticipation {
+            id,
+            start_sample,
+            seat,
+            capture_session_id: shared.demux.capture_session_id().to_owned(),
+            demux: Arc::clone(&shared.demux),
+        })
     }
 
     /// Release one channel subscription. The last subscriber closes the device.
@@ -1566,13 +1719,45 @@ impl StreamingRecorder {
 
     /// Close just this channel's capture interest. Recognition and archive
     /// joins transfer out of the physical recorder's slot before they wait.
+    ///
+    /// A participant that is not the last one only closes its own interval at
+    /// the current capture sample; the shared stream, ledger and archive keep
+    /// running for the others. The last participant releases the stream.
     pub async fn close_channel_session(&mut self, id: CaptureSubscriberId) -> ClosedChannel {
-        let position = self
-            .channel_tasks
-            .iter()
-            .position(|task| task.subscriber == id);
-        let removed = position.map(|index| self.channel_tasks.remove(index));
-        let last = self.release_capture_subscriber(id);
+        let end_sample = self.shared_channel_clock();
+        let participant = match (self.shared_channel.as_mut(), end_sample) {
+            (Some(shared), Some(end_sample)) if shared.participants.contains(&id) => {
+                shared.demux.detach(id, end_sample);
+                shared.participants.retain(|held| *held != id);
+                Some(Arc::clone(&shared.demux))
+            }
+            _ => None,
+        };
+        let releases_stream = participant.is_some()
+            && self
+                .shared_channel
+                .as_ref()
+                .is_some_and(|shared| shared.participants.is_empty());
+        if participant.is_some() && !releases_stream {
+            return ClosedChannel {
+                last: false,
+                task: None,
+                physical_archive: None,
+                participant: participant.map(|demux| (demux, id)),
+            };
+        }
+        // The last participant releases the shared feed; a feed registered
+        // without a session (attached-only) releases by its own identity.
+        let (subscriber, removed) = if releases_stream {
+            let shared = self
+                .shared_channel
+                .take()
+                .expect("shared stream checked above");
+            (shared.task.subscriber, Some(shared.task))
+        } else {
+            (id, None)
+        };
+        let last = self.release_capture_subscriber(subscriber);
         let physical_archive = if last && self.recorder.is_active() {
             self.recorder.close_capture().await;
             self.recorder.detach_closed_spill()
@@ -1583,6 +1768,7 @@ impl StreamingRecorder {
             last,
             task: removed,
             physical_archive,
+            participant: participant.map(|demux| (demux, id)),
         }
     }
 
@@ -1789,9 +1975,17 @@ pub struct ClosedChannel {
     /// The device spill when this channel closed the device. Auxiliary: it
     /// spans every subscriber that shared the capture and belongs to no session.
     physical_archive: Option<ClosedCaptureArchive>,
+    /// The participation this close ended, settled before `finish` returns.
+    participant: Option<(Arc<ChannelDemux>, CaptureSubscriberId)>,
 }
 
 impl ClosedChannel {
+    /// Whether this close released the shared stream (its last participant):
+    /// only that close owns the stream's archive, retention and capture lease.
+    pub fn released_stream(&self) -> bool {
+        self.task.is_some()
+    }
+
     /// The returned path is the channel's own exact archive, never the
     /// device span, so retention under the channel's session stays true.
     pub async fn finish(mut self) -> Result<(bool, Option<std::path::PathBuf>)> {
@@ -1851,10 +2045,21 @@ impl ClosedChannel {
                     .context("channel transcription task failed");
                 drop(removed.lifecycle);
                 drop(removed.last_window);
+                // The shared session joined: every event it will emit reached
+                // the demux, so every detached participant can settle now.
+                if let Some((demux, _)) = self.participant.as_ref() {
+                    demux.finish_capture();
+                }
                 joined
             }
             None => Ok(()),
         };
+        // This participant's own intervals freeze here: the decoder passed its
+        // detach sample, the stream ended, or the bounded wait elapsed.
+        if let Some((demux, id)) = self.participant.take() {
+            let settled = demux.settle(id, CHANNEL_DETACH_SETTLE_BUDGET).await;
+            info!(?id, ?settled, "channel participation settled");
+        }
         match (archive, task) {
             (Ok(path), Ok(())) => Ok((self.last, path)),
             (archive, task) => {
@@ -2332,7 +2537,12 @@ fn offer_pcm_to_feeds(feeds: &mut Vec<PcmFeed>, data: &[f32], dropped: &AtomicU6
             }
         }
         match feed.sender.try_send(data.to_vec()) {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Some(delivered) = &feed.delivered {
+                    delivered.fetch_add(data.len() as u64, Ordering::SeqCst);
+                }
+                true
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 full += 1;
                 true
@@ -2376,6 +2586,19 @@ fn block_rms(samples: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use crate::audio::chunker::{SpeechEvent, SpeechSession, VadGateMode};
+
+    /// Seat a hand-built channel task as the shared channel stream with one
+    /// participant whose identity is the feed's own.
+    fn install_channel_task(recorder: &mut StreamingRecorder, task: ChannelTask) {
+        let participant = task.subscriber;
+        recorder.shared_channel = Some(SharedChannelCapture {
+            demux: ChannelDemux::new(task.session_id.clone()),
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
+            delivered_samples: Arc::new(AtomicU64::new(0)),
+            participants: vec![participant],
+            task,
+        });
+    }
     use crate::audio::load_audio_file;
     use crate::vad;
     use serial_test::serial;
@@ -3008,21 +3231,24 @@ mod tests {
         let worker_release = Arc::clone(&release);
         let (lifecycle, _) = recorder_lifecycle_channel();
         let (_, last_window) = oneshot::channel();
-        recorder.channel_tasks.push(ChannelTask {
-            subscriber: channel,
-            task: tokio::spawn(async move {
-                worker_release.notified().await;
-            }),
-            lifecycle,
-            last_window,
-            archive: None,
-            terminal_audio_sender: None,
-            session_id: String::new(),
-            sample_rate: 16_000,
-        });
+        install_channel_task(
+            &mut recorder,
+            ChannelTask {
+                subscriber: channel,
+                task: tokio::spawn(async move {
+                    worker_release.notified().await;
+                }),
+                lifecycle,
+                last_window,
+                archive: None,
+                terminal_audio_sender: None,
+                session_id: String::new(),
+                sample_rate: 16_000,
+            },
+        );
         let closed = recorder.close_channel_session(channel).await;
         assert_eq!(recorder.capture_subscriber_count(), 1);
-        assert!(recorder.channel_tasks.is_empty());
+        assert!(recorder.shared_channel.is_none());
         assert!(matches!(
             channel_rx.try_recv(),
             Err(mpsc::error::TryRecvError::Disconnected)
@@ -3069,12 +3295,14 @@ mod tests {
                     send_failed: Arc::clone(&refused),
                     refused: Arc::clone(&refused_pcm),
                 }),
+                delivered: None,
             },
             PcmFeed {
                 id: CaptureSubscriberId(2),
                 kind: CaptureSubscriberKind::Channel,
                 sender: channel_tx,
                 archive: None,
+                delivered: None,
             },
         ];
         let dropped = AtomicU64::new(0);
@@ -3110,6 +3338,7 @@ mod tests {
             kind: CaptureSubscriberKind::Take,
             sender: take_tx,
             archive: Some(archive.feed().unwrap()),
+            delivered: None,
         }];
         let dropped = AtomicU64::new(0);
         // The writer admits the first block.
@@ -3169,16 +3398,19 @@ mod tests {
         let registration = recorder.register_channel_feed_archived(Some(archive.feed().unwrap()));
         let (lifecycle, _) = recorder_lifecycle_channel();
         let (_, last_window) = oneshot::channel();
-        recorder.channel_tasks.push(ChannelTask {
-            subscriber: registration.id,
-            task: tokio::spawn(async {}),
-            lifecycle,
-            last_window,
-            archive: Some(archive),
-            terminal_audio_sender: None,
-            session_id: String::new(),
-            sample_rate: 16_000,
-        });
+        install_channel_task(
+            &mut recorder,
+            ChannelTask {
+                subscriber: registration.id,
+                task: tokio::spawn(async {}),
+                lifecycle,
+                last_window,
+                archive: Some(archive),
+                terminal_audio_sender: None,
+                session_id: String::new(),
+                sample_rate: 16_000,
+            },
+        );
         offer_pcm_to_feeds(
             &mut recorder.pcm_feeds.lock().unwrap(),
             &[0.5; 160],
@@ -3227,26 +3459,29 @@ mod tests {
         let received = Arc::new(StdMutex::new(None));
         let sink = Arc::clone(&received);
         let session_id = "agent-channel-0-receipt-order".to_string();
-        recorder.channel_tasks.push(ChannelTask {
-            subscriber: registration.id,
-            task: tokio::spawn(async move {
-                // The session's stop tail: wait for the archive, as
-                // `apple_live_session` does with `recv_timeout(30 s)`.
-                let receipt = tokio::task::spawn_blocking(move || {
-                    terminal_rx.recv_timeout(std::time::Duration::from_secs(5))
-                })
-                .await
-                .unwrap()
-                .expect("archive receipt must arrive before the session task is joined");
-                *sink.lock().unwrap() = Some(receipt);
-            }),
-            lifecycle,
-            last_window,
-            archive: Some(archive),
-            terminal_audio_sender: Some(terminal_tx),
-            session_id: session_id.clone(),
-            sample_rate: 16_000,
-        });
+        install_channel_task(
+            &mut recorder,
+            ChannelTask {
+                subscriber: registration.id,
+                task: tokio::spawn(async move {
+                    // The session's stop tail: wait for the archive, as
+                    // `apple_live_session` does with `recv_timeout(30 s)`.
+                    let receipt = tokio::task::spawn_blocking(move || {
+                        terminal_rx.recv_timeout(std::time::Duration::from_secs(5))
+                    })
+                    .await
+                    .unwrap()
+                    .expect("archive receipt must arrive before the session task is joined");
+                    *sink.lock().unwrap() = Some(receipt);
+                }),
+                lifecycle,
+                last_window,
+                archive: Some(archive),
+                terminal_audio_sender: Some(terminal_tx),
+                session_id: session_id.clone(),
+                sample_rate: 16_000,
+            },
+        );
         offer_pcm_to_feeds(
             &mut recorder.pcm_feeds.lock().unwrap(),
             &[0.5; 160],
@@ -3302,6 +3537,7 @@ mod tests {
         let (open_tx, mut open_rx) = mpsc::channel::<Vec<f32>>(1);
         feeds.push(PcmFeed {
             archive: None,
+            delivered: None,
             id: CaptureSubscriberId(1),
             kind: CaptureSubscriberKind::Take,
             sender: open_tx,
@@ -3312,6 +3548,7 @@ mod tests {
             .expect("prefill the bounded feed to capacity");
         feeds.push(PcmFeed {
             archive: None,
+            delivered: None,
             id: CaptureSubscriberId(2),
             kind: CaptureSubscriberKind::Take,
             sender: full_tx,
@@ -3320,6 +3557,7 @@ mod tests {
         drop(closed_rx);
         feeds.push(PcmFeed {
             archive: None,
+            delivered: None,
             id: CaptureSubscriberId(3),
             kind: CaptureSubscriberKind::Take,
             sender: closed_tx,
