@@ -1667,9 +1667,19 @@
               "required_code": [
                 "struct OverlayIntentRail: View",
                 "Self.actionAvailability(intents: intents, versions: versions)",
+                "mountedControl(slot)",
                 "dispatch(intent)",
                 "func dispatch(_ intent: OverlayIntent)",
                 "onIntent(intent)"
+              ]
+            },
+            {
+              "symbol": "mountedControl",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "required_code": [
+                "switch slot",
+                "case .intent(let intent):",
+                "intentControl(intent)"
               ]
             },
             {
@@ -1900,9 +1910,16 @@
               "minimum_count": 1
             },
             {
-              "callee": "intentControl",
+              "callee": "mountedControl",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "intentControl",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "mountedControl",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "minimum_count": 1
             },
