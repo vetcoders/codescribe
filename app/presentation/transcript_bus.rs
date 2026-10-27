@@ -1707,7 +1707,7 @@ impl TranscriptBus {
         writer.started
             && !writer.ended
             && !writer.sealed
-            && refusal.session_id() == self.capture_session_id()
+            && refusal.session_id() == self.session.session_id
             && writer.last_projection.as_ref().is_some_and(|last| {
                 last.capture_epoch == refusal.capture_epoch()
                     && last.rendered_text == text
