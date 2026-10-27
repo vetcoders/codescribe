@@ -3788,66 +3788,13 @@ impl RecordingController {
         if wait.preempted {
             wait.live_finals_admitted = false;
         }
-        let preempted = wait.preempted;
-        if take_delivers_to_composer(capture_turn) {
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
-        if preempted {
-            // A new take does not authorize pasting the old take's unfinished
-            // paint. Its owned drain retains the audio and terminal document.
-            self.record_delivery_disposition(TranscriptDelivery::Retained)
-                .await;
-            return StopCanvasDelivery {
-                delivery: Ok(Some(TranscriptDelivery::Retained)),
-                preempted: true,
-            };
-        }
-        if !assistive
-            && runtime_settings.formatting_policy() != FormattingPolicy::Off
-            && presentation
-                .as_ref()
-                .is_some_and(|emitter| !emitter.literal_delivery())
-        {
-            // The painted prefix is not the terminal formatter source. Selecting
-            // it here would permanently freeze the fallback before the last
-            // occurrence results can settle. PCM is already closed; leave the
-            // one delivery claim to the existing terminal path.
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
-        let committed_canvas = wait
-            .snapshot
-            .as_ref()
-            .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
-        if !wait.permits_first_delivery(take_id) {
-            info!(
-                take_id,
-                stop_final_wait_ms = wait.stop_final_wait_ms,
-                stop_final_timeout = wait.stop_final_timeout,
-                live_finals_admitted = wait.live_finals_admitted,
-                committed_canvas,
-                "stop paste deferred until terminal text settlement"
-            );
-            // None leaves the single delivery claim for the existing terminal
-            // path. A paint timeout or recognizer close cannot settle a prefix
-            // and suppress the later, complete document.
-            return StopCanvasDelivery {
-                delivery: Ok(None),
-                preempted: false,
-            };
-        }
         let config = runtime_settings.values().clone();
-        let delivery = self
-            .settle_frozen_canvas_at_stop(
+        self.stop_canvas_delivery(
                 take_id,
                 presentation.as_deref(),
                 wait,
                 stop.stopped_at,
+                (assistive, capture_turn, runtime_settings),
                 |text| async move {
                     let text = if !assistive {
                         self.select_paste_projection(take_id, runtime_settings, text)
@@ -3918,6 +3865,80 @@ impl RecordingController {
                     .await
                 },
             )
+            .await
+    }
+
+    /// Decide first-Stop delivery before invoking the single transport boundary.
+    /// Tests supply that boundary after the original ClosedTake completion wait.
+    async fn stop_canvas_delivery<F, Fut>(
+        &self,
+        take_id: Option<&str>,
+        presentation: Option<&PresentationEmitter>,
+        wait: StopCanvasWait,
+        stop_start: std::time::Instant,
+        intent: (bool, CaptureTurnIntent, &RuntimeSettingsSnapshot),
+        deliver: F,
+    ) -> StopCanvasDelivery
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<TranscriptDelivery>>,
+    {
+        let (assistive, capture_turn, runtime_settings) = intent;
+        let preempted = wait.preempted;
+        if take_delivers_to_composer(capture_turn) {
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        if preempted {
+            // A new take does not authorize pasting the old take's unfinished
+            // paint. Its owned drain retains the audio and terminal document.
+            self.record_delivery_disposition(TranscriptDelivery::Retained)
+                .await;
+            return StopCanvasDelivery {
+                delivery: Ok(Some(TranscriptDelivery::Retained)),
+                preempted: true,
+            };
+        }
+        if !assistive
+            && runtime_settings.formatting_policy() != FormattingPolicy::Off
+            && presentation
+                .as_ref()
+                .is_some_and(|emitter| !emitter.literal_delivery())
+        {
+            // The painted prefix is not the terminal formatter source. Selecting
+            // it here would permanently freeze the fallback before the last
+            // occurrence results can settle. PCM is already closed; leave the
+            // one delivery claim to the existing terminal path.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        let committed_canvas = wait
+            .snapshot
+            .as_ref()
+            .is_some_and(|canvas| canvas.has_committed_document && canvas.preview_only_words == 0);
+        if !wait.permits_first_delivery(take_id) {
+            info!(
+                take_id,
+                stop_final_wait_ms = wait.stop_final_wait_ms,
+                stop_final_timeout = wait.stop_final_timeout,
+                live_finals_admitted = wait.live_finals_admitted,
+                committed_canvas,
+                "stop paste deferred until terminal text settlement"
+            );
+            // None leaves the single delivery claim for the existing terminal
+            // path. A paint timeout or recognizer close cannot settle a prefix
+            // and suppress the later, complete document.
+            return StopCanvasDelivery {
+                delivery: Ok(None),
+                preempted: false,
+            };
+        }
+        let delivery = self
+            .settle_frozen_canvas_at_stop(take_id, presentation, wait, stop_start, deliver)
             .await
             .map(Some);
         StopCanvasDelivery {
