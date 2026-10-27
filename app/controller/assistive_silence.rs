@@ -435,7 +435,7 @@ mod tests {
             move |route: DeliveryRoute, _: String, _: Option<String>| async move {
                 assert_eq!(route, DeliveryRoute::ClipboardPaste);
                 seen.fetch_add(1, Ordering::SeqCst);
-                Err::<OverlayPasteResult, _>(anyhow::anyhow!("test sink"))
+                Err(anyhow::anyhow!("test sink"))
             }
         };
         let silent = "take-silent";
