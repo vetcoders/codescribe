@@ -14,6 +14,17 @@ pub fn default_double_tap_interval_ms() -> u64 {
     200
 }
 
+/// Longest Option press in milliseconds that still counts as a tap.
+pub fn default_tap_max_ms() -> u64 {
+    220
+}
+
+/// Milliseconds after a typed key during which an Option tap counts for
+/// nothing: Option also types characters (Polish diacritics).
+pub fn default_typing_quiet_ms() -> u64 {
+    300
+}
+
 /// Seconds of silence that end a recording in toggle mode.
 pub fn default_toggle_silence_sec() -> f32 {
     5.0

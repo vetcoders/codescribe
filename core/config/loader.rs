@@ -1275,6 +1275,8 @@ impl Config {
         );
         env_parse!("HOLD_START_DELAY_MS", self.hold_start_delay_ms);
         env_parse!("DOUBLE_TAP_INTERVAL_MS", self.double_tap_interval_ms);
+        env_parse!("TAP_MAX_MS", self.tap_max_ms);
+        env_parse!("TYPING_QUIET_MS", self.typing_quiet_ms);
         env_parse!("TOGGLE_SILENCE_SEC", self.toggle_silence_sec);
         env_flag!("WHISPER_ADAPTIVE_BUFFER", self.whisper_adaptive_buffer);
         env_parse!(
@@ -1504,6 +1506,12 @@ impl Config {
             "DOUBLE_TAP_INTERVAL_MS",
             self.double_tap_interval_ms,
             settings.double_tap_interval_ms
+        );
+        apply_copy!("TAP_MAX_MS", self.tap_max_ms, settings.tap_max_ms);
+        apply_copy!(
+            "TYPING_QUIET_MS",
+            self.typing_quiet_ms,
+            settings.typing_quiet_ms
         );
         apply_copy!(
             "TOGGLE_SILENCE_SEC",

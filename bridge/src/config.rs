@@ -94,6 +94,10 @@ pub struct CsSettings {
     pub hold_arm_modifier: String,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
+    /// `TAP_MAX_MS`: longest Option press that still counts as a tap.
+    pub tap_max_ms: u64,
+    /// `TYPING_QUIET_MS`: Option taps count for nothing this long after typing.
+    pub typing_quiet_ms: u64,
     pub toggle_silence_sec: f32,
     /// `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
     pub whisper_context_window_sec: f32,
@@ -256,6 +260,8 @@ impl CsSettings {
             hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
+            tap_max_ms: config.tap_max_ms,
+            typing_quiet_ms: config.typing_quiet_ms,
             toggle_silence_sec: config.toggle_silence_sec,
             whisper_context_window_sec: config.whisper_context_window_sec,
             whisper_adaptive_buffer: config.whisper_adaptive_buffer,

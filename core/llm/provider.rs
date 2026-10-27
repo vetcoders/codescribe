@@ -1048,9 +1048,8 @@ mod tests {
         }
         assert_eq!(responses.normalize_endpoint(" not a URL "), "not a URL");
         assert_eq!(
-            WireFamily::AnthropicMessages.normalize_endpoint(
-                "https://proxy.example/mount/v1/responses/v1/chat/completions"
-            ),
+            WireFamily::AnthropicMessages
+                .normalize_endpoint("https://proxy.example/mount/v1/responses/v1/chat/completions"),
             "https://proxy.example/mount/v1/messages"
         );
     }
